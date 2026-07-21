@@ -74,6 +74,13 @@ describe('resolveAgentSkillEntries', () => {
     expect(out[0]!.skills).toEqual([])
   })
 
+  it('a wildcard honors the source own filter instead of broadening to all', async () => {
+    const repo = repoWith([source({ name: 'platform', skills: ['review-pr'] })])
+    const out = await resolveAgentSkillEntries({ orgId: ORG, skills: ['platform/*'] }, repo)
+    // NOT [] — that would mean "install every skill", broadening the restriction.
+    expect(out[0]!.skills).toEqual(['review-pr'])
+  })
+
   it('intersects picks with the source own filter when the source scopes a subset', async () => {
     const repo = repoWith([source({ name: 'platform', skills: ['review-pr'] })])
     const out = await resolveAgentSkillEntries(
@@ -81,6 +88,13 @@ describe('resolveAgentSkillEntries', () => {
       repo
     )
     expect(out[0]!.skills).toEqual(['review-pr'])
+  })
+
+  it('omits a source when specific picks intersect the source filter to nothing', async () => {
+    const repo = repoWith([source({ name: 'platform', skills: ['review-pr'] })])
+    // The agent enabled only a skill the source no longer offers → omit, never fall back to all.
+    const out = await resolveAgentSkillEntries({ orgId: ORG, skills: ['platform/gone'] }, repo)
+    expect(out).toEqual([])
   })
 
   it('drops enable-list entries whose source no longer exists', async () => {

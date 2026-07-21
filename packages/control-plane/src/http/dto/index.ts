@@ -318,10 +318,27 @@ const McpServerNamesBody = z.array(
     .min(1)
     .refine((n) => n !== RESERVED_MCP_SERVER_NAME, { message: `"${RESERVED_MCP_SERVER_NAME}" is reserved` })
 )
+// A skills-source name: the org-unique reference key AND the prefix of the
+// "<source>/<skill>" enable-ref, so it must be slash-free (a "/" would corrupt
+// parseSkillRef) and free of whitespace/wildcards.
+const SKILL_SOURCE_NAME = /^[A-Za-z0-9._-]+$/
+const SkillSourceName = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(SKILL_SOURCE_NAME, { message: 'name may contain only letters, digits, dot, underscore, or hyphen' })
+
 // Enabled shared-skills (docs/designs/shared-skills.md): each entry is
-// "<sourceName>/<skillName>" or "<sourceName>/*" (the whole source). The CP
-// resolves these against the org SkillSource registry when it assembles the spec.
-const SkillEnableBody = z.array(z.string().min(1))
+// "<sourceName>/<skillName>", "<sourceName>/*" (the whole source), or a bare
+// "<sourceName>". The grammar mirrors SkillSourceName for the source segment so a
+// name and its enable-refs stay consistent; the CP resolves these against the org
+// SkillSource registry when it assembles the spec.
+const SkillEnableBody = z.array(
+  z.string().regex(/^[A-Za-z0-9._-]+(\/([A-Za-z0-9._-]+|\*))?$/, {
+    message: 'must be "<source>", "<source>/<skill>", or "<source>/*"'
+  })
+)
 // Memory backend selection (design: docs/designs/memory-evolution.md). External
 // carries only a connection reference + product policy; credentials and plugin
 // transport stay on the daemon-private connection data plane.
@@ -715,7 +732,7 @@ export const McpProviderCreatedDto = McpProviderDto.extend({
  *  `skills` empty ⇒ install every skill the source exposes. */
 export const CreateSkillSourceBody = z
   .object({
-    name: z.string().trim().min(1).max(64),
+    name: SkillSourceName,
     source: z.string().trim().min(1),
     githubRepoId: z.string().optional(), // numeric id as string (BigInt on the wire)
     ref: z.string().trim().optional(),

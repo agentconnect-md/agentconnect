@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest'
-import { composeSource } from '../src/skills/install-skills.js'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { composeSource, installSkills } from '../src/skills/install-skills.js'
 import { skillsAgentId } from '../src/skills/runtime-agent-map.js'
 
 describe('skillsAgentId', () => {
@@ -50,5 +53,60 @@ describe('composeSource', () => {
     expect(composeSource({ ...base, source: 'https://gitlab.com/acme/skills', ref: 'v1' })).toBe(
       'https://gitlab.com/acme/skills'
     )
+  })
+})
+
+describe('installSkills reconcile (no npx: empty/unmapped paths)', () => {
+  let cwd: string
+  const marker = () => join(cwd, '.agentconnect', 'skills-install.json')
+  const writeMarker = (m: unknown) => {
+    mkdirSync(join(cwd, '.agentconnect'), { recursive: true })
+    writeFileSync(marker(), JSON.stringify(m))
+  }
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'skills-'))
+  })
+  afterEach(() => {
+    rmSync(cwd, { recursive: true, force: true })
+  })
+
+  it('disabling the last skill removes previously-installed dirs and clears the marker', async () => {
+    mkdirSync(join(cwd, '.claude', 'skills', 'review-pr'), { recursive: true })
+    writeMarker({ fingerprint: 'old', installed: ['.claude/skills/review-pr'] })
+
+    const res = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd)
+
+    expect(existsSync(join(cwd, '.claude', 'skills', 'review-pr'))).toBe(false)
+    expect(res.removed).toEqual(['.claude/skills/review-pr'])
+    expect(JSON.parse(readFileSync(marker(), 'utf8'))).toMatchObject({ installed: [] })
+  })
+
+  it('never removes a manually-authored skill (one not recorded as daemon-installed)', async () => {
+    mkdirSync(join(cwd, '.claude', 'skills', 'mine'), { recursive: true })
+    mkdirSync(join(cwd, '.claude', 'skills', 'daemon-installed'), { recursive: true })
+    writeMarker({ fingerprint: 'old', installed: ['.claude/skills/daemon-installed'] })
+
+    await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd)
+
+    expect(existsSync(join(cwd, '.claude', 'skills', 'mine'))).toBe(true)
+    expect(existsSync(join(cwd, '.claude', 'skills', 'daemon-installed'))).toBe(false)
+  })
+
+  it('an unchanged fingerprint skips entirely (no removal)', async () => {
+    // fingerprint of runtime=claude, agentId=claude-code, skills=[] — recompute-stable.
+    const first = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd)
+    expect(first.skipped).toBeNull() // first run writes the marker
+    mkdirSync(join(cwd, '.claude', 'skills', 'untracked'), { recursive: true })
+    const second = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd)
+    expect(second.skipped).toBe('unchanged')
+    expect(existsSync(join(cwd, '.claude', 'skills', 'untracked'))).toBe(true)
+  })
+
+  it('an unmapped runtime still reconciles away prior daemon-installed copies', async () => {
+    mkdirSync(join(cwd, '.agents', 'skills', 'x'), { recursive: true })
+    writeMarker({ fingerprint: 'old', installed: ['.agents/skills/x'] })
+    await installSkills({ id: 'a1', runtime: 'exotic-agent', skills: [{ name: 'x', source: 'o/r', skills: [] }] }, cwd)
+    expect(existsSync(join(cwd, '.agents', 'skills', 'x'))).toBe(false)
   })
 })

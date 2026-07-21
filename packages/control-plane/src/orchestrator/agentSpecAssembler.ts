@@ -51,6 +51,13 @@ export class AgentSpecAssembler {
     return this.secrets.get(a.id)
   }
 
+  /** Resolve the agent's skill entries — pinned into the move {@link MoveBundle} so
+   *  the authoritative `agent/activate` path ships them (a bare `project` would
+   *  default to [], which `writeAgentSpec` reads as "clear", wiping skills on move). */
+  skillsOf(a: Pick<AgentRecord, 'orgId' | 'skills'>): Promise<AgentSkillEntry[]> {
+    return resolveAgentSkillEntries(a, this.skillSources)
+  }
+
   /**
    * Pure projection over ALREADY-FETCHED secrets. The agent-move path calls this
    * with its snapshotted `MoveBundle.secrets` so the activation fingerprint

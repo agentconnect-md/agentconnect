@@ -53,15 +53,28 @@ export async function resolveAgentSkillEntries(
     const bucket = bySource.get(name)!
     const row = await repo.getByName(agent.orgId, name)
     if (!row) continue // enable-list references a source that no longer exists → drop
+
+    // `skills: []` in an entry means "install every skill the source exposes", so it
+    // must never be produced from a NARROWER intent (that would broaden the filter).
+    let skills: string[]
+    if (bucket.all) {
+      // Whole-source request: honor the source's OWN filter. `[]` here is faithful —
+      // it means the source itself scopes to all skills.
+      skills = [...row.skills]
+    } else {
+      // Specific picks: intersect with the source's own filter (when it scopes a
+      // subset). An empty intersection means the agent enabled only skills the source
+      // no longer offers — OMIT the source entirely rather than falling back to all.
+      skills = scopeSkills([...bucket.skills], row.skills)
+      if (skills.length === 0) continue
+    }
+
     entries.push({
       name: row.name,
       source: row.source,
       ...(row.ref ? { ref: row.ref } : {}),
       ...(row.subDir ? { subDir: row.subDir } : {}),
-      // Whole-source request, or the source's own filter is empty ⇒ install all.
-      // Otherwise intersect the agent's picks with the source's own skill filter
-      // (when the source itself scopes to a subset).
-      skills: bucket.all ? [] : scopeSkills([...bucket.skills], row.skills)
+      skills
     })
   }
   return entries

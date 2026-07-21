@@ -10,11 +10,26 @@
  * session still starts. Idempotent: a fingerprint marker in the workspace skips
  * the whole `npx` pass when the enabled set + runtime are unchanged, so the
  * common case costs one stat, not a network round-trip.
+ *
+ * Reconciling: `npx skills add` only ADDS, so disabling or narrowing a source
+ * would leave stale skill copies the runtime keeps auto-discovering. The marker
+ * records exactly the skill directories THIS daemon created; a changed run removes
+ * those first (never touching manually-authored skills) before re-installing the
+ * desired set — including the zero-desired case.
  */
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { AgentSkillEntry } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
@@ -29,6 +44,16 @@ const SKILLS_CLI_SPEC = 'skills'
 const INSTALL_TIMEOUT_MS = 20_000
 const MARKER_DIR = '.agentconnect'
 const MARKER_FILE = 'skills-install.json'
+// Project-scope skill roots the CLI writes into, relative to the ACP cwd: Claude
+// uses `.claude/skills`, the other supported agents (codex/cursor/opencode/gemini)
+// use `.agents/skills`. Both are watched for reconcile + git-excluded.
+const SKILL_ROOTS = ['.claude/skills', '.agents/skills']
+
+interface Marker {
+  fingerprint?: string
+  /** cwd-relative skill dirs this daemon created (for reconcile removal). */
+  installed: string[]
+}
 
 /** Compose the string handed to `npx skills add` from a skill entry, folding an
  *  optional ref/subDir into the GitHub `tree/<ref>/<subdir>` path form (design §5).
@@ -53,34 +78,82 @@ function markerPath(cwd: string): string {
   return join(cwd, MARKER_DIR, MARKER_FILE)
 }
 
-function readMarker(cwd: string): string | undefined {
+function readMarker(cwd: string): Marker {
   try {
-    const raw = JSON.parse(readFileSync(markerPath(cwd), 'utf8')) as { fingerprint?: unknown }
-    return typeof raw.fingerprint === 'string' ? raw.fingerprint : undefined
+    const raw = JSON.parse(readFileSync(markerPath(cwd), 'utf8')) as { fingerprint?: unknown; installed?: unknown }
+    return {
+      ...(typeof raw.fingerprint === 'string' ? { fingerprint: raw.fingerprint } : {}),
+      installed: Array.isArray(raw.installed) ? raw.installed.filter((p): p is string => typeof p === 'string') : []
+    }
   } catch {
-    return undefined
+    return { installed: [] }
   }
 }
 
-function writeMarker(cwd: string, fp: string): void {
+function writeMarker(cwd: string, marker: Marker): void {
   try {
     mkdirSync(join(cwd, MARKER_DIR), { recursive: true })
-    writeFileSync(markerPath(cwd), JSON.stringify({ fingerprint: fp }) + '\n')
+    writeFileSync(markerPath(cwd), JSON.stringify(marker) + '\n')
   } catch {
-    // A missing marker only costs a redundant re-install next session — never fatal.
+    // A missing/stale marker only costs a redundant re-install next session — never fatal.
   }
 }
 
-/** Keep installed skill dirs out of a git-repo workspace's tracked tree so the
- *  agent's `git status` stays clean. Best-effort; from-scratch workspaces have no
- *  `.git` and are skipped. */
+/** cwd-relative paths of the skill directories currently present under the CLI's
+ *  project-scope roots. Used to diff before/after an install (what WE created) and
+ *  to remove exactly our own copies on a later change. */
+function listSkillDirs(cwd: string): string[] {
+  const out: string[] = []
+  for (const root of SKILL_ROOTS) {
+    const abs = join(cwd, root)
+    let entries: import('node:fs').Dirent[]
+    try {
+      entries = readdirSync(abs, { withFileTypes: true })
+    } catch {
+      continue // root absent
+    }
+    for (const e of entries) if (e.isDirectory()) out.push(`${root}/${e.name}`)
+  }
+  return out
+}
+
+/** Walk up from `cwd` to the repository root (the dir holding `.git`), so exclude
+ *  patterns land in the real repo even when the ACP cwd is a nested `agentDir`.
+ *  Returns undefined for a from-scratch workspace (no `.git` above cwd). */
+function findRepoRoot(cwd: string): string | undefined {
+  let dir = cwd
+  for (;;) {
+    if (existsSync(join(dir, '.git'))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) return undefined
+    dir = parent
+  }
+}
+
+/** Keep installed skill dirs (and the marker) out of a git-repo workspace's tracked
+ *  tree so the agent's `git status` stays clean. Excludes at the repo root (not the
+ *  possibly-nested cwd), covering both `.claude/skills` and `.agents/skills`.
+ *  Best-effort; from-scratch workspaces have no `.git` and are skipped. */
 function excludeFromGit(cwd: string): void {
-  const exclude = join(cwd, '.git', 'info', 'exclude')
-  if (!existsSync(exclude)) return
+  const repoRoot = findRepoRoot(cwd)
+  if (repoRoot === undefined) return
+  const gitPath = join(repoRoot, '.git')
+  // A linked worktree has `.git` as a file pointing elsewhere; skip (cosmetic only).
   try {
-    const current = readFileSync(exclude, 'utf8')
-    const want = ['.claude/skills/', '.agentconnect/'].filter((p) => !current.includes(p))
-    if (want.length) appendFileSync(exclude, (current.endsWith('\n') ? '' : '\n') + want.join('\n') + '\n')
+    if (!statSync(gitPath).isDirectory()) return
+  } catch {
+    return
+  }
+  const exclude = join(gitPath, 'info', 'exclude')
+  // Patterns are repo-root-relative — anchor them under the (possibly nested) cwd.
+  const rel = cwd === repoRoot ? '' : `${cwd.slice(repoRoot.length + 1)}/`
+  const want = [...SKILL_ROOTS.map((r) => `${rel}${r}/`), `${rel}${MARKER_DIR}/`]
+  try {
+    mkdirSync(dirname(exclude), { recursive: true })
+    const current = existsSync(exclude) ? readFileSync(exclude, 'utf8') : ''
+    const missing = want.filter((p) => !current.includes(p))
+    if (missing.length)
+      appendFileSync(exclude, (current === '' || current.endsWith('\n') ? '' : '\n') + missing.join('\n') + '\n')
   } catch {
     // ignore — a dirty status is cosmetic, not correctness
   }
@@ -88,41 +161,59 @@ function excludeFromGit(cwd: string): void {
 
 export interface InstallSkillsResult {
   installed: string[]
-  skipped: 'unchanged' | 'no-skills' | 'no-runtime-mapping' | null
+  removed: string[]
+  skipped: 'unchanged' | null
   errors: Array<{ source: string; error: string }>
 }
 
 /**
- * Install `agent.skills` into `cwd`. Never throws. `env` is merged into the child
- * (git credential helper vars for private sources, GIT_TERMINAL_PROMPT=0, etc.);
- * `warn` receives non-fatal diagnostics.
+ * Install `agent.skills` into `cwd`, reconciling away skill copies this daemon
+ * previously created but that are no longer desired. Never throws. `env` is merged
+ * into the child (git credential helper vars for private sources,
+ * GIT_TERMINAL_PROMPT=0, etc.); `warn` receives non-fatal diagnostics.
  */
 export async function installSkills(
   agent: Pick<Agent, 'id' | 'runtime' | 'skills'>,
   cwd: string,
   opts: { env?: NodeJS.ProcessEnv; warn?: (msg: string) => void } = {}
 ): Promise<InstallSkillsResult> {
-  const result: InstallSkillsResult = { installed: [], skipped: null, errors: [] }
+  const result: InstallSkillsResult = { installed: [], removed: [], skipped: null, errors: [] }
   const entries = agent.skills ?? []
-  if (entries.length === 0) {
-    result.skipped = 'no-skills'
-    return result
-  }
-
   const agentId = skillsAgentId(agent.runtime)
-  if (!agentId) {
-    // P1: no native installer for this runtime; prompt-fallback is P2 (§6.5).
-    opts.warn?.(`skills: no npx-skills mapping for runtime "${agent.runtime}"; skipping install`)
-    result.skipped = 'no-runtime-mapping'
-    return result
-  }
+  // Include the mapped agent id in the fingerprint so a runtime switch re-runs
+  // (the target dir changes); an unmapped runtime installs nothing but must still
+  // reconcile away copies from a prior mapped runtime.
+  const fp = fingerprint(agent.runtime, agentId ?? '', entries)
 
-  const fp = fingerprint(agent.runtime, agent.id, entries)
-  if (readMarker(cwd) === fp) {
+  const prior = readMarker(cwd)
+  if (prior.fingerprint === fp) {
     result.skipped = 'unchanged'
     return result
   }
 
+  // Reconcile: remove exactly the dirs we created last time (disable / narrow /
+  // runtime change / zero-desired all pass through here). Manually-authored skills
+  // are never in `prior.installed`, so they survive.
+  for (const rel of prior.installed) {
+    try {
+      rmSync(join(cwd, rel), { recursive: true, force: true })
+      result.removed.push(rel)
+    } catch {
+      // best-effort
+    }
+  }
+
+  if (entries.length === 0 || !agentId) {
+    if (!agentId && entries.length > 0) {
+      // P1: no native installer for this runtime; prompt-fallback is P2 (§6.5).
+      opts.warn?.(`skills: no npx-skills mapping for runtime "${agent.runtime}"; skipping install`)
+    }
+    // Nothing to install, but the reconcile above happened — record the empty state.
+    writeMarker(cwd, { fingerprint: fp, installed: [] })
+    return result
+  }
+
+  const before = new Set(listSkillDirs(cwd))
   const env = { GIT_TERMINAL_PROMPT: '0', ...process.env, ...opts.env }
   for (const entry of entries) {
     const composed = composeSource(entry)
@@ -147,8 +238,11 @@ export async function installSkills(
     }
   }
 
+  // Whatever appeared under the skill roots is ours to track (and later remove).
+  const created = listSkillDirs(cwd).filter((p) => !before.has(p))
   excludeFromGit(cwd)
-  // Only fingerprint a fully-clean pass — a partial failure should retry next session.
-  if (result.errors.length === 0) writeMarker(cwd, fp)
+  // Record the created set always (so a later change can clean them up); commit the
+  // fingerprint only on a fully-clean pass so a partial failure retries next session.
+  writeMarker(cwd, { ...(result.errors.length === 0 ? { fingerprint: fp } : {}), installed: created })
   return result
 }
