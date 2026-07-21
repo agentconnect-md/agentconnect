@@ -109,4 +109,14 @@ describe('installSkills reconcile (no npx: empty/unmapped paths)', () => {
     await installSkills({ id: 'a1', runtime: 'exotic-agent', skills: [{ name: 'x', source: 'o/r', skills: [] }] }, cwd)
     expect(existsSync(join(cwd, '.agents', 'skills', 'x'))).toBe(false)
   })
+
+  it('ignores a tampered marker path outside the skill roots (no traversal delete)', async () => {
+    // A victim directory INSIDE cwd that a poisoned relative path tries to reach via
+    // "..". The strict tracked-dir grammar must reject it, leaving the victim intact.
+    mkdirSync(join(cwd, 'sub', 'victim'), { recursive: true })
+    writeMarker({ fingerprint: 'old', installed: ['.claude/skills/../../sub/victim', '../escape', '/etc'] })
+    const res = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd)
+    expect(existsSync(join(cwd, 'sub', 'victim'))).toBe(true) // untouched
+    expect(res.removed).toEqual([]) // nothing matched the strict tracked-dir grammar
+  })
 })

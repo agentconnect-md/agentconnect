@@ -120,12 +120,20 @@ export type AgentIcon = z.infer<typeof AgentIcon>
  * cache. The CP resolves each agent's enabled org-level `SkillSource` rows into
  * these entries when it builds the spec.
  */
+// These strings become positional/`-s` arguments to `npx skills`, so a leading
+// "-" would be parsed as a FLAG (argument injection, not shell injection). Reject
+// option-looking values at the wire boundary — the daemon guards again in depth.
+const SkillArg = z
+  .string()
+  .min(1)
+  .refine((s) => !s.startsWith('-'), { message: 'must not start with "-"' })
+
 export const AgentSkillEntry = z.object({
   // Display/log label — the org-level source name. NOT passed to the CLI.
   name: z.string(),
   // The source string fed straight to `npx skills add` (owner/repo, a full git
   // URL, or a tree/<ref>/<subdir> path). Everything else here is optional.
-  source: z.string(),
+  source: SkillArg,
   // Optional branch/tag/commit. The daemon composes it into the source when set;
   // a tag/commit pins content, a branch/absent tracks the head (design §5).
   ref: z.string().optional(),
@@ -133,7 +141,7 @@ export const AgentSkillEntry = z.object({
   subDir: z.string().optional(),
   // Which skills from the source to install (passed as repeated `-s`). Empty ⇒
   // install every skill the source exposes (no `-s`).
-  skills: z.array(z.string()).default([])
+  skills: z.array(SkillArg).default([])
 })
 export type AgentSkillEntry = z.infer<typeof AgentSkillEntry>
 

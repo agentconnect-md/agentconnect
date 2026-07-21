@@ -99,6 +99,18 @@ function writeMarker(cwd: string, marker: Marker): void {
   }
 }
 
+/** The marker lives inside `cwd`, so cloned repo content or the agent itself can
+ *  tamper with it — its paths are UNTRUSTED. Only a single non-dotted directory
+ *  segment directly under a known skill root is a legitimate daemon-managed target;
+ *  anything else (traversal `..`, absolute, nested, wildcard) is rejected so a
+ *  poisoned marker can't drive `rm` outside the workspace. */
+function isTrackedSkillDir(rel: string): boolean {
+  const m = /^(\.claude\/skills|\.agents\/skills)\/([^/]+)$/.exec(rel)
+  if (!m) return false
+  const seg = m[2]!
+  return seg !== '.' && seg !== '..' && !seg.includes('\0')
+}
+
 /** cwd-relative paths of the skill directories currently present under the CLI's
  *  project-scope roots. Used to diff before/after an install (what WE created) and
  *  to remove exactly our own copies on a later change. */
@@ -185,16 +197,26 @@ export async function installSkills(
   // reconcile away copies from a prior mapped runtime.
   const fp = fingerprint(agent.runtime, agentId ?? '', entries)
 
+  // Only paths that are legitimate daemon-managed skill dirs may drive removal —
+  // reject a tampered marker's traversal/absolute/nested entries (path-traversal guard).
   const prior = readMarker(cwd)
-  if (prior.fingerprint === fp) {
+  const priorTracked = prior.installed.filter(isTrackedSkillDir)
+
+  // The fast path requires more than a fingerprint match: every recorded target must
+  // still exist (a deleted/never-created install must repair, not stay "unchanged"),
+  // and a non-empty desired set must have recorded at least one owned target.
+  const targetsIntact =
+    priorTracked.length === prior.installed.length && priorTracked.every((rel) => existsSync(join(cwd, rel)))
+  const cacheCoversDesired = entries.length === 0 || priorTracked.length > 0
+  if (prior.fingerprint === fp && targetsIntact && cacheCoversDesired) {
     result.skipped = 'unchanged'
     return result
   }
 
   // Reconcile: remove exactly the dirs we created last time (disable / narrow /
   // runtime change / zero-desired all pass through here). Manually-authored skills
-  // are never in `prior.installed`, so they survive.
-  for (const rel of prior.installed) {
+  // are never in `priorTracked`, so they survive.
+  for (const rel of priorTracked) {
     try {
       rmSync(join(cwd, rel), { recursive: true, force: true })
       result.removed.push(rel)
@@ -217,6 +239,19 @@ export async function installSkills(
   const env = { GIT_TERMINAL_PROMPT: '0', ...process.env, ...opts.env }
   for (const entry of entries) {
     const composed = composeSource(entry)
+    // Defense-in-depth against argument injection (the protocol/CP boundary already
+    // rejects these): a source or skill value beginning with "-" would be parsed by
+    // `npx skills` as a flag (e.g. `-s --all` selects everything). execFile blocks
+    // shell injection, not argument injection — so drop option-looking values here.
+    if (composed.startsWith('-')) {
+      result.errors.push({ source: entry.name, error: 'source resolves to an option-like argument' })
+      opts.warn?.(`skills: refusing option-like source for "${entry.name}": ${composed}`)
+      continue
+    }
+    const skillFlags = entry.skills.filter((s) => !s.startsWith('-'))
+    if (skillFlags.length !== entry.skills.length) {
+      opts.warn?.(`skills: dropped option-like skill name(s) for "${entry.name}"`)
+    }
     const args = [
       '--yes',
       SKILLS_CLI_SPEC,
@@ -226,7 +261,7 @@ export async function installSkills(
       agentId,
       '-y',
       '--copy',
-      ...entry.skills.flatMap((s) => ['-s', s])
+      ...skillFlags.flatMap((s) => ['-s', s])
     ]
     try {
       await execFileAsync('npx', args, { cwd, env, timeout: INSTALL_TIMEOUT_MS })
@@ -241,8 +276,11 @@ export async function installSkills(
   // Whatever appeared under the skill roots is ours to track (and later remove).
   const created = listSkillDirs(cwd).filter((p) => !before.has(p))
   excludeFromGit(cwd)
-  // Record the created set always (so a later change can clean them up); commit the
-  // fingerprint only on a fully-clean pass so a partial failure retries next session.
-  writeMarker(cwd, { ...(result.errors.length === 0 ? { fingerprint: fp } : {}), installed: created })
+  // Commit the fingerprint (the "unchanged" fast path) ONLY when the pass fully
+  // succeeded AND actually produced an owned target — otherwise a run that errored,
+  // or claimed success while creating nothing, must retry next session rather than
+  // caching a phantom install. Always record `created` so a later change cleans up.
+  const effective = result.errors.length === 0 && created.length > 0
+  writeMarker(cwd, { ...(effective ? { fingerprint: fp } : {}), installed: created })
   return result
 }

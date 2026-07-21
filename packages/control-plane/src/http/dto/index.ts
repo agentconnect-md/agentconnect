@@ -329,14 +329,28 @@ const SkillSourceName = z
   .max(64)
   .regex(SKILL_SOURCE_NAME, { message: 'name may contain only letters, digits, dot, underscore, or hyphen' })
 
+// A skill name that becomes a `-s <name>` argument to `npx skills`. It must NOT
+// start with "-" (that would be parsed as a flag — argument injection), so the
+// first char is constrained to letters/digits/dot/underscore.
+const SkillFilterName = z
+  .string()
+  .regex(/^[A-Za-z0-9._][A-Za-z0-9._-]*$/, { message: 'skill name may not start with "-"' })
+
+// A source string that becomes a positional argument to `npx skills add`. Reject
+// option-looking values for the same reason.
+const SkillSourceArg = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((s) => !s.startsWith('-'), { message: 'source must not start with "-"' })
+
 // Enabled shared-skills (docs/designs/shared-skills.md): each entry is
 // "<sourceName>/<skillName>", "<sourceName>/*" (the whole source), or a bare
-// "<sourceName>". The grammar mirrors SkillSourceName for the source segment so a
-// name and its enable-refs stay consistent; the CP resolves these against the org
-// SkillSource registry when it assembles the spec.
+// "<sourceName>". The source segment mirrors SkillSourceName; the skill segment
+// forbids a leading "-" (SkillFilterName grammar) so it can't inject a CLI flag.
 const SkillEnableBody = z.array(
-  z.string().regex(/^[A-Za-z0-9._-]+(\/([A-Za-z0-9._-]+|\*))?$/, {
-    message: 'must be "<source>", "<source>/<skill>", or "<source>/*"'
+  z.string().regex(/^[A-Za-z0-9._-]+(\/([A-Za-z0-9._][A-Za-z0-9._-]*|\*))?$/, {
+    message: 'must be "<source>", "<source>/<skill>", or "<source>/*" (skill may not start with "-")'
   })
 )
 // Memory backend selection (design: docs/designs/memory-evolution.md). External
@@ -733,11 +747,11 @@ export const McpProviderCreatedDto = McpProviderDto.extend({
 export const CreateSkillSourceBody = z
   .object({
     name: SkillSourceName,
-    source: z.string().trim().min(1),
+    source: SkillSourceArg,
     githubRepoId: z.string().optional(), // numeric id as string (BigInt on the wire)
     ref: z.string().trim().optional(),
     subDir: z.string().trim().optional(),
-    skills: z.array(z.string()).default([]),
+    skills: z.array(SkillFilterName).default([]),
     visibility: ResourceVisibilityEnum.optional(),
     sharedWith: z.array(z.string()).optional()
   })
@@ -748,11 +762,11 @@ export const CreateSkillSourceBody = z
  *  bind by name); recreate under a new name to rename. */
 export const UpdateSkillSourceBody = z
   .object({
-    source: z.string().trim().min(1).optional(),
+    source: SkillSourceArg.optional(),
     githubRepoId: z.string().nullable().optional(),
     ref: z.string().trim().nullable().optional(),
     subDir: z.string().trim().nullable().optional(),
-    skills: z.array(z.string()).optional()
+    skills: z.array(SkillFilterName).optional()
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, { message: 'no fields to update' })

@@ -63,11 +63,12 @@ export class AgentSpecAssembler {
    * with its snapshotted `MoveBundle.secrets` so the activation fingerprint
    * compares stable inputs; everything else should prefer {@link assemble}.
    *
-   * `skillEntries` defaults to [] — the move path doesn't snapshot skills, so a
-   * just-moved agent's skills re-inline on the next reconcile/upsert (which goes
-   * through {@link assemble}). All other paths pass the resolved entries.
+   * `skillEntries` is REQUIRED (not defaulted): the move/activation path is
+   * authoritative and `writeAgentSpec` reads an omitted skills list as "clear", so
+   * a silent default would wipe skills on every move/workspace edit. The move bundle
+   * snapshots the resolved entries and passes them here; callers with none pass [].
    */
-  project(a: AgentRecord, secrets: Record<string, string>, skillEntries: AgentSkillEntry[] = []): AssembledAgentSpec {
+  project(a: AgentRecord, secrets: Record<string, string>, skillEntries: AgentSkillEntry[]): AssembledAgentSpec {
     return agentRecordToSpec(a, secrets, this.iconBases, skillEntries)
   }
 }
