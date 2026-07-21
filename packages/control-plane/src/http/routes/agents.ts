@@ -486,9 +486,9 @@ export function agentRoutes(deps: HttpDeps) {
     // Skills enablement authorization (shared-skills.md §9). A skill-ref is
     // "<source>/<skill>" / "<source>/*" / "<source>"; its self-contained definition
     // is pushed to the daemon, so a caller may only ADD refs to sources they can see.
-    // Newly-added refs to an unknown OR unviewable source are blocked (a collaborator
-    // can't guess a restricted source name to leak its definition); removing/keeping a
-    // ref to a source they can't see is allowed. `before` is [] on create.
+    // Newly-added refs to an unknown OR unviewable source are blocked, so the
+    // enable-list surface mirrors source visibility (same rule as MCP providers);
+    // removing/keeping a ref to a source they can't see is allowed. `before` is [] on create.
     const enablingUnseenSkillDenied = async (
       orgId: OrgId,
       ctx: ViewCtx,

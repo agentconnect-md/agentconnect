@@ -121,8 +121,8 @@ export type AgentIcon = z.infer<typeof AgentIcon>
  * these entries when it builds the spec.
  */
 // These strings become positional/`-s` arguments to `npx skills`, so a leading
-// "-" would be parsed as a FLAG (argument injection, not shell injection). Reject
-// option-looking values at the wire boundary — the daemon guards again in depth.
+// "-" would be read as a flag rather than a value. Reject option-looking values at
+// the wire boundary — the daemon validates again in depth.
 const SkillArg = z
   .string()
   .min(1)

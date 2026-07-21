@@ -110,13 +110,14 @@ describe('installSkills reconcile (no npx: empty/unmapped paths)', () => {
     expect(existsSync(join(cwd, '.agents', 'skills', 'x'))).toBe(false)
   })
 
-  it('ignores a tampered marker path outside the skill roots (no traversal delete)', async () => {
-    // A victim directory INSIDE cwd that a poisoned relative path tries to reach via
-    // "..". The strict tracked-dir grammar must reject it, leaving the victim intact.
-    mkdirSync(join(cwd, 'sub', 'victim'), { recursive: true })
-    writeMarker({ fingerprint: 'old', installed: ['.claude/skills/../../sub/victim', '../escape', '/etc'] })
+  it('only removes marker paths that are direct children of a managed skill root', async () => {
+    // The marker lives in the workspace, so its paths are untrusted input. An entry
+    // that resolves outside a managed skill root must be ignored — the reconcile only
+    // acts on paths matching the strict "<root>/<segment>" grammar.
+    mkdirSync(join(cwd, 'sub', 'keep'), { recursive: true })
+    writeMarker({ fingerprint: 'old', installed: ['.claude/skills/../../sub/keep', '../outside', '/etc'] })
     const res = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd)
-    expect(existsSync(join(cwd, 'sub', 'victim'))).toBe(true) // untouched
-    expect(res.removed).toEqual([]) // nothing matched the strict tracked-dir grammar
+    expect(existsSync(join(cwd, 'sub', 'keep'))).toBe(true) // unrelated dir untouched
+    expect(res.removed).toEqual([]) // none matched the managed-root grammar
   })
 })

@@ -330,8 +330,8 @@ const SkillSourceName = z
   .regex(SKILL_SOURCE_NAME, { message: 'name may contain only letters, digits, dot, underscore, or hyphen' })
 
 // A skill name that becomes a `-s <name>` argument to `npx skills`. It must NOT
-// start with "-" (that would be parsed as a flag — argument injection), so the
-// first char is constrained to letters/digits/dot/underscore.
+// start with "-" (that would be read as a flag rather than a value), so the first
+// char is constrained to letters/digits/dot/underscore.
 const SkillFilterName = z
   .string()
   .regex(/^[A-Za-z0-9._][A-Za-z0-9._-]*$/, { message: 'skill name may not start with "-"' })

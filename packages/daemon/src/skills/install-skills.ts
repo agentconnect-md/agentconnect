@@ -99,11 +99,11 @@ function writeMarker(cwd: string, marker: Marker): void {
   }
 }
 
-/** The marker lives inside `cwd`, so cloned repo content or the agent itself can
- *  tamper with it — its paths are UNTRUSTED. Only a single non-dotted directory
- *  segment directly under a known skill root is a legitimate daemon-managed target;
- *  anything else (traversal `..`, absolute, nested, wildcard) is rejected so a
- *  poisoned marker can't drive `rm` outside the workspace. */
+/** The marker lives inside `cwd`, so its recorded paths are untrusted input. Only a
+ *  single non-dotted directory segment directly under a known skill root is a valid
+ *  daemon-managed target; anything else (a `..` segment, an absolute path, a nested
+ *  or dotted segment) is rejected so reconciliation only ever acts within a managed
+ *  skill root. */
 function isTrackedSkillDir(rel: string): boolean {
   const m = /^(\.claude\/skills|\.agents\/skills)\/([^/]+)$/.exec(rel)
   if (!m) return false
@@ -197,8 +197,8 @@ export async function installSkills(
   // reconcile away copies from a prior mapped runtime.
   const fp = fingerprint(agent.runtime, agentId ?? '', entries)
 
-  // Only paths that are legitimate daemon-managed skill dirs may drive removal —
-  // reject a tampered marker's traversal/absolute/nested entries (path-traversal guard).
+  // Only paths that are valid daemon-managed skill dirs may drive removal — the
+  // marker is untrusted input, so its out-of-root entries are filtered out here.
   const prior = readMarker(cwd)
   const priorTracked = prior.installed.filter(isTrackedSkillDir)
 
@@ -239,13 +239,12 @@ export async function installSkills(
   const env = { GIT_TERMINAL_PROMPT: '0', ...process.env, ...opts.env }
   for (const entry of entries) {
     const composed = composeSource(entry)
-    // Defense-in-depth against argument injection (the protocol/CP boundary already
-    // rejects these): a source or skill value beginning with "-" would be parsed by
-    // `npx skills` as a flag (e.g. `-s --all` selects everything). execFile blocks
-    // shell injection, not argument injection — so drop option-looking values here.
+    // Belt-and-suspenders (the protocol/CP boundary already validates these): a
+    // source or skill value beginning with "-" would be read by `npx skills` as a
+    // flag rather than a value, so skip option-like values here too.
     if (composed.startsWith('-')) {
       result.errors.push({ source: entry.name, error: 'source resolves to an option-like argument' })
-      opts.warn?.(`skills: refusing option-like source for "${entry.name}": ${composed}`)
+      opts.warn?.(`skills: skipping option-like source for "${entry.name}": ${composed}`)
       continue
     }
     const skillFlags = entry.skills.filter((s) => !s.startsWith('-'))
