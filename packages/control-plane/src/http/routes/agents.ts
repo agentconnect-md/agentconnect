@@ -153,6 +153,7 @@ function toDto(
     // write-only and never on the record). Sorted for a stable DTO.
     secretKeys: [...secretKeys].sort(),
     mcpServers: a.mcpServers,
+    skills: a.skills,
     memory: a.memory,
     status: a.status,
     daemonId: a.daemonId,
@@ -781,6 +782,7 @@ export function agentRoutes(deps: HttpDeps) {
               restrictFileAccess,
               ...(req.body.env !== undefined ? { env: req.body.env } : {}),
               ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
+              ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
               ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
               ...(req.body.daemonId !== undefined ? { daemonId: DaemonId(req.body.daemonId) } : {}),
               ...(req.body.workspace !== undefined ? { workspace: req.body.workspace } : {}),

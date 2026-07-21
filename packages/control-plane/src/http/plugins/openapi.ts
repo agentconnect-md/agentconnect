@@ -65,6 +65,7 @@ export const Tag = {
   Integrations: 'Integrations',
   Bots: 'Bots',
   Mcp: 'MCP providers',
+  Skills: 'Skill sources',
   Memory: 'External memory',
   Crons: 'Crons',
   Hooks: 'Hooks',
@@ -92,6 +93,10 @@ const TAG_DESCRIPTIONS: ReadonlyArray<{ name: string; description: string }> = [
   {
     name: Tag.Mcp,
     description: 'Org-level MCP providers — upstream tool servers the CP proxies through a relay to agents.'
+  },
+  {
+    name: Tag.Skills,
+    description: 'Org-level shared-skills sources — GitHub/git repos the daemon installs via `npx skills`.'
   },
   {
     name: Tag.Memory,

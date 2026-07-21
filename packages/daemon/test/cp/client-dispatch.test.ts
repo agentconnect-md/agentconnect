@@ -320,13 +320,14 @@ describe('CpClient dispatch', () => {
     )
     // Legacy payloads still receive the inbound collection default, but the
     // outbound list remains absent with its optional policy so a mixed-version
-    // update cannot clear an existing selected allow-list.
+    // update cannot clear an existing selected allow-list. skills defaults to [].
     expect(configApply.applyAgentUpsert).toHaveBeenCalledWith({
       agentId: DAEMON_ID,
       spec: {
         name: 'helper',
         model: 'opus',
         mcpServers: [],
+        skills: [],
         allowedCallerAgentIds: []
       }
     })
@@ -363,7 +364,7 @@ describe('CpClient dispatch', () => {
     await tick()
     expect(configApply.applyAgentActivate).toHaveBeenCalledWith({
       ...payload,
-      spec: { name: 'helper', mcpServers: [], allowedCallerAgentIds: [] }
+      spec: { name: 'helper', mcpServers: [], skills: [], allowedCallerAgentIds: [] }
     })
     expect(JSON.parse(t.sent[0]!)).toMatchObject({
       type: 'ack',

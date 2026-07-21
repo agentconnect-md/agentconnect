@@ -14,7 +14,6 @@ import AddDaemonModal from './modals/AddDaemonModal'
 import AddIntegrationModal, { type Platform as IntegrationPlatform } from './modals/AddIntegrationModal'
 import DeleteIntegrationModal from './modals/DeleteIntegrationModal'
 import DeleteHookModal from './modals/DeleteHookModal'
-import AddSkillModal from './modals/AddSkillModal'
 import AddCronModal from './modals/AddCronModal'
 import ReconnectDaemonModal from './modals/ReconnectDaemonModal'
 import DeleteDaemonModal from './modals/DeleteDaemonModal'
@@ -33,7 +32,6 @@ export type ModalKind =
   | 'integration'
   | 'deleteIntegration'
   | 'deleteHook'
-  | 'skill'
   | 'cron'
   | 'reconnectDaemon'
   | 'deleteDaemon'
@@ -111,7 +109,6 @@ export function ModalProvider({ children }: { children: ReactNode }) {
             {open.kind === 'deleteHook' && open.target && (
               <DeleteHookModal hook={open.target as HookDto | HookDto[]} onClose={close} />
             )}
-            {open.kind === 'skill' && <AddSkillModal onClose={close} />}
             {open.kind === 'cron' && <AddCronModal cron={open.target as CronDto | undefined} onClose={close} />}
             {open.kind === 'reconnectDaemon' && open.target && (
               <ReconnectDaemonModal daemon={open.target as DaemonRow} onClose={close} />

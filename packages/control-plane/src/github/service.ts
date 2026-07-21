@@ -301,6 +301,34 @@ export class GithubService {
     return branches.map((b) => b.name)
   }
 
+  /**
+   * Best-effort scan of a skills source repo (docs/designs/shared-skills.md §3/§7):
+   * tag names for the ref picker + the `SKILL.md` manifest so the console can offer
+   * a per-skill checklist. Skill discovery mirrors the `npx skills` layout probe:
+   * the first matching layout wins (`skills/<skill>/SKILL.md`, then top-level
+   * `<skill>/SKILL.md`, then `.claude/skills/<skill>/SKILL.md`, then a root
+   * `SKILL.md`). Names come from the skill directory; frontmatter is NOT read here
+   * (best-effort — the daemon's `npx skills` is the authority). Needs contents:read.
+   */
+  async scanSkillSource(
+    ins: GithubInstallationRecord,
+    owner: string,
+    repo: string,
+    ref?: string
+  ): Promise<{ tags: string[]; skills: Array<{ name: string; dirPath: string }> }> {
+    const cred = await this.tokens.mint(ins.installationId, `${owner}/${repo}`, 'read')
+    const auth = { auth: cred.token, fetchImpl: this.deps.fetchImpl, baseUrl: this.deps.baseUrl }
+    const tags = await githubRequest<Array<{ name: string }>>(`/repos/${owner}/${repo}/tags?per_page=100`, auth)
+      .then((rows) => rows.map((t) => t.name))
+      .catch(() => [])
+    const tree = await githubRequest<{ tree: Array<{ path: string; type: string }> }>(
+      `/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref ?? 'HEAD')}?recursive=1`,
+      auth
+    ).catch(() => ({ tree: [] as Array<{ path: string; type: string }> }))
+    const skillPaths = tree.tree.filter((e) => e.type === 'blob' && e.path.endsWith('SKILL.md')).map((e) => e.path)
+    return { tags, skills: pickSkillLayout(skillPaths) }
+  }
+
   /** Create-time check: can this installation reach `owner/repo` at all?
    *  (Covers both `all` and `selected` grants: an out-of-grant repo reads 404.) */
   async installationCoversRepo(ins: GithubInstallationRecord, owner: string, repo: string): Promise<boolean> {
@@ -971,4 +999,39 @@ function isInstallationFactsDenial(error: GithubApiError): boolean {
 function hasChecksReporterPermissions(installation: GithubInstallationRecord): boolean {
   const pullRequests = installation.permissions?.pull_requests
   return installation.permissions?.checks === 'write' && (pullRequests === 'read' || pullRequests === 'write')
+}
+
+/**
+ * Pick the skills from a list of SKILL.md blob paths using the `npx skills`
+ * layout precedence (shared-skills.md §3): the first layout that matches wins.
+ *   1. skills/<skill>/SKILL.md   2. <skill>/SKILL.md (top-level dir)
+ *   3. .claude/skills/<skill>/SKILL.md   4. a single root SKILL.md
+ * Skill name = the immediate parent directory (or the repo for a root SKILL.md).
+ */
+export function pickSkillLayout(paths: string[]): Array<{ name: string; dirPath: string }> {
+  const under = (prefix: string) =>
+    paths
+      .filter((p) => p.startsWith(prefix) && p.slice(prefix.length).split('/').length === 2)
+      .map((p) => {
+        const rest = p.slice(prefix.length)
+        const name = rest.slice(0, rest.indexOf('/'))
+        return { name, dirPath: `${prefix}${name}` }
+      })
+
+  const inSkillsDir = under('skills/')
+  if (inSkillsDir.length) return inSkillsDir
+
+  const topLevel = paths
+    .filter((p) => p.split('/').length === 2 && p.endsWith('/SKILL.md') && !p.startsWith('.'))
+    .map((p) => {
+      const name = p.slice(0, p.indexOf('/'))
+      return { name, dirPath: name }
+    })
+  if (topLevel.length) return topLevel
+
+  const claude = under('.claude/skills/')
+  if (claude.length) return claude
+
+  if (paths.includes('SKILL.md')) return [{ name: 'SKILL.md', dirPath: '.' }]
+  return []
 }

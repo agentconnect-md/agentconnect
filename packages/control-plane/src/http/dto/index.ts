@@ -318,6 +318,10 @@ const McpServerNamesBody = z.array(
     .min(1)
     .refine((n) => n !== RESERVED_MCP_SERVER_NAME, { message: `"${RESERVED_MCP_SERVER_NAME}" is reserved` })
 )
+// Enabled shared-skills (docs/designs/shared-skills.md): each entry is
+// "<sourceName>/<skillName>" or "<sourceName>/*" (the whole source). The CP
+// resolves these against the org SkillSource registry when it assembles the spec.
+const SkillEnableBody = z.array(z.string().min(1))
 // Memory backend selection (design: docs/designs/memory-evolution.md). External
 // carries only a connection reference + product policy; credentials and plugin
 // transport stay on the daemon-private connection data plane.
@@ -363,6 +367,7 @@ export const CreateAgentBody = z.object({
   // resolves them to definitions locally. Absent/empty ⇒ none. The bridge name
   // is rejected here so a misconfiguration fails at the API, not as a daemon warn.
   mcpServers: McpServerNamesBody.optional(),
+  skills: SkillEnableBody.optional(),
   memory: MemoryConfigBody.optional(), // memory backend; absent ⇒ managed default
   daemonId: z.string().optional(), // the owning daemon, if chosen at create
   workspace: AgentWorkspaceInputBody.optional(), // absent ⇒ scratch; the cold editor can replace either mode later
@@ -409,6 +414,7 @@ export const UpdateAgentBody = z
     // it, an omitted key is left untouched — the client never holds existing values.
     secrets: AgentSecretsPatchBody.optional(),
     mcpServers: McpServerNamesBody.nullable().optional(), // replaced wholesale; null clears
+    skills: SkillEnableBody.nullable().optional(), // enabled skills; replaced wholesale; null clears
     memory: MemoryConfigBody.nullable().optional() // memory backend; null clears (revert to managed)
   })
   .strict()
@@ -457,6 +463,7 @@ export const AgentDto = z.object({
   // returned — set/replace them via the PATCH `secrets` body; the console masks them.
   secretKeys: z.array(z.string()),
   mcpServers: z.array(z.string()), // enabled daemon-configured MCP server names ([] ⇒ none)
+  skills: z.array(z.string()), // enabled shared-skills "<source>/<skill>" / "<source>/*" ([] ⇒ none)
   memory: MemoryConfigBody.nullable(), // memory backend (null ⇒ managed default)
   status: z.string(),
   daemonId: z.string().nullable(),
@@ -700,6 +707,74 @@ export type McpProviderDtoT = z.infer<typeof McpProviderDto>
 export const McpProviderCreatedDto = McpProviderDto.extend({
   grantKey: z.string()
 })
+
+// ── shared-skills sources (docs/designs/shared-skills.md) ────────────────────
+
+/** `POST /skill-sources` — register an org-level skills source. `source` is the
+ *  string handed to `npx skills add` (owner/repo | git URL | tree/<ref>/<subdir>).
+ *  `skills` empty ⇒ install every skill the source exposes. */
+export const CreateSkillSourceBody = z
+  .object({
+    name: z.string().trim().min(1).max(64),
+    source: z.string().trim().min(1),
+    githubRepoId: z.string().optional(), // numeric id as string (BigInt on the wire)
+    ref: z.string().trim().optional(),
+    subDir: z.string().trim().optional(),
+    skills: z.array(z.string()).default([]),
+    visibility: ResourceVisibilityEnum.optional(),
+    sharedWith: z.array(z.string()).optional()
+  })
+  .strict()
+
+/** `PATCH /skill-sources/:id` — edit source/ref/subDir/skill filter. At least one
+ *  field. `skills` REPLACES the stored filter wholesale. Name is immutable (agents
+ *  bind by name); recreate under a new name to rename. */
+export const UpdateSkillSourceBody = z
+  .object({
+    source: z.string().trim().min(1).optional(),
+    githubRepoId: z.string().nullable().optional(),
+    ref: z.string().trim().nullable().optional(),
+    subDir: z.string().trim().nullable().optional(),
+    skills: z.array(z.string()).optional()
+  })
+  .strict()
+  .refine((b) => Object.keys(b).length > 0, { message: 'no fields to update' })
+
+/** `POST /skill-sources/preview` — best-effort GitHub scan for the import dialog.
+ *  Takes an installation + repo (same shape as the branches picker) and returns the
+ *  ref choices + the SKILL.md manifest. Scan failure ⇒ empty skills (install all). */
+export const PreviewSkillSourceBody = z
+  .object({
+    installationId: z.string(),
+    owner: z.string().min(1),
+    repo: z.string().min(1),
+    ref: z.string().optional()
+  })
+  .strict()
+
+export const SkillSourcePreviewDto = z.object({
+  branches: z.array(z.string()),
+  tags: z.array(z.string()),
+  skills: z.array(z.object({ name: z.string(), dirPath: z.string() }))
+})
+
+/** Console view of a skills source — pure metadata (nothing secret). */
+export const SkillSourceDto = z.object({
+  id: z.string(),
+  name: z.string(),
+  source: z.string(),
+  githubRepoId: z.string().nullable(), // BigInt rendered as string
+  ref: z.string().nullable(),
+  subDir: z.string().nullable(),
+  skills: z.array(z.string()), // the source's own skill filter ([] ⇒ all)
+  visibility: z.string(), // 'org' | 'restricted'
+  sharedWith: z.array(z.string()),
+  createdBy: z.string().nullable(),
+  canManageSharing: z.boolean(),
+  createdAt: z.string() // ISO-8601
+})
+export const SkillSourceListDto = z.array(SkillSourceDto)
+export type SkillSourceDtoT = z.infer<typeof SkillSourceDto>
 
 // ── open-connector connectors (docs: connectors integration) ─────────────────
 /** Whether the open-connector integration is configured on this CP (drives the

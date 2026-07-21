@@ -113,6 +113,31 @@ export const AgentIcon = z.discriminatedUnion('kind', [
 export type AgentIcon = z.infer<typeof AgentIcon>
 
 /**
+ * A self-contained skill source the daemon installs via `npx skills` after the
+ * workspace is ready and before the ACP host spawns (design: shared-skills.md §4).
+ * The source definition rides INLINE on the AgentSpec (and lands in agent.json,
+ * like mcpServers) — there is no separate skillsource frame or daemon-side def
+ * cache. The CP resolves each agent's enabled org-level `SkillSource` rows into
+ * these entries when it builds the spec.
+ */
+export const AgentSkillEntry = z.object({
+  // Display/log label — the org-level source name. NOT passed to the CLI.
+  name: z.string(),
+  // The source string fed straight to `npx skills add` (owner/repo, a full git
+  // URL, or a tree/<ref>/<subdir> path). Everything else here is optional.
+  source: z.string(),
+  // Optional branch/tag/commit. The daemon composes it into the source when set;
+  // a tag/commit pins content, a branch/absent tracks the head (design §5).
+  ref: z.string().optional(),
+  // Optional repo-relative install directory.
+  subDir: z.string().optional(),
+  // Which skills from the source to install (passed as repeated `-s`). Empty ⇒
+  // install every skill the source exposes (no `-s`).
+  skills: z.array(z.string()).default([])
+})
+export type AgentSkillEntry = z.infer<typeof AgentSkillEntry>
+
+/**
  * The editable agent definition the CP owns and the daemon needs to run it:
  * prompt + runtime selection. The launch protocol carries this config and the
  * daemon synthesizes the system prompt locally; `description` IS the prompt.
@@ -181,6 +206,11 @@ export const AgentSpec = z.object({
   // Names of daemon-configured MCP servers (daemon config `mcpServers`, reported
   // via `facts/daemon-runtimes`) to attach at `session/new`. Empty/absent ⇒ none.
   mcpServers: z.array(z.string()).default([]),
+  // Skill sources to install into the workspace before the ACP host spawns
+  // (design: shared-skills.md). Unlike mcpServers (names resolved daemon-side),
+  // these are SELF-CONTAINED entries — the daemon needs nothing but agent.json to
+  // run `npx skills`. Always shipped (even []) so removing the last skill replicates.
+  skills: z.array(AgentSkillEntry).default([]),
   // Agent→agent call authorization (design §2.5). `callPolicy` gates who may wake
   // this agent via the `messageAgent` tool: 'all' ⇒ any peer in the org, 'selected'
   // ⇒ only agents in `allowedCallerAgentIds`. Replicated CP→daemon so the daemon can

@@ -55,6 +55,7 @@ model Org {
   slackUserConfigs          SlackUserConfig[]
   inviteLink                OrgInviteLink?
   mcpProviders              McpProvider[]
+  skillSources              SkillSource[]
   memoryPluginInstallations MemoryPluginInstallation[]
   externalMemoryConnections ExternalMemoryConnection[]
 
@@ -86,6 +87,7 @@ model User {
   createdIntegrations              Integration[]
   createdBots                      Bot[]
   createdMcpProviders              McpProvider[]
+  createdSkillSources              SkillSource[]
   createdMemoryPluginInstallations MemoryPluginInstallation[] @relation("MemoryPluginInstallationCreatedBy")
   createdExternalMemoryConnections ExternalMemoryConnection[] @relation("ExternalMemoryConnectionCreatedBy")
   createdDaemons                   Daemon[]                   @relation("DaemonCreatedBy")
@@ -552,7 +554,7 @@ model Agent {
   gitAccess             GitAccess          @default(write) // ceiling for minted tokens (contents read|write)
   capabilities          String[]           @default([]) // → AgentLaunch.activeCapabilities
   permissions           Json               @default("{}") @db.JsonB // {policy:"ask",autoApprove:[...]}
-  runtimeOverrides      Json?              @db.JsonB // {model, reasoningEffort, outputMode, fastMode, env{K:V}, mcpServers[]} — NO secret values (those live in agent_secret)
+  runtimeOverrides      Json?              @db.JsonB // {model, reasoningEffort, outputMode, fastMode, env{K:V}, mcpServers[], skills[]} — NO secret values (those live in agent_secret)
   createdByUserId       String? // WebUI user who created the agent (audit; null for daemon/CLI-created). Surfaced in the console "Created" row.
   // Last-modification audit (human edits only): stamped on create + PATCH. Kept
   // separate from `updatedAt`, which also bumps on system writes (e.g. placement).
@@ -1623,6 +1625,41 @@ model McpGrant {
 
   @@index([mcpProviderId])
   @@map("mcp_grant")
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Shared skills registry (docs/designs/shared-skills.md). The CP records only
+// the SOURCE (a repo / git URL / tree path) plus an optional ref + skill
+// filter — skill CONTENT never touches the CP. The daemon installs enabled
+// skills via `npx skills` after clone and before the ACP host spawns. There is
+// no secret side-table or grant: skills are plain content, and private-repo
+// reads reuse the existing GitHub App short-lived token path on the daemon.
+//
+// The per-agent enable-list is NOT a relation here; like mcpServers it lives as
+// a string[] of "<sourceName>/<skillName>" (or "<sourceName>/*") inside the
+// agent's runtimeOverrides JSON bag. The CP resolves those into self-contained
+// AgentSpec.skills entries when it assembles the spec (agentSpecAssembler).
+model SkillSource {
+  id              String             @id @default(uuid()) @db.Uuid
+  orgId           String
+  name            String // reference key; the agent enable-list keys on it. @@unique([orgId, name])
+  source          String // fed to `npx skills add` (owner/repo | git URL | tree/<ref>/<subdir>)
+  githubRepoId    BigInt? // GitHub numeric id — survives rename/re-create (mirrors AgentRepoAuthorization)
+  ref             String? // optional branch/tag/commit; composed into the source (design §5)
+  subDir          String? // optional repo-relative install dir
+  skills          String[]           @default([]) // empty ⇒ install every skill; else only these (passed as -s)
+  visibility      ResourceVisibility @default(org)
+  sharedWith      String[]           @default([]) // app_user.id set granted view when visibility='restricted'
+  createdByUserId String?
+  createdAt       DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime           @updatedAt @db.Timestamptz(6)
+
+  org       Org   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@map("skill_source")
 }
 
 // ───────────────────────────────────────────────────────────────────────
