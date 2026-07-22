@@ -789,6 +789,15 @@ export const SkillSourcePreviewDto = z.object({
   skills: z.array(z.object({ name: z.string(), dirPath: z.string() }))
 })
 
+/** `GET /skill-sources/:id/skills` — the source's discovered SKILL.md manifest for
+ *  the agent editor's per-skill picker. Best-effort: `resolvable:false` (empty
+ *  skills) when the source isn't a scannable GitHub repo or no installation covers
+ *  it, so the UI falls back to whole-source enablement. */
+export const SkillSourceSkillsDto = z.object({
+  resolvable: z.boolean(),
+  skills: z.array(z.object({ name: z.string(), dirPath: z.string() }))
+})
+
 /** Console view of a skills source — pure metadata (nothing secret). */
 export const SkillSourceDto = z.object({
   id: z.string(),

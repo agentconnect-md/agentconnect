@@ -30,6 +30,7 @@ import {
   UpdateSkillSourceBody,
   PreviewSkillSourceBody,
   SkillSourcePreviewDto,
+  SkillSourceSkillsDto,
   SkillSourceDto,
   SkillSourceListDto,
   SetSharingBody,
@@ -37,6 +38,19 @@ import {
   IdParam,
   type SkillSourceDtoT
 } from '../dto/index.js'
+
+/** Extract `{owner, repo, ref?}` from a source string (shorthand, https, or ssh
+ *  GitHub form). Returns null for a non-GitHub / unparseable source. */
+function parseGithubRepo(source: string): { owner: string; repo: string; ref?: string } | null {
+  const s = source.trim().replace(/\.git$/, '')
+  let m = /^https?:\/\/github\.com\/([^/]+)\/([^/]+)(?:\/tree\/([^/]+))?/i.exec(s)
+  if (m) return { owner: m[1]!, repo: m[2]!, ...(m[3] ? { ref: m[3] } : {}) }
+  m = /^git@github\.com:([^/]+)\/([^/]+)$/i.exec(s)
+  if (m) return { owner: m[1]!, repo: m[2]! }
+  m = /^([^/\s:]+)\/([^/\s]+)$/.exec(s)
+  if (m) return { owner: m[1]!, repo: m[2]! }
+  return null
+}
 
 function toDto(s: SkillSourceRecord, ctx: ViewCtx): SkillSourceDtoT {
   return {
@@ -130,6 +144,36 @@ export function skillSourceRoutes(deps: HttpDeps) {
         const s = await deps.repos.skillSource.get(req.params.id)
         if (!s || s.orgId !== orgOf(req) || !canView(s, ctxOf(req))) return notFound(reply)
         return toDto(s, ctxOf(req))
+      }
+    )
+
+    r.get(
+      '/skill-sources/:id/skills',
+      {
+        schema: {
+          tags: [Tag.Skills],
+          summary: 'List a skill source’s skills',
+          description:
+            'Best-effort scan of the source repo for its SKILL.md manifest, for the per-agent skill picker. Returns resolvable:false + an empty list when the source is not a scannable GitHub repo reachable by an installation (the UI then offers whole-source enablement only).',
+          operationId: 'listSkillSourceSkills',
+          params: IdParam,
+          response: { 200: SkillSourceSkillsDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const s = await deps.repos.skillSource.get(req.params.id)
+        if (!s || s.orgId !== orgOf(req) || !canView(s, ctxOf(req))) return notFound(reply)
+        const gh = deps.github
+        const parsed = parseGithubRepo(s.source)
+        if (!gh || !parsed) return { resolvable: false, skills: [] }
+        const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(orgOf(req), parsed.owner)
+        if (!ins) return { resolvable: false, skills: [] }
+        try {
+          const scan = await gh.scanSkillSource(ins, parsed.owner, parsed.repo, s.ref ?? parsed.ref)
+          return { resolvable: true, skills: scan.skills }
+        } catch {
+          return { resolvable: false, skills: [] }
+        }
       }
     )
 

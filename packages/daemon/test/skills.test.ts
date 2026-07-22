@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { composeSource, installSkills } from '../src/skills/install-skills.js'
+import { composeSource, installSkills, resolveSkillsCliSpec } from '../src/skills/install-skills.js'
 import { skillsAgentId } from '../src/skills/runtime-agent-map.js'
 
 describe('skillsAgentId', () => {
@@ -16,6 +16,20 @@ describe('skillsAgentId', () => {
   })
   it('returns undefined for an unmapped runtime', () => {
     expect(skillsAgentId('some-exotic-agent')).toBeUndefined()
+  })
+})
+
+describe('resolveSkillsCliSpec (AC_SKILLS_CLI pin)', () => {
+  it('defaults to "skills" when unset', () => {
+    expect(resolveSkillsCliSpec({})).toBe('skills')
+  })
+  it('honors a clean pinned version spec', () => {
+    expect(resolveSkillsCliSpec({ AC_SKILLS_CLI: 'skills@1.4.0' })).toBe('skills@1.4.0')
+  })
+  it('rejects option-like or whitespace-bearing values (no arg smuggling)', () => {
+    expect(resolveSkillsCliSpec({ AC_SKILLS_CLI: '--evil' })).toBe('skills')
+    expect(resolveSkillsCliSpec({ AC_SKILLS_CLI: 'skills --run x' })).toBe('skills')
+    expect(resolveSkillsCliSpec({ AC_SKILLS_CLI: '   ' })).toBe('skills')
   })
 })
 

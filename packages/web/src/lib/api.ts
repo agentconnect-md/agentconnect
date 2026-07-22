@@ -2789,6 +2789,17 @@ export async function fetchSkillSources(orgId?: string): Promise<SkillSourceDto[
   return apiGet<SkillSourceDto[]>(`${orgBase(orgId)}/skill-sources`)
 }
 
+// A source's discovered SKILL.md manifest for the agent editor's per-skill picker.
+// `resolvable:false` (empty skills) ⇒ the source isn't a scannable GitHub repo, so
+// the UI offers whole-source enablement only.
+export interface SkillSourceSkillsDto {
+  resolvable: boolean
+  skills: Array<{ name: string; dirPath: string }>
+}
+export async function fetchSkillSourceSkills(id: string): Promise<SkillSourceSkillsDto> {
+  return apiGet<SkillSourceSkillsDto>(`${orgBase()}/skill-sources/${encodeURIComponent(id)}/skills`)
+}
+
 export async function previewSkillSource(input: PreviewSkillSourceInput): Promise<SkillSourcePreviewDto> {
   return apiPost<SkillSourcePreviewDto>(`${orgBase()}/skill-sources/preview`, input)
 }

@@ -37,9 +37,16 @@ import { skillsAgentId } from './runtime-agent-map.js'
 
 const execFileAsync = promisify(execFile)
 
-// The `npx skills` package spec. Left unpinned for now; centralize the pin here
-// once a version is chosen (design §6.2 — pinning guards against CLI drift).
-const SKILLS_CLI_SPEC = 'skills'
+// The `npx skills` package spec (design §6.2 — pinning guards against CLI drift).
+// Ops pin a specific version via AC_SKILLS_CLI (e.g. "skills@1.4.0" or a tarball
+// URL) without a code change; the default tracks latest. Trimmed + validated to a
+// plain package spec so the env value can't smuggle extra npx arguments.
+const DEFAULT_SKILLS_CLI_SPEC = 'skills'
+export function resolveSkillsCliSpec(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.AC_SKILLS_CLI?.trim()
+  if (!raw || raw.startsWith('-') || /\s/.test(raw)) return DEFAULT_SKILLS_CLI_SPEC
+  return raw
+}
 // Per-source install budget. A wedged network fetch must not hold the session.
 const INSTALL_TIMEOUT_MS = 20_000
 const MARKER_DIR = '.agentconnect'
@@ -237,6 +244,7 @@ export async function installSkills(
 
   const before = new Set(listSkillDirs(cwd))
   const env = { GIT_TERMINAL_PROMPT: '0', ...process.env, ...opts.env }
+  const cliSpec = resolveSkillsCliSpec(env)
   for (const entry of entries) {
     const composed = composeSource(entry)
     // Belt-and-suspenders (the protocol/CP boundary already validates these): a
@@ -253,7 +261,7 @@ export async function installSkills(
     }
     const args = [
       '--yes',
-      SKILLS_CLI_SPEC,
+      cliSpec,
       'add',
       composed,
       '-a',
