@@ -107,6 +107,14 @@ describe('installSkills reconcile (no npx: empty/unmapped paths)', () => {
     expect(existsSync(join(cwd, '.claude', 'skills', 'daemon-installed'))).toBe(false)
   })
 
+  it('changing AC_SKILLS_CLI invalidates the fingerprint (re-install, not skip)', async () => {
+    const readFp = () => JSON.parse(readFileSync(marker(), 'utf8')).fingerprint as string
+    await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, { env: { AC_SKILLS_CLI: 'skills@1.0.0' } })
+    const first = readFp()
+    await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, { env: { AC_SKILLS_CLI: 'skills@2.0.0' } })
+    expect(readFp()).not.toBe(first) // the pinned CLI spec is part of the fingerprint
+  })
+
   it('an unchanged fingerprint skips entirely (no removal)', async () => {
     // fingerprint of runtime=claude, agentId=claude-code, skills=[] — recompute-stable.
     const first = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd)

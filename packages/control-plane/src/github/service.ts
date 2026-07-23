@@ -314,7 +314,8 @@ export class GithubService {
     ins: GithubInstallationRecord,
     owner: string,
     repo: string,
-    ref?: string
+    ref?: string,
+    subDir?: string
   ): Promise<{ tags: string[]; skills: Array<{ name: string; dirPath: string }> }> {
     const cred = await this.tokens.mint(ins.installationId, `${owner}/${repo}`, 'read')
     const auth = { auth: cred.token, fetchImpl: this.deps.fetchImpl, baseUrl: this.deps.baseUrl }
@@ -325,7 +326,14 @@ export class GithubService {
       `/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref ?? 'HEAD')}?recursive=1`,
       auth
     ).catch(() => ({ tree: [] as Array<{ path: string; type: string }> }))
-    const skillPaths = tree.tree.filter((e) => e.type === 'blob' && e.path.endsWith('SKILL.md')).map((e) => e.path)
+    let skillPaths = tree.tree.filter((e) => e.type === 'blob' && e.path.endsWith('SKILL.md')).map((e) => e.path)
+    // Scope discovery to the source's subdirectory (the same scope `composeSource`
+    // installs from) so a `packages/foo` source reports ITS skills, not the repo
+    // root's. Layout detection then runs relative to the subdir.
+    const prefix = subDir?.replace(/^\/+|\/+$/g, '')
+    if (prefix) {
+      skillPaths = skillPaths.filter((p) => p.startsWith(`${prefix}/`)).map((p) => p.slice(prefix.length + 1))
+    }
     return { tags, skills: pickSkillLayout(skillPaths) }
   }
 
@@ -337,9 +345,13 @@ export class GithubService {
 
   /** Repo metadata through the installation's metadata token; null when the
    *  installation can't see the repo (out of grant / gone — both read 404). */
-  async getRepoMeta(ins: GithubInstallationRecord, owner: string, repo: string): Promise<{ private: boolean } | null> {
+  async getRepoMeta(
+    ins: GithubInstallationRecord,
+    owner: string,
+    repo: string
+  ): Promise<{ private: boolean; defaultBranch: string } | null> {
     const ref = await this.repoRefFor(ins, owner, repo)
-    return ref ? { private: ref.private } : null
+    return ref ? { private: ref.private, defaultBranch: ref.defaultBranch } : null
   }
 
   /**

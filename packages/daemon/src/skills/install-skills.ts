@@ -77,8 +77,8 @@ export function composeSource(entry: AgentSkillEntry): string {
   return `${base.replace(/\/+$/, '')}/tree/${ref ?? 'main'}${suffix}`
 }
 
-function fingerprint(runtime: string, agentId: string, entries: AgentSkillEntry[]): string {
-  return createHash('sha256').update(JSON.stringify({ runtime, agentId, entries })).digest('hex')
+function fingerprint(runtime: string, agentId: string, entries: AgentSkillEntry[], cliSpec: string): string {
+  return createHash('sha256').update(JSON.stringify({ runtime, agentId, entries, cliSpec })).digest('hex')
 }
 
 function markerPath(cwd: string): string {
@@ -199,10 +199,12 @@ export async function installSkills(
   const result: InstallSkillsResult = { installed: [], removed: [], skipped: null, errors: [] }
   const entries = agent.skills ?? []
   const agentId = skillsAgentId(agent.runtime)
-  // Include the mapped agent id in the fingerprint so a runtime switch re-runs
-  // (the target dir changes); an unmapped runtime installs nothing but must still
-  // reconcile away copies from a prior mapped runtime.
-  const fp = fingerprint(agent.runtime, agentId ?? '', entries)
+  const env = { GIT_TERMINAL_PROMPT: '0', ...process.env, ...opts.env }
+  const cliSpec = resolveSkillsCliSpec(env)
+  // Fingerprint over runtime + mapped agent id + entries + the CLI spec: a runtime
+  // switch changes the target dir, and re-pinning AC_SKILLS_CLI must invalidate the
+  // cache so a changed CLI actually re-installs (it produces the on-disk skills).
+  const fp = fingerprint(agent.runtime, agentId ?? '', entries, cliSpec)
 
   // Only paths that are valid daemon-managed skill dirs may drive removal — the
   // marker is untrusted input, so its out-of-root entries are filtered out here.
@@ -243,8 +245,6 @@ export async function installSkills(
   }
 
   const before = new Set(listSkillDirs(cwd))
-  const env = { GIT_TERMINAL_PROMPT: '0', ...process.env, ...opts.env }
-  const cliSpec = resolveSkillsCliSpec(env)
   for (const entry of entries) {
     const composed = composeSource(entry)
     // Belt-and-suspenders (the protocol/CP boundary already validates these): a

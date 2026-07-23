@@ -41,10 +41,10 @@ import {
 
 /** Extract `{owner, repo, ref?}` from a source string (shorthand, https, or ssh
  *  GitHub form). Returns null for a non-GitHub / unparseable source. */
-function parseGithubRepo(source: string): { owner: string; repo: string; ref?: string } | null {
+function parseGithubRepo(source: string): { owner: string; repo: string; ref?: string; subDir?: string } | null {
   const s = source.trim().replace(/\.git$/, '')
-  let m = /^https?:\/\/github\.com\/([^/]+)\/([^/]+)(?:\/tree\/([^/]+))?/i.exec(s)
-  if (m) return { owner: m[1]!, repo: m[2]!, ...(m[3] ? { ref: m[3] } : {}) }
+  let m = /^https?:\/\/github\.com\/([^/]+)\/([^/]+)(?:\/tree\/([^/]+)(?:\/(.+))?)?/i.exec(s)
+  if (m) return { owner: m[1]!, repo: m[2]!, ...(m[3] ? { ref: m[3] } : {}), ...(m[4] ? { subDir: m[4] } : {}) }
   m = /^git@github\.com:([^/]+)\/([^/]+)$/i.exec(s)
   if (m) return { owner: m[1]!, repo: m[2]! }
   m = /^([^/\s:]+)\/([^/\s]+)$/.exec(s)
@@ -83,6 +83,27 @@ function parseRepoId(raw: string | null | undefined): bigint | null | undefined 
 export function skillSourceRoutes(deps: HttpDeps) {
   return async function skillSourceRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+
+    // A `subDir` source needs a ref (the CLI's tree/<ref>/<subdir> form requires one),
+    // and the daemon must not assume `main`. When a subdir is given without a ref,
+    // resolve the repo's ACTUAL default branch here and persist it as the ref. Returns
+    // the ref unchanged when there's nothing to resolve (no subdir, ref already set,
+    // non-GitHub source, or no installation).
+    const resolveRefForSubdir = async (
+      orgId: OrgId,
+      source: string,
+      ref: string | undefined,
+      subDir: string | undefined
+    ): Promise<string | undefined> => {
+      if (ref || !subDir) return ref
+      const gh = deps.github
+      const parsed = parseGithubRepo(source)
+      if (!gh || !parsed) return ref
+      const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(orgId, parsed.owner)
+      if (!ins) return ref
+      const meta = await gh.getRepoMeta(ins, parsed.owner, parsed.repo).catch(() => null)
+      return meta?.defaultBranch ?? ref
+    }
 
     // Re-inline a source's definition onto every agent that enables it and push
     // the refreshed spec. Best-effort per agent (the register/ok roster is the
@@ -169,8 +190,20 @@ export function skillSourceRoutes(deps: HttpDeps) {
         const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(orgOf(req), parsed.owner)
         if (!ins) return { resolvable: false, skills: [] }
         try {
-          const scan = await gh.scanSkillSource(ins, parsed.owner, parsed.repo, s.ref ?? parsed.ref)
-          return { resolvable: true, skills: scan.skills }
+          // Scan the SAME ref/subdir composeSource installs from, so the manifest
+          // reflects the source's actual scope.
+          const scan = await gh.scanSkillSource(
+            ins,
+            parsed.owner,
+            parsed.repo,
+            s.ref ?? parsed.ref,
+            s.subDir ?? parsed.subDir
+          )
+          // Honor the source's own skill filter: never offer skills the resolver
+          // would later drop (`resolveAgentSkillEntries` intersects with s.skills).
+          const allowed = s.skills.length > 0 ? new Set(s.skills) : null
+          const skills = allowed ? scan.skills.filter((sk) => allowed.has(sk.name)) : scan.skills
+          return { resolvable: true, skills }
         } catch {
           return { resolvable: false, skills: [] }
         }
@@ -224,12 +257,13 @@ export function skillSourceRoutes(deps: HttpDeps) {
             ? await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
             : undefined
         const repoId = parseRepoId(req.body.githubRepoId)
+        const ref = await resolveRefForSubdir(orgOf(req), req.body.source, req.body.ref, req.body.subDir)
         const source = await deps.repos.skillSource.create({
           orgId: orgOf(req),
           name: req.body.name,
           source: req.body.source,
           ...(repoId !== undefined ? { githubRepoId: repoId } : {}),
-          ...(req.body.ref !== undefined ? { ref: req.body.ref } : {}),
+          ...(ref !== undefined ? { ref } : {}),
           ...(req.body.subDir !== undefined ? { subDir: req.body.subDir } : {}),
           skills: req.body.skills,
           ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
@@ -259,10 +293,18 @@ export function skillSourceRoutes(deps: HttpDeps) {
         const existing = await deps.repos.skillSource.get(req.params.id)
         if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) return notFound(reply)
         const repoId = parseRepoId(req.body.githubRepoId)
+        // When this edit sets a subdir but no explicit ref, resolve the repo's default
+        // branch against the effective source so the daemon never falls back to `main`.
+        const effSubDir =
+          req.body.subDir === undefined ? (existing.subDir ?? undefined) : (req.body.subDir ?? undefined)
+        const resolvedRef =
+          req.body.ref === undefined || req.body.ref === null
+            ? await resolveRefForSubdir(orgOf(req), req.body.source ?? existing.source, undefined, effSubDir)
+            : req.body.ref
         const source = await deps.repos.skillSource.update(existing.id, {
           ...(req.body.source !== undefined ? { source: req.body.source } : {}),
           ...(repoId !== undefined ? { githubRepoId: repoId } : {}),
-          ...(req.body.ref !== undefined ? { ref: req.body.ref } : {}),
+          ...(resolvedRef !== undefined ? { ref: resolvedRef } : req.body.ref === null ? { ref: null } : {}),
           ...(req.body.subDir !== undefined ? { subDir: req.body.subDir } : {}),
           ...(req.body.skills !== undefined ? { skills: req.body.skills } : {})
         })

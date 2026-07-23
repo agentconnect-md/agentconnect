@@ -301,6 +301,11 @@ export class SessionManager {
     // once persisted, is what authorizes SessionTarget replies to the parent on later
     // human-triggered turns that have no per-turn CallMeta.
     const effectiveOriginSessionId = rec?.originSessionId ?? originSessionId
+    // Prepare the workspace (clone/pull + skill install) BEFORE acquiring the host,
+    // so `npx skills` lands the enabled skills before the runtime process spawns —
+    // runtimes that discover project skills at process init must see them (design §6).
+    // The resolved ACP cwd is reused by both the new-session and resume paths below.
+    const cwd = await abortable(() => prepareWorkspace(agent), signal)
     const host = await abortable(() => this.deps.hostFor(agentId), signal)
     // The sticky per-session effort override rides session `_meta` on new/load so the
     // `ultracode` sentinel (rejected by the `thought_level` select) takes effect;
@@ -464,8 +469,7 @@ export class SessionManager {
     // the CP already knows). Drives the daemon's one-shot `event/session` start emit.
     let created = false
     if (!rec || !rec.acpSessionId) {
-      // brand-new session for this (channel, thread, agent)
-      const cwd = await abortable(() => prepareWorkspace(agent), signal)
+      // brand-new session for this (channel, thread, agent); `cwd` prepared above.
       const mcpServers =
         this.deps.mcpServersFor?.({
           agent,
@@ -502,7 +506,7 @@ export class SessionManager {
       // (session/load — the agent restores its own history, so the §8.5 gap replay
       // below only re-feeds messages it missed). If the agent can't load it, recreate
       // a fresh session and replay the whole thread as context (lastDeliveredTs=null).
-      const cwd = await abortable(() => prepareWorkspace(agent), signal)
+      // `cwd` prepared above (before the host), so skills are installed pre-spawn.
       // Resolved once, shared by both paths: session/load must re-attach the same
       // MCP servers a fresh session would get (the agent doesn't persist them
       // across processes), and resolving twice would register two bridge tokens.
