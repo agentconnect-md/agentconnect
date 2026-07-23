@@ -315,6 +315,11 @@ export function skillSourceRoutes(deps: HttpDeps) {
         if (denyViewerWrite(req, reply)) return
         const existing = await deps.repos.skillSource.get(req.params.id)
         if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) return notFound(reply)
+        // Same public-only guard as create, on the EFFECTIVE source — a PATCH that
+        // points an existing source at a (now-confirmed) private repo is rejected too.
+        if (await isPrivateRepo(orgOf(req), req.body.source ?? existing.source)) {
+          return reply.code(400).send(privateNotSupported)
+        }
         const repoId = parseRepoId(req.body.githubRepoId)
         // Preserve an explicit ref across an unrelated PATCH: only resolve a default
         // branch when the EFFECTIVE ref is absent (untouched-and-existing counts as
