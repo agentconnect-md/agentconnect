@@ -7,8 +7,10 @@
  * `npx skills` after clone and before the ACP host spawns.
  *
  * There is NO secret side-table and NO grant (unlike MCP providers): skills carry
- * no upstream credential, and private-repo reads reuse the daemon's GitHub App
- * token path. The source definition is not pushed on its own frame either — it
+ * no upstream credential. This release supports PUBLIC sources only — a private
+ * repo has no daemon authorization path yet, so create rejects a confirmed-private
+ * source (a dedicated read-only grant is a follow-up). The definition is not pushed
+ * on its own frame either — it
  * rides INLINE on each enabling agent's AgentSpec.skills (resolved by
  * agentSpecAssembler). So a source change fans out to `agent/upsert` for every
  * agent that references it (§4 trade-off).
@@ -103,6 +105,18 @@ export function skillSourceRoutes(deps: HttpDeps) {
       if (!ins) return ref
       const meta = await gh.getRepoMeta(ins, parsed.owner, parsed.repo).catch(() => null)
       return meta?.defaultBranch ?? ref
+    }
+
+    // True only when we can CONFIRM the source repo is private (GitHub source + org
+    // installation + a readable meta saying private). Unknown ⇒ false (treated public).
+    const isPrivateRepo = async (orgId: OrgId, source: string): Promise<boolean> => {
+      const gh = deps.github
+      const parsed = parseGithubRepo(source)
+      if (!gh || !parsed) return false
+      const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(orgId, parsed.owner)
+      if (!ins) return false
+      const meta = await gh.getRepoMeta(ins, parsed.owner, parsed.repo).catch(() => null)
+      return meta?.private === true
     }
 
     // Re-inline a source's definition onto every agent that enables it and push
@@ -257,6 +271,12 @@ export function skillSourceRoutes(deps: HttpDeps) {
             ? await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
             : undefined
         const repoId = parseRepoId(req.body.githubRepoId)
+        // Scope this release to PUBLIC sources: the daemon has no authorization path to
+        // clone a private skill repo yet (a dedicated read-only grant is a follow-up).
+        // Reject a source we can confirm is private rather than silently accept one that
+        // can never install. Undeterminable privacy (no installation) is allowed through
+        // as public — a private repo with no installation can't be scanned/cloned anyway.
+        if (await isPrivateRepo(orgOf(req), req.body.source)) return reply.code(400).send(privateNotSupported)
         const ref = await resolveRefForSubdir(orgOf(req), req.body.source, req.body.ref, req.body.subDir)
         // A subdir source needs a ref; if we couldn't resolve one (owner has no org
         // installation, non-GitHub source) reject rather than let the daemon assume `main`.
@@ -399,4 +419,10 @@ const subdirNeedsRef = {
   error: 'Bad Request',
   statusCode: 400,
   message: 'a subdir skill source needs a ref; provide one, or ensure the org GitHub App can reach the repo'
+}
+
+const privateNotSupported = {
+  error: 'Bad Request',
+  statusCode: 400,
+  message: 'private skill sources are not supported yet — use a public repository'
 }
