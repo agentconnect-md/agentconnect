@@ -258,6 +258,9 @@ export function skillSourceRoutes(deps: HttpDeps) {
             : undefined
         const repoId = parseRepoId(req.body.githubRepoId)
         const ref = await resolveRefForSubdir(orgOf(req), req.body.source, req.body.ref, req.body.subDir)
+        // A subdir source needs a ref; if we couldn't resolve one (owner has no org
+        // installation, non-GitHub source) reject rather than let the daemon assume `main`.
+        if (req.body.subDir && !ref) return reply.code(400).send(subdirNeedsRef)
         const source = await deps.repos.skillSource.create({
           orgId: orgOf(req),
           name: req.body.name,
@@ -293,18 +296,30 @@ export function skillSourceRoutes(deps: HttpDeps) {
         const existing = await deps.repos.skillSource.get(req.params.id)
         if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) return notFound(reply)
         const repoId = parseRepoId(req.body.githubRepoId)
-        // When this edit sets a subdir but no explicit ref, resolve the repo's default
-        // branch against the effective source so the daemon never falls back to `main`.
+        // Preserve an explicit ref across an unrelated PATCH: only resolve a default
+        // branch when the EFFECTIVE ref is absent (untouched-and-existing counts as
+        // present), so a `skills`-only edit can't silently rewrite the pinned ref.
+        const refTouched = req.body.ref !== undefined
+        const currentRef = refTouched ? (req.body.ref ?? undefined) : (existing.ref ?? undefined)
         const effSubDir =
           req.body.subDir === undefined ? (existing.subDir ?? undefined) : (req.body.subDir ?? undefined)
-        const resolvedRef =
-          req.body.ref === undefined || req.body.ref === null
-            ? await resolveRefForSubdir(orgOf(req), req.body.source ?? existing.source, undefined, effSubDir)
-            : req.body.ref
+        const resolvedRef = await resolveRefForSubdir(
+          orgOf(req),
+          req.body.source ?? existing.source,
+          currentRef,
+          effSubDir
+        )
+        // A subdir source needs a ref; reject if we couldn't resolve one rather than
+        // let the daemon assume `main`.
+        if (effSubDir && !resolvedRef) return reply.code(400).send(subdirNeedsRef)
         const source = await deps.repos.skillSource.update(existing.id, {
           ...(req.body.source !== undefined ? { source: req.body.source } : {}),
           ...(repoId !== undefined ? { githubRepoId: repoId } : {}),
-          ...(resolvedRef !== undefined ? { ref: resolvedRef } : req.body.ref === null ? { ref: null } : {}),
+          ...(resolvedRef !== undefined
+            ? { ref: resolvedRef }
+            : refTouched && req.body.ref === null
+              ? { ref: null }
+              : {}),
           ...(req.body.subDir !== undefined ? { subDir: req.body.subDir } : {}),
           ...(req.body.skills !== undefined ? { skills: req.body.skills } : {})
         })
@@ -378,4 +393,10 @@ export function skillSourceRoutes(deps: HttpDeps) {
 
 function notFound(reply: FastifyReply) {
   return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'skill source not found' })
+}
+
+const subdirNeedsRef = {
+  error: 'Bad Request',
+  statusCode: 400,
+  message: 'a subdir skill source needs a ref; provide one, or ensure the org GitHub App can reach the repo'
 }

@@ -302,10 +302,13 @@ export class SessionManager {
     // human-triggered turns that have no per-turn CallMeta.
     const effectiveOriginSessionId = rec?.originSessionId ?? originSessionId
     // Prepare the workspace (clone/pull + skill install) BEFORE acquiring the host,
-    // so `npx skills` lands the enabled skills before the runtime process spawns —
-    // runtimes that discover project skills at process init must see them (design §6).
-    // The resolved ACP cwd is reused by both the new-session and resume paths below.
-    const cwd = await abortable(() => prepareWorkspace(agent), signal)
+    // but ONLY when this turn will create a brand-new session — that's the path that
+    // spawns the runtime, so skills must be on disk first (design §6). A warm turn on
+    // an existing session must NOT re-run prepareWorkspace: pulling/reconciling would
+    // mutate a checkout the live ACP process is already using. The resume path keeps
+    // its own prepareWorkspace (the process is already running there, so ordering is moot).
+    const isNewSession = !rec || !rec.acpSessionId
+    const preparedCwd = isNewSession ? await abortable(() => prepareWorkspace(agent), signal) : undefined
     const host = await abortable(() => this.deps.hostFor(agentId), signal)
     // The sticky per-session effort override rides session `_meta` on new/load so the
     // `ultracode` sentinel (rejected by the `thought_level` select) takes effect;
@@ -469,7 +472,8 @@ export class SessionManager {
     // the CP already knows). Drives the daemon's one-shot `event/session` start emit.
     let created = false
     if (!rec || !rec.acpSessionId) {
-      // brand-new session for this (channel, thread, agent); `cwd` prepared above.
+      // brand-new session for this (channel, thread, agent); workspace prepared above.
+      const cwd = preparedCwd!
       const mcpServers =
         this.deps.mcpServersFor?.({
           agent,
@@ -506,7 +510,9 @@ export class SessionManager {
       // (session/load — the agent restores its own history, so the §8.5 gap replay
       // below only re-feeds messages it missed). If the agent can't load it, recreate
       // a fresh session and replay the whole thread as context (lastDeliveredTs=null).
-      // `cwd` prepared above (before the host), so skills are installed pre-spawn.
+      // The runtime process is already running on this path, so prepare here (clone/pull
+      // + skill reconcile) rather than before the host — ordering-before-spawn is moot.
+      const cwd = await abortable(() => prepareWorkspace(agent), signal)
       // Resolved once, shared by both paths: session/load must re-attach the same
       // MCP servers a fresh session would get (the agent doesn't persist them
       // across processes), and resolving twice would register two bridge tokens.
