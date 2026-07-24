@@ -10,6 +10,21 @@ import {
 import type { TelegramMessage } from '../src/telegram/normalize.js'
 import type { Agent } from '../src/agents/agent-schema.js'
 
+// Capture the options grammY's real Bot.start() receives, so we can assert the
+// default factory drops the pending backlog on connect (regression: replayed stale
+// @mentions each minted a duplicate session).
+const { startSpy } = vi.hoisted(() => ({ startSpy: vi.fn() }))
+vi.mock('grammy', () => ({
+  Bot: class {
+    api = {}
+    botInfo = { id: 1, username: 'grammybot' }
+    init = vi.fn(async () => {})
+    on = vi.fn()
+    start = startSpy
+    stop = vi.fn(async () => {})
+  }
+}))
+
 function fakeApi(over: Partial<TelegramApi> = {}): TelegramApi {
   return {
     sendMessage: vi.fn(async () => ({ message_id: 777 })),
@@ -125,6 +140,20 @@ describe('TelegramConnection.start', () => {
       'permission',
       'queue'
     ])
+  })
+
+  it('drops the pending backlog on connect (default grammY factory)', async () => {
+    startSpy.mockClear()
+    // No injected factory → exercises defaultFactory, which builds the mocked grammY Bot.
+    const conn = new TelegramConnection({
+      group: { botToken: 'TKN', integrations: [{ agentId: 'a1', integrationId: 'i1' }] },
+      onMessage: () => {},
+      newTraceId: () => 'trace-x',
+      sendIntervalMs: 0
+    })
+    await conn.start()
+    expect(startSpy).toHaveBeenCalledTimes(1)
+    expect(startSpy.mock.calls[0]![0]).toMatchObject({ drop_pending_updates: true })
   })
 
   it('start() survives a setMyCommands failure (best-effort menu)', async () => {
