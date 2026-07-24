@@ -39,12 +39,47 @@ export type MemoryRecallPolicy = z.infer<typeof MemoryRecallPolicy>
 export const MemoryCapturePolicy = z.object({ mode: z.enum(['turn', 'manual']).default('manual') }).strict()
 export type MemoryCapturePolicy = z.infer<typeof MemoryCapturePolicy>
 
+/**
+ * Dreaming — periodic offline consolidation of the MANAGED store
+ * (design: docs/designs/memory-dreaming.md). Valid only with
+ * `provider: 'managed'`; the daemon stages a rebuilt store per dream and the
+ * user (or the gated auto-adopt path) reviews and adopts it. Bounds mirror the
+ * design: sessionWindow ≤ 100 mined transcripts, instructions ≤ 4096 chars.
+ */
+export const MemoryDreamingPolicy = z
+  .object({
+    enabled: z.boolean(),
+    /** How many recent sessions to mine (default 20). */
+    sessionWindow: z.number().int().min(1).max(100).optional(),
+    /** Cron expression for scheduled dreams (same syntax as agent crons). */
+    schedule: z.string().min(1).max(128).optional(),
+    /** Operator steering text applied through the whole dream pipeline. */
+    instructions: z.string().max(4096).optional(),
+    /** Also mine reusable procedures into candidate skills (never auto-installed). */
+    mineSkills: z.boolean().optional(),
+    /** Adopt the staged store automatically on completion. Admissible only on
+     *  runtimes with a trusted extraction channel; the daemon enforces that. */
+    autoAdopt: z.boolean().optional()
+  })
+  .strict()
+export type MemoryDreamingPolicy = z.infer<typeof MemoryDreamingPolicy>
+
 const BuiltInMemoryBinding = z
   .object({
     provider: z.enum(['none', 'native', 'managed']),
-    autoDistill: z.boolean().optional()
+    autoDistill: z.boolean().optional(),
+    dreaming: MemoryDreamingPolicy.optional()
   })
   .strict()
+  .superRefine((binding, ctx) => {
+    if (binding.dreaming && binding.provider !== 'managed') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['dreaming'],
+        message: 'dreaming is only supported with the managed memory provider'
+      })
+    }
+  })
 
 export const ExternalMemoryBinding = z
   .object({
