@@ -2969,7 +2969,7 @@ export async function fetchGithubRepos(
   }, signal)
 }
 
-/** Load the complete caller-visible repository roster for client-side searching.
+/** Load the complete App-visible repository roster for client-side searching.
  *  GitHub exposes only pagination here, so fetch the remaining pages after the
  *  first response reveals the installation's total repository count. */
 export async function fetchAllGithubRepos(installationId: string, signal?: AbortSignal): Promise<GithubRepoDto[]> {

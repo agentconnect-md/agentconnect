@@ -211,7 +211,10 @@ export default function AddAgentRepoModal({
 
   const q1 = q.trim().toLowerCase()
   const matches = (repos ?? []).filter((r) => !q1 || r.fullName.toLowerCase().includes(q1))
+  // A typed owner/repo missing from a failed or stale roster refresh — the CP
+  // re-validates it against the installations either way.
   const typedRepo = /^[^/\s]+\/[^/\s]+$/.test(q.trim()) ? q.trim() : null
+  const typedIsListed = !!typedRepo && matches.some((r) => r.fullName.toLowerCase() === typedRepo.toLowerCase())
   const typedTaken = !!typedRepo && (isWorkspace(typedRepo) || isAuthorized(typedRepo))
 
   const canSubmit = !!pick && !isWorkspace(pick) && !isAuthorized(pick) && !uncovered && !probeDenies
@@ -422,6 +425,26 @@ export default function AddAgentRepoModal({
                           </button>
                         )
                       })}
+                      {typedRepo && !typedIsListed && !typedTaken && (
+                        <button
+                          key={`typed:${typedRepo}`}
+                          className="fopt min-h-[46px] items-center gap-3 px-2 py-2"
+                          onClick={() => {
+                            setPick(typedRepo)
+                            setPickOpen(false)
+                          }}
+                        >
+                          <Icon name="book-marked" size={16} color="var(--text-tertiary)" className="flex-none" />
+                          <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
+                            <span className="block w-full min-w-0 truncate font-mono text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+                              {typedRepo}
+                            </span>
+                            <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                              Use this repository — must be covered by an installation
+                            </span>
+                          </span>
+                        </button>
+                      )}
                       {typedRepo && typedTaken && (
                         <div className="fnohit">
                           {isWorkspace(typedRepo)
@@ -429,7 +452,7 @@ export default function AddAgentRepoModal({
                             : `${typedRepo} is already authorized`}
                         </div>
                       )}
-                      {repos !== null && matches.length === 0 && !typedTaken && !reposError && (
+                      {repos !== null && matches.length === 0 && !typedRepo && !reposError && (
                         <div className="fnohit">No repositories match &ldquo;{q}&rdquo;</div>
                       )}
                       {repos === null && (
