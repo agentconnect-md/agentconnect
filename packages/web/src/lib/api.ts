@@ -446,7 +446,10 @@ export type CreateIntegrationInput =
     })
   | (CreateIntegrationBase & { platform: 'telegram'; telegram?: { botToken: string } })
   | (CreateIntegrationBase & { platform: 'discord'; discord?: { botToken: string } })
-  | (CreateIntegrationBase & { platform: 'feishu'; feishu?: { appId: string; appSecret: string } })
+  | (CreateIntegrationBase & {
+      platform: 'feishu'
+      feishu?: { appId: string; appSecret: string; region?: 'feishu' | 'lark' }
+    })
 
 // ── Slack config-token auto-install funnel (docs/designs/slack-install-smoothing.md §Tier B) ──
 // The CP creates the Slack app from a manifest (using the operator's App
@@ -517,6 +520,7 @@ export interface IntegrationDto {
   agentId: string
   botId: string
   status: string
+  region?: 'feishu' | 'lark' // feishu integrations only: which open-platform gateway
   createdAt: string // ISO-8601
   channels: IntegrationChannelDto[]
 }

@@ -19,6 +19,7 @@ import type {
   SecretsRequest,
   CronUpsert,
   Platform,
+  FeishuRegion,
   BindRule,
   AgentIcon,
   AgentMemoryBinding
@@ -1719,6 +1720,9 @@ export interface CreateBotInput {
   slackAppId?: string
   /** Discord application (client) id, decoded from the bot token. Public metadata, NOT a secret. */
   discordAppId?: string
+  /** Feishu/Lark gateway region; only set for platform 'feishu'. Durable home for the
+   *  region so a freed bot reinstalls against the same gateway. */
+  feishuRegion?: FeishuRegion
   /** Opt into shared-bot mode at create (shared-bot-relay.md §4.1). Default false. */
   shareable?: boolean
   /** Slack inbound transport (slack-http-mode). Default 'socket'. */
@@ -1737,6 +1741,9 @@ export interface BotRecord {
   slackAppId: string | null
   /** Discord application (client) id — lets the console offer a ready-made invite URL. */
   discordAppId: string | null
+  /** Feishu/Lark gateway region for this bot; null for non-feishu bots (and feishu bots
+   *  created before the column — treated as 'feishu'). Durable across uninstall. */
+  feishuRegion: FeishuRegion | null
   /** Shared-bot opt-in (§4.1): true ⇒ may serve MANY agents (http transport only). */
   shareable: boolean
   /** Slack inbound transport (slack-http-mode): 'http' ⇒ relay-pool Events API
@@ -2048,6 +2055,7 @@ export interface CreateIntegrationInput {
   botId: BotId // the identity this install runs as (1 bot : ≤1 install)
   platform: Platform // 'slack'
   name: string
+  feishuRegion?: FeishuRegion // feishu/lark gateway; only set for platform 'feishu'
   createdByUserId?: string
 }
 
@@ -2060,6 +2068,9 @@ export interface IntegrationRecord {
   platform: Platform
   name: string
   status: IntegrationStatus
+  /** Feishu/Lark gateway region; undefined for non-feishu integrations (and for
+   *  feishu rows created before the region column — treated as 'feishu'). */
+  feishuRegion?: FeishuRegion
   createdAt: Date
 }
 

@@ -322,6 +322,8 @@ export default function AddIntegrationModal({
   const [appName, setAppName] = useState(agent.name)
   const [botToken, setBotToken] = useState('')
   const [appToken, setAppToken] = useState('')
+  // Feishu/Lark gateway: 'feishu' (open.feishu.cn, China) vs 'lark' (open.larksuite.com, intl).
+  const [feishuRegion, setFeishuRegion] = useState<'feishu' | 'lark'>('feishu')
   const [saving, setSaving] = useState(false)
   const [showErrors, setShowErrors] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -938,7 +940,11 @@ export default function AddIntegrationModal({
       } else if (platform === 'telegram') {
         input = { platform: 'telegram', agentId: agent.id, telegram: { botToken: tokenTrim } }
       } else if (platform === 'feishu') {
-        input = { platform: 'feishu', agentId: agent.id, feishu: { appId: tokenTrim, appSecret: appToken.trim() } }
+        input = {
+          platform: 'feishu',
+          agentId: agent.id,
+          feishu: { appId: tokenTrim, appSecret: appToken.trim(), region: feishuRegion }
+        }
       } else {
         input = { platform: 'discord', agentId: agent.id, discord: { botToken: tokenTrim } }
       }
@@ -2172,17 +2178,51 @@ export default function AddIntegrationModal({
             block instead of the single-token generic one above — mirroring Slack. */}
         {mode === 'create' && platform === 'feishu' && (
           <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
+            {/* Region picks the open-platform gateway: Feishu (China, open.feishu.cn) vs
+                Lark (international, open.larksuite.com). Same app model, different console
+                + host — an app is registered in one region, so the operator chooses first. */}
+            <div className="mb-3">
+              <span className="fldlbl mb-[6px] block">Region</span>
+              <div className="grid grid-cols-2 gap-[6px]" role="radiogroup" aria-label="Feishu region">
+                {(
+                  [
+                    { key: 'feishu', label: 'Feishu', sub: '飞书 · China' },
+                    { key: 'lark', label: 'Lark', sub: 'International' }
+                  ] as const
+                ).map((r) => (
+                  <button
+                    key={r.key}
+                    type="button"
+                    role="radio"
+                    aria-checked={feishuRegion === r.key}
+                    onClick={() => setFeishuRegion(r.key)}
+                    className={`flex flex-col items-start gap-[1px] rounded-md border px-[11px] py-[7px] text-left ${
+                      feishuRegion === r.key
+                        ? 'border-(--brand) bg-(--surface-active)'
+                        : 'border-(--border-default) bg-(--surface-app)'
+                    }`}
+                  >
+                    <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                      {r.label}
+                    </span>
+                    <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                      {r.sub}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="mb-3 flex gap-[10px]">
               <span className="mono mt-[1px] flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
                 1
               </span>
               <div className="min-w-0 flex-1">
                 <div className="mb-2 font-sans text-[12.5px] font-medium leading-[1.45] text-(--text-secondary)">
-                  Create a self-built app in the Feishu console, enable the bot, then copy its App ID and App Secret
-                  from Credentials &amp; Basic Info.
+                  Create a self-built app in the {feishuRegion === 'lark' ? 'Lark' : 'Feishu'} console, enable the bot,
+                  then copy its App ID and App Secret from Credentials &amp; Basic Info.
                 </div>
                 <a
-                  href="https://open.feishu.cn/"
+                  href={feishuRegion === 'lark' ? 'https://open.larksuite.com/' : 'https://open.feishu.cn/'}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
@@ -2190,7 +2230,7 @@ export default function AddIntegrationModal({
                   <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
                     <PlatformMark platform="feishu" />
                   </span>
-                  Open the Feishu console
+                  Open the {feishuRegion === 'lark' ? 'Lark' : 'Feishu'} console
                   <Icon name="external-link" size={14} />
                 </a>
               </div>

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AgentMemoryBinding, AgentSkillEntry } from '@agentconnect.md/protocol'
+import { AgentMemoryBinding, AgentSkillEntry, FeishuRegion } from '@agentconnect.md/protocol'
 
 export const BindMatchSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('mention') }),
@@ -57,6 +57,7 @@ export const FeishuConfigSchema = z.object({
   appId: z.string(), // cli_… app identifier (semi-public); needed to open the WSClient
   appSecret: z.string(), // app secret (single secret; no app token / signing secret)
   botOpenId: z.string().optional(), // bot's own open_id for mention detection; filled at connect via bot/info if absent
+  region: FeishuRegion.default('feishu'), // open-platform gateway: feishu.cn (default) vs larksuite.com
   allowedUserIds: z.array(z.string()).default([]),
   bindRules: z.array(BindRuleConfigSchema).default([])
 })

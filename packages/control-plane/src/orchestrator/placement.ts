@@ -214,8 +214,15 @@ export function integrationToSpec(
       agentId: i.agentId,
       platform: 'feishu',
       // Feishu authenticates the WSClient with an appId + appSecret pair, stored in the
-      // two-slot bot_secret: botToken = appSecret (the secret), appToken = appId.
-      feishu: { appId: secret.appToken ?? '', appSecret: secret.botToken, allowedUserIds: [], bindRules }
+      // two-slot bot_secret: botToken = appSecret (the secret), appToken = appId. The
+      // region (feishu.cn vs larksuite.com) rides on the integration row; NULL ⇒ 'feishu'.
+      feishu: {
+        appId: secret.appToken ?? '',
+        appSecret: secret.botToken,
+        region: i.feishuRegion ?? 'feishu',
+        allowedUserIds: [],
+        bindRules
+      }
     }
   }
   return {

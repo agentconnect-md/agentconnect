@@ -17,6 +17,7 @@
  *
  * This is the only spot the CP touches the appSecret to reach Feishu; it NEVER logs it.
  */
+import type { FeishuRegion } from '@agentconnect.md/protocol'
 
 /** tenant-access-token exchange outcome: valid creds (with the derived bot name), creds
  *  Feishu rejected, or an inconclusive reachability failure. */
@@ -25,18 +26,30 @@ export type FeishuBotVerification =
   | { status: 'invalid' } // Feishu returned a non-zero code — bad app id / secret
   | { status: 'unreachable' } // network / timeout / non-2xx — inconclusive, do not block
 
-export type FeishuBotVerifier = (appId: string, appSecret: string) => Promise<FeishuBotVerification>
+export type FeishuBotVerifier = (
+  appId: string,
+  appSecret: string,
+  region?: FeishuRegion
+) => Promise<FeishuBotVerification>
 
-const FEISHU_BASE = 'https://open.feishu.cn/open-apis'
+/** Open-platform gateway per region. Mainland China ('feishu') vs international ('lark');
+ *  the verifier must exchange credentials against the SAME host the daemon's SDK will use,
+ *  or a valid Lark app would be rejected against the Feishu gateway. Defaults to feishu. */
+const REGION_BASE: Record<FeishuRegion, string> = {
+  feishu: 'https://open.feishu.cn/open-apis',
+  lark: 'https://open.larksuite.com/open-apis'
+}
 const FEISHU_TIMEOUT_MS = 5000
 
 /** Exchange (app_id, app_secret) → tenant_access_token, then derive the bot name from
  *  `/bot/v3/info`. A non-zero `code` on the token exchange means Feishu rejected the
- *  credentials (`invalid`); any transport failure is `unreachable`. */
-export const verifyFeishuBot: FeishuBotVerifier = async (appId, appSecret) => {
+ *  credentials (`invalid`); any transport failure is `unreachable`. `region` selects the
+ *  gateway (feishu.cn vs larksuite.com); omitted ⇒ 'feishu'. */
+export const verifyFeishuBot: FeishuBotVerifier = async (appId, appSecret, region = 'feishu') => {
+  const base = REGION_BASE[region]
   let token: string
   try {
-    const res = await fetch(`${FEISHU_BASE}/auth/v3/tenant_access_token/internal`, {
+    const res = await fetch(`${base}/auth/v3/tenant_access_token/internal`, {
       method: 'POST',
       headers: { 'content-type': 'application/json; charset=utf-8' },
       body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
@@ -54,7 +67,7 @@ export const verifyFeishuBot: FeishuBotVerifier = async (appId, appSecret) => {
   // Credentials are valid. Derive the bot name best-effort — a failure here must NOT
   // downgrade the verification (the creds already validated), so fall back to null.
   try {
-    const res = await fetch(`${FEISHU_BASE}/bot/v3/info`, {
+    const res = await fetch(`${base}/bot/v3/info`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(FEISHU_TIMEOUT_MS)
     })

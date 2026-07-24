@@ -54,6 +54,7 @@ function toDto(i: IntegrationRecord, channels: IntegrationChannelRecord[] = []):
     agentId: i.agentId,
     botId: i.botId,
     status: i.status,
+    ...(i.feishuRegion ? { region: i.feishuRegion } : {}),
     createdAt: i.createdAt.toISOString(),
     channels: channels.map(toChannelDto)
   }
@@ -252,6 +253,9 @@ export function integrationRoutes(deps: HttpDeps) {
                 botId: bot.id,
                 platform: req.body.platform,
                 name: bot.name,
+                // Carry the durable region forward so a reinstalled feishu/lark bot keeps
+                // its gateway (undefined ⇒ 'feishu' for non-feishu bots).
+                ...(bot.feishuRegion ? { feishuRegion: bot.feishuRegion } : {}),
                 ...(req.principal ? { createdByUserId: req.principal.userId } : {})
               })
               // Relay owns the ingest — (re)assign the bot + push send-only specs to
@@ -272,6 +276,9 @@ export function integrationRoutes(deps: HttpDeps) {
               botId: bot.id,
               platform: req.body.platform,
               name: bot.name,
+              // Carry the durable region forward so a reinstalled feishu/lark bot keeps
+              // its gateway (undefined ⇒ 'feishu' for non-feishu bots).
+              ...(bot.feishuRegion ? { feishuRegion: bot.feishuRegion } : {}),
               ...(req.principal ? { createdByUserId: req.principal.userId } : {})
             })
             await replicateUpsert(integration, daemonId)
@@ -380,7 +387,10 @@ export function integrationRoutes(deps: HttpDeps) {
           // appToken = appId, the identifier — appToken already nullable since Telegram).
           if (req.body.platform === 'feishu') {
             const feishu = req.body.feishu! // superRefine guarantees it when botId is absent
-            const check = deps.verifyFeishuBot ? await deps.verifyFeishuBot(feishu.appId, feishu.appSecret) : null
+            const region = feishu.region // zod-defaulted to 'feishu' when omitted
+            const check = deps.verifyFeishuBot
+              ? await deps.verifyFeishuBot(feishu.appId, feishu.appSecret, region)
+              : null
             if (check?.status === 'invalid') {
               return reply.code(400).send({
                 error: 'Bad Request',
@@ -398,6 +408,9 @@ export function integrationRoutes(deps: HttpDeps) {
               orgId,
               platform: 'feishu',
               name,
+              // Durable home for the region so a later reinstall of this freed bot
+              // reconstructs the right gateway (the integration row is deleted on uninstall).
+              feishuRegion: region,
               ...(req.principal ? { createdByUserId: req.principal.userId } : {})
             })
             // botToken = appSecret (secret), appToken = appId (identifier).
@@ -413,6 +426,7 @@ export function integrationRoutes(deps: HttpDeps) {
               botId,
               platform: 'feishu',
               name,
+              feishuRegion: region,
               ...(req.principal ? { createdByUserId: req.principal.userId } : {})
             })
             await replicateUpsert(integration, daemonId)

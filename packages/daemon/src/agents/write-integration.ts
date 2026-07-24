@@ -57,6 +57,7 @@ function toIntegration(spec: IntegrationSpec): Integration {
         appId: spec.feishu.appId,
         appSecret: spec.feishu.appSecret,
         ...(spec.feishu.botOpenId ? { botOpenId: spec.feishu.botOpenId } : {}),
+        region: spec.feishu.region,
         allowedUserIds: spec.feishu.allowedUserIds,
         bindRules: spec.feishu.bindRules
       }

@@ -10,6 +10,7 @@ import {
   AgentMemoryBinding,
   AgentPermissionRequestRecord,
   CanonicalMemoryRecord,
+  FeishuRegion,
   MemoryPluginHistoryEvent,
   MemoryPluginOperation,
   RESERVED_MCP_SERVER_NAME,
@@ -587,11 +588,14 @@ export const CreateIntegrationBody = z
         applicationId: z.string().min(1).optional()
       })
       .optional(),
-    /** Register a new Feishu / Lark self-built app from its appId + appSecret pair. */
+    /** Register a new Feishu / Lark self-built app from its appId + appSecret pair.
+     *  `region` picks the open-platform gateway (feishu.cn vs larksuite.com); it
+     *  defaults to 'feishu' so older clients that omit it keep the China gateway. */
     feishu: z
       .object({
         appId: z.string().min(1),
-        appSecret: z.string().min(1)
+        appSecret: z.string().min(1),
+        region: FeishuRegion.default('feishu')
       })
       .optional()
   })
@@ -650,6 +654,7 @@ export const IntegrationDto = z.object({
   agentId: z.string(),
   botId: z.string(),
   status: z.string(),
+  region: FeishuRegion.optional(), // feishu integrations only: 'feishu' | 'lark' gateway
   createdAt: z.string(), // ISO-8601
   channels: z.array(IntegrationChannelDto)
 })
