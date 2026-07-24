@@ -1,0 +1,393 @@
+import { describe, it, expect, vi } from 'vitest'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import {
+  curatedProbeEnvironment,
+  probeRuntime,
+  probeAllRuntimes,
+  type ProbeHostPolicy
+} from '../src/runtimes/runtime-prober.js'
+import { modelOptionsFrom, type AcpHost } from '../src/acp/acp-host.js'
+import type { RuntimeDef } from '../src/config/config-schema.js'
+
+const rt: RuntimeDef = { command: 'npx', args: ['-y', 'pkg'], env: [] }
+
+/** Minimal AcpHost stand-in — only the methods the prober calls. */
+function fakeHost(behavior: {
+  start?: () => Promise<void>
+  newSession?: () => Promise<string>
+  models?: ReturnType<AcpHost['modelOptions']>
+  acp?: number
+  mcp?: ReturnType<AcpHost['mcpCapabilities']>
+  agentInfo?: { name: string; title?: string; version?: string }
+  onStop?: () => void
+}): AcpHost {
+  return {
+    start: behavior.start ?? (async () => {}),
+    newSession: behavior.newSession ?? (async () => 'sess-1'),
+    modelOptions: () => behavior.models ?? null,
+    acpProtocolVersion: () => behavior.acp,
+    mcpCapabilities: () => behavior.mcp ?? null,
+    acpAgentInfo: () => behavior.agentInfo,
+    stop: async () => {
+      behavior.onStop?.()
+    }
+  } as unknown as AcpHost
+}
+
+const successfulHost = (newSession = vi.fn(async () => 'sess-1')) => fakeHost({ newSession })
+
+describe('modelOptionsFrom', () => {
+  it('extracts a flat model selector', () => {
+    const opts = modelOptionsFrom([
+      {
+        id: 'model',
+        name: 'Model',
+        category: 'model',
+        type: 'select',
+        currentValue: 'sonnet',
+        options: [
+          { value: 'sonnet', name: 'Sonnet' },
+          { value: 'opus', name: 'Opus' }
+        ]
+      } as never
+    ])
+    expect(opts).toEqual({ current: 'sonnet', models: ['sonnet', 'opus'] })
+  })
+
+  it('flattens grouped options', () => {
+    const opts = modelOptionsFrom([
+      {
+        id: 'model',
+        name: 'Model',
+        category: 'model',
+        type: 'select',
+        currentValue: 'a',
+        options: [
+          { group: 'g1', name: 'Group 1', options: [{ value: 'a', name: 'A' }] },
+          { group: 'g2', name: 'Group 2', options: [{ value: 'b', name: 'B' }] }
+        ]
+      } as never
+    ])
+    expect(opts?.models).toEqual(['a', 'b'])
+  })
+
+  it('ignores non-model and boolean options, returns null when absent', () => {
+    expect(modelOptionsFrom(null)).toBeNull()
+    expect(
+      modelOptionsFrom([
+        { id: 'mode', name: 'Mode', category: 'mode', type: 'select', currentValue: 'x', options: [] } as never
+      ])
+    ).toBeNull()
+    expect(
+      modelOptionsFrom([
+        { id: 'think', name: 'Think', category: 'model', type: 'boolean', currentValue: true } as never
+      ])
+    ).toBeNull()
+  })
+})
+
+describe('probeRuntime', () => {
+  it('reports models on success and tears the host down', async () => {
+    const onStop = vi.fn()
+    const host = fakeHost({ models: { current: 'sonnet', models: ['sonnet', 'opus'] }, acp: 1, onStop })
+    const res = await probeRuntime('claude-acp', rt, '/tmp/x', { hostFactory: () => host })
+    expect(res).toEqual({
+      runtime: 'claude-acp',
+      ok: true,
+      models: ['sonnet', 'opus'],
+      currentModel: 'sonnet',
+      acpProtocolVersion: 1
+    })
+    expect(onStop).toHaveBeenCalledOnce()
+  })
+
+  it('captures the probed adapter version from agentInfo', async () => {
+    const host = fakeHost({
+      models: { current: 'sonnet', models: ['sonnet'] },
+      acp: 1,
+      agentInfo: { name: '@agentclientprotocol/claude-agent-acp', title: 'Claude Agent', version: '0.59.0' }
+    })
+    const res = await probeRuntime('claude-acp', rt, '/tmp/x', { hostFactory: () => host })
+    expect(res.ok).toBe(true)
+    expect(res.probedVersion).toBe('0.59.0')
+  })
+
+  it('leaves probedVersion undefined when the agent reports no agentInfo', async () => {
+    const host = fakeHost({ models: { current: 'sonnet', models: ['sonnet'] }, acp: 1 })
+    const res = await probeRuntime('claude-acp', rt, '/tmp/x', { hostFactory: () => host })
+    expect(res.probedVersion).toBeUndefined()
+  })
+
+  it('surfaces a runtime-advertised literal "default" model verbatim (never synthesized, never dropped)', async () => {
+    const host = fakeHost({ models: { current: 'default', models: ['default', 'gpt-5.3-codex', 'gpt-5.3'] } })
+    const res = await probeRuntime('codex-acp', rt, '/tmp/x', { hostFactory: () => host })
+    expect(res.ok).toBe(true)
+    expect(res.models).toEqual(['default', 'gpt-5.3-codex', 'gpt-5.3'])
+  })
+
+  it('captures the MCP transport caps advertised at initialize', async () => {
+    const host = fakeHost({ models: null, mcp: { http: true, sse: false } })
+    const res = await probeRuntime('claude-acp', rt, '/tmp/x', { hostFactory: () => host })
+    expect(res.ok).toBe(true)
+    expect(res.mcpCapabilities).toEqual({ http: true, sse: false })
+  })
+
+  it('omits MCP caps when the host reports none (older fake hosts)', async () => {
+    const res = await probeRuntime('bare', rt, '/tmp/x', { hostFactory: () => fakeHost({}) })
+    expect(res.ok).toBe(true)
+    expect(res.mcpCapabilities).toBeUndefined()
+  })
+
+  it('treats a session with no model selector as ok with empty models', async () => {
+    const res = await probeRuntime('deepagents', rt, '/tmp/x', { hostFactory: () => fakeHost({ models: null }) })
+    expect(res.ok).toBe(true)
+    expect(res.models).toEqual([])
+  })
+
+  it('captures a launch failure without throwing, still tearing down', async () => {
+    const onStop = vi.fn()
+    const host = fakeHost({
+      start: async () => {
+        throw new Error('spawn ENOENT')
+      },
+      onStop
+    })
+    const res = await probeRuntime('broken', rt, '/tmp/x', { hostFactory: () => host })
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('ENOENT')
+    expect(res.models).toEqual([])
+    expect(res.authRequired).toBeUndefined()
+    expect(onStop).toHaveBeenCalledOnce()
+  })
+
+  it('flags an ACP auth-required rejection (-32000) as authRequired', async () => {
+    const host = fakeHost({
+      // Exactly what claude-acp / codex-acp reject session/new with when logged
+      // out: the SDK's RequestError.authRequired (JSON-RPC -32000).
+      newSession: async () => {
+        throw Object.assign(new Error('Authentication required'), { code: -32000 })
+      }
+    })
+    const res = await probeRuntime('codex-acp', rt, '/tmp/x', { hostFactory: () => host })
+    expect(res.ok).toBe(false)
+    expect(res.authRequired).toBe(true)
+    expect(res.error).toContain('Authentication required')
+  })
+
+  it('keeps other JSON-RPC failures (e.g. -32603) out of authRequired', async () => {
+    const host = fakeHost({
+      newSession: async () => {
+        throw Object.assign(new Error('Internal error'), { code: -32603 })
+      }
+    })
+    const res = await probeRuntime('codex-acp', rt, '/tmp/x', { hostFactory: () => host })
+    expect(res.ok).toBe(false)
+    expect(res.authRequired).toBeUndefined()
+  })
+
+  it('always cancels permissions, declines elicitation, and supplies no MCP servers', async () => {
+    const start = vi.fn(async () => {})
+    const newSession = vi.fn(async () => 'sess-1')
+    let policy: ProbeHostPolicy | undefined
+    const res = await probeRuntime('safe', rt, '/tmp/probe/workspace', {
+      hostFactory: (_runtime, _id, _cwd, supplied) => {
+        policy = supplied
+        return fakeHost({ start, newSession })
+      }
+    })
+
+    expect(res.ok).toBe(true)
+    expect(await policy!.onPermission('sess', {} as never)).toEqual({ outcome: { outcome: 'cancelled' } })
+    expect(await policy!.onElicit('sess', {} as never)).toEqual({ action: 'decline' })
+    expect(policy!.suppressChildStderr).toBe(true)
+    expect(start).toHaveBeenCalledOnce()
+    expect(newSession).toHaveBeenCalledWith('/tmp/probe/workspace', [])
+  })
+
+  it('sanitizes credential values and filesystem paths from failures and logs', async () => {
+    const warn = vi.fn()
+    const secret = 'sk-probe-super-secret'
+    const res = await probeRuntime('broken', rt, '/private/probe/workspace', {
+      hostEnv: { PATH: '/usr/bin', OPENAI_API_KEY: secret },
+      log: { warn } as never,
+      hostFactory: () =>
+        fakeHost({
+          start: async () => {
+            throw new Error(`failed ${secret} at /Users/person/.hermes/auth.json`)
+          }
+        })
+    })
+
+    expect(res.error).toContain('[REDACTED]')
+    expect(res.error).toContain('<path>')
+    expect(res.error).not.toContain(secret)
+    expect(res.error).not.toContain('/Users/person')
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(secret)
+  })
+
+  it('redacts credentials seeded from private auth files', async () => {
+    const hostHome = mkdtempSync(join(tmpdir(), 'ac-probe-auth-'))
+    const hostHermes = join(hostHome, '.hermes')
+    const secret = 'file-only-oauth-secret'
+    mkdirSync(hostHermes)
+    writeFileSync(join(hostHermes, 'auth.json'), JSON.stringify({ token: secret }))
+
+    const results = await probeAllRuntimes(
+      { 'hermes-agent': { command: 'hermes', args: ['acp'], env: [] } },
+      {
+        curated: true,
+        hostEnv: { HOME: hostHome, PATH: '/usr/bin' },
+        hostFactory: () =>
+          fakeHost({
+            start: async () => {
+              throw new Error(`ACP rejected token ${secret}`)
+            }
+          })
+      }
+    )
+
+    expect(results[0]?.error).toContain('[REDACTED]')
+    expect(results[0]?.error).not.toContain(secret)
+  })
+
+  it('captures private launch preparation failures', async () => {
+    const res = await probeRuntime('broken-home', rt, '/tmp/x', {
+      launchFor: () => {
+        throw new Error('runtime HOME unavailable')
+      }
+    })
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('runtime HOME unavailable')
+  })
+
+  it('times out a hung probe', async () => {
+    const host = fakeHost({ newSession: () => new Promise<string>(() => {}) }) // never resolves
+    const res = await probeRuntime('slow', rt, '/tmp/x', { hostFactory: () => host, timeoutMs: 20 })
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('timed out')
+  })
+})
+
+describe('curatedProbeEnvironment', () => {
+  it('allows only process/proxy/certificate essentials and scalar provider keys', () => {
+    const env = curatedProbeEnvironment({
+      PATH: '/usr/bin',
+      PATHEXT: '.EXE',
+      SystemRoot: 'C:\\Windows',
+      HTTPS_PROXY: 'https://proxy.example',
+      no_proxy: 'localhost',
+      SSL_CERT_FILE: '/etc/certs.pem',
+      NODE_EXTRA_CA_CERTS: '/etc/extra.pem',
+      OPENAI_API_KEY: 'openai-key',
+      ANTHROPIC_API_KEY: 'anthropic-key',
+      KIRO_API_KEY: 'kiro-key',
+      AWS_SHARED_CREDENTIALS_FILE: '/host/aws',
+      GOOGLE_APPLICATION_CREDENTIALS: '/host/google.json',
+      KUBECONFIG: '/host/kube',
+      HERMES_HOME: '/host/hermes',
+      INTERPRETER_HOME: '/host/interpreter',
+      PI_CODING_AGENT_DIR: '/host/omp',
+      RANDOM_AMBIENT_VALUE: 'do-not-pass'
+    })
+
+    expect(env).toEqual({
+      PATH: '/usr/bin',
+      PATHEXT: '.EXE',
+      SystemRoot: 'C:\\Windows',
+      HTTPS_PROXY: 'https://proxy.example',
+      no_proxy: 'localhost',
+      SSL_CERT_FILE: '/etc/certs.pem',
+      NODE_EXTRA_CA_CERTS: '/etc/extra.pem',
+      OPENAI_API_KEY: 'openai-key',
+      ANTHROPIC_API_KEY: 'anthropic-key',
+      KIRO_API_KEY: 'kiro-key'
+    })
+  })
+})
+
+describe('probeAllRuntimes', () => {
+  it('probes every runtime and keys results by id', async () => {
+    const runtimes: Record<string, RuntimeDef> = { a: rt, b: rt, c: rt }
+    const results = await probeAllRuntimes(runtimes, {
+      concurrency: 2,
+      hostFactory: () => fakeHost({ models: { current: 'm', models: ['m'] } })
+    })
+    expect(results.map((r) => r.runtime).sort()).toEqual(['a', 'b', 'c'])
+    expect(results.every((r) => r.ok && r.models[0] === 'm')).toBe(true)
+  })
+
+  it('returns [] for no runtimes', async () => {
+    expect(await probeAllRuntimes({})).toEqual([])
+  })
+
+  it('uses a disposable protected curated launch and leaves host state unchanged', async () => {
+    const hostHome = mkdtempSync(join(tmpdir(), 'ac-probe-host-'))
+    const hostHermes = join(hostHome, '.hermes')
+    mkdirSync(hostHermes)
+    const hostConfig = join(hostHermes, 'config.yaml')
+    const hostDotEnv = join(hostHermes, '.env')
+    const original = 'model: test\nmemory:\n  memory_enabled: true\n'
+    writeFileSync(hostConfig, original)
+    writeFileSync(hostDotEnv, 'OPENAI_API_KEY=scalar-key\nGOOGLE_APPLICATION_CREDENTIALS=/host/google.json\n')
+
+    let privateHome = ''
+    let privateConfig = ''
+    const results = await probeAllRuntimes(
+      { 'hermes-agent': { command: 'hermes', args: ['acp'], env: [] } },
+      {
+        curated: true,
+        hostEnv: {
+          HOME: hostHome,
+          PATH: '/usr/bin',
+          OPENAI_API_KEY: 'scalar-key',
+          GOOGLE_APPLICATION_CREDENTIALS: '/host/google.json',
+          RANDOM_AMBIENT_VALUE: 'nope'
+        },
+        hostFactory: (_runtime, _id, cwd, policy) => {
+          privateHome = policy.env!.HOME
+          privateConfig = join(policy.env!.HERMES_HOME, 'config.yaml')
+          expect(dirname(cwd)).toBe(dirname(privateHome))
+          expect(policy.inheritProcessEnv).toBe(false)
+          expect(policy.env).not.toHaveProperty('GOOGLE_APPLICATION_CREDENTIALS')
+          expect(policy.env).not.toHaveProperty('RANDOM_AMBIENT_VALUE')
+          expect(readFileSync(privateConfig, 'utf8')).toContain('memory_enabled: false')
+          expect(readFileSync(join(policy.env!.HERMES_HOME, '.env'), 'utf8')).toBe('OPENAI_API_KEY=scalar-key\n')
+          return successfulHost()
+        }
+      }
+    )
+
+    expect(results[0]?.ok).toBe(true)
+    expect(readFileSync(hostConfig, 'utf8')).toBe(original)
+    expect(readFileSync(hostDotEnv, 'utf8')).toContain('GOOGLE_APPLICATION_CREDENTIALS=/host/google.json')
+    expect(existsSync(privateHome)).toBe(false)
+    expect(existsSync(privateConfig)).toBe(false)
+  })
+
+  it('removes copied Maki MCP declarations from disposable probes', async () => {
+    const hostHome = mkdtempSync(join(tmpdir(), 'ac-probe-maki-'))
+    const hostConfig = join(hostHome, '.config', 'maki')
+    mkdirSync(hostConfig, { recursive: true })
+    writeFileSync(join(hostConfig, 'init.lua'), 'maki.setup({})')
+    writeFileSync(join(hostConfig, 'mcp.toml'), '[servers.host]\ncommand = "unsafe"\n')
+
+    const results = await probeAllRuntimes(
+      { maki: { command: 'maki', args: ['acp'], env: [] } },
+      {
+        curated: true,
+        hostEnv: { HOME: hostHome, PATH: '/usr/bin' },
+        hostFactory: (_runtime, _id, _cwd, policy) => {
+          const privateConfig = join(policy.env!.HOME, '.config', 'maki')
+          expect(existsSync(join(privateConfig, 'init.lua'))).toBe(true)
+          expect(existsSync(join(privateConfig, 'mcp.toml'))).toBe(false)
+          return successfulHost()
+        }
+      }
+    )
+
+    expect(results[0]?.ok).toBe(true)
+    expect(readFileSync(join(hostConfig, 'mcp.toml'), 'utf8')).toContain('unsafe')
+  })
+})

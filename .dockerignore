@@ -1,0 +1,16 @@
+# Build context hygiene — keep the image build fast and reproducible.
+**/node_modules
+**/.pnpm-store
+**/dist
+**/.next
+**/.turbo
+.git
+.github
+docs
+**/*.log
+**/coverage
+**/.env
+**/.env.*
+!.env.example
+**/.DS_Store
+scratchpad

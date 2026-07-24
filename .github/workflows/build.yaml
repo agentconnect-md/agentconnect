@@ -1,0 +1,251 @@
+name: Build & Push Images
+
+# Builds the control-plane / relay / web / external-memory images for a RELEASE
+# and pushes them to GHCR tagged with the semantic-release version (the git tag:
+# `v1.2.3` stable, `v1.2.3-rc.4` prerelease). Stable releases also move `:latest`.
+#
+# Subscribes to the v* tags semantic-release pushes (rc from `main`, stable
+# from `release`) — release.yaml pushes them with a GitHub App token because the
+# built-in GITHUB_TOKEN's pushes never trigger workflows. Plain pushes to `main`
+# that don't produce a release don't build images. Manual rebuild:
+# workflow_dispatch, picking a vX.Y.Z(-rc.N) tag as the ref.
+#
+# Per-component effective versions: most releases don't touch every component,
+# and a component whose build inputs are unchanged since the previous release
+# on its channel would ship a behaviorally identical image under a new tag —
+# creating redundant downstream workflow work. scripts/component-versions.sh
+# computes, per component, the most recent same-channel tag (rc walks rc tags,
+# stable walks stable tags) that actually changed it. Changed components build
+# concurrently in one Buildx Bake invocation; unchanged components skip the
+# build and instead get this release's tag as an ALIAS of their effective image
+# (same manifest digest), so `<comp>:<version>` exists for every component at
+# every release regardless.
+#
+# After pushing, mints a short-lived GitHub App token for the configured
+# workflow repository and fires an `images-pushed` repository_dispatch
+# (payload `{version, sha, components: {controlPlane, web, relay, mem0,
+# mem0Backend}}` — the per-component tags the downstream workflow should
+# consume; `== version` exactly for the components this release changed). It
+# reports artifact facts, not an instruction — what happens next is the workflow
+# repository's concern and is documented there.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-push:
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      controlPlane: ${{ steps.components.outputs.controlPlane }}
+      web: ${{ steps.components.outputs.web }}
+      relay: ${{ steps.components.outputs.relay }}
+      mem0: ${{ steps.components.outputs.mem0 }}
+      mem0Backend: ${{ steps.components.outputs.mem0Backend }}
+    steps:
+      # Image tags come from the release tag this run fired on. The guard only
+      # bites manual workflow_dispatch runs: refuse anything that isn't a v*
+      # tag ref — a branch ref would mint a mutable image tag like `main` and
+      # break version→commit provenance.
+      - name: Resolve release version
+        id: meta
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::Must run at a release tag ref, got ${GITHUB_REF}. Re-run picking a vX.Y.Z(-rc.N) tag."
+            exit 1
+          fi
+          case "$GITHUB_REF_NAME" in
+            v[0-9]*) ;;
+            *) echo "::error::'${GITHUB_REF_NAME}' is not a vX.Y.Z(-rc.N) release tag."; exit 1 ;;
+          esac
+          echo "version=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          # Only stable releases (no prerelease suffix) move `:latest`.
+          case "$GITHUB_REF_NAME" in
+            *-*) echo "latest=false" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "latest=true"  >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      # Full history + tags: the effective-version walk below diffs stable tags
+      # pairwise. This repo is small; the extra clone cost on rc builds is noise.
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Per-component effective versions on this tag's channel (see the
+      # header): a component whose inputs didn't change since the channel's
+      # previous release keeps that older tag; only changed components build.
+      - name: Resolve per-component effective versions
+        id: components
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: bash scripts/component-versions.sh "$VERSION" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Select changed image targets
+        id: build-targets
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          CP_EFFECTIVE: ${{ steps.components.outputs.controlPlane }}
+          WEB_EFFECTIVE: ${{ steps.components.outputs.web }}
+          RELAY_EFFECTIVE: ${{ steps.components.outputs.relay }}
+          MEM0_EFFECTIVE: ${{ steps.components.outputs.mem0 }}
+          MEM0_BACKEND_EFFECTIVE: ${{ steps.components.outputs.mem0Backend }}
+        run: |
+          set -euo pipefail
+          targets=()
+          [ "$CP_EFFECTIVE" = "$VERSION" ] && targets+=(control-plane)
+          [ "$RELAY_EFFECTIVE" = "$VERSION" ] && targets+=(relay)
+          [ "$WEB_EFFECTIVE" = "$VERSION" ] && targets+=(web)
+          [ "$MEM0_EFFECTIVE" = "$VERSION" ] && targets+=(mem0)
+          [ "$MEM0_BACKEND_EFFECTIVE" = "$VERSION" ] && targets+=(mem0-backend)
+          (IFS=,; echo "targets=${targets[*]}" >> "$GITHUB_OUTPUT")
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          name: agentconnect-images
+          keep-state: true
+          cleanup: false
+
+      # One Bake invocation gives BuildKit all changed targets at once, so it
+      # schedules them concurrently while deduplicating their shared base and
+      # manifest stages. If no component changed, Bake is skipped and the
+      # release tags are aliased below.
+      - name: Build & push changed images in parallel
+        if: steps.build-targets.outputs.targets != ''
+        uses: docker/bake-action@v7
+        # Bake reads declared variables from the environment. Keep them out of
+        # the action's `vars` input because older Buildx releases do not support
+        # `buildx bake --var`.
+        env:
+          OWNER: ${{ github.repository_owner }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          LATEST: ${{ steps.meta.outputs.latest }}
+          GIT_SHA: ${{ github.sha }}
+        with:
+          source: .
+          push: true
+          targets: ${{ steps.build-targets.outputs.targets }}
+
+      # Components skipped above still get this release's tag: an alias of the
+      # effective image (imagetools create adds tags to the SAME manifest
+      # digest — no build, no storage). So `--set image.tag=<version>` (manual
+      # full syncs, rollbacks) resolves for every component at every release
+      # tag, while the per-component tags in the dispatch payload remain the
+      # restart-avoiding references. On stable releases the alias also moves
+      # `:latest`, keeping parity with the built components. Fails loudly if
+      # the effective image is missing (e.g. that earlier build run died
+      # before pushing) — re-run the build at the effective tag first.
+      #
+      # Baked build fingerprints (web's VERSION/GIT_SHA/BUILD_TIME → the
+      # profile-page fingerprint) are intrinsic to the image and therefore stay
+      # at the EFFECTIVE version's commit in an aliased tag — deliberately: the bits
+      # ARE that commit's build, and the pod's image tag says the same thing.
+      # Re-baking the train's sha into byte-identical code would relabel an
+      # unchanged image and force the pointless rebuild this step exists to
+      # avoid.
+      - name: Alias unchanged components to this release tag
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          LATEST: ${{ steps.meta.outputs.latest }}
+          CP_EFFECTIVE: ${{ steps.components.outputs.controlPlane }}
+          WEB_EFFECTIVE: ${{ steps.components.outputs.web }}
+          RELAY_EFFECTIVE: ${{ steps.components.outputs.relay }}
+          MEM0_EFFECTIVE: ${{ steps.components.outputs.mem0 }}
+          MEM0_BACKEND_EFFECTIVE: ${{ steps.components.outputs.mem0Backend }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -eu
+          alias_unchanged() {
+            comp="$1"; effective="$2"
+            if [ "$effective" = "$VERSION" ]; then
+              return 0
+            fi
+            echo "${comp} unchanged since ${effective} — aliasing ${comp}:${VERSION} to it"
+            set -- -t "${REGISTRY}/${OWNER}/${comp}:${VERSION}"
+            if [ "$LATEST" = "true" ]; then
+              set -- "$@" -t "${REGISTRY}/${OWNER}/${comp}:latest"
+            fi
+            docker buildx imagetools create "$@" "${REGISTRY}/${OWNER}/${comp}:${effective}"
+          }
+          alias_unchanged control-plane "$CP_EFFECTIVE"
+          alias_unchanged web "$WEB_EFFECTIVE"
+          alias_unchanged relay "$RELAY_EFFECTIVE"
+          alias_unchanged memory-plugin-mem0 "$MEM0_EFFECTIVE"
+          alias_unchanged mem0-server "$MEM0_BACKEND_EFFECTIVE"
+
+  notify-workflow:
+    needs: build-push
+    runs-on: self-hosted
+    steps:
+      - name: Resolve workflow repository
+        id: workflow-repository
+        shell: bash
+        env:
+          WORKFLOW_REPOSITORY: ${{ secrets.WORKFLOW_REPOSITORY }}
+        run: |
+          if [[ ! "${WORKFLOW_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::WORKFLOW_REPOSITORY must be set to owner/repository"
+            exit 1
+          fi
+          workflow_owner="${WORKFLOW_REPOSITORY%%/*}"
+          workflow_name="${WORKFLOW_REPOSITORY#*/}"
+          echo "::add-mask::${workflow_owner}"
+          echo "::add-mask::${workflow_name}"
+          echo "owner=${workflow_owner}" >> "$GITHUB_OUTPUT"
+          echo "name=${workflow_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Mint workflow repository GitHub App token
+        id: workflow-app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ steps.workflow-repository.outputs.owner }}
+          repositories: ${{ steps.workflow-repository.outputs.name }}
+
+      # `components` carries each component's effective tag on this channel
+      # (== version exactly for the components this release changed). Workflows
+      # that pin per-component tags can consume the independent values;
+      # consumers without per-component support can keep using `version` because
+      # the alias step above guarantees every component resolves at it.
+      - name: Notify workflow repository of pushed images
+        env:
+          DISPATCH_TOKEN: ${{ steps.workflow-app-token.outputs.token }}
+          WORKFLOW_REPOSITORY: ${{ secrets.WORKFLOW_REPOSITORY }}
+          VERSION: ${{ needs.build-push.outputs.version }}
+          SHA: ${{ github.sha }}
+          CP: ${{ needs.build-push.outputs.controlPlane }}
+          WEB: ${{ needs.build-push.outputs.web }}
+          RELAY: ${{ needs.build-push.outputs.relay }}
+          MEM0: ${{ needs.build-push.outputs.mem0 }}
+          MEM0_BACKEND: ${{ needs.build-push.outputs.mem0Backend }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${WORKFLOW_REPOSITORY}/dispatches" \
+            -d "{\"event_type\":\"images-pushed\",\"client_payload\":{\"version\":\"${VERSION}\",\"sha\":\"${SHA}\",\"components\":{\"controlPlane\":\"${CP}\",\"web\":\"${WEB}\",\"relay\":\"${RELAY}\",\"mem0\":\"${MEM0}\",\"mem0Backend\":\"${MEM0_BACKEND}\"}}}"

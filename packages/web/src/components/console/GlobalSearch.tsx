@@ -1,0 +1,532 @@
+'use client'
+
+// The console's unified search (design: the top-bar `sr.*` box + `.srpanel`).
+// One box searches agents, daemons, schedules and sessions BY NAME; results are
+// grouped (each capped at 3, with the full match count shown), keyboard-navigable
+// (↑↓ move · ↵ open · esc close), and ⌘K focuses it from anywhere. Selecting a
+// result routes to that entity's page. Everything runs client-side over the
+// already-loaded read models — no new CP endpoint, no extra fetch.
+
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useRouter } from 'next/navigation'
+import { useConsoleData } from '@/lib/data-context'
+import { useOrgs } from '@/lib/org-context'
+import { agentLabel, effectiveAgentStatus, status } from '@/lib/data'
+import { cronHuman } from '@/lib/cron'
+import { Icon } from '@/components/ui'
+import { AgentIconView } from '@/components/marks'
+import type { AgentIcon } from '@/lib/agent-icon'
+
+type SearchKind = 'agent' | 'daemon' | 'schedule' | 'session'
+
+interface SearchItem {
+  key: string
+  kind: SearchKind
+  title: string
+  meta: string
+  aux: string
+  /** Agent status dot color; other kinds render an icon well instead. */
+  dot?: string
+  /** Agent avatar fields (agents only); runtime is the legacy-icon fallback. */
+  icon?: AgentIcon | null
+  model?: string
+  runtime?: string
+  /** Org-scoped navigation target for this result. */
+  href: string
+}
+
+interface SearchGroup {
+  kind: SearchKind
+  label: string
+  count: number
+  items: SearchItem[]
+}
+
+// The type-filter chips shown atop the results panel: "All" plus one per kind
+// that has matches. `key: 'all'` clears the type narrowing.
+type TypeFilter = 'all' | SearchKind
+
+// Per-group result cap (design shows the first 3, with the total count beside the
+// label so a wider match set is still discoverable).
+const CAP = 3
+
+export function GlobalSearch({
+  autoFocus = false,
+  mobile = false,
+  onClose
+}: { autoFocus?: boolean; mobile?: boolean; onClose?: () => void } = {}) {
+  const router = useRouter()
+  const { orgPath } = useOrgs()
+  const { agents, daemons, crons, allSessions } = useConsoleData()
+
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const [sel, setSel] = useState(0)
+  const [activeType, setActiveType] = useState<TypeFilter>('all')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const query = q.trim().toLowerCase()
+
+  const daemonById = useMemo(() => new Map(daemons.map((d) => [d.daemonId, d])), [daemons])
+  const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents])
+
+  const groups = useMemo<SearchGroup[]>(() => {
+    // `hit('')` matches everything, so an empty query yields every entity. That's
+    // deliberate: the chip COUNTS use it (a filter row you can see before typing,
+    // per the mobile design), while the RESULTS list stays gated on a non-empty
+    // query via `shownGroups` below.
+    const hit = (s: string | null | undefined) => (s ?? '').toLowerCase().includes(query)
+
+    const agentMatches = agents.filter((a) => hit(agentLabel(a)) || hit(a.name))
+    const agentItems: SearchItem[] = agentMatches.slice(0, CAP).map((a) => {
+      // Gate "online" on the owning daemon being connected (as the Agents view does),
+      // and surface the daemon's display NAME — never its host.
+      const owning = daemonById.get(a.daemon)
+      const s = status(effectiveAgentStatus(a.status, owning?.status))
+      return {
+        key: `agent:${a.id}`,
+        kind: 'agent',
+        title: agentLabel(a),
+        meta: [a.model || undefined, owning?.name].filter(Boolean).join(' · '),
+        aux: s.label,
+        dot: s.dot,
+        icon: a.icon,
+        model: a.model || a.runtime,
+        runtime: a.runtime,
+        href: orgPath(`/agents/${a.id}`)
+      }
+    })
+
+    // Hosted-agent count per daemon — agents assigned to it (mirrors the detail
+    // view's "Agents hosted"). NOT daemon.agents, which is the active-session count.
+    const hostedByDaemon = new Map<string, number>()
+    for (const a of agents) hostedByDaemon.set(a.daemon, (hostedByDaemon.get(a.daemon) ?? 0) + 1)
+    const daemonMatches = daemons.filter((d) => hit(d.name))
+    const daemonItems: SearchItem[] = daemonMatches.slice(0, CAP).map((d) => {
+      const hosted = hostedByDaemon.get(d.daemonId) ?? 0
+      return {
+        key: `daemon:${d.daemonId}`,
+        kind: 'daemon',
+        title: d.name,
+        meta: [d.version || undefined, `${hosted} agent${hosted === 1 ? '' : 's'}`].filter(Boolean).join(' · '),
+        aux: status(d.status).label,
+        href: orgPath(`/daemons/${d.daemonId}`)
+      }
+    })
+
+    // Only named schedules are searchable — legacy/CLI cron rows have a null name.
+    // The `c.name` guard also keeps them out of the empty-query chip count (where
+    // `hit('')` would otherwise match a null name).
+    const cronMatches = crons.filter((c) => c.name != null && hit(c.name))
+    const cronItems: SearchItem[] = cronMatches.slice(0, CAP).map((c) => {
+      const owner = c.agentId ? agentById.get(c.agentId) : undefined
+      const agentName = owner ? agentLabel(owner) : c.agentId ? c.agentId.slice(0, 8) : '—'
+      return {
+        key: `schedule:${c.id}`,
+        kind: 'schedule',
+        title: c.name ?? '—',
+        meta: [agentName, cronHuman(c.schedule)].filter(Boolean).join(' · '),
+        aux: c.enabled ? 'enabled' : 'disabled',
+        href: orgPath(`/crons/${c.id}`)
+      }
+    })
+
+    const sessionMatches = allSessions.filter((s) => hit(s.title))
+    const sessionItems: SearchItem[] = sessionMatches.slice(0, CAP).map((s) => ({
+      key: `session:${s.id}`,
+      kind: 'session',
+      title: s.title,
+      meta: [s.agentName, s.channel].filter(Boolean).join(' · '),
+      aux: s.time,
+      href: orgPath(`/sessions/${s.id}`)
+    }))
+
+    // Keep all four groups (even empty ones) so the chip row can show every
+    // type's count; the visible list filters empties + the active type below.
+    return [
+      { kind: 'agent' as const, label: 'Agents', count: agentMatches.length, items: agentItems },
+      { kind: 'daemon' as const, label: 'Daemons', count: daemonMatches.length, items: daemonItems },
+      { kind: 'schedule' as const, label: 'Schedules', count: cronMatches.length, items: cronItems },
+      { kind: 'session' as const, label: 'Sessions', count: sessionMatches.length, items: sessionItems }
+    ]
+  }, [query, agents, daemons, crons, allSessions, daemonById, agentById, orgPath])
+
+  const totalCount = useMemo(() => groups.reduce((n, g) => n + g.count, 0), [groups])
+  // Chips: "All" + every kind with at least one match.
+  const typeChips = useMemo<{ key: TypeFilter; label: string; count: number }[]>(
+    () => [
+      { key: 'all', label: 'All', count: totalCount },
+      ...groups.filter((g) => g.count > 0).map((g) => ({ key: g.kind, label: g.label, count: g.count }))
+    ],
+    [groups, totalCount]
+  )
+  // The groups actually rendered: only once there's a query, non-empty, narrowed
+  // to the active type chip. Empty query → no results (the hint shows instead),
+  // even though the chips above still display per-type counts.
+  const shownGroups = useMemo(
+    () => (query ? groups.filter((g) => g.items.length > 0 && (activeType === 'all' || g.kind === activeType)) : []),
+    [groups, activeType, query]
+  )
+
+  const flat = useMemo(() => shownGroups.flatMap((g) => g.items), [shownGroups])
+  const idxByKey = useMemo(() => new Map(flat.map((it, i) => [it.key, i])), [flat])
+  // Keep the highlight in range as the result set shrinks/grows under the cursor.
+  const selClamped = Math.min(sel, Math.max(0, flat.length - 1))
+
+  const reset = useCallback(() => {
+    setOpen(false)
+    setQ('')
+    setSel(0)
+    setActiveType('all')
+  }, [])
+
+  const go = useCallback(
+    (item: SearchItem) => {
+      reset()
+      router.push(item.href)
+    },
+    [reset, router]
+  )
+
+  // When mounted inside the mobile full-screen search overlay, open + focus the input
+  // immediately (the desktop instance stays closed until ⌘K / focus).
+  useEffect(() => {
+    if (!autoFocus) return
+    setOpen(true)
+    const t = setTimeout(() => inputRef.current?.focus(), 0)
+    return () => clearTimeout(t)
+  }, [autoFocus])
+
+  // ⌘K / Ctrl-K opens + focuses the box from anywhere in the console.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault()
+        setOpen(true)
+        setTimeout(() => inputRef.current?.focus(), 0)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      if (flat.length) setSel((selClamped + 1) % flat.length)
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      if (flat.length) setSel((selClamped - 1 + flat.length) % flat.length)
+    } else if (e.key === 'Enter') {
+      const item = flat[selClamped]
+      if (item) go(item)
+    } else if (e.key === 'Escape') {
+      setOpen(false)
+      inputRef.current?.blur()
+    }
+  }
+
+  const isHint = open && query === ''
+  const isEmpty = open && query !== '' && totalCount === 0
+  const hasResults = open && flat.length > 0
+  // The active type chip filtered everything out, though other types have matches.
+  const noneInType = open && query !== '' && totalCount > 0 && flat.length === 0
+
+  // Type-filter chip row for the DESKTOP panel — only once there's a query with
+  // matches (the mobile screen renders its own always-on strip below). Null
+  // otherwise. (`groups` now computes on an empty query too, so gate on `query`.)
+  const typeChipRow =
+    query !== '' && totalCount > 0 ? (
+      <div className="srfilters">
+        {typeChips.map((c) => (
+          <button
+            key={c.key}
+            className={activeType === c.key ? 'srchip on' : 'srchip'}
+            onClick={() => {
+              setActiveType(c.key)
+              setSel(0)
+            }}
+          >
+            {c.label}
+            <span className="srchipn">{c.count}</span>
+          </button>
+        ))}
+      </div>
+    ) : null
+
+  const mark = (it: SearchItem) => {
+    if (it.kind === 'agent')
+      return (
+        <span className="srsq">
+          <AgentIconView icon={it.icon} runtime={it.runtime || it.model || ''} size={26} />
+          {it.dot && <span className="srdot" style={{ background: it.dot }} />}
+        </span>
+      )
+    const icon = it.kind === 'daemon' ? 'server' : it.kind === 'schedule' ? 'alarm-clock' : 'message-square-text'
+    return (
+      <span className="srwell">
+        <Icon name={icon} size={14} />
+      </span>
+    )
+  }
+
+  // ── mobile: full-screen search screen (design's Search push) ────────────────
+  // Owns the whole screen — search bar + inline results — so it doesn't inherit the
+  // desktop 340px box / ⌘K hint / floating dropdown chrome.
+  if (mobile) {
+    const wellIcon = (k: SearchKind) =>
+      k === 'daemon' ? 'server' : k === 'schedule' ? 'alarm-clock' : 'message-square-text'
+    const close = () => {
+      reset()
+      onClose?.()
+    }
+    return (
+      <div className="fixed inset-0 z-80 flex flex-col bg-(--surface-card)">
+        <div className="flex h-16 flex-none items-center gap-1 border-b border-(--border-subtle) pr-2 pl-3">
+          <div className="box-border flex h-11 min-w-0 flex-1 items-center gap-2 rounded-md border border-(--brand) px-3 shadow-[0_0_0_3px_var(--magenta-100)]">
+            <Icon name="search" size={18} color="var(--text-tertiary)" />
+            <input
+              ref={inputRef}
+              value={q}
+              placeholder="Search agents, daemons, schedules…"
+              onChange={(e) => {
+                setQ(e.target.value)
+                setSel(0)
+              }}
+              onKeyDown={onKeyDown}
+              className="min-w-0 flex-1 border-0 bg-transparent p-0 font-sans text-[15px] font-normal leading-normal text-(--text-primary) outline-none"
+            />
+            {q !== '' && (
+              <button
+                onClick={() => {
+                  setQ('')
+                  setSel(0)
+                  inputRef.current?.focus()
+                }}
+                aria-label="Clear"
+                className="flex h-5 w-5 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-(--text-tertiary)"
+              >
+                <Icon name="circle-x" size={18} />
+              </button>
+            )}
+          </div>
+          <button
+            onClick={close}
+            className="h-11 flex-none cursor-pointer border-0 bg-transparent px-3 font-sans text-[14px] font-semibold leading-normal text-(--text-secondary)"
+          >
+            Cancel
+          </button>
+        </div>
+
+        {/* Type-filter chips — a fixed, horizontally-scrollable strip below the
+            search bar (the mobile design's own style: equal-width chips, not the
+            desktop panel's wrapping .srchip row). */}
+        {totalCount > 0 && (
+          <div className="flex flex-none items-center gap-1 overflow-x-auto border-b border-(--border-subtle) bg-(--surface-card) px-3 py-[10px]">
+            {typeChips.map((c) => {
+              const on = activeType === c.key
+              return (
+                <button
+                  key={c.key}
+                  onClick={() => {
+                    setActiveType(c.key)
+                    setSel(0)
+                  }}
+                  className={`inline-flex h-[30px] min-w-0 flex-[1_1_auto] cursor-pointer items-center justify-center gap-1 rounded-full border px-[7px] font-sans text-[11.5px] font-medium leading-normal whitespace-nowrap ${
+                    on
+                      ? 'border-(--brand) bg-(--brand) text-white'
+                      : 'border-(--border-default) bg-(--surface-card) text-(--text-secondary)'
+                  }`}
+                >
+                  {c.label}
+                  <span
+                    className={`font-mono text-[10px] font-semibold ${on ? 'text-white/80' : 'text-(--text-tertiary)'}`}
+                  >
+                    {c.count}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto pb-6">
+          {query === '' && (
+            <div className="px-4 py-6 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+              Type to search agents, daemons, schedules and sessions by name.
+            </div>
+          )}
+          {isEmpty && (
+            <div className="px-4 py-6 text-center">
+              <div className="font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
+                No results for “{q.trim()}”
+              </div>
+              <div className="mt-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                Search matches agent, daemon, schedule and session names.
+              </div>
+            </div>
+          )}
+          {noneInType && (
+            <div className="px-4 py-[18px] text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+              No matches in this type.
+            </div>
+          )}
+          {shownGroups.map((g) => (
+            <div key={g.label}>
+              <div className="flex items-baseline gap-[7px] px-4 pt-4 pb-[6px] font-mono text-[11px] font-semibold uppercase leading-normal tracking-[.08em] text-(--text-tertiary)">
+                {g.label} <span className="font-medium text-(--text-disabled)">{g.count}</span>
+              </div>
+              {g.items.map((it) => (
+                <button
+                  key={it.key}
+                  onClick={() => {
+                    go(it)
+                    onClose?.()
+                  }}
+                  className="box-border flex min-h-14 w-full cursor-pointer items-center gap-3 border-0 bg-(--surface-card) px-4 py-2 text-left"
+                >
+                  {it.kind === 'agent' ? (
+                    <span className="relative flex h-8 w-8 flex-none items-center justify-center rounded-md bg-(--surface-inverse)">
+                      <span className="flex h-5 w-5">
+                        <AgentIconView icon={it.icon} runtime={it.runtime || it.model || ''} size={20} />
+                      </span>
+                      {it.dot && (
+                        <span
+                          className="absolute -right-[2px] -bottom-[2px] h-[10px] w-[10px] rounded-full border-2 border-(--surface-card)"
+                          style={{ background: it.dot }}
+                        />
+                      )}
+                    </span>
+                  ) : (
+                    <span className="flex h-8 w-8 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken) text-(--text-secondary)">
+                      <Icon name={wellIcon(it.kind)} size={16} />
+                    </span>
+                  )}
+                  <span className="flex min-w-0 flex-1 flex-col gap-[1px]">
+                    <span className="truncate font-sans text-[14px] font-medium leading-normal text-(--text-primary)">
+                      {it.title}
+                    </span>
+                    <span className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                      {it.meta}
+                    </span>
+                  </span>
+                  <span className="flex-none font-mono text-[12px] font-medium leading-normal text-(--text-tertiary)">
+                    {it.aux}
+                  </span>
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="searchwrap">
+      <div className={open ? 'search focus' : 'search'}>
+        <Icon name="search" size={16} color="var(--text-tertiary)" />
+        <input
+          ref={inputRef}
+          className="srinput"
+          placeholder="Search agents, daemons, schedules…"
+          value={q}
+          onChange={(e) => {
+            setQ(e.target.value)
+            setSel(0)
+          }}
+          onKeyDown={onKeyDown}
+          onFocus={() => setOpen(true)}
+        />
+        {!open && <span className="kbd">⌘K</span>}
+        {open && q !== '' && (
+          <button
+            onClick={() => {
+              setQ('')
+              setSel(0)
+              inputRef.current?.focus()
+            }}
+            title="Clear"
+            className="flex h-[18px] w-[18px] cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-(--text-tertiary)"
+          >
+            <Icon name="x" size={14} />
+          </button>
+        )}
+      </div>
+
+      {open && (
+        <>
+          <div className="srscrim" onClick={() => setOpen(false)} />
+          <div className="srpanel">
+            {typeChipRow}
+            {isHint && (
+              <div className="px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                Type to search agents, daemons, schedules and sessions by name.
+              </div>
+            )}
+            {isEmpty && (
+              <div className="px-4 py-5 text-center">
+                <div className="font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
+                  No results for “{q.trim()}”
+                </div>
+                <div className="mt-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                  Search matches agent, daemon, schedule and session names.
+                </div>
+              </div>
+            )}
+            {noneInType && (
+              <div className="px-4 py-[18px] text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                No matches in this type.
+              </div>
+            )}
+            {hasResults && (
+              <div className="srlist">
+                {shownGroups.map((g) => (
+                  <div key={g.label}>
+                    <div className="srlbl">
+                      {g.label}
+                      <b>{g.count}</b>
+                    </div>
+                    {g.items.map((it) => {
+                      const on = idxByKey.get(it.key) === selClamped
+                      return (
+                        <button
+                          key={it.key}
+                          className={on ? 'sritem on' : 'sritem'}
+                          onClick={() => go(it)}
+                          onMouseMove={() => {
+                            const i = idxByKey.get(it.key)
+                            if (i !== undefined) setSel(i)
+                          }}
+                        >
+                          {mark(it)}
+                          <span className="flex min-w-0 flex-1 flex-col gap-[1px]">
+                            <span className="srtitle">{it.title}</span>
+                            <span className="srmeta">{it.meta}</span>
+                          </span>
+                          <span className="sraux">{it.aux}</span>
+                          {on && <span className="kbd">↵</span>}
+                        </button>
+                      )
+                    })}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="srfoot">
+              <span>
+                <span className="kbd">↑↓</span> navigate
+              </span>
+              <span>
+                <span className="kbd">↵</span> open
+              </span>
+              <span>
+                <span className="kbd">esc</span> close
+              </span>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}

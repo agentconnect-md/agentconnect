@@ -1,0 +1,170 @@
+import { describe, it, expect } from 'vitest'
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { loadConfig } from '../src/config/load-config.js'
+import { McpServerDefSchema } from '../src/config/config-schema.js'
+
+function tmpRoot(config: unknown): string {
+  const root = mkdtempSync(join(tmpdir(), 'ac-cfg-'))
+  mkdirSync(root, { recursive: true })
+  writeFileSync(join(root, 'config.json'), JSON.stringify(config))
+  return root
+}
+
+describe('loadConfig', () => {
+  it('loads and validates a minimal config, applying defaults', () => {
+    const root = tmpRoot({
+      version: 1,
+      controlPlane: { enabled: false },
+      runtimes: { claude: { command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp'] } }
+    })
+    const cfg = loadConfig({ root })
+    expect(cfg.version).toBe(1)
+    expect(cfg.runtimes.claude.command).toBe('npx')
+    expect(cfg.security.isolateAccountApps).toBe(true)
+    expect(cfg.limits.maxAgents).toBeGreaterThan(0) // default applied
+    expect(cfg.agentsDir).toContain('agents')
+  })
+
+  it('rejects an invalid config (bad version)', () => {
+    const root = tmpRoot({ version: 2, runtimes: {} })
+    expect(() => loadConfig({ root })).toThrow()
+  })
+
+  it('throws a clear error when the config file is missing and not optional', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-cfg-')) // no config.json written
+    expect(() => loadConfig({ root })).toThrow(/config not found/)
+  })
+
+  it('optional: returns schema defaults (CP disabled, no runtimes) when config is absent', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-cfg-')) // no config.json written
+    const cfg = loadConfig({ root, optional: true })
+    expect(cfg.version).toBe(1)
+    expect(cfg.runtimes).toBeUndefined() // none from file → resolveRuntimes fills from registry
+    expect(cfg.limits.maxAgents).toBeGreaterThan(0) // defaults still applied
+    expect(cfg.agentsDir).toContain('agents')
+  })
+
+  it('autoCreate: writes an empty config (CP disabled) when absent and runs local', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-cfg-')) // no config.json written
+    const file = join(root, 'config.json')
+    expect(existsSync(file)).toBe(false)
+    const cfg = loadConfig({ root, autoCreate: true })
+    expect(existsSync(file)).toBe(true) // file was generated
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ version: 1 })
+    expect(cfg.controlPlane?.enabled).toBe(false) // fully local, no CP
+    expect(cfg.limits.maxAgents).toBeGreaterThan(0) // defaults applied
+  })
+
+  it('applies CLI/env overrides over file values', () => {
+    const root = tmpRoot({
+      version: 1,
+      controlPlane: { enabled: true, url: 'wss://file.example/daemon' },
+      runtimes: { claude: { command: 'npx', args: [] } }
+    })
+    const cfg = loadConfig({
+      root,
+      overrides: { cpUrl: 'wss://override.example/daemon', logLevel: 'debug', requireSandbox: true }
+    })
+    expect(cfg.controlPlane?.url).toBe('wss://override.example/daemon')
+    expect(cfg.logging.level).toBe('debug')
+    expect(cfg.security.requireSandbox).toBe(true)
+  })
+
+  it('allows the daemon to opt out of account-app isolation explicitly', () => {
+    const root = tmpRoot({ version: 1, security: { isolateAccountApps: false } })
+    expect(loadConfig({ root }).security.isolateAccountApps).toBe(false)
+  })
+
+  it('passing --cp-url/--cp-key enables the control plane (defaults off)', () => {
+    const root = tmpRoot({ version: 1 }) // no controlPlane block → enabled defaults false
+    const cfg = loadConfig({ root, overrides: { cpUrl: 'ws://cp/daemon/ws', cpKey: 'tok' } })
+    expect(cfg.controlPlane.enabled).toBe(true)
+    expect(cfg.controlPlane.url).toBe('ws://cp/daemon/ws')
+    expect(cfg.controlPlane.key).toBe('tok')
+  })
+
+  it('--no-cp wins even when --cp-url is also passed', () => {
+    const root = tmpRoot({ version: 1 })
+    const cfg = loadConfig({ root, overrides: { cpUrl: 'ws://cp/daemon/ws', noCp: true } })
+    expect(cfg.controlPlane.enabled).toBe(false)
+  })
+
+  it('loads configured MCP servers (defaults applied)', () => {
+    const root = tmpRoot({
+      version: 1,
+      mcpServers: {
+        files: { command: 'mcp-files' },
+        search: { transport: 'http', url: 'http://localhost:9000/mcp' }
+      }
+    })
+    const cfg = loadConfig({ root })
+    expect(cfg.mcpServers?.files).toEqual({ transport: 'stdio', command: 'mcp-files', args: [], env: [], headers: [] })
+    expect(cfg.mcpServers?.search?.url).toBe('http://localhost:9000/mcp')
+  })
+
+  it('loads an operator-owned stdio memory-plugin allowlist', () => {
+    const root = tmpRoot({
+      version: 1,
+      memoryPlugins: {
+        'mem0-oss': {
+          command: '/opt/agentconnect/mem0-wrapper',
+          args: ['--stdio'],
+          env: [{ name: 'MEM0_DIALECT', value: 'oss' }],
+          secretEnv: { apiKey: 'MEM0_API_KEY' }
+        }
+      }
+    })
+    expect(loadConfig({ root }).memoryPlugins?.['mem0-oss']).toEqual({
+      command: '/opt/agentconnect/mem0-wrapper',
+      args: ['--stdio'],
+      env: [{ name: 'MEM0_DIALECT', value: 'oss' }],
+      secretEnv: { apiKey: 'MEM0_API_KEY' }
+    })
+  })
+
+  it('rejects path-like command references and colliding static/secret env targets', () => {
+    expect(() =>
+      loadConfig({
+        root: tmpRoot({ version: 1, memoryPlugins: { '../../tenant-command': { command: 'wrapper' } } })
+      })
+    ).toThrow(/commandRef/)
+    expect(() =>
+      loadConfig({
+        root: tmpRoot({
+          version: 1,
+          memoryPlugins: {
+            local: {
+              command: 'wrapper',
+              env: [{ name: 'MEM0_API_KEY', value: 'static' }],
+              secretEnv: { apiKey: 'MEM0_API_KEY' }
+            }
+          }
+        })
+      })
+    ).toThrow(/secret env/)
+  })
+})
+
+describe('McpServerDefSchema', () => {
+  it('defaults to stdio and fills args/env/headers', () => {
+    const def = McpServerDefSchema.parse({ command: 'mcp-files' })
+    expect(def).toEqual({ transport: 'stdio', command: 'mcp-files', args: [], env: [], headers: [] })
+  })
+
+  it('accepts http/sse defs with a url', () => {
+    expect(McpServerDefSchema.parse({ transport: 'http', url: 'http://h/mcp' }).transport).toBe('http')
+    expect(McpServerDefSchema.parse({ transport: 'sse', url: 'http://h/sse' }).transport).toBe('sse')
+  })
+
+  it('rejects a stdio def without a command', () => {
+    expect(() => McpServerDefSchema.parse({})).toThrow(/command/)
+    expect(() => McpServerDefSchema.parse({ transport: 'stdio', url: 'http://h' })).toThrow(/command/)
+  })
+
+  it('rejects an http/sse def without a url', () => {
+    expect(() => McpServerDefSchema.parse({ transport: 'http', command: 'x' })).toThrow(/url/)
+    expect(() => McpServerDefSchema.parse({ transport: 'sse' })).toThrow(/url/)
+  })
+})

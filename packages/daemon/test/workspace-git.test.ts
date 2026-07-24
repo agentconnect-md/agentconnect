@@ -1,0 +1,189 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+// Mock simple-git so status/pull/log don't shell out. Impls are reassignable per test.
+let statusImpl: (...args: any[]) => Promise<unknown>
+let pullImpl: (...args: any[]) => Promise<unknown>
+let logImpl: (...args: any[]) => Promise<unknown>
+let envImpl: (...args: any[]) => unknown
+vi.mock('simple-git', () => ({
+  simpleGit: (_cwd?: unknown) => {
+    const git = {
+      status: (...a: any[]) => statusImpl(...a),
+      pull: (...a: any[]) => pullImpl(...a),
+      log: (...a: any[]) => logImpl(...a),
+      env: (...a: any[]) => {
+        envImpl(...a)
+        return git
+      }
+    }
+    return git
+  }
+}))
+
+const { createWorkspaceGit } = await import('../src/cp/workspace-git.js')
+const { WorkspaceViolationError } = await import('../src/cp/workspace-reader.js')
+
+/** A temp dir; `repo:true` seeds a `.git/` so it reads as a git-repo checkout. */
+function ws(repo: boolean): string {
+  const dir = join(mkdtempSync(join(tmpdir(), 'ac-git-')), 'co')
+  mkdirSync(dir, { recursive: true })
+  if (repo) mkdirSync(join(dir, '.git'), { recursive: true })
+  return dir
+}
+
+beforeEach(() => {
+  statusImpl = vi.fn()
+  pullImpl = vi.fn()
+  envImpl = vi.fn()
+  // Default: empty repo (no commits) ⇒ git log errors ⇒ lastCommit omitted.
+  logImpl = vi.fn().mockRejectedValue(new Error('does not have any commits yet'))
+})
+
+describe('createWorkspaceGit.status', () => {
+  it('reports isRepo:false / clean:true for a from-scratch (no .git) workspace', async () => {
+    const dir = ws(false)
+    const git = createWorkspaceGit(() => dir)
+    expect(await git.status('a')).toEqual({ agentId: 'a', isRepo: false, clean: true })
+    expect(statusImpl).not.toHaveBeenCalled() // short-circuits before touching git
+  })
+
+  it('maps a clean checkout: branch/tracking/ahead/behind, no files', async () => {
+    const dir = ws(true)
+    statusImpl = vi.fn().mockResolvedValue({
+      current: 'main',
+      tracking: 'origin/main',
+      ahead: 0,
+      behind: 0,
+      files: [],
+      isClean: () => true
+    })
+    const git = createWorkspaceGit(() => dir)
+    const s = await git.status('a')
+    expect(s).toMatchObject({ agentId: 'a', isRepo: true, clean: true, branch: 'main', tracking: 'origin/main' })
+    expect(s.files).toBeUndefined()
+  })
+
+  it('maps a dirty checkout: clean:false + changed files (index/workingDir chars)', async () => {
+    const dir = ws(true)
+    statusImpl = vi.fn().mockResolvedValue({
+      current: 'main',
+      tracking: 'origin/main',
+      ahead: 1,
+      behind: 2,
+      files: [
+        { path: 'a.ts', index: 'M', working_dir: ' ' },
+        { path: 'b.ts', index: '?', working_dir: '?' }
+      ],
+      isClean: () => false
+    })
+    const git = createWorkspaceGit(() => dir)
+    const s = await git.status('a')
+    expect(s.clean).toBe(false)
+    expect(s.ahead).toBe(1)
+    expect(s.behind).toBe(2)
+    expect(s.files).toEqual([
+      { path: 'a.ts', index: 'M', workingDir: ' ' },
+      { path: 'b.ts', index: '?', workingDir: '?' }
+    ])
+    expect(s.truncated).toBeUndefined()
+  })
+
+  it('caps the files list and flags truncated when the working tree is huge', async () => {
+    const dir = ws(true)
+    const files = Array.from({ length: 501 }, (_, i) => ({ path: `f${i}.ts`, index: 'M', working_dir: ' ' }))
+    statusImpl = vi.fn().mockResolvedValue({ current: 'main', ahead: 0, behind: 0, files, isClean: () => false })
+    const git = createWorkspaceGit(() => dir)
+    const s = await git.status('a')
+    expect(s.files).toHaveLength(500)
+    expect(s.truncated).toBe(true)
+  })
+
+  it('includes the HEAD commit and the last-fetch time when available', async () => {
+    const dir = ws(true)
+    // A real FETCH_HEAD so the mtime read resolves; pin its mtime deterministically.
+    writeFileSync(join(dir, '.git', 'FETCH_HEAD'), '')
+    const fetchedAt = new Date('2026-07-02T09:00:00.000Z')
+    utimesSync(join(dir, '.git', 'FETCH_HEAD'), fetchedAt, fetchedAt)
+    statusImpl = vi.fn().mockResolvedValue({ current: 'main', ahead: 0, behind: 0, files: [], isClean: () => true })
+    logImpl = vi.fn().mockResolvedValue({
+      latest: {
+        hash: 'a3f9c21deadbeef0000000000000000000000000',
+        date: '2026-07-02T07:00:00+00:00',
+        subject: 'Pin deploy image'
+      }
+    })
+    const git = createWorkspaceGit(() => dir)
+    const s = await git.status('a')
+    expect(s.lastCommit).toEqual({
+      sha: 'a3f9c21deadbeef0000000000000000000000000',
+      shortSha: 'a3f9c21',
+      subject: 'Pin deploy image',
+      committedAt: '2026-07-02T07:00:00+00:00'
+    })
+    expect(s.lastFetchAt).toBe(fetchedAt.toISOString())
+  })
+
+  it('omits lastCommit for an empty repo (git log errors)', async () => {
+    const dir = ws(true)
+    statusImpl = vi.fn().mockResolvedValue({ current: 'main', ahead: 0, behind: 0, files: [], isClean: () => true })
+    // logImpl rejects by default (beforeEach)
+    const git = createWorkspaceGit(() => dir)
+    const s = await git.status('a')
+    expect(s.lastCommit).toBeUndefined()
+  })
+
+  it('throws WorkspaceViolationError for an unknown agent', async () => {
+    const git = createWorkspaceGit(() => undefined)
+    await expect(git.status('nope')).rejects.toBeInstanceOf(WorkspaceViolationError)
+  })
+})
+
+describe('createWorkspaceGit.pull', () => {
+  it('reports isRepo:false / ok:false for a from-scratch workspace (nothing to pull)', async () => {
+    const dir = ws(false)
+    const git = createWorkspaceGit(() => dir)
+    expect(await git.pull('a')).toEqual({
+      agentId: 'a',
+      isRepo: false,
+      ok: false,
+      detail: 'workspace is not a git checkout'
+    })
+    expect(pullImpl).not.toHaveBeenCalled()
+  })
+
+  it('ff-only pulls and summarizes the update on success', async () => {
+    const dir = ws(true)
+    pullImpl = vi.fn().mockResolvedValue({ files: ['a.ts', 'b.ts'], summary: { insertions: 10, deletions: 3 } })
+    const git = createWorkspaceGit(
+      () => dir,
+      () => ({ AC_GITCRED_CAPABILITY: 'cap-a' })
+    )
+    const r = await git.pull('a')
+    expect(pullImpl).toHaveBeenCalledWith(['--ff-only'])
+    expect(envImpl).toHaveBeenCalledWith(expect.objectContaining({ AC_GITCRED_CAPABILITY: 'cap-a' }))
+    expect(r).toMatchObject({ isRepo: true, ok: true, changed: 2, insertions: 10, deletions: 3 })
+    expect(r.detail).toMatch(/updated 2 files/i)
+  })
+
+  it('reports "Already up to date." when nothing changed', async () => {
+    const dir = ws(true)
+    pullImpl = vi.fn().mockResolvedValue({ files: [], summary: { insertions: 0, deletions: 0 } })
+    const git = createWorkspaceGit(() => dir)
+    const r = await git.pull('a')
+    expect(r.ok).toBe(true)
+    expect(r.detail).toBe('Already up to date.')
+  })
+
+  it('surfaces a failed pull as ok:false and scrubs the host path out of the detail', async () => {
+    const dir = ws(true)
+    pullImpl = vi.fn().mockRejectedValue(new Error(`cannot fast-forward in ${dir}/x`))
+    const git = createWorkspaceGit(() => dir)
+    const r = await git.pull('a')
+    expect(r.ok).toBe(false)
+    expect(r.detail).not.toContain(dir) // absolute host path must not leak
+    expect(r.detail).toContain('<workspace>')
+  })
+})

@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Update Model Pricing'
+  short_description: 'Refresh public fallback model pricing safely'
+  default_prompt: 'Use $update-model-pricing to verify official model prices and update AgentConnect fallback estimates.'

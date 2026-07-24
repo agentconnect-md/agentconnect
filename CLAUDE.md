@@ -1,0 +1,164 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+Product behavior and user-facing invariants are documented in
+[`docs/product-conventions.md`](docs/product-conventions.md). Read it before changing
+how AgentConnect presents or delivers messages to users.
+
+## What this is
+
+AgentConnect is a **daemon-centric** multi-agent platform that bridges IM platforms
+(Slack / Telegram / Discord) to AI coding agents (Claude, Codex) over ACP. The
+authoritative design lives in [`docs/designs/`](docs/designs/) — start with
+[daemon-centric-architecture.md](docs/designs/daemon-centric-architecture.md). Design
+documentation is maintained in English.
+
+The defining architectural choice: **the Control Plane is never on the message hot
+path.** Platform I/O and agent execution happen entirely inside the daemon (edge);
+the CP only orchestrates. Concretely:
+
+- A **daemon** holds the platform bot credentials, connects directly to Slack/Telegram,
+  normalizes messages, and drives the local agent over **ACP as an in-process/local
+  protocol** (no network hop). It is a self-contained "message + agent execution unit"
+  and keeps running established sessions even if the CP is down (graceful degradation).
+- The **Control Plane** does orchestration/registry/auth + serves the Web UI BFF. It
+  stores **only control-plane metadata** — never message bodies, ACP `session/update`
+  streams, or attachment bytes. Authorized BFF reads may proxy bounded
+  transcript, tool-body, memory, or workspace content from the owning daemon
+  without persisting it.
+- daemon ↔ CP is a single **WebSocket** used primarily for control signaling
+  (register, heartbeat, orchestration commands, telemetry). It also carries the
+  scoped request/reply frames for those on-demand BFF reads; live platform
+  messages and ACP update streams never use it.
+
+## Monorepo (pnpm workspace, `packages/*`)
+
+| Package                          | Stack                              | Role                                                                                                                                                                         |
+| -------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@agentconnect.md/protocol`      | zod                                | Shared wire contract — the daemon↔CP WS frames + fencing fields (`sessionEpoch`/`seq`/`launchId`). Single source of truth, imported by both daemon and CP via `workspace:*`. |
+| `@agentconnect.md/daemon`        | Node CLI (commander)               | The edge unit. Exposes the `agentconnect` CLI bin. Many CLI subcommands are still stubs (`run` and `chat` are the live ones).                                                |
+| `@agentconnect.md/control-plane` | Fastify + Prisma (Postgres)        | One Fastify process co-hosts the C2 BFF REST surface **and** the daemon WS endpoint on one port / one Postgres connection.                                                   |
+| `@agentconnect.md/web`           | Next.js 16 + React 19 + Tailwind 4 | Config / monitoring console.                                                                                                                                                 |
+
+When you change a frame in `protocol`, both daemon and CP consume it — rebuild
+`protocol` (or rely on its `development` export → `./src/index.ts`) and check both sides.
+
+Web styling is Tailwind-utility-first over the CSS-variable design tokens —
+**read [`packages/web/STYLE.md`](packages/web/STYLE.md) before writing console
+styles** (var-shorthand color utilities, the `font:`-shorthand/`leading-normal`
+rule, the single `desktop:`/`max-desktop:` breakpoint, `shadow-(--shadow-*)`,
+the SWC same-line-space gotcha). Inline `style` is reserved for data-driven
+values only.
+
+The console has a **≤768px mobile responsive layer** — the `max-width: 768px`
+media block in `globals.css` plus `lib/use-is-mobile.ts` (`useIsMobile()`,
+SSR-safe). Mobile chrome (app bar, bottom-tab nav, bottom-sheet modals) is
+route+CSS-driven in `components/console/Shell.tsx`. Most views render **one
+responsive tree** (base = mobile classes + `desktop:` variants; genuinely
+divergent fragments dual-render behind `hidden desktop:*` / `desktop:hidden`).
+A few detail/list views keep an `if (isMobile) return (…)` fork where the two
+form factors differ in **features or interaction**, not just layout — when you
+touch one branch, keep the other in sync.
+
+## Commands
+
+Requires **Node >= 24** (`.nvmrc` = 24) and **pnpm 11**. `package.json#engines` is
+authoritative over the README's older ">=20".
+
+```bash
+pnpm install
+pnpm dev       # run all packages in parallel (-r --parallel dev)
+pnpm build     # pnpm -r build
+pnpm typecheck # type-check all packages
+pnpm lint      # eslint .   (lint:fix to autofix)
+pnpm format    # prettier --write .   (format:check to verify)
+pnpm test      # pnpm -r test
+
+# single package
+pnpm --filter @agentconnect.md/daemon dev        # tsx watch ... run
+pnpm --filter @agentconnect.md/control-plane dev # tsx watch src/index.ts
+pnpm --filter @agentconnect.md/web dev           # next dev
+```
+
+### Control-plane tests (two Vitest projects)
+
+```bash
+pnpm --filter @agentconnect.md/control-plane test:unit # pure logic, NO Docker
+pnpm --filter @agentconnect.md/control-plane test:int  # test/**/*.test.ts — real Postgres
+pnpm --filter @agentconnect.md/control-plane test      # both
+# run one test: append -- -t "<name>" or a path to the filter command
+```
+
+`test:unit` is the fast inner loop (codec, fencing predicates, placement policy — zero
+I/O). `test:int` boots one `postgres:16-alpine` via Testcontainers
+(`test/global-setup.ts`: migrate deploy + seed), clones the migrated database once per
+Vitest pool, and truncates each pool-local database before a test (`test/setup.db.ts`).
+It requires Docker and runs files with four workers by default; set
+`INTEGRATION_TEST_WORKERS` to tune that count for the runner.
+
+### Prisma
+
+```bash
+pnpm --filter @agentconnect.md/control-plane prisma:generate
+# Prisma CLI runs in the package dir and does NOT read the repo-root .env — pass it:
+DATABASE_URL=... pnpm --filter @agentconnect.md/control-plane exec prisma migrate deploy
+pnpm --filter @agentconnect.md/control-plane db:seed:example
+```
+
+The generated client lands in `src/generated/prisma` (committed). Session rows live in
+table `session_meta`, not `session`.
+
+## CP composition (dependency injection)
+
+The CP is assembled through one root so prod and tests build the identical graph:
+
+- `src/config/env.ts` — `loadConfig()`: zod-validated `process.env` → `AppConfig`,
+  fail-fast on boot. Required: `DATABASE_URL`, `API_KEY_PEPPER` (≥ 32 chars).
+- `src/container.ts` — `buildContainer(...)`: manual DI; the only place outside
+  `persistence/` aware of concrete repo classes (repos → services → the two edges).
+- `src/app.ts` — `buildApp({ prisma, clock?, secretsProvider?, ... })`: the factory
+  **both** prod and tests call. Returns `{ http, mountWs(), shutdown() }`.
+- `src/index.ts` — thin bootstrap (`loadConfig → buildApp → listen → mountWs → SIGTERM`).
+
+Tests never call `index.ts`; they call `buildApp(...)` with the Testcontainers
+`PrismaClient`, a `FakeClock`, and a memory secrets provider.
+
+## Local full-stack gotchas
+
+- **CP `dev` auto-loads the repo-root `.env`.** `loadConfig()` still reads `process.env`
+  directly (no dotenv at runtime); the CP `dev` script feeds it via Node's native
+  `tsx watch --env-file-if-exists=../../.env` (`-if-exists` so no-`.env` envs don't fail).
+  So `pnpm dev` / `pnpm --filter @agentconnect.md/control-plane dev` just work once a
+  root `.env` exists (`cp .env.example .env`). `prod`/`start` and tests are unaffected —
+  they get env from the real environment, not the file.
+- **Prefer local Docker Postgres for dev.** If a team supplies a remote
+  development database, keep its connection details outside this repository.
+- **Next.js reads `.env` from `packages/web/`**, not the repo root. Web API base
+  defaults to `http://localhost:8080` (`NEXT_PUBLIC_CP_URL` overrides).
+- Git hooks are installed via `scripts/setup-hooks.sh` on `pnpm prepare`;
+  `lint-staged` runs on commit.
+
+## Human auth (Web UI) — opt-in OIDC
+
+Console sign-in is **opt-in social login** (GitHub/Google via Logto), off by default.
+
+- **CP** is a provider-agnostic OIDC resource server: `http/plugins/auth.ts` verifies the
+  bearer JWT (JWKS via OIDC discovery) and JIT-provisions a local user from the token's
+  `sub` (`persistence/repositories/user.repo.ts`). **Unset `OIDC_ISSUER` ⇒ devAuth stub
+  (admits all)** — the no-auth default; `OIDC_AUDIENCE` must match the token `aud`.
+- **Web** uses `@logto/browser` (`src/lib/auth.ts`); the login UI is social-only
+  (`src/components/Auth.tsx`), redirect landing at `src/app/auth/callback`.
+- **Runtime config (gotcha):** `NEXT_PUBLIC_*` is inlined at `next build`, so Logto config
+  is injected at request time instead — the server reads plain `LOGTO_*` env in
+  `src/lib/public-env.tsx` (root layout is `force-dynamic`) and emits `window.__AC_ENV`;
+  `src/lib/auth.ts` reads that, with `NEXT_PUBLIC_*` as a local-dev fallback.
+
+## OpenAPI docs
+
+The CP's public REST surface is self-documenting — `http/plugins/openapi.ts`
+generates an OpenAPI 3.1 doc from the routes' zod schemas (Swagger-UI at `/docs`,
+raw JSON at `/api/v1/openapi.json`). **When you add or change a route, give its
+`schema` a `tags` (from the exported `Tag` map), `summary`, `description`, and a
+unique `operationId`** — the transform passes these through, and without them a
+docs UI (ReadMe / Swagger) renders only the bare path with no name or group.

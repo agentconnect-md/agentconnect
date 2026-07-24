@@ -1,0 +1,56 @@
+{
+  "name": "@agentconnect.md/cli",
+  "version": "1.0.0-dev",
+  "description": "AgentConnect CLI — daemon version management, service install, restart/upgrade",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "dist/index.js",
+  "bin": {
+    "agentconnect": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "pnpm --filter '{.}^...' build && tsdown && node scripts/assert-self-contained.mjs",
+    "clean": "rm -rf dist",
+    "prepack": "pnpm run build",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.typecheck.json"
+  },
+  "dependencies": {
+    "@agentconnect.md/connection": "workspace:*",
+    "@agentconnect.md/protocol": "workspace:*",
+    "commander": "^15.0.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.2",
+    "@types/ws": "^8.18.1",
+    "json": "^11.0.0",
+    "tsdown": "^0.22.3",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  },
+  "keywords": [
+    "agentconnect",
+    "cli",
+    "daemon"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

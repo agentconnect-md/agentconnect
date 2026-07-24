@@ -1,0 +1,247 @@
+import { describe, it, expect, vi } from 'vitest'
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Readable } from 'node:stream'
+import { persistCredentials, runLogin, buildInstallOpts } from '../src/login.js'
+import { resolveRoot } from '../src/paths.js'
+
+function emptyRoot(): string {
+  return mkdtempSync(join(tmpdir(), 'ac-login-'))
+}
+function readConfig(root: string): Record<string, any> {
+  return JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'))
+}
+const sink = () => {
+  const lines: string[] = []
+  const out = { write: (s: string) => (lines.push(s), true) } as unknown as NodeJS.WritableStream
+  return { out, lines }
+}
+/** A readable that yields the given lines to readline, in order. */
+const tty = (lines: string[]) => Readable.from(lines.map((l) => l + '\n')) as unknown as NodeJS.ReadableStream
+
+describe('buildInstallOpts', () => {
+  it('includeRootEnv is false for the default root', () => {
+    const result = buildInstallOpts({ root: resolveRoot(undefined) })
+    expect(result.includeRootEnv).toBe(false)
+  })
+
+  it('includeRootEnv is true for a non-default root', () => {
+    const nonDefault = mkdtempSync(join(tmpdir(), 'ac-buildopts-'))
+    const result = buildInstallOpts({ root: nonDefault })
+    expect(result.includeRootEnv).toBe(true)
+  })
+
+  it('sets execPath to the current process executable', () => {
+    const result = buildInstallOpts({})
+    expect(result.execPath).toBe(process.execPath)
+  })
+})
+
+describe('persistCredentials', () => {
+  it('writes controlPlane url/token and enables the control plane', () => {
+    const root = emptyRoot()
+    persistCredentials({ root, cpUrl: 'wss://cp.example/daemon/ws', cpKey: 'tok-123' })
+    const raw = readConfig(root)
+    expect(raw.controlPlane.url).toBe('wss://cp.example/daemon/ws')
+    expect(raw.controlPlane.key).toBe('tok-123')
+    expect(raw.controlPlane.enabled).toBe(true)
+  })
+
+  it('persists daemonId only when explicitly provided', () => {
+    const root = emptyRoot()
+    persistCredentials({ root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' })
+    expect(readConfig(root).daemonId).toBeUndefined()
+    const root2 = emptyRoot()
+    persistCredentials({ root: root2, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok', daemonId: 'fixed-id' })
+    expect(readConfig(root2).daemonId).toBe('fixed-id')
+  })
+
+  it('preserves unrelated existing config keys', () => {
+    const root = emptyRoot()
+    mkdirSync(root, { recursive: true })
+    writeFileSync(
+      join(root, 'config.json'),
+      JSON.stringify({ version: 1, logging: { level: 'debug' }, runtimes: { claude: { command: 'npx', args: [] } } })
+    )
+    persistCredentials({ root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' })
+    const raw = readConfig(root)
+    expect(raw.logging.level).toBe('debug')
+    expect(raw.runtimes.claude.command).toBe('npx')
+    expect(raw.controlPlane.key).toBe('tok')
+  })
+})
+
+describe('runLogin — non-interactive (no TTY)', () => {
+  it('throws a clear error when the cp-url is missing', async () => {
+    const { out } = sink()
+    await expect(runLogin({ cpKey: 'tok' }, { isTTY: false, out })).rejects.toThrow(/--cp-url/)
+  })
+  it('throws a clear error when the cp-key is missing', async () => {
+    const { out } = sink()
+    await expect(runLogin({ cpUrl: 'wss://cp/daemon/ws' }, { isTTY: false, out })).rejects.toThrow(/--cp-key/)
+  })
+  it('probes then persists on success', async () => {
+    const root = emptyRoot()
+    const { out } = sink()
+    const probe = vi.fn(async () => ({ ok: true, daemonId: 'd1' }))
+    await runLogin({ root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' }, { isTTY: false, out, probe })
+    expect(probe).toHaveBeenCalledOnce()
+    expect(readConfig(root).controlPlane.key).toBe('tok')
+  })
+  it('does not persist when the probe fails', async () => {
+    const root = emptyRoot()
+    const { out } = sink()
+    const probe = vi.fn(async () => ({ ok: false, reason: 'bad token' }))
+    await expect(
+      runLogin({ root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'bad' }, { isTTY: false, out, probe })
+    ).rejects.toThrow(/bad token/)
+    expect(existsSync(join(root, 'config.json'))).toBe(false)
+  })
+})
+
+describe('runLogin — interactive', () => {
+  it('install=yes → installs+starts the service, no foreground handoff', async () => {
+    const root = emptyRoot()
+    const { out } = sink()
+    const installService = vi.fn(async () => {})
+    const runForeground = vi.fn(async () => {})
+    await runLogin(
+      { root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' },
+      {
+        isTTY: true,
+        out,
+        input: tty(['y']),
+        probe: async () => ({ ok: true, daemonId: 'd1' }),
+        installService,
+        runForeground
+      }
+    )
+    expect(installService).toHaveBeenCalledOnce()
+    expect(runForeground).not.toHaveBeenCalled()
+    expect(readConfig(root).controlPlane.key).toBe('tok')
+  })
+
+  it('accepts an uppercase Y / YES at the install prompt', async () => {
+    const root = emptyRoot()
+    const { out } = sink()
+    const installService = vi.fn(async () => {})
+    const runForeground = vi.fn(async () => {})
+    await runLogin(
+      { root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' },
+      {
+        isTTY: true,
+        out,
+        input: tty(['YES']),
+        probe: async () => ({ ok: true, daemonId: 'd1' }),
+        installService,
+        runForeground
+      }
+    )
+    expect(installService).toHaveBeenCalledOnce()
+    expect(runForeground).not.toHaveBeenCalled()
+  })
+
+  it('rejects --config in interactive mode (handoff reads <root>/config.json)', async () => {
+    const root = emptyRoot()
+    const { out } = sink()
+    const probe = vi.fn(async () => ({ ok: true, daemonId: 'd1' }))
+    const installService = vi.fn(async () => {})
+    const runForeground = vi.fn(async () => {})
+    await expect(
+      runLogin(
+        { root, configPath: join(root, 'custom.json'), cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' },
+        { isTTY: true, out, input: tty(['y']), probe, installService, runForeground }
+      )
+    ).rejects.toThrow(/--config/)
+    // Rejected before any probe / persist / handoff.
+    expect(probe).not.toHaveBeenCalled()
+    expect(installService).not.toHaveBeenCalled()
+    expect(runForeground).not.toHaveBeenCalled()
+    expect(existsSync(join(root, 'custom.json'))).toBe(false)
+  })
+
+  it('install=no → runs in the foreground', async () => {
+    const root = emptyRoot()
+    const { out } = sink()
+    const installService = vi.fn(async () => {})
+    const runForeground = vi.fn(async () => {})
+    await runLogin(
+      { root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' },
+      {
+        isTTY: true,
+        out,
+        input: tty(['n']),
+        probe: async () => ({ ok: true, daemonId: 'd1' }),
+        installService,
+        runForeground
+      }
+    )
+    expect(installService).not.toHaveBeenCalled()
+    expect(runForeground).toHaveBeenCalledOnce()
+  })
+
+  it('prompts for url + token when not passed as flags', async () => {
+    const root = emptyRoot()
+    const { out, lines } = sink()
+    const probe = vi.fn(async () => ({ ok: true, daemonId: 'd1' }))
+    await runLogin(
+      { root },
+      {
+        isTTY: true,
+        out,
+        input: tty(['wss://typed/daemon/ws', 'typed-tok', 'n']),
+        probe,
+        installService: async () => {},
+        runForeground: async () => {}
+      }
+    )
+    expect(probe).toHaveBeenCalledWith({ url: 'wss://typed/daemon/ws', token: 'typed-tok' })
+    expect(readConfig(root).controlPlane.url).toBe('wss://typed/daemon/ws')
+    expect(lines.join('')).toContain('Control Plane URL:')
+    expect(lines.join('')).toContain('Daemon API key:')
+  })
+
+  it('retries once on bad token then succeeds', async () => {
+    const root = emptyRoot()
+    const { out } = sink()
+    const probe = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, reason: 'bad token' })
+      .mockResolvedValueOnce({ ok: true, daemonId: 'd1' })
+    await runLogin(
+      { root, cpUrl: 'wss://cp/daemon/ws' },
+      {
+        isTTY: true,
+        out,
+        input: tty(['bad-tok', 'good-tok', 'n']),
+        probe,
+        installService: async () => {},
+        runForeground: async () => {}
+      }
+    )
+    expect(probe).toHaveBeenCalledTimes(2)
+    expect(readConfig(root).controlPlane.key).toBe('good-tok')
+  })
+
+  it('rejects and persists nothing after two bad tokens', async () => {
+    const root = emptyRoot()
+    const { out } = sink()
+    const probe = vi.fn(async () => ({ ok: false, reason: 'bad token' }))
+    await expect(
+      runLogin(
+        { root, cpUrl: 'wss://cp/daemon/ws' },
+        {
+          isTTY: true,
+          out,
+          input: tty(['bad-1', 'bad-2', 'n']),
+          probe,
+          installService: async () => {},
+          runForeground: async () => {}
+        }
+      )
+    ).rejects.toThrow(/authentication failed/)
+    expect(probe).toHaveBeenCalledTimes(2)
+    expect(existsSync(join(root, 'config.json'))).toBe(false)
+  })
+})

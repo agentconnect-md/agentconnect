@@ -1,0 +1,109 @@
+import { describe, expect, it, vi } from 'vitest'
+import type { AnyFrame } from '@agentconnect.md/protocol'
+import type { DaemonConnection } from '../connection.js'
+import type { DaemonWsDeps } from '../deps.js'
+import { handleEventSession } from './event-session.js'
+
+const DAEMON_ID = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
+const AGENT_ID = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+
+function eventSessionFrame(): AnyFrame {
+  return {
+    v: 1,
+    id: crypto.randomUUID(),
+    ts: '2026-07-10T00:00:00.000Z',
+    type: 'event/session',
+    payload: {
+      sessionId: 'session-407',
+      agentId: AGENT_ID,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C407',
+      title: 'Fresh session',
+      ts: '2026-07-10T00:00:00.000Z'
+    }
+  }
+}
+
+describe('handleEventSession', () => {
+  it('publishes the milestone only after it has been persisted', async () => {
+    const order: string[] = []
+    let finishPersist!: () => void
+    const recordMilestone = vi.fn(() => {
+      order.push('persist:start')
+      return new Promise<void>((resolve) => {
+        finishPersist = () => {
+          order.push('persist:finish')
+          resolve()
+        }
+      })
+    })
+    const publish = vi.fn(() => {
+      order.push('publish')
+    })
+    const deps = {
+      session: { recordMilestone },
+      events: { publish }
+    } as unknown as DaemonWsDeps
+    const conn = { daemonId: DAEMON_ID } as DaemonConnection
+    const frame = eventSessionFrame()
+
+    const handling = handleEventSession(frame, conn, deps)
+
+    expect(order).toEqual(['persist:start'])
+    expect(publish).not.toHaveBeenCalled()
+
+    finishPersist()
+    await handling
+
+    expect(order).toEqual(['persist:start', 'persist:finish', 'publish'])
+    expect(publish).toHaveBeenCalledWith(DAEMON_ID, frame.payload)
+  })
+
+  it('passes the execution-config snapshot through and stamps daemonId from the connection', async () => {
+    const recordMilestone = vi.fn().mockResolvedValue(undefined)
+    const deps = {
+      session: { recordMilestone },
+      events: { publish: vi.fn() }
+    } as unknown as DaemonWsDeps
+    const frame = eventSessionFrame()
+    Object.assign(frame.payload as Record<string, unknown>, {
+      runtime: 'claude',
+      model: 'opus',
+      effort: 'high',
+      fastMode: true,
+      permissionMode: 'acceptEdits',
+      outputMode: 'medium'
+    })
+
+    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+
+    expect(recordMilestone).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtime: 'claude',
+        model: 'opus',
+        effort: 'high',
+        fastMode: true,
+        permissionMode: 'acceptEdits',
+        outputMode: 'medium',
+        // The reporting daemon is CP-stamped from the authenticated connection,
+        // never taken from the frame payload.
+        daemonId: DAEMON_ID
+      })
+    )
+  })
+
+  it('does not publish when persistence fails', async () => {
+    const failure = new Error('write failed')
+    const publish = vi.fn()
+    const deps = {
+      session: { recordMilestone: vi.fn().mockRejectedValue(failure) },
+      events: { publish }
+    } as unknown as DaemonWsDeps
+
+    await expect(
+      handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    ).rejects.toBe(failure)
+    expect(publish).not.toHaveBeenCalled()
+  })
+})

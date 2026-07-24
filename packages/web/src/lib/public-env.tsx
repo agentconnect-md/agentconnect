@@ -1,0 +1,61 @@
+// Runtime public config injection.
+//
+// Next inlines `NEXT_PUBLIC_*` at build time, which would pin a prebuilt image to
+// one tenant. Instead the server reads plain (non-public) env at request time and
+// emits an inline script that sets `window.__AC_ENV` before the app bundle runs;
+// the client (lib/auth.ts) reads from there. Same image, configured at deploy
+// time. Values here are public (they ship to the browser regardless) — never put
+// secrets in __AC_ENV. Falls back to the NEXT_PUBLIC_* build-time vars so local
+// dev (.env.local) keeps working unchanged.
+
+// LOGTO_* gate the social-login UI; CP_URL points the console at its Control
+// Plane; RELAY_URL points at the public relay ingress. OTEL_WEB_* configures
+// browser-side tracing only. All are public (they reach the browser anyway) —
+// never add secrets.
+const KEYS = [
+  'LOGTO_ENDPOINT',
+  'LOGTO_APP_ID',
+  'LOGTO_API_RESOURCE',
+  'CP_URL',
+  'RELAY_URL',
+  // Dedicated MCP origin (mirrors the CP's PUBLIC_MCP_URL). Unset ⇒ the console
+  // renders the MCP endpoint as CP_URL + /mcp (ConnectAiCard).
+  'MCP_URL',
+  // Help-menu link targets — let an OSS fork point the rail-footer help menu at its
+  // own docs / connector guide / support channel without rebuilding. Unset ⇒ the
+  // agentconnect.md defaults (see Shell.tsx HELP_LINK_DEFAULTS).
+  'HELP_MCP_URL',
+  'HELP_DOCS_URL',
+  'HELP_SUPPORT_URL',
+  'OTEL_WEB_ENABLED',
+  'OTEL_WEB_TRACES_ENDPOINT',
+  'OTEL_WEB_SERVICE_NAME',
+  'OTEL_WEB_DEPLOYMENT_ENVIRONMENT',
+  'OTEL_WEB_RESOURCE_ATTRIBUTES',
+  'OTEL_WEB_PROPAGATE_TRACE_HEADER_URLS',
+  // PostHog product analytics (opt-in). POSTHOG_API_KEY is PostHog's PUBLIC
+  // project key (phc_…) — safe in the browser. Unset ⇒ analytics is a no-op
+  // (lib/analytics never initializes). POSTHOG_HOST defaults to us.i.posthog.com.
+  'POSTHOG_API_KEY',
+  'POSTHOG_HOST'
+] as const
+
+function resolve(): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const k of KEYS) {
+    const v = process.env[k] ?? process.env[`NEXT_PUBLIC_${k}`] ?? ''
+    if (v) env[k] = v
+  }
+  // The Control Plane already calls this value PUBLIC_RELAY_URL. Accept that name
+  // for shared local env files while keeping the Web runtime key parallel to CP_URL.
+  const relayUrl = process.env.RELAY_URL ?? process.env.PUBLIC_RELAY_URL ?? process.env.NEXT_PUBLIC_RELAY_URL
+  if (relayUrl) env.RELAY_URL = relayUrl
+  return env
+}
+
+/** Inline <script> that publishes the runtime public config to the browser. */
+export function PublicEnvScript() {
+  // JSON.stringify guards against breaking out of the script context.
+  const json = JSON.stringify(resolve())
+  return <script dangerouslySetInnerHTML={{ __html: `window.__AC_ENV=${json}` }} />
+}

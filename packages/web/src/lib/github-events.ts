@@ -1,0 +1,121 @@
+import type { GithubCommentFamily } from './api'
+
+/**
+ * GitHub subscription event model shared by the Add-integration form and the
+ * agent-detail pills. The console works in FAMILIES (pull requests / issues /
+ * commits) plus a per-repo TRIGGER MODE ("when"); the stored `HookDef.events`
+ * patterns plus the `mentionOnly` flag encode both:
+ *
+ *   created  → `family:opened` for the regular cadence; the relay additionally
+ *              accepts a later explicit @mention in the selected thread family
+ *              (commits have no "first" — a push subscription is inherently
+ *              per-push, so `push:*` rides along unchanged)
+ *   updated  → `family:*` + `issue_comment:created` when a thread family is
+ *              selected. The relay ignores close/reopen and every issue/PR
+ *              `edited` action; supported updates and replies still run.
+ *   mention only → the same subscriptions as updated, with `mentionOnly: true` —
+ *              an event fires ONLY when its text (issue/PR body, comment body,
+ *              commit message) @-mentions the assigned agent or the App. The
+ *              agent handle targets one rule; the App handle broadcasts.
+ *              Comments additionally pass the relay's collaborator gate.
+ *
+ * The REST DTO accepts finer `family:action` values — these helpers just never
+ * emit them.
+ */
+
+export type GhFamily = 'pull_request' | 'issues' | 'push'
+export type GhTriggerMode = 'first' | 'every' | 'mention'
+
+// `desc` is the Add-integration tile subtitle — the design's compact grid, so
+// keep it to a short fragment that fits one or two 11.5px lines.
+//
+// The `push` (Commits) family is intentionally omitted for now — the
+// commit-subscription flow is held back. `GhFamily` still includes 'push' so
+// the event helpers keep reading any already-stored push subscription; re-add
+// the tile here (and restore the 3-up grid) to bring the feature back.
+export const GH_FAMILIES: { fam: GhFamily; pill: string; icon: string; label: string; desc: string }[] = [
+  {
+    fam: 'pull_request',
+    pill: 'PRs',
+    icon: 'git-pull-request',
+    label: 'Pull requests',
+    desc: 'opened, new commits, replies'
+  },
+  {
+    fam: 'issues',
+    pill: 'Issues',
+    icon: 'circle-dot',
+    label: 'Issues',
+    desc: 'opened, labels, replies'
+  }
+]
+
+/** The "when" dropdown's vocabulary, in menu order. */
+export const GH_TRIGGER_MODES: readonly GhTriggerMode[] = ['first', 'every', 'mention']
+export const GH_TRIGGER_LABEL: Record<GhTriggerMode, string> = {
+  first: 'created',
+  every: 'updated',
+  mention: 'mention only'
+}
+
+/** Concrete hover copy for the agent-targeted GitHub mention form. */
+export function githubMentionUsage(agentName: string): string {
+  return `Use @${agentName} to trigger only this agent.`
+}
+
+/** The default create-form selection: pull requests only. */
+export const GH_DEFAULT_FAMILIES: readonly GhFamily[] = ['pull_request']
+
+/** The default create-form cadence: react to issue or pull-request updates. */
+export const GH_DEFAULT_TRIGGER_MODE: GhTriggerMode = 'every'
+
+/** The comment subscription that rides updated/mention-only modes for thread families. */
+export const THREAD_COMMENT_EVENT = 'issue_comment:created'
+
+/** Derive the explicit comment scope from the selected issue/PR families. */
+export function commentFamiliesForFamilies(fams: Iterable<GhFamily>): GithubCommentFamily[] {
+  return [...fams].filter((fam): fam is GithubCommentFamily => fam === 'issues' || fam === 'pull_request')
+}
+
+/** Compile the console's family+mode choice into stored event patterns. */
+export function eventsForFamilies(fams: Iterable<GhFamily>, mode: GhTriggerMode): string[] {
+  const families = [...fams]
+  const familyEvents = families.map((fam) => (mode === 'first' && fam !== 'push' ? `${fam}:opened` : `${fam}:*`))
+  const listensForThreadReplies = mode !== 'first' && commentFamiliesForFamilies(families).length > 0
+  return listensForThreadReplies ? [...familyEvents, THREAD_COMMENT_EVENT] : familyEvents
+}
+
+/** Whether a hook's stored events cover a family (any action pattern counts). */
+export function famCovered(events: string[], fam: GhFamily): boolean {
+  return events.some((e) => e.startsWith(`${fam}:`))
+}
+
+/** Recover the trigger mode: the mentionOnly flag wins, `:opened`-only ⇒ created. */
+export function triggerModeOf(h: { events: string[]; mentionOnly: boolean }): GhTriggerMode {
+  if (h.mentionOnly) return 'mention'
+  return h.events.some((e) => e.endsWith(':opened')) ? 'first' : 'every'
+}
+
+/** Whether a persisted hook differs from the canonical console encoding.
+ *  Legacy/API rules are never rewritten implicitly; this lets an explicit
+ *  same-cadence selection normalize them instead of returning early. */
+export function githubHookNeedsNormalization(h: {
+  events: string[]
+  commentFamilies: GithubCommentFamily[]
+  mentionOnly: boolean
+}): boolean {
+  const families = GH_FAMILIES.map((family) => family.fam).filter((family) => famCovered(h.events, family))
+  // Raw API comment-only rules have no console family to normalize into and
+  // must remain untouched even if the user reselects the displayed cadence.
+  if (families.length === 0) return false
+  const mode = triggerModeOf(h)
+  const sameMembers = (actual: string[], expected: string[]) => {
+    const actualSet = new Set(actual)
+    const expectedSet = new Set(expected)
+    return actualSet.size === expectedSet.size && [...actualSet].every((value) => expectedSet.has(value))
+  }
+  return (
+    !sameMembers(h.events, eventsForFamilies(families, mode)) ||
+    !sameMembers(h.commentFamilies, commentFamiliesForFamilies(families))
+  )
+}

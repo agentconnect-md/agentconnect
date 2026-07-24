@@ -1,0 +1,963 @@
+import { HttpsProxyAgent } from 'https-proxy-agent'
+import pkg from '@slack/bolt'
+const { App, LogLevel } = pkg
+import { WebClient } from '@slack/web-api'
+import {
+  decodeSlackStatusOverflowValue,
+  extractSlackMessageText,
+  isSlackSystemMessage
+} from '@agentconnect.md/protocol'
+import type { Agent } from '../agents/agent-schema.js'
+import { normalizeSlackEvent, toAttachment, type SlackFile, type SlackMessageEvent } from './normalize.js'
+import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
+import type { Logger } from '../log.js'
+import { SlackSendQueue } from './send-queue.js'
+import {
+  STATUS_ACTION,
+  ELICIT_ACTION_PREFIX,
+  ELICIT_DISMISS_ACTION,
+  PERMISSION_ACTION_PREFIX,
+  buildStatusModal,
+  decodePermValue,
+  type StatusBarInfo,
+  type StatusModalIdentity
+} from './render.js'
+
+export interface ConsolidatedGroup {
+  appToken: string
+  botToken: string
+  integrations: { agentId: string; integrationId: string }[]
+}
+
+/** Optional per-message rendering controls. The authorship fields both require
+ *  Slack's `chat:write.customize` scope; {@link SlackConnection} transparently falls
+ *  back to the app identity for older installations that do not have it yet. */
+export interface SlackPostOptions {
+  username?: string
+  /** Public https image URL for the message avatar (the agent's icon). */
+  icon_url?: string
+  /** Stable AgentConnect author identity for first-class agent thread events.
+   *  Slack's bot_id identifies the shared app, not the individual agent, so this
+   *  rides in message metadata and survives cross-daemon history reconstruction. */
+  agentAuthorId?: string
+  /** Reply-only trailing blocks (the linked attribution context). When present they
+   *  are included in the initial chat.postMessage and link/media unfurls are disabled. */
+  trailingBlocks?: unknown[]
+  /** Marks this message as daemon CHROME (status bar, progress/plan/reasoning, notices,
+   *  cards) rather than a conversational message. Stamps a distinguishing `event_type` in
+   *  Slack metadata so a peer daemon's thread backfill can skip it — chrome is never
+   *  conversation and must not be re-ingested as a transcript text row. */
+  chrome?: boolean
+}
+
+/** Optional per-status identity overrides supported by assistant.threads.setStatus.
+ * Unlike chat.postMessage customization, Slack accepts these with chat:write. */
+export interface SlackStatusOptions {
+  username?: string
+  /** Public https image URL for the transient status avatar. */
+  icon_url?: string
+}
+
+/** Slack message `metadata.event_type` marking a message as daemon chrome (see
+ *  `SlackPostOptions.chrome`). Exported so the backfill can recognize it. */
+export const SLACK_CHROME_EVENT_TYPE = 'agentconnect_chrome'
+
+/** §6.1: one Slack Socket Mode connection per unique appToken.
+ *  Shared-mode integrations are SKIPPED here — their inbound lives on a relay, so
+ *  the daemon opens no socket for them (it reaches them send-only via RelayClient;
+ *  see shared-bot-relay.md §11). They carry no appToken, so there is nothing to
+ *  consolidate on. */
+export function consolidate(agents: Agent[]): Map<string, ConsolidatedGroup> {
+  const groups = new Map<string, ConsolidatedGroup>()
+  for (const a of agents) {
+    for (const int of a.integrations) {
+      if (int.platform !== 'slack') continue
+      if (int.slack.mode === 'shared' || !int.slack.appToken) continue
+      const k = int.slack.appToken
+      const g = groups.get(k) ?? { appToken: k, botToken: int.slack.botToken, integrations: [] }
+      g.integrations.push({ agentId: a.id, integrationId: int.id })
+      groups.set(k, g)
+    }
+  }
+  return groups
+}
+
+/** Group SHARED-mode Slack integrations by xoxb (one send-only client per bot
+ *  token). These have no appToken (the relay owns inbound), so they can't be keyed
+ *  by appToken like {@link consolidate} — the bot token is the identity. */
+export function consolidateShared(agents: Agent[]): Map<string, ConsolidatedGroup> {
+  const groups = new Map<string, ConsolidatedGroup>()
+  for (const a of agents) {
+    for (const int of a.integrations) {
+      if (int.platform !== 'slack' || int.slack.mode !== 'shared') continue
+      const k = int.slack.botToken
+      const g = groups.get(k) ?? { appToken: '', botToken: k, integrations: [] }
+      g.integrations.push({ agentId: a.id, integrationId: int.id })
+      groups.set(k, g)
+    }
+  }
+  return groups
+}
+
+export interface SlackDeps {
+  group: ConsolidatedGroup
+  onMessage: (msg: NormalizedMessage) => void
+  /** Fired when the bot's channel membership changes (invited to / removed from a
+   *  channel), so the daemon can re-list + re-report the membership snapshot. */
+  onChannelsChanged?: () => void
+  /** Fired when a user interacts with the status modal's controls (the model
+   *  `static_select` or the Cancel button). `sessionKey` comes from the modal's
+   *  `private_metadata`; payload fields are present only for their matching action. */
+  onStatusAction?: (a: {
+    kind: 'set-model' | 'set-effort' | 'set-permission-mode' | 'set-fast' | 'set-output' | 'cancel'
+    sessionKey: string
+    model?: string
+    effort?: string
+    permissionMode?: string
+    fastMode?: boolean
+    outputMode?: 'none' | 'minimal' | 'low' | 'medium' | 'high'
+  }) => void
+  /** Synchronous getter into the daemon (source of truth) for a session's agent identity,
+   *  current status snapshot, deep link, and cancel availability — used to build the
+   *  Configure controls modal on demand. Undefined for an unknown/closed session key. */
+  onStatusInfo?: (
+    sessionKey: string
+  ) => { info: StatusBarInfo; identity?: StatusModalIdentity; link?: string; cancellable: boolean } | undefined
+  /** Fired when a user taps a button on an interactive permission card
+   *  (render.buildPermissionCard). The decoded `requestId` ties the click back to the
+   *  pending ACP `session/request_permission`; `optionId` is the chosen option. */
+  onPermissionChoice?: (a: { requestId: string; optionId: string }) => void
+  /** Fired when a user taps a button on an interactive elicitation card
+   *  (render.buildElicitationCard). `value` is the chosen option's wire value, or null
+   *  for the Dismiss button (decline). */
+  onElicitChoice?: (a: { requestId: string; value: string | null }) => void
+  newTraceId: () => string
+  log?: Logger
+  /** When true, hand Bolt LogLevel.DEBUG so socket-mode internals are visible. */
+  boltDebug?: boolean
+  /** Min spacing (ms) between outbound writes (§9.1 SlackSendQueue). Tests pass 0. */
+  sendIntervalMs?: number
+  /**
+   * SEND-ONLY mode (shared-bot-relay.md §11): the bot's INBOUND lives on a relay,
+   * so this connection opens NO Socket Mode socket — it is just the xoxb Web-API
+   * client + the send queue, wired into `connByIntegration` so replies, attachment
+   * fetches, MCP platform tools and cron anchors reuse it unchanged. `group.appToken`
+   * is empty here (the daemon never holds the shared bot's xapp). `onMessage` is
+   * never called (the relay delivers inbound as `rd/msg`).
+   */
+  sendOnly?: boolean
+}
+
+type SlackUserResult = {
+  id?: string
+  name?: string
+  real_name?: string
+  is_bot?: boolean
+  profile?: { real_name?: string; display_name?: string }
+}
+
+/** The subset of a Block Kit `block_actions` payload we read: the interacted element
+ *  (`action_id` + its value / selected option) and the enclosing block's `block_id`; on the
+ *  message it's the `trigger_id` (to open a modal), inside a modal the `view` (id +
+ *  `private_metadata`, which carries the session key). */
+type BlockActionArgs = {
+  ack: () => Promise<void>
+  action: { action_id?: string; block_id?: string; value?: string; selected_option?: { value?: string } }
+  body?: {
+    trigger_id?: string
+    view?: { id?: string; private_metadata?: string }
+    actions?: { block_id?: string }[]
+  }
+}
+
+type AppLike = {
+  message: (handler: (args: { message: unknown }) => Promise<void> | void) => void
+  event: (type: string, handler: (args: { event: unknown }) => Promise<void> | void) => void
+  action: (actionId: string | RegExp, handler: (args: BlockActionArgs) => Promise<void> | void) => void
+  client: {
+    views: {
+      open: (a: unknown) => Promise<unknown>
+      update: (a: unknown) => Promise<unknown>
+    }
+    // auth.test also returns `url` — the workspace's base Slack URL
+    // (e.g. "https://acme.slack.com/"), the root for thread permalinks.
+    auth: { test: () => Promise<{ user_id?: string; bot_id?: string; url?: string }> }
+    chat: {
+      postMessage: (a: unknown) => Promise<{ ts?: string }>
+      update: (a: unknown) => Promise<{ ts?: string }>
+      delete: (a: unknown) => Promise<unknown>
+    }
+    conversations: {
+      info: (
+        a: unknown
+      ) => Promise<{ channel?: { id?: string; name?: string; is_im?: boolean; is_private?: boolean; user?: string } }>
+      members: (a: unknown) => Promise<{ members?: string[] }>
+      list: (a: unknown) => Promise<{ channels?: { id?: string; name?: string; is_private?: boolean }[] }>
+      replies: (a: unknown) => Promise<{
+        messages?: {
+          user?: string
+          bot_id?: string
+          ts?: string
+          text?: string
+          subtype?: string
+          files?: SlackFile[]
+          metadata?: {
+            event_type?: string
+            event_payload?: { author_agent_id?: unknown }
+          }
+        }[]
+        has_more?: boolean
+        response_metadata?: { next_cursor?: string }
+      }>
+    }
+    users: {
+      info: (a: unknown) => Promise<{ user?: SlackUserResult }>
+      // users.conversations — channels the AUTHED BOT is a member of (not the
+      // workspace-wide conversations.list). Needs channels:read / groups:read.
+      conversations: (a: unknown) => Promise<{
+        channels?: { id?: string; name?: string; is_private?: boolean; is_im?: boolean; is_mpim?: boolean }[]
+        response_metadata?: { next_cursor?: string }
+      }>
+    }
+    assistant: {
+      threads: {
+        setStatus: (a: unknown) => Promise<unknown>
+        setTitle: (a: unknown) => Promise<unknown>
+      }
+    }
+  }
+  start: () => Promise<void>
+  stop: () => Promise<void>
+}
+
+type AssistantThreadStartedEvent = {
+  assistant_thread?: {
+    channel_id?: string
+    thread_ts?: string
+  }
+}
+
+/** Only top-level chat shapes enter routing. Slack emits edits, deletes,
+ *  assistant-thread metadata/title updates, and system records through the same generic
+ *  `message` listener. In particular, `message_changed` keeps the actual sender and
+ *  text in a nested `message` object; normalizing that outer wrapper would turn it
+ *  into an anonymous empty DM and could feed our own update back into the agent.
+ *  `me_message` and thread broadcasts still carry genuine user text and must remain
+ *  routable. Keep this allowlist aligned with the relay's shared Slack ingest. */
+function isRoutableMessageSubtype(subtype: string | undefined): boolean {
+  return (
+    subtype === undefined ||
+    subtype === 'file_share' ||
+    subtype === 'me_message' ||
+    subtype === 'thread_broadcast' ||
+    subtype === 'reply_broadcast'
+  )
+}
+
+function isRoutableMessageEvent(ev: SlackMessageEvent): boolean {
+  // Slack documents an Events API bug where a message_replied structural wrapper may
+  // omit its subtype. Author + shape checks keep that hidden/nested wrapper out while
+  // retaining genuine human and bot chat at the top level. `deliver` removes the
+  // exact receiving connection's own echo.
+  return (
+    Boolean(ev.user || ev.bot_id) &&
+    !ev.hidden &&
+    ev.message === undefined &&
+    (isRoutableMessageSubtype(ev.subtype) || ev.subtype === 'bot_message')
+  )
+}
+
+/** Cap on members enriched per `listChannelMembers` call (bounds users.info fan-out). */
+const MEMBER_ENRICH_CAP = 50
+
+/**
+ * Build a chat.postMessage/update payload that renders the body as a Block Kit
+ * `markdown` block — Slack renders standard CommonMark there natively, so the agent's
+ * markdown is sent verbatim (no markdown→mrkdwn conversion). `text` is kept as the
+ * notification/accessibility fallback. Callers pre-chunk to SLACK_MARKDOWN_BLOCK_LIMIT.
+ */
+function markdownBlock(text: string): { text: string; blocks: { type: 'markdown'; text: string }[] } {
+  return { text, blocks: [{ type: 'markdown', text }] }
+}
+
+/** Slack Web API platform errors carry the rejected scope in `data.needed`.
+ *  Match that exact capability so a real chat:write/network failure is never
+ *  retried and cannot duplicate a message whose first result was ambiguous. */
+function isMissingCustomizeScope(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const data = (err as { data?: unknown }).data
+  if (!data || typeof data !== 'object') return false
+  const record = data as { error?: unknown; needed?: unknown }
+  if (record.error !== 'missing_scope') return false
+  const needed = Array.isArray(record.needed) ? record.needed : String(record.needed ?? '').split(',')
+  return needed.some((scope) => String(scope).trim() === 'chat:write.customize')
+}
+
+// Re-probe periodically so granting chat:write.customize to an existing Slack app
+// takes effect without requiring a daemon restart, while avoiding one rejected API
+// call per message for installations that have not been upgraded yet.
+const CUSTOM_USERNAME_REPROBE_MS = 5 * 60_000
+
+/** Build the send-only {@link AppLike}: a real Slack `WebClient` (xoxb) for the send
+ *  surface + inert event/start/stop members (shared-bot-relay.md §11). Same proxy +
+ *  timeout/retry tuning as the socket-mode factory. */
+function sendOnlyApp(botToken: string): AppLike {
+  const proxyUrl = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY
+  const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined
+  const client = new WebClient(botToken, {
+    ...(agent ? { agent } : {}),
+    timeout: 30_000,
+    retryConfig: { retries: 2 }
+  })
+  return {
+    message: () => {},
+    event: () => {},
+    action: () => {},
+    client: client as unknown as AppLike['client'],
+    start: async () => {},
+    stop: async () => {}
+  }
+}
+
+export class SlackConnection {
+  private app: AppLike
+  // §9.1: all outbound writes (post/update/setStatus/setTitle) funnel through one queue so
+  // streamed edits are FIFO-ordered and rate-limited per Slack app connection.
+  private queue: SlackSendQueue
+  /** Cooldown after Slack proves this installation lacks chat:write.customize. */
+  private customUsernameRetryAt = 0
+  // Slack's Agent/assistant DM surface can announce the real app-thread root via
+  // assistant_thread_started, while later message.im payloads may arrive without
+  // thread_ts. Keep the active DM thread root so replies stay inside that thread.
+  private assistantDmThreads = new Map<string, string>()
+  botUserId = ''
+  /** The appToken this socket is keyed by (one socket per unique appToken). */
+  readonly appToken: string
+  /** The botToken this socket authenticated with (used to detect a same-appToken swap). */
+  readonly botToken: string
+  // The bot's `B…` id (distinct from the `U…` user id). Used to recognize our own
+  // echoes that arrive with bot_id but no user field. Resolved at start() via auth.test.
+  botId = ''
+  // The workspace's base Slack URL (e.g. "https://acme.slack.com/"), resolved at
+  // start() via auth.test. The root for building thread permalinks (session deep
+  // links). Empty until start() completes.
+  workspaceUrl = ''
+
+  constructor(
+    private deps: SlackDeps,
+    factory: (opts: { token: string; appToken: string }) => AppLike = (o) => {
+      // If HTTPS_PROXY or HTTP_PROXY is set, route all Slack API calls and
+      // WebSocket connections through that proxy.
+      const proxyUrl = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY
+      const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined
+      return new App({
+        token: o.token,
+        appToken: o.appToken,
+        socketMode: true,
+        ...(agent ? { agent } : {}),
+        // Bound the Web API per-request time + retries. The @slack/web-api default
+        // "10 retries over ~30 minutes" would, combined with our serial send-queue,
+        // let one transient failure block all delivery for a whole turn. 30s is a
+        // compromise: long enough for the initial connect handshake (auth.test /
+        // apps.connections.open) to survive a slow/VPN link, yet still bounded so a
+        // stuck send can't wedge the queue indefinitely. Tradeoff: this timeout is
+        // shared by connect AND send calls, so the ceiling also caps the worst-case
+        // stall on the hot send path — acceptable given retries:2 and the daemon's
+        // background reconnect loop retries a failed connect anyway.
+        clientOptions: { timeout: 30_000, retryConfig: { retries: 2 } },
+        ...(deps.boltDebug ? { logLevel: LogLevel.DEBUG } : {})
+      }) as unknown as AppLike
+    }
+  ) {
+    this.appToken = deps.group.appToken
+    this.botToken = deps.group.botToken
+    // Send-only: a bare Web-API client (no Socket Mode, no appToken) wrapped in the
+    // AppLike send surface. The event/action/start/stop members are inert — nothing
+    // ever registers a handler or opens a socket in this mode.
+    this.app = deps.sendOnly
+      ? sendOnlyApp(deps.group.botToken)
+      : factory({ token: deps.group.botToken, appToken: deps.group.appToken })
+    this.queue = new SlackSendQueue(deps.sendIntervalMs ?? 350)
+  }
+
+  async start(): Promise<void> {
+    const log = this.deps.log
+    log?.debug('slack: auth.test → resolving bot identity (HTTPS)…')
+    const auth = await this.app.client.auth.test()
+    this.botUserId = auth.user_id ?? ''
+    this.botId = auth.bot_id ?? ''
+    this.workspaceUrl = auth.url ?? ''
+    log?.debug(`slack: auth.test ok → bot user ${this.botUserId} (bot_id ${this.botId || 'n/a'})`)
+    // Send-only (shared bot): no Socket Mode socket, no event/action handlers, no
+    // app.start(). Identity is resolved above (for mention rendering / echo id); the
+    // relay owns inbound. Return before any handler registration.
+    if (this.deps.sendOnly) {
+      log?.info('slack: send-only connection ready (shared bot — inbound via relay)')
+      return
+    }
+    const deliver = (ev: SlackMessageEvent, kind: string) => {
+      if (isSlackSystemMessage(ev) || ev.user === this.botUserId || ev.bot_id === this.botId) return
+      const msg = normalizeSlackEvent(this.withAssistantThread(ev), { traceId: this.deps.newTraceId() })
+      log?.debug(
+        `slack: inbound ${kind} ch=${msg.channel} thread=${msg.thread ?? 'none'} user=${msg.sender.id} isBot=${msg.sender.isBot} isDm=${msg.isDm} mentions=[${msg.mentionedBots.join(',')}] text=${JSON.stringify(msg.text.slice(0, 80))}`
+      )
+      this.deps.onMessage(msg)
+    }
+    // message.* events: DMs, and channels the bot reads (needs the matching
+    // `message.channels`/`message.groups`/`message.im` bot-event subscriptions).
+    this.app.message(async ({ message }) => {
+      const ev = message as SlackMessageEvent
+      if (ev.type !== 'message' || !ev.channel || !isRoutableMessageEvent(ev)) {
+        log?.debug(
+          `slack: inbound event ignored (type=${ev.type}, subtype=${ev.subtype ?? 'none'}, channel=${ev.channel ?? 'none'})`
+        )
+        return
+      }
+      deliver(ev, 'message')
+    })
+    // app_mention events: fired whenever the bot is @-mentioned (needs only the
+    // `app_mentions:read` scope). Dedup against the message.* path happens in the
+    // daemon by msgId, since both carry the same channel:ts.
+    this.app.event('app_mention', async ({ event }) => {
+      const ev = event as SlackMessageEvent
+      if (!ev.channel) return
+      deliver(ev, 'app_mention')
+    })
+    // Agent/assistant DM threads expose their canonical thread root through this
+    // event. Normal message.im payloads remain the source of user text; this event
+    // only preserves routing coordinates for those messages.
+    this.app.event('assistant_thread_started', async ({ event }) => {
+      const thread = this.rememberAssistantThread(event as AssistantThreadStartedEvent)
+      if (thread) log?.debug(`slack: assistant thread started ch=${thread.channel} thread=${thread.threadTs}`)
+    })
+    // Membership changes: the bot was invited to (member_joined_channel, filtered
+    // to our own user id) or removed from (channel_left / group_left) a channel.
+    // The daemon re-lists + re-reports the membership snapshot on each fire.
+    this.app.event('member_joined_channel', async ({ event }) => {
+      const ev = event as { user?: string; channel?: string }
+      if (ev.user !== this.botUserId) return
+      log?.debug(`slack: bot joined channel ${ev.channel ?? '?'}`)
+      this.deps.onChannelsChanged?.()
+    })
+    for (const type of ['channel_left', 'group_left']) {
+      this.app.event(type, async ({ event }) => {
+        log?.debug(`slack: bot left channel ${(event as { channel?: string }).channel ?? '?'} (${type})`)
+        this.deps.onChannelsChanged?.()
+      })
+    }
+    // Status-bar interactivity (Block Kit block_actions over Socket Mode). Each handler
+    // MUST ack() promptly (Slack drops the interaction / trigger_id after ~3s). Configure
+    // opens the controls modal; the modal's select/Cancel carry the session key in
+    // `view.private_metadata`. No-op when
+    // interactivity is unsubscribed (the handler never fires).
+    this.app.action(STATUS_ACTION.more, async ({ ack, action, body }) => {
+      await ack()
+      const choice = action.selected_option?.value ? decodeSlackStatusOverflowValue(action.selected_option.value) : null
+      const sessionKey = action.block_id ?? choice?.target
+      if (!choice || !sessionKey) return
+      if (choice.action === 'manage') {
+        const triggerId = body?.trigger_id
+        if (triggerId) await this.openStatusModal(triggerId, sessionKey)
+      } else if (choice.action === 'cancel') {
+        this.deps.onStatusAction?.({ kind: 'cancel', sessionKey })
+      }
+    })
+    this.app.action(STATUS_ACTION.manage, async ({ ack, action, body }) => {
+      await ack()
+      const sessionKey = action.value // Configure carries the key
+      const triggerId = body?.trigger_id
+      if (!sessionKey || !triggerId) return
+      await this.openStatusModal(triggerId, sessionKey)
+    })
+    this.app.action(STATUS_ACTION.setModel, async ({ ack, action, body }) => {
+      await ack()
+      const sessionKey = body?.view?.private_metadata ?? action.block_id
+      const model = action.selected_option?.value
+      if (sessionKey && model) this.deps.onStatusAction?.({ kind: 'set-model', sessionKey, model })
+    })
+    this.app.action(STATUS_ACTION.setEffort, async ({ ack, action, body }) => {
+      await ack()
+      const sessionKey = body?.view?.private_metadata ?? action.block_id
+      const effort = action.selected_option?.value
+      if (sessionKey && effort) this.deps.onStatusAction?.({ kind: 'set-effort', sessionKey, effort })
+    })
+    this.app.action(STATUS_ACTION.setPermissionMode, async ({ ack, action, body }) => {
+      await ack()
+      const sessionKey = body?.view?.private_metadata ?? action.block_id
+      const permissionMode = action.selected_option?.value
+      if (sessionKey && permissionMode)
+        this.deps.onStatusAction?.({ kind: 'set-permission-mode', sessionKey, permissionMode })
+    })
+    this.app.action(STATUS_ACTION.setFast, async ({ ack, action, body }) => {
+      await ack()
+      const sessionKey = body?.view?.private_metadata ?? action.block_id
+      const value = action.selected_option?.value
+      if (sessionKey && value) this.deps.onStatusAction?.({ kind: 'set-fast', sessionKey, fastMode: value === 'on' })
+    })
+    this.app.action(STATUS_ACTION.setOutput, async ({ ack, action, body }) => {
+      await ack()
+      const sessionKey = body?.view?.private_metadata ?? action.block_id
+      const mode = action.selected_option?.value
+      if (
+        sessionKey &&
+        (mode === 'none' || mode === 'minimal' || mode === 'low' || mode === 'medium' || mode === 'high')
+      )
+        this.deps.onStatusAction?.({ kind: 'set-output', sessionKey, outputMode: mode })
+    })
+    this.app.action(STATUS_ACTION.cancel, async ({ ack, action, body }) => {
+      await ack()
+      const sessionKey = body?.view?.private_metadata ?? action.value
+      if (sessionKey) this.deps.onStatusAction?.({ kind: 'cancel', sessionKey })
+    })
+    this.app.action(STATUS_ACTION.view, async ({ ack }) => {
+      await ack() // URL button — the browser follows the link; nothing to do here.
+    })
+    // Interactive permission card (buildPermissionCard): every option button shares the
+    // `ac_perm:<index>` prefix, matched here by RegExp. The chosen requestId+optionId ride
+    // the button `value`; the daemon resolves the pending ACP request from them.
+    this.app.action(new RegExp(`^${PERMISSION_ACTION_PREFIX}:`), async ({ ack, action }) => {
+      await ack()
+      const decoded = action.value ? decodePermValue(action.value) : null
+      if (decoded) this.deps.onPermissionChoice?.(decoded)
+    })
+    // Interactive elicitation card (buildElicitationCard): option buttons share the
+    // `ac_elicit:<index>` prefix (value = `<requestId>|<optionValue>`); the Dismiss button
+    // is `ac_elicit_dismiss` (value = bare requestId → decline).
+    this.app.action(new RegExp(`^${ELICIT_ACTION_PREFIX}:`), async ({ ack, action }) => {
+      await ack()
+      const decoded = action.value ? decodePermValue(action.value) : null
+      if (decoded) this.deps.onElicitChoice?.({ requestId: decoded.requestId, value: decoded.optionId })
+    })
+    this.app.action(ELICIT_DISMISS_ACTION, async ({ ack, action }) => {
+      await ack()
+      if (action.value) this.deps.onElicitChoice?.({ requestId: action.value, value: null })
+    })
+    log?.debug('slack: app.start → opening Socket Mode WebSocket (wss://…slack.com)…')
+    await this.app.start()
+    log?.debug('slack: app.start resolved → socket established')
+  }
+
+  /** Open the existing per-session controls modal. Direct bots call this from their
+   *  local Socket Mode action handler; shared bots call it after the relay forwards the
+   *  click over `rd/msg(slack_action)`. `privateMetadata` stays opaque to Slack and lets the
+   *  relay route subsequent select/cancel interactions back to this daemon. */
+  async openStatusModal(triggerId: string, sessionKey: string, privateMetadata = sessionKey): Promise<void> {
+    const data = this.deps.onStatusInfo?.(sessionKey)
+    if (!data) return // session gone / not ours
+    try {
+      await this.app.client.views.open({
+        trigger_id: triggerId,
+        view: buildStatusModal(data.info, sessionKey, data.link, privateMetadata, data.cancellable, data.identity)
+      })
+    } catch (err) {
+      this.deps.log?.debug(`slack: views.open failed: ${(err as Error).message}`)
+    }
+  }
+
+  private rememberAssistantThread(ev: AssistantThreadStartedEvent): { channel: string; threadTs: string } | null {
+    const channel = ev.assistant_thread?.channel_id
+    const threadTs = ev.assistant_thread?.thread_ts
+    if (!channel || !threadTs) return null
+    this.assistantDmThreads.set(channel, threadTs)
+    return { channel, threadTs }
+  }
+
+  private withAssistantThread(ev: SlackMessageEvent): SlackMessageEvent {
+    if (ev.thread_ts || !ev.channel) return ev
+    if (ev.channel_type !== 'im' && !ev.channel.startsWith('D')) return ev
+    const threadTs = this.assistantDmThreads.get(ev.channel)
+    return threadTs ? { ...ev, thread_ts: threadTs } : ev
+  }
+
+  /** Shared chat.postMessage boundary for plain/markdown and Block Kit messages.
+   *  `username` + `icon_url` are the per-message identity overrides — both gated by
+   *  the same `chat:write.customize` scope, so they share one probe/cooldown. A
+   *  missing customize scope is safe to retry because Slack rejected the first
+   *  request before creating a message; every other error is propagated. */
+  private async postChatMessage(
+    payload: Record<string, unknown>,
+    options?: SlackPostOptions
+  ): Promise<{ ts?: string }> {
+    const customize: Record<string, unknown> = {}
+    const username = options?.username?.trim()
+    const iconUrl = options?.icon_url?.trim()
+    if (username) customize.username = username
+    if (iconUrl) customize.icon_url = iconUrl
+    if (Object.keys(customize).length === 0 || Date.now() < this.customUsernameRetryAt)
+      return this.app.client.chat.postMessage(payload)
+    try {
+      const result = await this.app.client.chat.postMessage({ ...payload, ...customize })
+      this.customUsernameRetryAt = 0
+      return result
+    } catch (err) {
+      if (!isMissingCustomizeScope(err)) throw err
+      this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
+      this.deps.log?.debug('slack: chat:write.customize missing — retrying with the app default identity')
+      return this.app.client.chat.postMessage(payload)
+    }
+  }
+
+  async postMessage(
+    channel: string,
+    text: string,
+    threadTs?: string,
+    options?: SlackPostOptions
+  ): Promise<string | undefined> {
+    return this.queue.enqueue(async () => {
+      const body = markdownBlock(text)
+      const trailing = options?.trailingBlocks
+      const agentAuthorId = options?.agentAuthorId?.trim()
+      const res = await this.postChatMessage(
+        {
+          channel,
+          thread_ts: threadTs,
+          ...body,
+          // A conversational agent message carries its author id; chrome carries a distinct
+          // marker so a peer daemon's backfill can skip it. The two are mutually exclusive.
+          ...(agentAuthorId
+            ? {
+                metadata: {
+                  event_type: 'agentconnect_thread_event',
+                  event_payload: { author_agent_id: agentAuthorId }
+                }
+              }
+            : options?.chrome
+              ? { metadata: { event_type: SLACK_CHROME_EVENT_TYPE, event_payload: {} } }
+              : {}),
+          ...(trailing?.length
+            ? {
+                blocks: [...body.blocks, ...trailing],
+                unfurl_links: false,
+                unfurl_media: false
+              }
+            : {})
+        },
+        options
+      )
+      return res?.ts
+    })
+  }
+
+  /** Edit a previously-posted message in place (chat.update) — the §9.1 "in-place update"
+   *  primitive for the main progress / plan message. Best-effort: swallows errors.
+   *  `chrome` re-stamps the chrome metadata: chat.update drops metadata that isn't
+   *  re-supplied, so a chrome message updated in place would otherwise lose its marker. */
+  async updateMessage(channel: string, ts: string, text: string, chrome = false): Promise<void> {
+    await this.queue.enqueue(async () => {
+      try {
+        await this.app.client.chat.update({
+          channel,
+          ts,
+          ...markdownBlock(text),
+          ...(chrome ? { metadata: { event_type: SLACK_CHROME_EVENT_TYPE, event_payload: {} } } : {})
+        })
+      } catch (err) {
+        this.deps.log?.debug(`slack: chat.update failed (ch=${channel} ts=${ts}): ${(err as Error).message}`)
+      }
+    })
+  }
+
+  /** Post an explicit Block Kit message (the interactive status bar) — `text` is the
+   *  notification/accessibility fallback. `unfurl_links`/`unfurl_media` are off so the
+   *  status bar's "View session" URL doesn't sprout a link-preview card. Returns the ts
+   *  for later in-place edits. */
+  async postBlocks(
+    channel: string,
+    blocks: unknown[],
+    text: string,
+    threadTs?: string,
+    options?: SlackPostOptions
+  ): Promise<string | undefined> {
+    return this.queue.enqueue(async () => {
+      const res = await this.postChatMessage(
+        {
+          channel,
+          thread_ts: threadTs,
+          text,
+          blocks,
+          unfurl_links: false,
+          unfurl_media: false,
+          // Block Kit chrome (status bar, cards) — mark it so the backfill skips it.
+          ...(options?.chrome ? { metadata: { event_type: SLACK_CHROME_EVENT_TYPE, event_payload: {} } } : {})
+        },
+        options
+      )
+      return res?.ts
+    })
+  }
+
+  /** Edit a previously-posted Block Kit message in place (chat.update). Best-effort;
+   *  returns false after logging so footer migration can retry a failed cleanup. `text`
+   *  is optional so callers can preserve the original notification fallback. */
+  async updateBlocks(channel: string, ts: string, blocks: unknown[], text?: string, chrome = false): Promise<boolean> {
+    try {
+      return await this.queue.enqueue(async () => {
+        await this.app.client.chat.update({
+          channel,
+          ts,
+          ...(text !== undefined ? { text } : {}),
+          blocks,
+          unfurl_links: false,
+          unfurl_media: false,
+          ...(chrome ? { metadata: { event_type: SLACK_CHROME_EVENT_TYPE, event_payload: {} } } : {})
+        })
+        return true
+      })
+    } catch (err) {
+      // Catch both Slack API failures and SlackSendQueue's outer timeout rejection.
+      this.deps.log?.debug(`slack: chat.update (blocks) failed (ch=${channel} ts=${ts}): ${(err as Error).message}`)
+      return false
+    }
+  }
+
+  /** Delete one of this app's own messages. Used when chronological re-anchoring
+   *  replaces live chrome with a newer message. Best-effort so a cleanup failure
+   *  never interrupts the agent turn. */
+  async deleteMessage(channel: string, ts: string): Promise<boolean> {
+    try {
+      return await this.queue.enqueue(async () => {
+        await this.app.client.chat.delete({ channel, ts })
+        return true
+      })
+    } catch (err) {
+      this.deps.log?.debug(`slack: chat.delete failed (ch=${channel} ts=${ts}): ${(err as Error).message}`)
+      return false
+    }
+  }
+
+  /**
+   * Pull a Slack thread's full history (conversations.replies, cursor-paginated)
+   * for §8.4/§9.2 mid-thread context. Returns root + replies in Slack ts order;
+   * best-effort (returns what it fetched, [] on error). Bot/system frames keep
+   * their bot_id as the sender so the caller can attribute them.
+   */
+  async getThreadReplies(
+    channel: string,
+    threadTs: string,
+    maxMessages = 200,
+    window?: { oldest?: string; latest?: string }
+  ): Promise<
+    {
+      sender: string
+      agentAuthorId?: string
+      ts: string
+      text: string
+      isBot: boolean
+      chrome: boolean
+      attachments: Attachment[]
+    }[]
+  > {
+    const out: {
+      sender: string
+      agentAuthorId?: string
+      ts: string
+      text: string
+      isBot: boolean
+      chrome: boolean
+      attachments: Attachment[]
+    }[] = []
+    let cursor: string | undefined
+    try {
+      do {
+        const res = await this.app.client.conversations.replies({
+          channel,
+          ts: threadTs,
+          limit: 200,
+          // Slack otherwise returns only metadata.event_type and omits the payload
+          // that carries the stable agent author id.
+          include_all_metadata: true,
+          ...(window?.oldest ? { oldest: window.oldest } : {}),
+          ...(window?.latest ? { latest: window.latest } : {}),
+          // `oldest` is the already-delivered watermark; exclude it. `latest` is a
+          // wall-clock cutoff rather than a real message ts, so excluding it is inert.
+          ...(window?.oldest || window?.latest ? { inclusive: false } : {}),
+          ...(cursor ? { cursor } : {})
+        })
+        for (const m of res.messages ?? []) {
+          if (!m.ts) continue
+          const metadataAuthor =
+            m.metadata?.event_type === 'agentconnect_thread_event' &&
+            typeof m.metadata.event_payload?.author_agent_id === 'string'
+              ? m.metadata.event_payload.author_agent_id.trim()
+              : ''
+          out.push({
+            sender: m.user ?? m.bot_id ?? 'unknown',
+            ...(metadataAuthor ? { agentAuthorId: metadataAuthor } : {}),
+            ts: m.ts,
+            text: extractSlackMessageText(m),
+            isBot: Boolean(m.bot_id),
+            chrome: m.metadata?.event_type === SLACK_CHROME_EVENT_TYPE,
+            attachments: (m.files ?? []).map(toAttachment).filter((a): a is Attachment => a !== null)
+          })
+          if (out.length >= maxMessages) return out
+        }
+        cursor = res.has_more ? res.response_metadata?.next_cursor : undefined
+      } while (cursor)
+    } catch (err) {
+      this.deps.log?.debug(
+        `slack: conversations.replies failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`
+      )
+    }
+    return out
+  }
+
+  /**
+   * Download an auth-gated Slack file (url_private[_download]) with the bot token,
+   * up to `maxBytes` (bounds daemon RSS + the inlined prompt frame). Returns the
+   * bytes, or null on any failure / over-cap (best-effort — a failed or oversized
+   * attachment degrades to a resource_link, never breaks the prompt). §9.2: bytes
+   * stay daemon-local.
+   */
+  async downloadFile(sourceUrl: string, maxBytes = 8 * 1024 * 1024): Promise<Buffer | null> {
+    try {
+      const res = await fetch(sourceUrl, { headers: { Authorization: `Bearer ${this.deps.group.botToken}` } })
+      if (!res.ok) {
+        this.deps.log?.debug(`slack: downloadFile ${sourceUrl} → HTTP ${res.status}`)
+        return null
+      }
+      const declared = Number(res.headers.get('content-length'))
+      if (Number.isFinite(declared) && declared > maxBytes) {
+        this.deps.log?.debug(`slack: downloadFile ${sourceUrl} skipped — ${declared} bytes > cap ${maxBytes}`)
+        return null
+      }
+      // An unauthorized url_private fetch is redirected to an HTML login page
+      // (HTTP 200, text/html) rather than 401 — never mistake that for the file.
+      const ctype = res.headers.get('content-type') ?? ''
+      if (ctype.includes('text/html')) {
+        this.deps.log?.debug(`slack: downloadFile ${sourceUrl} got text/html (login page?) — treating as inaccessible`)
+        return null
+      }
+      // Defensively bound the read even when content-length is absent/untrustworthy.
+      const buf = Buffer.from(await res.arrayBuffer())
+      if (buf.byteLength > maxBytes) {
+        this.deps.log?.debug(`slack: downloadFile ${sourceUrl} discarded — ${buf.byteLength} bytes > cap ${maxBytes}`)
+        return null
+      }
+      return buf
+    } catch (err) {
+      this.deps.log?.debug(`slack: downloadFile ${sourceUrl} failed: ${(err as Error).message}`)
+      return null
+    }
+  }
+
+  // ── MCP MessageGateway: read helpers backing the injected channel tools ──
+
+  async getChannelInfo(
+    channel: string
+  ): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean; user?: string }> {
+    const res = await this.app.client.conversations.info({ channel })
+    const c = res.channel ?? {}
+    // `user` is the DM counterpart — only set on im ("D…") conversations.
+    return { id: c.id ?? channel, name: c.name, isIm: c.is_im, isPrivate: c.is_private, user: c.user }
+  }
+
+  async listMembers(channel: string): Promise<{ id: string; name?: string; isBot?: boolean }[]> {
+    const res = await this.app.client.conversations.members({ channel, limit: 200 })
+    const ids = (res.members ?? []).slice(0, MEMBER_ENRICH_CAP)
+    return Promise.all(
+      ids.map((id) =>
+        this.getUserProfile(id)
+          .then((p) => ({ id: p.id, name: p.name, isBot: p.isBot }))
+          .catch(() => ({ id }))
+      )
+    )
+  }
+
+  /**
+   * The channels this bot is a MEMBER of (users.conversations, cursor-paginated) —
+   * the membership snapshot behind the console's per-channel trigger config. DMs /
+   * group DMs are excluded (they are not configurable channels). Returns null on
+   * any API failure so the caller never mistakes an error for "left all channels".
+   */
+  async listBotChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[] | null> {
+    const out: { id: string; name?: string; isPrivate?: boolean }[] = []
+    let cursor: string | undefined
+    try {
+      do {
+        const res = await this.app.client.users.conversations({
+          types: 'public_channel,private_channel',
+          exclude_archived: true,
+          limit: 200,
+          ...(cursor ? { cursor } : {})
+        })
+        for (const c of res.channels ?? []) {
+          if (!c.id || c.is_im || c.is_mpim) continue
+          out.push({ id: c.id, ...(c.name ? { name: c.name } : {}), ...(c.is_private ? { isPrivate: true } : {}) })
+        }
+        cursor = res.response_metadata?.next_cursor || undefined
+      } while (cursor)
+    } catch (err) {
+      this.deps.log?.debug(`slack: users.conversations failed: ${(err as Error).message}`)
+      return null
+    }
+    return out
+  }
+
+  async listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]> {
+    const channels = await this.listBotChannels()
+    if (!channels) throw new Error('failed to list Slack channels for bot membership')
+    return channels
+  }
+
+  async getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }> {
+    const res = await this.app.client.users.info({ user })
+    const u = res.user ?? {}
+    return { id: u.id ?? user, name: u.name, realName: u.real_name ?? u.profile?.real_name, isBot: u.is_bot }
+  }
+
+  /**
+   * Best-effort assistant loading status (assistant.threads.setStatus).
+   * Works in channels/DMs/assistant panel under chat:write (post Mar 2026).
+   * Pass status='' to clear. Never throws into dispatch.
+   */
+  async setStatus(
+    channel: string,
+    threadTs: string,
+    status: string,
+    loadingMessages?: string[],
+    options?: SlackStatusOptions
+  ): Promise<void> {
+    await this.queue.enqueue(async () => {
+      try {
+        // A clear only needs the status coordinates. Keeping authorship off that request
+        // also makes the identity override specific to the visible loading state.
+        const username = status ? options?.username?.trim() : undefined
+        const iconUrl = status ? options?.icon_url?.trim() : undefined
+        await this.app.client.assistant.threads.setStatus({
+          channel_id: channel,
+          thread_ts: threadTs,
+          status,
+          ...(loadingMessages ? { loading_messages: loadingMessages } : {}),
+          ...(username ? { username } : {}),
+          ...(iconUrl ? { icon_url: iconUrl } : {})
+        })
+      } catch (err) {
+        this.deps.log?.debug(`slack: setStatus failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`)
+      }
+    })
+  }
+
+  /**
+   * Best-effort assistant thread title (assistant.threads.setTitle). This API is
+   * only valid for Slack app threads created by the Agents feature; the daemon
+   * gates calls to DM sessions before reaching this boundary. Never throws into
+   * dispatch, including when the shared send queue itself times out.
+   */
+  async setTitle(channel: string, threadTs: string, title: string): Promise<void> {
+    try {
+      await this.queue.enqueue(() =>
+        this.app.client.assistant.threads.setTitle({
+          channel_id: channel,
+          thread_ts: threadTs,
+          title
+        })
+      )
+    } catch (err) {
+      this.deps.log?.debug(`slack: setTitle failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`)
+    }
+  }
+
+  async stop(): Promise<void> {
+    await this.app.stop()
+  }
+}

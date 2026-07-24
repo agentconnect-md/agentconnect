@@ -1,0 +1,10 @@
+[alias]
+	# amend previous commit
+	amend = commit -a --amend -C HEAD
+	# reset to remote
+	sync-force = !git fetch && git reset --hard origin/main
+	# rebase to remote
+	sync = !git fetch && git rebase origin/main
+
+[push]
+	autoSetupRemote = true

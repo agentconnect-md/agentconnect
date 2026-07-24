@@ -1,0 +1,70 @@
+import { describe, it, expect } from 'vitest'
+import { classifyInvocation, firstPositional } from '../src/route.js'
+
+describe('firstPositional', () => {
+  it('finds a bare command', () => {
+    expect(firstPositional(['chat'])).toBe('chat')
+  })
+  it('skips a value-taking global option and its value', () => {
+    expect(firstPositional(['--root', '/tmp/ac', 'chat'])).toBe('chat')
+  })
+  it('handles the --opt=value form (no separate value token)', () => {
+    expect(firstPositional(['--root=/tmp/ac', 'chat'])).toBe('chat')
+  })
+  it('does not skip a token after a boolean flag', () => {
+    expect(firstPositional(['--dry-run', 'run'])).toBe('run')
+  })
+  it('treats everything after -- as positional', () => {
+    expect(firstPositional(['--', 'chat'])).toBe('chat')
+  })
+  it('returns undefined when there is no command', () => {
+    expect(firstPositional([])).toBeUndefined()
+    expect(firstPositional(['--help'])).toBeUndefined()
+    expect(firstPositional(['--root', '/tmp/ac'])).toBeUndefined()
+  })
+})
+
+describe('classifyInvocation', () => {
+  it('routes the foreground run shell', () => {
+    expect(classifyInvocation(['run'])).toBe('run')
+    expect(classifyInvocation(['--root', '/x', 'run'])).toBe('run')
+  })
+
+  it('delegates daemon-owned commands, with global options on either side', () => {
+    expect(classifyInvocation(['chat'])).toBe('delegate')
+    expect(classifyInvocation(['--root', '/tmp/ac', 'chat'])).toBe('delegate')
+    expect(classifyInvocation(['chat', '--root', '/tmp/ac'])).toBe('delegate')
+    expect(classifyInvocation(['agent', 'list'])).toBe('delegate')
+    expect(classifyInvocation(['git-credential', 'a1', 'get'])).toBe('delegate')
+  })
+
+  it('delegates unknown/future daemon commands without a CLI change', () => {
+    expect(classifyInvocation(['some-future-command'])).toBe('delegate')
+    expect(classifyInvocation(['--root=/x', 'brand-new-thing'])).toBe('delegate')
+  })
+
+  it('keeps CLI-owned commands on the CLI', () => {
+    for (const c of [
+      'up',
+      'down',
+      'restart',
+      'status',
+      'install',
+      'install-service',
+      'uninstall-service',
+      'login',
+      'upgrade'
+    ]) {
+      expect(classifyInvocation([c])).toBe('cli')
+    }
+    expect(classifyInvocation(['--root', '/x', 'login'])).toBe('cli')
+    expect(classifyInvocation(['version', 'list'])).toBe('cli')
+  })
+
+  it('keeps bare / help / version invocations on the CLI', () => {
+    expect(classifyInvocation([])).toBe('cli')
+    expect(classifyInvocation(['--help'])).toBe('cli')
+    expect(classifyInvocation(['--version'])).toBe('cli')
+    expect(classifyInvocation(['help'])).toBe('cli')
+  })
+})

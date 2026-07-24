@@ -1,0 +1,267 @@
+'use client'
+
+// Agent-type + IM-platform brand marks.
+// Sized to 60% of their container to match the .av / .imark CSS.
+
+import { Icon } from './ui'
+import { withIconUrl, type AgentIcon } from '@/lib/agent-icon'
+import newLarkIcon from '@iconify-icons/icon-park/new-lark'
+import slackIcon from '@iconify-icons/logos/slack-icon'
+import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
+import { Icon as IconifyIcon } from '@iconify/react'
+import { SiDiscord, SiGithub, SiTelegram } from 'react-icons/si'
+import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
+
+const fill = { width: '60%', height: '60%', display: 'block' } as const
+
+export function AgentMark({ model }: { model: string }) {
+  const registry = useAcpRegistry()
+  const registryIcon = acpRuntime(registry, model)?.icon
+  if (!registryIcon) return null
+  return (
+    <img
+      src={registryIcon}
+      alt=""
+      className="block h-[60%] w-[60%] object-contain [html[data-theme='dark']_&]:invert"
+    />
+  )
+}
+
+/**
+ * Agent avatar — renders the stored {@link AgentIcon} descriptor, filling its
+ * parent tile (which owns the box size + border-radius):
+ *  - `glyph` → a white Lucide glyph on a solid color plate.
+ *  - `image` → the image, cover-cropped.
+ *  - `runtime` / null (legacy default) → the runtime brand mark (<AgentMark>) on
+ *    the tile's own background, i.e. today's behavior.
+ * `size` is the tile's pixel size (used to scale the glyph). Distinct from
+ * <AgentMark>, which stays the pure runtime mark for the runtime-select fields.
+ */
+export function AgentIconView({ icon, runtime, size }: { icon?: AgentIcon | null; runtime: string; size: number }) {
+  if (icon?.kind === 'glyph') {
+    return (
+      <span
+        data-agent-icon-glyph="true"
+        className="flex h-full w-full items-center justify-center rounded-[inherit]"
+        style={{ background: icon.color }}
+      >
+        <Icon name={icon.glyph} color="#fff" size={Math.round(size * 0.56)} strokeWidth={2} />
+      </span>
+    )
+  }
+  if (icon?.kind === 'image' && icon.url) {
+    // Inline width/height (not h-full/w-full utilities) so this beats the `.av img`
+    // / `.imark img` 60% descendant rules and the avatar fills its tile. The url is
+    // reassembled from the DTO `iconUrl` at the fetch boundary (agentFromDto/orgFromDto).
+    return (
+      <img
+        src={icon.url}
+        alt=""
+        data-agent-icon-image="true"
+        className="rounded-[inherit] bg-white object-cover"
+        style={{ width: '100%', height: '100%' }}
+      />
+    )
+  }
+  return <AgentMark model={runtime} />
+}
+
+/** Organization avatar for selectors and other identity surfaces. Uploaded images
+ * and stored glyphs use the shared icon renderer; legacy/invalid descriptors keep
+ * the existing deterministic initial fallback instead of leaving an empty tile. */
+export function OrgIconView({
+  icon,
+  iconUrl,
+  label,
+  fallbackColor,
+  size,
+  className
+}: {
+  icon?: AgentIcon | null
+  iconUrl?: string | null
+  label: string
+  fallbackColor: string
+  size: number
+  className: string
+}) {
+  const resolved = withIconUrl(icon, iconUrl)
+  const renderable = resolved?.kind === 'glyph' || (resolved?.kind === 'image' && Boolean(resolved.url))
+
+  return (
+    <span
+      className={`flex flex-none items-center justify-center overflow-hidden font-sans font-semibold leading-normal text-white ${className}`}
+      style={{ width: size, height: size, background: renderable ? undefined : fallbackColor }}
+    >
+      {renderable ? <AgentIconView icon={resolved} runtime="" size={size} /> : label.charAt(0).toUpperCase()}
+    </span>
+  )
+}
+
+// GitHub octocat mark — rendered on the workspace tiles and cards instead of
+// <Icon name="github" /> (which lucide no longer ships).
+export function GithubMark({ color = 'currentColor' }: { color?: string }) {
+  return <SiGithub className="block h-[60%] w-[60%]" color={color} aria-hidden />
+}
+
+export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fillPct?: number }) {
+  const x = (platform || '').toLowerCase()
+  // Marks render at 60% of their box to sit inside .av / .imark tiles; callers can override
+  // fillPct — e.g. the Bots row fills a 14px box (fillPct=100) to match the design's full-bleed mark.
+  const s = fillPct === 60 ? fill : ({ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' } as const)
+  if (x.includes('github')) {
+    return <SiGithub style={s} color="currentColor" aria-hidden />
+  }
+  if (x.includes('hook')) {
+    return <IconifyIcon icon={webhooksLogoFillIcon} style={s} color="var(--brand)" aria-hidden />
+  }
+  // 'playground' (live) and 'webchat' (its persisted session) share the sandbox mark.
+  if (x.includes('play') || x.includes('web')) {
+    return (
+      <span
+        style={{ width: s.width, height: s.height }}
+        className="flex items-center justify-center rounded-[27%] bg-(--brand)"
+        aria-hidden
+      >
+        <Icon name="flask-conical" size={16} color="#fff" className="h-[64%] w-[64%]" />
+      </span>
+    )
+  }
+  if (x.includes('tele')) {
+    return <SiTelegram style={s} color="#26A5E4" aria-hidden />
+  }
+  if (x.includes('disc')) {
+    return <SiDiscord style={s} color="#5865F2" aria-hidden />
+  }
+  if (x.includes('feishu') || x.includes('lark')) {
+    return (
+      <IconifyIcon
+        icon={newLarkIcon}
+        style={s}
+        className="[&_path:nth-child(1)]:stroke-[#3370FF] [&_path:nth-child(2)]:fill-[#00D6B9] [&_path:nth-child(3)]:stroke-[#133C9A]"
+        aria-hidden
+      />
+    )
+  }
+  if (x.includes('slack')) {
+    return <IconifyIcon icon={slackIcon} style={s} aria-hidden />
+  }
+  return (
+    <span style={{ width: s.width, height: s.height }} className="flex items-center justify-center" aria-hidden>
+      <Icon name="plug" className="h-full w-full" />
+    </span>
+  )
+}
+
+export function Wordmark({ height = 36, inverse = false }: { height?: number; inverse?: boolean }) {
+  const textFill = inverse ? '#ffffff' : '#3a2a4d'
+  const accentFill = inverse ? '#ef7eb4' : '#c62a78'
+  return (
+    <svg
+      height={height}
+      viewBox="0 0 230 48"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      role="img"
+      aria-label="AgentConnect"
+    >
+      <polygon points="24,5 43,24 24,24" fill="#f2c64a" />
+      <polygon points="43,24 24,43 24,24" fill="#f4793a" />
+      <polygon points="24,43 5,24 24,24" fill="#7c3ca2" />
+      <polygon points="5,24 24,5 24,24" fill="#d83f96" />
+      <text
+        x="58"
+        y="31"
+        fontFamily="Geist, -apple-system, sans-serif"
+        fontSize="21"
+        fontWeight="600"
+        letterSpacing="-0.02em"
+        fill={textFill}
+      >
+        Agent<tspan fill={accentFill}>Connect</tspan>
+      </text>
+    </svg>
+  )
+}
+
+export function LogoMark({ size = 27 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 48 48"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      role="img"
+      aria-label="AgentConnect"
+    >
+      <polygon points="24,5 43,24 24,24" fill="#f2c64a" />
+      <polygon points="43,24 24,43 24,24" fill="#f4793a" />
+      <polygon points="24,43 5,24 24,24" fill="#7c3ca2" />
+      <polygon points="5,24 24,5 24,24" fill="#d83f96" />
+    </svg>
+  )
+}
+
+// Loading spinner: the four logo facets chase in opacity around the diamond.
+const SPIN = { dur: '1.4s', keyTimes: '0;0.18;0.7;1', values: '0.22;1;0.22;0.22' } as const
+const FACETS = [
+  { points: '24,5 43,24 24,24', fill: '#f2c64a', begin: '0s' },
+  { points: '43,24 24,43 24,24', fill: '#f4793a', begin: '0.175s' },
+  { points: '24,43 5,24 24,24', fill: '#7c3ca2', begin: '0.35s' },
+  { points: '5,24 24,5 24,24', fill: '#d83f96', begin: '0.525s' }
+] as const
+
+export function Spinner({ size = 48 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 48 48"
+      role="img"
+      aria-label="Loading"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      {FACETS.map((f) => (
+        <polygon key={f.points} points={f.points} fill={f.fill} opacity="0.22">
+          <animate
+            attributeName="opacity"
+            dur={SPIN.dur}
+            repeatCount="indefinite"
+            begin={f.begin}
+            keyTimes={SPIN.keyTimes}
+            values={SPIN.values}
+          />
+        </polygon>
+      ))}
+    </svg>
+  )
+}
+
+// Centered spinner for a page/card body that is still waiting on its data pull.
+// Shared so every view's loading state looks the same (cf. Usage / daemon detail).
+//
+// `fill` is for a WHOLE-VIEW loader (the sole thing on screen while a list/detail
+// first loads): it reserves the content region and centres the spinner vertically,
+// so a refresh doesn't strand it at the top of the tall mobile viewport. Leave it
+// off for compact in-card section loaders (they keep the small top-padded box).
+export function LoadingState({
+  size = 30,
+  padding = 48,
+  fill = false
+}: {
+  size?: number
+  padding?: number
+  fill?: boolean
+}) {
+  if (fill)
+    return (
+      <div className="loadfill">
+        <Spinner size={size} />
+      </div>
+    )
+  return (
+    <div className="flex justify-center" style={{ padding }}>
+      <Spinner size={size} />
+    </div>
+  )
+}

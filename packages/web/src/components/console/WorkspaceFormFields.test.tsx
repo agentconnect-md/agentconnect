@@ -1,0 +1,63 @@
+// @vitest-environment happy-dom
+
+import { act, type ReactNode } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { RepositoryAccessField, WorkspaceModeField } from './WorkspaceFormFields'
+
+let root: Root | undefined
+let container: HTMLDivElement | undefined
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+
+async function render(element: ReactNode) {
+  container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+  await act(async () => root?.render(element))
+}
+
+afterEach(async () => {
+  if (root) await act(async () => root?.unmount())
+  container?.remove()
+  root = undefined
+  container = undefined
+})
+
+describe('WorkspaceFormFields', () => {
+  it('uses one workspace source picker for create and edit flows', async () => {
+    const onChange = vi.fn()
+    await render(<WorkspaceModeField value="scratch" onChange={onChange} />)
+
+    const buttons = Array.from(container?.querySelectorAll('button') ?? [])
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      'From scratchFresh empty directory.',
+      'From GitHubClone a repo on a branch.'
+    ])
+
+    await act(async () => buttons[1]?.click())
+    expect(onChange).toHaveBeenCalledWith('github')
+  })
+
+  it('returns the shared repository access vocabulary', async () => {
+    const onChange = vi.fn()
+    await render(
+      <RepositoryAccessField
+        repositorySelected
+        value="read"
+        open
+        onToggle={() => undefined}
+        onClose={() => undefined}
+        onChange={onChange}
+      />
+    )
+
+    const writeButton = Array.from(container?.querySelectorAll('button') ?? []).find((button) =>
+      button.textContent?.startsWith('Read & write')
+    )
+    expect(writeButton?.textContent).toContain('Push, open PRs & run GitHub Actions')
+
+    await act(async () => writeButton?.click())
+    expect(onChange).toHaveBeenCalledWith('write')
+  })
+})

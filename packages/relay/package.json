@@ -1,0 +1,62 @@
+{
+  "name": "@agentconnect.md/relay",
+  "version": "1.0.0-dev",
+  "description": "AgentConnect relay — the unified ingress plane (shared bot / webhook / webchat) that dials the control-plane and forwards to daemons",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "dist/index.js",
+  "bin": {
+    "agentconnect-relay": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",
+    "prepack": "pnpm run build",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@agentconnect.md/connection": "workspace:*",
+    "@agentconnect.md/protocol": "workspace:*",
+    "@slack/web-api": "^7.17.0",
+    "fastify": "^5.8.5",
+    "https-proxy-agent": "^9.1.0",
+    "ws": "^8.21.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.2",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  },
+  "keywords": [
+    "agentconnect",
+    "ingress",
+    "relay",
+    "websocket"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

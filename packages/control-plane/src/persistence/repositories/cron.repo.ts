@@ -1,0 +1,226 @@
+/**
+ * PgCronRepo — cron definitions (design §3.11, §3.14).
+ *
+ * A cron drives ONE agent. `upsert` is keyed on cronId so `cron/upsert` re-apply
+ * is idempotent (the CP owns the definition). `listForDaemon` builds the
+ * per-daemon `register/ok.crons[]` (crons of agents placed on that daemon —
+ * same scope rule as integrations); `listForOrg` backs the console list.
+ * `lastRunAt` here is advisory — the daemon is authoritative for firing.
+ */
+import type { Platform } from '@agentconnect.md/protocol'
+import type { CronDef, User } from '../../generated/prisma/client.js'
+import type { PrismaLike } from '../prisma.js'
+import type { CronRepo, CronRecord, CronReportInput, CronRunRecord, UpsertCronInput, ViewCtx } from '../ports.js'
+import { visibilityWhere } from '../ports.js'
+import { toDbPlatform } from '../platform.js'
+import { AgentId, CronId, IntegrationId, OrgId, type DaemonId } from '../../domain/ids.js'
+
+// The cron row plus its joined creator + last-modifier users — reads surface both
+// for the console (same model as agents/daemons).
+type CronWithUsers = CronDef & { createdBy: User | null; lastModifiedBy: User | null }
+const withUsers = { createdBy: true, lastModifiedBy: true } as const
+
+function toRecord(c: CronWithUsers): CronRecord {
+  return {
+    id: CronId(c.id),
+    orgId: OrgId(c.orgId),
+    agentId: c.agentId ? AgentId(c.agentId) : null,
+    name: c.name,
+    schedule: c.schedule,
+    timezone: c.timezone,
+    targetPlatform: c.targetPlatform as Platform,
+    targetChannel: c.targetChannel,
+    targetIntegrationId: c.targetIntegrationId ? IntegrationId(c.targetIntegrationId) : null,
+    trigger: c.trigger,
+    enabled: c.enabled,
+    lastRunAt: c.lastRunAt,
+    createdBy: c.createdBy
+      ? { userId: c.createdBy.id, displayName: c.createdBy.displayName, email: c.createdBy.email }
+      : null,
+    // Raw creator scalar for the visibility creator-arm — independent of the joined
+    // `createdBy` above, which is null once the user row is SetNull-deleted.
+    createdByUserId: c.createdByUserId,
+    visibility: c.visibility,
+    sharedWith: c.sharedWith,
+    createdAt: c.createdAt,
+    lastModifiedAt: c.lastModifiedAt,
+    lastModifiedBy: c.lastModifiedBy
+      ? { userId: c.lastModifiedBy.id, displayName: c.lastModifiedBy.displayName, email: c.lastModifiedBy.email }
+      : null
+  }
+}
+
+export class PgCronRepo implements CronRepo {
+  constructor(private readonly db: PrismaLike) {}
+
+  async upsert(input: UpsertCronInput): Promise<CronRecord> {
+    const data = {
+      orgId: input.orgId,
+      agentId: input.agentId,
+      name: input.name ?? null,
+      schedule: input.schedule,
+      timezone: input.timezone,
+      targetPlatform: toDbPlatform(input.targetPlatform ?? 'slack'),
+      targetChannel: input.targetChannel ?? null,
+      targetIntegrationId: input.targetIntegrationId ?? null,
+      trigger: input.trigger,
+      enabled: input.enabled ?? true
+    }
+    const c = await this.db.cronDef.upsert({
+      where: { id: input.cronId },
+      // Creator only on CREATE — a later edit through the same PUT upsert never
+      // reassigns the cron to its editor. The last-modified audit, by contrast, is
+      // stamped on BOTH paths: on create the editor == creator (lastModifiedAt
+      // defaults to now = createdAt); on edit it advances to this upsert's actor.
+      create: {
+        id: input.cronId,
+        ...data,
+        ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {}),
+        ...(input.lastModifiedByUserId ? { lastModifiedByUserId: input.lastModifiedByUserId } : {}),
+        // Initial visibility on create only (mirrors createdByUserId); the update
+        // branch never touches sharing — that's the setSharing / PUT /sharing path.
+        ...(input.visibility ? { visibility: input.visibility } : {}),
+        ...(input.sharedWith ? { sharedWith: input.sharedWith } : {})
+      },
+      update: {
+        ...data,
+        lastModifiedAt: new Date(),
+        ...(input.lastModifiedByUserId ? { lastModifiedByUserId: input.lastModifiedByUserId } : {})
+      },
+      include: withUsers
+    })
+    return toRecord(c)
+  }
+
+  async setSharing(
+    cronId: CronId,
+    sharing: { visibility: CronRecord['visibility']; sharedWith: string[] },
+    byUserId?: string
+  ): Promise<CronRecord> {
+    // A sharing change is a human edit — advance the last-modified audit (editor
+    // stamped when known; absent under devAuth ⇒ leave the prior editor as-is).
+    const c = await this.db.cronDef.update({
+      where: { id: cronId },
+      data: {
+        visibility: sharing.visibility,
+        sharedWith: sharing.sharedWith,
+        lastModifiedAt: new Date(),
+        ...(byUserId ? { lastModifiedByUserId: byUserId } : {})
+      },
+      include: withUsers
+    })
+    return toRecord(c)
+  }
+
+  async remove(cronId: CronId): Promise<void> {
+    await this.db.cronDef.delete({ where: { id: cronId } })
+  }
+
+  async listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<CronRecord[]> {
+    const rows = await this.db.cronDef.findMany({
+      where: { orgId, ...visibilityWhere(viewer) },
+      include: withUsers,
+      orderBy: { createdAt: 'asc' }
+    })
+    return rows.map(toRecord)
+  }
+
+  async listForAgent(agentId: AgentId): Promise<CronRecord[]> {
+    const rows = await this.db.cronDef.findMany({
+      where: { agentId },
+      include: withUsers,
+      orderBy: { createdAt: 'asc' }
+    })
+    return rows.map(toRecord)
+  }
+
+  async listForDaemon(daemonId: DaemonId): Promise<CronRecord[]> {
+    // Via the agent relation: only crons whose owning agent is placed on this
+    // daemon. Orphaned rows (agentId null) match no daemon — inert by design.
+    const rows = await this.db.cronDef.findMany({
+      where: { agent: { daemonId } },
+      include: withUsers,
+      orderBy: { createdAt: 'asc' }
+    })
+    return rows.map(toRecord)
+  }
+
+  async get(cronId: CronId): Promise<CronRecord | null> {
+    const c = await this.db.cronDef.findUnique({ where: { id: cronId }, include: withUsers })
+    return c ? toRecord(c) : null
+  }
+
+  async recordReport(cronId: CronId, reportingDaemonId: DaemonId, r: CronReportInput): Promise<boolean> {
+    // Scope gate first (owning agent placed on the reporting daemon) — a
+    // foreign daemon's report is a silent no-op, never an error.
+    const cron = await this.db.cronDef.findFirst({
+      where: { id: cronId, agent: { daemonId: reportingDaemonId } },
+      select: { id: true, orgId: true }
+    })
+    if (!cron) return false
+    // lastRunAt is latest-wins: an older firedAt (reconnect re-assert,
+    // out-of-order delivery) never regresses the stamp.
+    await this.db.cronDef.updateMany({
+      where: { id: cronId, OR: [{ lastRunAt: null }, { lastRunAt: { lt: r.firedAt } }] },
+      data: { lastRunAt: r.firedAt }
+    })
+    // Run row keyed on (cronId, firedAt): the fire report opens it (`running`),
+    // a session progress report adds the deep-link without closing it, and the
+    // completion report closes it — and still creates it if earlier reports
+    // were lost. A plain fire re-assert never resets either field.
+    const key = { cronId_startedAt: { cronId, startedAt: r.firedAt } }
+    if (!r.status) {
+      const progress = r.sessionId ? { sessionId: r.sessionId } : {}
+      await this.db.cronRun.upsert({
+        where: key,
+        create: { cronId, orgId: cron.orgId, startedAt: r.firedAt, ...progress },
+        update: progress
+      })
+    } else {
+      const outcome = {
+        status: r.status,
+        durationMs: r.durationMs ?? null,
+        ...(r.sessionId ? { sessionId: r.sessionId } : {}),
+        reason: r.reason ?? null
+      }
+      await this.db.cronRun.upsert({
+        where: key,
+        create: { cronId, orgId: cron.orgId, startedAt: r.firedAt, ...outcome },
+        update: outcome
+      })
+    }
+    return true
+  }
+
+  async listRuns(cronId: CronId, limit = 50): Promise<CronRunRecord[]> {
+    const rows = await this.db.cronRun.findMany({
+      where: { cronId },
+      orderBy: { startedAt: 'desc' },
+      take: limit
+    })
+    return rows.map((r) => ({
+      id: r.id,
+      cronId: CronId(r.cronId),
+      startedAt: r.startedAt,
+      status: r.status,
+      durationMs: r.durationMs,
+      sessionId: r.sessionId,
+      reason: r.reason
+    }))
+  }
+
+  async reapStaleRuns(staleBefore: Date): Promise<number> {
+    // Fail only rows still `running` past the cutoff; terminal rows are left as
+    // they are, and a late completion report re-closes a reaped row with the real
+    // outcome (recordReport's upsert `update` is unconditional).
+    const res = await this.db.cronRun.updateMany({
+      where: { status: 'running', startedAt: { lt: staleBefore } },
+      data: { status: 'failed', reason: ORPHANED_RUN_REASON }
+    })
+    return res.count
+  }
+}
+
+// Marker set on a run whose completion report never arrived (the reaper closed
+// it). Kept short — surfaced verbatim in the console run detail.
+export const ORPHANED_RUN_REASON = 'no completion report (daemon offline or restarted at turn end)'

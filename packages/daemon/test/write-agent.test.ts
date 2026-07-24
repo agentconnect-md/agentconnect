@@ -1,0 +1,697 @@
+import { describe, it, expect } from 'vitest'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { AgentSpec, CronUpsert, IntegrationSpec } from '@agentconnect.md/protocol'
+import {
+  archiveAgent,
+  commitAgentMove,
+  detachedAgentDir,
+  findAgentFileById,
+  pruneMovedAgentDependents,
+  removeAgent,
+  readAgentMoveStage,
+  restoreArchivedAgent,
+  stageAgentMove,
+  stagedAgentIds,
+  writeAgentSpec
+} from '../src/agents/write-agent.js'
+import { writeIntegrationSpec } from '../src/agents/write-integration.js'
+import { writeCronDef } from '../src/agents/write-cron.js'
+
+const deps = { knownRuntimes: ['claude', 'codex'] }
+
+function seedAgent(dir: string, id: string, agent: Record<string, unknown>): string {
+  const adir = join(dir, id)
+  mkdirSync(adir, { recursive: true })
+  const file = join(adir, 'agent.json')
+  writeFileSync(file, JSON.stringify(agent))
+  return file
+}
+
+function readJson(file: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+}
+
+const baseSpec = (over: Partial<AgentSpec> = {}): AgentSpec => ({
+  name: 'bot-a',
+  runtime: 'claude',
+  env: {},
+  ...over
+})
+
+describe('writeAgentSpec — merge (agent.json exists)', () => {
+  it('merges displayName from the CP spec', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      displayName: 'Old Bot',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ displayName: 'Support Bot' }), deps)
+
+    expect(readJson(file).displayName).toBe('Support Bot')
+    expect(readJson(file).origin).toBe('cp')
+  })
+
+  it('leaves the on-disk displayName alone when the spec omits it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      displayName: 'Hand-authored Bot',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec(), deps)
+
+    expect(readJson(file).displayName).toBe('Hand-authored Bot')
+  })
+
+  it('clears displayName when the CP spec sends null', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      displayName: 'Support Bot',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ displayName: null }), deps)
+
+    expect(readJson(file)).not.toHaveProperty('displayName')
+  })
+
+  it('merges description from the CP spec', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      description: 'Old prompt',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ description: 'You deploy things.' }), deps)
+
+    expect(readJson(file).description).toBe('You deploy things.')
+  })
+
+  it('leaves the on-disk description alone when the spec omits it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      description: 'Hand-authored prompt',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec(), deps)
+
+    expect(readJson(file).description).toBe('Hand-authored prompt')
+  })
+
+  it('clears description when the CP spec sends "" (cleared to empty text)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      description: 'Old prompt',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ description: '' }), deps)
+
+    expect(readJson(file)).not.toHaveProperty('description')
+  })
+
+  it('switches the runtime when the CP spec changes it (regression: #370)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ runtime: 'codex' }), deps)
+
+    expect(readJson(file).runtime).toBe('codex')
+  })
+
+  it('leaves the on-disk runtime alone when the spec omits it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'codex',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ runtime: undefined }), deps)
+
+    expect(readJson(file).runtime).toBe('codex')
+  })
+
+  it('folds a pause change into raw.pause (#288)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ pause: true }), deps)
+
+    expect(readJson(file).pause).toBe(true)
+  })
+
+  it('leaves an on-disk pause untouched when the spec omits it (#288)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      pause: true,
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    // Spec has no pause key ⇒ a hand-edited pause on disk must survive a CP upsert.
+    writeAgentSpec(dir, 'bot-a', baseSpec({ pause: undefined }), deps)
+
+    expect(readJson(file).pause).toBe(true)
+  })
+
+  it('folds an introduceOnJoin change into raw.introduceOnJoin (#536)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ introduceOnJoin: true }), deps)
+
+    expect(readJson(file).introduceOnJoin).toBe(true)
+  })
+
+  it('leaves an on-disk introduceOnJoin untouched when the spec omits it (#536)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      introduceOnJoin: true,
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ introduceOnJoin: undefined }), deps)
+
+    expect(readJson(file).introduceOnJoin).toBe(true)
+  })
+
+  it('folds a model change into runtimeOverrides.model', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ model: 'opus' }), deps)
+
+    const raw = readJson(file)
+    expect((raw.runtimeOverrides as { model?: string }).model).toBe('opus')
+  })
+
+  it('folds spec.secrets (Record) into runtimeOverrides.secrets (array), like env', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(
+      dir,
+      'bot-a',
+      baseSpec({ env: { PUBLIC_URL: 'https://x' }, secrets: { API_KEY: 'sk-1', DB_PASSWORD: 'p@ss' } }),
+      deps
+    )
+
+    const ro = readJson(file).runtimeOverrides as { env?: unknown; secrets?: unknown }
+    expect(ro.env).toEqual([{ name: 'PUBLIC_URL', value: 'https://x' }])
+    expect(ro.secrets).toEqual([
+      { name: 'API_KEY', value: 'sk-1' },
+      { name: 'DB_PASSWORD', value: 'p@ss' }
+    ])
+  })
+
+  it('clears a stale runtimeOverrides.model when the spec sends model: null (runtime switch → default)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      // The previous runtime's model, left over on disk.
+      runtimeOverrides: { model: 'opus', env: [{ name: 'FOO', value: 'bar' }] },
+      reasoningEffort: 'high',
+      permissionMode: 'plan',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    // Switch runtime with model/effort/permissionMode reset to default (null ⇒ clear).
+    // env still rides in the same runtimeOverrides bag (always shipped) and must survive.
+    writeAgentSpec(
+      dir,
+      'bot-a',
+      baseSpec({ runtime: 'codex', model: null, reasoningEffort: null, permissionMode: null, env: { FOO: 'bar' } }),
+      deps
+    )
+
+    const raw = readJson(file)
+    expect(raw.runtime).toBe('codex')
+    // The stale model override is gone; env in the same bag survives.
+    expect((raw.runtimeOverrides as { model?: string }).model).toBeUndefined()
+    expect((raw.runtimeOverrides as { env?: unknown }).env).toEqual([{ name: 'FOO', value: 'bar' }])
+    expect(raw.reasoningEffort).toBeUndefined()
+    expect(raw.permissionMode).toBeUndefined()
+  })
+
+  it('leaves runtimeOverrides.model alone when the spec omits model (absent ≠ clear)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      runtimeOverrides: { model: 'opus' },
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    // model undefined (key absent) ⇒ hand-authored override survives a partial upsert.
+    writeAgentSpec(dir, 'bot-a', baseSpec({ model: undefined, env: undefined }), deps)
+
+    expect((readJson(file).runtimeOverrides as { model?: string }).model).toBe('opus')
+  })
+
+  it('preserves the relative workspace.path on update', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ runtime: 'codex' }), deps)
+
+    expect((readJson(file).workspace as { path?: string }).path).toBe('./workspace')
+  })
+
+  it('persists explicit-repo GitHub credentials for a scratch workspace', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ workspace: { mode: 'scratch', gitCredential: 'github-app' } }), deps)
+
+    expect(readJson(file).workspace).toMatchObject({
+      mode: 'from-scratch',
+      path: './workspace',
+      gitCredential: 'github-app'
+    })
+  })
+
+  it('persists and normalizes a GitHub working subdirectory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'git-repo', path: './workspace', agentDir: 'old/path' }
+    })
+
+    writeAgentSpec(
+      dir,
+      'bot-a',
+      baseSpec({
+        workspace: {
+          mode: 'github',
+          gitRepo: 'https://github.com/acme/repo',
+          branch: 'main',
+          agentDir: './services/api'
+        }
+      }),
+      deps
+    )
+
+    expect((readJson(file).workspace as { agentDir?: string }).agentDir).toBe('services/api')
+  })
+
+  it('clears a stale working subdirectory for repo-root and scratch specs', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'git-repo', path: './workspace', agentDir: 'old/path' }
+    })
+
+    writeAgentSpec(
+      dir,
+      'bot-a',
+      baseSpec({ workspace: { mode: 'github', gitRepo: 'https://github.com/acme/repo', branch: 'main' } }),
+      deps
+    )
+    expect(readJson(file).workspace).not.toHaveProperty('agentDir')
+
+    const raw = readJson(file)
+    ;(raw.workspace as Record<string, unknown>).agentDir = 'stale/path'
+    writeFileSync(file, JSON.stringify(raw))
+    writeAgentSpec(dir, 'bot-a', baseSpec({ workspace: { mode: 'scratch' } }), deps)
+    expect(readJson(file).workspace).not.toHaveProperty('agentDir')
+  })
+
+  it('keeps a historical invalid working subdirectory during replication', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'git-repo', path: './workspace' }
+    })
+
+    writeAgentSpec(
+      dir,
+      'bot-a',
+      baseSpec({
+        workspace: { mode: 'github', gitRepo: 'https://github.com/acme/repo', branch: 'main', agentDir: '../legacy' }
+      }),
+      deps
+    )
+
+    expect((readJson(file).workspace as { agentDir?: string }).agentDir).toBe('../legacy')
+  })
+})
+
+describe('writeAgentSpec — create (no agent.json)', () => {
+  it('persists displayName for a fresh agent', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+
+    writeAgentSpec(dir, 'bot-new', baseSpec({ name: 'bot-new', displayName: 'Deploy Bot' }), deps)
+
+    const file = findAgentFileById(dir, 'bot-new')
+    expect(file).toBeDefined()
+    expect(readJson(file!).displayName).toBe('Deploy Bot')
+    expect(readJson(file!).origin).toBe('cp')
+  })
+
+  it('uses the spec runtime for a fresh agent', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+
+    writeAgentSpec(dir, 'bot-new', baseSpec({ name: 'bot-new', runtime: 'codex' }), deps)
+
+    const file = findAgentFileById(dir, 'bot-new')
+    expect(file).toBeDefined()
+    expect(readJson(file!).runtime).toBe('codex')
+  })
+
+  it('falls back to the first known runtime when the spec omits it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+
+    writeAgentSpec(dir, 'bot-new', baseSpec({ name: 'bot-new', runtime: undefined }), deps)
+
+    const file = findAgentFileById(dir, 'bot-new')
+    expect(readJson(file!).runtime).toBe('claude')
+  })
+})
+
+describe('cold-move archive', () => {
+  it('archives the whole custom agent root and writeAgentSpec restores it before merging CP fields', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const agentDir = join(dir, 'teams', 'custom-name')
+    mkdirSync(join(agentDir, 'workspace', 'nested'), { recursive: true })
+    mkdirSync(join(agentDir, 'memory'), { recursive: true })
+    writeFileSync(join(agentDir, 'local-note.txt'), 'agent-local-state')
+    writeFileSync(join(agentDir, 'workspace', 'nested', 'keep.txt'), 'workspace-state')
+    writeFileSync(join(agentDir, 'memory', 'keep.md'), 'memory-state')
+    writeFileSync(
+      join(agentDir, 'agent.json'),
+      JSON.stringify({
+        id: 'bot-a',
+        name: 'local-name',
+        status: 'active',
+        runtime: 'claude',
+        integrations: [],
+        crons: [],
+        workspace: { mode: 'from-scratch', path: './workspace' }
+      })
+    )
+
+    expect(archiveAgent(dir, 'bot-a')).toBe('archived')
+    expect(findAgentFileById(dir, 'bot-a')).toBeUndefined()
+    const archiveRoot = detachedAgentDir(dir, 'bot-a')
+    expect(JSON.parse(readFileSync(join(archiveRoot, 'metadata.json'), 'utf8'))).toEqual({
+      agentId: 'bot-a',
+      relativePath: join('teams', 'custom-name')
+    })
+    expect(readFileSync(join(archiveRoot, 'agent', 'workspace', 'nested', 'keep.txt'), 'utf8')).toBe('workspace-state')
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ name: 'cp-name', runtime: 'codex' }), deps)
+    expect(findAgentFileById(dir, 'bot-a')).toBe(join(agentDir, 'agent.json'))
+    expect(existsSync(archiveRoot)).toBe(false)
+    expect(readFileSync(join(agentDir, 'workspace', 'nested', 'keep.txt'), 'utf8')).toBe('workspace-state')
+    expect(readFileSync(join(agentDir, 'memory', 'keep.md'), 'utf8')).toBe('memory-state')
+    expect(readFileSync(join(agentDir, 'local-note.txt'), 'utf8')).toBe('agent-local-state')
+    expect(readJson(join(agentDir, 'agent.json'))).toMatchObject({ name: 'cp-name', runtime: 'codex' })
+  })
+
+  it('is idempotent while detached, restores the original path, and remove purges the archive', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    expect(archiveAgent(dir, 'bot-a')).toBe('archived')
+    expect(archiveAgent(dir, 'bot-a')).toBe('already-detached')
+    expect(restoreArchivedAgent(dir, 'bot-a')).toBe(true)
+    expect(findAgentFileById(dir, 'bot-a')).toBe(join(dir, 'bot-a', 'agent.json'))
+
+    expect(archiveAgent(dir, 'bot-a')).toBe('archived')
+    stageAgentMove(dir, 'bot-a', '77777777-7777-4777-8777-777777777777', true)
+    expect(stagedAgentIds(dir)).toEqual(['bot-a'])
+    expect(readAgentMoveStage(dir, 'bot-a')).toEqual({
+      moveId: '77777777-7777-4777-8777-777777777777',
+      state: 'staging',
+      requireEmptyWorkspace: true
+    })
+    commitAgentMove(dir, 'bot-a', '77777777-7777-4777-8777-777777777777')
+    expect(stagedAgentIds(dir)).toEqual([])
+    expect(readAgentMoveStage(dir, 'bot-a')).toEqual({
+      moveId: '77777777-7777-4777-8777-777777777777',
+      state: 'committed'
+    })
+    stageAgentMove(dir, 'bot-a', '88888888-8888-4888-8888-888888888888')
+    expect(stagedAgentIds(dir)).toEqual(['bot-a'])
+    removeAgent(dir, 'bot-a')
+    expect(existsSync(detachedAgentDir(dir, 'bot-a'))).toBe(false)
+    expect(stagedAgentIds(dir)).toEqual([])
+    expect(findAgentFileById(dir, 'bot-a')).toBeUndefined()
+  })
+
+  it('exact-prunes stale restored dependents while preserving hand-authored crons', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' },
+      integrations: [
+        { id: 'int-current', platform: 'slack', slack: { botToken: 'current', appToken: 'current' } },
+        { id: 'int-stale', platform: 'slack', slack: { botToken: 'stale', appToken: 'stale' } }
+      ],
+      crons: [
+        { id: 'cron-current', schedule: '* * * * *', trigger: 'current', origin: 'cp' },
+        { id: 'cron-stale', schedule: '* * * * *', trigger: 'stale', origin: 'cp' },
+        { id: 'cron-local', schedule: '* * * * *', trigger: 'local' }
+      ]
+    })
+
+    expect(
+      pruneMovedAgentDependents(dir, 'bot-a', {
+        integrationIds: ['int-current'],
+        cronIds: ['cron-current']
+      })
+    ).toBe(true)
+    const raw = readJson(file)
+    expect((raw.integrations as Array<{ id: string }>).map((item) => item.id)).toEqual(['int-current'])
+    expect((raw.crons as Array<{ id: string }>).map((item) => item.id)).toEqual(['cron-current', 'cron-local'])
+  })
+
+  it('authoritative bundle writes overwrite same-id stale values before exact pruning', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' },
+      integrations: [
+        {
+          id: 'int-current',
+          platform: 'slack',
+          slack: { mode: 'direct', botToken: 'old-secret', appToken: 'old-app' }
+        },
+        { id: 'int-stale', platform: 'slack', slack: { mode: 'direct', botToken: 'stale', appToken: 'stale' } }
+      ],
+      crons: [
+        { id: 'cron-current', schedule: '* * * * *', trigger: 'old-trigger', origin: 'cp' },
+        { id: 'cron-stale', schedule: '* * * * *', trigger: 'stale-trigger', origin: 'cp' }
+      ]
+    })
+    const integration = {
+      integrationId: 'int-current',
+      agentId: 'bot-a',
+      platform: 'slack',
+      slack: {
+        mode: 'direct',
+        botToken: 'new-secret',
+        appToken: 'new-app',
+        allowedUserIds: [],
+        bindRules: []
+      }
+    } as IntegrationSpec
+    const cron = {
+      cronId: 'cron-current',
+      agentId: 'bot-a',
+      schedule: '0 * * * *',
+      timezone: 'UTC',
+      trigger: 'new-trigger',
+      enabled: true
+    } as CronUpsert
+
+    expect(archiveAgent(dir, 'bot-a')).toBe('archived')
+    const archivedAgentFile = join(detachedAgentDir(dir, 'bot-a'), 'agent', 'agent.json')
+    const archivedJson = readFileSync(archivedAgentFile, 'utf8')
+    expect(archivedJson).not.toContain('old-secret')
+    expect((JSON.parse(archivedJson) as { integrations: unknown[] }).integrations).toEqual([])
+    // Simulate an archive from an older/interrupted version and prove a repeated
+    // detach security-converges it before returning already-detached.
+    const legacy = JSON.parse(archivedJson) as Record<string, unknown>
+    legacy.integrations = [
+      { id: 'legacy', platform: 'slack', slack: { mode: 'direct', botToken: 'legacy-secret', appToken: 'legacy' } }
+    ]
+    writeFileSync(archivedAgentFile, JSON.stringify(legacy))
+    expect(archiveAgent(dir, 'bot-a')).toBe('already-detached')
+    expect(readFileSync(archivedAgentFile, 'utf8')).not.toContain('legacy-secret')
+    // AgentActivate's bundle writes the agent spec first; this restores the old
+    // archive while it is still hidden behind the daemon's staging gate.
+    writeAgentSpec(dir, 'bot-a', baseSpec({ name: 'bot-a', runtime: 'claude' }), deps)
+    expect(writeIntegrationSpec(dir, integration, {})).toBe(true)
+    expect(writeCronDef(dir, cron, {})).toBe(true)
+    pruneMovedAgentDependents(dir, 'bot-a', {
+      integrationIds: [integration.integrationId],
+      cronIds: [cron.cronId]
+    })
+
+    const raw = readJson(file)
+    expect(raw.integrations).toEqual([
+      {
+        id: 'int-current',
+        origin: 'cp',
+        platform: 'slack',
+        slack: {
+          mode: 'direct',
+          botToken: 'new-secret',
+          appToken: 'new-app',
+          allowedUserIds: [],
+          bindRules: []
+        }
+      }
+    ])
+    expect(raw.crons).toEqual([
+      {
+        id: 'cron-current',
+        schedule: '0 * * * *',
+        timezone: 'UTC',
+        trigger: 'new-trigger',
+        enabled: true,
+        origin: 'cp'
+      }
+    ])
+  })
+
+  it('fails activation verification on a hand-authored cron id collision', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' },
+      crons: [{ id: 'cron-current', schedule: '* * * * *', trigger: 'local' }]
+    })
+
+    expect(() => pruneMovedAgentDependents(dir, 'bot-a', { integrationIds: [], cronIds: ['cron-current'] })).toThrow(
+      'authoritative dependent bundle did not persist'
+    )
+  })
+
+  it('self-heals a metadata-only archive residue when the active root still exists', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+    const residue = detachedAgentDir(dir, 'bot-a')
+    mkdirSync(residue, { recursive: true })
+    writeFileSync(join(residue, 'metadata.json'), JSON.stringify({ agentId: 'bot-a', relativePath: 'bot-a' }))
+
+    expect(archiveAgent(dir, 'bot-a')).toBe('archived')
+    expect(existsSync(join(residue, 'agent', 'agent.json'))).toBe(true)
+  })
+})

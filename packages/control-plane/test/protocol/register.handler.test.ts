@@ -1,0 +1,463 @@
+/**
+ * Phase 2 — `register` handler red→green (design §6 Phase 2).
+ *
+ * After `auth/ok`, a `register` frame returns `register/ok` carrying the
+ * authoritative reconcile snapshot (`assignments` / `crons` / `leases` / `drop`)
+ * built from seeded C6 state; re-sending `register` is idempotent (same
+ * snapshot, CP wins all conflicts); and a non-`auth`/`register` frame before
+ * READY is rejected with `error{code:"PROTOCOL_STATE"}` (protocol §2.1).
+ *
+ * Runs over the `InMemoryDaemonStub` against real Testcontainers Postgres.
+ */
+import { describe, it, expect } from 'vitest'
+import { isFrame } from '@agentconnect.md/protocol'
+import { prisma } from '../setup.db.js'
+import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { buildWsHarness } from '../fakes/build-ws.js'
+import type { GithubService } from '../../src/github/service.js'
+
+const DAEMON = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+const AGENT = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1'
+const WORKSPACE = 'f5f5f5f5-f5f5-4f5f-8f5f-f5f5f5f5f5f5'
+const CRON = 'c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1'
+const LEASE = '11ea5e00-0000-4000-8000-000000000001'
+
+const AUTH_ID = '11111111-1111-4111-8111-111111111111'
+const REG_ID = '22222222-2222-4222-8222-222222222222'
+const REG_ID2 = '33333333-3333-4333-8333-333333333333'
+
+/**
+ * Seed a daemon + agent + workspace, one ACTIVE assignment for the daemon, one
+ * cron for the org, and one active lease for the daemon. The workspace id is an
+ * explicit UUID (the wire `RouteAssign.workspaceId` / `SecretsGrant.scope` are
+ * `uuid`, and `register/ok` re-validates against the protocol schema at the stub).
+ */
+async function seedReconcileState(): Promise<void> {
+  await prisma.daemon.create({
+    data: { id: DAEMON, orgId: DEFAULT_ORG_ID, sessionEpoch: 1n, routingEpoch: 7n, maxAgents: 4, status: 'ready' }
+  })
+  await prisma.agent.create({
+    data: {
+      id: AGENT,
+      orgId: DEFAULT_ORG_ID,
+      name: 'agent-1',
+      runtime: 'claude',
+      daemonId: DAEMON
+    }
+  })
+
+  await prisma.assignment.create({
+    data: {
+      platform: 'slack',
+      channel: 'C123',
+      thread: 'T9',
+      agentId: AGENT,
+      daemonId: DAEMON,
+      workspaceId: WORKSPACE,
+      assignedEpoch: 1n,
+      routingEpoch: 7n,
+      state: 'active',
+      bindRules: [{ match: { kind: 'mention' } }]
+    }
+  })
+
+  await prisma.cronDef.create({
+    data: {
+      id: CRON,
+      orgId: DEFAULT_ORG_ID,
+      agentId: AGENT,
+      schedule: '0 9 * * *',
+      timezone: 'Asia/Singapore',
+      targetPlatform: 'slack',
+      targetChannel: 'C123',
+      trigger: 'daily standup',
+      enabled: true
+    }
+  })
+
+  await prisma.secretLease.create({
+    data: {
+      id: LEASE,
+      daemonId: DAEMON,
+      scopePlatform: 'slack',
+      scopeWorkspaceId: WORKSPACE,
+      ref: 'vault://kv/slack/ws-1',
+      ttlSec: 3600,
+      renewBeforeSec: 60,
+      status: 'active',
+      issuedAt: new Date(),
+      expiresAt: new Date(Date.now() + 3_600_000)
+    }
+  })
+}
+
+function authPayload(token: string) {
+  return { apiKey: token, daemonId: DAEMON, agentVersion: '1.4.0' }
+}
+
+/** A register payload whose localState claims one stale assignment + cron the CP no longer owns. */
+function registerPayload() {
+  return {
+    host: 'host-1',
+    capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true },
+    maxAgents: 4,
+    localState: {
+      assignments: ['slack:C123:T9', 'slack:CDEAD:-'], // second is stale → drop
+      crons: [CRON, 'deadcron-0000-4000-8000-000000000000'], // second is stale → drop
+      leases: [LEASE],
+      agents: [],
+      integrations: []
+    }
+  }
+}
+
+async function authThenAwaitOk(h: ReturnType<typeof buildWsHarness>) {
+  const token = await h.mintToken(DAEMON)
+  const { conn, stub } = h.connect()
+  stub.inject('auth', authPayload(token), { id: AUTH_ID })
+  await stub.expectFrame('auth/ok')
+  return { conn, stub }
+}
+
+describe('register handler — authoritative reconcile snapshot + idempotency + state gate', () => {
+  it('after auth/ok, register → register/ok with the seeded reconcile snapshot', async () => {
+    await seedReconcileState()
+    const h = buildWsHarness(prisma)
+    h.deps.github = {
+      getGitCommitIdentity: async () => ({
+        name: 'agentconnect-example[bot]',
+        email: '123456+agentconnect-example[bot]@users.noreply.github.com'
+      })
+    } as GithubService
+    const { stub } = await authThenAwaitOk(h)
+
+    stub.inject('register', registerPayload(), { id: REG_ID })
+    const ok = await stub.expectFrame('register/ok')
+    expect(isFrame('register/ok')(ok)).toBe(true)
+    if (!isFrame('register/ok')(ok)) throw new Error('expected register/ok')
+
+    expect(ok.corr).toBe(REG_ID)
+    const snap = ok.payload
+
+    expect(snap.gitCommitIdentity).toEqual({
+      name: 'agentconnect-example[bot]',
+      email: '123456+agentconnect-example[bot]@users.noreply.github.com'
+    })
+
+    // routingEpoch re-issued as-is (convergence, not bump).
+    expect(snap.routingEpoch).toBe(7)
+
+    // assignments: exactly the one active row for this daemon, as a RouteAssign.
+    expect(snap.assignments).toHaveLength(1)
+    expect(snap.assignments[0]!.sessionKey).toEqual({ platform: 'slack', channel: 'C123', thread: 'T9' })
+    expect(snap.assignments[0]!.agentId).toBe(AGENT)
+    expect(snap.assignments[0]!.workspaceId).toBe(WORKSPACE)
+    expect(snap.assignments[0]!.bindRules).toEqual([{ match: { kind: 'mention' } }])
+
+    // crons: the agent's cron (per-daemon scope via agent placement), as a CronUpsert.
+    expect(snap.crons).toHaveLength(1)
+    expect(snap.crons[0]!.cronId).toBe(CRON)
+    expect(snap.crons[0]!.agentId).toBe(AGENT)
+    expect(snap.crons[0]!.timezone).toBe('Asia/Singapore')
+    expect(snap.crons[0]!.target).toEqual({ platform: 'slack', channel: 'C123' })
+    expect(snap.crons[0]!.trigger).toBe('daily standup')
+
+    // leases: the daemon's active lease, as a SecretsGrant (ref only — no plaintext).
+    expect(snap.leases).toHaveLength(1)
+    expect(snap.leases[0]!.leaseId).toBe(LEASE)
+    expect(snap.leases[0]!.ref).toBe('vault://kv/slack/ws-1')
+    expect(snap.leases[0]!.ttl).toBe(3600)
+
+    // agents: ONLY the agents placed on THIS daemon (1 agent : 1 machine) — a
+    // daemon never receives specs for agents owned by other machines.
+    expect(snap.agents).toHaveLength(1)
+    expect(snap.agents[0]!).toEqual({
+      agentId: AGENT,
+      name: 'agent-1',
+      displayName: null,
+      // Always shipped value-or-null (like displayName): null here — no icon set and no
+      // PUBLIC_CP_URL configured in the test, so the reconcile snapshot carries no URL.
+      iconUrl: null,
+      // Always shipped as a string: "" here so clearing the system-prompt seed
+      // replicates (overwrites a stale value) instead of being omitted. Uses "" not
+      // null because older daemons parse description as a non-nullable string.
+      description: '',
+      runtime: 'claude',
+      // Per-runtime override vocabularies, always shipped as null when unset: a runtime
+      // switch must replicate the CLEAR (an absent key would read as "leave alone" and
+      // strand the previous runtime's value in the daemon's agent.json).
+      model: null,
+      reasoningEffort: null,
+      permissionMode: null,
+      showFooter: true,
+      allowRuntimeChangesInChat: false,
+      env: {}, // always shipped — an absent env would read as "leave alone" on the daemon
+      secrets: {}, // write-only secrets ride the same wire as env; always shipped (even {})
+      mcpServers: [], // likewise always shipped (disabling the last server must replicate)
+      // Agent→agent call policy (§2.5), always shipped so a policy/allow-list change replicates.
+      callPolicy: 'all',
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'all',
+      allowedTargetAgentIds: [],
+      // #536: self-introduce-on-join — always shipped (definite column) so a toggle replicates.
+      introduceOnJoin: false,
+      // #642: sandbox preference — always shipped (definite column); default false.
+      restrictFileAccess: false,
+      workspace: { mode: 'scratch', gitCredential: 'github-app' }
+    })
+
+    // drop: the stale local keys the CP no longer owns for this daemon.
+    expect(snap.drop.assignments).toEqual(['slack:CDEAD:-'])
+    expect(snap.drop.crons).toEqual(['deadcron-0000-4000-8000-000000000000'])
+    expect(snap.drop.agents).toEqual([])
+    expect(snap.drop.integrations).toEqual([])
+  })
+
+  it('drops legacy moved and unplaced replicas, but preserves unknown local-only config', async () => {
+    await seedReconcileState()
+    const OTHER_DAEMON = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    const MOVED_AGENT = 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2'
+    const UNPLACED_AGENT = '29292929-2929-4929-8929-292929292929'
+    const DELETED_AGENT = 'c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3'
+    const LOCAL_AGENT = 'd4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4'
+    const BOT = 'e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5'
+    const MOVED_INTEGRATION = 'f6f6f6f6-f6f6-4f6f-8f6f-f6f6f6f6f6f6'
+    const DELETED_INTEGRATION = '07070707-0707-4707-8707-070707070707'
+    const LOCAL_INTEGRATION = '18181818-1818-4818-8818-181818181818'
+
+    await prisma.daemon.create({
+      data: {
+        id: OTHER_DAEMON,
+        orgId: DEFAULT_ORG_ID,
+        sessionEpoch: 1n,
+        routingEpoch: 1n,
+        maxAgents: 4,
+        status: 'ready'
+      }
+    })
+    await prisma.agent.create({
+      data: {
+        id: MOVED_AGENT,
+        orgId: DEFAULT_ORG_ID,
+        name: 'moved-agent',
+        runtime: 'claude',
+        daemonId: OTHER_DAEMON
+      }
+    })
+    await prisma.agent.create({
+      data: {
+        id: UNPLACED_AGENT,
+        orgId: DEFAULT_ORG_ID,
+        name: 'unplaced-agent',
+        runtime: 'claude',
+        daemonId: null
+      }
+    })
+    await prisma.bot.create({ data: { id: BOT, orgId: DEFAULT_ORG_ID, platform: 'slack', name: 'moved-bot' } })
+    await prisma.integration.create({
+      data: {
+        id: MOVED_INTEGRATION,
+        orgId: DEFAULT_ORG_ID,
+        agentId: MOVED_AGENT,
+        botId: BOT,
+        platform: 'slack',
+        name: 'moved-bot',
+        status: 'active'
+      }
+    })
+
+    const base = registerPayload()
+    const payload = {
+      ...base,
+      localState: {
+        ...base.localState,
+        agents: [
+          { agentId: MOVED_AGENT, origin: 'unknown' as const }, // pre-marker replica: CP row proves the move
+          { agentId: UNPLACED_AGENT, origin: 'unknown' as const }, // CP row proves it belongs on no daemon
+          { agentId: LOCAL_AGENT, origin: 'unknown' as const }, // no CP row: preserve hand-authored config
+          { agentId: DELETED_AGENT, origin: 'cp' as const } // explicit marker proves a missed delete
+        ],
+        integrations: [
+          { integrationId: MOVED_INTEGRATION, origin: 'unknown' as const },
+          { integrationId: LOCAL_INTEGRATION, origin: 'unknown' as const },
+          { integrationId: DELETED_INTEGRATION, origin: 'cp' as const }
+        ]
+      }
+    }
+
+    const h = buildWsHarness(prisma)
+    const { stub } = await authThenAwaitOk(h)
+    stub.inject('register', payload, { id: REG_ID })
+    const ok = await stub.expectFrame('register/ok')
+    if (!isFrame('register/ok')(ok)) throw new Error('expected register/ok')
+
+    expect(ok.payload.drop.agents).toEqual([
+      { agentId: MOVED_AGENT, action: 'detach' },
+      { agentId: UNPLACED_AGENT, action: 'detach' },
+      { agentId: DELETED_AGENT, action: 'remove' }
+    ])
+    expect(ok.payload.drop.integrations).toEqual([MOVED_INTEGRATION, DELETED_INTEGRATION])
+  })
+
+  it('reconcile roster is scoped to THIS daemon — never leaks another daemon’s agents', async () => {
+    await seedReconcileState() // seeds AGENT placed on DAEMON
+
+    // A second daemon in the SAME org, with its own agent.
+    const OTHER_DAEMON = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+    const OTHER_AGENT = 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2'
+    await prisma.daemon.create({
+      data: {
+        id: OTHER_DAEMON,
+        orgId: DEFAULT_ORG_ID,
+        sessionEpoch: 1n,
+        routingEpoch: 1n,
+        maxAgents: 4,
+        status: 'ready'
+      }
+    })
+    await prisma.agent.create({
+      data: { id: OTHER_AGENT, orgId: DEFAULT_ORG_ID, name: 'other-agent', runtime: 'claude', daemonId: OTHER_DAEMON }
+    })
+
+    const h = buildWsHarness(prisma)
+    const { stub } = await authThenAwaitOk(h)
+    stub.inject('register', registerPayload(), { id: REG_ID })
+    const ok = await stub.expectFrame('register/ok')
+    if (!isFrame('register/ok')(ok)) throw new Error('expected register/ok')
+
+    // DAEMON's roster has ONLY its own agent — the other daemon's agent is absent.
+    const ids = ok.payload.agents.map((a) => a.agentId)
+    expect(ids).toEqual([AGENT])
+    expect(ids).not.toContain(OTHER_AGENT)
+  })
+
+  it('reconcile roster includes a TELEGRAM integration, not just Slack', async () => {
+    await seedReconcileState() // AGENT placed on DAEMON
+
+    // A Telegram integration owned by the placed agent: durable bot + its
+    // secret (plaintext at rest, read via BotSecretStore) + the install row.
+    const BOT = 'b0b0b0b0-b0b0-4b0b-8b0b-b0b0b0b0b0b0'
+    const INTEG = '1e1e1e1e-1e1e-4e1e-8e1e-1e1e1e1e1e1e'
+    await prisma.bot.create({ data: { id: BOT, orgId: DEFAULT_ORG_ID, platform: 'telegram', name: 'tg-bot' } })
+    await prisma.botSecret.create({ data: { botId: BOT, botToken: '123456:AAE-xyz', appToken: null } })
+    await prisma.integration.create({
+      data: {
+        id: INTEG,
+        orgId: DEFAULT_ORG_ID,
+        agentId: AGENT,
+        botId: BOT,
+        platform: 'telegram',
+        name: 'tg-bot',
+        status: 'active'
+      }
+    })
+    await prisma.integrationChannel.create({
+      data: { integrationId: INTEG, channelId: '-1001234567890', name: 'ops' }
+    })
+
+    const h = buildWsHarness(prisma)
+    const { stub } = await authThenAwaitOk(h)
+    stub.inject('register', registerPayload(), { id: REG_ID })
+    const ok = await stub.expectFrame('register/ok')
+    if (!isFrame('register/ok')(ok)) throw new Error('expected register/ok')
+
+    // The roster must carry the telegram-shaped spec WITH its token — otherwise
+    // the daemon never converges it onto agent.json and the bot never connects.
+    expect(ok.payload.integrations).toHaveLength(1)
+    const tg = ok.payload.integrations[0]!
+    expect(tg).toMatchObject({
+      integrationId: INTEG,
+      agentId: AGENT,
+      platform: 'telegram',
+      telegram: { botToken: '123456:AAE-xyz' }
+    })
+    // A non-empty collaboration snapshot used to make this entire register/ok
+    // invalid because DEFAULT_ORG_ID is intentionally not a UUID. The in-memory
+    // transport schema-validates the full reply, matching the daemon decoder.
+    expect(ok.payload.collabRoutes.channels).toEqual([
+      {
+        orgId: DEFAULT_ORG_ID,
+        platform: 'telegram',
+        channelId: '-1001234567890',
+        agents: [
+          {
+            agentId: AGENT,
+            daemonId: DAEMON,
+            integrationId: INTEG,
+            callPolicy: 'all',
+            allowedCallerAgentIds: [],
+            outboundPolicy: 'all',
+            allowedTargetAgentIds: [],
+            // Carried so a peer daemon can label this agent by name in a visible agent-call post.
+            name: 'agent-1'
+          }
+        ]
+      }
+    ])
+  })
+
+  it('re-sending register is idempotent (same snapshot)', async () => {
+    await seedReconcileState()
+    const h = buildWsHarness(prisma)
+    const { stub } = await authThenAwaitOk(h)
+
+    stub.inject('register', registerPayload(), { id: REG_ID })
+    const first = await stub.expectFrame('register/ok')
+    if (!isFrame('register/ok')(first)) throw new Error('expected register/ok')
+
+    stub.inject('register', registerPayload(), { id: REG_ID2 })
+    // Wait until a SECOND register/ok lands.
+    const { vi } = await import('vitest')
+    await vi.waitFor(() => {
+      if (stub.sent.filter((f) => f.type === 'register/ok').length < 2) {
+        throw new Error('second register/ok not yet sent')
+      }
+    })
+    const replies = stub.sent.filter(isFrame('register/ok'))
+    expect(replies).toHaveLength(2)
+    // Same authoritative payload; only the corr differs.
+    expect(replies[1]!.corr).toBe(REG_ID2)
+    expect(replies[1]!.payload).toEqual(first.payload)
+  })
+
+  it('seeds the daemon name from the hostname on first register, then never overwrites it', async () => {
+    await seedReconcileState() // daemon row has no name yet
+    const h = buildWsHarness(prisma)
+    const { stub } = await authThenAwaitOk(h)
+    const { vi } = await import('vitest')
+
+    // First register → name seeded from the reported host.
+    stub.inject('register', registerPayload(), { id: REG_ID })
+    await stub.expectFrame('register/ok')
+    await vi.waitFor(async () => {
+      const d = await prisma.daemon.findUnique({ where: { id: DAEMON } })
+      if (d?.name !== 'host-1') throw new Error(`name not seeded yet: ${d?.name}`)
+    })
+
+    // A later register from a DIFFERENT host must not overwrite the seeded name.
+    stub.inject('register', { ...registerPayload(), host: 'host-renamed' }, { id: REG_ID2 })
+    await vi.waitFor(() => {
+      if (stub.sent.filter((f) => f.type === 'register/ok').length < 2) throw new Error('second register/ok not yet')
+    })
+    const after = await prisma.daemon.findUnique({ where: { id: DAEMON } })
+    expect(after?.name).toBe('host-1')
+  })
+
+  it('a non-auth/register frame before READY → error{code:PROTOCOL_STATE}', async () => {
+    const h = buildWsHarness(prisma)
+    const { stub } = h.connect() // state = AUTHENTICATING, never authed
+
+    stub.inject('heartbeat', {
+      load: { cpu: 0.1, mem: 0.2, agents: 0 },
+      health: 'ok',
+      activeSessions: 0
+    })
+
+    const err = await stub.expectFrame('error')
+    if (!isFrame('error')(err)) throw new Error('expected error frame')
+    expect(err.payload.code).toBe('PROTOCOL_STATE')
+    // No auth/ok or register/ok was produced.
+    expect(stub.lastSent('auth/ok')).toBeUndefined()
+    expect(stub.lastSent('register/ok')).toBeUndefined()
+  })
+})

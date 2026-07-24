@@ -1,0 +1,240 @@
+/**
+ * gitcred.sock — the local credential channel for agent-run git AND gh
+ * (docs/designs/github-app-git-credentials.md §Local Helper Channel;
+ * agent-multi-repo-authorization.md §Daemon for per-repo routing, #457).
+ *
+ * A tiny newline-delimited-JSON server over a unix socket (0700 dir + 0600
+ * socket, stale-socket cleanup — the `mcp/control-server.ts` pattern). Hidden
+ * helper subcommands connect per invocation with a runtime-only, per-agent
+ * capability:
+ *   { op: 'get',   agentId, capability, repoFullName?, plane? }  → { ok, username, password } | { ok:false, error }
+ *   { op: 'erase', agentId, capability, password?, repoFullName?, plane? } → { ok: true }
+ *
+ * `repoFullName` ("owner/repo") routes to that repo's token; absent — or equal
+ * to the agent's workspace repo, which is NORMALIZED onto the repo-less key so
+ * the helper path and the pre-warm/spawn paths share one cache entry — ⇒ the
+ * workspace token. `plane: 'gh'` picks the widened GH_TOKEN capability set.
+ *
+ * The capability prevents a shell process from selecting an agent id and
+ * directly querying the socket. It is defense in depth, not a host-security
+ * boundary: a same-user process that can inspect or modify the managed runtime
+ * can still recover it. Repo authorization remains the CP's decision. Tokens
+ * transit the socket and helper stdout only; nothing lands on disk.
+ *
+ * Alongside the socket the daemon (re)writes SECRET-FREE files per boot:
+ * the shim `run/git-credential-helper.sh` (pins the current node + CLI path so
+ * `.git/config` survives daemon upgrades), the `run/bin/gh` wrapper (see
+ * cp/gh-shim.ts) and per-agent gitconfig includes for the session-env channel
+ * (see workspace/git-injection.ts).
+ */
+import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { createServer, type Server, type Socket } from 'node:net'
+import { dirname, join } from 'node:path'
+import { GitCredentialCache, GitCredUnavailableError, type CredPlane } from './git-credential.js'
+
+export const GITCRED_CAPABILITY_ENV = 'AC_GITCRED_CAPABILITY'
+/** The agent identity minted TOGETHER with the capability (git-injection
+ *  gitCredentialEnv). Helpers prefer this pair over the agentId baked into a
+ *  `.git/config` helper line, which goes stale when an agent is deleted and
+ *  recreated under the same name over a surviving checkout. */
+export const GITCRED_AGENT_ENV = 'AC_GITCRED_AGENT'
+
+export function gitcredSocketPath(root: string): string {
+  return join(root, 'run', 'gitcred.sock')
+}
+
+export function gitcredShimPath(root: string): string {
+  return join(root, 'run', 'git-credential-helper.sh')
+}
+
+interface GitCredIpcRequest {
+  op: 'get' | 'erase'
+  agentId: string
+  /** Ephemeral daemon-local capability bound to agentId. Never persisted. */
+  capability?: string
+  password?: string
+  /** "owner/repo" to route to (multi-repo, #457); absent ⇒ workspace. */
+  repoFullName?: string
+  /** 'gh' ⇒ the widened GH_TOKEN capability set; absent/'git' ⇒ contents-only. */
+  plane?: string
+}
+
+export interface GitCredServerDeps {
+  log: { info: (m: string) => void; warn: (m: string) => void }
+  /** The agent's workspace "owner/repo" label (lowercase-insensitive compare) —
+   *  lets a helper request that names the workspace repo share the repo-less
+   *  cache key with pre-warm/spawn instead of splitting the cache. */
+  workspaceRepoOf?: (agentId: string) => string | undefined
+}
+
+export class GitCredServer {
+  private server?: Server
+  private readonly capabilities = new Map<string, string>()
+  private readonly log: GitCredServerDeps['log']
+  private readonly workspaceRepoOf?: (agentId: string) => string | undefined
+
+  constructor(
+    private readonly cache: GitCredentialCache,
+    private readonly path: string,
+    deps: GitCredServerDeps
+  ) {
+    this.log = deps.log
+    if (deps.workspaceRepoOf) this.workspaceRepoOf = deps.workspaceRepoOf
+  }
+
+  start(): void {
+    const dir = dirname(this.path)
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    try {
+      chmodSync(dir, 0o700) // defeat a loose umask; best-effort on non-POSIX
+    } catch {
+      /* best-effort */
+    }
+    rmSync(this.path, { force: true }) // a stale socket from a crash makes listen() throw
+
+    const server = createServer((sock) => this.serve(sock))
+    server.listen(this.path, () => {
+      try {
+        chmodSync(this.path, 0o600)
+      } catch {
+        /* best-effort */
+      }
+      this.log.info(`gitcred: helper socket at ${this.path}`)
+    })
+    server.on('error', (e) => this.log.warn(`gitcred: socket error: ${e.message}`))
+    this.server = server
+  }
+
+  stop(): void {
+    this.server?.close()
+    this.capabilities.clear()
+    rmSync(this.path, { force: true })
+  }
+
+  /** Runtime-only bearer used by the helper processes for one agent. */
+  capabilityFor(agentId: string): string {
+    let capability = this.capabilities.get(agentId)
+    if (!capability) {
+      capability = randomBytes(32).toString('base64url')
+      this.capabilities.set(agentId, capability)
+    }
+    return capability
+  }
+
+  revoke(agentId: string): void {
+    this.capabilities.delete(agentId)
+  }
+
+  private serve(sock: Socket): void {
+    let buf = ''
+    sock.on('data', (chunk) => {
+      buf += chunk.toString('utf8')
+      const nl = buf.indexOf('\n')
+      if (nl === -1) return
+      const line = buf.slice(0, nl)
+      buf = buf.slice(nl + 1)
+      void this.handle(line, sock)
+    })
+    sock.on('error', () => sock.destroy())
+  }
+
+  private async handle(line: string, sock: Socket): Promise<void> {
+    const reply = (msg: unknown) => {
+      sock.write(JSON.stringify(msg) + '\n')
+      sock.end()
+    }
+    let req: GitCredIpcRequest
+    try {
+      req = JSON.parse(line) as GitCredIpcRequest
+    } catch {
+      return reply({ ok: false, error: 'malformed request' })
+    }
+    if (!req || typeof req.agentId !== 'string' || !this.authorized(req.agentId, req.capability)) {
+      this.audit('rejected', req?.agentId, req?.plane === 'gh' ? 'gh' : 'git', req?.repoFullName, true)
+      return reply({ ok: false, error: 'local credential capability required' })
+    }
+    const plane: CredPlane = req.plane === 'gh' ? 'gh' : 'git'
+    // Workspace normalization: a request naming the workspace repo folds onto
+    // the repo-less key (one cache entry with pre-warm/spawn; and old CPs that
+    // strip the wire field keep serving the workspace unchanged).
+    let repo = typeof req.repoFullName === 'string' && req.repoFullName.includes('/') ? req.repoFullName : undefined
+    if (repo !== undefined) {
+      const workspace = this.workspaceRepoOf?.(req.agentId)
+      if (workspace && workspace.toLowerCase() === repo.toLowerCase()) repo = undefined
+    }
+    if (req.op === 'erase') {
+      // Git presents the rejected credential — GitHub revokes instantly on
+      // uninstall/suspend, and this is how the daemon cache learns.
+      this.cache.invalidate(req.agentId, req.password, { plane, ...(repo !== undefined ? { repo } : {}) })
+      this.audit('erased', req.agentId, plane, repo)
+      return reply({ ok: true })
+    }
+    if (req.op !== 'get') {
+      return reply({ ok: false, error: 'unsupported op' })
+    }
+    try {
+      const cred = await this.cache.get(req.agentId, 'helper', { plane, ...(repo !== undefined ? { repo } : {}) })
+      this.audit('served', req.agentId, plane, repo ?? cred.repoFullName)
+      return reply({ ok: true, username: cred.username, password: cred.token, repoFullName: cred.repoFullName })
+    } catch (e) {
+      const msg =
+        e instanceof GitCredUnavailableError ? e.message : `git credentials unavailable: ${(e as Error).message}`
+      this.audit('denied', req.agentId, plane, repo)
+      return reply({ ok: false, error: msg })
+    }
+  }
+
+  private authorized(agentId: string, presented?: string): boolean {
+    const expected = this.capabilities.get(agentId)
+    if (!expected || !presented) return false
+    const a = Buffer.from(expected)
+    const b = Buffer.from(presented)
+    return a.length === b.length && timingSafeEqual(a, b)
+  }
+
+  private audit(
+    outcome: 'served' | 'erased' | 'denied' | 'rejected',
+    agentId: unknown,
+    plane: CredPlane,
+    repo?: unknown,
+    warn = false
+  ): void {
+    const message =
+      `gitcred: local credential outcome=${outcome} agent=${JSON.stringify(agentId)} ` +
+      `repo=${JSON.stringify(typeof repo === 'string' ? repo : 'workspace')} plane=${plane}`
+    if (warn) this.log.warn(message)
+    else this.log.info(message)
+  }
+}
+
+/**
+ * (Re)write the secret-free shim `.git/config` helper lines exec through. The
+ * absolute node + CLI paths are re-pinned every daemon boot, so repo configs
+ * keep working across upgrades/relocations. Quoted throughout — a home dir
+ * with a space (macOS "/Users/example user/…") must not word-split.
+ */
+export function writeGitcredShim(root: string, cliEntry: string): string {
+  const shim = gitcredShimPath(root)
+  mkdirSync(dirname(shim), { recursive: true, mode: 0o700 })
+  const q = (v: string) => `'${v.replaceAll("'", "'\\''")}'`
+  // Production runs the built dist (a .js entry node executes directly). A dev
+  // daemon runs under tsx with a .ts argv[1] — route the shim through the tsx
+  // CLI then, or plain `node entry.ts` would die resolving .js-suffixed imports.
+  const argv = [q(process.execPath)]
+  if (cliEntry.endsWith('.ts')) {
+    const req = createRequire(import.meta.url)
+    argv.push(q(req.resolve('tsx/cli')))
+  }
+  argv.push(q(cliEntry))
+  const body = [
+    '#!/bin/sh',
+    '# agentconnect git credential helper shim — regenerated on daemon start; NO secrets.',
+    `AGENTCONNECT_ROOT=${q(root)} \\`,
+    `  exec ${argv.join(' ')} git-credential "$@"`,
+    ''
+  ].join('\n')
+  writeFileSync(shim, body, { mode: 0o755 })
+  return shim
+}

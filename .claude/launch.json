@@ -1,0 +1,26 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@agentconnect.md/web", "dev"],
+      "port": 3000,
+      "autoPort": false
+    },
+    {
+      "name": "web-mock",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@agentconnect.md/web", "dev"],
+      "port": 3000,
+      "autoPort": true,
+      "env": { "NEXT_PUBLIC_MOCK": "1" }
+    },
+    {
+      "name": "control-plane",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@agentconnect.md/control-plane", "dev"],
+      "port": 8080
+    }
+  ]
+}

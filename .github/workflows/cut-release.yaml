@@ -1,0 +1,42 @@
+name: Cut Release
+
+# Promotes a commit to a STABLE release: force-updates the `release` branch to
+# the chosen commit (defaults to HEAD), which triggers Release on that branch →
+# semantic-release's stable channel (vX.Y.Z).
+#
+# The push uses a GitHub App installation token (same app as release.yaml), not
+# the built-in GITHUB_TOKEN — a built-in-token push wouldn't trigger Release, an
+# App-token push does. Needs RELEASE_APP_CLIENT_ID (var) + RELEASE_APP_PRIVATE_KEY
+# (secret), installed on this repo with Contents write.
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'Commit to be cut to final release, defaults to head'
+        required: false
+        default: ''
+
+jobs:
+  release:
+    runs-on: self-hosted
+    steps:
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      # Persist the App token as the git credential so the push below is authored
+      # by the App and therefore triggers Release.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.commit }}
+          token: ${{ steps.app-token.outputs.token }}
+      - name: Sync Release Branch
+        run: |
+          git checkout -b release
+          git log -1
+          git push -f --set-upstream origin release

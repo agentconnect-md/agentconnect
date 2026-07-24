@@ -1,0 +1,488 @@
+import { afterEach, describe, expect, it } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import type { Ack, AgentActivate, MemoryConnectionSpec } from '@agentconnect.md/protocol'
+import { prisma } from '../setup.db.js'
+import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
+import type { DaemonLiveness } from '../../src/ports.js'
+import type { ControlSender } from '../../src/orchestrator/outbound.js'
+import type { HookService } from '../../src/hooks/hook.service.js'
+import type { SharedBotOrchestrator } from '../../src/orchestrator/sharedBot.js'
+import type { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
+import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
+import { OrgId } from '../../src/domain/ids.js'
+import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+
+const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
+const SOURCE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const TARGET = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+const MOVE_CAPS = {
+  platforms: ['slack'],
+  runtimes: ['Claude Code'],
+  acp: true,
+  features: ['agent-move-v1']
+}
+
+let running: HttpApp | undefined
+
+afterEach(async () => {
+  await running?.close()
+  running = undefined
+})
+
+class MoveControlSpy {
+  failMemoryUpsertAfterApply = false
+  readonly calls: string[] = []
+  readonly activations: AgentActivate[] = []
+
+  async agentDetach(daemonId: string): Promise<Ack> {
+    this.calls.push(`detach:${daemonId}`)
+    return { ok: true }
+  }
+  async agentActivate(daemonId: string, value: AgentActivate): Promise<Ack> {
+    this.calls.push(`activate:${daemonId}`)
+    this.activations.push(value)
+    return { ok: true }
+  }
+  async memoryConnectionUpsert(daemonId: string, spec: MemoryConnectionSpec): Promise<void> {
+    this.calls.push(`memory-upsert:${daemonId}:${spec.connectionId}`)
+    if (this.failMemoryUpsertAfterApply) throw new Error('simulated lost memory upsert ACK')
+  }
+  async memoryConnectionRemove(daemonId: string, connectionId: string): Promise<void> {
+    this.calls.push(`memory-remove:${daemonId}:${connectionId}`)
+  }
+}
+
+const live: DaemonLiveness = {
+  get: (id) => ([SOURCE, TARGET].includes(id) ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
+}
+
+async function seedMoveDaemons(): Promise<void> {
+  await seedDaemon(prisma, SOURCE, { capabilities: MOVE_CAPS })
+  await seedDaemon(prisma, TARGET, { capabilities: MOVE_CAPS })
+}
+
+describe('PUT /agents/:id/daemon', () => {
+  it('cold-moves the full dependent bundle and repairs an idempotent retry', async () => {
+    await seedMoveDaemons()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    const classicBot = randomUUID()
+    const sharedBot = randomUUID()
+    const classicIntegration = randomUUID()
+    const sharedIntegration = randomUUID()
+    const cronId = randomUUID()
+    await prisma.bot.createMany({
+      data: [
+        { id: classicBot, orgId: DEFAULT_ORG_ID, platform: 'slack', name: 'classic' },
+        { id: sharedBot, orgId: DEFAULT_ORG_ID, platform: 'slack', name: 'shared', shareable: true, transport: 'http' }
+      ]
+    })
+    await prisma.botSecret.createMany({
+      data: [
+        { botId: classicBot, botToken: 'xoxb-classic', appToken: 'xapp-classic' },
+        { botId: sharedBot, botToken: 'xoxb-shared', appToken: 'xapp-shared' }
+      ]
+    })
+    await prisma.integration.createMany({
+      data: [
+        {
+          id: classicIntegration,
+          orgId: DEFAULT_ORG_ID,
+          agentId,
+          botId: classicBot,
+          platform: 'slack',
+          name: 'classic'
+        },
+        {
+          id: sharedIntegration,
+          orgId: DEFAULT_ORG_ID,
+          agentId,
+          botId: sharedBot,
+          platform: 'slack',
+          name: 'shared'
+        }
+      ]
+    })
+    await prisma.integrationChannel.create({
+      data: { integrationId: classicIntegration, channelId: 'C123', trigger: 'any' }
+    })
+    await prisma.cronDef.create({
+      data: {
+        id: cronId,
+        orgId: DEFAULT_ORG_ID,
+        agentId,
+        schedule: '0 0 * * *',
+        timezone: 'UTC',
+        trigger: 'daily',
+        enabled: true
+      }
+    })
+
+    const control = new MoveControlSpy()
+    const derived: string[] = []
+    running = buildHttpApp(prisma, undefined, live, control as unknown as ControlSender, {
+      hooks: { rebroadcastForAgent: async () => void derived.push('hooks') } as unknown as HookService,
+      sharedBot: {
+        syncBot: async (id: string) => void derived.push(`shared:${id}`)
+      } as unknown as SharedBotOrchestrator,
+      collabRoutes: { broadcast: async () => void derived.push('collab') } as unknown as CollabRoutesService
+    })
+
+    const res = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { daemonId: TARGET }
+    })
+    expect(res.statusCode, res.body).toBe(200)
+    expect((res.json() as { daemonId: string; status: string }).daemonId).toBe(TARGET)
+    expect((await prisma.agent.findUnique({ where: { id: agentId } }))?.daemonId).toBe(TARGET)
+    expect(control.calls).toEqual([`detach:${SOURCE}`, `detach:${TARGET}`, `activate:${TARGET}`])
+    expect(control.activations).toHaveLength(1)
+    expect(control.activations[0]?.agentId).toBe(agentId)
+    expect(
+      control.activations[0]?.integrations
+        .flatMap((integration) => (integration.platform === 'slack' ? [integration.slack.mode] : []))
+        .sort()
+    ).toEqual(['direct', 'shared'])
+    expect(control.activations[0]?.crons.map((cron) => cron.cronId)).toEqual([cronId])
+    expect(derived).toEqual(['hooks', 'collab', `shared:${sharedBot}`])
+
+    // A lost-response retry repairs the full target bundle and activates again,
+    // and first arms the idempotent target staging gate.
+    control.calls.length = 0
+    const retry = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { daemonId: TARGET }
+    })
+    expect(retry.statusCode).toBe(200)
+    expect(control.calls[0]).toBe(`detach:${TARGET}`)
+    expect(control.calls.at(-1)).toBe(`activate:${TARGET}`)
+  })
+
+  it('stages an external-memory registry before activation and removes the unused source copy', async () => {
+    await seedMoveDaemons()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    const control = new MoveControlSpy()
+    running = buildHttpApp(prisma, { RELAY_STALE_MS: 60_000 }, live, control as unknown as ControlSender)
+    await running.deps.repos.relay.upsertByName('move-relay', 'wss://relay.example/rd', new Date())
+    const installation = await running.deps.repos.memoryPluginInstallation.create({
+      orgId: OrgId(DEFAULT_ORG_ID),
+      pluginId: 'ai.example.move-memory',
+      transport: 'streamable-http',
+      endpoint: 'https://plugin.example/mcp',
+      pinnedProfileMajor: 1,
+      secretHeaders: [{ name: 'apiKey', header: 'Authorization', required: true }]
+    })
+    const connection = await running.deps.repos.externalMemoryConnection.create({
+      orgId: OrgId(DEFAULT_ORG_ID),
+      installationId: installation.id,
+      config: { projectId: 'move' }
+    })
+    await running.deps.repos.externalMemoryConnectionSecret.put(connection.id, { apiKey: 'secret' })
+    await running.deps.repos.externalMemoryGrant.mintFor(connection.id)
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: {
+        runtimeOverrides: {
+          memory: {
+            provider: 'external',
+            connectionId: connection.id,
+            recall: { mode: 'auto', topK: 5, maxBytes: 8 * 1024, timeoutMs: 1_000 },
+            capture: { mode: 'manual' }
+          }
+        }
+      }
+    })
+    // A request may time out after the target applied the private definition.
+    // Treat that as potentially staged and revoke the unused target copy.
+    control.failMemoryUpsertAfterApply = true
+    const failed = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { daemonId: TARGET }
+    })
+    expect(failed.statusCode).toBe(503)
+    expect(control.calls).toEqual([
+      `memory-upsert:${TARGET}:${connection.id}`,
+      `memory-remove:${TARGET}:${connection.id}`
+    ])
+    expect((await prisma.agent.findUnique({ where: { id: agentId } }))?.daemonId).toBe(SOURCE)
+
+    control.failMemoryUpsertAfterApply = false
+    control.calls.length = 0
+    const res = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { daemonId: TARGET }
+    })
+    expect(res.statusCode, res.body).toBe(200)
+    expect(control.calls).toEqual([
+      `memory-upsert:${TARGET}:${connection.id}`,
+      `detach:${SOURCE}`,
+      `detach:${TARGET}`,
+      `activate:${TARGET}`,
+      `memory-upsert:${TARGET}:${connection.id}`,
+      `memory-remove:${SOURCE}:${connection.id}`
+    ])
+    expect(control.activations[0]?.spec.memory).toMatchObject({
+      provider: 'external',
+      connectionId: connection.id
+    })
+  })
+
+  it('rejects an unready, unsupported, incompatible, or full target before detaching source', async () => {
+    await seedMoveDaemons()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    const control = new MoveControlSpy()
+
+    const attempt = async (liveness: DaemonLiveness) => {
+      running = buildHttpApp(prisma, undefined, liveness, control as unknown as ControlSender)
+      const res = await running.app.inject({
+        method: 'PUT',
+        url: `${ORG}/agents/${agentId}/daemon`,
+        payload: { daemonId: TARGET }
+      })
+      await running.close()
+      running = undefined
+      return res
+    }
+
+    expect(
+      (
+        await attempt({
+          get: (id) => (id === SOURCE ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
+        })
+      ).statusCode
+    ).toBe(409)
+
+    await prisma.daemon.update({ where: { id: TARGET }, data: { capabilities: { ...MOVE_CAPS, features: [] } } })
+    expect((await attempt(live)).json()).toMatchObject({ message: 'target daemon does not support agent moves' })
+
+    await prisma.daemon.update({ where: { id: TARGET }, data: { capabilities: MOVE_CAPS } })
+    await prisma.runtimeProfile.create({
+      data: { daemonId: TARGET, runtime: 'codex', version: '1.0.0', models: [] }
+    })
+    expect((await attempt(live)).json()).toMatchObject({ message: 'target daemon does not support runtime claude' })
+    await prisma.runtimeProfile.deleteMany({ where: { daemonId: TARGET } })
+
+    await prisma.runtimeProfile.create({
+      data: {
+        daemonId: TARGET,
+        runtime: 'claude',
+        version: '1.0.0',
+        models: ['supported'],
+        mcpCapabilities: { http: false, sse: false }
+      }
+    })
+    await prisma.agent.update({ where: { id: agentId }, data: { runtimeOverrides: { model: 'missing' } } })
+    expect((await attempt(live)).json()).toMatchObject({
+      message: 'target daemon does not support model missing for runtime claude'
+    })
+
+    await prisma.agent.update({ where: { id: agentId }, data: { runtimeOverrides: { mcpServers: ['missing'] } } })
+    expect((await attempt(live)).json()).toMatchObject({ message: 'target daemon cannot attach MCP server missing' })
+
+    await prisma.agent.update({ where: { id: agentId }, data: { runtimeOverrides: { mcpServers: ['remote'] } } })
+    await prisma.daemon.update({
+      where: { id: TARGET },
+      data: { mcpServers: [{ name: 'remote', transport: 'http' }] }
+    })
+    expect((await attempt(live)).json()).toMatchObject({
+      message: 'target runtime claude does not support MCP http transport for remote'
+    })
+
+    await prisma.runtimeProfile.deleteMany({ where: { daemonId: TARGET } })
+    await prisma.agent.update({ where: { id: agentId }, data: { runtimeOverrides: {} } })
+
+    await prisma.daemon.update({ where: { id: TARGET }, data: { load: { agents: 4, cpu: 0, mem: 0 }, maxAgents: 4 } })
+    expect((await attempt(live)).json()).toMatchObject({ message: 'target daemon is at agent capacity' })
+    expect(control.calls).toEqual([])
+  })
+
+  it('treats a cached (hydrated) model list as permissive for the move model gate', async () => {
+    await seedMoveDaemons()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    await prisma.agent.update({ where: { id: agentId }, data: { runtimeOverrides: { model: 'missing' } } })
+    await prisma.runtimeProfile.create({
+      data: { daemonId: TARGET, runtime: 'claude', version: '1.0.0', models: ['supported'], modelsSource: 'probed' }
+    })
+    const control = new MoveControlSpy()
+    running = buildHttpApp(prisma, undefined, live, control as unknown as ControlSender)
+    const move = () =>
+      running!.app.inject({ method: 'PUT', url: `${ORG}/agents/${agentId}/daemon`, payload: { daemonId: TARGET } })
+
+    // A live-probed list stays strict…
+    expect((await move()).statusCode).toBe(409)
+
+    // …but the same list hydrated from the daemon's last-good cache (a probe has
+    // not confirmed it this process) is permissive, exactly like an empty one
+    // (runtime-model-catalog.md §5) — the move must not strand on a stale list.
+    await prisma.runtimeProfile.updateMany({ where: { daemonId: TARGET }, data: { modelsSource: 'cached' } })
+    const res = await move()
+    expect(res.statusCode, res.body).toBe(200)
+    expect((await prisma.agent.findUnique({ where: { id: agentId } }))?.daemonId).toBe(TARGET)
+  })
+
+  it('returns 409 for agent, integration, and cron writes while that agent is moving', async () => {
+    await seedMoveDaemons()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    const botId = randomUUID()
+    const sharedBotId = randomUUID()
+    await prisma.bot.create({
+      data: { id: botId, orgId: DEFAULT_ORG_ID, platform: 'slack', name: 'guarded' }
+    })
+    await prisma.bot.create({
+      data: {
+        id: sharedBotId,
+        orgId: DEFAULT_ORG_ID,
+        platform: 'slack',
+        name: 'shared-guarded',
+        shareable: true,
+        transport: 'http'
+      }
+    })
+    await prisma.integration.create({
+      data: {
+        id: randomUUID(),
+        orgId: DEFAULT_ORG_ID,
+        agentId,
+        botId: sharedBotId,
+        platform: 'slack',
+        name: 'shared-guarded'
+      }
+    })
+    const gate = new AgentMutationGate()
+    const release = gate.tryBeginMove(agentId)!
+    running = buildHttpApp(prisma, undefined, live, undefined, { agentMutations: gate })
+
+    try {
+      const responses = await Promise.all([
+        running.app.inject({
+          method: 'PATCH',
+          url: `${ORG}/agents/${agentId}`,
+          payload: { description: 'blocked' }
+        }),
+        running.app.inject({ method: 'DELETE', url: `${ORG}/agents/${agentId}` }),
+        running.app.inject({
+          method: 'PUT',
+          url: `${ORG}/agents/${agentId}/sharing`,
+          payload: { visibility: 'org', sharedWith: [] }
+        }),
+        running.app.inject({
+          method: 'PUT',
+          url: `${ORG}/agents/${agentId}/call-policy`,
+          payload: { callPolicy: 'all', allowedCallerAgentIds: [] }
+        }),
+        running.app.inject({
+          method: 'POST',
+          url: `${ORG}/integrations`,
+          payload: { agentId, platform: 'slack', botId }
+        }),
+        running.app.inject({
+          method: 'PUT',
+          url: `${ORG}/crons/${randomUUID()}`,
+          payload: { agentId, schedule: '0 0 * * *', trigger: 'daily', enabled: true }
+        }),
+        running.app.inject({
+          method: 'PATCH',
+          url: `${ORG}/bots/${sharedBotId}`,
+          payload: { shareable: false }
+        })
+      ])
+      expect(responses.map((response) => response.statusCode)).toEqual([409, 409, 409, 409, 409, 409, 409])
+    } finally {
+      release()
+    }
+  })
+
+  it('blocks promoting a classic bot while an existing member agent is moving', async () => {
+    await seedMoveDaemons()
+    const movingAgentId = randomUUID()
+    const joiningAgentId = randomUUID()
+    await seedAgent(prisma, movingAgentId, { daemonId: SOURCE })
+    await seedAgent(prisma, joiningAgentId, { daemonId: SOURCE })
+    const botId = randomUUID()
+    await prisma.bot.create({
+      data: { id: botId, orgId: DEFAULT_ORG_ID, platform: 'slack', name: 'classic-member' }
+    })
+    await prisma.integration.create({
+      data: {
+        id: randomUUID(),
+        orgId: DEFAULT_ORG_ID,
+        agentId: movingAgentId,
+        botId,
+        platform: 'slack',
+        name: 'classic-member'
+      }
+    })
+    const gate = new AgentMutationGate()
+    const release = gate.tryBeginMove(movingAgentId)!
+    running = buildHttpApp(prisma, undefined, live, undefined, { agentMutations: gate })
+    try {
+      const res = await running.app.inject({
+        method: 'POST',
+        url: `${ORG}/integrations`,
+        payload: { agentId: joiningAgentId, platform: 'slack', botId, shareable: true }
+      })
+      expect(res.statusCode).toBe(409)
+      expect(res.json()).toMatchObject({ message: expect.stringContaining('move is in progress') })
+      expect(await prisma.integration.count({ where: { botId } })).toBe(1)
+      expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).shareable).toBe(false)
+    } finally {
+      release()
+    }
+  })
+
+  it('re-reads agent placement after acquiring integration and cron mutation leases', async () => {
+    await seedMoveDaemons()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    const botId = randomUUID()
+    await prisma.bot.create({
+      data: { id: botId, orgId: DEFAULT_ORG_ID, platform: 'slack', name: 'race' }
+    })
+
+    const moveAfterFirstRead = (app: HttpApp) => {
+      const original = app.deps.repos.agent.get.bind(app.deps.repos.agent)
+      let first = true
+      app.deps.repos.agent.get = async (id) => {
+        const observed = await original(id)
+        if (first && observed?.id === agentId) {
+          first = false
+          await prisma.agent.update({ where: { id: agentId }, data: { daemonId: TARGET } })
+        }
+        return observed
+      }
+    }
+
+    running = buildHttpApp(prisma, undefined, live)
+    moveAfterFirstRead(running)
+    const integration = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { agentId, platform: 'slack', botId }
+    })
+    expect(integration.statusCode).toBe(409)
+    expect(await prisma.integration.count({ where: { agentId } })).toBe(0)
+
+    await running.close()
+    running = undefined
+    await prisma.agent.update({ where: { id: agentId }, data: { daemonId: SOURCE } })
+    running = buildHttpApp(prisma, undefined, live)
+    moveAfterFirstRead(running)
+    const cronId = randomUUID()
+    const cron = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/crons/${cronId}`,
+      payload: { agentId, schedule: '0 0 * * *', trigger: 'daily', enabled: true }
+    })
+    expect(cron.statusCode).toBe(409)
+    expect(await prisma.cronDef.count({ where: { id: cronId } })).toBe(0)
+  })
+})

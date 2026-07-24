@@ -1,0 +1,74 @@
+{
+  "name": "@agentconnect.md/web",
+  "version": "1.0.0-dev",
+  "description": "AgentConnect Web UI — agent / channel / workspace / session config & monitoring",
+  "license": "Apache-2.0",
+  "files": [
+    "next.config.mjs",
+    "postcss.config.mjs",
+    "public",
+    "src"
+  ],
+  "scripts": {
+    "build": "next build",
+    "clean": "rm -rf .next",
+    "dev": "next dev",
+    "lint": "eslint .",
+    "start": "next start",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@iconify-icons/icon-park": "^1.2.11",
+    "@iconify-icons/logos": "^1.2.36",
+    "@iconify-icons/ph": "^1.2.5",
+    "@iconify/react": "^6.0.2",
+    "@logto/browser": "^3.0.13",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/context-zone": "^2.9.0",
+    "@opentelemetry/core": "^2.9.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.220.0",
+    "@opentelemetry/instrumentation": "^0.220.0",
+    "@opentelemetry/instrumentation-fetch": "^0.220.0",
+    "@opentelemetry/resources": "^2.9.0",
+    "@opentelemetry/sdk-trace-web": "^2.9.0",
+    "@opentelemetry/semantic-conventions": "^1.41.1",
+    "croner": "^10.0.1",
+    "cronstrue": "^3.24.0",
+    "highlight.js": "^11.11.1",
+    "lucide-react": "^1.21.0",
+    "next": "^16.2.9",
+    "node-emoji": "^2.2.0",
+    "posthog-js": "^1.406.2",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-icons": "^5.7.0",
+    "react-markdown": "^9.1.0",
+    "remark-breaks": "^4.0.0",
+    "remark-gfm": "^4.0.1",
+    "swr": "^2.4.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.1",
+    "@types/node": "^24.13.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "happy-dom": "^20.11.0",
+    "postcss": "^8.5.15",
+    "tailwindcss": "^4.3.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  },
+  "keywords": [
+    "agentconnect",
+    "dashboard",
+    "next",
+    "web"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

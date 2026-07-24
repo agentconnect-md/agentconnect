@@ -1,0 +1,1108 @@
+'use client'
+
+// Settings page (design: `isSettings`). Everything here is REAL and scoped to
+// the active org: the Organization card (rename via PATCH /orgs/:id, owners
+// only), Members & roles (GET /members; owners can invite-by-email, re-role
+// and remove members — the CP enforces owner-only writes and the last-owner
+// guard), the Bots card (the org's durable bot identities; free ones can be
+// deleted here — the Add-integration picker only offers them for reuse), and
+// the Roles explainer. In no-auth mode the devAuth principal owns the local
+// default org, so the page is fully editable with no picker.
+
+import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react'
+import useSWR from 'swr'
+import { Avatar, Button, Icon, Toggle } from '@/components/ui'
+import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
+import type { AgentIcon } from '@/lib/agent-icon'
+import { withIconUrl } from '@/lib/agent-icon'
+import { AgentIconPicker } from '@/components/console/AgentIconPicker'
+import { useModal } from '@/components/console/ModalProvider'
+import { useConsoleData } from '@/lib/data-context'
+import { useProfile } from '@/lib/profile'
+import { useOrgs } from '@/lib/org-context'
+import { initialsFrom } from '@/lib/auth'
+import {
+  createOrgInviteLink,
+  creatorLabel,
+  fetchGithubInstallUrl,
+  fetchGithubInstallations,
+  fetchMembers,
+  fetchOrgInviteLink,
+  memberDisplayName,
+  refreshSlackBot,
+  revokeOrgInviteLink,
+  ROLE_LABELS,
+  syncGithubInstallations,
+  updateOrg,
+  uploadOrgIcon,
+  type BotDto,
+  type GithubInstallationDto,
+  type MeDto,
+  type MemberDto,
+  type MemberRole,
+  type OrgInviteLinkDto,
+  type SlackBotRefreshDto
+} from '@/lib/api'
+import { agentLabel, type IntegrationRow } from '@/lib/data'
+import { slackAppSettingsUrl } from '@/lib/slack-manifest'
+import { slackRefreshNoticeState } from '@/lib/slack-refresh-notice'
+import { discordBotInviteUrl } from '@/lib/discord-invite'
+import { consoleKeys } from '@/lib/swr-keys'
+import { inviteLinkStatus, inviteLinkUrl } from '@/lib/org-invite-link'
+import EditMemberModal, { type MemberTarget } from '@/components/console/modals/EditMemberModal'
+import InviteMembersModal from '@/components/console/modals/InviteMembersModal'
+import DeleteBotModal from '@/components/console/modals/DeleteBotModal'
+import UninstallGithubInstallationModal from '@/components/console/modals/UninstallGithubInstallationModal'
+
+// The free-bot sub-line shows where the bot came from without repeating
+// historical usage metadata in the list row.
+function botSubline(b: BotDto): string {
+  return b.freedFromAgent ? `freed from ${b.freedFromAgent}` : b.prebuilt ? 'prebuilt' : ''
+}
+
+// One rendered member row, precomputed from the wire DTO.
+interface MemberRowView {
+  userId: string
+  name: string
+  email: string | null
+  picture: string | null
+  initials: string
+  avBg: string
+  avText: string
+  roleLabel: string
+  roleBg: string
+  roleText: string
+  role: MemberRole
+}
+
+function rowFromDto(m: MemberDto): MemberRowView {
+  const name = memberDisplayName(m)
+  const owner = m.role === 'owner'
+  return {
+    userId: m.userId,
+    name,
+    email: m.email,
+    picture: m.picture,
+    initials: initialsFrom(m.name ?? '', m.email ?? undefined),
+    avBg: owner ? 'var(--magenta-100)' : 'var(--gray-100)',
+    avText: owner ? 'var(--magenta-700)' : 'var(--text-secondary)',
+    roleLabel: ROLE_LABELS[m.role],
+    roleBg: owner ? 'var(--brand-soft)' : 'var(--surface-active)',
+    roleText: owner ? 'var(--brand-soft-text)' : 'var(--text-secondary)',
+    role: m.role
+  }
+}
+
+const MEMBER_GRID = 'grid-cols-[2fr_1.4fr_auto]'
+// Design grid (`isSettings` Bots card): Bot | Sharable | Agents | Created by |
+// actions. The 100px action track fits refresh + platform link + delete and stays
+// identical across rows; below 480px "Created by" is dropped to preserve space.
+const BOT_GRID = 'grid-cols-[2fr_0.9fr_1.5fr_100px] min-[480px]:grid-cols-[2fr_0.9fr_1.5fr_1fr_100px]'
+
+// One merged channel row for a bot's expandable roster.
+interface BotChannelView {
+  channelId: string
+  name: string
+  /** Explicit per-channel assignment; null ⇒ the bot's default agent (earliest
+   *  install = agentIds[0], same ordering the route compiler uses, §10.3). */
+  agentId: string | null
+  /** Integration whose snapshot row backs this channel — the PATCH target when
+   *  the picker switches the active agent. */
+  integrationId: string | null
+}
+
+// The bot's channel roster, merged across its installs (a shared bot fans out to
+// one integration per agent, each reporting its own membership snapshot). An
+// explicit per-channel assignment wins over rows that carry none.
+function botChannels(bot: BotDto, integrations: IntegrationRow[]): BotChannelView[] {
+  const merged = new Map<string, BotChannelView>()
+  for (const i of integrations) {
+    if (i.botId !== bot.id) continue
+    for (const c of i.channels) {
+      const explicit = c.agentId ?? null
+      const prev = merged.get(c.channelId)
+      if (!prev) {
+        merged.set(c.channelId, {
+          channelId: c.channelId,
+          name: c.name,
+          agentId: explicit,
+          integrationId: i.id ?? null
+        })
+      } else if (!prev.agentId && explicit) {
+        prev.agentId = explicit
+        prev.integrationId = i.id ?? null
+      }
+    }
+  }
+  return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** Per-channel active-agent picker for a SHARED bot (design: the Bots card's
+ *  expanded channel rows) — a bordered button showing the current agent that
+ *  opens a menu of every agent installed on the bot; picking one PATCHes the
+ *  channel's explicit owner. */
+function ActiveAgentPicker({
+  options,
+  activeId,
+  disabled,
+  onPick
+}: {
+  options: { id: string; name: string; model: string; runtime: string; icon?: AgentIcon | null }[]
+  activeId: string | null
+  disabled: boolean
+  onPick: (agentId: string) => Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const active = options.find((o) => o.id === activeId) ?? options[0]
+  const pick = (id: string) => {
+    setOpen(false)
+    if (disabled || saving || id === active?.id) return
+    setSaving(true)
+    onPick(id).finally(() => setSaving(false))
+  }
+  return (
+    <span className="relative justify-self-start" onClick={(e) => e.stopPropagation()}>
+      <button
+        onClick={() => !disabled && setOpen((v) => !v)}
+        title="Switch active agent"
+        className={`flex items-center gap-2 rounded-[6px] border border-(--border-default) bg-(--surface-card) px-2 py-1 transition-[background-color,border-color] hover:border-(--border-strong) hover:bg-(--surface-hover) ${
+          disabled ? 'cursor-default' : 'cursor-pointer'
+        } ${saving ? 'opacity-60' : ''}`}
+      >
+        <span className="av h-5 w-5 rounded-[5px]">
+          <AgentIconView icon={active?.icon} runtime={active?.runtime ?? active?.model ?? ''} size={20} />
+        </span>
+        <span className="font-sans text-[12px] font-medium leading-normal text-(--text-primary)">
+          {active?.name ?? '—'}
+        </span>
+        <Icon name="chevrons-up-down" size={13} color="var(--text-tertiary)" />
+      </button>
+      {open && (
+        <>
+          <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          {/* right-anchored: the picker sits in the roster's right-most column, so a
+              left-anchored menu (wider than its button) would clip past the card edge */}
+          <div className="absolute right-0 top-[calc(100%+5px)] z-40 min-w-[230px] rounded-lg border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)">
+            {options.map((o) => (
+              <button
+                key={o.id}
+                onClick={() => pick(o.id)}
+                className="flex w-full cursor-pointer items-center gap-[9px] rounded-[6px] border-0 bg-transparent px-[9px] py-[6px] text-left hover:bg-(--surface-hover)"
+              >
+                <span className="av h-[22px] w-[22px] flex-none rounded-[6px]">
+                  <AgentIconView icon={o.icon} runtime={o.runtime} size={22} />
+                </span>
+                <span className="flex min-w-0 flex-1 flex-col items-start">
+                  <span className="font-sans text-[12px] font-medium leading-normal text-(--text-primary)">
+                    {o.name}
+                  </span>
+                  <span className="mono text-[10.5px] text-(--text-tertiary)">{o.model}</span>
+                </span>
+                <Icon
+                  name="check"
+                  size={13}
+                  color={o.id === active?.id ? 'var(--brand)' : 'transparent'}
+                  className="flex-none"
+                />
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </span>
+  )
+}
+
+function SlackRefreshNotice({ result }: { result: SlackBotRefreshDto }) {
+  const { needsAttention, message, action } = slackRefreshNoticeState(result)
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className={`flex flex-col items-start gap-2 border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] desktop:flex-row desktop:justify-between desktop:gap-3 ${
+        needsAttention ? 'bg-(--status-paused-soft) text-(--amber-500)' : 'text-(--green-500)'
+      }`}
+    >
+      <span className="min-w-0">
+        <span>{message}</span>
+        {result.missingScopes.length > 0 && (
+          <span className="mono ml-1 text-[11px]">Missing: {result.missingScopes.join(', ')}</span>
+        )}
+      </span>
+      {action && (
+        <a href={action.href} target="_blank" rel="noopener noreferrer" className="lnk flex-none">
+          {action.label}
+        </a>
+      )}
+    </div>
+  )
+}
+
+function InviteLinksCard({ orgId }: { orgId: string }) {
+  const key = consoleKeys.inviteLink(orgId)
+  const {
+    data: link,
+    error: loadError,
+    mutate
+  } = useSWR<OrgInviteLinkDto | null>(key, ([, id]) => fetchOrgInviteLink(id as string))
+  const [revealed, setRevealed] = useState<{ id: string; url: string } | null>(null)
+  const [busy, setBusy] = useState<'generate' | 'revoke' | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setRevealed(null)
+    setCopied(false)
+    setActionError(null)
+  }, [orgId])
+
+  const status = link ? inviteLinkStatus(link) : null
+  const canGenerate = link !== undefined && (!link || status !== 'active')
+
+  const generate = async () => {
+    if (busy || !canGenerate) return
+    setBusy('generate')
+    setActionError(null)
+    setCopied(false)
+    try {
+      const created = await createOrgInviteLink(orgId)
+      setRevealed({ id: created.id, url: inviteLinkUrl(created.token, window.location.origin) })
+      await mutate(created, { revalidate: false })
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const revoke = async () => {
+    if (!link || busy) return
+    setBusy('revoke')
+    setActionError(null)
+    try {
+      await revokeOrgInviteLink(link.id, orgId)
+      setRevealed(null)
+      await mutate()
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const copy = async () => {
+    if (!revealed) return
+    try {
+      await navigator.clipboard.writeText(revealed.url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      /* clipboard unavailable — the URL stays visible for manual selection */
+    }
+  }
+
+  return (
+    <div className="card mt-[18px]">
+      <div className="cardhead justify-between">
+        <span className="cardtitle">Invite links</span>
+        {canGenerate && (
+          <Button variant="secondary" size="xs" onClick={() => void generate()}>
+            <Icon name="link" size={14} />
+            {busy === 'generate' ? 'Generating…' : link ? 'Generate new' : 'Generate link'}
+          </Button>
+        )}
+      </div>
+
+      {link === undefined && !loadError ? (
+        <LoadingState size={22} padding={20} />
+      ) : loadError ? (
+        <div className="px-4 py-[15px] font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
+          Couldn&apos;t load the invite link.
+        </div>
+      ) : !link ? (
+        <div className="flex items-center gap-3 px-4 py-[15px]">
+          <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md bg-(--surface-sunken)">
+            <Icon name="link" size={17} color="var(--text-tertiary)" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="font-sans text-[13px] font-semibold leading-normal">No invite link</div>
+            <div className="mt-[2px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+              Generate the organization&apos;s single collaborator link.
+            </div>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-col gap-3 px-4 py-[15px] desktop:flex-row desktop:items-center">
+            <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md bg-(--brand-soft)">
+              <Icon name="link" size={17} color="var(--brand)" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-sans text-[13px] font-semibold leading-normal">Organization invite link</span>
+                <span
+                  className={`badge ${
+                    status === 'active'
+                      ? 'bg-(--status-online-soft) text-(--status-online)'
+                      : status === 'expired'
+                        ? 'bg-(--status-paused-soft) text-(--status-paused)'
+                        : 'bg-(--status-error-soft) text-(--status-error)'
+                  }`}
+                >
+                  {status === 'active' ? 'Active' : status === 'expired' ? 'Expired' : 'Revoked'}
+                </span>
+              </div>
+            </div>
+            {status === 'active' && (
+              <Button variant="secondary" size="xs" onClick={() => void revoke()}>
+                <Icon name="ban" size={13} />
+                {busy === 'revoke' ? 'Revoking…' : 'Revoke'}
+              </Button>
+            )}
+          </div>
+
+          {revealed?.id === link.id && (
+            <div className="mx-4 mb-4 overflow-hidden rounded-[9px] border border-(--gray-800) bg-(--gray-1000)">
+              <div className="flex items-center gap-2 border-b border-(--gray-800) px-[13px] py-[9px]">
+                <Icon name="link" size={13} color="var(--text-inverse-dim)" />
+                <span className="font-mono text-[11px] font-medium leading-normal text-(--text-inverse-dim)">
+                  Copy this link now — it is shown only once
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void copy()}
+                  className="ml-auto inline-flex cursor-pointer items-center gap-[5px] border-0 bg-transparent font-mono text-[11px] font-medium leading-normal text-(--text-inverse-dim)"
+                >
+                  <Icon name={copied ? 'check' : 'copy'} size={12} />
+                  {copied ? 'copied' : 'copy'}
+                </button>
+              </div>
+              <div className="break-all px-[14px] py-[13px] font-mono text-[12px] leading-[1.7] text-[#cdd6e0]">
+                {revealed.url}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {actionError && (
+        <div className="border-t border-(--border-subtle) px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--status-error)">
+          {actionError}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default function SettingsView() {
+  const { me } = useProfile()
+  const { activeOrg, myRole, refreshOrgs, error: orgError } = useOrgs()
+  const { openModal } = useModal()
+  const isOwner = myRole === 'owner'
+  const canWrite = myRole !== 'viewer' // the CP denies viewer writes; hide the controls too
+
+  const membersKey = consoleKeys.members(activeOrg?.id)
+  const {
+    data: membersData,
+    error: membersError,
+    mutate: mutateMembers
+  } = useSWR(membersKey, ([, orgId]) => fetchMembers(orgId))
+  const loadFailed = membersData === undefined && Boolean(membersError ?? orgError)
+  const members = loadFailed ? [] : (membersData ?? null)
+  const [editing, setEditing] = useState<MemberTarget | null>(null)
+  const [inviting, setInviting] = useState(false)
+  const [deletingBot, setDeletingBot] = useState<BotDto | null>(null)
+
+  // A member change can affect ME (self-demote/-remove) — re-pull the org list
+  // too so myRole / the active org stay honest instead of 403-ing controls.
+  const onMembersChanged = useCallback(() => {
+    void Promise.allSettled([mutateMembers(), refreshOrgs()])
+  }, [mutateMembers, refreshOrgs])
+
+  const rows = (members ?? []).map(rowFromDto)
+  const ownerCount = rows.filter((r) => r.role === 'owner').length
+
+  const edit = (r: MemberRowView) => {
+    setEditing({
+      userId: r.userId,
+      name: r.name,
+      email: r.email,
+      picture: r.picture,
+      initials: r.initials,
+      avBg: r.avBg,
+      avText: r.avText,
+      role: r.role,
+      lastOwner: r.role === 'owner' && ownerCount <= 1
+    })
+  }
+
+  return (
+    <div className="wrap max-w-[900px] max-desktop:p-4">
+      <p className="psub mt-0">Organization, members and access tokens.</p>
+
+      <div className="card mt-5">
+        <div className="cardhead justify-between">
+          <span className="cardtitle">Organization</span>
+          {isOwner && (
+            <Button variant="secondary" size="xs" onClick={() => openModal('editOrg')}>
+              <Icon name="pencil" size={14} />
+              Edit
+            </Button>
+          )}
+        </div>
+        <div className="flex items-center gap-[14px] px-4 py-[15px]">
+          {isOwner ? (
+            // Owners edit the org avatar in place: glyph/color via onCommit, an uploaded
+            // image via onUploadImage (shown only when the object store is configured).
+            <AgentIconPicker
+              value={withIconUrl(activeOrg?.icon, activeOrg?.iconUrl)}
+              runtime=""
+              size={44}
+              radiusClass="rounded-[10px]"
+              onCommit={(icon) =>
+                activeOrg &&
+                void updateOrg(activeOrg.id, { icon })
+                  .then(() => refreshOrgs())
+                  .catch(() => {})
+              }
+              onUploadImage={
+                activeOrg?.iconUploadEnabled
+                  ? async (blob) => {
+                      await uploadOrgIcon(blob, activeOrg.id)
+                      refreshOrgs()
+                    }
+                  : undefined
+              }
+            />
+          ) : (
+            <span className="av h-11 w-11 flex-none rounded-[10px]">
+              <AgentIconView icon={withIconUrl(activeOrg?.icon, activeOrg?.iconUrl)} runtime="" size={44} />
+            </span>
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="font-sans text-[15px] font-semibold leading-normal">
+              {activeOrg?.name ?? activeOrg?.slug ?? '—'}
+            </div>
+            <div className="mono mt-[2px] text-[11.5px] text-(--text-tertiary)">{activeOrg?.slug ?? ''}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card mt-[18px]">
+        <div className="cardhead justify-between">
+          <span className="cardtitle">Members &amp; roles</span>
+          {isOwner && (
+            <Button variant="secondary" size="xs" onClick={() => setInviting(true)}>
+              <Icon name="user-plus" size={14} />
+              Invite
+            </Button>
+          )}
+        </div>
+        <div className={`row h ${MEMBER_GRID}`}>
+          <span>Member</span>
+          <span>Role</span>
+          <span />
+        </div>
+        {rows.map((p) => (
+          <div key={p.userId} className={`row ${MEMBER_GRID} gap-[11px]`}>
+            <div className="flex min-w-0 items-center gap-[11px]">
+              <Avatar src={p.picture} initials={p.initials} size={32} fontSize={12} bg={p.avBg} fg={p.avText} />
+              <div className="min-w-0">
+                <div className="truncate font-sans text-[13px] font-semibold leading-normal">{p.name}</div>
+                <div className="mono truncate text-[11px] text-(--text-tertiary)">{p.email ?? '—'}</div>
+              </div>
+            </div>
+            <span className="badge self-center justify-self-start" style={{ background: p.roleBg, color: p.roleText }}>
+              {p.roleLabel}
+            </span>
+            {isOwner ? (
+              <button className="iconbtn h-7 w-7 self-center" title="Edit member" onClick={() => edit(p)}>
+                <Icon name="pencil" size={14} />
+              </button>
+            ) : (
+              <span className="w-7" />
+            )}
+          </div>
+        ))}
+        {members === null && (
+          <div className="row grid-cols-[1fr]">
+            <LoadingState size={22} padding={20} />
+          </div>
+        )}
+        {loadFailed && (
+          <div className="row grid-cols-[1fr] font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
+            Couldn&apos;t load members — is the control plane reachable?
+          </div>
+        )}
+      </div>
+
+      {isOwner && activeOrg && <InviteLinksCard orgId={activeOrg.id} />}
+
+      {/* One card per IM platform, each listing that platform's durable bot
+          identities. Rows carry the Sharable toggle + installed-agent stack and
+          expand to the bot's channel roster (a SHARED bot's channels each get an
+          active-agent picker). Slack rows deep-link to the app's settings; Discord
+          rows offer a ready-made "Add to Discord" invite (preset scopes +
+          permissions) built from the persisted application id. The per-user
+          auto-install config token is managed on the Profile page, not here. */}
+      <PlatformBotsCard
+        platform="slack"
+        label="Slack"
+        noun="app"
+        canWrite={canWrite}
+        me={me}
+        onDelete={setDeletingBot}
+        rowLink={(b) =>
+          b.slackAppId ? (
+            <a
+              href={slackAppSettingsUrl(b.slackAppId)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Configure on Slack"
+              aria-label="Configure on Slack"
+              className="iconbtn h-7 w-7 flex-none"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Icon name="external-link" size={12} />
+            </a>
+          ) : null
+        }
+      />
+
+      <PlatformBotsCard
+        platform="discord"
+        label="Discord"
+        noun="bot"
+        canWrite={canWrite}
+        me={me}
+        onDelete={setDeletingBot}
+        rowLink={(b) =>
+          b.discordAppId ? (
+            <a
+              href={discordBotInviteUrl(b.discordAppId)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Invite this bot to a Discord server — preset scopes &amp; permissions"
+              aria-label="Add this bot to a Discord server"
+              className="iconbtn h-7 w-7 flex-none"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Icon name="external-link" size={12} />
+            </a>
+          ) : null
+        }
+      />
+
+      <PlatformBotsCard
+        platform="telegram"
+        label="Telegram"
+        noun="bot"
+        canWrite={canWrite}
+        me={me}
+        onDelete={setDeletingBot}
+      />
+
+      <PlatformBotsCard
+        platform="feishu"
+        label="Feishu"
+        noun="bot"
+        canWrite={canWrite}
+        me={me}
+        onDelete={setDeletingBot}
+      />
+
+      <GithubCard canWrite={canWrite} isOwner={isOwner} />
+
+      {inviting && (
+        <div className="scrim" onClick={() => setInviting(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <InviteMembersModal onClose={() => setInviting(false)} onAdded={onMembersChanged} />
+          </div>
+        </div>
+      )}
+      {editing && (
+        <div className="scrim" onClick={() => setEditing(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <EditMemberModal member={editing} onClose={() => setEditing(null)} onChanged={onMembersChanged} />
+          </div>
+        </div>
+      )}
+      {deletingBot && (
+        <div className="scrim" onClick={() => setDeletingBot(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <DeleteBotModal bot={deletingBot} onClose={() => setDeletingBot(null)} />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Per-platform bots card ────────────────────────────────────────────────────
+// One card per IM platform (Slack / Discord / Telegram), listing that platform's
+// durable bot identities. Default view hides in-use bots; the per-card "Show in
+// use" toggle reveals the full roster (in-use is judged on `agentIds` — NOT
+// `inUseByAgentId`, which is always null for a shareable bot even while several
+// agents are installed on it). Each row carries the Sharable toggle (PATCH
+// /bots/:id; the CP's 409 reason renders inline) + the installed-agent stack, and
+// expands to the bot's channel roster — a SHARED bot's channels each get an
+// active-agent picker. `rowLink` renders a per-bot deep link in the right actions;
+// `footer` hangs extra config off the card (Slack's auto-install token). `noun`
+// drives the header / empty-state / delete copy ("app" vs "bot").
+function PlatformBotsCard({
+  platform,
+  label,
+  noun,
+  canWrite,
+  me,
+  onDelete,
+  rowLink,
+  footer
+}: {
+  platform: string
+  label: string
+  noun: string
+  canWrite: boolean
+  me: MeDto | null
+  onDelete: (b: BotDto) => void
+  rowLink?: (b: BotDto) => ReactNode
+  footer?: ReactNode
+}) {
+  const { bots, integrations, getAgent, setBotShareable, setChannelAgent, loading: dataLoading } = useConsoleData()
+  const [showInUse, setShowInUse] = useState(false)
+  // Bot row expanded to its channel roster (one at a time), the bot whose
+  // shareable PATCH is in flight, and the last toggle denial to surface (the CP
+  // 409s with a reason: no relay connected / still shared by several agents).
+  const [openBotId, setOpenBotId] = useState<string | null>(null)
+  const [botBusyId, setBotBusyId] = useState<string | null>(null)
+  const [botErr, setBotErr] = useState<{ id: string; msg: string } | null>(null)
+  const [slackRefreshBusyId, setSlackRefreshBusyId] = useState<string | null>(null)
+  const [slackRefresh, setSlackRefresh] = useState<Record<string, { result?: SlackBotRefreshDto; error?: string }>>({})
+
+  const platformBots = bots.filter((b) => b.platform === platform)
+  const visible = platformBots.filter((b) => b.agentIds.length === 0 || showInUse)
+
+  const flipShareable = async (b: BotDto, next: boolean) => {
+    if (botBusyId) return
+    setBotBusyId(b.id)
+    setBotErr(null)
+    try {
+      await setBotShareable(b.id, next)
+    } catch (e) {
+      setBotErr({ id: b.id, msg: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setBotBusyId(null)
+    }
+  }
+
+  const refreshSlackApp = async (b: BotDto) => {
+    if (slackRefreshBusyId) return
+    setSlackRefreshBusyId(b.id)
+    setSlackRefresh((current) => ({ ...current, [b.id]: {} }))
+    try {
+      const result = await refreshSlackBot(b.id)
+      setSlackRefresh((current) => ({ ...current, [b.id]: { result } }))
+    } catch (e) {
+      setSlackRefresh((current) => ({
+        ...current,
+        [b.id]: { error: e instanceof Error ? e.message : String(e) }
+      }))
+    } finally {
+      setSlackRefreshBusyId(null)
+    }
+  }
+
+  return (
+    <div className="card mt-[18px]">
+      <div className="cardhead justify-between">
+        <span className="cardtitle flex items-center gap-2">
+          <span className="imark h-[15px] w-[15px] border-0 bg-transparent">
+            <PlatformMark platform={platform} />
+          </span>
+          {label}
+        </span>
+        <label className="inline-flex cursor-pointer items-center gap-2">
+          <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">Show in use</span>
+          <Toggle checked={showInUse} onChange={setShowInUse} />
+        </label>
+      </div>
+      {/* gap must match the data rows' or the narrow tracks drift out of line. */}
+      <div className={`row h ${BOT_GRID} gap-[11px]`}>
+        <span>{noun === 'app' ? 'App' : 'Bot'}</span>
+        <span>Sharable</span>
+        <span>Agents</span>
+        <span className="whitespace-nowrap max-[479px]:hidden">Created by</span>
+        <span />
+      </div>
+      {visible.map((b) => {
+        const free = b.agentIds.length === 0
+        const open = openBotId === b.id
+        const channels = open ? botChannels(b, integrations) : []
+        const slackState = slackRefresh[b.id]
+        const refreshingSlack = slackRefreshBusyId === b.id
+        const slackNeedsAttention = slackState?.result
+          ? slackRefreshNoticeState(slackState.result).needsAttention
+          : false
+        const chanGrid = b.shareable ? 'grid-cols-[1fr_auto]' : 'grid-cols-[1fr]'
+        // The picker's choices: every agent installed on the bot.
+        const agentOptions = b.agentIds.map((id) => {
+          const ag = getAgent(id)
+          return {
+            id,
+            name: ag ? agentLabel(ag) : id,
+            model: ag?.model || ag?.runtime || '',
+            runtime: ag?.runtime || ag?.model || '',
+            icon: ag?.icon
+          }
+        })
+        return (
+          <Fragment key={b.id}>
+            <div
+              className={`row click ${BOT_GRID} items-center gap-[11px]`}
+              onClick={() => setOpenBotId(open ? null : b.id)}
+            >
+              <div className="flex min-w-0 items-center gap-[10px]">
+                <Icon
+                  name="chevron-right"
+                  size={14}
+                  className={`flex-none text-(--text-tertiary) transition-transform ${open ? 'rotate-90' : ''}`}
+                />
+                <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
+                  <span className="flex h-[14px] w-[14px] items-center justify-center">
+                    <PlatformMark platform={b.platform} fillPct={100} />
+                  </span>
+                </span>
+                <span className="mono truncate text-[12.5px]">{b.name}</span>
+                {b.prebuilt && <span className="badge bg-(--surface-active) text-(--text-tertiary)">prebuilt</span>}
+                {/* Transport tag (Slack) — makes the Sharable column's disabled state
+                    self-explanatory: only an http bot may be shared. */}
+                {platform === 'slack' && (
+                  <span className="badge bg-(--surface-active) text-(--text-tertiary)">{b.transport ?? 'socket'}</span>
+                )}
+              </div>
+              <span
+                className="flex items-center justify-self-start"
+                title={
+                  (b.transport ?? 'socket') === 'socket'
+                    ? 'HTTP transport required to share'
+                    : 'Allow several agents to share this bot across channels'
+                }
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Toggle
+                  checked={b.shareable}
+                  disabled={!canWrite || botBusyId === b.id || (b.transport ?? 'socket') === 'socket'}
+                  onChange={(next) => void flipShareable(b, next)}
+                />
+              </span>
+              <div className="flex min-w-0 items-center">
+                {b.agentIds.length > 0 ? (
+                  b.agentIds.map((id, idx) => {
+                    const ag = getAgent(id)
+                    return (
+                      <span
+                        key={id}
+                        title={ag ? agentLabel(ag) : id}
+                        className={`av h-[22px] w-[22px] rounded-[6px] border-2 border-(--surface-card) ${
+                          idx > 0 ? '-ml-[6px]' : ''
+                        }`}
+                      >
+                        <AgentIconView icon={ag?.icon} runtime={ag?.runtime || ag?.model || ''} size={22} />
+                      </span>
+                    )
+                  })
+                ) : (
+                  <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                    {botSubline(b)}
+                  </span>
+                )}
+              </div>
+              <span className="min-w-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) max-[479px]:hidden">
+                {b.createdBy ? creatorLabel(b.createdBy, me) : b.prebuilt ? 'AgentConnect' : '—'}
+              </span>
+              <span className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                {platform === 'slack' && !b.prebuilt && b.slackAppId && canWrite && (
+                  <button
+                    className={`iconbtn h-7 w-7 flex-none ${
+                      slackNeedsAttention ? 'border-(--amber-500) bg-(--status-paused-soft) text-(--amber-500)' : ''
+                    } ${refreshingSlack ? 'cursor-default opacity-60' : ''}`}
+                    title={slackNeedsAttention ? 'Slack app needs attention' : 'Refresh Slack app'}
+                    aria-label="Refresh Slack app"
+                    disabled={refreshingSlack}
+                    onClick={() => void refreshSlackApp(b)}
+                  >
+                    <Icon
+                      name={refreshingSlack ? 'loader' : 'refresh-cw'}
+                      size={14}
+                      className={refreshingSlack ? 'animate-spin' : undefined}
+                    />
+                  </button>
+                )}
+                {rowLink?.(b)}
+                {free && canWrite ? (
+                  <button className="iconbtn h-7 w-7 flex-none" title={`Delete ${noun}`} onClick={() => onDelete(b)}>
+                    <Icon name="trash-2" size={14} />
+                  </button>
+                ) : !free ? (
+                  <span
+                    title="Uninstall its integration first"
+                    className="flex h-7 w-7 flex-none cursor-not-allowed items-center justify-center opacity-45"
+                  >
+                    <Icon name="trash-2" size={14} />
+                  </span>
+                ) : (
+                  <span className="h-7 w-7 flex-none" />
+                )}
+              </span>
+            </div>
+            {botErr?.id === b.id && (
+              <div className="border-b border-(--border-subtle) px-4 py-2 font-sans text-[12px] font-normal leading-normal text-(--status-error)">
+                {botErr.msg}
+              </div>
+            )}
+            {slackState?.error && (
+              <div
+                role="alert"
+                className="border-b border-(--border-subtle) bg-(--status-error-soft) px-4 py-2 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)"
+              >
+                Couldn&apos;t refresh this Slack app — {slackState.error}
+              </div>
+            )}
+            {slackState?.result && <SlackRefreshNotice result={slackState.result} />}
+            {open && (
+              <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 pb-[14px] pl-10 pt-3">
+                {channels.length > 0 ? (
+                  <>
+                    <div
+                      className={`grid ${chanGrid} gap-[11px] px-3 pb-[7px] font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)`}
+                    >
+                      <span>Channel</span>
+                      {b.shareable && <span>Active agent</span>}
+                    </div>
+                    <div className="overflow-visible rounded-lg border border-(--border-subtle) bg-(--surface-card)">
+                      {channels.map((c) => (
+                        <div
+                          key={c.channelId}
+                          className={`grid ${chanGrid} items-center gap-[11px] border-b border-(--border-subtle) px-3 py-2 last:border-b-0`}
+                        >
+                          <span className="mono flex min-w-0 items-center gap-[7px] text-[12px]">
+                            <Icon name="hash" size={12} color="var(--text-tertiary)" className="flex-none" />
+                            <span className="truncate">{c.name}</span>
+                          </span>
+                          {b.shareable && (
+                            <ActiveAgentPicker
+                              options={agentOptions}
+                              activeId={c.agentId ?? b.agentIds[0] ?? null}
+                              disabled={!canWrite || !c.integrationId}
+                              onPick={(agentId) => setChannelAgent(c.integrationId!, c.channelId, agentId)}
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                    Not in any channel yet — invite the bot to a channel and it shows up here.
+                  </div>
+                )}
+              </div>
+            )}
+          </Fragment>
+        )
+      })}
+      {platformBots.length === 0 &&
+        (dataLoading ? (
+          <LoadingState size={22} padding={20} />
+        ) : (
+          <div className="px-4 py-7 text-center">
+            <div className="font-sans text-[13px] font-semibold leading-normal">No {noun}s yet</div>
+            <div className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+              A {label} {noun} is registered when you add a {label} integration to an agent.
+            </div>
+          </div>
+        ))}
+      {platformBots.length > 0 && visible.length === 0 && (
+        <div className="px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+          Every {noun} is in use — turn on Show in use to see them.
+        </div>
+      )}
+
+      {footer}
+    </div>
+  )
+}
+
+// ── GitHub App card ─────────────────────────────────────────────────────────
+// The deployment GitHub App powering github-app workspaces (repo picker +
+// credential-free daemon git). Deployment-config opt-in: when the CP has no
+// GITHUB_APP_* env the routes 404 and this card shows the disabled note.
+// Installations are org-level infrastructure (like bots) — every member can
+// see them; installing and syncing are writes (viewers don't get those buttons),
+// while uninstalling the App from an account is owner-only.
+function GithubCard({ canWrite, isOwner }: { canWrite: boolean; isOwner: boolean }) {
+  // Gate the org-scoped fetch on the active org (same hard-refresh race as SlackCard):
+  // before OrgProvider resolves, `orgBase()` throws → the catch would show "not enabled"
+  // even when it IS. Re-fetch once the org resolves / on switch.
+  const { activeOrg } = useOrgs()
+  const [enabled, setEnabled] = useState<boolean | null>(null)
+  const [installs, setInstalls] = useState<GithubInstallationDto[]>([])
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [uninstalling, setUninstalling] = useState<GithubInstallationDto | null>(null)
+
+  useEffect(() => {
+    if (!activeOrg) return
+    let alive = true
+    setEnabled(null)
+    fetchGithubInstallations()
+      .then(({ enabled, installations }) => {
+        if (!alive) return
+        setEnabled(enabled)
+        setInstalls(installations)
+      })
+      .catch(() => alive && setEnabled(false))
+    return () => {
+      alive = false
+    }
+  }, [activeOrg])
+
+  // The install link mints a ONE-SHOT signed state — fetch fresh per click.
+  const install = async () => {
+    setErr(null)
+    try {
+      const url = await fetchGithubInstallUrl()
+      if (url) window.open(url, '_blank', 'noopener')
+      else setErr('Could not mint an install link.')
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  // Reconcile with GitHub — the fallback for a lost setup callback, a pending
+  // admin approval, or an install finished in the other tab just now.
+  const sync = async () => {
+    if (busy) return
+    setBusy(true)
+    setErr(null)
+    try {
+      setInstalls(await syncGithubInstallations())
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="card mt-[18px]">
+      <div className="cardhead justify-between">
+        <span className="cardtitle flex items-center gap-2">
+          <span className="flex h-[15px] w-[15px] items-center justify-center">
+            <GithubMark color="var(--text-primary)" />
+          </span>
+          GitHub
+        </span>
+        {enabled === true && canWrite && (
+          <span className="flex items-center gap-2">
+            <Button variant="ghost" onClick={sync}>
+              <Icon name="refresh-cw" size={13} />
+              {busy ? 'Syncing…' : 'Sync'}
+            </Button>
+            <Button onClick={install}>
+              <Icon name="external-link" size={13} />
+              Install on GitHub
+            </Button>
+          </span>
+        )}
+      </div>
+      {enabled === null && <LoadingState size={22} padding={20} />}
+      {enabled === false && (
+        <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+          Not enabled on this deployment — the control plane has no GitHub App configured.
+        </div>
+      )}
+      {enabled === true && installs.length === 0 && (
+        <div className="px-4 py-7 text-center">
+          <div className="font-sans text-[13px] font-semibold leading-normal">No installations yet</div>
+          <div className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+            Install the GitHub App on your org to pick private repositories when creating agents — the daemon then
+            clones and pushes with short-lived tokens, no git credentials on the machine.
+          </div>
+        </div>
+      )}
+      {enabled === true &&
+        installs.map((i) => (
+          <Fragment key={i.id}>
+            <div className="row grid-cols-1 gap-2 desktop:grid-cols-[minmax(0,1fr)_auto] desktop:gap-[11px]">
+              <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
+                <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
+                  <span className="flex h-[14px] w-[14px] items-center justify-center">
+                    <GithubMark color="var(--text-primary)" />
+                  </span>
+                </span>
+                <span className="mono min-w-0 truncate text-[12.5px]">{i.accountLogin}</span>
+                <span className="badge bg-(--surface-active) text-(--text-tertiary)">
+                  {i.accountType === 'Organization' ? 'org' : 'user'}
+                </span>
+                {i.suspended && <span className="badge bg-(--status-error-soft) text-(--status-error)">suspended</span>}
+                {i.permissionsStatus === 'outdated' && (
+                  <span className="badge bg-(--status-paused-soft) text-(--amber-500)">needs update</span>
+                )}
+              </div>
+              <span className="flex items-center justify-between gap-3 desktop:justify-end">
+                <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                  {i.repositorySelection === 'all' ? 'all repositories' : 'selected repositories'}
+                </span>
+                {isOwner && (
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    className="text-(--status-error) hover:text-(--status-error)"
+                    onClick={() => setUninstalling(i)}
+                  >
+                    <Icon name="unplug" size={13} />
+                    Uninstall
+                  </Button>
+                )}
+              </span>
+            </div>
+            {i.permissionsStatus === 'outdated' && (
+              <div
+                role="status"
+                className="flex flex-col items-start gap-2 border-b border-(--border-subtle) bg-(--status-paused-soft) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--amber-500) desktop:flex-row desktop:items-center desktop:justify-between desktop:gap-3"
+              >
+                <span className="flex min-w-0 items-start gap-2">
+                  <Icon name="triangle-alert" size={14} color="var(--amber-500)" className="mt-[2px] flex-none" />
+                  <span>This installation&rsquo;s GitHub permissions need updating before all features will work.</span>
+                </span>
+                <a href={i.settingsUrl} target="_blank" rel="noopener noreferrer" className="lnk flex-none text-[12px]">
+                  Update permissions
+                  <Icon name="external-link" size={12} />
+                </a>
+              </div>
+            )}
+          </Fragment>
+        ))}
+      {err && (
+        <div className="px-4 py-2 font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</div>
+      )}
+      {uninstalling && (
+        <div className="scrim" onClick={() => setUninstalling(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <UninstallGithubInstallationModal
+              installation={uninstalling}
+              onClose={() => setUninstalling(null)}
+              onUninstalled={(id) => {
+                setInstalls((current) => current.filter((installation) => installation.id !== id))
+                setUninstalling(null)
+              }}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

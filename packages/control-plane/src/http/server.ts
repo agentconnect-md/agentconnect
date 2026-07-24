@@ -1,0 +1,239 @@
+/**
+ * `http/server.ts` (design §2.1) — `buildHttpServer(deps)`: the C2 BFF Fastify
+ * instance. Installs the zod type provider (validator + bigint-safe serializer),
+ * registers the `humanAuth` plane (devAuth stub or OIDC by config), mounts every
+ * route plugin, and installs the error mapper that turns zod validation /
+ * serialization failures and thrown errors into stable JSON problem responses.
+ *
+ * Shared by production (`container.ts`) and tests (`build-http.ts`): the same
+ * graph, with the repos/registry/auth/events seams injected either real (Prisma)
+ * or faked. No `@prisma/client` import here — only ports.
+ */
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyServerOptions } from 'fastify'
+import cors from '@fastify/cors'
+import { hasZodFastifySchemaValidationErrors, isResponseSerializationError } from 'fastify-type-provider-zod'
+import type { HttpDeps } from './deps.js'
+import { installZod } from './plugins/zod.js'
+import { installOpenapi } from './plugins/openapi.js'
+import { humanAuthPlugin } from './plugins/auth.js'
+import { healthRoutes } from './routes/health.js'
+import { daemonRoutes } from './routes/daemons.js'
+import { keyRoutes } from './routes/keys.js'
+import { agentRoutes } from './routes/agents.js'
+import { agentRepoRoutes } from './routes/agent-repos.js'
+import { webchatTokenRoutes } from './routes/webchat-token.js'
+import { integrationRoutes } from './routes/integrations.js'
+import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './routes/slack-install.js'
+import { botRoutes } from './routes/bots.js'
+import { mcpProviderRoutes } from './routes/mcp-providers.js'
+import { connectorRoutes } from './routes/connectors.js'
+import { memoryConnectionRoutes } from './routes/memory-connections.js'
+import { githubRoutes, githubCallbackRoutes } from './routes/github.js'
+import { agentIconRoutes } from './routes/agent-icon.js'
+import { orgIconRoutes } from './routes/org-icon.js'
+import { iconUploadRoutes } from './routes/icon-upload.js'
+import { memberRoutes } from './routes/members.js'
+import { orgInviteAcceptRoutes, orgInviteLinkRoutes } from './routes/org-invite-links.js'
+import { meRoutes } from './routes/me.js'
+import { waitlistRoutes } from './routes/waitlist.js'
+import { meKeyRoutes } from './routes/me-keys.js'
+import { orgRoutes, orgScopedRoutes } from './routes/orgs.js'
+import { makeOrgScope } from './org-scope.js'
+import { cronRoutes } from './routes/crons.js'
+import { hookRoutes } from './routes/hooks.js'
+import { sessionRoutes } from './routes/sessions.js'
+import { usageRoutes } from './routes/usage.js'
+import { streamRoutes } from './routes/stream.js'
+import { mcpRoutes } from './mcp/routes.js'
+import { oauthConsentRoutes } from './oauth/consent.js'
+import { oauthMetadataRoutes } from './oauth/metadata.js'
+import { oauthRoutes } from './oauth/routes.js'
+import { API_V1_PREFIX } from './version.js'
+import { controlPlaneOtelFastifyPlugin } from '../observability.js'
+
+export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {}): FastifyInstance {
+  const app = Fastify({ logger: false, ...opts })
+
+  const otelPlugin = controlPlaneOtelFastifyPlugin()
+  if (otelPlugin) void app.register(otelPlugin)
+
+  // zod validator + (bigint-safe) serializer — must precede route registration.
+  installZod(app)
+
+  // OpenAPI 3.1 generation + interactive docs: the raw spec at
+  // `/api/v1/openapi.json` (versioned, machine-readable) and Swagger-UI at
+  // `/docs` (root, unversioned — human tooling). Registered here — before the
+  // route plugins below — so `@fastify/swagger`'s `onRoute` hook captures them
+  // and builds the spec straight from the zod DTO schemas each route declares.
+  installOpenapi(app, { ...(deps.config.PUBLIC_CP_URL ? { publicUrl: deps.config.PUBLIC_CP_URL } : {}) })
+
+  // Browser CORS for the Web UI (C2). Explicit CORS_ORIGIN wins; otherwise reflect
+  // any origin in development and stay disabled in production. Bearer-token auth
+  // (not cookies) so credentials are off and `*`/reflection are safe.
+  const corsOrigin =
+    deps.config.CORS_ORIGIN !== undefined
+      ? deps.config.CORS_ORIGIN === '*'
+        ? true
+        : deps.config.CORS_ORIGIN.split(',').map((o) => o.trim())
+      : deps.config.NODE_ENV !== 'production'
+  // @fastify/cors v11 defaults `methods` to GET,HEAD,POST — without this the
+  // PUT/PATCH/DELETE routes (cron upsert; rename/delete daemon, delete agent/key/cron)
+  // fail the browser preflight ("Failed to fetch") even though the route exists.
+  if (corsOrigin)
+    void app.register(cors, { origin: corsOrigin, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'] })
+
+  // C2 human-auth plane (devAuth stub unless OIDC_ISSUER is set). Non-encapsulated
+  // (fastify-plugin) so `app.humanAuth` is visible to every route plugin. The user
+  // repo is injected as the JIT resolver so a verified OIDC `sub` maps to a local
+  // user/org (only consulted on the OIDC path; the devAuth stub ignores it). The
+  // API-key verifier lets a dot-free `Authorization: Bearer <key>` authenticate as a
+  // personal key in front of the JWT/dev path (daemon-api-key-auth.md §8).
+  void app.register(humanAuthPlugin, {
+    ...deps.config,
+    resolveUser: (input) => deps.repos.user.provisionOidcUser(input),
+    verifyApiKey: (token) => deps.apiKeys.authenticateUser(token)
+  })
+
+  // Map zod validation/serialization failures + Prisma "record not found" to
+  // stable problem responses (design §2.1 "error mapper").
+  app.setErrorHandler((err: FastifyError, req, reply) => {
+    if (hasZodFastifySchemaValidationErrors(err)) {
+      return reply.code(400).send({
+        error: 'Bad Request',
+        statusCode: 400,
+        message: 'request does not match schema',
+        details: { issues: err.validation, method: req.method, url: req.url }
+      })
+    }
+    if (isResponseSerializationError(err)) {
+      req.log.error({ err }, 'response serialization error')
+      return reply.code(500).send({
+        error: 'Internal Server Error',
+        statusCode: 500,
+        message: 'response does not match schema'
+      })
+    }
+    // Prisma "record to delete/update does not exist".
+    if ((err as { code?: string }).code === 'P2025') {
+      return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'resource not found' })
+    }
+    // Prisma unique-constraint violation (e.g. duplicate agent slug in an org).
+    if ((err as { code?: string }).code === 'P2002') {
+      return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'resource already exists' })
+    }
+    const status = typeof err.statusCode === 'number' ? err.statusCode : 500
+    if (status >= 500) req.log.error({ err }, 'unhandled error')
+    return reply.code(status).send({
+      error: status >= 500 ? 'Internal Server Error' : err.name,
+      statusCode: status,
+      message: status >= 500 ? 'internal server error' : err.message
+    })
+  })
+
+  // Routes (each a Fastify plugin; closures capture `deps`).
+  //
+  // `GET /health` stays at the ROOT, unversioned — an infra liveness probe the
+  // deployment hits at a stable path (versioning a probe is an anti-pattern).
+  //
+  // Everything else is the versioned public REST surface, mounted under
+  // `/api/v1` (see `version.ts`) so the API is externally versioned from day one.
+  // Within it: the caller's org list/create + profile at the version root, and
+  // every resource org-scoped under `/api/v1/orgs/:orgId` behind humanAuth + the
+  // org-scope guard (membership check → `req.orgCtx`), so every resource URL
+  // names its tenant and cross-org access reads as 404.
+  void app.register(healthRoutes(deps))
+  // Embedded OAuth AS (agent-assistant.md §7) — discovery + protocol endpoints at the ROOT
+  // (unauthenticated auth-bootstrap surface): the .well-known metadata + /oauth/{register,
+  // authorize,token}. Hand-rolled Fastify over `OAuthService` (the MCP SDK dropped its
+  // embedded-AS helpers in v2; the spec keeps AS internals out of scope). /authorize
+  // redirects to the web console consent page — the CP holds no browser session.
+  void app.register(oauthMetadataRoutes(deps))
+  void app.register(oauthRoutes(deps))
+  void app.register(
+    async (api) => {
+      await api.register(orgRoutes(deps))
+      await api.register(meRoutes(deps))
+      await api.register(meKeyRoutes(deps))
+      await api.register(waitlistRoutes(deps))
+      await api.register(orgInviteAcceptRoutes(deps))
+      // OAuth consent BACKEND (agent-assistant.md §7.3) — version root, per-route
+      // humanAuth (the web console consent page calls it with the user's session).
+      await api.register(oauthConsentRoutes(deps))
+      // Unauthenticated GitHub setup callback (browser redirect; org rides the
+      // signed state) — version root, deliberately OUTSIDE the org subtree.
+      await api.register(githubCallbackRoutes(deps))
+      // Unauthenticated Slack OAuth callback (browser redirect; the pending row
+      // rides the OAuth state) — same version-root placement as the GitHub one.
+      await api.register(slackOauthCallbackRoutes(deps))
+      // Unauthenticated agent avatar PNG (Slack fetches it as the per-message
+      // icon_url; no bearer, no org — only the agent UUID). Handed-out URL uses
+      // the public `/v1` form, aliased below.
+      await api.register(agentIconRoutes(deps))
+      // Unauthenticated org avatar PNG (console `<img src>`; no bearer). Same
+      // version-root placement + `/v1` alias as the agent icon endpoint.
+      await api.register(orgIconRoutes(deps))
+      // AgentConnect MCP — version root, OUTSIDE the org subtree: the org is
+      // resolved from the personal API key's binding, not the URL
+      // (docs/designs/agent-assistant.md §6.1). Mounted again at the public
+      // `/v1` alias below; the handed-out URL is `<PUBLIC_CP_URL>/v1/mcp`.
+      await api.register(mcpRoutes(deps))
+      await api.register(
+        async (scope) => {
+          // preValidation, not preHandler: zod validation strips params a route's
+          // schema doesn't declare (the prefix's `orgId`), and it runs BEFORE
+          // preHandler — the guard must read the raw params first.
+          scope.addHook('preValidation', scope.humanAuth)
+          scope.addHook('preValidation', makeOrgScope(deps.repos.org))
+          await scope.register(orgScopedRoutes(deps))
+          await scope.register(daemonRoutes(deps))
+          await scope.register(keyRoutes(deps))
+          await scope.register(agentRoutes(deps))
+          await scope.register(agentRepoRoutes(deps))
+          await scope.register(webchatTokenRoutes(deps))
+          await scope.register(integrationRoutes(deps))
+          await scope.register(slackInstallRoutes(deps))
+          await scope.register(slackConfigRoutes(deps))
+          await scope.register(botRoutes(deps))
+          await scope.register(mcpProviderRoutes(deps))
+          await scope.register(connectorRoutes(deps))
+          await scope.register(memoryConnectionRoutes(deps))
+          await scope.register(memberRoutes(deps))
+          await scope.register(orgInviteLinkRoutes(deps))
+          await scope.register(cronRoutes(deps))
+          await scope.register(hookRoutes(deps))
+          await scope.register(sessionRoutes(deps))
+          await scope.register(usageRoutes(deps))
+          await scope.register(streamRoutes(deps))
+          await scope.register(githubRoutes(deps))
+          // Uploaded-icon write surface — mounted ONLY when the object store is
+          // configured; absent ⇒ the routes don't exist and the console hides Upload.
+          if (deps.iconStore) await scope.register(iconUploadRoutes(deps))
+        },
+        { prefix: '/orgs/:orgId' }
+      )
+    },
+    { prefix: API_V1_PREFIX }
+  )
+
+  // PUBLIC-prefix alias for the routes whose URLs are handed OUT of the system.
+  // Externally the versioned API lives under `/v1` (the edge rewrites it to the
+  // internal `/api/v1`), and these URLs leave in that public form: the OAuth
+  // callbacks (SLACK_OAUTH_CALLBACK_PATH; the GitHub App's Setup URL) and the
+  // AgentConnect MCP endpoint (MCP_PUBLIC_PATH — the canonical resource URL users
+  // paste into claude.ai / Claude Code; RFC 9728 clients validate it byte-for-byte).
+  // A direct-hit deploy (local dev, no rewriting edge) has nothing mapping `/v1`
+  // back to `/api/v1` — mount the same plugins at `/v1` so the public form routes
+  // in both shapes.
+  void app.register(
+    async (pub) => {
+      await pub.register(githubCallbackRoutes(deps))
+      await pub.register(slackOauthCallbackRoutes(deps))
+      await pub.register(agentIconRoutes(deps))
+      await pub.register(orgIconRoutes(deps))
+      await pub.register(mcpRoutes(deps))
+    },
+    { prefix: '/v1' }
+  )
+
+  return app
+}

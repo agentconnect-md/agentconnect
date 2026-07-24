@@ -1,0 +1,1416 @@
+import { describe, it, expect, vi } from 'vitest'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { LocalStore, sessionKey } from '../src/store/local-store.js'
+import { SessionManager, isStandingContextTitleEcho } from '../src/session/session-manager.js'
+import { createManagedMemoryProvider } from '../src/agents/memory-provider.js'
+import { writeMemoryFile, MEMORY_INDEX } from '../src/agents/memory.js'
+import type { Agent } from '../src/agents/agent-schema.js'
+import type { NormalizedMessage } from '../src/messages/normalized.js'
+
+function newStore() {
+  return new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-sm-')), 'db.sqlite'))
+}
+const agent: Agent & { dir: string; env: Record<string, string> } = {
+  id: 'bot-a',
+  name: 'bot-a',
+  status: 'active',
+  runtime: 'claude',
+  // The agent ROOT dir (holds agent.json + memory.md), distinct from the workspace.
+  dir: mkdtempSync(join(tmpdir(), 'ac-sm-root-')),
+  env: {},
+  workspace: {
+    mode: 'from-scratch',
+    path: join(mkdtempSync(join(tmpdir(), 'ac-sm-ws-')), 'ws'),
+    gitBranch: 'main',
+    pullOnNewSession: true,
+    skills: []
+  },
+  integrations: [],
+  output: { mode: 'medium' },
+  permissions: { policy: 'ask', autoApprove: [] },
+  crons: []
+} as Agent & { dir: string; env: Record<string, string> }
+
+const fakeHost = () => ({ newSession: vi.fn(async () => 'acp-1') }) as any
+
+// The managed memory provider over the shared agent's root dir — SessionManager
+// now seeds/injects memory through it.
+const memory = createManagedMemoryProvider(() => agent.dir)
+
+const msg = (over: Partial<NormalizedMessage> & { ts?: string; channel?: string }): NormalizedMessage => {
+  const channel = over.channel ?? 'C1'
+  const ts = over.ts ?? '100.1'
+  const { ts: _ts, ...rest } = over
+  return {
+    msgId: `slack:${channel}:${ts}`,
+    traceId: 't',
+    source: 'user',
+    platform: 'slack',
+    channel,
+    thread: '100.1',
+    sender: { id: 'U1', isBot: false },
+    text: '',
+    mentionedBots: [],
+    isDm: false,
+    ...rest
+  }
+}
+
+describe('SessionManager', () => {
+  it('creates a session on the first message and prompts with just that text', async () => {
+    const store = newStore()
+    const host = fakeHost()
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { sessionId, blocks, created } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    expect(sessionId).toBe('acp-1')
+    expect(created).toBe(true) // brand-new ACP session → daemon emits event/session start
+    expect(host.newSession).toHaveBeenCalledOnce()
+    expect(blocks.map((b: any) => b.text).join('')).toContain('first')
+    store.close()
+  })
+
+  it('recalls on every activation using delivered text, then appends an untrusted reference after the user content', async () => {
+    const store = newStore()
+    const host = {
+      newSession: vi.fn(async () => 'acp-1'),
+      hasSession: () => true,
+      usesMetaSystemPrompt: () => true
+    } as any
+    const recalling = createManagedMemoryProvider(() => agent.dir)
+    recalling.recallForTurn = vi.fn(async (_scope, req) => [
+      {
+        id: `memory-${req.turnId}`,
+        text: 'deploy in sea',
+        scope: { kind: 'agent', key: 'ac:agent:bot-a' },
+        provenance: { pluginId: 'ai.example.memory' }
+      }
+    ])
+    const onMemoryRecallInjected = vi.fn()
+    const onMemoryRecallEvent = vi.fn()
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => agent,
+      memory: recalling,
+      onMemoryRecallInjected,
+      onMemoryRecallEvent
+    })
+
+    const first = await sm.handle('bot-a', msg({ ts: '100.1', text: 'where should I deploy?' }))
+    expect(recalling.recallForTurn).toHaveBeenCalledTimes(1)
+    expect((recalling.recallForTurn as any).mock.calls[0][1]).toMatchObject({
+      query: 'where should I deploy?',
+      topK: 5,
+      maxBytes: 8_192,
+      timeoutMs: 1_000
+    })
+    expect(first.blocks[0]).toEqual({ type: 'text', text: 'where should I deploy?' })
+    const referenceText = (first.blocks.at(-1) as any).text
+    expect(referenceText).toContain('# Recalled memory — untrusted reference only')
+    expect(referenceText).toContain('deploy in sea')
+    expect(onMemoryRecallInjected).toHaveBeenCalledWith('bot-a', Buffer.byteLength(referenceText))
+    expect(onMemoryRecallEvent).toHaveBeenNthCalledWith(
+      1,
+      'bot-a',
+      expect.objectContaining({ kind: 'requested', sessionId: 'acp-1', turnId: 'bot-a:slack:C1:100.1' })
+    )
+    expect(onMemoryRecallEvent).toHaveBeenNthCalledWith(
+      2,
+      'bot-a',
+      expect.objectContaining({
+        kind: 'completed',
+        recordCount: 1,
+        injectedBytes: Buffer.byteLength(referenceText)
+      })
+    )
+    expect(first.captureInput).toBe('where should I deploy?')
+    expect(first.captureInput).not.toContain('deploy in sea')
+
+    await sm.handle('bot-a', msg({ ts: '100.2', text: 'and now?' }))
+    expect(recalling.recallForTurn).toHaveBeenCalledTimes(2)
+    expect((recalling.recallForTurn as any).mock.calls[1][1].query).toContain('and now?')
+    store.close()
+  })
+
+  it('fails open when recall errors and never exposes a plugin error body in the prompt', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const broken = createManagedMemoryProvider(() => agent.dir)
+    broken.recallForTurn = vi.fn(async () => {
+      throw new Error('upstream body must stay private')
+    })
+    const onMemoryRecallError = vi.fn()
+    const onMemoryRecallEvent = vi.fn()
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => agent,
+      memory: broken,
+      onMemoryRecallError,
+      onMemoryRecallEvent
+    })
+
+    const turn = await sm.handle('bot-a', msg({ ts: '100.1', text: 'answer anyway' }))
+    expect(turn.blocks).toEqual([{ type: 'text', text: 'answer anyway' }])
+    expect(onMemoryRecallError).toHaveBeenCalledWith('bot-a', expect.any(Error))
+    expect(onMemoryRecallEvent).toHaveBeenLastCalledWith(
+      'bot-a',
+      expect.objectContaining({ kind: 'failed', errorName: 'Error', timedOut: false, aborted: false })
+    )
+    expect(JSON.stringify(turn.blocks)).not.toContain('upstream body')
+    store.close()
+  })
+
+  it('does not make an automatic data-plane call for a tool-only recall policy', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const toolOnly = createManagedMemoryProvider(() => agent.dir)
+    toolOnly.recallPolicy = () => ({ mode: 'tool-only', topK: 3, maxBytes: 4_096, timeoutMs: 250 })
+    toolOnly.recallForTurn = vi.fn(async () => [])
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory: toolOnly })
+    const turn = await sm.handle('bot-a', msg({ ts: '100.1', text: 'do not recall automatically' }))
+    expect(toolOnly.recallForTurn).not.toHaveBeenCalled()
+    expect(turn.captureInput).toBe('do not recall automatically')
+    store.close()
+  })
+
+  it('omits all memory behavior when the evaluation treatment is off', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const disabled = createManagedMemoryProvider(() => agent.dir)
+    const ensure = vi.spyOn(disabled, 'ensure')
+    const standingContext = vi.spyOn(disabled, 'standingContextAtSessionStart')
+    const recallPolicy = vi.spyOn(disabled, 'recallPolicy')
+    disabled.recallForTurn = vi.fn(async () => [])
+    const onMemoryRecallEvent = vi.fn()
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => agent,
+      memory: disabled,
+      memoryEnabled: false,
+      onMemoryRecallEvent
+    })
+
+    const turn = await sm.handle('bot-a', msg({ ts: '100.1', text: 'keep the user turn intact' }))
+
+    expect(ensure).not.toHaveBeenCalled()
+    expect(standingContext).not.toHaveBeenCalled()
+    expect(recallPolicy).not.toHaveBeenCalled()
+    expect(disabled.recallForTurn).not.toHaveBeenCalled()
+    expect(onMemoryRecallEvent).not.toHaveBeenCalled()
+    expect(turn.blocks).toEqual([{ type: 'text', text: 'keep the user turn intact' }])
+    expect(turn.captureInput).toBe('keep the user turn intact')
+    expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.memoryProvider).toBe('none')
+    store.close()
+  })
+
+  it('uses the webchat trace id as the stable per-turn memory id', async () => {
+    const store = newStore()
+    const host = {
+      newSession: vi.fn(async () => 'acp-web'),
+      hasSession: () => true,
+      usesMetaSystemPrompt: () => true
+    } as any
+    const recalling = createManagedMemoryProvider(() => agent.dir)
+    recalling.recallForTurn = vi.fn(async () => [])
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory: recalling })
+    const webchat = (traceId: string, text: string) =>
+      msg({
+        platform: 'webchat',
+        source: 'user',
+        msgId: 'webchat:conversation-1',
+        traceId,
+        channel: 'conversation-1',
+        thread: undefined,
+        isDm: true,
+        text
+      })
+
+    const first = await sm.handle('bot-a', webchat('turn-1', 'first'))
+    const second = await sm.handle('bot-a', webchat('turn-2', 'second'))
+    expect(first.turnId).toBe('bot-a:turn-1')
+    expect(second.turnId).toBe('bot-a:turn-2')
+    expect(first.turnId).not.toBe(second.turnId)
+    store.close()
+  })
+
+  it('starts a fresh ACP session when the memory provider changes', async () => {
+    const store = newStore()
+    let currentAgent = { ...agent, memory: { provider: 'managed' as const } }
+    const host = {
+      newSession: vi.fn().mockResolvedValueOnce('acp-managed').mockResolvedValueOnce('acp-none'),
+      hasSession: vi.fn(() => true)
+    } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => currentAgent, memory })
+
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    currentAgent = { ...agent, memory: { provider: 'none' as const } }
+    const next = await sm.handle('bot-a', msg({ ts: '100.2', text: 'second' }))
+
+    expect(next.sessionId).toBe('acp-none')
+    expect(next.created).toBe(true)
+    expect(host.newSession).toHaveBeenCalledTimes(2)
+    expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.memoryProvider).toBe('none')
+    store.close()
+  })
+
+  it('prepends the agent meta object as the first block on a new non-Claude session', async () => {
+    const store = newStore()
+    // Non-Claude: no usesMetaSystemPrompt, so the agent meta object (+ any memory) inlines
+    // as block 0. The description is a FIELD of that object.
+    const host = { newSession: vi.fn(async () => 'acp-1') } as any
+    const withDesc = { ...agent, description: 'you are terse' }
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => withDesc, memory })
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    // block 0 is the agent meta object; the user message is a LATER block (#398).
+    expect((blocks[0] as any).text).toMatch(/^# Agent/)
+    expect((blocks[0] as any).text).toContain('you are terse')
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: 'first' })
+    store.close()
+  })
+
+  it('recognizes a codex-acp raw-prompt fallback title as a standing-context echo', async () => {
+    const store = newStore()
+    // Non-meta runtime: the standing context inlines as block 0, and codex-acp
+    // >= 1.1.3 auto-titles an untitled session by joining ALL first-prompt text
+    // blocks with collapsed whitespace. That echo must be recognized (and a real
+    // title must not be), keyed to the REAL block content so a format drift in
+    // the agent-meta builder fails here.
+    const host = { newSession: vi.fn(async () => 'acp-echo-1') } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'fix the login bug' }))
+    const upstreamFallbackTitle = blocks
+      .filter((b: any) => b.type === 'text')
+      .map((b: any) => b.text)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    expect(isStandingContextTitleEcho(upstreamFallbackTitle)).toBe(true)
+    expect(isStandingContextTitleEcho((blocks[0] as any).text)).toBe(true) // session/load first-message shape
+    expect(isStandingContextTitleEcho('fix the login bug')).toBe(false)
+    expect(isStandingContextTitleEcho('Fix session titles')).toBe(false)
+    store.close()
+  })
+
+  it('injects session naming guidance for a whitelisted runtime and passes the exact delivery route to MCP setup', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-title-1') } as any
+    const mcpServersFor = vi.fn(() => [])
+    const codexAgent = { ...agent, runtime: 'codex-acp' }
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => codexAgent,
+      memory,
+      usesSessionTitleTool: (candidate) => candidate.runtime === 'codex-acp',
+      mcpServersFor
+    })
+
+    const { blocks } = await sm.handle(
+      'bot-a',
+      msg({ ts: '100.1', text: 'fix titles', isDm: true }),
+      undefined,
+      'int-b'
+    )
+
+    expect((blocks[0] as any).text).toContain('# Session naming')
+    expect((blocks[0] as any).text).toContain('`setSessionTitle`')
+    expect(mcpServersFor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: codexAgent,
+        platform: 'slack',
+        channel: 'C1',
+        thread: '100.1',
+        integrationId: 'int-b',
+        isDm: true
+      })
+    )
+    store.close()
+  })
+
+  it('omits session naming guidance for a native-title runtime', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-title-native') } as any
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => agent,
+      memory,
+      usesSessionTitleTool: (candidate) => candidate.runtime === 'codex-acp',
+      mcpServersFor: () => []
+    })
+
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'fix titles' }))
+
+    expect((blocks[0] as any).text).not.toContain('# Session naming')
+    expect((blocks[0] as any).text).not.toContain('`setSessionTitle`')
+    store.close()
+  })
+
+  it('does not re-inject the agent meta object when the session already exists', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.2', text: 'second' }))
+    // second turn reuses the session (created=false) → no meta block
+    expect(blocks.some((b: any) => typeof b.text === 'string' && b.text.includes('# Agent'))).toBe(false)
+    store.close()
+  })
+
+  it('routes the agent meta object via _meta for Claude, never a user-turn block', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    // The meta object rides the _meta append (newSession's 4th arg), NOT a prompt block.
+    const metaArg = host.newSession.mock.calls[0][3] as string
+    expect(metaArg).toMatch(/^# Agent/)
+    expect(blocks.some((b: any) => typeof b.text === 'string' && b.text.includes('# Agent'))).toBe(false)
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: 'first' })
+    store.close()
+  })
+
+  it('the agent meta object carries identity, description and the channel source', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const withDesc = { ...agent, name: 'matrixtest', id: 'bot-a', description: 'be helpful' }
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => withDesc, memory })
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi', platform: 'discord', channel: 'C42' }))
+    const metaArg = host.newSession.mock.calls[0][3] as string
+    expect(metaArg).toContain('- Name: matrixtest')
+    expect(metaArg).toContain('- ID: bot-a')
+    expect(metaArg).toContain('- Source: discord')
+    expect(metaArg).toContain('- Channel: C42')
+    expect(metaArg).toContain('be helpful')
+    // No resolved display name for C42 → the channel-name line is omitted.
+    expect(metaArg).not.toContain('- Channel name:')
+    // session-concept §2.3 standing locators: Thread is always rendered; Session is
+    // absent on a brand-new session's FIRST turn (its acpSessionId is minted AFTER this
+    // block is composed); Parent session is absent when this session has no parent.
+    expect(metaArg).toContain('- Thread: 100.1')
+    expect(metaArg).not.toContain('- Session:')
+    expect(metaArg).not.toContain('- Parent session:')
+    store.close()
+  })
+
+  it('adds the channel name to the meta object when a display name is resolved', async () => {
+    const store = newStore()
+    // The channel's display name is learned out-of-band (Slack bulk refresh /
+    // ChannelNameResolver) and cached in `display_names`; the meta object surfaces it.
+    store.setDisplayName('C42', 'general', Date.now())
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi', channel: 'C42' }))
+    const metaArg = host.newSession.mock.calls[0][3] as string
+    expect(metaArg).toContain('- Channel: C42')
+    expect(metaArg).toContain('- Channel name: general')
+    store.close()
+  })
+
+  it('re-asserts the agent meta object via loadSession when resuming in a fresh process (Claude)', async () => {
+    const store = newStore()
+    // create on one Claude host, then resume on a second that must load it — the meta
+    // object must be re-asserted so the resumed session keeps its system prompt.
+    const host1 = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
+    await sm1.handle('bot-a', msg({ ts: '100.1', text: 'first', platform: 'telegram' }))
+    const host2 = {
+      newSession: vi.fn(async () => 'acp-2'),
+      loadSession: vi.fn(async () => {}),
+      hasSession: () => false,
+      loadSupported: () => true,
+      usesMetaSystemPrompt: () => true
+    } as any
+    const sm2 = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory })
+    await sm2.handle('bot-a', msg({ ts: '100.2', text: 'second', platform: 'telegram' }))
+    expect(host2.loadSession).toHaveBeenCalledOnce()
+    const appendArg = host2.loadSession.mock.calls[0][4] as string
+    expect(appendArg).toMatch(/^# Agent/)
+    expect(appendArg).toContain('- Source: telegram')
+    expect(appendArg).toContain('# Choosing whether to respond')
+    expect(appendArg).toContain('AC_NO_RESPONSE')
+    // On a resume the session record already carries its acpSessionId (minted on the
+    // first turn), so the `- Session` locator line is present now.
+    expect(appendArg).toContain('- Session: acp-1')
+    store.close()
+  })
+
+  it('renders the Parent session locator when handle is woken by another session (originSessionId)', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    // session-concept §2.3/§5.3: the 5th `handle` param is the origin (parent) session id,
+    // surfaced as the `- Parent session` line — the SessionTarget this turn replies into.
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'from parent' }), undefined, undefined, 'origin-sess-9')
+    const metaArg = host.newSession.mock.calls[0][3] as string
+    expect(metaArg).toContain('- Parent session: origin-sess-9')
+    store.close()
+  })
+
+  it('declares write-only secret NAMES — never values — in the standing context', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const withSecrets = {
+      ...agent,
+      runtimeOverrides: { env: [], secrets: [{ name: 'TestSA', value: 's3cret-value' }] }
+    }
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => withSecrets, memory })
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'is TestSA in the env?' }))
+    const metaArg = host.newSession.mock.calls[0][3] as string
+    expect(metaArg).toContain('# Secret environment variables')
+    expect(metaArg).toContain('`TestSA`')
+    // the VALUE never rides the prompt channel — only the daemon's child env has it
+    expect(metaArg).not.toContain('s3cret-value')
+    expect(JSON.stringify(blocks)).not.toContain('s3cret-value')
+    store.close()
+  })
+
+  it('describes a config-file secret as a materialized file behind its pointer var', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const kube = 'apiVersion: v1\nusers:\n- user:\n    token: tok-abcdef\n'
+    const withFileSecret = {
+      ...agent,
+      runtimeOverrides: { env: [], secrets: [{ name: 'KUBECONFIG_DATA', value: kube }] }
+    }
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => withFileSecret, memory })
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    const metaArg = host.newSession.mock.calls[0][3] as string
+    expect(metaArg).toContain('# Secret environment variables')
+    expect(metaArg).toContain('`KUBECONFIG_DATA`')
+    expect(metaArg).toContain('materialized as private file')
+    expect(metaArg).toContain('`KUBECONFIG`')
+    expect(metaArg).not.toContain('tok-abcdef')
+    // materialized ⇒ NOT described as a readable env var
+    expect(metaArg).not.toContain('are write-only')
+    store.close()
+  })
+
+  it('falls back to plain env-var wording when the runtime definition sets the pointer var', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const withFileSecret = {
+      ...agent,
+      runtimeOverrides: { env: [], secrets: [{ name: 'KUBECONFIG_DATA', value: 'apiVersion: v1\n' }] }
+    }
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => withFileSecret,
+      memory,
+      // Same base the spawn path merges under the agent env — a runtime-def
+      // KUBECONFIG wins the conflict, so the secret stays a plain env var.
+      runtimeEnvFor: () => ({ KUBECONFIG: '/host/kubeconfig' })
+    })
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    const metaArg = host.newSession.mock.calls[0][3] as string
+    expect(metaArg).toContain('`KUBECONFIG_DATA`')
+    expect(metaArg).not.toContain('materialized as private file')
+    store.close()
+  })
+
+  it('falls back to plain env-var wording when the pointer var is set explicitly', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const withConflict = {
+      ...agent,
+      runtimeOverrides: {
+        env: [{ name: 'KUBECONFIG', value: '/home/me/.kube/config' }],
+        secrets: [{ name: 'KUBECONFIG_DATA', value: 'apiVersion: v1\n' }]
+      }
+    }
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => withConflict, memory })
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    const metaArg = host.newSession.mock.calls[0][3] as string
+    expect(metaArg).toContain('`KUBECONFIG_DATA`')
+    expect(metaArg).not.toContain('materialized as private file')
+    store.close()
+  })
+
+  it('inlines the secrets notice in block 0 for a non-Claude runtime, and omits it without secrets', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => false } as any
+    const withSecrets = {
+      ...agent,
+      runtimeOverrides: { env: [], secrets: [{ name: 'TestSA', value: 's3cret-value' }] }
+    }
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => withSecrets, memory })
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    expect((blocks[0] as any).text).toContain('# Secret environment variables')
+    expect((blocks[0] as any).text).toContain('`TestSA`')
+    expect(JSON.stringify(blocks)).not.toContain('s3cret-value')
+
+    // No secrets configured → no notice at all.
+    const bare = newStore()
+    const host2 = { newSession: vi.fn(async () => 'acp-2'), usesMetaSystemPrompt: () => false } as any
+    const sm2 = new SessionManager({ store: bare, hostFor: async () => host2, agentById: () => agent, memory })
+    const second = await sm2.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    expect(JSON.stringify(second.blocks)).not.toContain('# Secret environment variables')
+    bare.close()
+    store.close()
+  })
+
+  it('re-asserts the secrets notice via loadSession when a Claude session resumes in a fresh process', async () => {
+    const store = newStore()
+    const withSecrets = {
+      ...agent,
+      runtimeOverrides: { env: [], secrets: [{ name: 'TestSA', value: 's3cret-value' }] }
+    }
+    const host1 = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => withSecrets, memory })
+    await sm1.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    const host2 = {
+      newSession: vi.fn(async () => 'acp-2'),
+      loadSession: vi.fn(async () => {}),
+      hasSession: () => false,
+      loadSupported: () => true,
+      usesMetaSystemPrompt: () => true
+    } as any
+    const sm2 = new SessionManager({ store, hostFor: async () => host2, agentById: () => withSecrets, memory })
+    await sm2.handle('bot-a', msg({ ts: '100.2', text: 'second' }))
+    const appendArg = host2.loadSession.mock.calls[0][4] as string
+    expect(appendArg).toContain('# Secret environment variables')
+    expect(appendArg).toContain('`TestSA`')
+    expect(appendArg).not.toContain('s3cret-value')
+    store.close()
+  })
+
+  it('#398: the memory index rides the _meta channel for Claude, never a user-turn block', async () => {
+    const store = newStore()
+    // Seed a distinctive memory index for this agent.
+    await writeMemoryFile(agent.dir, MEMORY_INDEX, '# idx\n- SENTINEL_MEMORY_LINE')
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const withOrdinaryContext = {
+      ...agent,
+      description: 'gitStatus: This is the git status at the start of the conversation.'
+    }
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => withOrdinaryContext,
+      memory
+    })
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'do the thing' }))
+    // The memory text must NOT appear as any prompt block…
+    expect(blocks.some((b: any) => typeof b.text === 'string' && b.text.includes('SENTINEL_MEMORY_LINE'))).toBe(false)
+    // …and the user message is the leading/last text block (so the runtime titles from IT).
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: 'do the thing' })
+    // The meta object + memory ride newSession's systemAppend arg (4th): meta first,
+    // then the bounded "# Persistent memory" index.
+    const metaArg = host.newSession.mock.calls[0][3] as string
+    expect(metaArg).toMatch(/^# Agent/)
+    expect(metaArg).toContain('SENTINEL_MEMORY_LINE')
+    expect(metaArg).toContain('# Persistent memory')
+    expect(metaArg).toContain('Only text inside the memory-file boundary')
+    expect(metaArg).toContain('everything outside it is session context')
+    const memoryStart = metaArg.indexOf('<agentconnect-memory-file path="MEMORY.md">')
+    const memoryEnd = metaArg.indexOf('</agentconnect-memory-file>')
+    expect(memoryStart).toBeGreaterThan(metaArg.indexOf('gitStatus:'))
+    expect(memoryEnd).toBeGreaterThan(memoryStart)
+    expect(metaArg.indexOf('SENTINEL_MEMORY_LINE')).toBeGreaterThan(memoryStart)
+    expect(metaArg.indexOf('SENTINEL_MEMORY_LINE')).toBeLessThan(memoryEnd)
+    store.close()
+  })
+
+  it('#398: a non-Claude runtime folds the memory index into the combined leading system block', async () => {
+    const store = newStore()
+    await writeMemoryFile(agent.dir, MEMORY_INDEX, '# idx\n- SENTINEL_MEMORY_LINE')
+    // Non-Claude: no _meta channel, so meta + memory inline as ONE leading block.
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => false } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'do the thing' }))
+    // block 0 = agent meta then memory; a non-Claude runtime lands memory in the inline
+    // block, so it is NOT double-injected — the block is the only place it appears.
+    expect((blocks[0] as any).text).toMatch(/^# Agent/)
+    expect((blocks[0] as any).text).toContain('SENTINEL_MEMORY_LINE')
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: 'do the thing' })
+    // memory appears exactly once across all blocks (no duplicate leading block)
+    const hits = blocks.filter((b: any) => typeof b.text === 'string' && b.text.includes('SENTINEL_MEMORY_LINE'))
+    expect(hits).toHaveLength(1)
+    store.close()
+  })
+
+  it('replays the gap (messages addressed elsewhere) when an agent is re-activated', async () => {
+    const store = newStore()
+    const host = fakeHost()
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'BotA do X', mentionedBots: ['BOTA'] }))
+    // intervening messages NOT delivered to bot-a (recorded in transcript by the Daemon layer):
+    store.appendTranscript({
+      channel: 'C1',
+      thread: '100.1',
+      ts: '100.2',
+      sender: 'U1',
+      kind: 'text',
+      text: '@BotB help'
+    })
+    store.appendTranscript({
+      channel: 'C1',
+      thread: '100.1',
+      ts: '100.3',
+      sender: 'U2',
+      kind: 'text',
+      text: 'human note'
+    })
+
+    const { blocks, created } = await sm.handle(
+      'bot-a',
+      msg({ ts: '100.4', text: 'BotA continue', mentionedBots: ['BOTA'] })
+    )
+    const joined = blocks.map((b: any) => b.text).join('\n')
+    expect(joined).toContain('@BotB help') // gap replayed as context
+    expect(joined).toContain('human note')
+    expect(joined).toContain('BotA continue') // current prompt last
+    expect(host.newSession).toHaveBeenCalledOnce() // reused, not recreated
+    expect(created).toBe(false) // same session continued → no repeat start emit
+    store.close()
+  })
+
+  it('re-creates a session the live agent process does not recognize, replaying the thread', async () => {
+    const store = newStore()
+    // first run: host1 creates acp-1 and the store persists it
+    const host1 = { newSession: vi.fn(async () => 'acp-1'), hasSession: (id: string) => id === 'acp-1' } as any
+    const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
+    await sm1.handle('bot-a', msg({ ts: '100.1', text: 'first turn' }))
+
+    // daemon restart / host eviction: a fresh process has no memory of acp-1
+    const host2 = { newSession: vi.fn(async () => 'acp-2'), hasSession: () => false } as any
+    const sm2 = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory })
+    const { sessionId, blocks, created } = await sm2.handle('bot-a', msg({ ts: '100.2', text: 'second turn' }))
+
+    expect(sessionId).toBe('acp-2') // recreated against the live process
+    expect(created).toBe(true) // fresh ACP id the CP has never seen → emit start
+    expect(host2.newSession).toHaveBeenCalledOnce()
+    const joined = blocks.map((b: any) => b.text).join('\n')
+    expect(joined).toContain('first turn') // whole thread replayed as fresh context
+    expect(joined).toContain('second turn')
+    store.close()
+  })
+
+  it('resumes via session/load when the agent supports it, replaying only the missed gap', async () => {
+    const store = newStore()
+    const host1 = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true, loadSupported: () => false } as any
+    const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
+    await sm1.handle('bot-a', msg({ ts: '100.1', text: 'first turn' }))
+    // a message the agent missed while down (addressed to another bot in the thread)
+    store.appendTranscript({
+      channel: 'C1',
+      thread: '100.1',
+      ts: '100.2',
+      sender: 'U2',
+      kind: 'text',
+      text: '@BotB note'
+    })
+
+    // restart: fresh process doesn't have acp-1 in memory, but CAN load it
+    const host2 = {
+      newSession: vi.fn(async () => 'acp-2'),
+      hasSession: () => false,
+      loadSupported: () => true,
+      loadSession: vi.fn(async () => {})
+    } as any
+    const mcpServersFor = vi.fn(() => [])
+    const sm2 = new SessionManager({
+      store,
+      hostFor: async () => host2,
+      agentById: () => agent,
+      memory,
+      mcpServersFor
+    })
+    const { sessionId, blocks, created } = await sm2.handle(
+      'bot-a',
+      msg({ ts: '100.3', text: 'third turn', isDm: true }),
+      undefined,
+      'int-b'
+    )
+
+    expect(sessionId).toBe('acp-1') // resumed the SAME session, not recreated
+    expect(created).toBe(false) // same id, CP already knows it → no start emit
+    expect(host2.loadSession).toHaveBeenCalledWith('acp-1', expect.any(String), [], undefined, undefined)
+    expect(mcpServersFor).toHaveBeenCalledWith(
+      expect.objectContaining({ integrationId: 'int-b', isDm: true, thread: '100.1' })
+    )
+    expect(host2.newSession).not.toHaveBeenCalled()
+    const joined = blocks.map((b: any) => b.text).join('\n')
+    expect(joined).not.toContain('first turn') // agent restored its own history
+    expect(joined).toContain('@BotB note') // only the missed gap is replayed
+    expect(joined).toContain('third turn')
+    store.close()
+  })
+
+  it('builds an inline image block for an attachment when the agent supports images', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), promptSupports: (k: string) => k === 'image' } as any
+    const png = Buffer.from('PNGBYTES')
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => agent,
+      memory,
+      downloadAttachment: async () => png
+    })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      msg({
+        ts: '100.1',
+        text: 'see this',
+        attachments: [{ id: 'F1', name: 'a.png', mimeType: 'image/png', sourceUrl: 'https://files/F1' }]
+      })
+    )
+    const img = blocks.find((b: any) => b.type === 'image') as any
+    expect(img).toMatchObject({ type: 'image', mimeType: 'image/png', data: png.toString('base64') })
+    store.close()
+  })
+
+  it('degrades an attachment to a resource_link when the agent lacks the capability', async () => {
+    const store = newStore()
+    const host = fakeHost() // no promptSupports → not image-capable
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      msg({
+        ts: '100.1',
+        attachments: [{ id: 'F1', name: 'a.png', mimeType: 'image/png', size: 9, sourceUrl: 'https://files/F1' }]
+      })
+    )
+    const link = blocks.find((b: any) => b.type === 'resource_link') as any
+    expect(link).toMatchObject({ type: 'resource_link', name: 'a.png', uri: 'https://files/F1', mimeType: 'image/png' })
+    store.close()
+  })
+
+  it('backfills real Slack thread history on a cold mid-thread activation', async () => {
+    const store = newStore()
+    const host = fakeHost()
+    const fetchThreadHistory = vi.fn(async () => [
+      { sender: 'U2', ts: '100.2', text: 'earlier human msg' },
+      { sender: 'U3', ts: '100.3', text: 'another reply' }
+    ])
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => agent,
+      fetchThreadHistory,
+      memory
+    })
+    // mid-thread: thread '100.1' (existing) but the @ arrives as a later reply
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.5', thread: '100.1', text: 'BotA help' }))
+    expect(fetchThreadHistory).toHaveBeenCalledWith('bot-a', 'C1', '100.1', expect.any(String), null)
+    const joined = blocks.map((b: any) => b.text).join('\n')
+    expect(joined).toContain('earlier human msg') // pulled history replayed as context
+    expect(joined).toContain('another reply')
+    expect(joined).toContain('BotA help') // current prompt last
+    store.close()
+  })
+
+  it('snapshots a warm Slack thread through turn start and delivers every unread message in timestamp order', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: vi.fn(() => true) } as any
+    const fetchThreadHistory = vi.fn(async () => [
+      { sender: 'U1', ts: '100.1', text: 'root request' },
+      { sender: 'U1', ts: '100.2', text: 'stale triggering follow-up' },
+      { sender: 'U1', ts: '100.3', text: 'newer clarification' },
+      { sender: 'U1', ts: '100.4', text: 'latest instruction: merge it' }
+    ])
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => agent,
+      fetchThreadHistory,
+      memory
+    })
+
+    // Establish a warm session whose watermark predates all three follow-ups.
+    await sm.handle('bot-a', msg({ ts: '100.1', thread: '100.1', text: 'root request' }))
+    fetchThreadHistory.mockClear()
+
+    // Socket Mode wakes the daemon with the oldest follow-up only. The authoritative
+    // Slack thread already contains two newer messages sent before this turn starts.
+    const result = await sm.handle('bot-a', msg({ ts: '100.2', thread: '100.1', text: 'stale triggering follow-up' }))
+
+    expect(fetchThreadHistory).toHaveBeenCalledWith('bot-a', 'C1', '100.1', expect.any(String), '100.1')
+    const joined = result.blocks.map((b: any) => b.text ?? '').join('\n')
+    expect(joined).toContain('stale triggering follow-up')
+    expect(joined).toContain('newer clarification')
+    expect(joined).toContain('latest instruction: merge it')
+    expect(joined.indexOf('stale triggering follow-up')).toBeLessThan(joined.indexOf('newer clarification'))
+    expect(joined.indexOf('newer clarification')).toBeLessThan(joined.indexOf('latest instruction: merge it'))
+    // The batch watermark covers the newest message, not merely the stale event that
+    // happened to wake us.
+    expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.lastDeliveredTs).toBe('100.4')
+
+    // A later Socket Mode delivery for an already-snapshotted message must not start
+    // another model turn.
+    const duplicate = await sm.handle('bot-a', msg({ ts: '100.3', thread: '100.1', text: 'newer clarification' }))
+    expect((duplicate as any).skipped).toBe(true)
+    store.close()
+  })
+
+  it('recovers a legacy synthetic Slack cursor before delivering a real follow-up', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: vi.fn(() => true) } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+
+    await sm.handle(
+      'bot-a',
+      msg({
+        msgId: 'cron:daily:trace-1',
+        traceId: 'trace-1',
+        source: 'cron',
+        thread: '100.100000',
+        text: 'scheduled task'
+      })
+    )
+    const key = sessionKey('slack', 'C1', '100.100000', 'bot-a')
+    expect(store.getSession(key)?.lastDeliveredTs).toBe('trace-1')
+
+    const followUp = await sm.handle('bot-a', msg({ ts: '100.200000', thread: '100.100000', text: 'are you sure?' }))
+    expect(followUp.skipped).not.toBe(true)
+    expect(followUp.blocks.at(-1)).toEqual({ type: 'text', text: 'are you sure?' })
+    expect(store.getSession(key)?.lastDeliveredTs).toBe('100.200000')
+    store.close()
+  })
+
+  it('a toAgent+channel wake dedups against the recorded post and keeps a canonical cursor', async () => {
+    // Mirrors the real ops → delivery → SessionManager path for
+    // `sendMessage({toAgent, channel, thread})`: ops posts a visible message (recordOutbound
+    // writes a row at the post's real Slack ts) and then wakes the peer carrying that ts as
+    // `transcriptTs`. The woken session's triggering row must collapse onto the SAME
+    // (channel, thread, ts) primary key (no duplicate hand-off), and its read cursor must stay a
+    // canonical Slack ts — not the wake's internal (non-Slack) delivery id.
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: vi.fn(() => true) } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+
+    // (1) The visible post recorded by ops.recordOutbound, at the post's real Slack ts.
+    store.appendTranscript({
+      channel: 'C1',
+      thread: '200.1',
+      ts: '200.5',
+      sender: 'bot-a',
+      kind: 'text',
+      text: 'over to you'
+    })
+
+    // (2) The caller-framed wake delivered to bot-b — same channel/thread, transcriptTs = the
+    // post ts, msgId bearing the non-Slack delivery id that transcriptCoords would otherwise use.
+    const wake = msg({
+      msgId: 'agentcall:C1:9999999999999',
+      traceId: '9999999999999',
+      source: 'agent',
+      thread: '200.1',
+      transcriptTs: '200.5',
+      sender: { id: 'bot-a', isBot: true },
+      text: '@bot-a: over to you'
+    })
+    const res = await sm.handle('bot-b', wake)
+    expect(res.skipped).not.toBe(true)
+
+    // One deduped hand-off row (the post), not two.
+    const rows = store.transcriptSince('C1', '200.1', null).filter((r) => r.kind === 'text')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ ts: '200.5' })
+
+    // Canonical Slack cursor — not the wake's internal delivery id.
+    expect(store.getSession(sessionKey('slack', 'C1', '200.1', 'bot-b'))?.lastDeliveredTs).toBe('200.5')
+    store.close()
+  })
+
+  it('leaves Slack messages after the snapshot wall-clock cutoff for the next turn', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(100_350)
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: vi.fn(() => true) } as any
+    const fetchThreadHistory = vi.fn(async () => [
+      { sender: 'U1', ts: '100.2', text: 'trigger' },
+      { sender: 'U1', ts: '100.3', text: 'before cutoff' },
+      { sender: 'U1', ts: '100.4', text: 'after cutoff' }
+    ])
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => agent,
+      fetchThreadHistory,
+      memory
+    })
+    await sm.handle('bot-a', msg({ ts: '100.1', thread: '100.1', text: 'root' }))
+
+    const first = await sm.handle('bot-a', msg({ ts: '100.2', thread: '100.1', text: 'trigger' }))
+    const firstText = first.blocks.map((b: any) => b.text ?? '').join('\n')
+    expect(firstText).toContain('before cutoff')
+    expect(firstText).not.toContain('after cutoff')
+    expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.lastDeliveredTs).toBe('100.3')
+
+    // Once wall clock passes 100.4, that message is the next genuine turn.
+    now.mockReturnValue(100_500)
+    const second = await sm.handle('bot-a', msg({ ts: '100.4', thread: '100.1', text: 'after cutoff' }))
+    expect(second.blocks.map((b: any) => b.text ?? '').join('\n')).toContain('after cutoff')
+    expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.lastDeliveredTs).toBe('100.4')
+    now.mockRestore()
+    store.close()
+  })
+
+  it('does not fetch thread history for a top-level (thread-root) message', async () => {
+    const store = newStore()
+    const host = fakeHost()
+    const fetchThreadHistory = vi.fn(async () => [])
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => agent,
+      fetchThreadHistory,
+      memory
+    })
+    // thread === ts → this message starts the thread, nothing to backfill
+    await sm.handle('bot-a', msg({ ts: '100.1', thread: '100.1', text: 'hi' }))
+    expect(fetchThreadHistory).not.toHaveBeenCalled()
+    store.close()
+  })
+
+  it('does not replay the agent’s own recorded messages back as missed context', async () => {
+    const store = newStore()
+    const host = fakeHost()
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'BotA do X', mentionedBots: ['BOTA'] }))
+    // The agent's own sendSlackMessage output is recorded under its agent id...
+    store.appendTranscript({
+      channel: 'C1',
+      thread: '100.1',
+      ts: '100.2',
+      sender: 'bot-a',
+      kind: 'text',
+      text: 'on it!'
+    })
+    // ...alongside a genuine human message it missed.
+    store.appendTranscript({
+      channel: 'C1',
+      thread: '100.1',
+      ts: '100.3',
+      sender: 'U2',
+      kind: 'text',
+      text: 'human note'
+    })
+
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.4', text: 'BotA continue', mentionedBots: ['BOTA'] }))
+    const joined = blocks.map((b: any) => b.text).join('\n')
+    expect(joined).toContain('human note') // real missed context still replayed
+    expect(joined).not.toContain('on it!') // but not the agent's own prior output
+    store.close()
+  })
+
+  it('does not re-record the agent’s own message from the thread snapshot (minimal-mode dup guard)', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: vi.fn(() => true) } as any
+    // The agent's own reply, already recorded at the send boundary with a monotonic-style ts
+    // (as `minimal` mode's recordReplySegment does) — distinct from the Slack ts the snapshot
+    // reports for the same message.
+    store.appendTranscript({
+      channel: 'C1',
+      thread: '100.1',
+      ts: '1783948510902',
+      sender: 'bot-a',
+      kind: 'text',
+      text: 'here is my answer'
+    })
+    // The authoritative thread snapshot re-includes that same own message (real Slack ts) plus
+    // a genuine human follow-up the agent missed.
+    const fetchThreadHistory = vi.fn(async () => [
+      { sender: 'U1', ts: '100.1', text: 'root request' },
+      { sender: 'bot-a', ts: '100.2', text: 'here is my answer' },
+      { sender: 'U2', ts: '100.3', text: 'human follow-up' }
+    ])
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => agent,
+      fetchThreadHistory,
+      memory
+    })
+
+    await sm.handle('bot-a', msg({ ts: '100.4', thread: '100.1', text: 'BotA continue', mentionedBots: ['BOTA'] }))
+
+    // The own message stays a SINGLE transcript row (the snapshot skipped it), while the
+    // missed human message is still backfilled.
+    const own = store.transcriptSince('C1', '100.1', null).filter((r) => r.text === 'here is my answer')
+    expect(own).toHaveLength(1)
+    const human = store.transcriptSince('C1', '100.1', null).filter((r) => r.text === 'human follow-up')
+    expect(human).toHaveLength(1)
+    store.close()
+  })
+})
+
+describe('SessionManager.threadOwner (§7.3 idle→closed thread-affinity revival)', () => {
+  const seed = (store: LocalStore, agentId: string, state: 'idle' | 'closed', thread = 'T1') =>
+    store.upsertSession({
+      key: sessionKey('slack', 'C1', thread, agentId),
+      agentId,
+      platform: 'slack',
+      channel: 'C1',
+      thread,
+      acpSessionId: `acp-${agentId}`,
+      state,
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+  const sm = (store: LocalStore) =>
+    new SessionManager({ store, hostFor: async () => fakeHost(), agentById: () => agent, memory })
+
+  it('returns the sole OPEN owner (live continuity, unchanged behaviour)', () => {
+    const store = newStore()
+    seed(store, 'bot-a', 'idle')
+    expect(sm(store).threadOwner('C1', 'T1')).toBe('bot-a')
+    store.close()
+  })
+
+  it('is null when 2+ OPEN owners actively share the thread (→ mention-gated)', () => {
+    const store = newStore()
+    seed(store, 'bot-a', 'idle')
+    seed(store, 'bot-b', 'idle')
+    expect(sm(store).threadOwner('C1', 'T1')).toBeNull()
+    store.close()
+  })
+
+  it('revives the sole CLOSED owner when no OPEN session remains', () => {
+    const store = newStore()
+    seed(store, 'bot-a', 'closed')
+    expect(sm(store).threadOwner('C1', 'T1')).toBe('bot-a')
+    store.close()
+  })
+
+  it('prefers a live OPEN owner over a closed one — closed never inflates the count', () => {
+    const store = newStore()
+    seed(store, 'bot-a', 'closed')
+    seed(store, 'bot-b', 'idle')
+    // Naively unioning open+closed would see 2 owners → null; the fallback must
+    // keep bot-b (the sole live owner) routable.
+    expect(sm(store).threadOwner('C1', 'T1')).toBe('bot-b')
+    store.close()
+  })
+
+  it('is null when 2+ CLOSED owners are ambiguous', () => {
+    const store = newStore()
+    seed(store, 'bot-a', 'closed')
+    seed(store, 'bot-b', 'closed')
+    expect(sm(store).threadOwner('C1', 'T1')).toBeNull()
+    store.close()
+  })
+
+  it('is null for a thread nobody ever owned', () => {
+    const store = newStore()
+    expect(sm(store).threadOwner('C1', 'T1')).toBeNull()
+    store.close()
+  })
+})
+
+describe('SessionManager — first-class agent thread events', () => {
+  // Seed prior thread messages from the human and another agent in the same (channel, thread).
+  function seedThread(store: LocalStore) {
+    store.appendTranscript({
+      channel: 'C1',
+      thread: '100.1',
+      ts: '100.1',
+      sender: 'U1',
+      kind: 'text',
+      text: 'human: say hi to everyone'
+    })
+    store.appendTranscript({
+      channel: 'C1',
+      thread: '100.1',
+      ts: '100.2',
+      sender: 'bot-x',
+      kind: 'text',
+      text: 'bot-x greeting'
+    })
+  }
+
+  it('an agent-addressed wake catches up the shared thread before the current ask', async () => {
+    const store = newStore()
+    seedThread(store)
+    const sm = new SessionManager({ store, hostFor: async () => fakeHost(), agentById: () => agent, memory })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      msg({ ts: '100.3', text: '@caller asked: greet the channel', source: 'agent' })
+    )
+    const joined = blocks.map((b: any) => b.text).join('\n')
+    expect(joined).toContain('thread context you may have missed')
+    expect(joined).toContain('say hi to everyone')
+    expect(joined).toContain('bot-x greeting')
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: '@caller asked: greet the channel' })
+    store.close()
+  })
+
+  it('a human turn in the same thread STILL replays the shared thread (collaboration)', async () => {
+    const store = newStore()
+    seedThread(store)
+    const sm = new SessionManager({ store, hostFor: async () => fakeHost(), agentById: () => agent, memory })
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.3', text: 'do the thing', source: 'user' }))
+    const joined = blocks.map((b: any) => b.text).join('\n')
+    expect(joined).toContain('thread context you may have missed')
+    expect(joined).toContain('say hi to everyone')
+    store.close()
+  })
+
+  it('an agent-addressed wake advances the same per-agent cursor used by later human turns', async () => {
+    const store = newStore()
+    seedThread(store)
+    const sm = new SessionManager({ store, hostFor: async () => fakeHost(), agentById: () => agent, memory })
+    await sm.handle('bot-a', msg({ ts: '100.3', text: 'agent task', source: 'agent' }))
+    const key = sessionKey('slack', 'C1', '100.1', 'bot-a')
+    expect(store.getSession(key)?.lastDeliveredTs).toBe('100.3')
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.4', text: 'now do it', source: 'user' }))
+    expect(blocks.map((b: any) => b.text).join('\n')).not.toContain('say hi to everyone')
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: 'now do it' })
+    store.close()
+  })
+
+  it('orders a mixed human B → messageAgent M → human C window as one public catch-up batch', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: vi.fn(() => true) } as any
+    const fetchThreadHistory = vi.fn(async () => [
+      { sender: 'U1', ts: '100.100000', text: 'root' },
+      { sender: 'U1', ts: '100.200000', text: 'B: human update' },
+      { sender: 'bot-x', ts: '100.300000', text: '@bot-x → @bot-a: M: agent update' },
+      { sender: 'U1', ts: '100.400000', text: 'C: human follow-up' }
+    ])
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => agent,
+      fetchThreadHistory,
+      memory
+    })
+    await sm.handle('bot-a', msg({ ts: '100.100000', thread: '100.100000', text: 'root' }))
+
+    const result = await sm.handle(
+      'bot-a',
+      msg({
+        ts: '100.300000',
+        thread: '100.100000',
+        text: '@bot-x → @bot-a: M: agent update',
+        source: 'agent',
+        sender: { id: 'bot-x', isBot: true }
+      })
+    )
+    const joined = result.blocks.map((b: any) => b.text ?? '').join('\n')
+    expect(joined.indexOf('B: human update')).toBeLessThan(joined.indexOf('M: agent update'))
+    expect(joined.indexOf('M: agent update')).toBeLessThan(joined.indexOf('C: human follow-up'))
+    expect(store.getSession(sessionKey('slack', 'C1', '100.100000', 'bot-a'))?.lastDeliveredTs).toBe('100.400000')
+
+    const covered = await sm.handle(
+      'bot-a',
+      msg({ ts: '100.400000', thread: '100.100000', text: 'C: human follow-up', source: 'user' })
+    )
+    expect(covered.skipped).toBe(true)
+    store.close()
+  })
+})
+
+describe('SessionManager — collaboration preamble', () => {
+  it('omits collaboration standing context when the treatment is off', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => agent,
+      memory,
+      collaborationEnabled: false
+    })
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi' }))
+    const metaArg = host.newSession.mock.calls[0][3] as string
+    expect(metaArg).not.toContain('# Collaborating with other agents')
+    expect(metaArg).toContain('# Choosing whether to respond')
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: 'hi' })
+    store.close()
+  })
+
+  it('injects the collaboration guidance into a fresh non-Claude session (inline block 0)', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1') } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi' }))
+    const first = (blocks[0] as any).text as string
+    expect(first).toContain('# Collaborating with other agents')
+    // Waking / replying / posting each get a complete sendMessage target example, not dotted pseudo-syntax.
+    expect(first).toContain('`sendMessage`')
+    expect(first).toContain('{"to":{"toAgent":"<agent id>"},"message":"..."}')
+    expect(first).toContain('{"to":{"sessionId":"<Parent session>"},"message":"..."}')
+    expect(first).toContain('{"to":{"channel":"<channel id>"},"message":"..."}')
+    expect(first).not.toContain('`to.toAgent`')
+    expect(first).not.toContain('`to.sessionId`')
+    expect(first).not.toContain('`messageAgent`')
+    expect(first).toContain('Be quiet about mechanics') // conciseness guidance
+    expect(first).toContain('introduces itself to you') // record-newcomer-in-memory guidance
+    store.close()
+  })
+
+  it('routes the collaboration guidance via _meta for Claude, never a user-turn block', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi' }))
+    const metaArg = host.newSession.mock.calls[0][3] as string
+    expect(metaArg).toContain('# Collaborating with other agents')
+    expect(blocks.some((b: any) => typeof b.text === 'string' && b.text.includes('# Collaborating'))).toBe(false)
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: 'hi' })
+    store.close()
+  })
+
+  it('injects the no-response rule into standing context for a shared channel', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi', isDm: false }))
+    const metaArg = host.newSession.mock.calls[0][3] as string
+    expect(metaArg).toContain('# Choosing whether to respond')
+    expect(metaArg).toContain('AC_NO_RESPONSE')
+    store.close()
+  })
+
+  it('keeps the same standing response contract for webchat, hooks, crons, and direct agent calls', async () => {
+    const cases: Array<{ label: string; message: Partial<NormalizedMessage> }> = [
+      { label: 'webchat', message: { platform: 'webchat', isDm: true } },
+      { label: 'hook', message: { platform: 'hook', source: 'hook', headless: true } },
+      { label: 'cron', message: { source: 'cron', headless: true } },
+      { label: 'direct agent call', message: { source: 'agent', isDm: true } }
+    ]
+
+    for (const scenario of cases) {
+      const store = newStore()
+      const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+      const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+      await sm.handle('bot-a', msg({ ts: '100.1', text: scenario.label, ...scenario.message }))
+      const metaArg = host.newSession.mock.calls[0][3] as string
+      expect(metaArg, scenario.label).toContain('# Choosing whether to respond')
+      expect(metaArg, scenario.label).toContain('AC_NO_RESPONSE')
+      store.close()
+    }
+  })
+
+  it('marks a raw platform self-mention as explicitly addressed to this agent', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      msg({
+        ts: '100.1',
+        text: '<@U1234567890> hello',
+        mentionedBots: ['U1234567890'],
+        trigger: 'mention',
+        isDm: false
+      })
+    )
+    const texts = blocks.map((b: any) => b.text ?? '')
+    expect(
+      texts.some((text: string) =>
+        text.includes('A platform message in this activation explicitly @-mentioned your bound bot identity')
+      )
+    ).toBe(true)
+    // Preserve the user's exact platform text; the trusted routing fact is a separate block.
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: '<@U1234567890> hello' })
+    store.close()
+  })
+
+  it('does not claim an implicitly routed shared-channel message explicitly mentioned the agent', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'hello everyone', isDm: false }))
+    expect(
+      blocks.some(
+        (b: any) =>
+          typeof b.text === 'string' &&
+          b.text.includes('A platform message in this activation explicitly @-mentioned your bound bot identity')
+      )
+    ).toBe(false)
+    store.close()
+  })
+
+  it('keeps the no-response rule in a 1:1 DM while stating that direct messages are addressed', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi', isDm: true }))
+    const metaArg = host.newSession.mock.calls[0][3] as string
+    expect(metaArg).toContain('# Choosing whether to respond')
+    expect(metaArg).toContain('A direct message or direct agent call is addressed to you')
+    expect(metaArg).toContain('AC_NO_RESPONSE')
+    store.close()
+  })
+
+  it('re-injects a compact no-response reminder after a context compaction', async () => {
+    const store = newStore()
+    // Non-Claude runtime (context inlines as a block); session reused so later turns aren't `created`.
+    const host = {
+      newSession: vi.fn(async () => 'acp-1'),
+      hasSession: () => true,
+      usesMetaSystemPrompt: () => false
+    } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const key = sessionKey('slack', 'C1', '100.1', 'bot-a')
+
+    // t1 creates (full rule in the leading block); t2 records the baseline context;
+    // t3 sees tokens-in-context collapse (a compaction) → the reminder is re-injected.
+    // (setUsageSnapshot is an UPDATE — a no-op until the session row exists, so it runs
+    // after the creating turn, mirroring how usage_update lands during a live turn.)
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 't1' }))
+    store.setUsageSnapshot(key, { contextUsed: 100_000, contextSize: 200_000 })
+    const t2 = await sm.handle('bot-a', msg({ ts: '100.2', text: 't2' }))
+    expect(t2.blocks.some((b: any) => b.text?.includes('<system-reminder>'))).toBe(false)
+    store.setUsageSnapshot(key, { contextUsed: 1_000, contextSize: 200_000 })
+    const t3 = await sm.handle('bot-a', msg({ ts: '100.3', text: 't3' }))
+    expect(t3.blocks.some((b: any) => b.text?.includes('<system-reminder>') && b.text.includes('AC_NO_RESPONSE'))).toBe(
+      true
+    )
+    store.close()
+  })
+
+  it('re-injects the current marker on the first resumed turn after a daemon restart', async () => {
+    const store = newStore()
+    const host1 = {
+      newSession: vi.fn(async () => 'acp-1'),
+      hasSession: () => true,
+      usesMetaSystemPrompt: () => false
+    } as any
+    const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
+    await sm1.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+
+    // A new SessionManager models a daemon restart. The runtime can resume its old
+    // history, but that history may still teach a marker from the previous release.
+    const host2 = {
+      newSession: vi.fn(async () => 'acp-2'),
+      hasSession: () => true,
+      usesMetaSystemPrompt: () => false
+    } as any
+    const sm2 = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory })
+    const resumed = await sm2.handle('bot-a', msg({ ts: '100.2', text: 'second' }))
+    expect(
+      resumed.blocks.some((b: any) => b.text?.includes('<system-reminder>') && b.text.includes('AC_NO_RESPONSE'))
+    ).toBe(true)
+    store.close()
+  })
+
+  it('re-injects the reminder periodically on a long-running shared channel', async () => {
+    const store = newStore()
+    const host = {
+      newSession: vi.fn(async () => 'acp-1'),
+      hasSession: () => true,
+      usesMetaSystemPrompt: () => false
+    } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    let sawReminder = false
+    // Monotonically increasing Slack ts (microsecond-compared upstream) so each turn is a
+    // fresh in-order activation, not a stale/already-delivered one.
+    for (let i = 0; i < 15; i++) {
+      const { blocks } = await sm.handle('bot-a', msg({ ts: `${101 + i}.0`, text: `m${i}` }))
+      if (blocks.some((b: any) => b.text?.includes('<system-reminder>'))) sawReminder = true
+    }
+    expect(sawReminder).toBe(true)
+    store.close()
+  })
+})

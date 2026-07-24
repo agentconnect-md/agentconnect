@@ -1,0 +1,41 @@
+import {
+  HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+  HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
+  HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
+  HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED
+} from '@agentconnect.md/protocol'
+import { describe, expect, it } from 'vitest'
+import { hookRuntimeProjectionState, hookSkippedCheckLabel } from './projection-state.js'
+
+describe('hookRuntimeProjectionState', () => {
+  it('keeps failed agent runs non-blocking without changing their operational status', () => {
+    expect(hookRuntimeProjectionState({ status: 'failed', reason: HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED })).toBe(
+      'skipped'
+    )
+    expect(hookRuntimeProjectionState({ status: 'failed', reason: HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED })).toBe(
+      'skipped'
+    )
+    expect(hookRuntimeProjectionState({ status: 'failed', reason: 'session_start_failed' })).toBe('skipped')
+    expect(hookRuntimeProjectionState({ status: 'failed', reason: 'turn_failed' })).toBe('skipped')
+    expect(hookRuntimeProjectionState({ status: 'failed', reason: "You've hit your usage limit" })).toBe('skipped')
+  })
+
+  it('projects definite pre-dispatch unavailability without exposing topology', () => {
+    expect(hookRuntimeProjectionState({ status: 'failed', reason: HOOK_DELIVERY_REASON_DAEMON_OFFLINE })).toBe(
+      'skipped'
+    )
+    expect(hookSkippedCheckLabel(HOOK_DELIVERY_REASON_DAEMON_OFFLINE)).toBe('Agent unavailable')
+    expect(hookSkippedCheckLabel(HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED)).toBe(
+      'Review requires a maintainer request'
+    )
+    expect(hookSkippedCheckLabel('session_start_failed')).toBe('Review could not be completed')
+    expect(hookSkippedCheckLabel(HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED)).toBeNull()
+    expect(hookRuntimeProjectionState({ status: 'failed', reason: 'dispatch_timeout' })).toBe('skipped')
+    expect(hookRuntimeProjectionState({ status: 'failed', reason: 'rejected:paused' })).toBe('skipped')
+  })
+
+  it('preserves the existing success and running mappings', () => {
+    expect(hookRuntimeProjectionState({ status: 'success' })).toBe('neutral')
+    expect(hookRuntimeProjectionState({ status: 'running' })).toBeNull()
+  })
+})
