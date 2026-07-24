@@ -145,6 +145,17 @@ export class AgentMoveService {
     return this.withMoveGate(agent.id, async () => this.ensureActiveLocked(await this.reloadAfterGate(agent)))
   }
 
+  /** Resume a durable daemon-side staging fence reported during register. The
+   * queued gate waits for the request that lost its socket to settle first, then
+   * re-checks authoritative placement before sending any activation material. */
+  async recoverStaged(agentId: AgentId, daemonId: DaemonId, moveId: string): Promise<void> {
+    try {
+      await this.recoverStagedOnce(agentId, daemonId, moveId)
+    } catch (err) {
+      this.deps.log?.warn({ err, agentId, daemonId }, 'agent move: staged reconnect recovery failed')
+    }
+  }
+
   async move(agent: AgentRecord, targetDaemonId: DaemonId, editor?: string): Promise<AgentRecord> {
     return this.withMoveGate(agent.id, async () =>
       this.moveLocked(await this.reloadAfterGate(agent), targetDaemonId, editor)
@@ -187,11 +198,52 @@ export class AgentMoveService {
     }
   }
 
+  private async recoverStagedOnce(agentId: AgentId, daemonId: DaemonId, moveId: string): Promise<void> {
+    const release = await this.deps.mutations.beginMoveWhenIdle(agentId)
+    try {
+      const current = await this.deps.agents.get(agentId)
+      if (!current || current.daemonId !== daemonId) return
+
+      const candidate = await this.snapshotOwned(agentId, daemonId)
+      const resumed = await this.deps.control.agentActivate(daemonId, {
+        ...this.activationDefinition(candidate.agent, candidate.bundle),
+        moveId,
+        reconcileWorkspace: true
+      })
+
+      let stable: ActivationSnapshot
+      if (resumed.ok) {
+        const observed = await this.snapshotOwned(agentId, daemonId)
+        if (candidate.fingerprint === observed.fingerprint) {
+          const confirmed = await this.deps.agents.get(agentId)
+          if (!confirmed || confirmed.daemonId !== daemonId) return this.failClosedOwnership(agentId, daemonId)
+          stable = { ...observed, agent: confirmed }
+        } else {
+          stable = await this.activateUntilStable(agentId, daemonId, 'staged reconnect recovery', {
+            reconcileWorkspace: true
+          })
+        }
+      } else {
+        // A conversion may have crashed after swapping its checkout, where the
+        // old token retains a one-shot empty-workspace guard. A fresh generic
+        // token safely supersedes that fence and completes from current CP state.
+        stable = await this.activateUntilStable(agentId, daemonId, 'staged reconnect recovery', {
+          reconcileWorkspace: true
+        })
+      }
+      await this.convergeDerived(stable.agent, stable.bundle.sharedBotIds)
+    } finally {
+      release()
+    }
+  }
+
   private async ensureActiveLocked(agent: AgentRecord): Promise<AgentRecord> {
     if (!agent.daemonId) throw new AgentMoveConflict('agent is not placed')
     let stable: ActivationSnapshot
     try {
-      stable = await this.activateUntilStable(agent.id, agent.daemonId, 'target repair')
+      stable = await this.activateUntilStable(agent.id, agent.daemonId, 'target repair', {
+        reconcileWorkspace: true
+      })
     } catch (err) {
       if (err instanceof AgentMoveFailed) throw err
       throw new AgentMoveFailed('target daemon repair failed', err)

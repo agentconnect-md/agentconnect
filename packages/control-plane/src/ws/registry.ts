@@ -12,6 +12,7 @@
  * `ws/connection.ts`.
  */
 import type { ControlExt, RegisterReq } from '@agentconnect.md/protocol'
+import { EventEmitter, once } from 'node:events'
 import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
 import type { RequestOpts } from './correlator.js'
 
@@ -47,12 +48,22 @@ export interface DaemonConnState {
   launches: Map<string, { launchId: string; acpSessionId?: string; runtime: string }> // agentId → launch
 }
 
+/** A request was dispatched, but its daemon connection closed before a reply. */
+export class ConnectionClosed extends Error {
+  constructor() {
+    super('connection closed')
+    this.name = 'ConnectionClosed'
+  }
+}
+
 export class ConnectionRegistry {
   private byDaemon = new Map<string, DaemonConnState>()
   private ownerByKey = new Map<string, string>() // sessionKeyStr → daemonId
+  private readonly readyEvents = new EventEmitter().setMaxListeners(0)
 
   add(s: DaemonConnState): void {
     this.byDaemon.set(s.daemonId, s)
+    if (s.state === 'READY') this.readyEvents.emit(s.daemonId, s)
   }
 
   get(daemonId: string): DaemonConnState | undefined {
@@ -61,6 +72,25 @@ export class ConnectionRegistry {
 
   has(daemonId: string): boolean {
     return this.byDaemon.has(daemonId)
+  }
+
+  /** Publish the point at which a newly-authenticated connection may accept
+   * control frames, waking idempotent commands interrupted on an older epoch. */
+  markReady(daemonId: string, conn: ConnChannel): DaemonConnState | undefined {
+    const state = this.byDaemon.get(daemonId)
+    if (!state || state.conn !== conn) return undefined
+    state.state = 'READY'
+    this.readyEvents.emit(daemonId, state)
+    return state
+  }
+
+  async waitForReadyAfter(daemonId: string, afterEpoch: number, signal: AbortSignal): Promise<DaemonConnState> {
+    for (;;) {
+      const current = this.byDaemon.get(daemonId)
+      if (current?.state === 'READY' && current.sessionEpoch > afterEpoch) return current
+      const [ready] = (await once(this.readyEvents, daemonId, { signal })) as [DaemonConnState]
+      if (ready.sessionEpoch > afterEpoch) return ready
+    }
   }
 
   /** The live connection state that currently owns a sessionKey, if any. */

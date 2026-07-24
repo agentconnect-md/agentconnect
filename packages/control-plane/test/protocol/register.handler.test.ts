@@ -9,7 +9,7 @@
  *
  * Runs over the `InMemoryDaemonStub` against real Testcontainers Postgres.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { isFrame } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
@@ -25,6 +25,7 @@ const LEASE = '11ea5e00-0000-4000-8000-000000000001'
 const AUTH_ID = '11111111-1111-4111-8111-111111111111'
 const REG_ID = '22222222-2222-4222-8222-222222222222'
 const REG_ID2 = '33333333-3333-4333-8333-333333333333'
+const MOVE_ID = '44444444-4444-4444-8444-444444444444'
 
 /**
  * Seed a daemon + agent + workspace, one ACTIVE assignment for the daemon, one
@@ -106,7 +107,8 @@ function registerPayload() {
       crons: [CRON, 'deadcron-0000-4000-8000-000000000000'], // second is stale → drop
       leases: [LEASE],
       agents: [],
-      integrations: []
+      integrations: [],
+      stagedAgents: [] as Array<{ agentId: string; moveId?: string }>
     }
   }
 }
@@ -120,6 +122,23 @@ async function authThenAwaitOk(h: ReturnType<typeof buildWsHarness>) {
 }
 
 describe('register handler — authoritative reconcile snapshot + idempotency + state gate', () => {
+  it('replies READY before handing durable staged moves to reconnect recovery', async () => {
+    await seedReconcileState()
+    const h = buildWsHarness(prisma)
+    const { stub } = await authThenAwaitOk(h)
+    const recover = vi.fn(async () => {
+      expect(stub.lastSent('register/ok')).toBeDefined()
+      expect(h.deps.connReg.get(DAEMON)?.state).toBe('READY')
+    })
+    h.deps.recoverStagedAgent = recover
+
+    const payload = registerPayload()
+    payload.localState.stagedAgents = [{ agentId: AGENT, moveId: MOVE_ID }]
+    stub.inject('register', payload, { id: REG_ID })
+    await stub.expectFrame('register/ok')
+    await vi.waitFor(() => expect(recover).toHaveBeenCalledWith(AGENT, DAEMON, MOVE_ID))
+  })
+
   it('after auth/ok, register → register/ok with the seeded reconcile snapshot', async () => {
     await seedReconcileState()
     const h = buildWsHarness(prisma)

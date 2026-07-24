@@ -44,6 +44,7 @@ function fencingDeps(clock: FakeClock): DaemonWsDeps {
     integration: {} as DaemonWsDeps['integration'],
     integrationChannel: {} as DaemonWsDeps['integrationChannel'],
     agentMutations: new AgentMutationGate(),
+    recoverStagedAgent: async () => {},
     collabRoutes: {} as DaemonWsDeps['collabRoutes'],
     cron: {} as DaemonWsDeps['cron'],
     hook: {} as DaemonWsDeps['hook'],

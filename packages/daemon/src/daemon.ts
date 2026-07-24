@@ -136,6 +136,7 @@ import { RelayManager } from './cp/relay-manager.js'
 import { CpCollabRoutes } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import {
+  AgentActivate as AgentActivateSchema,
   encodeSharedSlackStatusTarget,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HookReport,
@@ -10289,7 +10290,16 @@ export class Daemon {
           integrationId: integration.id,
           origin: integration.origin === 'cp' ? 'cp' : 'unknown'
         }))
-      )
+      ),
+      stagedAgents: this.opts.agentName
+        ? []
+        : [...this.moveStageMetadata]
+            .filter(([, stage]) => stage.state === 'staging')
+            .map(([agentId, stage]) => ({
+              agentId,
+              ...(AgentActivateSchema.shape.moveId.safeParse(stage.moveId).success ? { moveId: stage.moveId } : {})
+            }))
+            .sort((left, right) => left.agentId.localeCompare(right.agentId))
     }
   }
 

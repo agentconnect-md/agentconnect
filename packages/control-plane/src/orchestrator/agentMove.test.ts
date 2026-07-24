@@ -27,6 +27,7 @@ const CRON = CronId('44444444-4444-4444-8444-444444444444')
 const MODIFIED_AT = new Date('2026-07-11T00:00:00.000Z')
 const SESSION_KEY = { platform: 'slack' as const, channel: 'C-move', thread: 'T-move' }
 const WORKSPACE_REPO_ID = 4242n
+const STAGED_MOVE = '77777777-7777-4777-8777-777777777777'
 const GITHUB_WORKSPACE = {
   mode: 'github',
   gitRepo: 'https://github.com/acme/repo.git',
@@ -256,6 +257,14 @@ function make(
 }
 
 describe('AgentMoveService', () => {
+  it('reconciles workspace materialization during placement repair', async () => {
+    const t = make({ workspace: GITHUB_WORKSPACE })
+
+    await expect(t.service.ensureActive(t.current())).resolves.toMatchObject({ daemonId: SOURCE })
+    expect(t.activations).toHaveLength(1)
+    expect(t.activations[0]?.reconcileWorkspace).toBe(true)
+  })
+
   it('detaches source, bootstraps the complete target bundle, and activates last', async () => {
     const t = make()
     const moved = await t.service.move(t.current(), TARGET)
@@ -406,6 +415,37 @@ describe('AgentMoveService', () => {
         .slice(0, 2)
         .map((value) => value.moveId)
     ).toEqual(targetActivations.map((value) => value.moveId))
+  })
+
+  it('waits behind the interrupted mutation then resumes its exact staged token', async () => {
+    const t = make()
+    const releaseInterrupted = t.mutations.tryBeginMove(AGENT)!
+
+    const recovery = t.service.recoverStaged(AGENT, SOURCE, STAGED_MOVE)
+    await Promise.resolve()
+    expect(t.activations).toEqual([])
+
+    releaseInterrupted()
+    await recovery
+    expect(t.detaches).toEqual([])
+    expect(t.activations).toHaveLength(1)
+    expect(t.activations[0]).toMatchObject({
+      agentId: AGENT,
+      moveId: STAGED_MOVE,
+      reconcileWorkspace: true
+    })
+    expect(t.calls).toEqual([`activate:${SOURCE}`, 'hooks', 'collab'])
+  })
+
+  it('supersedes a staged token when its one-shot workspace guard rejects resume', async () => {
+    const t = make({ rejectWorkspaceActivate: true })
+
+    await t.service.recoverStaged(AGENT, SOURCE, STAGED_MOVE)
+    expect(t.activations).toHaveLength(2)
+    expect(t.activations[0]?.moveId).toBe(STAGED_MOVE)
+    expect(t.detaches).toHaveLength(1)
+    expect(t.detaches[0]?.moveId).toBe(t.activations[1]?.moveId)
+    expect(t.activations[1]?.moveId).not.toBe(STAGED_MOVE)
   })
 
   it('serializes concurrent moves and rejects mutations while the first move holds the gate', async () => {
