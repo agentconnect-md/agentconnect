@@ -87,14 +87,21 @@ const GITHUB_REVISION_REVIEW_EVENTS = new Set([
   'check_run:requested_action'
 ])
 
-function githubReviewDecisionHint(c: HookContext, github: GithubHookMetadata | undefined): string {
+function githubReviewDecisionHint(
+  c: HookContext,
+  github: GithubHookMetadata | undefined,
+  reviewPolicy: RdMsgHook['reviewPolicy']
+): string {
   if (github?.subjectKind !== 'pull_request') return ''
+  if (reviewPolicy === 'off') return ''
   const event = c.action ? `${c.event}:${c.action}` : (c.event ?? '')
-  if (github.explicitReviewRequest || GITHUB_REVISION_REVIEW_EVENTS.has(event)) {
+  if (reviewPolicy !== undefined && (github.explicitReviewRequest || GITHUB_REVISION_REVIEW_EVENTS.has(event))) {
+    const passingEvent = reviewPolicy === 'full' ? 'APPROVE' : 'COMMENT'
+    const failingEvent = reviewPolicy === 'comment' ? 'COMMENT' : 'REQUEST_CHANGES'
     return (
       ' This delivery opens a review generation for the current PR revision. If you finish reviewing this revision, ' +
-      'record the actual verdict through `submitGithubReview`: use APPROVE + pass when it passes, or ' +
-      'REQUEST_CHANGES + fail when it has blocking findings. An approval or rejection from an earlier revision does ' +
+      `record the actual verdict through \`submitGithubReview\`: use ${passingEvent} + pass when it passes, or ` +
+      `${failingEvent} + fail when it has blocking findings. An approval or rejection from an earlier revision does ` +
       'not complete this revision; do not merely describe the verdict in your final reply.'
     )
   }
@@ -134,7 +141,11 @@ function trustedInlineReplyTarget(
  *  answer rather than mutate comments/reviews through CLI, MCP, connector, or API.
  *  Only emitted when the poster will actually run (a thread number exists); push
  *  fires have no thread, so they never see this. */
-function githubReplyHint(c: HookContext, github: GithubHookMetadata | undefined): string {
+function githubReplyHint(
+  c: HookContext,
+  github: GithubHookMetadata | undefined,
+  reviewPolicy: RdMsgHook['reviewPolicy']
+): string {
   const inlineTarget = trustedInlineReplyTarget(c, github)
   const where = inlineTarget ? `${inlineTarget.repo}#${inlineTarget.number}` : `${c.repo ?? 'this thread'}#${c.number}`
   if (inlineTarget) {
@@ -151,7 +162,7 @@ function githubReplyHint(c: HookContext, github: GithubHookMetadata | undefined)
   }
   return [
     '',
-    `Your final reply is kept in the session transcript and is posted back to ${where} automatically as an ordinary GitHub comment only when no formal review was attempted or the current attempt definitively returns \`not_submitted\`. Keep it self-contained; the daemon exclusively owns that fallback reply comment. If this active PR hook permits a formal review, use only the structured \`submitGithubReview\` tool for COMMENT / REQUEST_CHANGES / APPROVE and inline review comments. Its \`body\` must be a complete, self-contained, non-empty public review summary (including for APPROVE), because a submitted, ambiguous, or otherwise unresolved formal attempt suppresses the ordinary comment.${githubReviewDecisionHint(c, github)} Do NOT create, update, or delete GitHub comments or formal reviews through \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return a self-contained final reply for the transcript and fallback path.`
+    `Your final reply is kept in the session transcript and is posted back to ${where} automatically as an ordinary GitHub comment only when no formal review was attempted or the current attempt definitively returns \`not_submitted\`. Keep it self-contained; the daemon exclusively owns that fallback reply comment. If this active PR hook permits a formal review, use only the structured \`submitGithubReview\` tool for COMMENT / REQUEST_CHANGES / APPROVE and inline review comments. Its \`body\` must be a complete, self-contained, non-empty public review summary (including for APPROVE), because a submitted, ambiguous, or otherwise unresolved formal attempt suppresses the ordinary comment.${githubReviewDecisionHint(c, github, reviewPolicy)} Do NOT create, update, or delete GitHub comments or formal reviews through \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return a self-contained final reply for the transcript and fallback path.`
   ].join('\n')
 }
 
@@ -159,7 +170,11 @@ function githubReplyHint(c: HookContext, github: GithubHookMetadata | undefined)
  *  The title rides the header (relay-sanitized to one capped line) — it is
  *  still attacker-authored, so keep it quoted and short, never instructional
  *  framing of our own. */
-function buildGithubHookText(c: HookContext, github: GithubHookMetadata | undefined): string {
+function buildGithubHookText(
+  c: HookContext,
+  github: GithubHookMetadata | undefined,
+  reviewPolicy: RdMsgHook['reviewPolicy']
+): string {
   const head = [
     `GitHub ${githubSubjectLine(c)}${c.title ? ` "${c.title}"` : ''}`,
     `From: ${c.senderLogin ?? 'unknown'}${c.authorAssociation ? ` (${c.authorAssociation})` : ''}${
@@ -170,7 +185,9 @@ function buildGithubHookText(c: HookContext, github: GithubHookMetadata | undefi
   // Ordinary replies use the display context's number. Inline replies instead
   // use the complete, body-free PR target carried with the trusted root id.
   const tail =
-    c.number !== undefined || trustedInlineReplyTarget(c, github) !== undefined ? githubReplyHint(c, github) : ''
+    c.number !== undefined || trustedInlineReplyTarget(c, github) !== undefined
+      ? githubReplyHint(c, github, reviewPolicy)
+      : ''
   if (!c.bodyExcerpt) return head + tail
   return (
     [
@@ -188,7 +205,7 @@ function buildGithubHookText(c: HookContext, github: GithubHookMetadata | undefi
 
 /** The turn text: the caller's payload-borne message (+ leftover fields as context). */
 export function buildHookText(msg: RdMsgHook): string {
-  if (msg.context?.source === 'github') return buildGithubHookText(msg.context, msg.github)
+  if (msg.context?.source === 'github') return buildGithubHookText(msg.context, msg.github, msg.reviewPolicy)
   const parts: string[] = []
   const body = msg.context?.body
   if (body) {

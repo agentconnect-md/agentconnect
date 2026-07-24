@@ -67,8 +67,9 @@ export const GithubHookMetadata = z
     isDraft: z.boolean().optional(),
     baseChanged: z.boolean().optional(),
     // Relay-derived from a newly-authored PR conversation comment that
-    // explicitly mentions this agent or the App. The body stays off the CP
-    // wire; only this trusted routing fact reopens the review generation.
+    // explicitly mentions this agent or the App while the accepted rule
+    // enables formal reviews. The body stays off the CP wire; only this
+    // trusted routing fact reopens the review generation.
     explicitReviewRequest: z.boolean().optional(),
     reviewCommentId: HookBigIntString.optional(),
     reviewThreadRootCommentId: HookBigIntString.optional()
