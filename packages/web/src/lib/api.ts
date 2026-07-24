@@ -86,10 +86,10 @@ export function mintWebchatToken(orgId: string, agentId: string, conversationId?
  * CP token, then dial `${relayUrl}/webchat?token=…&conversation_id=…`; content never
  * touches the CP. Throws `ApiError(503)` when no relay pool is configured.
  *
- * Pass `conversationId` to RESUME an existing conversation: the relay re-resolves the
- * agent's live placement and lands the socket on that same daemon session so the console
- * can continue a session opened from the list. Omit it to start fresh (the CP mints the
- * id, echoed back in the `ready` frame).
+ * Pass `conversationId` to RESUME an existing conversation owned by the current user:
+ * the CP authorizes that binding, and the relay lands the socket on the same daemon
+ * session. Omit it to start fresh (the CP allocates and binds the id, echoed back in the
+ * `ready` frame).
  */
 export async function webchatWsUrl(orgId: string, agentId: string, conversationId?: string): Promise<string> {
   const minted = await mintWebchatToken(orgId, agentId, conversationId)

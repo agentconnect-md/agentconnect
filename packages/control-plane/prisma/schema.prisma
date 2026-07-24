@@ -58,6 +58,7 @@ model Org {
   skillSources              SkillSource[]
   memoryPluginInstallations MemoryPluginInstallation[]
   externalMemoryConnections ExternalMemoryConnection[]
+  webchatConversations      WebchatConversation[]
 
   @@map("org")
 }
@@ -100,6 +101,7 @@ model User {
   slackConfigs                     SlackUserConfig[]
   createdInviteLinks               OrgInviteLink[]            @relation("OrgInviteLinkCreatedBy")
   inviteRedemptions                OrgInviteRedemption[]
+  webchatConversations             WebchatConversation[]
 
   @@map("app_user")
 }
@@ -574,19 +576,20 @@ model Agent {
   createdAt             DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt             DateTime           @updatedAt @db.Timestamptz(6)
 
-  org            Org                      @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  daemon         Daemon?                  @relation(fields: [daemonId], references: [id], onDelete: SetNull)
-  createdBy      User?                    @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  lastModifiedBy User?                    @relation("AgentModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
-  assignments    Assignment[]
-  launches       AgentLaunch[]
-  sessions       SessionMeta[]
-  sessionUsage   SessionUsage[]
-  crons          CronDef[]
-  hooks          HookDef[]
-  integrations   Integration[]
-  repoAuths      AgentRepoAuthorization[]
-  secrets        AgentSecret[]
+  org                  Org                      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  daemon               Daemon?                  @relation(fields: [daemonId], references: [id], onDelete: SetNull)
+  createdBy            User?                    @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  lastModifiedBy       User?                    @relation("AgentModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
+  assignments          Assignment[]
+  launches             AgentLaunch[]
+  sessions             SessionMeta[]
+  sessionUsage         SessionUsage[]
+  crons                CronDef[]
+  hooks                HookDef[]
+  integrations         Integration[]
+  repoAuths            AgentRepoAuthorization[]
+  secrets              AgentSecret[]
+  webchatConversations WebchatConversation[]
 
   @@unique([orgId, name]) // slug is unique within an org
   @@index([orgId])
@@ -763,6 +766,26 @@ model SessionMeta {
   @@index([launchId])
   @@index([daemonId])
   @@map("session_meta")
+}
+
+// Durable ownership metadata for a browser webchat conversation. The message
+// stream and transcript remain daemon-local; this row only lets the CP prove
+// that a requested resume belongs to the authenticated human, agent, and org.
+model WebchatConversation {
+  id        String   @id @db.Uuid
+  orgId     String
+  agentId   String   @db.Uuid
+  userId    String
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  org   Org   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@index([agentId])
+  @@index([userId])
+  @@map("webchat_conversation")
 }
 
 // ───────────────────────────────────────────────────────────────────────────

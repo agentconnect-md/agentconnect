@@ -6,8 +6,9 @@
  * holds no JWKS / no DB), so the CP mints a self-contained token AFTER the console's
  * normal human-auth + agent-visibility check, and the relay delegates verification
  * back to the CP via `rc/verify(webchat-token)`. The token is a compact HS256 JWT —
- * no new table, no cleanup — carrying `{ userId, user, agentId, orgId }` with a short
- * expiry; the CP re-resolves the agent's CURRENT placement (daemonId) at verify time
+ * carrying `{ userId, user, agentId, orgId, conversationId }` with a short expiry.
+ * The conversation id was already registered to that identity in CP metadata before
+ * minting. The CP re-resolves the agent's CURRENT placement (daemonId) at verify time
  * (placement can change between mint and dial), so the token never encodes it.
  *
  * The signing key is DERIVED from `API_KEY_PEPPER` (domain-separated) so no new secret
@@ -23,10 +24,14 @@ export interface WebchatTokenClaims {
   user: string
   agentId: string
   orgId: string
+  conversationId: string
 }
 
-const KEY_INFO = 'agentconnect.webchat-token.v1'
+// v2 is intentionally incompatible with the pre-conversation-binding verifier:
+// a new token must not be accepted by an old CP during a rolling deployment.
+const KEY_INFO = 'agentconnect.webchat-token.v2'
 const DEFAULT_TTL_SEC = 300 // 5 min — long enough to dial the relay, short enough to bound misuse
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 export class WebchatTokenService {
   private readonly key: Uint8Array
@@ -41,7 +46,12 @@ export class WebchatTokenService {
 
   /** Mint a short-lived token for `claims` (call ONLY after human-auth + canView). */
   async mint(claims: WebchatTokenClaims): Promise<string> {
-    return new SignJWT({ user: claims.user, agentId: claims.agentId, orgId: claims.orgId })
+    return new SignJWT({
+      user: claims.user,
+      agentId: claims.agentId,
+      orgId: claims.orgId,
+      conversationId: claims.conversationId
+    })
       .setProtectedHeader({ alg: 'HS256' })
       .setSubject(claims.userId)
       .setIssuedAt()
@@ -53,9 +63,23 @@ export class WebchatTokenService {
   async verify(token: string): Promise<WebchatTokenClaims | null> {
     try {
       const { payload } = await jwtVerify(token, this.key, { algorithms: ['HS256'] })
-      const { sub, user, agentId, orgId } = payload as Record<string, unknown>
-      if (typeof sub !== 'string' || typeof agentId !== 'string' || typeof orgId !== 'string') return null
-      return { userId: sub, user: typeof user === 'string' ? user : sub, agentId, orgId }
+      const { sub, user, agentId, orgId, conversationId } = payload as Record<string, unknown>
+      if (
+        typeof sub !== 'string' ||
+        typeof agentId !== 'string' ||
+        typeof orgId !== 'string' ||
+        typeof conversationId !== 'string' ||
+        !UUID_RE.test(conversationId)
+      ) {
+        return null
+      }
+      return {
+        userId: sub,
+        user: typeof user === 'string' ? user : sub,
+        agentId,
+        orgId,
+        conversationId: conversationId.toLowerCase()
+      }
     } catch {
       return null // bad signature / expired / malformed
     }

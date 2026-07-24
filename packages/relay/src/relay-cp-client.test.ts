@@ -249,6 +249,33 @@ describe('RelayCpClient', () => {
     await expect(p).resolves.toMatchObject({ ok: true, daemonId: DAEMON_ID })
   })
 
+  it('marks webchat verification as conversation-binding aware', async () => {
+    const { client, transport } = makeClient()
+    await handshakeToReady(client, transport)
+    const p = client.verify('webchat-token', 'the-browser-token')
+    await flush()
+    const req = transport.lastReq('rc/verify')!
+    expect(req.payload).toEqual({
+      kind: 'webchat-token',
+      credential: 'the-browser-token',
+      conversationBinding: 'v1'
+    })
+    transport.inject(
+      buildRelayCpFrame(
+        'rc/verify/ok',
+        {
+          ok: true,
+          agentId: DAEMON_ID,
+          daemonId: DAEMON_ID,
+          orgId: 'org-1',
+          conversationId: DAEMON_ID
+        },
+        { corr: req.id }
+      )
+    )
+    await expect(p).resolves.toMatchObject({ ok: true, conversationId: DAEMON_ID })
+  })
+
   it('authorizeGithubComment() round-trips one metadata-only request', async () => {
     const { client, transport } = makeClient()
     await handshakeToReady(client, transport)

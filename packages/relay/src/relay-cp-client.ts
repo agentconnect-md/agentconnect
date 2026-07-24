@@ -160,7 +160,9 @@ export class RelayCpClient {
     if (this.state !== 'READY' || !this.transport) {
       throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
     }
-    const rep = await this.sendRequest(buildRelayCpFrame('rc/verify', { kind, credential }))
+    const request: RcVerify =
+      kind === 'webchat-token' ? { kind, credential, conversationBinding: 'v1' } : { kind, credential }
+    const rep = await this.sendRequest(buildRelayCpFrame('rc/verify', request))
     if (rep.type !== 'rc/verify/ok') {
       throw new WireError('INTERNAL', `expected rc/verify/ok, got ${rep.type}`, false)
     }

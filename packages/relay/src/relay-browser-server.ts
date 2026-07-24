@@ -4,9 +4,10 @@
  * Fastify `http.Server` at {@link RELAY_WEBCHAT_WS_PATH}.
  *
  * A browser can't set headers on a WS handshake, so it presents the CP-minted webchat
- * token as `?token=` (+ optional `?conversation_id=` to resume). The relay holds no DB,
- * so it delegates verification to the CP via `rc/verify(webchat-token)` — resolving the
- * user + agent + the agent's CURRENT daemon placement — BEFORE completing the handshake.
+ * token as `?token=` (+ a compatibility `?conversation_id=` echo). The relay holds no
+ * DB, so it delegates verification to the CP via `rc/verify(webchat-token)` — resolving
+ * the user, conversation, agent, and the agent's CURRENT daemon placement — BEFORE
+ * completing the handshake. The verified conversation binding is authoritative.
  * On accept the socket becomes a {@link RelayBrowserConnection} bridged to that daemon.
  * (Mirrors the old CP webchat gateway, which stays as a fallback until it retires in A4b.)
  *
@@ -15,7 +16,6 @@
  */
 import { WebSocketServer, type WebSocket } from 'ws'
 import type { FastifyInstance } from 'fastify'
-import { randomUUID } from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { MAX_FRAME_BYTES, type RcVerifyResult } from '@agentconnect.md/protocol'
@@ -62,7 +62,7 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
     const token = url.searchParams.get('token')
     if (!token) return refuse(socket, 401, 'Unauthorized')
     const rawConv = url.searchParams.get('conversation_id')
-    const resumeId = rawConv && UUID_RE.test(rawConv) ? rawConv.toLowerCase() : undefined
+    const requestedConversationId = rawConv && UUID_RE.test(rawConv) ? rawConv.toLowerCase() : undefined
 
     // Verify + resolve placement BEFORE handleUpgrade, so a rejected browser never
     // completes the handshake (mirrors the old CP webchat gateway).
@@ -73,15 +73,24 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
       } catch {
         return refuse(socket, 503, 'Verify Unavailable') // relay↔CP link down → retryable
       }
-      if (!result.ok || !result.agentId || !result.daemonId) return refuse(socket, 401, 'Unauthorized')
+      if (!result.ok || !result.agentId || !result.daemonId || !result.conversationId) {
+        return refuse(socket, 401, 'Unauthorized')
+      }
       const { agentId, daemonId } = result
+      const conversationId = result.conversationId.toLowerCase()
+      // `conversation_id` is only a compatibility echo. The signed CP verdict is
+      // authoritative; rejecting a mismatch prevents a valid token for one
+      // conversation from being replayed against another session key.
+      if (!UUID_RE.test(conversationId) || (rawConv !== null && requestedConversationId !== conversationId)) {
+        return refuse(socket, 401, 'Unauthorized')
+      }
       const user = result.user ?? 'webchat'
 
       wss.handleUpgrade(req, socket, head, (raw: WebSocket) => {
         trackAlive(raw)
         const remoteAddr = req.socket.remoteAddress ?? 'unknown'
         new RelayBrowserConnection(new WsServerTransport(raw, remoteAddr), {
-          chatId: resumeId ?? randomUUID(),
+          chatId: conversationId,
           agentId,
           user,
           daemonConn: () => deps.daemons.get(daemonId),
