@@ -165,14 +165,14 @@ describe('DreamRunner pipeline', () => {
 
   it('cancel-wins when it lands during staging: no completed status, staging removed', async () => {
     // onStaged fires right after the staging writes, standing in for a cancel
-    // that lands mid-staging. The post-stage recheck must honor it.
-    let runner!: DreamRunner
+    // that lands mid-staging. The post-stage recheck must honor it. The closure
+    // reads `runner` only when invoked (after the const is initialized), so the
+    // forward self-reference is safe.
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
     ensureMemory(dir, 'bot')
     await writeMemoryFile(dir, 'prefs.md', '- seed\n', undefined, 'tool')
     const store = new FakeStore()
-    let started: { dreamId: string } | undefined
-    runner = new DreamRunner({
+    const runner = new DreamRunner({
       agentDirByAgent: () => dir,
       dreamingPolicyFor: () => ({ enabled: true }),
       store,
@@ -182,7 +182,7 @@ describe('DreamRunner pipeline', () => {
       },
       log: silent
     })
-    started = await runner.start('a1', { trigger: 'manual' })
+    const started = await runner.start('a1', { trigger: 'manual' })
     const done = await settle(store, started.dreamId)
     expect(done.status).toBe('canceled') // NOT overwritten to completed
     expect(await runner.stagedFiles('a1', started.dreamId)).toBeNull() // partial output dropped
