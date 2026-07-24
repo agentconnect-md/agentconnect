@@ -215,19 +215,24 @@ export async function rewrapAllSecrets(
 
   {
     let rows = 0
+    let values = 0
     let skipped = 0
     for (const r of await prisma.slackUserConfig.findMany()) {
       const res = await prisma.slackUserConfig.updateMany({
         where: { orgId: r.orgId, userId: r.userId, accessToken: r.accessToken, refreshToken: r.refreshToken },
         data: {
           accessToken: await reseal(r.accessToken),
-          refreshToken: await reseal(r.refreshToken)
+          // Access-only rows have no refresh token to reseal (the column is nullable).
+          refreshToken: r.refreshToken ? await reseal(r.refreshToken) : null
         }
       })
       if (res.count === 0) skipped += 1
-      else rows += 1
+      else {
+        rows += 1
+        values += r.refreshToken ? 2 : 1
+      }
     }
-    done('slack_user_config', rows, rows * 2, skipped)
+    done('slack_user_config', rows, values, skipped)
   }
 
   return stats

@@ -487,17 +487,20 @@ export interface SlackInstallStatusDto {
  *  modal's forced auto/manual mode). Per-user. NEVER carries the token. */
 export interface SlackConfigDto {
   configured: boolean // the signed-in caller has stored their own token
+  durable: boolean // a refresh token is stored ⇒ the pair auto-rotates and never expires
   funnelEnabled: boolean // this deployment supports auto-install (public callback)
-  autoAvailable: boolean // configured AND funnelEnabled
+  autoAvailable: boolean // funnelEnabled AND the stored token is usable right now
+  accessExpiresAt: string | null // ISO expiry of the stored access token (drives the expires/expired copy)
   // The sole signal the console has for the "http default vs socket-only" rule:
   relayAvailable: boolean // PUBLIC_RELAY_URL set AND ≥1 relay connected
   relayPublicUrl: string | null // https(s) LB URL for the http manifest request_url; null when unavailable
   updatedAt: string | null
 }
-/** `PUT /slack/config` body — the caller's own Slack App Configuration token pair. */
+/** `PUT /slack/config` body — the caller's own Slack App Configuration token. The
+ *  access (config) token is required; the refresh token is optional (adds durability). */
 export interface SlackConfigInput {
   accessToken: string // xoxe.xoxp-…
-  refreshToken: string // xoxe-…
+  refreshToken?: string // xoxe-… — optional; omit to store an access-only (expiring) token
 }
 
 // How the bot activates in one channel: only when @-mentioned, or on any message.

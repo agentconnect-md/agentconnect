@@ -26,7 +26,8 @@ export class PgSlackUserConfigStore implements SlackUserConfigStore {
       orgId: OrgId(r.orgId),
       userId: r.userId,
       accessToken: await this.cipher.open(r.accessToken),
-      refreshToken: await this.cipher.open(r.refreshToken),
+      // Access-only rows have no refresh token (the column is nullable).
+      refreshToken: r.refreshToken ? await this.cipher.open(r.refreshToken) : null,
       accessExpiresAt: r.accessExpiresAt,
       updatedAt: r.updatedAt
     }
@@ -40,7 +41,7 @@ export class PgSlackUserConfigStore implements SlackUserConfigStore {
   async put(orgId: OrgId, userId: string, m: SlackUserConfigMaterial): Promise<void> {
     const tokens = {
       accessToken: await this.cipher.seal(m.accessToken),
-      refreshToken: await this.cipher.seal(m.refreshToken),
+      refreshToken: m.refreshToken ? await this.cipher.seal(m.refreshToken) : null,
       accessExpiresAt: m.accessExpiresAt
     }
     await this.prisma.slackUserConfig.upsert({

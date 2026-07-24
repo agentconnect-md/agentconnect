@@ -1013,11 +1013,13 @@ export const SlackAppStartBody = z.object({
 })
 
 /** `PUT /slack/config` — store (or replace) the CALLER's Slack App Configuration token.
- *  Both are needed: the access token (`xoxe.xoxp-…`) and its refresh token
- *  (`xoxe-…`, used to rotate a fresh access token once the 12h one expires). */
+ *  The access (config) token (`xoxe.xoxp-…`) is required and enough on its own for
+ *  installs while it is fresh (~12h). The refresh token (`xoxe-…`) is OPTIONAL: when
+ *  provided the pair auto-rotates so it never expires; when omitted the caller re-enters
+ *  the access token once it lapses. */
 export const SlackConfigBody = z.object({
   accessToken: z.string().min(1),
-  refreshToken: z.string().min(1)
+  refreshToken: z.string().min(1).optional()
 })
 
 /** `GET /slack/config` — whether the CALLER has stored their own config token, and
@@ -1025,9 +1027,16 @@ export const SlackConfigBody = z.object({
  *  the tokens. Per-user: the status reflects the signed-in caller, not the org. */
 export const SlackConfigDto = z.object({
   configured: z.boolean(), // the caller has stored their own token
+  /** A refresh token is stored ⇒ the pair auto-rotates and never needs re-entry. When
+   *  false, the stored token is access-only and lapses at `accessExpiresAt`. */
+  durable: z.boolean(),
   funnelEnabled: z.boolean(), // deployment supports auto-install (public callback)
-  /** configured AND funnelEnabled — drives the modal's forced auto/manual mode. */
+  /** funnelEnabled AND the stored token is usable right now (durable, or the access
+   *  token is still fresh) — drives the modal's forced auto/manual mode. */
   autoAvailable: z.boolean(),
+  /** ISO-8601 expiry of the stored access token; drives the "expires / expired" copy
+   *  on the config card. Null when unconfigured. (Meaningful mainly when !durable.) */
+  accessExpiresAt: z.string().nullable(),
   /** Slack HTTP mode is offerable here: PUBLIC_RELAY_URL is set AND ≥1 relay is
    *  connected to receive the Events API POSTs (slack-http-mode). */
   relayAvailable: z.boolean(),

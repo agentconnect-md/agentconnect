@@ -2753,3 +2753,151 @@
     transition-duration: 1ms !important;
   }
 }
+
+/* Slack manifest hover-preview: blink the highlighted "From a manifest" tile. */
+@keyframes slackHintBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.15;
+  }
+}
+
+/* Config-token hover popover (design: .cfgtok / .cfgtok-pop) — sits above the
+   "Open Slack app config tokens" button with a downward caret. */
+.cfgtok {
+  position: relative;
+}
+.cfgtok-pop {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 9px);
+  z-index: 30;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition:
+    opacity 0.16s var(--ease-out),
+    transform 0.16s var(--ease-out),
+    visibility 0.16s;
+  pointer-events: none;
+}
+.cfgtok:hover .cfgtok-pop {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+.cfgtok-pop::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--surface-card);
+  filter: drop-shadow(0 1px 0 var(--border-default));
+}
+/* The popover's animated mini-screen: auto-scroll to the bottom "Your App
+   Configuration Tokens" section, then pulse each token's Copy button in turn. */
+@keyframes cfgScroll {
+  0%,
+  10% {
+    transform: translateY(0);
+  }
+  36%,
+  82% {
+    transform: translateY(calc(-100% + 140px));
+  }
+  96%,
+  100% {
+    transform: translateY(0);
+  }
+}
+/* Two Copy pulses in sequence: the access token first (cfgClickA), then the
+   refresh token (cfgClickB), both while scrolled to the bottom. */
+@keyframes cfgClickA {
+  0%,
+  40% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  46% {
+    opacity: 1;
+    transform: scale(1.18);
+  }
+  52% {
+    opacity: 0.85;
+    transform: scale(0.9);
+  }
+  58% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+  64%,
+  100% {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+@keyframes cfgClickB {
+  0%,
+  62% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  68% {
+    opacity: 1;
+    transform: scale(1.18);
+  }
+  74% {
+    opacity: 0.85;
+    transform: scale(0.9);
+  }
+  80% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+  86%,
+  100% {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+
+/* Plain animation classes — reference the keyframes above from WITHIN this file so the
+   CSS optimizer keeps them. Tailwind arbitrary `animate-[name_…]` utilities live in a
+   separate output the optimizer can't see as a reference, so it would otherwise prune
+   these @keyframes and the animations would silently not play. */
+.slack-hint-blink {
+  animation: slackHintBlink 1.1s ease-in-out infinite;
+}
+.cfg-scroll {
+  animation: cfgScroll 4.6s ease-in-out infinite;
+}
+.cfg-click-a {
+  animation: cfgClickA 4.6s ease-in-out infinite;
+}
+.cfg-click-b {
+  animation: cfgClickB 4.6s ease-in-out infinite;
+}
+
+/* Reduced motion: no loops. Leave a useful STATIC preview — the config-token popover is
+   parked at the bottom (the "Your App Configuration Tokens" section, the destination), the
+   Copy-pulse rings are hidden, and the manifest tile keeps its (static) highlight. */
+@media (prefers-reduced-motion: reduce) {
+  .slack-hint-blink {
+    animation: none;
+  }
+  .cfg-scroll {
+    animation: none;
+    transform: translateY(calc(-100% + 140px));
+  }
+  .cfg-click-a,
+  .cfg-click-b {
+    animation: none;
+    opacity: 0;
+  }
+}
