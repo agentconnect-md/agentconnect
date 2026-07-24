@@ -20,7 +20,7 @@ import DeleteDaemonModal from './modals/DeleteDaemonModal'
 import DaemonLifecycleModal from './modals/DaemonLifecycleModal'
 import EditDaemonModal from './modals/EditDaemonModal'
 import DeleteAgentModal from './modals/DeleteAgentModal'
-import EditAgentModal from './modals/EditAgentModal'
+import EditAgentModal, { type EditAgentSection } from './modals/EditAgentModal'
 import EditDescriptionModal from './modals/EditDescriptionModal'
 import EditProfileModal from './modals/EditProfileModal'
 import CreateOrgModal from './modals/CreateOrgModal'
@@ -49,9 +49,12 @@ export type ModalKind =
 type ModalTarget = DaemonRow | Agent | CronDto | IntegrationRow | HookDto | HookDto[]
 
 // Per-kind extras: `platform` preselects the Add-integration pane (the GitHub group
-// card's "Add repository" lands on GitHub, not the Slack default).
+// card's "Add repository" lands on GitHub, not the Slack default). `focusSection`
+// scrolls the Edit-agent modal to the group whose Edit was clicked (Basics / Runtime
+// behavior / Access), so every Configuration group edits through the same surface.
 interface ModalOpts {
   platform?: IntegrationPlatform
+  focusSection?: EditAgentSection
 }
 
 interface ModalData {
@@ -91,9 +94,9 @@ export function ModalProvider({ children }: { children: ReactNode }) {
             className={
               open.kind === 'integration'
                 ? 'modal desktop:max-w-[700px]'
-                : // Add agent carries a section rail beside the form — it needs the
+                : // Add/Edit agent carry a section rail beside the form — they need the
                   // design's ≥720px so the two-up fields keep their old width.
-                  open.kind === 'agent'
+                  open.kind === 'agent' || open.kind === 'editAgent'
                   ? 'modal desktop:max-w-[760px]'
                   : 'modal'
             }
@@ -129,7 +132,7 @@ export function ModalProvider({ children }: { children: ReactNode }) {
               <DeleteAgentModal agent={open.target as Agent} onClose={close} />
             )}
             {open.kind === 'editAgent' && open.target && (
-              <EditAgentModal agent={open.target as Agent} onClose={close} />
+              <EditAgentModal agent={open.target as Agent} focusSection={open.opts?.focusSection} onClose={close} />
             )}
             {open.kind === 'editAgentDesc' && open.target && (
               <EditDescriptionModal agent={open.target as Agent} onClose={close} />
