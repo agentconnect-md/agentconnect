@@ -1250,6 +1250,7 @@ model Bot {
   prebuilt        Boolean        @default(false) // provisioned by AgentConnect, not a console user
   slackAppId      String? // Slack app id (A…), parsed from the pasted xapp token — deep-links the console to api.slack.com/apps/{id}. Public metadata, NOT secret material.
   discordAppId    String? // Discord application (client) id, decoded from the bot token's first segment — lets the console offer a ready-made "Add to Discord" invite URL. Public metadata (it IS the bot's user id), NOT secret material.
+  feishuRegion    String? // Feishu/Lark open-platform gateway for this app: 'feishu' (open.feishu.cn) | 'lark' (open.larksuite.com). NULL ⇒ 'feishu'. DURABLE home (survives uninstall) so a freed Lark bot reinstalls against the right gateway. Public config, NOT secret.
   // Shared-bot opt-in (shared-bot-relay.md §4.1). false ⇒ classic 1-bot:1-agent
   // (daemon owns the whole socket, zero behaviour change). true ⇒ the bot's
   // INBOUND migrates to a relay and it may serve MULTIPLE agents (one Integration

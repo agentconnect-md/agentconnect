@@ -63,6 +63,9 @@ describe('feishu region → gateway plumbing', () => {
       }
     )
     expect(conn.appId).toBe('cli_intl')
+    // Exposed so daemon reconcile can detect a region change on the same appId and
+    // reconnect against the new gateway instead of reusing the old-domain client.
+    expect(conn.region).toBe('lark')
     expect(seen).toEqual(['lark'])
   })
 })

@@ -57,6 +57,7 @@ function toBotRecord(b: BotJoined): BotRecord {
     prebuilt: b.prebuilt,
     slackAppId: b.slackAppId,
     discordAppId: b.discordAppId,
+    feishuRegion: (b.feishuRegion as FeishuRegion | null) ?? null,
     shareable: b.shareable,
     transport: b.transport as BotRecord['transport'],
     createdBy: b.createdBy
@@ -85,6 +86,7 @@ export class PgBotRepo implements BotRepo {
         ...(input.prebuilt !== undefined ? { prebuilt: input.prebuilt } : {}),
         ...(input.slackAppId ? { slackAppId: input.slackAppId } : {}),
         ...(input.discordAppId ? { discordAppId: input.discordAppId } : {}),
+        ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {}),
         ...(input.shareable !== undefined ? { shareable: input.shareable } : {}),
         ...(input.transport !== undefined ? { transport: input.transport } : {}),
         ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})

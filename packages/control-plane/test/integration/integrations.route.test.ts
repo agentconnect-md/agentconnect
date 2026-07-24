@@ -613,6 +613,44 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect(spy.upserts[1]!.u).toMatchObject({ slack: { botToken: SLACK.botToken, appToken: SLACK.appToken } })
   })
 
+  it("reinstalling a freed Lark bot by botId preserves region 'lark' (retained creds keep their gateway)", async () => {
+    const agentId = await placedAgent()
+    const { app, spy } = withSpy()
+    // Install a Lark-region bot, then uninstall — the integration row (holding its region
+    // mirror) is deleted, but the durable bot row + credentials survive.
+    const first = (
+      await app.app.inject({
+        method: 'POST',
+        url: `${ORG}/integrations`,
+        payload: {
+          platform: 'feishu',
+          agentId,
+          feishu: { appId: 'cli_lark123', appSecret: 's3cr3t-lark', region: 'lark' }
+        }
+      })
+    ).json() as { id: string; botId: string }
+    await app.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${first.id}` })
+    // Region lives durably on the freed bot.
+    expect((await prisma.bot.findUnique({ where: { id: first.botId } }))?.feishuRegion).toBe('lark')
+
+    const otherAgent = randomUUID()
+    await seedAgent(prisma, otherAgent, { daemonId: DAEMON })
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'feishu', agentId: otherAgent, botId: first.botId }
+    })
+    expect(res.statusCode).toBe(201)
+    const dto = res.json() as Record<string, unknown>
+    // The reinstall carries the region forward — NOT silently defaulted to Feishu.
+    expect(dto.region).toBe('lark')
+    expect((await prisma.integration.findUnique({ where: { id: dto.id as string } }))?.feishuRegion).toBe('lark')
+    // The daemon's spec dials the Lark gateway for the reinstalled bot.
+    const u = spy.upserts[1]!.u
+    if (u.platform !== 'feishu') throw new Error('expected feishu upsert')
+    expect(u.feishu.region).toBe('lark')
+  })
+
   it('reusing a bot that is STILL installed is refused with 409', async () => {
     const agentId = await placedAgent()
     const { app } = withSpy()

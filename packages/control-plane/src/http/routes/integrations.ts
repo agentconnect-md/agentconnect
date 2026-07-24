@@ -253,6 +253,9 @@ export function integrationRoutes(deps: HttpDeps) {
                 botId: bot.id,
                 platform: req.body.platform,
                 name: bot.name,
+                // Carry the durable region forward so a reinstalled feishu/lark bot keeps
+                // its gateway (undefined ⇒ 'feishu' for non-feishu bots).
+                ...(bot.feishuRegion ? { feishuRegion: bot.feishuRegion } : {}),
                 ...(req.principal ? { createdByUserId: req.principal.userId } : {})
               })
               // Relay owns the ingest — (re)assign the bot + push send-only specs to
@@ -273,6 +276,9 @@ export function integrationRoutes(deps: HttpDeps) {
               botId: bot.id,
               platform: req.body.platform,
               name: bot.name,
+              // Carry the durable region forward so a reinstalled feishu/lark bot keeps
+              // its gateway (undefined ⇒ 'feishu' for non-feishu bots).
+              ...(bot.feishuRegion ? { feishuRegion: bot.feishuRegion } : {}),
               ...(req.principal ? { createdByUserId: req.principal.userId } : {})
             })
             await replicateUpsert(integration, daemonId)
@@ -402,6 +408,9 @@ export function integrationRoutes(deps: HttpDeps) {
               orgId,
               platform: 'feishu',
               name,
+              // Durable home for the region so a later reinstall of this freed bot
+              // reconstructs the right gateway (the integration row is deleted on uninstall).
+              feishuRegion: region,
               ...(req.principal ? { createdByUserId: req.principal.userId } : {})
             })
             // botToken = appSecret (secret), appToken = appId (identifier).

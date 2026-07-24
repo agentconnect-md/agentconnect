@@ -2341,7 +2341,11 @@ export class Daemon {
       this.discordConns = this.discordConns.filter((candidate) => candidate !== conn)
     }
     for (const conn of [...this.feishuConns]) {
-      if (feishu.has(conn.appId)) continue
+      // Keep only a conn whose appId is still desired AND whose region is unchanged —
+      // a region flip on the same appId must drop the old-domain client so the open
+      // loop dials the new gateway (feishu.cn ↔ larksuite.com).
+      const want = feishu.get(conn.appId)
+      if (want && want.region === conn.region) continue
       await this.waitForConnectionUses(conn)
       await conn.stop()
       this.feishuConns = this.feishuConns.filter((candidate) => candidate !== conn)
@@ -2625,7 +2629,9 @@ export class Daemon {
   private async reconcileFeishuConnections(): Promise<void> {
     const groups = consolidateFeishu([...this.agents.values()])
     for (const group of groups.values()) {
-      const existing = this.feishuConns.find((c) => c.appId === group.appId)
+      // Match on appId AND region: a region change on the same appId must NOT reuse the
+      // old-domain client (the prune pass drops it; this guards a same-pass race too).
+      const existing = this.feishuConns.find((c) => c.appId === group.appId && c.region === group.region)
       if (existing) {
         for (const { integrationId } of group.integrations) {
           if (this.fsConnByIntegration.get(integrationId) !== existing) {

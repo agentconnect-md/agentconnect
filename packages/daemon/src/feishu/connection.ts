@@ -264,6 +264,10 @@ export class FeishuConnection {
   private queue: SlackSendQueue
   /** The appId this connection authenticated with (used to detect a swap). */
   readonly appId: string
+  /** The gateway region this connection dialed (feishu.cn vs larksuite.com). Reconcile
+   *  compares it so a region change on the same appId forces a reconnect rather than
+   *  leaving the app bound to the old-domain client. */
+  readonly region: FeishuRegion
   /** The bot's own open_id, resolved at start() (config value preferred; best-effort
    *  API fallback). Mention-routing matches this (normalize's mentionedBots are
    *  open_ids). '' when neither config nor bot/info yields one. */
@@ -279,6 +283,7 @@ export class FeishuConnection {
     factory: (appId: string, appSecret: string, region: FeishuRegion) => FeishuClientHandle = defaultFactory
   ) {
     this.appId = deps.group.appId
+    this.region = deps.group.region
     this.handle = factory(deps.group.appId, deps.group.appSecret, deps.group.region)
     this.queue = new SlackSendQueue(deps.sendIntervalMs ?? 350)
   }
