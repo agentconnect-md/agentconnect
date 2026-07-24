@@ -633,7 +633,11 @@ function BotsCard({ canWrite, me, onDelete }: { canWrite: boolean; me: MeDto | n
 
   return (
     <div className="card mt-[18px]">
-      <div className="cardhead gap-0 overflow-x-auto py-0" role="tablist" aria-label="Bot platform">
+      <div
+        className="cardhead gap-0 overflow-x-auto py-0 [scrollbar-width:none] desktop:overflow-x-visible [&::-webkit-scrollbar]:hidden"
+        role="tablist"
+        aria-label="Bot platform"
+      >
         {BOT_PLATFORMS.map((item) => {
           const selected = item.platform === platform
           return (
