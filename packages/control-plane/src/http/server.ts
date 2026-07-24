@@ -157,8 +157,8 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       await api.register(meKeyRoutes(deps))
       await api.register(waitlistRoutes(deps))
       await api.register(orgInviteAcceptRoutes(deps))
-      // OAuth consent BACKEND (agent-assistant.md §7.3) — version root, per-route
-      // humanAuth (the web console consent page calls it with the user's session).
+      // OAuth consent BACKEND (agent-assistant.md §7.3) — version root, guarded
+      // inside its plugin by interactive human auth for the console session.
       await api.register(oauthConsentRoutes(deps))
       // Unauthenticated GitHub setup callback (browser redirect; org rides the
       // signed state) — version root, deliberately OUTSIDE the org subtree.

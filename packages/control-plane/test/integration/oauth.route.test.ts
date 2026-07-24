@@ -310,6 +310,74 @@ describe('OAuth refresh + disconnect', () => {
 })
 
 describe('OAuth security rejections', () => {
+  it('requires interactive sign-in for consent and grant management', async () => {
+    const { base } = await start()
+    const accessToken = ((await fullFlow(base, { scope: 'mcp:read' })).tok.json() as Tokens).access_token
+    const personalKeyResponse = await req(base, 'POST', '/api/v1/me/keys', {
+      json: { orgId: DEFAULT_ORG_ID }
+    })
+    expect(personalKeyResponse.status).toBe(201)
+    const personalKey = (personalKeyResponse.json() as { apiKey: string }).apiKey
+
+    const grants = (await req(base, 'GET', '/api/v1/oauth/grants')).json() as {
+      grants: { id: string }[]
+    }
+    expect(grants.grants).toHaveLength(1)
+    const grantId = grants.grants[0]!.id
+
+    const clientId = await registerClient(base)
+    const { challenge } = pkce()
+    const attempts = [
+      {
+        name: 'read consent context',
+        run: (bearer: string) =>
+          req(
+            base,
+            'GET',
+            `/api/v1/oauth/consent/context?client_id=${clientId}&scope=${encodeURIComponent('mcp:read mcp:write')}`,
+            { bearer }
+          )
+      },
+      {
+        name: 'approve broader scopes',
+        run: (bearer: string) =>
+          req(base, 'POST', '/api/v1/oauth/consent', {
+            bearer,
+            json: {
+              clientId,
+              redirectUri: REDIRECT,
+              codeChallenge: challenge,
+              codeChallengeMethod: 'S256',
+              orgId: DEFAULT_ORG_ID,
+              scope: 'mcp:read mcp:write',
+              grantedScopes: ['mcp:read', 'mcp:write'],
+              decision: 'allow'
+            }
+          })
+      },
+      {
+        name: 'list grants',
+        run: (bearer: string) => req(base, 'GET', '/api/v1/oauth/grants', { bearer })
+      },
+      {
+        name: 'revoke a grant',
+        run: (bearer: string) => req(base, 'DELETE', `/api/v1/oauth/grants/${grantId}`, { bearer })
+      }
+    ]
+
+    for (const [credential, bearer] of [
+      ['personal API key', personalKey],
+      ['OAuth access token', accessToken]
+    ] as const) {
+      for (const attempt of attempts) {
+        expect((await attempt.run(bearer)).status, `${credential} cannot ${attempt.name}`).toBe(403)
+      }
+    }
+
+    // The rejected revoke did not damage the existing grant.
+    expect((await mcpWhoami(base, accessToken)).status).toBe(200)
+  })
+
   it('rejects an unregistered redirect_uri at /authorize (no open redirect)', async () => {
     const { base } = await start()
     const clientId = await registerClient(base)

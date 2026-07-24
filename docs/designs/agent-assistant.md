@@ -291,7 +291,7 @@ console /oauth/consent page (new):
   signed in → show client name (DCR/CIMD registration), organization picker (user orgs + roles),
               scope picker (mcp:read / mcp:read+write), Approve / Deny
   approve → POST /api/v1/oauth/consent { requestId, orgId, scopes }
-            (existing user bearer, validated by humanAuth)
+            (console OIDC identity, or devAuth locally; API/OAuth keys are rejected)
   → CP creates authorization code bound to userId+orgId+scopes+PKCE challenge+resource
   → browser 302 redirect_uri?code&state
 
@@ -300,6 +300,7 @@ POST /oauth/token(code + code_verifier [+ client_id])
 ```
 
 - **Organization selection happens on the consent page** because keys bind to one organization. This matches Atlassian per-site authorization and Sentry path-constrained sessions. Switching organizations means reauthorizing; a client may add a second connector.
+- Consent context, approval, and grant list/revocation require the interactive console identity. Existing personal keys and OAuth access tokens cannot mint or manage further credentials.
 - In local devAuth, consent passes through as DEFAULT_OWNER, allowing end-to-end testing.
 
 ### 7.4 Token Model (Two New Tables + ApiKey Reuse)
