@@ -2,7 +2,7 @@ name: agentconnect
 
 x-control-plane-image: &control-plane-image
   image: ${AGENTCONNECT_IMAGE_REGISTRY:-ghcr.io/agentconnect-md}/control-plane:${AGENTCONNECT_VERSION:-latest}
-  platform: ${AGENTCONNECT_PLATFORM:-linux/amd64}
+  platform: linux/amd64
   pull_policy: missing
 
 services:
@@ -39,7 +39,7 @@ services:
 
   migrate:
     image: ${AGENTCONNECT_IMAGE_REGISTRY:-ghcr.io/agentconnect-md}/prisma-cli:${AGENTCONNECT_PRISMA_CLI_VERSION:-7.8.0-node24-r1}
-    platform: ${AGENTCONNECT_PLATFORM:-linux/amd64}
+    platform: linux/amd64
     pull_policy: missing
     build:
       context: .
@@ -101,7 +101,7 @@ services:
 
   relay:
     image: ${AGENTCONNECT_IMAGE_REGISTRY:-ghcr.io/agentconnect-md}/relay:${AGENTCONNECT_VERSION:-latest}
-    platform: ${AGENTCONNECT_PLATFORM:-linux/amd64}
+    platform: linux/amd64
     pull_policy: missing
     build:
       context: .
@@ -136,7 +136,7 @@ services:
 
   web:
     image: ${AGENTCONNECT_IMAGE_REGISTRY:-ghcr.io/agentconnect-md}/web:${AGENTCONNECT_VERSION:-latest}
-    platform: ${AGENTCONNECT_PLATFORM:-linux/amd64}
+    platform: linux/amd64
     pull_policy: missing
     build:
       context: .
