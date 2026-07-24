@@ -19,6 +19,7 @@ import type {
   SecretsRequest,
   CronUpsert,
   Platform,
+  FeishuRegion,
   BindRule,
   AgentIcon,
   AgentMemoryBinding
@@ -2047,6 +2048,7 @@ export interface CreateIntegrationInput {
   botId: BotId // the identity this install runs as (1 bot : ≤1 install)
   platform: Platform // 'slack'
   name: string
+  feishuRegion?: FeishuRegion // feishu/lark gateway; only set for platform 'feishu'
   createdByUserId?: string
 }
 
@@ -2059,6 +2061,9 @@ export interface IntegrationRecord {
   platform: Platform
   name: string
   status: IntegrationStatus
+  /** Feishu/Lark gateway region; undefined for non-feishu integrations (and for
+   *  feishu rows created before the region column — treated as 'feishu'). */
+  feishuRegion?: FeishuRegion
   createdAt: Date
 }
 

@@ -308,8 +308,42 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       integrationId: dto.id,
       agentId,
       platform: 'feishu',
-      feishu: { appId: FEISHU.appId, appSecret: FEISHU.appSecret }
+      // region defaults to 'feishu' (China gateway) when the install omits it.
+      feishu: { appId: FEISHU.appId, appSecret: FEISHU.appSecret, region: 'feishu' }
     })
+    expect(dto.region).toBe('feishu')
+  })
+
+  it("POST feishu with region 'lark' verifies against + pushes the international gateway", async () => {
+    const agentId = await placedAgent()
+    const { app, spy } = withSpy()
+    const verifierCalls: Array<string | undefined> = []
+    app.deps.verifyFeishuBot = async (_appId, _appSecret, region) => {
+      verifierCalls.push(region)
+      return { status: 'ok', name: null }
+    }
+
+    const FEISHU = { appId: 'cli_lark123', appSecret: 's3cr3t-lark-xyz', region: 'lark' as const }
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'acme-lark', platform: 'feishu', agentId, feishu: FEISHU }
+    })
+    expect(res.statusCode).toBe(201)
+    const dto = res.json() as Record<string, unknown>
+    expect(dto.region).toBe('lark')
+
+    // The verifier was asked to check against the Lark gateway, not the default Feishu one.
+    expect(verifierCalls).toEqual(['lark'])
+
+    // The daemon's spec carries region 'lark' so its SDK dials open.larksuite.com.
+    const u = spy.upserts[0]!.u
+    if (u.platform !== 'feishu') throw new Error('expected feishu upsert')
+    expect(u.feishu).toMatchObject({ appId: FEISHU.appId, region: 'lark' })
+
+    // Persisted on the integration row so a reconnect reconstructs the same region.
+    const row = await prisma.integration.findUnique({ where: { id: dto.id as string } })
+    expect(row?.feishuRegion).toBe('lark')
   })
 
   it('POST rejects feishu credentials Feishu refuses (400) and stores nothing', async () => {

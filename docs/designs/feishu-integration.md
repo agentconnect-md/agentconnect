@@ -1,9 +1,10 @@
 # Feishu Integration Design
 
 > **Status:** Implemented. The integration supports topic-thread replies and
-> authenticated attachment downloads. It targets the mainland China Feishu
-> region; global Lark requires explicit region and domain support throughout the
-> stack.
+> authenticated attachment downloads. It supports **both** the mainland China
+> Feishu region (`open.feishu.cn`) and the international Lark region
+> (`open.larksuite.com`), selected per integration by a `region` field (see
+> section 10).
 >
 > Related documents:
 > [daemon-centric-architecture.md](daemon-centric-architecture.md),
@@ -23,13 +24,13 @@ capabilities; marketplace distribution of custom enterprise applications; and
 shared bots with relay-managed ingress, described in section 9. v1 supports
 only a custom application, one tenant, and text messages, matching Discord v1.
 
-> **Scope:** the integration supports only the **mainland China Feishu region**.
-> Control Plane credential verification is fixed to
-> `open.feishu.cn`, and the daemon SDK uses the default Feishu domain. The
-> global Lark region at larksuite.com is not supported. Console wording is
-> therefore "Feishu", not "Feishu / Lark". Global Lark support must carry an
-> explicit region or domain through the protocol, Control Plane verification,
-> and daemon SDK.
+> **Region (Feishu vs Lark):** the integration supports **both** the mainland
+> China Feishu region (`open.feishu.cn`) and the international Lark region
+> (`open.larksuite.com`). The operator picks one when installing, and the choice
+> rides a `region: 'feishu' | 'lark'` field end to end (see section 10). Both
+> regions share the same app model (`appId` + `appSecret`), SDK
+> (`@larksuiteoapi/node-sdk`), and message shapes — only the open-platform
+> gateway host differs.
 
 ## 2. Key decision: use Feishu `WSClient` long connections with the direct template
 
@@ -454,7 +455,28 @@ Portal checklist.
   `im.message.receive_v1`, permissions, and group membership. Like Discord, this
   does not block the contract phase.
 
-## 10. Current constraints and follow-ups
+## 10. Region: Feishu vs Lark
+
+A Feishu self-built app is registered in exactly one open-platform region —
+mainland China (`open.feishu.cn`) or international Lark (`open.larksuite.com`).
+Both regions share the same app model, SDK, event shapes, and message rendering;
+only the gateway host differs. Rather than a separate `platform`, the region is a
+single field threaded end to end:
+
+- **Protocol** — `IntegrationFeishuConfig.region: 'feishu' | 'lark'`
+  (`FeishuRegion`), defaulting to `'feishu'` so existing installs are unaffected.
+- **Daemon** — `consolidateFeishu` carries `region` onto the per-app group, and
+  `FeishuConnection` passes it to the SDK factory, which sets `domain`
+  (`Lark.Domain.Feishu` / `Lark.Domain.Lark`) on both the `Lark.Client` and the
+  `WSClient` long connection.
+- **Control Plane** — persisted on the `integration` row (`feishuRegion`, NULL ⇒
+  `'feishu'`); `integrationToSpec` reads it into the wire spec, and
+  `verifyFeishuBot` exchanges credentials against the matching gateway (verifying
+  a Lark app against the Feishu host would spuriously reject it).
+- **Web** — a region selector in the Add-integration modal; the "Open the
+  console" link and copy switch between the Feishu and Lark developer consoles.
+
+## 11. Current constraints and follow-ups
 
 1. Schema, DTOs, and web have no public `bot.feishuAppId` column. The checklist
    remains the group-installation path until an add-to-group link is required.

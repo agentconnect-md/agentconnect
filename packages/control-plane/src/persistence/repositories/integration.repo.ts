@@ -9,7 +9,7 @@
  * plaintext; an encrypting provider stores ciphertext without changing
  * routes/protocol/daemon.
  */
-import type { Platform } from '@agentconnect.md/protocol'
+import type { Platform, FeishuRegion } from '@agentconnect.md/protocol'
 import type { Bot, Integration, IntegrationChannel, User } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
 import type {
@@ -185,6 +185,7 @@ function toRecord(i: Integration): IntegrationRecord {
     platform: i.platform as Platform,
     name: i.name,
     status: i.status as IntegrationStatus,
+    ...(i.feishuRegion ? { feishuRegion: i.feishuRegion as FeishuRegion } : {}),
     createdAt: i.createdAt
   }
 }
@@ -201,6 +202,7 @@ export class PgIntegrationRepo implements IntegrationRepo {
         botId: input.botId,
         platform: toDbPlatform(input.platform),
         name: input.name,
+        ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {}),
         ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
       }
     })

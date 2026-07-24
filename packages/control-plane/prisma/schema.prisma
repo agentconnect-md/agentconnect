@@ -1337,6 +1337,7 @@ model Integration {
   platform        Platform          @default(slack)
   name            String // Slack app / display name (mirrors bot.name at install time)
   status          IntegrationStatus @default(active)
+  feishuRegion    String? // Feishu/Lark open-platform gateway: 'feishu' (open.feishu.cn) | 'lark' (open.larksuite.com). NULL ⇒ 'feishu' (default / non-feishu integrations). Public config, NOT secret.
   createdByUserId String? // WebUI user who installed it (audit)
   createdAt       DateTime          @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime          @updatedAt @db.Timestamptz(6)

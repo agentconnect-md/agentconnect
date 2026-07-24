@@ -54,6 +54,7 @@ function toDto(i: IntegrationRecord, channels: IntegrationChannelRecord[] = []):
     agentId: i.agentId,
     botId: i.botId,
     status: i.status,
+    ...(i.feishuRegion ? { region: i.feishuRegion } : {}),
     createdAt: i.createdAt.toISOString(),
     channels: channels.map(toChannelDto)
   }
@@ -380,7 +381,10 @@ export function integrationRoutes(deps: HttpDeps) {
           // appToken = appId, the identifier — appToken already nullable since Telegram).
           if (req.body.platform === 'feishu') {
             const feishu = req.body.feishu! // superRefine guarantees it when botId is absent
-            const check = deps.verifyFeishuBot ? await deps.verifyFeishuBot(feishu.appId, feishu.appSecret) : null
+            const region = feishu.region // zod-defaulted to 'feishu' when omitted
+            const check = deps.verifyFeishuBot
+              ? await deps.verifyFeishuBot(feishu.appId, feishu.appSecret, region)
+              : null
             if (check?.status === 'invalid') {
               return reply.code(400).send({
                 error: 'Bad Request',
@@ -413,6 +417,7 @@ export function integrationRoutes(deps: HttpDeps) {
               botId,
               platform: 'feishu',
               name,
+              feishuRegion: region,
               ...(req.principal ? { createdByUserId: req.principal.userId } : {})
             })
             await replicateUpsert(integration, daemonId)

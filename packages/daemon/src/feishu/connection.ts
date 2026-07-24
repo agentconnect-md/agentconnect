@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as Lark from '@larksuiteoapi/node-sdk'
+import type { FeishuRegion } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
@@ -31,6 +32,10 @@ import { chunkForFeishu } from './render.js'
 export interface ConsolidatedFeishuGroup {
   appId: string
   appSecret: string
+  /** Open-platform gateway the SDK talks to: 'feishu' (open.feishu.cn, default) vs
+   *  'lark' (open.larksuite.com). Same across an appId (an app is region-scoped);
+   *  taken from the first integration for the appId. */
+  region: FeishuRegion
   /** From the first integration's feishu.botOpenId (same across the appId). */
   botOpenId?: string
   integrations: { agentId: string; integrationId: string }[]
@@ -46,6 +51,7 @@ export function consolidateFeishu(agents: Agent[]): Map<string, ConsolidatedFeis
       const g = groups.get(k) ?? {
         appId: k,
         appSecret: int.feishu.appSecret,
+        region: int.feishu.region,
         ...(int.feishu.botOpenId ? { botOpenId: int.feishu.botOpenId } : {}),
         integrations: []
       }
@@ -128,9 +134,17 @@ export interface FeishuClientHandle {
   close(): void
 }
 
+/** Map our region enum to the SDK's gateway domain. Omitting `domain` would default to
+ *  Feishu, but we pass it explicitly so the region is unambiguous at both the REST client
+ *  and the WSClient long-connection. */
+function regionDomain(region: FeishuRegion): Lark.Domain {
+  return region === 'lark' ? Lark.Domain.Lark : Lark.Domain.Feishu
+}
+
 /** Default factory: adapt a real `Lark.Client` + `Lark.WSClient` to {@link FeishuClientHandle}. */
-function defaultFactory(appId: string, appSecret: string): FeishuClientHandle {
-  const client = new Lark.Client({ appId, appSecret, loggerLevel: Lark.LoggerLevel.error })
+function defaultFactory(appId: string, appSecret: string, region: FeishuRegion): FeishuClientHandle {
+  const domain = regionDomain(region)
+  const client = new Lark.Client({ appId, appSecret, domain, loggerLevel: Lark.LoggerLevel.error })
   let ws: Lark.WSClient | undefined
 
   const api: FeishuApi = {
@@ -210,7 +224,7 @@ function defaultFactory(appId: string, appSecret: string): FeishuClientHandle {
           onEvent(data)
         }
       })
-      ws = new Lark.WSClient({ appId, appSecret, loggerLevel: Lark.LoggerLevel.error })
+      ws = new Lark.WSClient({ appId, appSecret, domain, loggerLevel: Lark.LoggerLevel.error })
       await ws.start({ eventDispatcher: dispatcher })
     },
     close() {
@@ -262,10 +276,10 @@ export class FeishuConnection {
 
   constructor(
     private deps: FeishuDeps,
-    factory: (appId: string, appSecret: string) => FeishuClientHandle = defaultFactory
+    factory: (appId: string, appSecret: string, region: FeishuRegion) => FeishuClientHandle = defaultFactory
   ) {
     this.appId = deps.group.appId
-    this.handle = factory(deps.group.appId, deps.group.appSecret)
+    this.handle = factory(deps.group.appId, deps.group.appSecret, deps.group.region)
     this.queue = new SlackSendQueue(deps.sendIntervalMs ?? 350)
   }
 
