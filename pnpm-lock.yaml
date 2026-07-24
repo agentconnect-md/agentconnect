@@ -152,8 +152,8 @@ importers:
         specifier: ^6.0.0
         version: 6.0.0
       '@modelcontextprotocol/server':
-        specifier: 2.0.0-beta.4
-        version: 2.0.0-beta.4
+        specifier: 2.0.0-beta.5
+        version: 2.0.0-beta.5
       '@octokit/auth-app':
         specifier: ^8.2.0
         version: 8.2.0
@@ -249,8 +249,8 @@ importers:
   packages/daemon:
     dependencies:
       '@agentclientprotocol/sdk':
-        specifier: ^1.2.1
-        version: 1.2.1(zod@4.4.3)
+        specifier: ^1.3.0
+        version: 1.3.0(zod@4.4.3)
       '@agentconnect.md/connection':
         specifier: workspace:*
         version: link:../connection
@@ -261,7 +261,7 @@ importers:
         specifier: ^1.70.0
         version: 1.70.0
       '@modelcontextprotocol/sdk':
-        specifier: ^1.12.0
+        specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
       '@opentelemetry/api':
         specifier: ^1.9.1
@@ -346,7 +346,7 @@ importers:
         specifier: workspace:*
         version: link:../protocol
       '@modelcontextprotocol/sdk':
-        specifier: ^1.12.0
+        specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
       '@opentelemetry/api':
         specifier: ^1.9.0
@@ -562,8 +562,8 @@ packages:
   '@actions/io@3.0.2':
     resolution: {integrity: sha512-nRBchcMM+QK1pdjO7/idu86rbJI5YHUKCvKs0KxnSYbVe3F51UfGxuZX4Qy/fWlp6l7gWFwIkrOzN+oUK03kfw==}
 
-  '@agentclientprotocol/sdk@1.2.1':
-    resolution: {integrity: sha512-jwYUdOQR7tc+Zfch53VL4JJyUNK/46q03uUTYb+PjECsmnNl94XFXOfYLJ8RBpMNidXd1rpOAVgb0vqD98xImA==}
+  '@agentclientprotocol/sdk@1.3.0':
+    resolution: {integrity: sha512-i3h/efaeuMUFAO1HSfo97QZQnnvMd7wWBYtBsdL6UMZg3a78sk3Ffya5Xu7C7tYsXomXoDXJBAzQF2PcFKAhIQ==}
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
@@ -1779,8 +1779,8 @@ packages:
     resolution: {integrity: sha512-9I2Zn6+NJLfaGoz9jN3lpwDgAYvfGeNYdbAIjJOqzs4Tpc+VU3Jqq4IofSUBKajiDS8k9fZIg18/z13mpk1bsA==}
     engines: {node: '>=8'}
 
-  '@modelcontextprotocol/core@2.0.0-beta.4':
-    resolution: {integrity: sha512-nsMXd4wQBKzmph6r+WOhum+mXjDYljTAqwY/XUg3hLtvNOQ8+JVqBSJOVCMJvx9lXhTpTOPrGZ3BuNiaNPjSvg==}
+  '@modelcontextprotocol/core@2.0.0-beta.5':
+    resolution: {integrity: sha512-HKbY9XTbsDy1Y6r2I55TGE3JEapM0vg96e1MUmBIF9LGjos5gjhcIrTz1yvBPLg2aFKHjwhUAQfRdrCEnPxNew==}
     engines: {node: '>=20'}
 
   '@modelcontextprotocol/sdk@1.29.0':
@@ -1793,8 +1793,8 @@ packages:
       '@cfworker/json-schema':
         optional: true
 
-  '@modelcontextprotocol/server@2.0.0-beta.4':
-    resolution: {integrity: sha512-pjMZcNEt1dOq0aJCcY3b7w1Ayh+qmQN2xlfTELcGV9yiAjEGIczBPBLWWW0k0zzo5T8kiv15jtKPsWeHGxLvLg==}
+  '@modelcontextprotocol/server@2.0.0-beta.5':
+    resolution: {integrity: sha512-i1E5l75rQKsgY/AKAIspgMBH1vEL7dqiK7tHr0L+raYcb0SWOziqNGJXGIG6NY4AlXDWIKGJQGB7Nqfs3oUi5g==}
     engines: {node: '>=20'}
 
   '@mongodb-js/saslprep@1.4.12':
@@ -8153,7 +8153,7 @@ snapshots:
 
   '@actions/io@3.0.2': {}
 
-  '@agentclientprotocol/sdk@1.2.1(zod@4.4.3)':
+  '@agentclientprotocol/sdk@1.3.0(zod@4.4.3)':
     dependencies:
       zod: 4.4.3
 
@@ -9557,7 +9557,7 @@ snapshots:
 
   '@lukeed/ms@2.0.2': {}
 
-  '@modelcontextprotocol/core@2.0.0-beta.4':
+  '@modelcontextprotocol/core@2.0.0-beta.5':
     dependencies:
       zod: 4.4.3
 
@@ -9583,9 +9583,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/server@2.0.0-beta.4':
+  '@modelcontextprotocol/server@2.0.0-beta.5':
     dependencies:
-      '@modelcontextprotocol/core': 2.0.0-beta.4
+      '@modelcontextprotocol/core': 2.0.0-beta.5
       zod: 4.4.3
 
   '@mongodb-js/saslprep@1.4.12':
