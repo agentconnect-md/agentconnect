@@ -76,17 +76,27 @@ export type RcHeartbeat = z.infer<typeof RcHeartbeat>
 // R→C REQ → rc/verify/ok. The relay holds no database, so it delegates credential
 // checks to the CP: a daemon's API key on `rd/hello`, or a browser's CP-minted
 // short-lived webchat token. The credential is secret material — NEVER log.
-export const RcVerify = z.object({
-  kind: z.enum(['daemon-key', 'webchat-token']),
-  credential: z.string().min(1)
-})
+// `conversationBinding` is optional on the wire so a new CP can reject one old
+// relay's webchat dial without closing the relay's shared control connection.
+export const RcVerify = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('daemon-key'),
+    credential: z.string().min(1)
+  }),
+  z.object({
+    kind: z.literal('webchat-token'),
+    credential: z.string().min(1),
+    conversationBinding: z.literal('v1').optional()
+  })
+])
 export type RcVerify = z.infer<typeof RcVerify>
 
 // C→R REP (corr = rc/verify id). `ok:false` carries no detail beyond `reason`
 // (no existence oracle). On success the identity fields depend on `kind`:
 //  - daemon-key     → daemonId + orgId
-//  - webchat-token  → userId (+ display `user`) + agentId + daemonId + orgId,
-//    where daemonId is the agent's CURRENT placement (resolved at verify time).
+//  - webchat-token  → userId (+ display `user`) + agentId + daemonId + orgId +
+//    conversationId, where daemonId is the agent's CURRENT placement and the
+//    conversation id is the CP-authorized binding carried by the token.
 export const RcVerifyResult = z.object({
   ok: z.boolean(),
   reason: z.string().optional(),
@@ -94,7 +104,8 @@ export const RcVerifyResult = z.object({
   daemonId: z.string().uuid().optional(),
   userId: z.string().optional(),
   user: z.string().optional(), // display handle for the transcript author line
-  agentId: z.string().uuid().optional()
+  agentId: z.string().uuid().optional(),
+  conversationId: z.string().uuid().optional()
 })
 export type RcVerifyResult = z.infer<typeof RcVerifyResult>
 

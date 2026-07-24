@@ -419,12 +419,26 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     expect(body.conversationId).toMatch(/^[0-9a-f-]{36}$/) // a fresh conversation id
   })
 
-  it('POST …/webchat/token echoes a provided conversationId (resume)', async () => {
+  it('POST …/webchat/token resumes only a conversation bound to the caller', async () => {
     const { app } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
     await seedAgent(prisma, AGENT)
-    const conversationId = randomUUID()
-    const res = await mintWebchatToken(app, AGENT, { conversationId })
-    expect((res.json() as { conversationId: string }).conversationId).toBe(conversationId)
+    const fresh = await mintWebchatToken(app, AGENT)
+    const conversationId = (fresh.json() as { conversationId: string }).conversationId
+
+    const owned = await mintWebchatToken(app, AGENT, { conversationId })
+    expect(owned.statusCode).toBe(200)
+    expect((owned.json() as { conversationId: string }).conversationId).toBe(conversationId)
+
+    expect((await mintWebchatToken(app, AGENT, { conversationId: randomUUID() })).statusCode).toBe(404)
+
+    const otherUserId = 'usr_webchat_victim'
+    await prisma.user.create({ data: { id: otherUserId, email: 'webchat-victim@example.test' } })
+    await prisma.membership.create({ data: { orgId: DEFAULT_ORG_ID, userId: otherUserId, role: 'collaborator' } })
+    const otherConversationId = randomUUID()
+    await prisma.webchatConversation.create({
+      data: { id: otherConversationId, orgId: DEFAULT_ORG_ID, agentId: AGENT, userId: otherUserId }
+    })
+    expect((await mintWebchatToken(app, AGENT, { conversationId: otherConversationId })).statusCode).toBe(404)
   })
 
   it('POST …/webchat/token → 503 when no relay pool is configured (PUBLIC_RELAY_URL unset)', async () => {
@@ -438,16 +452,29 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     expect((await mintWebchatToken(app, randomUUID())).statusCode).toBe(404)
   })
 
-  it('rc/verify(webchat-token) resolves a placed+READY agent to {ok:true, agentId, daemonId, orgId}', async () => {
+  it('rc/verify(webchat-token) resolves placement and the bound conversation id', async () => {
     const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
     const daemonWs = await connectDaemonReady(base) // DAEMON now READY in connReg
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
-    const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { token: string }
+    const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as {
+      token: string
+      conversationId: string
+    }
 
     const { ws } = await openRelay(base, 'pod-w', 'wss://pod-w.example.test')
-    sendFrame(ws, 'rc/verify', { kind: 'webchat-token', credential: token.token })
+    sendFrame(ws, 'rc/verify', {
+      kind: 'webchat-token',
+      credential: token.token,
+      conversationBinding: 'v1'
+    })
     const ok = (await nextFrame(ws, 'rc/verify/ok')).payload as RcVerifyResult
-    expect(ok).toMatchObject({ ok: true, agentId: AGENT, daemonId: DAEMON, orgId: DEFAULT_ORG_ID })
+    expect(ok).toMatchObject({
+      ok: true,
+      agentId: AGENT,
+      daemonId: DAEMON,
+      orgId: DEFAULT_ORG_ID,
+      conversationId: token.conversationId
+    })
     expect(typeof ok.user).toBe('string') // the transcript author handle from the token
     ws.close()
     daemonWs.close()
@@ -461,7 +488,11 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { token: string }
 
     const { ws } = await openRelay(base, 'pod-w2', 'wss://pod-w2.example.test')
-    sendFrame(ws, 'rc/verify', { kind: 'webchat-token', credential: token.token })
+    sendFrame(ws, 'rc/verify', {
+      kind: 'webchat-token',
+      credential: token.token,
+      conversationBinding: 'v1'
+    })
     const ok = (await nextFrame(ws, 'rc/verify/ok')).payload as RcVerifyResult
     expect(ok.ok).toBe(false)
     expect(ok.daemonId).toBeUndefined()
@@ -471,7 +502,11 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
   it('rc/verify(webchat-token) → {ok:false} for a bogus token (no oracle)', async () => {
     const { base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
     const { ws } = await openRelay(base, 'pod-w3', 'wss://pod-w3.example.test')
-    sendFrame(ws, 'rc/verify', { kind: 'webchat-token', credential: 'not.a.valid.jwt' })
+    sendFrame(ws, 'rc/verify', {
+      kind: 'webchat-token',
+      credential: 'not.a.valid.jwt',
+      conversationBinding: 'v1'
+    })
     const ok = (await nextFrame(ws, 'rc/verify/ok')).payload as RcVerifyResult
     expect(ok.ok).toBe(false)
     ws.close()

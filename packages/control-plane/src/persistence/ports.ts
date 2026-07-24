@@ -898,6 +898,24 @@ export interface SessionRepo {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// WebchatConversationRepo — browser conversation ownership metadata
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface WebchatConversationBinding {
+  conversationId: string
+  orgId: OrgId
+  agentId: AgentId
+  userId: string
+}
+
+export interface WebchatConversationRepo {
+  /** Register a server-allocated conversation before its first relay dial. */
+  create(binding: WebchatConversationBinding): Promise<void>
+  /** Exact owner check for resume. Unknown and foreign bindings both return false. */
+  owns(binding: WebchatConversationBinding): Promise<boolean>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // SessionUsageRepo (C6) — per-session token accounting for the usage dashboard
 // ───────────────────────────────────────────────────────────────────────────
 

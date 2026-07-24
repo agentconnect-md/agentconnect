@@ -22,7 +22,6 @@ const AGENT = '11111111-1111-4111-8111-111111111111'
 const DAEMON = '22222222-2222-4222-8222-222222222222'
 const RESUME = '33333333-3333-4333-8333-333333333333'
 const silentLog: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 let http: Server | undefined
 let wss: ReturnType<typeof createRelayBrowserServer> | undefined
@@ -60,7 +59,9 @@ async function start(
   const daemon = 'daemon' in opts ? opts.daemon : ({ sendMsg } as unknown as RelayDaemonConnection)
   const daemons = { get: (id: string) => (id === DAEMON ? daemon : undefined) } as unknown as RelayDaemonServer
   const verify =
-    opts.verify ?? (async () => ({ ok: true, agentId: AGENT, daemonId: DAEMON, user: 'ada' }) as RcVerifyResult)
+    opts.verify ??
+    (async () =>
+      ({ ok: true, agentId: AGENT, daemonId: DAEMON, user: 'ada', conversationId: RESUME }) as RcVerifyResult)
   wss = createRelayBrowserServer({ server: http } as unknown as FastifyInstance, {
     verify,
     daemons,
@@ -124,25 +125,41 @@ describe('createRelayBrowserServer (browser webchat edge)', () => {
   })
 
   it('refuses when the token verifies but resolves no live placement (401)', async () => {
-    const { base } = await start({ verify: async () => ({ ok: true, agentId: AGENT }) }) // no daemonId
+    const { base } = await start({
+      verify: async () => ({ ok: true, agentId: AGENT, conversationId: RESUME })
+    }) // no daemonId
     await expect(dial(base, '?token=t')).rejects.toThrow('status:401')
   })
 
-  it('accepts a valid token and greets with a ready frame carrying a fresh conversation id', async () => {
+  it('uses the token-bound conversation id when the compatibility query is omitted', async () => {
     const { base } = await start()
     const ws = await dial(base, '?token=good')
     const ready = await nextFrame(ws, 'ready')
     expect(ready.agentId).toBe(AGENT)
-    expect(UUID_RE.test(String(ready.conversationId))).toBe(true)
+    expect(ready.conversationId).toBe(RESUME)
     ws.close()
   })
 
-  it('honors ?conversation_id= to resume (ready echoes the same id)', async () => {
+  it('accepts a compatibility conversation_id that matches the token binding', async () => {
     const { base } = await start()
     const ws = await dial(base, `?token=good&conversation_id=${RESUME}`)
     const ready = await nextFrame(ws, 'ready')
     expect(ready.conversationId).toBe(RESUME)
     ws.close()
+  })
+
+  it('refuses a conversation_id that does not match the token binding', async () => {
+    const { base } = await start()
+    await expect(dial(base, '?token=good&conversation_id=44444444-4444-4444-8444-444444444444')).rejects.toThrow(
+      'status:401'
+    )
+  })
+
+  it('refuses a webchat verification result without a conversation binding', async () => {
+    const { base } = await start({
+      verify: async () => ({ ok: true, agentId: AGENT, daemonId: DAEMON, user: 'ada' })
+    })
+    await expect(dial(base, '?token=legacy')).rejects.toThrow('status:401')
   })
 
   it('bridges a browser turn to rd/msg and streams the daemon reply back as output/done', async () => {

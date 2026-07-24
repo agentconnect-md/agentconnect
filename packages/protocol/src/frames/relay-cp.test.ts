@@ -76,6 +76,10 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
   it('rc/verify enforces the kind enum', () => {
     expect(RcVerify.safeParse({ kind: 'daemon-key', credential: 'k' }).success).toBe(true)
     expect(RcVerify.safeParse({ kind: 'webchat-token', credential: 't' }).success).toBe(true)
+    expect(RcVerify.safeParse({ kind: 'webchat-token', credential: 't', conversationBinding: 'v1' }).success).toBe(true)
+    expect(RcVerify.safeParse({ kind: 'webchat-token', credential: 't', conversationBinding: 'v0' }).success).toBe(
+      false
+    )
     expect(RcVerify.safeParse({ kind: 'slack-token', credential: 'x' }).success).toBe(false)
     expect(RcVerify.safeParse({ kind: 'daemon-key', credential: '' }).success).toBe(false)
   })
@@ -90,9 +94,18 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
       user: 'user@example.com',
       agentId: AGENT_ID,
       daemonId: DAEMON_ID,
-      orgId: 'org_x'
+      orgId: 'org_x',
+      conversationId: '33333333-3333-4333-8333-333333333333'
     })
     expect(webchat.success).toBe(true)
+    expect(
+      RcVerifyResult.safeParse({
+        ok: true,
+        agentId: AGENT_ID,
+        daemonId: DAEMON_ID,
+        conversationId: 'not-a-uuid'
+      }).success
+    ).toBe(false)
     // rejection carries no identity (no existence oracle)
     expect(RcVerifyResult.safeParse({ ok: false, reason: 'expired' }).success).toBe(true)
     expect(RcVerifyResult.safeParse({ ok: false }).success).toBe(true)

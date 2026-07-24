@@ -396,6 +396,37 @@ describe('RelayConnection FSM', () => {
     expect(transport.lastRep('rc/verify/ok')!.payload).toMatchObject({ ok: false })
   })
 
+  it('rc/verify(webchat-token) rejects a relay without the conversation-binding fence', async () => {
+    const verifyWebchatToken = vi.fn(async () => ({
+      ok: true,
+      agentId: '33333333-3333-4333-8333-333333333333',
+      daemonId: '44444444-4444-4444-8444-444444444444',
+      conversationId: '55555555-5555-4555-8555-555555555555'
+    }))
+    const { transport } = build({ verifyWebchatToken })
+    await toReady(transport)
+
+    transport.feed('rc/verify', { kind: 'webchat-token', credential: 'browser-token' })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(transport.lastRep('rc/verify/ok')!.payload).toMatchObject({
+      ok: false,
+      reason: 'unsupported webchat binding'
+    })
+    expect(verifyWebchatToken).not.toHaveBeenCalled()
+    expect(transport.closed).toBeUndefined()
+
+    transport.feed('rc/verify', {
+      kind: 'webchat-token',
+      credential: 'browser-token',
+      conversationBinding: 'v1'
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(verifyWebchatToken).toHaveBeenCalledWith('browser-token')
+    expect(transport.lastRep('rc/verify/ok')!.payload).toMatchObject({ ok: true })
+  })
+
   it('rc/verify → retryable error (not a link close) when verify throws', async () => {
     const { transport } = build({
       auth: {

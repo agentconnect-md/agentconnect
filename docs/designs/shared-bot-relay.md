@@ -223,7 +223,7 @@ rc/thread-lookup/ok { botId, sessionKey, target }
 rc/bot-channels      { botId, channels }
 rc/set-channel-agent { botId, channelId, agentId }
 rc/daemon-revoke     { daemonId }
-rc/verify            { kind: 'daemon-key' | 'webchat-token', credential }
+rc/verify            { kind: 'daemon-key' | 'webchat-token', credential, conversationBinding?: 'v1' }
 ```
 
 `rc/bot-assign`, `rc/routes`, and `rc/assign` are broadcast to the pool.
@@ -362,9 +362,17 @@ returns over a control channel without the original payload. The detailed
 rules remain in
 [webhook-triggers-and-github-events.md](webhook-triggers-and-github-events.md).
 
-A webchat browser presents a short-lived CP-minted token. The relay delegates
-verification, resolves the agent's current daemon placement, and bridges
-browser turns and daemon output without routing arbitration.
+A webchat browser presents a short-lived CP-minted token. For a new
+conversation, CP allocates its id and persists only the ownership tuple
+`(conversationId, userId, agentId, orgId)`. A resume mint succeeds only when
+that tuple matches the authenticated caller; unknown and foreign ids fail
+closed. The token carries the authorized conversation id, and the relay uses
+that token-bound value rather than trusting the browser query. It then resolves
+the agent's current daemon placement and bridges browser turns and daemon
+output without routing arbitration. Webchat verification carries a
+`conversationBinding: 'v1'` fence and uses a v2 token-signing domain so mixed
+old/new CP and relay instances fail closed instead of silently downgrading.
+Conversation bodies remain daemon-local.
 
 ## 11. Daemon Responsibilities
 

@@ -14,6 +14,7 @@ import type {
   RelayRepo,
   SessionRepo,
   SessionUsageRepo,
+  WebchatConversationRepo,
   UserRepo,
   OrgRepo,
   WaitlistRepo,
@@ -124,6 +125,8 @@ export interface HttpDeps {
     session: SessionRepo
     /** Per-session token usage → the `/usage` dashboard aggregates. */
     sessionUsage: SessionUsageRepo
+    /** Ownership-only metadata that authorizes browser conversation resumes. */
+    webchatConversation: WebchatConversationRepo
     /** WebUI human identity — JIT-provisions the user behind a verified OIDC token. */
     user: UserRepo
     /** The caller's orgs (picker, create, owner-gated rename). */

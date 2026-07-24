@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { createHmac } from 'node:crypto'
+import { SignJWT, jwtVerify } from 'jose'
 import { WebchatTokenService, type WebchatTokenClaims } from './webchatToken.js'
 
 const PEPPER = 'webchat-token-test-pepper-0123456789abcdef'
@@ -6,7 +8,8 @@ const CLAIMS: WebchatTokenClaims = {
   userId: 'user-1',
   user: 'ada@example.com',
   agentId: '11111111-1111-4111-8111-111111111111',
-  orgId: 'org-1'
+  orgId: 'org-1',
+  conversationId: '33333333-3333-4333-8333-333333333333'
 }
 
 describe('WebchatTokenService', () => {
@@ -20,6 +23,26 @@ describe('WebchatTokenService', () => {
     const minted = await new WebchatTokenService(PEPPER).mint(CLAIMS)
     const other = new WebchatTokenService('a-totally-different-pepper-0123456789ab')
     expect(await other.verify(minted)).toBeNull()
+  })
+
+  it('isolates v1 and v2 tokens during a rolling deployment', async () => {
+    const legacyKey = new Uint8Array(createHmac('sha256', PEPPER).update('agentconnect.webchat-token.v1').digest())
+    const legacyToken = await new SignJWT({
+      user: CLAIMS.user,
+      agentId: CLAIMS.agentId,
+      orgId: CLAIMS.orgId,
+      conversationId: CLAIMS.conversationId
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject(CLAIMS.userId)
+      .setIssuedAt()
+      .setExpirationTime('5m')
+      .sign(legacyKey)
+    const current = new WebchatTokenService(PEPPER)
+    expect(await current.verify(legacyToken)).toBeNull()
+
+    const currentToken = await current.mint(CLAIMS)
+    await expect(jwtVerify(currentToken, legacyKey, { algorithms: ['HS256'] })).rejects.toThrow()
   })
 
   it('rejects an EXPIRED token', async () => {

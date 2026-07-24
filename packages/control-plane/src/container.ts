@@ -44,6 +44,7 @@ import {
   PgAssignmentRepo,
   PgSessionRepo,
   PgSessionUsageRepo,
+  PgWebchatConversationRepo,
   PgLaunchRepo,
   PgSecretLeaseRepo,
   PgIntegrationRepo,
@@ -200,6 +201,7 @@ export function buildContainer(
     assignment: new PgAssignmentRepo(prisma),
     session: new PgSessionRepo(prisma),
     sessionUsage: new PgSessionUsageRepo(prisma),
+    webchatConversation: new PgWebchatConversationRepo(prisma),
     launch: new PgLaunchRepo(prisma),
     lease: new PgSecretLeaseRepo(prisma),
     integration: new PgIntegrationRepo(prisma),
@@ -313,8 +315,8 @@ export function buildContainer(
   const agentSpecs = new AgentSpecAssembler(repos.agentSecret, iconBases, repos.skillSource)
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
-  // {userId, user, agentId, orgId}. The relay delegates verification here via
-  // rc/verify(webchat-token); the CP re-resolves the agent's CURRENT placement.
+  // {userId, user, agentId, orgId, conversationId}. The relay delegates verification
+  // here via rc/verify(webchat-token); the CP re-resolves the agent's CURRENT placement.
   const webchatTokens = new WebchatTokenService(config.API_KEY_PEPPER)
 
   const registry = new DaemonRegistryService(repos.daemon, repos.runtimeProfile, repos.daemonLifecycleOp, clock)
@@ -575,6 +577,7 @@ export function buildContainer(
       relay: repos.relay,
       session: repos.session,
       sessionUsage: repos.sessionUsage,
+      webchatConversation: repos.webchatConversation,
       user: repos.user,
       org: repos.org,
       waitlist: repos.waitlist,
@@ -821,7 +824,8 @@ export function buildContainer(
         user: claims.user,
         agentId: claims.agentId,
         daemonId: agent.daemonId,
-        orgId: claims.orgId
+        orgId: claims.orgId,
+        conversationId: claims.conversationId
       }
     },
     // Current-permission fallback for GitHub comment webhooks whose
