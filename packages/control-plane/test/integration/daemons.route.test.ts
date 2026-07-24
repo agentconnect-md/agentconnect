@@ -854,7 +854,7 @@ describe('lifecycle op closure on register→READY', () => {
     host: 'macbook-pro',
     capabilities: { platforms: [] as never[], runtimes: [] as string[], acp: true, features: [] as string[] },
     maxAgents: 3,
-    localState: { assignments: [], crons: [], leases: [], agents: [], integrations: [] }
+    localState: { assignments: [], crons: [], leases: [], agents: [], integrations: [], stagedAgents: [] }
   }
   const makeRegistry = (ops: PgDaemonLifecycleOpRepo) =>
     new DaemonRegistryService(new PgDaemonRepo(prisma), new PgRuntimeProfileRepo(prisma), ops, systemClock)

@@ -107,6 +107,7 @@ describe('decodeEnvelope — additional codec/frame units', () => {
     // Rolling upgrade: older daemons omit replica inventories.
     expect(r.frame.payload.localState.agents).toEqual([])
     expect(r.frame.payload.localState.integrations).toEqual([])
+    expect(r.frame.payload.localState.stagedAgents).toEqual([])
   })
 
   it('register accepts discord in capabilities.platforms (handshake regression)', () => {
@@ -124,6 +125,25 @@ describe('decodeEnvelope — additional codec/frame units', () => {
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('register')(r.frame)) throw new Error('expected a register frame')
     expect(r.frame.payload.capabilities.platforms).toEqual(['slack', 'discord'])
+  })
+
+  it('register accepts a fail-closed staged tombstone without a recoverable token', () => {
+    const r = decodeEnvelope(
+      envelope('register', {
+        host: 'host-1',
+        capabilities: { platforms: [], runtimes: [], acp: true },
+        maxAgents: 4,
+        localState: {
+          assignments: [],
+          crons: [],
+          leases: [],
+          stagedAgents: [{ agentId: AGENT_ID }]
+        }
+      })
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || !isFrame('register')(r.frame)) throw new Error('expected a register frame')
+    expect(r.frame.payload.localState.stagedAgents).toEqual([{ agentId: AGENT_ID }])
   })
 
   it('round-trips an error frame through build → encode → decode', () => {

@@ -16,7 +16,7 @@ import { AnyFrame, type ControlExt, type ErrorCode, isFrame } from '@agentconnec
 import { decodeEnvelope, buildEnvelope, encode, type InboundControlExt } from './codec.js'
 import { ReqRep, type RequestOpts } from './correlator.js'
 import type { Transport } from './transport.js'
-import type { ConnChannel, LifecycleState } from './registry.js'
+import { ConnectionClosed, type ConnChannel, type LifecycleState } from './registry.js'
 import type { DaemonWsDeps } from './deps.js'
 import type { FrameRouter } from './handlers/index.js'
 import { FencingState, checkFencing } from '../orchestrator/fencing.js'
@@ -190,7 +190,7 @@ export class DaemonConnection implements ConnChannel {
 
   private onClose(_code: number, _reason: string): void {
     this.state = 'CLOSED'
-    this.correlator.rejectAll(new Error('connection closed'))
+    this.correlator.rejectAll(new ConnectionClosed())
     // Remove the registry entry only while it is still OURS. On reconnect the new
     // connection's auth overwrites the entry (keyed by daemonId), and a half-dead
     // old socket's close event can arrive AFTER that — it must not evict the live

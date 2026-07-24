@@ -30,6 +30,7 @@ import type { Clock } from '../domain/clock.js'
 import type { SessionEventSink } from '../events/sink.js'
 import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
+import type { AgentId, DaemonId } from '../domain/ids.js'
 
 /** Config slice the WS edge reads. */
 export interface WsConfig {
@@ -56,6 +57,8 @@ export interface DaemonWsDeps {
   integrationChannel: IntegrationChannelRepo
   /** Shares the HTTP agent-move boundary with daemon-originated channel snapshots. */
   agentMutations: AgentMutationGate
+  /** Resumes durable move tombstones advertised by a reconnecting daemon. */
+  recoverStagedAgent: (agentId: AgentId, daemonId: DaemonId, moveId: string) => Promise<void>
   /** Refreshes relay and daemon collaboration snapshots after accepted membership changes. */
   collabRoutes: CollabRoutesService
   /** Stamps `lastRunAt` from the `cron/report` EVT (daemon-scoped, latest-wins). */

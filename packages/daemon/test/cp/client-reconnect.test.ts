@@ -18,7 +18,7 @@ function deps(connect: () => Promise<FakeTransport>, clock: FakeClock): CpClient
     maxAgents: 4,
     capabilities: () => ({ platforms: ['slack'], runtimes: [], acp: true, features: [] }),
     runtimeProfiles: () => [],
-    localState: () => ({ assignments: [], crons: [], leases: [], agents: [], integrations: [] }),
+    localState: () => ({ assignments: [], crons: [], leases: [], agents: [], integrations: [], stagedAgents: [] }),
     loadSnapshot: () => ({ cpu: 0, mem: 0, agents: 0 }),
     activeSessions: () => 0,
     configApply: {

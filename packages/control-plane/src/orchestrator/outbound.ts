@@ -73,7 +73,7 @@ import type {
   AgentPermissionDecision
 } from '@agentconnect.md/protocol'
 import type { LaunchRepo } from '../persistence/ports.js'
-import type { ConnectionRegistry, DaemonConnState } from '../ws/registry.js'
+import { ConnectionClosed, type ConnectionRegistry, type DaemonConnState } from '../ws/registry.js'
 import { AgentId, DaemonId, LaunchId } from '../domain/ids.js'
 import { ProtocolError } from '../domain/errors.js'
 
@@ -82,6 +82,7 @@ import { ProtocolError } from '../domain/errors.js'
 // idempotent operation enough time to return its acknowledgement.
 const COLD_ACTIVATE_ACK_TIMEOUT_MS = 60_000
 const COLD_ACTIVATE_MAX_TRIES = 5
+const COLD_ACTIVATE_MAX_CONNECTIONS = 5
 
 /** Raised when no live/READY connection exists for a daemon. */
 export class NoConnection extends Error {
@@ -236,12 +237,33 @@ export class ControlSender {
 
   /** Activate a fully bootstrapped/restored agent after a cold daemon move (REQ → ack). */
   async agentActivate(daemonId: string, a: AgentActivate): Promise<Ack> {
-    const c = this.must(daemonId)
-    return c.conn.request<Ack>(
-      'agent/activate',
-      a,
-      { epoch: c.sessionEpoch, agentId: a.agentId },
-      { ackTimeoutMs: COLD_ACTIVATE_ACK_TIMEOUT_MS, maxTries: COLD_ACTIVATE_MAX_TRIES }
+    let c = await this.activationConnection(daemonId)
+    for (let connectionTry = 1; ; connectionTry += 1) {
+      try {
+        return await c.conn.request<Ack>(
+          'agent/activate',
+          a,
+          { epoch: c.sessionEpoch, agentId: a.agentId },
+          { ackTimeoutMs: COLD_ACTIVATE_ACK_TIMEOUT_MS, maxTries: COLD_ACTIVATE_MAX_TRIES }
+        )
+      } catch (err) {
+        if (!(err instanceof ConnectionClosed) || connectionTry >= COLD_ACTIVATE_MAX_CONNECTIONS) throw err
+        c = await this.registry.waitForReadyAfter(
+          daemonId,
+          c.sessionEpoch,
+          AbortSignal.timeout(COLD_ACTIVATE_ACK_TIMEOUT_MS)
+        )
+      }
+    }
+  }
+
+  private async activationConnection(daemonId: string): Promise<DaemonConnState> {
+    const current = this.registry.get(daemonId)
+    if (current?.state === 'READY' || current?.state === 'DRAINING') return current
+    return this.registry.waitForReadyAfter(
+      daemonId,
+      Math.max(0, (current?.sessionEpoch ?? 1) - 1),
+      AbortSignal.timeout(COLD_ACTIVATE_ACK_TIMEOUT_MS)
     )
   }
 

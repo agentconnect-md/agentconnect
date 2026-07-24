@@ -119,6 +119,7 @@ import { replayMemoryConnectionsTo, syncMemoryConnectionsToDaemons } from './orc
 import { relayHttpOrigin } from './orchestrator/mcpProvider.js'
 import { CollabRoutesService } from './orchestrator/collabRoutes.service.js'
 import { AgentMutationGate } from './orchestrator/agentMutationGate.js'
+import { AgentMoveService } from './orchestrator/agentMove.js'
 import { ExclusiveMutationGate } from './orchestrator/exclusiveMutationGate.js'
 import { createDaemonWsServer } from './ws/gateway.js'
 import type { DaemonWsServerDeps } from './ws/gateway.js'
@@ -401,6 +402,23 @@ export function buildContainer(
       debug: (o, m) => http.log.debug(o, m)
     }
   )
+  const stagedAgentMoves = new AgentMoveService({
+    agents: repos.agent,
+    assignments: repos.assignment,
+    integrations: repos.integration,
+    integrationChannels: repos.integrationChannel,
+    bots: repos.bot,
+    botSecrets: repos.botSecret,
+    specs: agentSpecs,
+    crons: repos.cron,
+    control: sender,
+    hooks: hookService,
+    sharedBot,
+    collabRoutes,
+    mutations: agentMutations,
+    sessionOwners: connReg,
+    log: { warn: (o, m) => http.log.warn(o, m) }
+  })
 
   // C3 orchestrator with the live placement/rebalance surface fully wired.
   const orchestrator = new Placement(
@@ -750,6 +768,7 @@ export function buildContainer(
     integration: repos.integration,
     integrationChannel: repos.integrationChannel,
     agentMutations,
+    recoverStagedAgent: (agentId, daemonId, moveId) => stagedAgentMoves.recoverStaged(agentId, daemonId, moveId),
     collabRoutes,
     cron: repos.cron,
     hook: repos.hook,

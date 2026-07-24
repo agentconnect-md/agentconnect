@@ -88,7 +88,7 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
     maxAgents: 4,
     capabilities: () => ({ platforms: ['slack'], runtimes: [], acp: true, features: [] }),
     runtimeProfiles: () => [],
-    localState: () => ({ assignments: [], crons: [], leases: [], agents: [], integrations: [] }),
+    localState: () => ({ assignments: [], crons: [], leases: [], agents: [], integrations: [], stagedAgents: [] }),
     loadSnapshot: () => ({ cpu: 0.1, mem: 0.2, agents: 1 }),
     activeSessions: () => 2,
     configApply,

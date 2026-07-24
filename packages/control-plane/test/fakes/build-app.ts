@@ -116,6 +116,7 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
       integration: repos.integration,
       integrationChannel: repos.integrationChannel,
       agentMutations: new AgentMutationGate(),
+      recoverStagedAgent: async () => {},
       collabRoutes: { broadcast: async () => undefined } as unknown as DaemonWsDeps['collabRoutes'],
       cron: repos.cron,
       hook: repos.hook,
