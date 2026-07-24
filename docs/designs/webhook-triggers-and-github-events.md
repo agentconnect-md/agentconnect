@@ -235,6 +235,14 @@ Pull-request bodies and diffs are attacker-controlled input. A lifecycle event
 from an author outside the repository write boundary does not run an agent
 automatically.
 
+`OWNER`, `MEMBER`, and `COLLABORATOR` payload associations are the local fast
+path. For any other or missing association, the relay asks the CP for the PR
+author's current repository permission using the existing metadata-only GitHub
+App authorization path. Current write/admin permission recovers a stale webhook
+association; denial or an unavailable lookup fails closed. One lookup and a
+batch of durable hook fences decide the complete repository fan-out before any
+agent dispatch.
+
 For revision-bearing events such as open, synchronize, ready-for-review, and
 draft conversion, the system records a body-free
 `review_request_required` outcome and may project an informational Check with a
@@ -268,7 +276,8 @@ needs more context.
 The trust boundary depends on runtime permissions and repository credentials:
 
 - public issue text can contain prompt injection;
-- external pull requests require a maintainer request;
+- pull requests from authors without current write authority require a
+  maintainer request;
 - repository tokens are narrowed to the required repository and capability;
 - ordinary comment mutation is unavailable to the agent during a numbered
   hook turn; and
