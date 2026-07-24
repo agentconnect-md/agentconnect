@@ -36,8 +36,9 @@ sessions keep running when it is temporarily unavailable.
 Built for teams that want a shared agent platform without moving execution or
 workspace access into a hosted runtime:
 
-- **Keep execution local.** Workspaces, agent processes, platform connections,
-  and model-provider traffic stay on daemon hosts you control.
+- **Keep execution local.** Workspaces, agent processes, direct platform
+  connections, and model-provider traffic stay on daemon hosts you control.
+  Public callback ingress terminates on the optional relay you operate.
 - **Operate agents as a fleet.** Configure runtimes, workspaces, integrations,
   secrets, schedules, and sessions from one Web console.
 - **Preserve data boundaries.** The Control Plane stores orchestration metadata,
@@ -105,13 +106,13 @@ For a complete local Control Plane and Postgres development setup, follow the
 AgentConnect uses ACP at the runtime boundary and connects agents to the systems
 where work already happens.
 
-| Surface           | Supported options                                                               |
-| ----------------- | ------------------------------------------------------------------------------- |
-| Agent runtimes    | Claude, Codex, and other ACP-compatible runtimes                                |
-| Team channels     | Slack, Telegram, Discord, Feishu, and webchat                                   |
-| Event sources     | GitHub events, generic webhooks, and scheduled tasks                            |
-| Persistent memory | Managed AgentConnect memory, runtime-native memory, external providers, or none |
-| Collaboration     | Directional agent discovery and policy-controlled delegation                    |
+| Surface           | Supported options                                                                   |
+| ----------------- | ----------------------------------------------------------------------------------- |
+| Agent runtimes    | Claude, Codex, and other ACP-compatible runtimes                                    |
+| Team channels     | Slack, Telegram, Discord, Feishu, and webchat                                       |
+| Event sources     | GitHub events, generic webhooks, and scheduled tasks                                |
+| Persistent memory | Managed AgentConnect memory, runtime-native memory, external providers, or disabled |
+| Collaboration     | Directional agent discovery and policy-controlled delegation                        |
 
 ## Architecture
 
