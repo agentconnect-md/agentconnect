@@ -5,7 +5,7 @@
  *
  * Two implementations, chosen by config:
  *  - **devAuth (default)** — when `OIDC_ISSUER` is unset, a stub that injects a
- *    fixed principal (the seeded owner in the default org) and logs a warning
+ *    fixed principal (the bootstrapped owner in the default org) and logs a warning
  *    once. Lets every `/agents`,`/workspaces`,`/crons`,`/sessions`,`/daemons`
  *    route register `humanAuth` from day one.
  *  - **oidcAuth** — when `OIDC_ISSUER` is set, verifies the `Authorization:
@@ -31,7 +31,7 @@ export interface HumanAuthConfig {
   OIDC_ISSUER?: string
   /** OIDC audience to require (optional). */
   OIDC_AUDIENCE?: string
-  /** The user the devAuth stub injects (the seeded owner of the local default org). */
+  /** The user the devAuth stub injects (the bootstrapped owner of the local default org). */
   DEFAULT_OWNER_ID: string
 }
 
