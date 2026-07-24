@@ -69,9 +69,30 @@ Rules:
 - The index must reference only files present in "files".
 - Return the smallest faithful store, not the largest possible one.`
 
+/** Byte clamp for PROMPT context only — a stray U+FFFD at a mid-codepoint cut is
+ *  harmless here (the model reads it as data). Never use this for a value that
+ *  becomes a memory file; use {@link clampToBytesOnBoundary} for those. */
 function clamp(text: string, bytes: number): string {
   if (Buffer.byteLength(text) <= bytes) return text
   return Buffer.from(text).subarray(0, bytes).toString('utf8')
+}
+
+/**
+ * Byte clamp that always lands on a UTF-8 code-point boundary, so the result
+ * re-encodes to at most `bytes` and never introduces a replacement character.
+ * Used for staged file/index content that must satisfy `writeMemoryFile`'s hard
+ * byte cap at adoption time — a mid-codepoint cut (decoding to a 3-byte U+FFFD)
+ * or an unaccounted trailing newline would stage a "completed" dream that can
+ * never be adopted (review finding P2).
+ */
+export function clampToBytesOnBoundary(text: string, bytes: number): string {
+  const buf = Buffer.from(text, 'utf8')
+  if (buf.length <= bytes) return text
+  let end = bytes
+  // Back up while the byte at `end` is a UTF-8 continuation byte (0b10xxxxxx),
+  // i.e. we'd be splitting a multibyte sequence.
+  while (end > 0 && (buf[end]! & 0xc0) === 0x80) end--
+  return buf.subarray(0, end).toString('utf8')
 }
 
 /**
@@ -139,11 +160,15 @@ export function parseDreamProposal(text: string): DreamProposal | null {
       continue
     }
     seen.add(file.path)
-    files.push({ path: file.path, content: clamp(file.content.trim(), MAX_MEMORY_FILE_BYTES) + '\n' })
+    // Reserve one byte for the trailing newline so the final string is ≤ the
+    // writer's byte cap, and clamp on a code-point boundary so the cut never
+    // decodes to a replacement char that would push it back over the cap.
+    const content = clampToBytesOnBoundary(file.content.trim(), MAX_MEMORY_FILE_BYTES - 1) + '\n'
+    files.push({ path: file.path, content })
     if (files.length >= MAX_DREAM_FILES) break
   }
 
-  const index = clamp(proposal.index.trim(), MAX_INDEX_INJECT_BYTES)
+  const index = clampToBytesOnBoundary(proposal.index.trim(), MAX_INDEX_INJECT_BYTES - 1)
   if (!index) return null
   return { files, index: index + '\n' }
 }

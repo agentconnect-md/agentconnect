@@ -3184,11 +3184,23 @@ export class Daemon {
    * Run one isolated dream-extraction session (docs/designs/memory-dreaming.md §5).
    * Unlike the long-lived distillation session, every dream gets a FRESH session
    * and discards it — dreams are rare and their huge prompts should not linger in
-   * a cached context. Trust handling also differs: on a runtime with a trusted
-   * system-prompt channel the dream policy rides `_meta.systemPrompt` (+ read-only
-   * mode, like distillation); otherwise the policy is prepended to the user
-   * prompt — acceptable ONLY because dream output is staged and reviewed, never
-   * written to the live store by the pipeline.
+   * a cached context.
+   *
+   * Two independent trust dimensions, deliberately gated differently:
+   *
+   * - **Side effects during the run — HARD GATE (fail closed).** The mined
+   *   transcript is attacker-controlled; a prompt injection could drive the
+   *   runtime's native shell/file/network tools before it ever returns JSON, and
+   *   staged-output review only contains the *memory result*, not tool side
+   *   effects. So we REQUIRE a verified non-mutating (read-only/plan) permission
+   *   mode and throw if the runtime has none or the switch doesn't take — the
+   *   dream then fails rather than running with write access. (Passing `[]`
+   *   mcpServers only drops our MCP tools, not the runtime's built-ins.)
+   * - **Trusted system-prompt channel — SOFT.** When the runtime carries the
+   *   system prompt via `_meta.systemPrompt` the dream policy rides it; otherwise
+   *   the policy is prepended to the user prompt. That fallback is acceptable
+   *   because the output is staged and reviewed — bad *content* can't reach the
+   *   live store. `autoAdopt` (D-2) is what stays gated on the trusted channel.
    */
   private async runDreamExtraction(agentId: string, systemPrompt: string, prompt: string): Promise<string> {
     const agent = this.agents.get(agentId)
@@ -3202,12 +3214,14 @@ export class Daemon {
     }
     const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
     try {
-      // Best-effort read-only: the staged pipeline never needs writes, so take a
-      // non-mutating mode when the runtime offers one; unlike distillation this
-      // is not a hard gate (staging + review is the containment).
+      // HARD GATE: require a verified non-mutating mode. Fail closed if the
+      // runtime advertises none or the switch is rejected — never run an
+      // injection-exposed extraction with write access.
       const modes = host.permissionModeOptions()?.modes ?? []
       const readOnlyMode = modes.find((mode) => mode === 'read-only') ?? modes.find((mode) => mode === 'plan')
-      if (readOnlyMode) await host.setSessionPermissionMode(sessionId, readOnlyMode)
+      if (!readOnlyMode || !(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
+        throw new Error('runtime lacks a verified read-only/plan mode; dream extraction cannot run safely')
+      }
 
       const key = pendingTurnKey(agentId, sessionId)
       const chunks: string[] = []

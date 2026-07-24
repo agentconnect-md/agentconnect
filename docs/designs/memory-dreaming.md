@@ -77,12 +77,25 @@ Three invariants:
    traversal) and performs all filesystem writes itself. `.history` is never
    part of the proposal — it is carried over verbatim and appended to.
 
-Invariant 3 is what makes the mode safe on **every harness**: the existing
-distillation gate (`trustedExtractionMode`) refuses runtimes without a trusted
-system-prompt channel because per-turn distillation writes into the live store
-unmediated. A dream's blast radius is a staged candidate a human reviews, so
-the executor can run even where that gate fails — the gate instead controls
-whether **auto-adopt** (§6) is allowed.
+Invariant 3 bounds only what the dream _output_ can do: a bad proposal can at
+worst become a staged candidate a human reviews. It says nothing about what the
+_extraction run itself_ can do — the mined transcript is attacker-controlled, so
+a prompt injection could drive the runtime's native shell/file/network tools
+before the model ever emits JSON, and staged-output review cannot undo those
+side effects. The executor therefore separates two independent gates:
+
+- **Side effects during the run — HARD gate (fail closed).** The extraction
+  session requires a verified non-mutating permission mode (read-only / plan);
+  if the runtime advertises none or the switch is rejected, the dream fails
+  rather than running with write access. This is what keeps the executor safe
+  on runtimes without a trusted system-prompt channel (Codex has read-only
+  mode), and it is stricter than "staging contains everything."
+- **Trusted system-prompt channel — SOFT.** When the runtime carries the system
+  prompt via `_meta.systemPrompt` the dream policy rides it; otherwise the
+  policy is prepended to the user prompt. That fallback is acceptable because
+  invariant 3 already contains bad _content_. The trusted channel gates only
+  **auto-adopt** (§6), the one unattended path with distillation-equivalent
+  blast radius.
 
 ## 3. Configuration
 
@@ -215,9 +228,12 @@ with the same injection posture and a five-phase pipeline:
 Where the runtime has no trusted system-prompt channel (today: Codex ACP),
 the policy text is prepended to the user prompt instead. That is acceptable
 _only_ because of invariant 3 + staged output: a prompt-injected dream can at
-worst produce a bad candidate the review step catches. `autoAdopt` remains
-gated on `trustedExtractionMode` (§6), so the unattended path never runs on an
-untrusted channel.
+worst produce a bad candidate the review step catches. Independently, the
+extraction session is **hard-gated on a verified read-only / plan mode** (§2) —
+so even on that untrusted-channel path a prompt injection cannot cause tool
+side effects during the run; a runtime with no non-mutating mode fails the
+dream. `autoAdopt` remains gated on `trustedExtractionMode` (§6), so the
+unattended path never runs on an untrusted channel.
 
 ## 6. Adoption (memory store)
 

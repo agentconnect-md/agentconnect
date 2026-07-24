@@ -116,6 +116,45 @@ describe('DreamRunner pipeline', () => {
     await settle(store, first.dreamId)
   })
 
+  it('serializes concurrent starts so exactly one dream is created', async () => {
+    let release!: (v: string) => void
+    const gate = new Promise<string>((r) => (release = r))
+    const { store, runner } = await setup({ extract: () => gate })
+    // Fire both without awaiting between them — the reservation must be taken
+    // before the first snapshot await, or both would slip through.
+    const results = await Promise.allSettled([
+      runner.start('a1', { trigger: 'manual' }),
+      runner.start('a1', { trigger: 'manual' })
+    ])
+    const ok = results.filter((r) => r.status === 'fulfilled')
+    const rejected = results.filter((r) => r.status === 'rejected')
+    expect(ok).toHaveLength(1)
+    expect(rejected).toHaveLength(1)
+    expect([...store.dreams.values()]).toHaveLength(1)
+    release(PROPOSAL)
+    await settle(store, (ok[0] as PromiseFulfilledResult<{ dreamId: string }>).value.dreamId)
+  })
+
+  it('fails a dream terminally when the pre-extraction snapshot write fails', async () => {
+    // agentDir points at a path we make un-writable by pointing memory-dreams at
+    // a file: the input/ mkdir fails before the pending→running transition.
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    ensureMemory(dir, 'bot')
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(join(dir, 'memory-dreams'), 'not a directory', 'utf8')
+    const store = new FakeStore()
+    const runner = new DreamRunner({
+      agentDirByAgent: () => dir,
+      dreamingPolicyFor: () => ({ enabled: true }),
+      store,
+      extract: async () => PROPOSAL,
+      log: silent
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    const done = await settle(store, started.dreamId)
+    expect(done.status).toBe('failed') // not stuck 'pending'
+  })
+
   it('fails the dream when the reply carries no proposal, keeping the record', async () => {
     const { store, runner } = await setup({ extract: async () => 'sorry, no JSON here' })
     const started = await runner.start('a1', { trigger: 'manual' })

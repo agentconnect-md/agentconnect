@@ -84,6 +84,24 @@ describe('dream proposal parsing', () => {
     )
     expect(proposal?.files).toHaveLength(MAX_DREAM_FILES)
   })
+
+  it('keeps oversized content adoptable: final bytes never exceed the writer cap', () => {
+    // A multibyte body larger than the cap: the trailing-newline reservation and
+    // the code-point-boundary clamp must keep the stored string within
+    // MAX_MEMORY_FILE_BYTES (256000), so writeMemoryFile can never reject it.
+    const proposal = parseDreamProposal(
+      JSON.stringify({
+        index: '#'.repeat(30_000), // over the 25k index cap
+        files: [{ path: 'big.md', content: '€'.repeat(200_000) }] // 3 bytes each ⇒ ~600kB
+      })
+    )
+    expect(proposal).not.toBeNull()
+    expect(Buffer.byteLength(proposal!.files[0]!.content)).toBeLessThanOrEqual(256_000)
+    expect(Buffer.byteLength(proposal!.index)).toBeLessThanOrEqual(25_000)
+    // No replacement character introduced by a mid-codepoint cut.
+    expect(proposal!.files[0]!.content).not.toContain('�')
+    expect(proposal!.index).not.toContain('�')
+  })
 })
 
 describe('store digest (adoption fence)', () => {
