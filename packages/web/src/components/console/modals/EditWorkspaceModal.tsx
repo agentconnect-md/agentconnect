@@ -207,10 +207,6 @@ export default function EditWorkspaceModal({
 
   const q1 = q.trim().toLowerCase()
   const matches = (repos ?? []).filter((r) => !q1 || r.fullName.toLowerCase().includes(q1))
-  // A typed owner/repo missing from a failed or stale roster refresh — the CP
-  // re-validates it against the installations either way.
-  const typedRepo = /^[^/\s]+\/[^/\s]+$/.test(q.trim()) ? q.trim() : null
-  const typedIsListed = !!typedRepo && matches.some((r) => r.fullName.toLowerCase() === typedRepo.toLowerCase())
 
   let normalizedAgentDir: string | undefined
   let agentDirError: string | null = null
@@ -409,16 +405,7 @@ export default function EditWorkspaceModal({
                       />
                     )
                   })}
-                  {typedRepo && !typedIsListed && (
-                    <GithubRepositoryOption
-                      key={`typed:${typedRepo}`}
-                      fullName={typedRepo}
-                      icon="book-marked"
-                      description="Use this repository — must be covered by an installation"
-                      onSelect={() => selectRepo(typedRepo)}
-                    />
-                  )}
-                  {repos !== null && matches.length === 0 && !typedRepo && !reposError && (
+                  {repos !== null && matches.length === 0 && !reposError && (
                     <div className="fnohit">No repositories match &ldquo;{q}&rdquo;</div>
                   )}
                   {repos === null && (

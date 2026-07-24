@@ -881,12 +881,10 @@ an explicit grant, so the daemon cannot name an arbitrary repository.
      no commits; choose a nonempty repository or use scratch," rather than
      sending a guaranteed-failing `--branch main` clone. Show guidance when
      the feature is disabled or no installation exists.
-   - **"Public repository URL":** preserve the existing free-form input.
-     **However,** if normalization produces the github.com host without an App
-     selection, show an inline hint: "Does this look like a private GitHub
-     repository? Use 'Select from GitHub App'." Otherwise it attempts an
-     anonymous clone and a private repository produces an opaque git
-     authentication error.
+   - **"Public repository URL":** preserve the existing free-form input only
+     when the deployment has no GitHub App configured. Once the App-backed
+     picker is enabled, do not supplement it with anonymous public-repository
+     search: every result must pass the caller's GitHub permission filter.
    - An **"Allow push (write)"** switch is enabled by default.
    - Submit `installationId` / `gitAccess` in the workspace body. Do not
      send `repoFullName`; the CP derives it from `gitRepo`. Put these fields on
@@ -1119,10 +1117,11 @@ the cache and stops requesting.
    the Logto Management API. It then uses an installation metadata token to
    query
    `GET /repos/{owner}/{repo}/collaborators/{username}/permission`, which
-   includes team- and organization-derived access. Read operations accept an
-   effective permission or a public repository; write operations require
-   write/admin. Missing identity metadata requires the user to refresh their
-   GitHub sign-in and never silently grants access.
+   includes team- and organization-derived access. Read operations require an
+   effective permission; write operations require write/admin. Public
+   visibility alone does not authorize repository selection. Missing identity
+   metadata requires the user to refresh their GitHub sign-in and never
+   silently grants access.
 
    **Remaining limits:**
 
@@ -1155,9 +1154,9 @@ the cache and stops requesting.
      both supported login shapes -> GitHub login ->
      installation metadata token ->
      `GET /repos/{o}/{r}/collaborators/{login}/permission`. For need=read,
-     accept any effective permission **or a public repository**. For
-     need=write, require write/admin. GitHub folds maintain into write and
-     triage into read; a public repository alone does not confer write.
+     require any effective permission. For need=write, require write/admin.
+     GitHub folds maintain into write and triage into read; repository
+     visibility alone does not confer either access tier.
      Missing GitHub identity, such as Google sign-in, returns
      `GITHUB_IDENTITY_REQUIRED` and never silently permits access.
    - **Enforcement points:** (1)
@@ -1175,11 +1174,11 @@ the cache and stops requesting.
      (installation, repo, login)->access for 5 minutes. All use the injected
      Clock.
    - **List filtering:** when the gateway is enabled, the repository
-     list is **filtered per user**. Public repositories are retained directly.
-     Each private repository is checked for effective permission and removed
-     on `none`, so the **name** of an unauthorized repository never reaches the
-     console. Cost model: probe only private repositories, at most 100 per
-     page, with bounded concurrency of 8, and share the same
+     list is **filtered per user**. Every repository is checked for effective
+     permission and removed on `none`, including public repositories, so the
+     **name** of an unauthorized repository never reaches the console. Cost
+     model: probe at most 100 repositories per page, with bounded concurrency
+     of 8, and share the same
      (installation, repo, login)->permission 5-minute cache with the
      branches/create gates. Cold cost is one page of Metadata:read probes per
      user every 5 minutes. A GraphQL alias batch query is the scale-up path when

@@ -258,7 +258,7 @@ export function githubRoutes(deps: HttpDeps) {
           tags: [Tag.GitHub],
           summary: 'List installation repositories',
           description:
-            'Repositories the installation is granted (paged, max 100/page). With the per-user authorization gate configured, the page is filtered to repositories the CALLER can read on GitHub (public, or any effective permission) — no-access repo names never reach the console. GitHub offers NO server-side search on this listing — the console filters client-side.',
+            'Repositories the installation is granted (paged, max 100/page). With the per-user authorization gate configured, the page is filtered to repositories on which the CALLER has an effective GitHub permission — public visibility alone does not qualify, and no-access repo names never reach the console. GitHub offers NO server-side search on this listing — the console filters client-side.',
           operationId: 'listGithubInstallationRepositories',
           params: IdParam,
           querystring: GithubRepoPageQuery,

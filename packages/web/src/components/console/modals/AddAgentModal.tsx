@@ -102,25 +102,6 @@ function fmtAgo(iso: string): string {
   return d < 30 ? `${d}d ago` : `${Math.floor(d / 30)}mo ago`
 }
 
-type GithubApiRepo = {
-  full_name?: string
-  private?: boolean
-  default_branch?: string
-  description?: string | null
-  updated_at?: string | null
-}
-
-function repoFromGithubApi(row: GithubApiRepo): GithubRepoDto | null {
-  if (!row.full_name) return null
-  return {
-    fullName: row.full_name,
-    private: !!row.private,
-    defaultBranch: row.default_branch || 'main',
-    description: row.description ?? null,
-    updatedAt: row.updated_at ?? null
-  }
-}
-
 function githubRepoLabelFromInput(input: string): string | null {
   const raw = input
     .trim()
@@ -137,36 +118,6 @@ function githubRepoLabelFromInput(input: string): string | null {
   if (!/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/i.test(owner)) return null
   if (!/^[a-z0-9._-]+$/i.test(repo)) return null
   return `${owner}/${repo}`
-}
-
-async function fetchPublicGithubRepo(fullName: string, signal?: AbortSignal): Promise<GithubRepoDto | null> {
-  const label = githubRepoLabelFromInput(fullName)
-  if (!label) return null
-  const res = await fetch(`https://api.github.com/repos/${label}`, { signal, cache: 'no-store' })
-  if (!res.ok) return null
-  const repo = repoFromGithubApi((await res.json()) as GithubApiRepo)
-  return repo && !repo.private ? repo : null
-}
-
-async function fetchPublicGithubBranches(fullName: string, signal?: AbortSignal): Promise<string[] | null> {
-  const label = githubRepoLabelFromInput(fullName)
-  if (!label) return null
-  const res = await fetch(`https://api.github.com/repos/${label}/branches?per_page=100`, { signal, cache: 'no-store' })
-  if (!res.ok) return null
-  const rows = (await res.json()) as Array<{ name?: string }>
-  return rows.map((r) => r.name).filter((name): name is string => !!name)
-}
-
-async function searchPublicGithubRepos(query: string, signal?: AbortSignal): Promise<GithubRepoDto[]> {
-  const q = query.trim()
-  if (q.length < 3) return []
-  const res = await fetch(
-    `https://api.github.com/search/repositories?q=${encodeURIComponent(`${q} in:name is:public`)}&per_page=5`,
-    { signal, cache: 'no-store' }
-  )
-  if (!res.ok) return []
-  const body = (await res.json()) as { items?: GithubApiRepo[] }
-  return (body.items ?? []).map(repoFromGithubApi).filter((repo): repo is GithubRepoDto => !!repo && !repo.private)
 }
 
 export default function AddAgentModal({ onClose }: { onClose: () => void }) {
@@ -226,17 +177,12 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const [ghBranchOpen, setGhBranchOpen] = useState(false)
   const [ghAccessOpen, setGhAccessOpen] = useState(false)
   const [ghQ, setGhQ] = useState('')
-  const [ghPublicRepos, setGhPublicRepos] = useState<GithubRepoDto[]>([])
-  const [ghPublicLoading, setGhPublicLoading] = useState(false)
   // An exact owner/repo lookup through an App installation. This supplements
-  // the first page of the roster, so private repositories never fall through
-  // to anonymous public GitHub search.
+  // the paged roster without exposing repositories the caller cannot access.
   const [ghInstalledExactRepo, setGhInstalledExactRepo] = useState<(GithubRepoDto & { installationId: string }) | null>(
     null
   )
-  const [ghPublicExactRepo, setGhPublicExactRepo] = useState<GithubRepoDto | null>(null)
   const [ghExactRepoState, setGhExactRepoState] = useState<RepoCheckState>('idle')
-  const [ghManualPublicRepo, setGhManualPublicRepo] = useState<GithubRepoDto | null>(null)
   const [sharing, setSharing] = useState<SharingValue>({ visibility: 'org', sharedWith: [] })
   // Agent-call visibility: which peer agents may call this one as a sub-agent.
   // Default 'all' (the CP's default); selected callers are picked from peers.
@@ -447,76 +393,33 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     }
   }, [usingPicker, ghInstalls, ghReposNonce])
 
-  // Bonus autocomplete for public GitHub repos outside the installation grant
-  // set. The exact owner/repo free-text path below still works if GitHub search
-  // is rate-limited or unavailable in the browser.
-  useEffect(() => {
-    if (!usingPicker || !ghRepoOpen || ghQ.trim().length < 3) {
-      setGhPublicRepos([])
-      setGhPublicLoading(false)
-      return
-    }
-    const ctrl = new AbortController()
-    const t = window.setTimeout(() => {
-      setGhPublicLoading(true)
-      searchPublicGithubRepos(ghQ, ctrl.signal)
-        .then((repos) => setGhPublicRepos(repos))
-        .catch(() => setGhPublicRepos([]))
-        .finally(() => {
-          if (!ctrl.signal.aborted) setGhPublicLoading(false)
-        })
-    }, 250)
-    return () => {
-      ctrl.abort()
-      window.clearTimeout(t)
-    }
-  }, [usingPicker, ghRepoOpen, ghQ])
-
   const ghRepoQuery = ghQ.trim()
-  const typedPublicRepo = githubRepoLabelFromInput(ghRepoQuery)
+  const typedGithubRepo = githubRepoLabelFromInput(ghRepoQuery)
   const syncedRepoMatches = ghRepos.filter(
     (r) => !ghRepoQuery || r.fullName.toLowerCase().includes(ghRepoQuery.toLowerCase())
   )
-  const typedPublicRepoLower = typedPublicRepo?.toLowerCase()
-  const exactSyncedRepoMatch = typedPublicRepoLower
-    ? ghRepos.find((r) => r.fullName.toLowerCase() === typedPublicRepoLower)
+  const typedGithubRepoLower = typedGithubRepo?.toLowerCase()
+  const exactSyncedRepoMatch = typedGithubRepoLower
+    ? ghRepos.find((r) => r.fullName.toLowerCase() === typedGithubRepoLower)
     : undefined
   const exactInstalledRepoMatch =
-    typedPublicRepoLower && ghInstalledExactRepo?.fullName.toLowerCase() === typedPublicRepoLower
+    typedGithubRepoLower && ghInstalledExactRepo?.fullName.toLowerCase() === typedGithubRepoLower
       ? ghInstalledExactRepo
       : undefined
   const picked = ghRepos.find((r) => r.fullName === ghRepo)
-  const manualPublicRepo = !!ghManualPublicRepo && ghManualPublicRepo.fullName === ghRepo && !picked
-  const publicRepo = manualPublicRepo ? ghManualPublicRepo.fullName : null
-  const publicRepoMatches = ghPublicRepos.filter((r) => {
-    const fullName = r.fullName.toLowerCase()
-    return (
-      fullName !== typedPublicRepoLower &&
-      !ghRepos.some((repo) => repo.fullName.toLowerCase() === fullName) &&
-      fullName !== exactInstalledRepoMatch?.fullName.toLowerCase()
-    )
-  })
-  const canUseTypedPublicRepo =
-    !!typedPublicRepo &&
-    !exactSyncedRepoMatch &&
-    !exactInstalledRepoMatch &&
-    !!ghPublicExactRepo &&
-    ghPublicExactRepo.fullName.toLowerCase() === typedPublicRepoLower
 
   useEffect(() => {
-    if (!usingPicker || !ghRepoOpen || !typedPublicRepo || exactSyncedRepoMatch) {
+    if (!usingPicker || !ghRepoOpen || !typedGithubRepo || exactSyncedRepoMatch) {
       setGhInstalledExactRepo(null)
-      setGhPublicExactRepo(null)
       setGhExactRepoState('idle')
       return
     }
     let alive = true
     const ctrl = new AbortController()
     const t = window.setTimeout(() => {
-      const [owner, repo] = typedPublicRepo.split('/')
+      const [owner, repo] = typedGithubRepo.split('/')
       if (!owner || !repo) return
       setGhInstalledExactRepo(null)
-      setGhPublicExactRepo(null)
       setGhExactRepoState('checking')
       void Promise.all(
         ghInstalls.map(async (installation) => {
@@ -531,18 +434,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           setGhExactRepoState('found')
           return
         }
-        fetchPublicGithubRepo(typedPublicRepo, ctrl.signal)
-          .then((publicRepo) => {
-            if (!alive) return
-            setGhPublicExactRepo(publicRepo)
-            setGhExactRepoState(publicRepo ? 'found' : 'missing')
-          })
-          .catch(() => {
-            if (alive && !ctrl.signal.aborted) {
-              setGhPublicExactRepo(null)
-              setGhExactRepoState('missing')
-            }
-          })
+        setGhExactRepoState('missing')
       })
     }, 250)
     return () => {
@@ -550,14 +442,12 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       ctrl.abort()
       window.clearTimeout(t)
     }
-  }, [usingPicker, ghRepoOpen, ghInstalls, typedPublicRepo, exactSyncedRepoMatch])
+  }, [usingPicker, ghRepoOpen, ghInstalls, typedGithubRepo, exactSyncedRepoMatch])
 
   // The gate's two UI shapes: an outright denial (no read → block create with a
   // note), and read-but-not-write (pin the agent to read-only).
   const ghDenied = ghAccess?.gated && !ghAccess.canRead ? ghAccess : null
   const ghReadOnly = !!ghAccess?.gated && ghAccess.canRead && !ghAccess.canWrite
-  const ghPushDisabled = ghReadOnly || manualPublicRepo
-  const ghPushChecked = manualPublicRepo ? false : ghPush
 
   // A read-only user must not submit gitAccess=write — clamp the toggle state
   // itself so the request body follows.
@@ -575,21 +465,8 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
         ? repos
         : [...repos, r]
     )
-    setGhManualPublicRepo(null)
     setGhRepo(r.fullName)
     setBranch(r.defaultBranch)
-    setGhRepoOpen(false)
-  }
-
-  const pickPublicGithubRepo = (r: GithubRepoDto) => {
-    const label = githubRepoLabelFromInput(r.fullName)
-    if (!label) return
-    setGhRepo(label)
-    setGhManualPublicRepo({ ...r, fullName: label })
-    setBranch(r.defaultBranch)
-    setGhAccess(null)
-    setGhBranches(null)
-    setGhBranchOpen(false)
     setGhRepoOpen(false)
   }
 
@@ -602,12 +479,10 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       pickSyncedGithubRepo(exactInstalledRepoMatch)
       return
     }
-    if (canUseTypedPublicRepo && ghPublicExactRepo) pickPublicGithubRepo(ghPublicExactRepo)
   }
 
   // Repo picked → branch to its real default (never assume 'main' for synced
-  // repos); a failed listing degrades to a free-text branch input. Manually
-  // typed public repos use anonymous GitHub reads only as a UX enhancement.
+  // repos); a failed branch listing degrades to a free-text branch input.
   useEffect(() => {
     if (!usingPicker) return
     if (!ghRepo) {
@@ -615,37 +490,14 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       setGhBranches([])
       setGhBranchOpen(false)
       setGhAccess(null)
-      setGhManualPublicRepo(null)
       return
     }
     if (!picked) {
       setGhAccess(null)
       setGhBranchOpen(false)
       setGhBranches(null)
-      const manualRepo = manualPublicRepo ? ghManualPublicRepo : null
-      if (!manualRepo) {
-        setBranch('')
-        setGhManualPublicRepo(null)
-        return
-      }
-      const label = manualRepo.fullName
-      let alive = true
-      const ctrl = new AbortController()
-      void fetchPublicGithubRepo(label, ctrl.signal)
-        .then((repo) => {
-          if (alive && repo?.defaultBranch)
-            setBranch((cur) => (!cur.trim() || cur === 'main' ? repo.defaultBranch : cur))
-        })
-        .catch(() => {})
-      void fetchPublicGithubBranches(label, ctrl.signal)
-        .then((names) => {
-          if (alive && names?.length) setGhBranches(names)
-        })
-        .catch(() => {})
-      return () => {
-        alive = false
-        ctrl.abort()
-      }
+      setBranch('')
+      return
     }
     setBranch(picked.defaultBranch)
     const [owner, repo] = picked.fullName.split('/')
@@ -662,15 +514,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     return () => {
       alive = false
     }
-  }, [
-    usingPicker,
-    ghRepo,
-    manualPublicRepo,
-    ghManualPublicRepo?.fullName,
-    picked?.defaultBranch,
-    picked?.fullName,
-    picked?.installationId
-  ])
+  }, [usingPicker, ghRepo, picked?.defaultBranch, picked?.fullName, picked?.installationId])
 
   const submit = async () => {
     // The name input sanitizes as you type, so finalize only trims a trailing
@@ -688,11 +532,11 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       return
     }
     if (usingPicker && !ghRepo) {
-      setErr('Pick a repository, type an authorized GitHub repository, or switch to “From scratch”.')
+      setErr('Pick a repository, or switch to “From scratch”.')
       return
     }
-    if (usingPicker && !picked && !publicRepo) {
-      setErr('Type an authorized GitHub repository as owner/repo, or pick a synced repository.')
+    if (usingPicker && !picked) {
+      setErr('Pick a repository you can access on GitHub.')
       return
     }
     if (usingPicker && ghDenied) {
@@ -725,21 +569,14 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     const workspace: AgentWorkspaceDto =
       wsMode === 'github'
         ? usingPicker
-          ? picked
-            ? {
-                mode: 'github',
-                gitRepo: picked.fullName, // owner/repo — the CP normalizes to the full address
-                ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
-                ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
-                installationId: picked.installationId,
-                gitAccess: ghPush ? ('write' as const) : ('read' as const)
-              }
-            : {
-                mode: 'github',
-                gitRepo: publicRepo ?? ghRepo.trim(),
-                ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
-                ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
-              }
+          ? {
+              mode: 'github',
+              gitRepo: picked!.fullName, // guarded above; the CP normalizes owner/repo to the full address
+              ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+              ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
+              installationId: picked!.installationId,
+              gitAccess: ghPush ? ('write' as const) : ('read' as const)
+            }
           : {
               mode: 'github',
               gitRepo: repo.trim(),
@@ -825,7 +662,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   else if (!daemon) blockers.basics = 'no daemon available'
   if (usingPicker && !ghRepo) blockers.workspace = 'pick a repository'
   else if (usingPicker && ghDenied) blockers.workspace = 'no access to this repository'
-  else if (usingPicker && !picked && !publicRepo) blockers.workspace = 'pick a repository'
+  else if (usingPicker && !picked) blockers.workspace = 'pick a repository'
   else if (wsMode === 'github' && !usingPicker && !repo.trim()) blockers.workspace = 'add a repository'
   if (memoryProvider === 'external' && !externalMemory.connectionId) blockers.memory = 'select a connection'
   const firstBlocker = SECTIONS.find((s) => blockers[s.id])
@@ -1099,9 +936,8 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                   <GithubConnectedBanner onManage={manageGithubAccess} />
 
                   <GithubRepositoryField
-                    value={picked?.fullName ?? publicRepo ?? ''}
+                    value={picked?.fullName ?? ''}
                     icon={picked?.private ? 'lock' : 'book-marked'}
-                    badge={manualPublicRepo ? 'public' : undefined}
                     loading={ghLoading}
                     open={ghRepoOpen}
                     query={ghQ}
@@ -1145,7 +981,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                       </>
                     }
                   >
-                    {ghExactRepoState === 'checking' && typedPublicRepo && !exactSyncedRepoMatch && (
+                    {ghExactRepoState === 'checking' && typedGithubRepo && !exactSyncedRepoMatch && (
                       <div className="px-2 py-[7px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
                         Checking GitHub repository…
                       </div>
@@ -1158,16 +994,6 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                         description="Available through the GitHub App"
                         selected={ghRepo === exactInstalledRepoMatch.fullName}
                         onSelect={() => pickSyncedGithubRepo(exactInstalledRepoMatch)}
-                      />
-                    )}
-                    {canUseTypedPublicRepo && ghPublicExactRepo && (
-                      <GithubRepositoryOption
-                        key={`public:${ghPublicExactRepo.fullName}`}
-                        fullName={ghPublicExactRepo.fullName}
-                        icon="book-marked"
-                        description="Use public repository"
-                        selected={ghRepo === ghPublicExactRepo.fullName}
-                        onSelect={() => pickPublicGithubRepo(ghPublicExactRepo)}
                       />
                     )}
                     {syncedRepoMatches.map((repo) => (
@@ -1185,54 +1011,29 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                         onSelect={() => pickSyncedGithubRepo(repo)}
                       />
                     ))}
-                    {publicRepoMatches.map((repo) => (
-                      <GithubRepositoryOption
-                        key={`public-search:${repo.fullName}`}
-                        fullName={repo.fullName}
-                        icon="book-marked"
-                        description={
-                          <>
-                            {repo.description ?? 'Public GitHub repository'}
-                            {repo.updatedAt ? ` · updated ${fmtAgo(repo.updatedAt)}` : ''}
-                          </>
-                        }
-                        selected={ghRepo === repo.fullName}
-                        onSelect={() => pickPublicGithubRepo(repo)}
-                      />
-                    ))}
-                    {ghPublicLoading && (
-                      <div className="px-2 py-[7px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                        Searching public repositories…
-                      </div>
-                    )}
-                    {!canUseTypedPublicRepo &&
-                      !exactInstalledRepoMatch &&
+                    {!exactInstalledRepoMatch &&
                       ghExactRepoState !== 'checking' &&
-                      !ghPublicLoading &&
                       !ghReposFailed &&
                       ghRepoQuery &&
-                      syncedRepoMatches.length === 0 &&
-                      publicRepoMatches.length === 0 && (
+                      syncedRepoMatches.length === 0 && (
                         <div className="fnohit">
-                          {typedPublicRepo && ghExactRepoState === 'missing'
-                            ? `No GitHub repository found for "${typedPublicRepo}"`
+                          {typedGithubRepo && ghExactRepoState === 'missing'
+                            ? `No accessible GitHub repository found for "${typedGithubRepo}"`
                             : `No repositories match "${ghQ}"`}
                         </div>
                       )}
                   </GithubRepositoryField>
 
                   <RepositoryAccessField
-                    repositorySelected={!!picked || manualPublicRepo}
-                    value={ghPushChecked ? 'write' : 'read'}
+                    repositorySelected={!!picked}
+                    value={ghPush ? 'write' : 'read'}
                     open={ghAccessOpen}
-                    readOnly={ghPushDisabled}
+                    readOnly={ghReadOnly}
                     readOnlyNote={
-                      ghPushDisabled ? (
+                      ghReadOnly ? (
                         <span className="mt-[6px] inline-flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
                           <Icon name="info" size={13} className="mt-[1px] flex-none" />
-                          {manualPublicRepo
-                            ? 'Public repository — read-only clone.'
-                            : 'You have read-only access to this repository on GitHub.'}
+                          You have read-only access to this repository on GitHub.
                         </span>
                       ) : undefined
                     }

@@ -218,6 +218,11 @@ workspace files and cannot be undone. Use an explicit `Replace workspace` save l
 for that destructive case. A working-subdirectory or access-only edit preserves the
 current checkout.
 
+GitHub App repository searches show only repositories on which the caller has an
+effective GitHub permission. Public visibility alone is not repository access. Exact
+owner/repository input must pass the same server-side gate and must not restore an
+otherwise hidden result.
+
 Workspace changes are cold edits: active work is drained and existing cached
 credentials are cleared before the new definition becomes active. Any edit that removes
 write workspace authority for a repository must be rejected while an enabled GitHub
