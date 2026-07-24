@@ -1,0 +1,130 @@
+- description: Core neutrality · exact instruction
+  metadata:
+    feature: core
+  providers:
+    - raw-acp
+    - daemon-core
+  vars:
+    expected: CORE-OK-7319
+    match: exact
+    case: |
+      {
+        "id": "core-simple-instruction",
+        "rootAgentId": "{{ env.AGENTCONNECT_EVAL_ROOT_AGENT }}",
+        "turns": [
+          {
+            "agentId": "{{ env.AGENTCONNECT_EVAL_ROOT_AGENT }}",
+            "conversationId": "core-simple-instruction",
+            "text": "Reply with exactly CORE-OK-7319 and nothing else."
+          }
+        ],
+        "metadata": { "feature": "core" }
+      }
+  assert:
+    - type: javascript
+      value: file://assertions/outcome.ts
+      metric: outcome
+
+- description: Managed memory · cross-session recall
+  metadata:
+    feature: memory
+  providers:
+    - daemon-core
+    - memory-only
+  vars:
+    expected: COBALT-HARBOR-7319
+    match: exact
+    case: |
+      {
+        "id": "memory-cross-session-recall",
+        "timeoutMs": 300000,
+        "rootAgentId": "{{ env.AGENTCONNECT_EVAL_ROOT_AGENT }}",
+        "turns": [
+          {
+            "agentId": "{{ env.AGENTCONNECT_EVAL_ROOT_AGENT }}",
+            "conversationId": "memory-seed",
+            "text": "Call the supplied MCP tool on server `agentconnect` whose tool name is `writeMemory` to add `- Project codename: COBALT-HARBOR-7319` to MEMORY.md for a later conversation. Do not write any workspace or runtime-native file. If that MCP tool call is unavailable or rejected, reply exactly MEMORY-UNAVAILABLE and stop; do not search for or substitute another tool. After the tool succeeds, acknowledge briefly."
+          },
+          {
+            "agentId": "{{ env.AGENTCONNECT_EVAL_ROOT_AGENT }}",
+            "conversationId": "memory-recall-fresh-session",
+            "text": "Read the project codename only from the AgentConnect persistent-memory block supplied at session start. Do not use tools or inspect any workspace, filesystem, database, transcript, or runtime state. If that memory block contains no project codename, reply exactly MEMORY-UNAVAILABLE. Otherwise reply with only the codename."
+          }
+        ],
+        "metadata": { "feature": "memory" }
+      }
+  assert:
+    - type: javascript
+      value: file://assertions/outcome.ts
+      metric: outcome
+
+- description: Collaboration · specialist delivery and reply
+  metadata:
+    feature: collaboration
+  providers:
+    - daemon-core
+    - collaboration-only
+  vars:
+    expected: SPECIALIST-OK-7319
+    match: exact
+    case: |
+      {
+        "id": "collab-delivery-reply",
+        "timeoutMs": 300000,
+        "rootAgentId": "{{ env.AGENTCONNECT_EVAL_ROOT_AGENT }}",
+        "fixtureAgentIds": [
+          "{{ env.AGENTCONNECT_EVAL_ROOT_AGENT }}",
+          "{{ env.AGENTCONNECT_EVAL_SPECIALIST_AGENT }}"
+        ],
+        "turns": [
+          {
+            "agentId": "{{ env.AGENTCONNECT_EVAL_ROOT_AGENT }}",
+            "conversationId": "collab-root",
+            "text": "Call the supplied MCP tool on server `agentconnect` whose tool name is `sendMessage` with `to.toAgent` set to `{{ env.AGENTCONNECT_EVAL_SPECIALIST_AGENT }}`. Ask that peer for the private validation token in its agent instructions. AgentConnect peer replies are asynchronous: after sendMessage succeeds, do not call any wait, sleep, or polling tool; end this current turn immediately with exactly AC_NO_RESPONSE. When the peer reply wakes you in a later turn, reply with only its token. If that agent-target MCP tool call is unavailable or rejected, reply exactly COLLABORATION-UNAVAILABLE and stop; do not search for or substitute another tool."
+          }
+        ],
+        "metadata": { "feature": "collaboration" }
+      }
+  assert:
+    - type: javascript
+      value: file://assertions/outcome.ts
+      metric: outcome
+
+- description: Interaction · delegated fresh-session memory
+  metadata:
+    feature: interaction
+  providers:
+    - daemon-core
+    - memory-only
+    - collaboration-only
+    - both
+  vars:
+    expected: INTERACTION-OK-7319
+    match: exact
+    case: |
+      {
+        "id": "memory-collab-handoff",
+        "timeoutMs": 600000,
+        "rootAgentId": "{{ env.AGENTCONNECT_EVAL_ROOT_AGENT }}",
+        "fixtureAgentIds": [
+          "{{ env.AGENTCONNECT_EVAL_ROOT_AGENT }}",
+          "{{ env.AGENTCONNECT_EVAL_SPECIALIST_AGENT }}"
+        ],
+        "turns": [
+          {
+            "agentId": "{{ env.AGENTCONNECT_EVAL_SPECIALIST_AGENT }}",
+            "conversationId": "interaction-specialist-seed",
+            "text": "Call the supplied MCP tool on server `agentconnect` whose tool name is `writeMemory` to add `- Launch code: INTERACTION-OK-7319` to MEMORY.md for a later conversation. Do not write any workspace or runtime-native file. If that MCP tool call is unavailable or rejected, reply exactly MEMORY-UNAVAILABLE and stop; do not search for or substitute another tool. After the tool succeeds, acknowledge briefly."
+          },
+          {
+            "agentId": "{{ env.AGENTCONNECT_EVAL_ROOT_AGENT }}",
+            "conversationId": "interaction-root-fresh-session",
+            "text": "Call the supplied MCP tool on server `agentconnect` whose tool name is `sendMessage` with `to.toAgent` set to `{{ env.AGENTCONNECT_EVAL_SPECIALIST_AGENT }}`. Ask that peer to read the launch code only from its AgentConnect persistent-memory block and return it, or MEMORY-UNAVAILABLE if that block has no launch code. AgentConnect peer replies are asynchronous: after sendMessage succeeds, do not call any wait, sleep, or polling tool; end this current turn immediately with exactly AC_NO_RESPONSE. When the peer reply wakes you in a later turn, reply with only its result. If that agent-target MCP tool call is unavailable or rejected, reply exactly COLLABORATION-UNAVAILABLE and stop; do not search for or substitute another tool."
+          }
+        ],
+        "metadata": { "feature": "interaction" }
+      }
+  assert:
+    - type: javascript
+      value: file://assertions/outcome.ts
+      metric: outcome

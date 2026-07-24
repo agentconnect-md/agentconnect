@@ -1,0 +1,11 @@
+{
+  "id": "sample",
+  "name": "Sample Agent",
+  "status": "active",
+  "runtime": "claude-acp",
+  "workspace": {
+    "mode": "from-scratch",
+    "path": "./workspace"
+  },
+  "integrations": []
+}

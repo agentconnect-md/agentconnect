@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "customConditions": ["development"],
+    "noEmit": true,
+    "rootDir": "../.."
+  },
+  "include": ["src", "test", "prisma", "scripts", "vitest.config.ts"]
+}

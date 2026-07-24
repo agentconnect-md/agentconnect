@@ -1,0 +1,291 @@
+/**
+ * `HookService.compile` — HookDef → relay rule, and the null cases that pull a
+ * hook OUT of the pool (webhook-triggers-and-github-events.md decision 4). Pure
+ * logic over faked repos: no DB, no I/O.
+ */
+import { describe, it, expect, vi } from 'vitest'
+import { HookService, type HookAgentReads } from './hook.service.js'
+import type {
+  AgentRecord,
+  GithubInstallationRecord,
+  HookRecord,
+  HookRepo,
+  HookSecretStore
+} from '../persistence/ports.js'
+import type { RelayControlSender } from '../orchestrator/relayControl.js'
+import { AgentId, HookId, IntegrationId, OrgId } from '../domain/ids.js'
+
+const INTEGRATION = IntegrationId('33333333-3333-4333-8333-333333333333')
+
+const HOOK = HookId('11111111-1111-4111-8111-111111111111')
+const AGENT = AgentId('22222222-2222-4222-8222-222222222222')
+const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
+
+function hook(over: Partial<HookRecord> = {}): HookRecord {
+  return {
+    id: HOOK,
+    orgId: 'org' as HookRecord['orgId'],
+    agentId: AGENT,
+    kind: 'webhook',
+    name: 'ci',
+    enabled: true,
+    sessionMode: 'perDelivery',
+    urlToken: 'whk_tok1',
+    hmacConfigured: false,
+    repoId: null,
+    repoFullName: null,
+    events: [],
+    commentFamilies: [],
+    labelFilter: [],
+    mentionOnly: false,
+    targetPlatform: 'slack',
+    targetChannel: null,
+    targetIntegrationId: null,
+    lastFiredAt: null,
+    createdBy: null,
+    createdByUserId: null,
+    createdAt: new Date(),
+    lastModifiedAt: new Date(),
+    lastModifiedBy: null,
+    ...over
+  }
+}
+
+/** Minimal installation rows for the github-compile fakes. */
+function installation(id: bigint, over: Partial<GithubInstallationRecord> = {}): GithubInstallationRecord {
+  return {
+    id: `row-${id}`,
+    orgId: OrgId('org'),
+    installationId: id,
+    accountLogin: 'acme',
+    accountType: 'Organization',
+    repositorySelection: 'all',
+    suspendedAt: null,
+    revokedAt: null,
+    createdAt: new Date(),
+    ...over
+  }
+}
+
+/** A HookService with faked deps + a spy RelayControlSender capturing pushes. */
+function make(
+  opts: {
+    daemonId?: string | null
+    secret?: string | null
+    installations?: GithubInstallationRecord[]
+    appSlug?: string
+    hooks?: Partial<HookRepo>
+  } = {}
+) {
+  const agents: HookAgentReads = {
+    get: vi.fn(async () =>
+      opts.daemonId === null
+        ? null
+        : ({ id: AGENT, name: 'review-agent', daemonId: opts.daemonId ?? DAEMON } as AgentRecord)
+    )
+  }
+  const secrets = { get: vi.fn(async () => opts.secret ?? null) } as unknown as HookSecretStore
+  const hooks = (opts.hooks ?? {}) as HookRepo
+  const assigns: unknown[] = []
+  const removes: string[] = []
+  const relayControl = {
+    hookAssign: (rule: unknown) => assigns.push(rule),
+    hookRemove: (id: string) => removes.push(id)
+  } as unknown as RelayControlSender
+  const installations = opts.installations ? { listForOrg: vi.fn(async () => opts.installations!) } : undefined
+  return { svc: new HookService(hooks, secrets, agents, relayControl, installations, opts.appSlug), assigns, removes }
+}
+
+describe('HookService.compile', () => {
+  it('compiles an enabled, placed webhook hook into a rule (with hmacSecret when set)', async () => {
+    const { svc } = make({ secret: 'whsec_x' })
+    const rule = await svc.compile(hook())
+    expect(rule).toEqual({
+      hookId: HOOK,
+      kind: 'webhook',
+      agentId: AGENT,
+      daemonId: DAEMON,
+      sessionMode: 'perDelivery',
+      reviewPolicy: 'off',
+      reportingMode: 'off',
+      gateMode: 'informational',
+      webhook: { urlToken: 'whk_tok1', hmacSecret: 'whsec_x' }
+    })
+  })
+
+  it('omits hmacSecret when the hook has no signing secret', async () => {
+    const { svc } = make({ secret: null })
+    const rule = await svc.compile(hook())
+    expect(rule?.webhook).toEqual({ urlToken: 'whk_tok1' })
+  })
+
+  it('carries an anchoring target only when a channel is set', async () => {
+    const { svc } = make()
+    const withTarget = await svc.compile(
+      hook({ targetChannel: 'C123', targetPlatform: 'slack', targetIntegrationId: INTEGRATION })
+    )
+    expect(withTarget?.target).toEqual({ platform: 'slack', channel: 'C123', integrationId: INTEGRATION })
+    const headless = await svc.compile(hook({ targetChannel: null }))
+    expect(headless?.target).toBeUndefined()
+  })
+
+  it('returns null for disabled / orphaned / unplaced hooks', async () => {
+    expect(await make().svc.compile(hook({ enabled: false }))).toBeNull()
+    expect(await make().svc.compile(hook({ agentId: null }))).toBeNull()
+    expect(await make({ daemonId: null }).svc.compile(hook())).toBeNull() // agent not placed
+  })
+
+  it('returns null for a tokenless webhook hook', async () => {
+    expect(await make().svc.compile(hook({ urlToken: null }))).toBeNull()
+  })
+
+  const ghHook = (over: Partial<HookRecord> = {}) =>
+    hook({
+      kind: 'github',
+      sessionMode: 'perThread',
+      urlToken: null,
+      repoId: 987654321n,
+      repoFullName: 'acme/infra',
+      githubSessionKey: 'github:987654321',
+      events: ['issues:opened', 'issue_comment:created'],
+      labelFilter: ['bug'],
+      ...over
+    })
+
+  it('compiles a github hook: BigInt ids stringified, valid installation set attached', async () => {
+    const { svc } = make({ installations: [installation(1234567n), installation(2345678n)] })
+    const rule = await svc.compile(ghHook())
+    expect(rule).toEqual({
+      hookId: HOOK,
+      kind: 'github',
+      agentId: AGENT,
+      daemonId: DAEMON,
+      sessionMode: 'perThread',
+      reviewPolicy: 'off',
+      reportingMode: 'off',
+      gateMode: 'informational',
+      github: {
+        repoId: '987654321',
+        repoFullName: 'acme/infra',
+        sessionKeyPrefix: 'github:987654321',
+        events: ['issues:opened', 'issue_comment:created'],
+        labelFilter: ['bug'],
+        mentionOnly: false,
+        agentName: 'review-agent',
+        installationIds: ['1234567', '2345678']
+      }
+    })
+  })
+
+  it('stamps the App broadcast handle and agent target handle into every github rule', async () => {
+    const { svc } = make({ installations: [installation(1234567n)], appSlug: 'example-review-app' })
+    const rule = await svc.compile(ghHook())
+    expect(rule?.github?.appSlug).toBe('example-review-app')
+    expect(rule?.github?.agentName).toBe('review-agent')
+    expect(rule?.github?.mentionOnly).toBe(false)
+  })
+
+  it('carries a non-empty comment family scope and omits the legacy empty scope', async () => {
+    const { svc } = make({ installations: [installation(1234567n)] })
+    const scoped = await svc.compile(ghHook({ commentFamilies: ['issues'] }))
+    expect(scoped?.github?.commentFamilies).toEqual(['issues'])
+
+    const legacy = await svc.compile(ghHook({ commentFamilies: [] }))
+    expect(legacy?.github).not.toHaveProperty('commentFamilies')
+  })
+
+  it('excludes suspended installations from the attribution set', async () => {
+    const { svc } = make({
+      installations: [installation(1n, { suspendedAt: new Date() }), installation(2n)]
+    })
+    const rule = await svc.compile(ghHook())
+    expect(rule?.github?.installationIds).toEqual(['2'])
+  })
+
+  it('returns null when no valid installation remains (rule must leave the pool)', async () => {
+    const all = make({ installations: [installation(1n, { suspendedAt: new Date() })] })
+    expect(await all.svc.compile(ghHook())).toBeNull()
+    const none = make({ installations: [] })
+    expect(await none.svc.compile(ghHook())).toBeNull()
+  })
+
+  it('returns null for a github hook without repo columns or without the installations dep', async () => {
+    const { svc } = make({ installations: [installation(1n)] })
+    expect(await svc.compile(ghHook({ repoId: null }))).toBeNull()
+    expect(await svc.compile(ghHook({ repoFullName: null }))).toBeNull()
+    // Deployment without the GitHub App: HookService built without the repo.
+    expect(await make().svc.compile(ghHook())).toBeNull()
+  })
+})
+
+describe('HookService.replayTo', () => {
+  it('one hook whose compile throws must not starve the rest of the replay', async () => {
+    // The github branch awaits installations.listForOrg — the first compile
+    // dependency that can realistically reject (DB blip). The per-hook
+    // try/catch is what keeps a (re)registering relay from losing ALL rules.
+    const webhook = hook()
+    const github = hook({
+      id: HookId('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'),
+      kind: 'github',
+      sessionMode: 'perThread',
+      urlToken: null,
+      repoId: 1n,
+      repoFullName: 'acme/infra',
+      events: ['issues:*']
+    })
+    const agents: HookAgentReads = { get: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON }) as AgentRecord) }
+    const secrets = { get: vi.fn(async () => null) } as unknown as HookSecretStore
+    const hooks = { listEnabled: vi.fn(async () => [github, webhook]) } as unknown as HookRepo
+    const installations = {
+      listForOrg: vi.fn(async () => {
+        throw new Error('db blip')
+      })
+    }
+    const svc = new HookService(hooks, secrets, agents, {} as RelayControlSender, installations, undefined, {
+      warn: vi.fn()
+    })
+    const sent: string[] = []
+    await svc.replayTo({ send: (_type: string, rule: { hookId: string }) => sent.push(rule.hookId) } as never)
+    expect(sent).toEqual([HOOK]) // the webhook rule still reached the relay
+  })
+})
+
+describe('HookService.rebroadcastGithubForOrg', () => {
+  it('re-converges each of the org github hooks to assign-or-remove', async () => {
+    const rows = [ghFixture(HookId('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')), ghFixture(HOOK, { enabled: false })]
+    const { svc, assigns, removes } = make({
+      installations: [installation(7n)],
+      hooks: { listForOrgKind: vi.fn(async () => rows) }
+    })
+    await svc.rebroadcastGithubForOrg(OrgId('org'))
+    expect(assigns).toHaveLength(1)
+    expect(removes).toEqual([HOOK]) // the disabled one converges to remove
+  })
+
+  function ghFixture(id: ReturnType<typeof HookId>, over: Partial<HookRecord> = {}): HookRecord {
+    return hook({
+      id,
+      kind: 'github',
+      sessionMode: 'perThread',
+      urlToken: null,
+      repoId: 1n,
+      repoFullName: 'acme/infra',
+      events: ['issues:*'],
+      ...over
+    })
+  }
+})
+
+describe('HookService.broadcast', () => {
+  it('assigns a compilable hook and removes an uncompilable one', async () => {
+    const on = make()
+    await on.svc.broadcast(hook())
+    expect(on.assigns).toHaveLength(1)
+    expect(on.removes).toHaveLength(0)
+
+    const off = make()
+    await off.svc.broadcast(hook({ enabled: false }))
+    expect(off.assigns).toHaveLength(0)
+    expect(off.removes).toEqual([HOOK])
+  })
+})

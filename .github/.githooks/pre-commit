@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+
+echo "Running pre-commit code formatter"
+pnpm lint-staged

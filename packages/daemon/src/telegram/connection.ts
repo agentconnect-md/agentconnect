@@ -1,0 +1,502 @@
+import { Bot } from 'grammy'
+import type { Agent } from '../agents/agent-schema.js'
+import type { NormalizedMessage } from '../messages/normalized.js'
+import type { Logger } from '../log.js'
+import { SlackSendQueue } from '../slack/send-queue.js'
+import { normalizeTelegramMessage, type TelegramMessage } from './normalize.js'
+
+/**
+ * §Telegram edge unit. Mirrors slack/connection.ts but over grammY long-polling
+ * (getUpdates) — an OUTBOUND long-lived connection, so it works behind NAT just
+ * like Slack Socket Mode. One connection per bot token.
+ *
+ * Control surface: unlike Slack (interactive status bar + modal), Telegram exposes
+ * session state and controls via slash commands — `/status`, `/stop`, `/cancel`, `/resume`,
+ * `/fast`, `/queue`, parsed by the daemon like any inbound text. start() registers
+ * them with BotFather (setMyCommands) so they autocomplete in the Telegram UI.
+ */
+
+/** The bot commands advertised to Telegram (setMyCommands) so they autocomplete.
+ *  The daemon parses the actual invocations (commands/commands.ts); this list is
+ *  purely the client-side menu. */
+const BOT_COMMANDS: { command: string; description: string }[] = [
+  { command: 'status', description: 'Show session model, context, and token usage' },
+  { command: 'stop', description: 'Stop the current turn and mute until you @mention me' },
+  { command: 'cancel', description: 'Cancel the current turn (keep the session live)' },
+  { command: 'resume', description: 'Reset loop protection and unmute this conversation' },
+  { command: 'fast', description: 'Toggle fast mode — /fast on | off' },
+  { command: 'models', description: 'Choose the model — /models [name] (bare = list)' },
+  { command: 'effort', description: 'Choose reasoning effort — /effort [level] (bare = list)' },
+  { command: 'permission', description: 'Choose permission mode — /permission [mode] (bare = list)' },
+  { command: 'queue', description: 'Queue a message to run when idle — /queue <text>' }
+]
+
+/** One Telegram long-poll connection per unique bot token. */
+export interface ConsolidatedTelegramGroup {
+  botToken: string
+  integrations: { agentId: string; integrationId: string }[]
+}
+
+/** §6.1 analog: group integrations by bot token (one grammY Bot per token). */
+export function consolidateTelegram(agents: Agent[]): Map<string, ConsolidatedTelegramGroup> {
+  const groups = new Map<string, ConsolidatedTelegramGroup>()
+  for (const a of agents) {
+    for (const int of a.integrations) {
+      if (int.platform !== 'telegram') continue
+      const k = int.telegram.botToken
+      const g = groups.get(k) ?? { botToken: k, integrations: [] }
+      g.integrations.push({ agentId: a.id, integrationId: int.id })
+      groups.set(k, g)
+    }
+  }
+  return groups
+}
+
+/** A tappable inline-keyboard button: shown `text`, and the ≤64-byte `callbackData`
+ *  echoed back in the callback_query when tapped. */
+export interface InlineButton {
+  text: string
+  callbackData: string
+}
+
+/** A normalized inline-keyboard tap (grammY `callback_query:data`), reduced to what the
+ *  daemon needs to act: the id to ack, the button `data`, the originating chat/message
+ *  (so the card can be edited in place), and who tapped (for authz). */
+export interface TelegramCallback {
+  id: string
+  data: string
+  channel: string
+  messageId: number
+  userId: string
+  topicId?: string
+}
+
+export interface TelegramDeps {
+  group: ConsolidatedTelegramGroup
+  onMessage: (msg: NormalizedMessage) => void
+  /** An inline-keyboard button was tapped (session-control cards — /models etc.). */
+  onCallback?: (cb: TelegramCallback) => void
+  newTraceId: () => string
+  log?: Logger
+  /** Min spacing (ms) between outbound writes (serialized send-queue). Tests pass 0. */
+  sendIntervalMs?: number
+}
+
+/** grammY's `InlineKeyboardMarkup` slice we build. */
+type InlineKeyboardMarkup = { inline_keyboard: { text: string; callback_data: string }[][] }
+
+/** The raw grammY `callback_query` slice the connection reads. */
+export interface TelegramCallbackQuery {
+  id: string
+  data?: string
+  from?: { id: number }
+  message?: { message_id: number; chat: { id: number }; message_thread_id?: number }
+}
+
+/** The slice of a Telegram user we surface through the gateway. */
+interface TgUser {
+  id: number
+  is_bot?: boolean
+  first_name?: string
+  last_name?: string
+  username?: string
+}
+
+/**
+ * The slice of grammY's `Api` we call — hand-declared (like slack's AppLike) so
+ * the connection is testable with a fake and doesn't fight grammY's generics.
+ * The default factory adapts a real `Bot`.
+ */
+export interface TelegramApi {
+  sendMessage(
+    chatId: number | string,
+    text: string,
+    opts?: {
+      message_thread_id?: number
+      parse_mode?: string
+      reply_parameters?: { message_id: number; allow_sending_without_reply?: boolean }
+      reply_markup?: InlineKeyboardMarkup
+    }
+  ): Promise<{ message_id: number }>
+  editMessageText(
+    chatId: number | string,
+    messageId: number,
+    text: string,
+    opts?: { parse_mode?: string; reply_markup?: InlineKeyboardMarkup }
+  ): Promise<unknown>
+  answerCallbackQuery(callbackQueryId: string, opts?: { text?: string }): Promise<unknown>
+  sendChatAction(chatId: number | string, action: string): Promise<unknown>
+  setMyCommands(commands: { command: string; description: string }[]): Promise<unknown>
+  getChat(chatId: number | string): Promise<{ id: number; type: string; title?: string; username?: string }>
+  getChatMember(chatId: number | string, userId: number): Promise<{ user: TgUser }>
+  getChatAdministrators(chatId: number | string): Promise<{ user: TgUser }[]>
+  getFile(fileId: string): Promise<{ file_path?: string; file_size?: number }>
+}
+
+/** The slice of grammY's `Bot` the connection drives. */
+export interface TelegramBotHandle {
+  readonly api: TelegramApi
+  /** Fetch getMe → populate botInfo. */
+  init(): Promise<void>
+  readonly botInfo: { id: number; username?: string } | undefined
+  /** Register the inbound message handler (grammY `bot.on('message')`). */
+  onMessage(handler: (msg: TelegramMessage) => void): void
+  /** Register the inline-keyboard tap handler (grammY `bot.on('callback_query:data')`). */
+  onCallbackQuery(handler: (cb: TelegramCallbackQuery) => void): void
+  /** Begin long-polling. NON-blocking: grammY's start() resolves only when the bot
+   *  stops, so the default factory kicks it off without awaiting. */
+  start(onStart?: () => void): void
+  stop(): Promise<void>
+}
+
+/** Default factory: adapt a real grammY Bot to {@link TelegramBotHandle}. */
+function defaultFactory(token: string): TelegramBotHandle {
+  const bot = new Bot(token)
+  return {
+    api: bot.api as unknown as TelegramApi,
+    init: () => bot.init(),
+    get botInfo() {
+      // grammY throws if read before init(); guard so callers can probe.
+      try {
+        return bot.botInfo
+      } catch {
+        return undefined
+      }
+    },
+    onMessage(handler) {
+      bot.on('message', (ctx) => handler(ctx.message as unknown as TelegramMessage))
+    },
+    onCallbackQuery(handler) {
+      bot.on('callback_query:data', (ctx) => handler(ctx.callbackQuery as unknown as TelegramCallbackQuery))
+    },
+    start(onStart) {
+      void bot.start(onStart ? { onStart: () => onStart() } : undefined)
+    },
+    stop: () => bot.stop()
+  }
+}
+
+/** Map our button rows to grammY's `InlineKeyboardMarkup` wire shape. */
+function toInlineKeyboard(buttons: InlineButton[][]): InlineKeyboardMarkup {
+  return { inline_keyboard: buttons.map((row) => row.map((b) => ({ text: b.text, callback_data: b.callbackData }))) }
+}
+
+const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+/** Cap on admins enriched per listMembers call (bounds the response). */
+const MEMBER_CAP = 50
+
+export class TelegramConnection {
+  private bot: TelegramBotHandle
+  // All outbound writes funnel through one queue so streamed edits are FIFO-ordered
+  // and rate-limited per bot connection (Telegram tolerates ~1 msg/s per chat).
+  private queue: SlackSendQueue
+  /** The bot token this connection authenticated with (used to detect a swap). */
+  readonly botToken: string
+  /** The bot's numeric user id (as string), resolved at start() via getMe. */
+  botUserId = ''
+  /** The bot's @username (without '@'), for mention-routing. Resolved at start(). */
+  botUsername = ''
+  /** No workspace permalink base on Telegram (unlike Slack's workspaceUrl); '' so the
+   *  daemon's deep-link base falls through to the configured / CP / local default Web App URL. */
+  readonly workspaceUrl = ''
+
+  constructor(
+    private deps: TelegramDeps,
+    factory: (token: string) => TelegramBotHandle = defaultFactory
+  ) {
+    this.botToken = deps.group.botToken
+    this.bot = factory(deps.group.botToken)
+    this.queue = new SlackSendQueue(deps.sendIntervalMs ?? 350)
+  }
+
+  async start(): Promise<void> {
+    const log = this.deps.log
+    log?.debug('telegram: init → getMe (resolving bot identity)…')
+    await this.bot.init()
+    const info = this.bot.botInfo
+    this.botUserId = info ? String(info.id) : ''
+    this.botUsername = info?.username ?? ''
+    log?.debug(`telegram: getMe ok → bot @${this.botUsername || '?'} (id ${this.botUserId || 'n/a'})`)
+
+    this.bot.onMessage((message) => {
+      const msg = normalizeTelegramMessage(message, { traceId: this.deps.newTraceId() })
+      log?.debug(
+        `telegram: inbound ch=${msg.channel} user=${msg.sender.id} isBot=${msg.sender.isBot} isDm=${msg.isDm} ` +
+          `topic=${msg.telegramTopicId ?? '-'} root=${msg.telegramThreadRoot ?? '-'} replyTo=${msg.replyTo ?? '-'} ` +
+          `mentions=[${msg.mentionedBots.join(',')}] text=${JSON.stringify(msg.text.slice(0, 80))}`
+      )
+      this.deps.onMessage(msg)
+    })
+
+    this.bot.onCallbackQuery((q) => {
+      // A stray tap on a card whose message we can't identify is unactionable — ack it
+      // (so the client's spinner clears) and drop it.
+      if (!q.message || q.data == null) return
+      const cb: TelegramCallback = {
+        id: q.id,
+        data: q.data,
+        channel: String(q.message.chat.id),
+        messageId: q.message.message_id,
+        userId: q.from ? String(q.from.id) : 'unknown',
+        ...(q.message.message_thread_id != null ? { topicId: String(q.message.message_thread_id) } : {})
+      }
+      log?.debug(`telegram: callback ch=${cb.channel} user=${cb.userId} data=${JSON.stringify(cb.data)}`)
+      this.deps.onCallback?.(cb)
+    })
+
+    // Advertise the slash-command menu (best-effort — a failure here must not stop the
+    // bot from serving; the commands still work whether or not they autocomplete).
+    try {
+      await this.bot.api.setMyCommands(BOT_COMMANDS)
+      log?.debug('telegram: setMyCommands ok')
+    } catch (err) {
+      log?.debug(`telegram: setMyCommands failed: ${(err as Error).message}`)
+    }
+
+    log?.debug('telegram: bot.start → opening long-poll (getUpdates)…')
+    this.bot.start(() => log?.debug('telegram: long-poll established'))
+  }
+
+  /**
+   * Post a message. `threadTs` (when numeric) is treated as a forum-topic
+   * message_thread_id — the daemon's reply-based session threads are non-numeric
+   * (`tg:<id>` / `dm`), so they correctly post to the chat root here. `replyTo`
+   * (a message id) threads the post as a reply, which is how the bot anchors its
+   * turn to the triggering message and keeps the reply chain intact. Returns the
+   * resulting message id as a string.
+   */
+  async postMessage(
+    channel: string,
+    text: string,
+    threadTs?: string,
+    // `replyTo` (a message id) anchors the post as a reply. The cross-platform
+    // MessageGateway contract passes a sender-identity object in this 4th slot, which
+    // Telegram can't honor (no per-message identity) — so `username`/`icon_url` are
+    // accepted for structural compatibility and ignored.
+    opts?: { replyTo?: number; username?: string; icon_url?: string }
+  ): Promise<string | undefined> {
+    const replyTo = opts?.replyTo
+    const thread = threadTs != null && /^\d+$/.test(threadTs) ? Number(threadTs) : undefined
+    return this.queue.enqueue(async () => {
+      const res = await this.bot.api.sendMessage(channel, text, {
+        ...(thread !== undefined ? { message_thread_id: thread } : {}),
+        ...(replyTo !== undefined
+          ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }
+          : {})
+      })
+      return res?.message_id != null ? String(res.message_id) : undefined
+    })
+  }
+
+  /**
+   * Post a "chrome" message (progress / plan / reasoning / tool-output / a `/status`
+   * reply) with an optional parse_mode + forum topic + reply target. Returns the new
+   * message id for later in-place edits. Best-effort: swallows send errors (chrome
+   * must never break a turn).
+   */
+  async postChrome(
+    channel: string,
+    text: string,
+    opts: { parseMode?: string; threadTs?: string; replyTo?: number } = {}
+  ): Promise<string | undefined> {
+    const thread = opts.threadTs != null && /^\d+$/.test(opts.threadTs) ? Number(opts.threadTs) : undefined
+    return this.queue.enqueue(async () => {
+      try {
+        const res = await this.bot.api.sendMessage(channel, text, {
+          ...(thread !== undefined ? { message_thread_id: thread } : {}),
+          ...(opts.parseMode ? { parse_mode: opts.parseMode } : {}),
+          ...(opts.replyTo !== undefined
+            ? { reply_parameters: { message_id: opts.replyTo, allow_sending_without_reply: true } }
+            : {})
+        })
+        return res?.message_id != null ? String(res.message_id) : undefined
+      } catch (err) {
+        this.deps.log?.debug(`telegram: sendMessage (chrome) failed (ch=${channel}): ${(err as Error).message}`)
+        return undefined
+      }
+    })
+  }
+
+  /**
+   * Post an interactive "card": a message carrying an inline keyboard (rows of tappable
+   * buttons) — the session-control pickers (/models, /effort, /permission). Best-effort;
+   * returns the new message id so the card can be edited in place after a tap.
+   */
+  async postCard(
+    channel: string,
+    text: string,
+    buttons: InlineButton[][],
+    opts: { parseMode?: string; threadTs?: string; replyTo?: number } = {}
+  ): Promise<string | undefined> {
+    const thread = opts.threadTs != null && /^\d+$/.test(opts.threadTs) ? Number(opts.threadTs) : undefined
+    return this.queue.enqueue(async () => {
+      try {
+        const res = await this.bot.api.sendMessage(channel, text, {
+          ...(thread !== undefined ? { message_thread_id: thread } : {}),
+          ...(opts.parseMode ? { parse_mode: opts.parseMode } : {}),
+          ...(opts.replyTo !== undefined
+            ? { reply_parameters: { message_id: opts.replyTo, allow_sending_without_reply: true } }
+            : {}),
+          reply_markup: toInlineKeyboard(buttons)
+        })
+        return res?.message_id != null ? String(res.message_id) : undefined
+      } catch (err) {
+        this.deps.log?.debug(`telegram: sendMessage (card) failed (ch=${channel}): ${(err as Error).message}`)
+        return undefined
+      }
+    })
+  }
+
+  /** Re-render a card in place (new text + keyboard) after a tap. Best-effort. */
+  async editCard(
+    channel: string,
+    messageId: number,
+    text: string,
+    buttons: InlineButton[][],
+    opts: { parseMode?: string } = {}
+  ): Promise<void> {
+    await this.queue.enqueue(async () => {
+      try {
+        await this.bot.api.editMessageText(channel, messageId, text, {
+          ...(opts.parseMode ? { parse_mode: opts.parseMode } : {}),
+          reply_markup: toInlineKeyboard(buttons)
+        })
+      } catch (err) {
+        this.deps.log?.debug(
+          `telegram: editMessageText (card) failed (ch=${channel} id=${messageId}): ${(err as Error).message}`
+        )
+      }
+    })
+  }
+
+  /** Acknowledge an inline-keyboard tap (clears the client's loading spinner; the
+   *  optional `text` shows as a transient toast). Not queued — a quick standalone ack. */
+  async answerCallback(callbackId: string, text?: string): Promise<void> {
+    try {
+      await this.bot.api.answerCallbackQuery(callbackId, text ? { text } : undefined)
+    } catch (err) {
+      this.deps.log?.debug(`telegram: answerCallbackQuery failed: ${(err as Error).message}`)
+    }
+  }
+
+  /** Edit a previously-posted message in place (editMessageText). Best-effort. */
+  async updateMessage(
+    channel: string,
+    messageId: string,
+    text: string,
+    opts: { parseMode?: string } = {}
+  ): Promise<void> {
+    await this.queue.enqueue(async () => {
+      try {
+        await this.bot.api.editMessageText(channel, Number(messageId), text, {
+          ...(opts.parseMode ? { parse_mode: opts.parseMode } : {})
+        })
+      } catch (err) {
+        this.deps.log?.debug(
+          `telegram: editMessageText failed (ch=${channel} id=${messageId}): ${(err as Error).message}`
+        )
+      }
+    })
+  }
+
+  /** Best-effort transient "typing…" indicator (Telegram's analog of a status bar).
+   *  Not queued — it's a fire-and-forget hint that expires on its own (~5s). */
+  async sendChatAction(channel: string): Promise<void> {
+    try {
+      await this.bot.api.sendChatAction(channel, 'typing')
+    } catch (err) {
+      this.deps.log?.debug(`telegram: sendChatAction failed (ch=${channel}): ${(err as Error).message}`)
+    }
+  }
+
+  /**
+   * Download a Telegram file by its `file_id` (carried in Attachment.sourceUrl):
+   * getFile → file_path → GET https://api.telegram.org/file/bot<token>/<path>, up
+   * to `maxBytes`. Returns null on any failure / over-cap (best-effort; a failed
+   * attachment degrades to a resource_link, never breaks the prompt). Bytes stay
+   * daemon-local (§9.2).
+   */
+  async downloadFile(fileId: string, maxBytes = DEFAULT_MAX_ATTACHMENT_BYTES): Promise<Buffer | null> {
+    try {
+      const file = await this.bot.api.getFile(fileId)
+      if (!file.file_path) {
+        this.deps.log?.debug(`telegram: getFile ${fileId} returned no file_path`)
+        return null
+      }
+      if (Number.isFinite(file.file_size) && (file.file_size as number) > maxBytes) {
+        this.deps.log?.debug(`telegram: file ${fileId} skipped — ${file.file_size} bytes > cap ${maxBytes}`)
+        return null
+      }
+      const url = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`
+      const res = await fetch(url)
+      if (!res.ok) {
+        this.deps.log?.debug(`telegram: downloadFile ${fileId} → HTTP ${res.status}`)
+        return null
+      }
+      const declared = Number(res.headers.get('content-length'))
+      if (Number.isFinite(declared) && declared > maxBytes) {
+        this.deps.log?.debug(`telegram: downloadFile ${fileId} skipped — ${declared} bytes > cap ${maxBytes}`)
+        return null
+      }
+      const buf = Buffer.from(await res.arrayBuffer())
+      if (buf.byteLength > maxBytes) {
+        this.deps.log?.debug(`telegram: downloadFile ${fileId} discarded — ${buf.byteLength} bytes > cap ${maxBytes}`)
+        return null
+      }
+      return buf
+    } catch (err) {
+      this.deps.log?.debug(`telegram: downloadFile ${fileId} failed: ${(err as Error).message}`)
+      return null
+    }
+  }
+
+  // ── MCP MessageGateway: read helpers backing the injected channel tools ──
+
+  async getChannelInfo(channel: string): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean }> {
+    const c = await this.bot.api.getChat(channel)
+    return {
+      id: String(c.id ?? channel),
+      name: c.title ?? c.username,
+      isIm: c.type === 'private',
+      // A group/supergroup without a public @username is effectively private.
+      isPrivate: c.type === 'group' || c.type === 'supergroup' ? !c.username : c.type !== 'channel'
+    }
+  }
+
+  /**
+   * Members of a chat. Telegram bots cannot enumerate the full member list — only
+   * administrators (groups/supergroups). Returns the admins, best-effort ([] on
+   * failure or for private chats).
+   */
+  async listMembers(channel: string): Promise<{ id: string; name?: string; isBot?: boolean }[]> {
+    try {
+      const admins = await this.bot.api.getChatAdministrators(channel)
+      return admins.slice(0, MEMBER_CAP).map((m) => ({
+        id: String(m.user.id),
+        name: m.user.username ?? ([m.user.first_name, m.user.last_name].filter(Boolean).join(' ') || undefined),
+        isBot: m.user.is_bot
+      }))
+    } catch (err) {
+      this.deps.log?.debug(`telegram: getChatAdministrators failed (ch=${channel}): ${(err as Error).message}`)
+      return []
+    }
+  }
+
+  /** A bot cannot enumerate the chats it belongs to — always []. */
+  async listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]> {
+    return []
+  }
+
+  /**
+   * Telegram has no standalone "get user" endpoint (getChatMember needs a chat
+   * context, which this gateway signature lacks), so this degrades to echoing the
+   * id. Names are resolved via listMembers / inbound messages instead.
+   */
+  async getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }> {
+    return { id: user }
+  }
+
+  async stop(): Promise<void> {
+    await this.bot.stop()
+  }
+}

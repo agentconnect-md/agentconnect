@@ -1,0 +1,2755 @@
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
+
+@import 'tailwindcss';
+
+/* Tailwind theme wiring (see STYLE.md).
+   - The app has ONE responsive boundary: mobile is `max-width: 768px`
+     (useIsMobile + the media blocks below). Stock sm:–2xl: breakpoints are
+     disabled so nobody reaches for `md:` (min-width 768) and disagrees with
+     the app's boundary at exactly 768px. Use `desktop:` / `max-desktop:`.
+   - `leading-normal` is redefined from Tailwind's 1.5 to CSS `normal`: the
+     console's typography was written with `font:` shorthands, whose implicit
+     line-height reset is what utilities must reproduce.
+   - The bare `transition-*` utilities default to the design system's motion
+     (120ms / --ease-standard) instead of Tailwind's stock 150ms/ease-in-out, so
+     a utility-styled hover matches a globals.css one without restating either. */
+@theme {
+  --breakpoint-*: initial;
+  --breakpoint-desktop: 769px;
+  --leading-normal: normal;
+  --default-transition-duration: var(--duration-fast);
+  --default-transition-timing-function: var(--ease-standard);
+}
+
+/* ============================================================================
+   AgentConnect Console — design tokens
+   Ported from the AgentConnect design system (colors / typography / spacing /
+   effects / base). Consume the semantic aliases; reach for raw scale steps
+   only when no alias fits.
+   ============================================================================ */
+:root {
+  /* Neutrals — cool graphite */
+  --gray-0: #ffffff;
+  --gray-25: #fafbfc;
+  --gray-50: #f4f6f8;
+  --gray-100: #eceff3;
+  --gray-150: #e4e8ed;
+  --gray-200: #dbe0e6;
+  --gray-300: #c5cdd6;
+  --gray-400: #9aa4b1;
+  --gray-500: #6f7b8a;
+  --gray-600: #525d6b;
+  --gray-700: #3a4452;
+  --gray-800: #28303b;
+  --gray-900: #1a212b;
+  --gray-950: #11161d;
+  --gray-1000: #0a0e13;
+
+  /* Primary — magenta */
+  --magenta-50: #fcebf3;
+  --magenta-100: #f9d6e7;
+  --magenta-200: #f0a9cb;
+  --magenta-300: #e479ac;
+  --magenta-400: #d6488d;
+  --magenta-500: #c62a78;
+  --magenta-600: #a82165;
+  --magenta-700: #8a1a53;
+  --magenta-800: #6d1542;
+  --magenta-900: #4f0f30;
+
+  /* Warm palette (logo facets / nav rail) */
+  --coral-500: #e8624c;
+  --gold-500: #e0a30f;
+  --purple-500: #7d46c0;
+  --plum-900: #241531;
+  --plum-950: #1b0f25;
+
+  /* Semantic status hues */
+  --green-500: #15a661;
+  --green-50: #e9f9f0;
+  --amber-500: #e0930f;
+  --amber-50: #fdf5e3;
+  --red-500: #dc4b4b;
+  --red-600: #c43a3a;
+  --red-50: #fdecec;
+  --blue-500: #2f6fed;
+  --blue-50: #ebf1fe;
+
+  /* IM platform brand accents */
+  --slack: #4a154b;
+  --telegram: #229ed9;
+  --discord: #5865f2;
+
+  /* Surfaces */
+  --surface-app: var(--gray-25);
+  --surface-card: var(--gray-0);
+  --surface-sunken: var(--gray-50);
+  --surface-hover: var(--gray-50);
+  --surface-active: var(--gray-100);
+  --surface-inverse: var(--plum-900);
+  --surface-inverse-2: var(--plum-950);
+
+  /* Text */
+  --text-primary: var(--gray-900);
+  --text-secondary: var(--gray-600);
+  --text-tertiary: var(--gray-500);
+  --text-disabled: var(--gray-400);
+  --text-inverse: var(--gray-0);
+  --text-inverse-dim: #b3a6c2;
+  --text-link: var(--blue-500);
+  --text-brand: var(--magenta-700);
+
+  /* Borders */
+  --border-subtle: var(--gray-150);
+  --border-default: var(--gray-200);
+  --border-strong: var(--gray-300);
+  --border-inverse: rgba(255, 255, 255, 0.1);
+  --border-focus: var(--magenta-500);
+
+  /* Brand / primary actions */
+  --brand: var(--magenta-500);
+  --brand-hover: var(--magenta-600);
+  --brand-active: var(--magenta-700);
+  --brand-soft: var(--magenta-50);
+  --brand-soft-text: var(--magenta-700);
+  --brand-soft-border: rgba(198, 42, 120, 0.18);
+  --brand-ring: rgba(198, 42, 120, 0.32);
+
+  /* Status — solid + soft pairings */
+  --status-online: var(--green-500);
+  --status-online-soft: var(--green-50);
+  --status-paused: var(--amber-500);
+  --status-paused-soft: var(--amber-50);
+  --status-error: var(--red-500);
+  --status-error-soft: var(--red-50);
+  --status-info: var(--blue-500);
+  --status-info-soft: var(--blue-50);
+
+  /* Type families */
+  --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'Geist Mono', 'SF Mono', ui-monospace, 'JetBrains Mono', Menlo, monospace;
+
+  /* Radius */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+
+  /* Shadows */
+  --shadow-xs: 0 1px 2px rgba(17, 22, 29, 0.05);
+  --shadow-sm: 0 1px 2px rgba(17, 22, 29, 0.06), 0 1px 1px rgba(17, 22, 29, 0.04);
+  --shadow-md: 0 2px 4px rgba(17, 22, 29, 0.06), 0 4px 12px rgba(17, 22, 29, 0.06);
+  --shadow-lg: 0 4px 8px rgba(17, 22, 29, 0.06), 0 12px 28px rgba(17, 22, 29, 0.1);
+  --shadow-xl: 0 8px 16px rgba(17, 22, 29, 0.08), 0 24px 56px rgba(17, 22, 29, 0.14);
+
+  /* Motion — confident, no bounce. Snappy enter, soft settle. */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --duration-slow: 320ms;
+
+  /* The single hover/press contract every interactive surface animates on.
+     One list of properties so a chip, a menu row, and a card settle in step —
+     `background-color` (not `background`) keeps gradients/images out of it. */
+  --transition-interactive:
+    background-color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard),
+    opacity var(--duration-fast) var(--ease-standard);
+}
+
+/* ============================================================================
+   Dark theme — semantic-token remap toggled via `data-theme="dark"` on <html>
+   (set by lib/theme + the (app) layout's no-FOUC init). A "plum dark" palette:
+   surfaces + the nav rail (--surface-inverse*) all shift to a near-black plum,
+   mirroring the AgentConnect design system's console theme (data-dark-tone=plum).
+   ============================================================================ */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --surface-app: #17101f;
+  --surface-card: #211829;
+  --surface-sunken: #120c1a;
+  --surface-hover: #271d34;
+  --surface-active: #2f2440;
+  /* Nav rail darkens too (design now remaps the inverse surfaces in dark). */
+  --surface-inverse: #150d1e;
+  --surface-inverse-2: #0f0817;
+
+  /* Text */
+  --text-primary: #edeff3;
+  --text-secondary: #a6afbc;
+  --text-tertiary: #7e8996;
+  --text-disabled: #58616d;
+  --text-inverse-dim: #b3a6c2;
+  --text-brand: #e97bb0;
+  --text-link: #7aa7ff;
+
+  /* Borders */
+  --border-subtle: #2a2137;
+  --border-default: #372b47;
+  --border-strong: #493a5d;
+  --border-inverse: rgba(255, 255, 255, 0.09);
+  --border-focus: #c62a78;
+
+  /* Brand / primary actions */
+  --brand: #c62a78;
+  --brand-hover: #d6488d;
+  --brand-active: #a82165;
+  --brand-soft: rgba(198, 42, 120, 0.16);
+  --brand-soft-text: #f4b8d3;
+  --brand-soft-border: rgba(198, 42, 120, 0.32);
+  --brand-ring: rgba(198, 42, 120, 0.42);
+
+  /* Raw scale steps that leak into surfaces/accents */
+  --magenta-100: rgba(198, 42, 120, 0.22);
+  --magenta-700: #f4b8d3;
+  --gray-100: rgba(255, 255, 255, 0.07);
+  --gray-200: rgba(255, 255, 255, 0.1);
+  --gray-300: #3b4552;
+  /* Syntax-highlight hues — lift the darkest hljs tokens (keyword=magenta-600,
+     type=purple-500) for legibility on the near-black code surface. Not in the
+     design's dark block (its mock has no live hljs viewer), app-specific. */
+  --magenta-600: #e479ac;
+  --purple-500: #b794e6;
+
+  /* Status — solid + soft pairings (idle normalized to offline on main, #321) */
+  --status-online: #2ec27e;
+  --status-online-soft: rgba(46, 194, 126, 0.16);
+  --status-online-text: #2ec27e;
+  --status-paused: #eaa93a;
+  --status-paused-soft: rgba(234, 169, 58, 0.16);
+  --status-error: #ef6b6b;
+  --status-error-soft: rgba(239, 107, 107, 0.16);
+  --status-info: #6a97f5;
+  --status-info-soft: rgba(106, 151, 245, 0.16);
+
+  --green-500: #2ec27e;
+  --green-50: rgba(46, 194, 126, 0.16);
+  --amber-500: #eaa93a;
+  --amber-50: rgba(234, 169, 58, 0.16);
+  --red-500: #ef6b6b;
+  --red-600: #dc4b4b;
+  --red-50: rgba(239, 107, 107, 0.16);
+  --blue-500: #6a97f5;
+  --blue-50: rgba(106, 151, 245, 0.16);
+
+  /* IM platform soft accents re-tuned for dark chips */
+  --slack-soft: rgba(163, 92, 168, 0.22);
+  --telegram-soft: rgba(34, 158, 217, 0.2);
+  --discord-soft: rgba(96, 108, 245, 0.24);
+
+  /* Shadows deepen on dark */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5), 0 1px 1px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.45), 0 4px 14px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 6px 14px rgba(0, 0, 0, 0.5), 0 16px 40px rgba(0, 0, 0, 0.6);
+  --shadow-xl: 0 12px 28px rgba(0, 0, 0, 0.55), 0 32px 72px rgba(0, 0, 0, 0.72);
+}
+/* Component-level dark tweaks that a token swap alone can't express. */
+:root[data-theme='dark'] .imark {
+  background: #e8ecf1;
+  border-color: #e8ecf1;
+  color: var(--surface-inverse);
+}
+:root[data-theme='dark'] .pill.on {
+  background: #2f2440;
+}
+:root[data-theme='dark'] .kbd {
+  background: var(--surface-sunken);
+}
+:root[data-theme='dark'] .codedark {
+  border-color: #2a2137;
+}
+
+/* ---- base ---- */
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    margin: 0;
+    height: 100%;
+  }
+  body {
+    font-family: var(--font-sans);
+    color: var(--text-primary);
+    background: var(--surface-app);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'cv01', 'ss03';
+  }
+  ::selection {
+    background: var(--brand-soft);
+    color: var(--brand-soft-text);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--gray-300) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--gray-300);
+    border-radius: var(--radius-pill);
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--gray-400);
+  }
+}
+
+/* Everything below lives in the `components` cascade layer so Tailwind
+   utilities can override it on the same element (className="card p-4").
+   The un-layered rules above (tokens, dark remap + dark component tweaks)
+   deliberately keep winning over this layer. */
+@layer components {
+  /* ============================================================================
+   Console layout + component classes
+   ============================================================================ */
+
+  /* One motion contract for every interactive surface. The design system's
+     interaction states are a set — hover tint, border step, shadow lift — and
+     they have to arrive together or the console feels like several UIs. Listing
+     the selectors here (rather than repeating `transition:` per class) is what
+     keeps them in step; hover/press VALUES still live with each class below. */
+  .railtoggle,
+  .railbrand-logo,
+  .navitem,
+  .sritem,
+  .srchip,
+  .tab,
+  .pill,
+  .row.click,
+  .card.click,
+  .file-browser-item,
+  .rthead,
+  .iconbtn,
+  .dmi,
+  .selbtn,
+  .fopt,
+  .sendbtn,
+  .chip,
+  .dsbtn,
+  .sso,
+  .usermenu-item,
+  .lnk {
+    transition: var(--transition-interactive);
+  }
+  .app {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    background: var(--surface-app);
+  }
+  .rail {
+    width: 240px;
+    flex: none;
+    background: var(--surface-inverse);
+    display: flex;
+    flex-direction: column;
+  }
+  /* Width animation is opt-in via `.rail-anim`, added one frame after mount so a
+     reload into the collapsed state snaps (no 240→64 sweep); user toggles animate. */
+  .rail.rail-anim {
+    transition: width var(--duration-normal) var(--ease-standard);
+  }
+  .railbrand {
+    position: relative;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    /* Right padding is smaller than left to seat the hover-reveal collapse toggle. */
+    padding: 0 12px 0 18px;
+    border-bottom: 1px solid var(--border-inverse);
+  }
+  /* Brand logo+wordmark link (left) and the collapse toggle (right) are siblings in
+     `.railbrand` — a button can't nest inside the logo's <a>. Display lives on the
+     class (not a utility) so the collapsed hover-swap below can override it. */
+  .railbrand-logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    text-decoration: none;
+  }
+  .railtoggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    margin-left: auto;
+    flex: none;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--text-inverse-dim);
+    cursor: pointer;
+    opacity: 0;
+  }
+  .rail:hover .railtoggle,
+  .railtoggle:focus-visible {
+    opacity: 1;
+  }
+  .railtoggle:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
+  }
+  .navlbl {
+    font: 600 11px var(--font-mono);
+    color: var(--text-inverse-dim);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 16px 16px 8px;
+  }
+  .navitem {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 9px 14px 9px 13px;
+    border-left: 3px solid transparent;
+    color: var(--text-inverse-dim);
+    font: 500 14px var(--font-sans);
+    cursor: pointer;
+    background: none;
+    border-top: 0;
+    border-right: 0;
+    border-bottom: 0;
+    width: 100%;
+    text-align: left;
+  }
+  /* Rail items sit on the plum surface, where the design system's hover is a
+     low-alpha white overlay — one step below the .on state's 0.07. */
+  .navitem:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .navitem.on {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.07);
+    border-left-color: var(--brand);
+  }
+  .navitem.on i {
+    color: var(--brand);
+  }
+  .navitem i {
+    width: 18px;
+    height: 18px;
+    flex: none;
+  }
+  /* ----- Collapsed rail (64px, icons only) ----- */
+  .rail.collapsed {
+    width: 64px;
+  }
+  .rail.collapsed .brandword,
+  .rail.collapsed .navlbl {
+    display: none;
+  }
+  .rail.collapsed .railbrand {
+    justify-content: center;
+    padding: 0;
+  }
+  .rail.collapsed .navitem {
+    justify-content: center;
+    padding: 9px 0;
+  }
+  .rail.collapsed .navitem span {
+    display: none;
+  }
+  /* Collapsed: the toggle overlays the centered logo, invisible but still in the tab
+     order (opacity, not display:none) so a keyboard-only user can Tab to it and
+     re-expand. It reveals on brand hover, or on keyboard focus via the global
+     `.railtoggle:focus-visible` rule above. The logo hides on hover, or when the
+     toggle itself is focused — keyed off `:has(.railtoggle:focus-visible)` (not
+     `:focus-within`) so Tabbing to the logo link never hides the focused link. */
+  .rail.collapsed .railtoggle {
+    position: absolute;
+    inset: 0;
+    width: auto;
+    height: auto;
+    margin: 0;
+  }
+  .rail.collapsed .railbrand:hover .railtoggle {
+    opacity: 1;
+  }
+  .rail.collapsed .railbrand:hover .railbrand-logo,
+  .rail.collapsed .railbrand:has(.railtoggle:focus-visible) .railbrand-logo {
+    opacity: 0;
+  }
+  .main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .top {
+    height: 56px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 24px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--surface-card);
+  }
+  .crumb {
+    font: 500 13px var(--font-sans);
+    color: var(--text-tertiary);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .crumb b {
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .search {
+    flex: 1;
+    max-width: 360px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 34px;
+    padding: 0 12px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+  }
+  /* ===== unified search (top-bar search box + results panel) ===== */
+  .searchwrap {
+    position: relative;
+    width: 340px;
+    flex: none;
+    z-index: 60;
+  }
+  .search.focus {
+    background: var(--surface-card);
+    border-color: var(--border-focus);
+    box-shadow: 0 0 0 3px var(--magenta-100);
+  }
+  .srinput {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    background: none;
+    outline: none;
+    font: 400 13px var(--font-sans);
+    color: var(--text-primary);
+    padding: 0;
+  }
+  .srinput::placeholder {
+    color: var(--text-disabled);
+  }
+  .srscrim {
+    position: fixed;
+    inset: 0;
+    z-index: 55;
+  }
+  .srpanel {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    width: 480px;
+    background: var(--surface-card);
+    border: 1px solid var(--border-default);
+    border-radius: 10px;
+    box-shadow: var(--shadow-lg);
+    z-index: 60;
+    overflow: hidden;
+  }
+  .srlist {
+    max-height: 480px;
+    overflow: auto;
+    padding: 2px 0 6px;
+  }
+  .srlbl {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    font: 600 10.5px var(--font-mono);
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    padding: 12px 14px 5px;
+  }
+  .srlbl b {
+    font-weight: 500;
+    color: var(--text-disabled);
+  }
+  .sritem {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    width: 100%;
+    padding: 7px 14px;
+    background: none;
+    border: 0;
+    cursor: pointer;
+    text-align: left;
+  }
+  .sritem:hover,
+  .sritem.on {
+    background: var(--surface-hover);
+  }
+  .srsq {
+    position: relative;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    background: var(--surface-inverse);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+  }
+  .srwell {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-subtle);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    color: var(--text-secondary);
+  }
+  .srdot {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 2px solid var(--surface-card);
+  }
+  .srtitle {
+    font: 500 13px var(--font-sans);
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .srmeta {
+    font: 400 11.5px var(--font-mono);
+    color: var(--text-tertiary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sraux {
+    font: 500 11px var(--font-mono);
+    color: var(--text-tertiary);
+    flex: none;
+  }
+  .srfoot {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 8px 14px;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--surface-app);
+    font: 400 11.5px var(--font-sans);
+    color: var(--text-tertiary);
+  }
+  /* Type-filter chip row at the top of the search panel — narrows results to one
+     kind (Agents / Daemons / Schedules / Sessions), each with its match count. */
+  .srfilters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .srchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border-default);
+    background: var(--surface-card);
+    font: 500 12px var(--font-sans);
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .srchip:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+  }
+  .srchip.on {
+    background: var(--brand);
+    border-color: var(--brand);
+    color: #fff;
+  }
+  .srchipn {
+    font: 600 10.5px var(--font-mono);
+    color: var(--text-tertiary);
+  }
+  .srchip.on .srchipn {
+    color: rgba(255, 255, 255, 0.8);
+  }
+  .content {
+    flex: 1;
+    overflow: auto;
+    padding: 26px 30px;
+  }
+  /* Whole-view loading placeholder (see LoadingState `fill`): a fixed, viewport-
+   centred overlay. Fixed (not a flow box) so the spinner sits at the SAME screen
+   position in every loading stage — the pre-render auth gate and each view's data
+   pull — instead of shifting with whatever chrome (summary row, segment bar) a
+   given view happens to render above it, which made it jump between stages.
+   pointer-events:none so it never blocks that chrome. */
+  .loadfill {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+  }
+  .ptitle {
+    font: 600 23px var(--font-sans);
+    letter-spacing: -0.02em;
+    margin: 0;
+  }
+  .psub {
+    font: 400 13.5px var(--font-sans);
+    color: var(--text-secondary);
+    margin: 5px 0 0;
+  }
+  /* Build fingerprint on the profile page: invisible until you select it. */
+  .buildinfo {
+    color: transparent;
+    user-select: all;
+  }
+  .buildinfo::selection {
+    color: var(--text-secondary);
+    background: var(--magenta-100);
+  }
+  .card {
+    background: var(--surface-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    box-shadow: var(--shadow-xs);
+  }
+  .cardhead {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .cardtitle {
+    font: 600 14px var(--font-sans);
+  }
+  .eyebrow {
+    font: 600 11px var(--font-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+  .mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: none;
+    display: inline-block;
+  }
+  .pillbar {
+    display: inline-flex;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-subtle);
+    border-radius: 7px;
+    padding: 3px;
+    gap: 2px;
+  }
+  .pill {
+    border: 0;
+    background: transparent;
+    font: 500 12.5px var(--font-sans);
+    color: var(--text-secondary);
+    padding: 5px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  /* Inactive segment: text-only lift, so it never reads as the selected .on
+     segment (which is the raised surface-card + shadow chip). */
+  .pill:hover {
+    color: var(--text-primary);
+  }
+  .pill.on {
+    background: var(--surface-card);
+    box-shadow: var(--shadow-xs);
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+  .tab {
+    position: relative;
+    background: none;
+    border: 0;
+    font: 500 13.5px var(--font-sans);
+    color: var(--text-secondary);
+    padding: 11px 4px;
+    margin-right: 22px;
+    cursor: pointer;
+  }
+  .tab:hover {
+    color: var(--text-primary);
+  }
+  .tab.on {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+  .tab.on::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    background: var(--brand);
+    border-radius: 2px;
+  }
+  .row {
+    display: grid;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .row.h {
+    padding: 10px 16px;
+    font: 600 11px var(--font-mono);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    background: var(--surface-app);
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+  }
+  .row.click {
+    cursor: pointer;
+  }
+  .row.click:hover {
+    background: var(--surface-hover);
+  }
+  /* A whole card that navigates. The design system's card affordance is a
+     border step + a small shadow lift (NOT a fill — the card IS the surface). */
+  .card.click {
+    cursor: pointer;
+  }
+  .card.click:hover {
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-md);
+  }
+  /* Shared two-pane file browser: unselected clickable rows hover. */
+  .file-browser-item {
+    cursor: pointer;
+  }
+  .file-browser-item:hover {
+    background: var(--surface-hover);
+  }
+  /* Daemon-detail runtime tile: the expandable header row. */
+  .rthead:hover {
+    background: var(--surface-hover);
+  }
+  .row:last-child {
+    border-bottom: 0;
+  }
+  .av {
+    border-radius: 8px;
+    background: var(--surface-inverse);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    position: relative;
+  }
+  .av img {
+    width: 60%;
+    height: 60%;
+  }
+  /* Uploaded images use a white plate. Matching the parent prevents its dark
+     fallback background from showing through their anti-aliased rounded edge. */
+  .av:has(> [data-agent-icon-image]) {
+    background: #fff;
+  }
+  /* Glyph plates already own their color. A transparent parent lets their
+     rounded edge anti-alias against the surrounding surface instead of the
+     dark legacy/runtime fallback plate. */
+  .av:has(> [data-agent-icon-glyph]) {
+    background: transparent;
+  }
+  .imark {
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+  }
+  .imark img {
+    width: 60%;
+    height: 60%;
+  }
+  /* `ring` is a Tailwind utility, so use a project-specific class for the
+     white spacer that keeps overlapping integration marks distinct. */
+  .imark.imark-overlap {
+    box-shadow: 0 0 0 2px var(--surface-card);
+  }
+  .lnk {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 600 13px var(--font-sans);
+    color: var(--brand-soft-text);
+    cursor: pointer;
+    background: none;
+    border: 0;
+    padding: 0;
+  }
+  .lnk:hover {
+    text-decoration: underline;
+  }
+  .kbd {
+    font: 500 11px var(--font-mono);
+    color: var(--text-tertiary);
+    background: var(--surface-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    padding: 2px 5px;
+  }
+  .stat {
+    padding: 15px 18px;
+  }
+  .statlbl {
+    font: 500 12px var(--font-sans);
+    color: var(--text-tertiary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .statval {
+    font: 600 24px var(--font-sans);
+    letter-spacing: -0.02em;
+    margin-top: 5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font: 600 11px var(--font-sans);
+    padding: 2px 8px;
+    border-radius: 999px;
+  }
+  .scope {
+    font: 500 11.5px var(--font-mono);
+    color: var(--text-secondary);
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    padding: 2px 7px;
+  }
+  .iconbtn {
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+    border: 1px solid var(--border-default);
+    background: var(--surface-card);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .iconbtn:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+  }
+  /* Daemon card actions dropdown (kebab menu). */
+  .dmenu {
+    position: absolute;
+    top: 34px;
+    right: 0;
+    z-index: 50;
+    min-width: 222px;
+    background: var(--surface-card);
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    box-shadow: var(--shadow-lg);
+    padding: 5px;
+  }
+  .dmi {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 8px 10px;
+    border: 0;
+    background: none;
+    border-radius: 6px;
+    font: 500 13px var(--font-sans);
+    color: var(--text-primary);
+    cursor: pointer;
+    text-align: left;
+  }
+  .dmi:hover {
+    background: var(--surface-hover);
+  }
+  .dmi svg {
+    width: 15px;
+    height: 15px;
+    color: var(--text-tertiary);
+    flex: none;
+  }
+  .dmi.danger {
+    color: var(--red-600);
+  }
+  .dmi.danger:hover {
+    background: var(--status-error-soft);
+  }
+  .dmi.danger svg {
+    color: var(--red-600);
+  }
+  .dmsep {
+    height: 1px;
+    background: var(--border-subtle);
+    margin: 5px 0;
+  }
+  .codeblk {
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-subtle);
+    border-radius: 7px;
+    padding: 9px 11px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .addchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 600 12px var(--font-sans);
+    color: var(--amber-500);
+    background: var(--status-paused-soft);
+    border: 1px solid var(--amber-500);
+    border-radius: 999px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  .scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(17, 22, 29, 0.5);
+    z-index: 900;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+  }
+  .modal {
+    background: var(--surface-card);
+    border: 1px solid var(--border-default);
+    border-radius: 12px;
+    box-shadow: var(--shadow-xl);
+    width: 100%;
+    max-width: 560px;
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .modalhead {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .modalbody {
+    padding: 20px;
+    overflow: auto;
+  }
+  .modalfoot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 15px 20px;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--surface-app);
+  }
+  .fld {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .fldlbl {
+    font: 500 12px var(--font-sans);
+    color: var(--text-secondary);
+  }
+  .inp {
+    min-height: 36px;
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    background: var(--surface-card);
+    padding: 8px 11px;
+    font: 400 13px var(--font-sans);
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .inp.ph {
+    color: var(--text-disabled);
+  }
+  .inp.mn {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+  }
+  .ptile {
+    border: 1px solid var(--border-default);
+    border-radius: 9px;
+    padding: 12px 13px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    position: relative;
+  }
+  .ptile.on {
+    border: 1.5px solid var(--brand);
+    background: var(--brand-soft);
+  }
+  /* Filter dropdown — a custom button + floating menu (replaces the old native
+     <select> overlay). The button shows the current selection and a chevron; the
+     menu lists options with a check on the active one and optional group headers. */
+  .selbtn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 32px;
+    padding: 0 26px 0 10px;
+    background: var(--surface-card);
+    border: 1px solid var(--border-default);
+    border-radius: 7px;
+    cursor: pointer;
+    font: 500 12.5px var(--font-sans);
+    color: var(--text-primary);
+  }
+  .selbtn:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+  }
+  .selbtn.on {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px var(--brand-ring);
+  }
+  .selbtn::after {
+    content: '';
+    position: absolute;
+    right: 11px;
+    top: 50%;
+    width: 7px;
+    height: 7px;
+    border-right: 1.5px solid var(--text-tertiary);
+    border-bottom: 1.5px solid var(--text-tertiary);
+    transform: translateY(-70%) rotate(45deg);
+    pointer-events: none;
+  }
+  /* Visible label tracks the current selection (not the widest option) so the
+     bar doesn't reflow as async options load in. */
+  .selbtn .lbl {
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .fmenu {
+    position: absolute;
+    z-index: 30;
+    top: calc(100% + 5px);
+    left: 0;
+    min-width: 210px;
+    max-height: 340px;
+    overflow: auto;
+    background: var(--surface-card);
+    border: 1px solid var(--border-default);
+    border-radius: 9px;
+    box-shadow: var(--shadow-lg);
+    padding: 5px;
+  }
+  .fopt {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    min-height: 34px;
+    padding: 0 8px;
+    border: 0;
+    background: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font: 500 12.5px var(--font-sans);
+    color: var(--text-primary);
+    text-align: left;
+  }
+  .fopt:hover {
+    background: var(--surface-hover);
+  }
+  .fhdr {
+    padding: 8px 8px 4px;
+    font: 600 10.5px var(--font-mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+  .fscrim {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+  }
+  .fsearch {
+    width: 100%;
+    box-sizing: border-box;
+    height: 32px;
+    margin: 0 0 4px;
+    padding: 0 9px;
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    background: var(--surface-sunken);
+    font: 500 12.5px var(--font-sans);
+    color: var(--text-primary);
+    outline: none;
+  }
+  .fsearch:focus {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px var(--brand-ring);
+    background: var(--surface-card);
+  }
+  .fnohit {
+    padding: 12px 8px;
+    text-align: center;
+    font: 400 12px var(--font-sans);
+    color: var(--text-tertiary);
+  }
+
+  /* playground */
+  .pgcomposer {
+    border-top: 1px solid var(--border-subtle);
+    padding: 12px 14px;
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+    background: var(--surface-card);
+  }
+  .pgin {
+    flex: 1;
+    resize: none;
+    border: 1px solid var(--border-default);
+    border-radius: 9px;
+    padding: 10px 12px;
+    font: 400 13.5px var(--font-sans);
+    color: var(--text-primary);
+    outline: none;
+    min-height: 40px;
+    max-height: 120px;
+    background: var(--surface-card);
+  }
+  .pgin:focus {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px rgba(198, 42, 120, 0.16);
+  }
+  .sendbtn {
+    width: 40px;
+    height: 40px;
+    border-radius: 9px;
+    border: 0;
+    background: var(--brand);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex: none;
+  }
+  .sendbtn:hover {
+    background: var(--brand-hover);
+  }
+  .sendbtn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    background: var(--brand);
+  }
+  .chip {
+    font: 500 12px var(--font-sans);
+    color: var(--text-secondary);
+    background: var(--surface-card);
+    border: 1px solid var(--border-default);
+    border-radius: 999px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  .chip:hover {
+    border-color: var(--border-strong);
+    background: var(--surface-hover);
+    color: var(--text-primary);
+  }
+  .tdot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-tertiary);
+    display: inline-block;
+    animation: acdot 1.2s ease-in-out infinite;
+  }
+  @keyframes acdot {
+    0%,
+    70%,
+    100% {
+      transform: translateY(0);
+      opacity: 0.4;
+    }
+    35% {
+      transform: translateY(-4px);
+      opacity: 1;
+    }
+  }
+
+  /* api */
+  .endpoint {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 9px 11px;
+  }
+  .tagpill {
+    font: 600 10px var(--font-mono);
+    letter-spacing: 0.06em;
+    background: var(--surface-active);
+    color: var(--text-secondary);
+    border-radius: 4px;
+    padding: 3px 6px;
+    flex: none;
+  }
+  .codedark {
+    background: var(--gray-1000);
+    border: 1px solid var(--gray-800);
+    border-radius: 9px;
+    padding: 13px 14px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.65;
+    color: #cdd6e0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow: auto;
+  }
+
+  /* design-system Button */
+  .dsbtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 34px;
+    padding: 0 14px;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    font: 600 13px var(--font-sans);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .dsbtn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--brand-ring);
+  }
+  .dsbtn.sm {
+    height: 30px;
+    padding: 0 12px;
+    font-size: 12.5px;
+  }
+  .dsbtn.xs {
+    height: 28px;
+    padding: 0 11px;
+    font-size: 12px;
+  }
+  .dsbtn-primary {
+    background: var(--brand);
+    color: #fff;
+  }
+  .dsbtn-primary:hover {
+    background: var(--brand-hover);
+  }
+  .dsbtn-secondary {
+    background: var(--surface-card);
+    color: var(--text-primary);
+    border-color: var(--border-default);
+  }
+  .dsbtn-secondary:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+  }
+  .dsbtn-ghost {
+    background: transparent;
+    color: var(--text-secondary);
+  }
+  .dsbtn-ghost:hover {
+    background: var(--surface-hover);
+    color: var(--text-primary);
+  }
+  .dsbtn-danger {
+    background: var(--status-error);
+    color: #fff;
+  }
+  .dsbtn-danger:hover {
+    background: var(--red-600);
+  }
+  .dsbtn i {
+    width: 15px;
+    height: 15px;
+  }
+
+  /* design-system Toggle */
+  .dstoggle {
+    width: 40px;
+    height: 22px;
+    flex: none;
+    border-radius: 11px;
+    border: 0;
+    padding: 2px;
+    background: var(--border-strong);
+    cursor: pointer;
+    transition: background-color var(--duration-fast) var(--ease-standard);
+    display: flex;
+    align-items: center;
+  }
+  .dstoggle:disabled {
+    cursor: not-allowed;
+  }
+  .dstoggle.on {
+    background: var(--brand);
+  }
+  .dstoggle-knob {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    transition: transform var(--duration-fast) var(--ease-standard);
+  }
+  .dstoggle.on .dstoggle-knob {
+    transform: translateX(18px);
+  }
+
+  /* design-system Input */
+  .dsinput {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .dsinput-field {
+    height: 34px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    background: var(--surface-card);
+    padding: 0 11px;
+    font: 400 13px var(--font-sans);
+    color: var(--text-primary);
+    outline: none;
+    width: 100%;
+  }
+  .dsinput-field.mono {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+  }
+  .dsinput-field::placeholder {
+    color: var(--text-disabled);
+  }
+  .dsinput-field.lg {
+    height: 44px;
+  }
+  .dsinput-field:focus {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px var(--brand-ring);
+  }
+  .dsinput-hint {
+    font: 400 11.5px var(--font-sans);
+    color: var(--text-tertiary);
+  }
+  .dsbtn.lg {
+    height: 44px;
+    padding: 0 18px;
+    font-size: 14px;
+  }
+  .dsbtn.full {
+    width: 100%;
+  }
+
+  /* ============================================================================
+   Auth (sign in / create account / reset password)
+   ============================================================================ */
+  .authpage {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    background: var(--surface-app);
+  }
+
+  /* ============================================================================
+   Waitlist / activation. A two-column card:
+   left = intake form → SSO verify → status; right = editorial panel. Ported from
+   the shared design; all rules scoped under `.wl-scope` so the generic class
+   names (.sso/.plat/.flink/…) never collide with console styles.
+   ============================================================================ */
+  .wl-scope {
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 32px;
+    background: var(--surface-app);
+  }
+  .wl-scope .wl-card {
+    display: flex;
+    width: 1080px;
+    max-width: 100%;
+    min-height: 660px;
+    border: 1px solid var(--border-default);
+    border-radius: 16px;
+    overflow: hidden;
+    background: var(--surface-card);
+    box-shadow:
+      0 1px 3px rgba(17, 22, 29, 0.1),
+      0 22px 54px rgba(17, 22, 29, 0.11);
+  }
+  .wl-scope .wl-formcol {
+    width: 560px;
+    flex: none;
+    padding: 46px 54px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-width: 0;
+    overflow-y: auto;
+  }
+  .wl-scope .wl-eyebrow {
+    font: 600 12px/1 var(--font-mono);
+    color: var(--brand);
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+  .wl-scope .wl-h1 {
+    font: 600 28px/1.12 var(--font-sans);
+    letter-spacing: -0.025em;
+    margin: 0;
+  }
+  .wl-scope .wl-lbl {
+    display: block;
+    font: 500 13px var(--font-sans);
+    color: var(--text-primary);
+    margin-bottom: 6px;
+  }
+  .wl-scope .wl-req {
+    color: var(--text-tertiary);
+    font: 400 12px var(--font-sans);
+  }
+  .wl-scope .wl-input,
+  .wl-scope .wl-select,
+  .wl-scope .wl-area {
+    width: 100%;
+    height: 40px;
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    background: var(--surface-card);
+    font: 400 14px var(--font-sans);
+    color: var(--text-primary);
+    padding: 0 12px;
+    outline: none;
+    transition:
+      border-color 0.12s,
+      box-shadow 0.12s;
+  }
+  .wl-scope .wl-area {
+    height: auto;
+    min-height: 76px;
+    padding: 10px 12px;
+    line-height: 1.5;
+    resize: vertical;
+    font-family: var(--font-sans);
+  }
+  .wl-scope .wl-input::placeholder,
+  .wl-scope .wl-area::placeholder {
+    color: var(--text-tertiary);
+  }
+  .wl-scope .wl-input:focus,
+  .wl-scope .wl-select:focus,
+  .wl-scope .wl-area:focus {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px var(--brand-ring, rgba(198, 42, 120, 0.2));
+  }
+  .wl-scope .wl-select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 34px;
+    cursor: pointer;
+  }
+  .wl-scope .plat {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex: 1;
+    height: 40px;
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    background: var(--surface-card);
+    font: 500 13.5px var(--font-sans);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .wl-scope .plat:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+  }
+  .wl-scope .plat.on {
+    border-color: var(--brand);
+    color: var(--brand);
+    background: var(--brand-soft);
+    box-shadow: inset 0 0 0 1px var(--brand);
+  }
+  .wl-scope .wl-btn-primary {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    height: 44px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--brand);
+    color: #fff;
+    font: 600 14.5px var(--font-sans);
+    cursor: pointer;
+    transition:
+      background 0.12s,
+      transform 0.06s;
+  }
+  .wl-scope .wl-btn-primary:hover {
+    background: var(--brand-hover);
+  }
+  .wl-scope .wl-btn-primary:active {
+    transform: translateY(1px);
+  }
+  .wl-scope .wl-btn-primary:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .wl-scope .sso {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    height: 46px;
+    width: 100%;
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    background: var(--surface-card);
+    font: 600 14px var(--font-sans);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .wl-scope .sso:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+  }
+  .wl-scope .sso.dark {
+    background: var(--surface-inverse);
+    color: #fff;
+    border-color: var(--surface-inverse);
+  }
+  .wl-scope .sso.dark:hover {
+    filter: brightness(1.18);
+  }
+  .wl-scope .sso svg {
+    width: 18px;
+    height: 18px;
+  }
+  .wl-scope .backlink {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    align-self: flex-start;
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    color: var(--text-tertiary);
+    font: 600 12.5px var(--font-sans);
+  }
+  .wl-scope .backlink:hover {
+    color: var(--text-secondary);
+  }
+  .wl-scope .wl-btn-ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 44px;
+    padding: 0 18px;
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    background: var(--surface-card);
+    color: var(--text-primary);
+    font: 600 14px var(--font-sans);
+    cursor: pointer;
+    transition: all 0.12s;
+    text-decoration: none;
+  }
+  .wl-scope .wl-btn-ghost:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+    text-decoration: none;
+  }
+  .wl-scope .flink {
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    color: var(--text-tertiary);
+    font: 500 12.5px var(--font-sans);
+    text-decoration: underline;
+  }
+  .wl-scope .flink:hover {
+    color: var(--text-secondary);
+  }
+  .wl-scope .wl-mono {
+    font-family: var(--font-mono);
+  }
+  .wl-scope .wl-aside {
+    flex: 1;
+    min-width: 0;
+    background: var(--surface-sunken);
+    border-left: 1px solid var(--border-subtle);
+    padding: 46px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+  }
+  .wl-scope .wl-aside.dark {
+    background: var(--surface-inverse);
+    color: #fff;
+    border-left: 0;
+  }
+  .wl-scope .wl-in {
+    animation: wlIn 0.32s var(--ease-out, cubic-bezier(0.16, 1, 0.3, 1));
+  }
+  @keyframes wlIn {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes wlPop {
+    0% {
+      transform: scale(0.6);
+      opacity: 0;
+    }
+    60% {
+      transform: scale(1.08);
+    }
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+  @keyframes wlRing {
+    0% {
+      transform: scale(0.9);
+      opacity: 0.5;
+    }
+    100% {
+      transform: scale(1.9);
+      opacity: 0;
+    }
+  }
+  /* Single-column on narrow viewports: drop the editorial panel. */
+  @media (max-width: 768px) {
+    .wl-scope {
+      padding: 0;
+    }
+    .wl-scope .wl-card {
+      flex-direction: column;
+      min-height: 100dvh;
+      width: 100%;
+      border: 0;
+      border-radius: 0;
+      box-shadow: none;
+    }
+    .wl-scope .wl-formcol {
+      width: 100%;
+      padding: 32px 22px;
+    }
+    .wl-scope .wl-aside {
+      display: none;
+    }
+  }
+  /* Full-screen background for the pre-render gate (the auth check that wraps every
+   route). Deliberately NOT `.authpage`: the mobile sign-in layer restyles that to
+   a stretched full-bleed column, which strands a lone spinner at the top on a
+   phone. The spinner itself is the fixed-centred `.loadfill` this hosts — the very
+   same overlay the views use, so it keeps its size AND position when the gate
+   resolves and the view mounts (no jump). */
+  .loadgate {
+    min-height: 100vh;
+    min-height: 100dvh;
+    background: var(--surface-app);
+  }
+  .authwin {
+    display: flex;
+    border: 1px solid var(--border-default);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow:
+      0 1px 3px rgba(17, 22, 29, 0.1),
+      0 18px 44px rgba(17, 22, 29, 0.1);
+    background: var(--surface-card);
+    width: 100%;
+    max-width: 1044px;
+    min-height: 620px;
+  }
+  .brand {
+    width: 404px;
+    flex: none;
+    background: var(--surface-inverse);
+    color: #fff;
+    padding: 40px 38px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+  }
+  .brand .facet {
+    position: absolute;
+    right: -110px;
+    bottom: -110px;
+    width: 440px;
+    height: 440px;
+    opacity: 0.16;
+    transform: rotate(8deg);
+  }
+  .brand-foot {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    position: relative;
+    z-index: 1;
+  }
+  .form {
+    flex: 1;
+    padding: 52px 60px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-width: 0;
+  }
+  .form-inner {
+    width: 100%;
+    max-width: 380px;
+    margin: 0 auto;
+  }
+  .atitle {
+    font: 600 26px/1.15 var(--font-sans);
+    letter-spacing: -0.02em;
+    margin: 0;
+  }
+  .asub {
+    font: 400 14px/1.5 var(--font-sans);
+    color: var(--text-secondary);
+    margin: 8px 0 0;
+  }
+  .sso {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    height: 44px;
+    width: 100%;
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    background: var(--surface-card);
+    font: 600 14px var(--font-sans);
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+  .sso:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+  }
+  .sso svg {
+    width: 18px;
+    height: 18px;
+  }
+  .divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 6px 0;
+  }
+  .divider span.l {
+    flex: 1;
+    height: 1px;
+    background: var(--border-subtle);
+  }
+  .divider span.t {
+    font: 500 12px var(--font-sans);
+    color: var(--text-tertiary);
+    white-space: nowrap;
+  }
+
+  /* ── Auth page, mobile (≤768px) ──────────────────────────────────────────────
+   The desktop sign-in is a centered two-pane card (404px dark brand rail + form).
+   On a phone that rail is wider than the screen, so the design stacks it into a
+   full-bleed column: a compact dark brand header on top, the SSO form below.
+   Driven by CSS so the first paint is already correct (no useIsMobile flash). */
+  @media (max-width: 768px) {
+    .authpage {
+      padding: 0;
+      align-items: stretch;
+      background: var(--surface-card);
+    }
+    .authwin {
+      flex-direction: column;
+      max-width: none;
+      min-height: 100vh;
+      min-height: 100dvh;
+      border: 0;
+      border-radius: 0;
+      box-shadow: none;
+    }
+    /* brand: full-width top header, content flowing top-down (not bottom-anchored) */
+    .brand {
+      width: auto;
+      flex: none;
+      padding: 26px 26px 30px;
+    }
+    .brand-mark svg {
+      height: 26px;
+      width: auto;
+    }
+    .brand-lead {
+      margin-top: 30px !important;
+    }
+    /* !important beats the inline `font:` shorthand on the tagline div. */
+    .brand-lead > div:first-child {
+      font-size: 21px !important;
+      max-width: 290px;
+    }
+    /* drop the longer Slack/Telegram blurb on the compact mobile header */
+    .brand-desc {
+      display: none;
+    }
+    .brand-foot {
+      margin-top: 14px !important;
+    }
+    .brand .facet {
+      right: -80px;
+      bottom: -90px;
+      width: 260px;
+      height: 260px;
+      opacity: 0.14;
+    }
+    .brand .facet svg {
+      width: 100%;
+      height: 100%;
+    }
+    /* form: top-aligned (not vertically centered), tighter gutters, taller buttons */
+    .form {
+      justify-content: flex-start;
+      padding: 34px 24px 26px;
+    }
+    .atitle {
+      font-size: 24px;
+    }
+    .asub {
+      font-size: 14px;
+    }
+    .sso {
+      height: 48px;
+    }
+  }
+  .legal {
+    font: 400 11.5px/1.55 var(--font-sans);
+    color: var(--text-tertiary);
+  }
+  .legal a {
+    color: var(--text-secondary);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  /* ---- user menu (top-bar avatar dropdown) ---- */
+  .usermenu {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 50;
+    width: 230px;
+    background: var(--surface-card);
+    border: 1px solid var(--border-default);
+    border-radius: 10px;
+    box-shadow: var(--shadow-lg);
+    padding: 6px;
+    overflow: hidden;
+  }
+  .usermenu-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 8px 10px;
+    border-bottom: 1px solid var(--border-subtle);
+    margin-bottom: 6px;
+  }
+  .usermenu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 8px;
+    border: 0;
+    background: none;
+    border-radius: 6px;
+    font: 500 13px var(--font-sans);
+    color: var(--text-primary);
+    cursor: pointer;
+    text-align: left;
+  }
+  .usermenu-item:hover {
+    background: var(--surface-hover);
+  }
+
+  /* ---- syntax highlighting (highlight.js) ----
+   A light theme for the workspace file viewer, mapped onto the console's design
+   tokens instead of shipping a stock hljs stylesheet. Token class names are
+   highlight.js's; we group them onto the palette we already use elsewhere. */
+  .hljs {
+    color: var(--text-primary);
+  }
+  .hljs-comment,
+  .hljs-quote {
+    color: var(--gray-400);
+    font-style: italic;
+  }
+  .hljs-keyword,
+  .hljs-selector-tag,
+  .hljs-literal,
+  .hljs-doctag,
+  .hljs-name {
+    color: var(--magenta-600);
+  }
+  .hljs-string,
+  .hljs-regexp,
+  .hljs-meta .hljs-string {
+    color: var(--green-500);
+  }
+  .hljs-number,
+  .hljs-symbol,
+  .hljs-bullet,
+  .hljs-link {
+    color: var(--coral-500);
+  }
+  .hljs-title,
+  .hljs-title.function_,
+  .hljs-section {
+    color: var(--blue-500);
+  }
+  .hljs-type,
+  .hljs-built_in,
+  .hljs-class .hljs-title,
+  .hljs-title.class_ {
+    color: var(--purple-500);
+  }
+  .hljs-attr,
+  .hljs-attribute,
+  .hljs-variable,
+  .hljs-template-variable,
+  .hljs-selector-attr,
+  .hljs-selector-pseudo {
+    color: var(--gold-500);
+  }
+  .hljs-selector-class,
+  .hljs-selector-id,
+  .hljs-tag {
+    color: var(--magenta-700);
+  }
+  .hljs-meta,
+  .hljs-params {
+    color: var(--text-secondary);
+  }
+  .hljs-deletion {
+    color: var(--red-600);
+  }
+  .hljs-addition {
+    color: var(--green-500);
+  }
+  .hljs-emphasis {
+    font-style: italic;
+  }
+  .hljs-strong {
+    font-weight: 600;
+  }
+  /* Bare URLs in the code view, wrapped into anchors by lib/highlight.ts
+   linkifyHtml() — link-coloured over whatever token colour surrounds them. */
+  .codelink {
+    color: var(--blue-500);
+    text-decoration: none;
+  }
+  .codelink:hover {
+    text-decoration: underline;
+  }
+
+  /* Rendered transcript message text (react-markdown output) — see MessageText.tsx.
+   Compact inline typography for chat rows, distinct from .md-body (file preview). */
+  .mdtxt {
+    min-width: 0;
+    overflow-wrap: break-word;
+  }
+  .mdtxt > * + * {
+    margin-top: 7px;
+  }
+  .mdtxt p {
+    margin: 0;
+  }
+  .mdtxt strong {
+    font-weight: 600;
+  }
+  .mdtxt em {
+    font-style: italic;
+  }
+  .mdtxt del {
+    text-decoration: line-through;
+    color: var(--text-secondary);
+  }
+  .mdtxt h1,
+  .mdtxt h2,
+  .mdtxt h3,
+  .mdtxt h4,
+  .mdtxt h5,
+  .mdtxt h6 {
+    margin: 0;
+    font-weight: 600;
+    font-size: 1em;
+  }
+  .mdtxt h1,
+  .mdtxt h2 {
+    font-size: 1.08em;
+  }
+  .mdtxt ul,
+  .mdtxt ol {
+    margin: 0;
+    padding-left: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .mdtxt blockquote {
+    margin: 0;
+    padding: 1px 0 1px 10px;
+    border-left: 3px solid var(--border-strong);
+    color: var(--text-secondary);
+  }
+  .mdtxt code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    padding: 0.5px 4px;
+  }
+  .mdtxt pre {
+    margin: 0;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-subtle);
+    border-radius: 7px;
+    padding: 9px 11px;
+    font: 400 11.5px/1.55 var(--font-mono);
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .mdtxt pre code {
+    background: none;
+    border: 0;
+    padding: 0;
+    font-size: inherit;
+  }
+  .mdtxt a {
+    color: var(--text-link);
+    text-decoration: none;
+    word-break: break-all;
+  }
+  .mdtxt a:hover {
+    text-decoration: underline;
+  }
+  .mdtxt hr {
+    border: 0;
+    border-top: 1px solid var(--border-subtle);
+    margin: 4px 0;
+  }
+  .mdtxt table {
+    border-collapse: collapse;
+    display: block;
+    width: max-content;
+    max-width: 100%;
+    overflow-x: auto;
+    font-size: 0.96em;
+  }
+  .mdtxt th,
+  .mdtxt td {
+    border: 1px solid var(--border-subtle);
+    padding: 4px 9px;
+    text-align: left;
+    vertical-align: top;
+  }
+  .mdtxt th {
+    background: var(--surface-sunken);
+    font-weight: 600;
+  }
+
+  /* Rendered-markdown preview in the workspace file browser (react-markdown output).
+   GitHub-flavoured document typography — distinct from .mdtxt, which is the compact
+   inline formatter used for chat. Scoped to .md-body so it never leaks elsewhere. */
+  .md-body {
+    font: 400 13.5px/1.7 var(--font-sans);
+    color: var(--text-primary);
+    word-wrap: break-word;
+  }
+  .md-body > *:first-child {
+    margin-top: 0;
+  }
+  .md-body > *:last-child {
+    margin-bottom: 0;
+  }
+  .md-body h1,
+  .md-body h2,
+  .md-body h3,
+  .md-body h4,
+  .md-body h5,
+  .md-body h6 {
+    margin: 22px 0 12px;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .md-body h1 {
+    font-size: 22px;
+    padding-bottom: 7px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .md-body h2 {
+    font-size: 18px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .md-body h3 {
+    font-size: 15.5px;
+  }
+  .md-body h4 {
+    font-size: 13.5px;
+  }
+  .md-body h5,
+  .md-body h6 {
+    font-size: 12.5px;
+    color: var(--text-secondary);
+  }
+  .md-body p,
+  .md-body ul,
+  .md-body ol,
+  .md-body blockquote,
+  .md-body table,
+  .md-body pre {
+    margin: 0 0 13px;
+  }
+  .md-body ul,
+  .md-body ol {
+    padding-left: 24px;
+  }
+  /* Re-assert list markers: the app's global reset strips list-style. */
+  .md-body ul {
+    list-style: disc;
+  }
+  .md-body ul ul {
+    list-style: circle;
+  }
+  .md-body ol {
+    list-style: decimal;
+  }
+  .md-body li {
+    margin: 3px 0;
+  }
+  .md-body li > ul,
+  .md-body li > ol {
+    margin: 3px 0;
+  }
+  .md-body li::marker {
+    color: var(--text-tertiary);
+  }
+  /* GFM task lists */
+  .md-body li.task-list-item {
+    list-style: none;
+    margin-left: -20px;
+  }
+  .md-body li.task-list-item input {
+    margin-right: 7px;
+    vertical-align: middle;
+  }
+  .md-body a {
+    color: var(--text-link);
+    text-decoration: none;
+  }
+  .md-body a:hover {
+    text-decoration: underline;
+  }
+  .md-body strong {
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .md-body code {
+    font: 400 0.86em var(--font-mono);
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .md-body pre {
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 12px 14px;
+    overflow: auto;
+  }
+  .md-body pre code {
+    background: none;
+    border: 0;
+    padding: 0;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .md-body blockquote {
+    padding: 2px 14px;
+    color: var(--text-secondary);
+    border-left: 3px solid var(--border-strong);
+  }
+  .md-body blockquote > *:last-child {
+    margin-bottom: 0;
+  }
+  .md-body table {
+    border-collapse: collapse;
+    display: block;
+    width: max-content;
+    max-width: 100%;
+    overflow: auto;
+    font-size: 12.5px;
+  }
+  .md-body th,
+  .md-body td {
+    border: 1px solid var(--border-subtle);
+    padding: 6px 12px;
+    text-align: left;
+  }
+  .md-body th {
+    background: var(--surface-sunken);
+    font-weight: 600;
+  }
+  .md-body tr:nth-child(2n) td {
+    background: var(--surface-app);
+  }
+  .md-body hr {
+    height: 1px;
+    border: 0;
+    background: var(--border-subtle);
+    margin: 20px 0;
+  }
+  .md-body img {
+    max-width: 100%;
+  }
+  .md-body h1:first-child,
+  .md-body h2:first-child,
+  .md-body h3:first-child {
+    margin-top: 0;
+  }
+
+  /* ============================================================================
+   Mobile / responsive layer
+   ----------------------------------------------------------------------------
+   The console is a fixed desktop shell (240px rail + fluid main). Below the
+   tablet breakpoint we swap the rail for a bottom tab bar, turn the top bar into
+   a compact app bar (logo + section), tighten gutters, and float modals up as
+   bottom sheets. Driven purely by CSS media queries so SSR markup is identical
+   on both — no viewport JS, no hydration mismatch. Mirrors the "AgentConnect
+   Mobile" design (app bar h-14 · bottom nav · scrim + rounded-t sheets).
+   ============================================================================ */
+
+  /* Mobile-only chrome — present in the DOM on every viewport (app bar + nav render
+   always; sheets/search render on demand), revealed only inside the media query. */
+  .mtop {
+    display: none;
+  }
+  .mnav {
+    display: none;
+  }
+
+  @media (max-width: 768px) {
+    /* ----- rail → bottom nav ----- */
+    .rail {
+      display: none;
+    }
+
+    /* ----- app bar: the desktop top bar is swapped for the mobile app bar (.mtop),
+     which comes in two variants (list-tab vs push) rendered by the shell ----- */
+    .top {
+      display: none;
+    }
+    .mtop {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      height: 56px;
+      flex: none;
+      padding: 0 8px;
+      background: var(--surface-card);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .mtop-logo {
+      display: inline-flex;
+      align-items: center;
+      flex: none;
+      line-height: 0;
+      margin-left: 8px;
+    }
+    .mtop-title {
+      flex: 1;
+      min-width: 0;
+      font: 600 16px var(--font-sans);
+      color: var(--text-primary);
+      margin-left: 8px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    /* Push variant: back button sits flush-left, so the title needs no logo gutter. */
+    .app.pushed .mtop-title {
+      margin-left: 0;
+    }
+    .mappbtn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 44px;
+      height: 44px;
+      flex: none;
+      border: 0;
+      border-radius: 8px;
+      background: none;
+      color: var(--text-secondary);
+      cursor: pointer;
+      padding: 0;
+    }
+    .mappbtn:active {
+      background: var(--surface-active);
+    }
+
+    /* ----- content: full-bleed on mobile (the mobile view branches own their own
+     12px×16px card gutters, matching the design's edge insets) — only reserve the
+     bottom inset that clears the fixed nav (list routes) or the safe area (push). ----- */
+    .content {
+      padding: 0 0 calc(76px + env(safe-area-inset-bottom, 0px));
+    }
+    .app.pushed .content {
+      padding: 0 0 calc(24px + env(safe-area-inset-bottom, 0px));
+    }
+    /* Until the client mounts, useIsMobile is still false, so `.content` holds the
+     desktop-first SSR markup. Hide it on phones until `.app.mounted` so desktop-only
+     chrome (e.g. the "Add agent" button) never flashes before the mobile layout swaps
+     in. Desktop never matches this media query, so it paints content immediately. */
+    .app:not(.mounted) .content {
+      visibility: hidden;
+    }
+
+    /* ----- bottom tab bar: plum, fixed 5-slot grid (4 tabs + More) + home pill ----- */
+    .mnav {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 60;
+      display: block;
+      background: var(--surface-inverse);
+      padding: 6px 8px calc(0px + env(safe-area-inset-bottom, 0px));
+    }
+    .mnav-tabs {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+    }
+    .mnavitem {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 6px 0 4px;
+      border: 0;
+      background: none;
+      cursor: pointer;
+      text-decoration: none;
+      color: var(--text-inverse-dim);
+      font: 500 12px var(--font-sans);
+    }
+    .mnavitem.on {
+      color: #fff;
+      font-weight: 600;
+    }
+    .mnavitem span {
+      white-space: nowrap;
+    }
+    /* Home-indicator pill row — shared between nav (translucent white) and sheets. */
+    .mnav-home,
+    .msheet-home {
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .home-pill {
+      width: 134px;
+      height: 5px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.3);
+    }
+    .home-pill.dark {
+      background: var(--gray-300);
+    }
+
+    /* ----- mobile bottom sheets (More / Org), reached from the nav's "More" tab ----- */
+    .msheet-scrim {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      background: rgba(17, 22, 29, 0.5);
+      backdrop-filter: blur(2px);
+      display: flex;
+      align-items: flex-end;
+    }
+    .msheet {
+      width: 100%;
+      background: var(--surface-card);
+      border-radius: 16px 16px 0 0;
+      box-shadow: var(--shadow-xl);
+      padding: 8px 8px 12px;
+      max-height: 88vh;
+      overflow-y: auto;
+    }
+    .msheet-handle {
+      width: 40px;
+      height: 4px;
+      border-radius: 999px;
+      background: var(--border-strong);
+      margin: 4px auto 8px;
+    }
+    .msheet-eyebrow {
+      padding: 4px 12px 10px;
+      font: 600 11px var(--font-mono);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      border-bottom: 1px solid var(--border-subtle);
+      margin-bottom: 8px;
+    }
+    .msheet-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+      min-height: 48px;
+      padding: 8px 12px;
+      border: 0;
+      border-radius: 8px;
+      background: none;
+      text-align: left;
+      text-decoration: none;
+      cursor: pointer;
+      font: 500 14px var(--font-sans);
+      color: var(--text-primary);
+    }
+    .msheet-row:active {
+      background: var(--surface-active);
+    }
+    .msheet-rowtext {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .msheet-rowname {
+      font: 600 14px var(--font-sans);
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .msheet-rowmeta {
+      font: 400 12px var(--font-mono);
+      color: var(--text-tertiary);
+    }
+    .msheet-orgsq {
+      width: 32px;
+      height: 32px;
+      flex: none;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font: 600 13px var(--font-sans);
+    }
+    .msheet-orgsq.dashed {
+      background: none !important;
+      border: 1px dashed var(--border-strong);
+      color: var(--text-tertiary);
+    }
+    .msheet-divider {
+      height: 1px;
+      background: var(--border-subtle);
+      margin: 4px 12px 8px;
+    }
+    .msheet-cancel {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: calc(100% - 8px);
+      height: 44px;
+      margin: 8px 4px 0;
+      border: 1px solid var(--border-default);
+      border-radius: 8px;
+      background: var(--surface-card);
+      font: 600 14px var(--font-sans);
+      color: var(--text-primary);
+      cursor: pointer;
+    }
+
+    /* (Full-screen mobile search is rendered by GlobalSearch's `mobile` variant with
+     inline styles — see components/console/GlobalSearch.tsx.) */
+
+    /* ----- modals → bottom sheets ----- */
+    .scrim {
+      align-items: flex-end;
+      padding: 0;
+    }
+    .modal {
+      max-width: 100%;
+      max-height: 92vh;
+      border-radius: 16px 16px 0 0;
+      border-bottom: 0;
+    }
+    /* Grab handle above the sheet header. */
+    .modalhead {
+      position: relative;
+      padding-top: 22px;
+    }
+    .modalhead::before {
+      content: '';
+      position: absolute;
+      top: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 40px;
+      height: 4px;
+      border-radius: 999px;
+      background: var(--border-strong);
+    }
+
+    /* ----- page title: dial the big view headings down a notch ----- */
+    .ptitle {
+      font-size: 20px;
+    }
+    /* ----- page subtitle: hide the long descriptive blurb under each view's title
+     (Agents/Sessions/Daemons/… list headers) — it eats vertical space on phones
+     and the section is already clear from the title + bottom-nav tab. */
+    .psub {
+      display: none;
+    }
+
+    /* ----- content overflow: the page never pans sideways; wide data tables
+     (the `.row` grids, which are fixed multi-column desktop layouts) scroll
+     inside their own card so no columns are lost and the header/title stay put. */
+    .content {
+      overflow-x: hidden;
+    }
+    .card:has(.row) {
+      overflow-x: auto;
+    }
+
+    /* Stat strips and modal two-up form grids used to be re-flowed here via
+       `div:has(> .card.stat)` / `[style*='grid-template-columns: 1fr 1fr']`
+       !important overrides of their inline styles. The Tailwind migration
+       encodes both directly on the elements (`grid-cols-2 desktop:grid-cols-4`,
+       `grid-cols-1 desktop:grid-cols-2` + `desktop:col-span-2`), so those
+       hacks are gone. */
+  }
+} /* end @layer components */
+
+/* All motion respects `prefers-reduced-motion`. Transitions collapse to a
+   single frame — the hover/press END states are unchanged, they just arrive
+   instantly. Deliberately un-layered and !important so it beats both the
+   component layer and Tailwind's `duration-*` utilities. The activity
+   animations (`acdot`) stay: they report live state, not decoration. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 1ms !important;
+  }
+}

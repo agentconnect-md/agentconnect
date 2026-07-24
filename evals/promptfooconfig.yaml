@@ -1,0 +1,62 @@
+description: AgentConnect add-on paired effects and harness neutrality
+
+prompts:
+  - '{{case}}'
+
+providers:
+  - id: file://providers/agentconnect.ts
+    label: raw-acp
+    config:
+      mode: raw-acp
+      name: raw-acp
+
+  - id: file://providers/agentconnect.ts
+    label: daemon-core
+    config:
+      mode: daemon
+      treatment:
+        name: daemon-core
+        memory: off
+        collaboration: off
+
+  - id: file://providers/agentconnect.ts
+    label: memory-only
+    config:
+      mode: daemon
+      treatment:
+        name: memory-only
+        memory: configured
+        collaboration: off
+
+  - id: file://providers/agentconnect.ts
+    label: collaboration-only
+    config:
+      mode: daemon
+      treatment:
+        name: collaboration-only
+        memory: off
+        collaboration: configured
+
+  - id: file://providers/agentconnect.ts
+    label: both
+    config:
+      mode: daemon
+      treatment:
+        name: both
+        memory: configured
+        collaboration: configured
+
+tests: file://cases/addons.yaml
+
+extensions:
+  - file://extensions/paired-summary.ts:afterAll
+
+evaluateOptions:
+  cache: false
+  maxConcurrency: 1
+
+outputPath:
+  - .artifacts/evaluation/promptfoo/results.json
+  - .artifacts/evaluation/promptfoo/results.junit.xml
+
+sharing: false

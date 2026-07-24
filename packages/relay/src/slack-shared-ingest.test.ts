@@ -1,0 +1,489 @@
+import { describe, expect, it, vi } from 'vitest'
+import { createHmac } from 'node:crypto'
+import {
+  ELICIT_ACTION_PREFIX,
+  ELICIT_DISMISS_ACTION,
+  PERMISSION_ACTION_PREFIX,
+  SHARED_AGENT_SELECT_ACTION_ID,
+  SHARED_CONFIG_ACTION_ID,
+  SLACK_STATUS_ACTION,
+  encodeSlackStatusOverflowValue,
+  encodeSharedSlackStatusTarget
+} from '@agentconnect.md/protocol'
+import {
+  parseSharedSlackAgentSelection,
+  parseSharedSlackAgentSwitch,
+  parseSharedSlackSessionAction,
+  sharedSlackAgentOptions,
+  SlackSharedIngest,
+  type SlackSharedIngestDeps,
+  type SlackInteractiveBody
+} from './slack-shared-ingest.js'
+import { verifySlackSignature } from './hooks/signature.js'
+
+const AGENT_ID = '11111111-1111-4111-8111-111111111111'
+const INTEGRATION_ID = '22222222-2222-4222-8222-222222222222'
+const SESSION_KEY = 'slack:C123:1720000000.000100:agent'
+const TARGET = { v: 1 as const, agentId: AGENT_ID, integrationId: INTEGRATION_ID, sessionKey: SESSION_KEY }
+const ENCODED_TARGET = encodeSharedSlackStatusTarget(TARGET)
+
+function body(actionId: string, over: Partial<SlackInteractiveBody> = {}): SlackInteractiveBody {
+  return {
+    type: 'block_actions',
+    trigger_id: 'trigger-1',
+    actions: [{ action_id: actionId, action_ts: '1720000000.000200' }],
+    view: { private_metadata: ENCODED_TARGET },
+    ...over
+  }
+}
+
+describe('parseSharedSlackSessionAction', () => {
+  it('parses the status gear from action.value and keeps a stable interaction receipt', () => {
+    const parsed = parseSharedSlackSessionAction(
+      body(SLACK_STATUS_ACTION.manage, {
+        actions: [
+          {
+            action_id: SLACK_STATUS_ACTION.manage,
+            action_ts: '1720000000.000200',
+            value: ENCODED_TARGET
+          }
+        ]
+      })
+    )
+    expect(parsed).toEqual({
+      target: TARGET,
+      interactionId: JSON.stringify([SLACK_STATUS_ACTION.manage, '1720000000.000200']),
+      kind: 'open-config',
+      triggerId: 'trigger-1'
+    })
+  })
+
+  it('parses Session options and Cancel from the compact overflow', () => {
+    const manage = parseSharedSlackSessionAction(
+      body(SLACK_STATUS_ACTION.more, {
+        actions: [
+          {
+            action_id: SLACK_STATUS_ACTION.more,
+            action_ts: '1720000000.000250',
+            block_id: ENCODED_TARGET,
+            selected_option: { value: encodeSlackStatusOverflowValue('manage') }
+          }
+        ]
+      })
+    )
+    expect(manage).toMatchObject({ target: TARGET, kind: 'open-config', triggerId: 'trigger-1' })
+
+    const cancel = parseSharedSlackSessionAction(
+      body(SLACK_STATUS_ACTION.more, {
+        actions: [
+          {
+            action_id: SLACK_STATUS_ACTION.more,
+            action_ts: '1720000000.000251',
+            block_id: ENCODED_TARGET,
+            selected_option: { value: encodeSlackStatusOverflowValue('cancel') }
+          }
+        ]
+      })
+    )
+    expect(cancel).toMatchObject({ target: TARGET, kind: 'cancel' })
+
+    const legacyCancel = parseSharedSlackSessionAction(
+      body(SLACK_STATUS_ACTION.more, {
+        actions: [
+          {
+            action_id: SLACK_STATUS_ACTION.more,
+            action_ts: '1720000000.000252',
+            selected_option: {
+              value: JSON.stringify({ v: 1, action: 'cancel', target: ENCODED_TARGET })
+            }
+          }
+        ]
+      })
+    )
+    expect(legacyCancel).toMatchObject({ target: TARGET, kind: 'cancel' })
+  })
+
+  it.each([
+    [SLACK_STATUS_ACTION.setModel, 'opus-4.8', { kind: 'set-model', model: 'opus-4.8' }],
+    [SLACK_STATUS_ACTION.setEffort, 'high', { kind: 'set-effort', effort: 'high' }],
+    [SLACK_STATUS_ACTION.setPermissionMode, 'plan', { kind: 'set-permission-mode', permissionMode: 'plan' }],
+    [SLACK_STATUS_ACTION.setFast, 'on', { kind: 'set-fast', fastMode: true }],
+    [SLACK_STATUS_ACTION.setOutput, 'medium', { kind: 'set-output', outputMode: 'medium' }]
+  ])('parses modal action %s from private_metadata', (actionId, selected, expected) => {
+    const parsed = parseSharedSlackSessionAction(
+      body(actionId, {
+        actions: [{ action_id: actionId, action_ts: '1720000000.000300', selected_option: { value: selected } }]
+      })
+    )
+    expect(parsed).toMatchObject({
+      target: TARGET,
+      interactionId: JSON.stringify([actionId, '1720000000.000300']),
+      ...expected
+    })
+  })
+
+  it('parses cancel and falls back to trigger_id when action_ts is absent', () => {
+    expect(
+      parseSharedSlackSessionAction(
+        body(SLACK_STATUS_ACTION.cancel, { actions: [{ action_id: SLACK_STATUS_ACTION.cancel }] })
+      )
+    ).toEqual({
+      target: TARGET,
+      interactionId: JSON.stringify([SLACK_STATUS_ACTION.cancel, 'trigger-1']),
+      kind: 'cancel'
+    })
+  })
+
+  it('routes permission and elicitation message buttons from their shared block target', () => {
+    const parseCard = (action_id: string, value: string) =>
+      parseSharedSlackSessionAction(
+        body(action_id, {
+          actions: [{ action_id, action_ts: '1720000000.000500', block_id: ENCODED_TARGET, value }],
+          view: undefined
+        })
+      )
+
+    expect(parseCard(`${PERMISSION_ACTION_PREFIX}:0`, 'perm-1|allow_once')).toMatchObject({
+      target: TARGET,
+      kind: 'permission-choice',
+      requestId: 'perm-1',
+      optionId: 'allow_once'
+    })
+    expect(parseCard(`${ELICIT_ACTION_PREFIX}:1`, 'elicit-1|TypeScript')).toMatchObject({
+      target: TARGET,
+      kind: 'elicitation-choice',
+      requestId: 'elicit-1',
+      value: 'TypeScript'
+    })
+    expect(parseCard(ELICIT_DISMISS_ACTION, 'elicit-2')).toMatchObject({
+      target: TARGET,
+      kind: 'elicitation-choice',
+      requestId: 'elicit-2',
+      value: null
+    })
+    expect(
+      parseSharedSlackSessionAction(
+        body(`${PERMISSION_ACTION_PREFIX}:0`, {
+          actions: [{ action_id: `${PERMISSION_ACTION_PREFIX}:0`, action_ts: '1', value: 'perm-1|allow_once' }]
+        })
+      )
+    ).toBeNull()
+  })
+
+  it('parses an inline Cancel target from action.value', () => {
+    expect(
+      parseSharedSlackSessionAction({
+        type: 'block_actions',
+        actions: [{ action_id: SLACK_STATUS_ACTION.cancel, action_ts: '1', value: ENCODED_TARGET }]
+      })
+    ).toMatchObject({ target: TARGET, kind: 'cancel' })
+  })
+
+  it('never turns the relay-local person/default-agent control into a daemon action', () => {
+    expect(
+      parseSharedSlackSessionAction(
+        body(SHARED_CONFIG_ACTION_ID, {
+          actions: [{ action_id: SHARED_CONFIG_ACTION_ID, action_ts: '1720000000.000400', value: ENCODED_TARGET }]
+        })
+      )
+    ).toBeNull()
+  })
+
+  it('rejects malformed/tampered targets, unknown values, and receipts with no stable id', () => {
+    expect(
+      parseSharedSlackSessionAction(
+        body(SLACK_STATUS_ACTION.manage, {
+          actions: [{ action_id: SLACK_STATUS_ACTION.manage, action_ts: '1', value: '{bad-json' }]
+        })
+      )
+    ).toBeNull()
+    const extraField = JSON.stringify({ ...TARGET, daemonId: 'attacker-chosen-daemon' })
+    expect(
+      parseSharedSlackSessionAction(
+        body(SLACK_STATUS_ACTION.manage, {
+          actions: [{ action_id: SLACK_STATUS_ACTION.manage, action_ts: '1', value: extraField }]
+        })
+      )
+    ).toBeNull()
+    expect(
+      parseSharedSlackSessionAction(
+        body(SLACK_STATUS_ACTION.setFast, {
+          actions: [{ action_id: SLACK_STATUS_ACTION.setFast, action_ts: '1', selected_option: { value: 'maybe' } }]
+        })
+      )
+    ).toBeNull()
+    expect(
+      parseSharedSlackSessionAction({
+        type: 'block_actions',
+        actions: [{ action_id: SLACK_STATUS_ACTION.cancel }],
+        view: { private_metadata: ENCODED_TARGET }
+      })
+    ).toBeNull()
+  })
+})
+
+describe('shared Slack agent selector', () => {
+  const agents = [
+    { agentId: AGENT_ID, name: 'Deploy Agent' },
+    { agentId: '33333333-3333-4333-8333-333333333333', name: 'Review Agent' }
+  ]
+
+  it('serves matching options and accepts only a current shared-bot member', () => {
+    expect(sharedSlackAgentOptions(agents, 'deploy')).toEqual([
+      { text: { type: 'plain_text', text: 'Deploy Agent' }, value: AGENT_ID }
+    ])
+    expect(
+      parseSharedSlackAgentSelection(
+        {
+          type: 'block_actions',
+          channel: { id: 'C123' },
+          message: { ts: '1720000000.000200', thread_ts: '1720000000.000100' },
+          actions: [{ action_id: SHARED_AGENT_SELECT_ACTION_ID, selected_option: { value: AGENT_ID } }]
+        },
+        agents
+      )
+    ).toEqual({ channelId: 'C123', threadTs: '1720000000.000100', agentId: AGENT_ID })
+  })
+
+  it('opens Switch agent for the current thread without treating it as a daemon action', () => {
+    const interaction = body(SLACK_STATUS_ACTION.more, {
+      channel: { id: 'C123' },
+      message: { ts: '1720000000.000200', thread_ts: '1720000000.000100' },
+      actions: [
+        {
+          action_id: SLACK_STATUS_ACTION.more,
+          action_ts: '1720000000.000200',
+          block_id: ENCODED_TARGET,
+          selected_option: { value: encodeSlackStatusOverflowValue('switch-agent') }
+        }
+      ]
+    })
+    expect(parseSharedSlackAgentSwitch(interaction)).toEqual({
+      channelId: 'C123',
+      threadTs: '1720000000.000100',
+      currentAgentId: AGENT_ID
+    })
+    expect(parseSharedSlackSessionAction(interaction)).toBeNull()
+
+    const legacyInteraction = {
+      ...interaction,
+      actions: [
+        {
+          action_id: SLACK_STATUS_ACTION.more,
+          action_ts: '1720000000.000201',
+          selected_option: {
+            value: JSON.stringify({ v: 1, action: 'switch-agent', target: ENCODED_TARGET })
+          }
+        }
+      ]
+    }
+    expect(parseSharedSlackAgentSwitch(legacyInteraction)).toEqual({
+      channelId: 'C123',
+      threadTs: '1720000000.000100',
+      currentAgentId: AGENT_ID
+    })
+  })
+})
+
+describe('SlackSharedIngest.handleInteraction', () => {
+  const silentLog = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
+  const ingestDeps = (over: Partial<SlackSharedIngestDeps> = {}): SlackSharedIngestDeps => ({
+    onMessage: vi.fn(async () => {}),
+    onBotUserId: vi.fn(),
+    onChannelsChanged: vi.fn(),
+    agents: () => [
+      { agentId: AGENT_ID, name: 'Deploy Agent' },
+      { agentId: '33333333-3333-4333-8333-333333333333', name: 'Review Agent' }
+    ],
+    currentOwner: () => undefined,
+    onSetChannelAgent: vi.fn(),
+    onSelectThreadAgent: vi.fn(),
+    onSessionAction: vi.fn(),
+    log: silentLog,
+    ...over
+  })
+
+  it('returns the external-select options on the 200 body for a block_suggestion', async () => {
+    const ingest = new SlackSharedIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, ingestDeps())
+    const result = await ingest.handleInteraction({
+      type: 'block_suggestion',
+      action_id: SHARED_AGENT_SELECT_ACTION_ID,
+      value: 'deploy'
+    })
+    expect(result).toEqual({ options: [{ text: { type: 'plain_text', text: 'Deploy Agent' }, value: AGENT_ID }] })
+  })
+
+  it('fires the thread-agent selection and returns an empty 200 body', async () => {
+    const onSelectThreadAgent = vi.fn()
+    const ingest = new SlackSharedIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      ingestDeps({ onSelectThreadAgent })
+    )
+    const result = await ingest.handleInteraction({
+      type: 'block_actions',
+      channel: { id: 'C123' },
+      message: { ts: '1720000000.000200', thread_ts: '1720000000.000100' },
+      actions: [{ action_id: SHARED_AGENT_SELECT_ACTION_ID, selected_option: { value: AGENT_ID } }]
+    })
+    expect(result).toBe('')
+    expect(onSelectThreadAgent).toHaveBeenCalledWith('C123', '1720000000.000100', AGENT_ID)
+  })
+})
+
+describe('SlackSharedIngest channel membership events', () => {
+  const silentLog = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
+  const deps = (web: object, over: Partial<SlackSharedIngestDeps> = {}): SlackSharedIngestDeps => ({
+    onMessage: vi.fn(async () => {}),
+    onBotUserId: vi.fn(),
+    onChannelsChanged: vi.fn(),
+    agents: () => [],
+    currentOwner: () => undefined,
+    onSetChannelAgent: vi.fn(),
+    onSelectThreadAgent: vi.fn(),
+    onSessionAction: vi.fn(),
+    webClientFactory: () => web as never,
+    log: silentLog,
+    ...over
+  })
+
+  it('refreshes the complete paginated snapshot only when the bot itself joins', async () => {
+    const conversations = vi.fn(async ({ cursor }: { cursor?: string }) =>
+      cursor
+        ? { channels: [{ id: 'C3' }], response_metadata: {} }
+        : {
+            channels: [
+              { id: 'C1', name: 'deploys' },
+              { id: 'D1', is_im: true },
+              { id: 'C2', name: 'ops', is_private: true }
+            ],
+            response_metadata: { next_cursor: 'page-2' }
+          }
+    )
+    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) }, users: { conversations } }
+    const onChannelsChanged = vi.fn()
+    const ingest = new SlackSharedIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      deps(web, { onChannelsChanged })
+    )
+    await ingest.start()
+
+    await ingest.handleEvent({ type: 'member_joined_channel', user: 'UOTHER', channel: 'C1' })
+    expect(conversations).not.toHaveBeenCalled()
+
+    await ingest.handleEvent({ type: 'member_joined_channel', user: 'UBOT', channel: 'C1' })
+    expect(conversations).toHaveBeenCalledTimes(2)
+    expect(onChannelsChanged).toHaveBeenCalledWith([
+      { id: 'C1', name: 'deploys' },
+      { id: 'C2', name: 'ops', isPrivate: true },
+      { id: 'C3' }
+    ])
+  })
+
+  it.each(['channel_left', 'group_left'])('refreshes after the self-scoped %s event', async (type) => {
+    const conversations = vi.fn(async () => ({ channels: [{ id: 'C1', name: 'remaining' }] }))
+    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) }, users: { conversations } }
+    const onChannelsChanged = vi.fn()
+    const ingest = new SlackSharedIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      deps(web, { onChannelsChanged })
+    )
+    await ingest.start()
+
+    await ingest.handleEvent({ type, channel: 'CLEFT' })
+
+    expect(onChannelsChanged).toHaveBeenCalledWith([{ id: 'C1', name: 'remaining' }])
+  })
+})
+
+describe('SlackSharedIngest message events', () => {
+  it('drops self and Slack system messages while forwarding peer app text', async () => {
+    const onMessage = vi.fn(async () => {})
+    const botIds = [undefined, 'BSELF']
+    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT', bot_id: botIds.shift() })) } }
+    const ingest = new SlackSharedIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      {
+        onMessage,
+        onBotUserId: vi.fn(),
+        onChannelsChanged: vi.fn(),
+        agents: () => [],
+        currentOwner: () => undefined,
+        onSetChannelAgent: vi.fn(),
+        onSelectThreadAgent: vi.fn(),
+        onSessionAction: vi.fn(),
+        webClientFactory: () => web as never,
+        log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
+      }
+    )
+    await ingest.start()
+
+    const botEvent = { type: 'message', subtype: 'bot_message', channel: 'C1' }
+    await ingest.handleEvent({
+      type: 'message',
+      channel: 'D1',
+      channel_type: 'im',
+      ts: '99.7',
+      user: 'USLACK',
+      text: '<@U1> added you to <#C1>.'
+    })
+    await ingest.handleEvent({ ...botEvent, ts: '99.8', bot_id: 'BPEER', text: 'identity unresolved' })
+    await ingest.handleEvent({ type: 'app_mention', channel: 'C1', ts: '99.9', user: 'U1', text: '<@UBOT> hi' })
+    await ingest.start()
+    await ingest.handleEvent({ ...botEvent, ts: '100.0', bot_id: 'BSELF', text: 'self echo' })
+    await ingest.handleEvent({
+      ...botEvent,
+      ts: '100.1',
+      bot_id: 'BCHANGELOGUE',
+      bot_profile: { app_id: 'ACHANGELOGUE' },
+      text: '<@UBOT>',
+      attachments: [
+        {
+          author_name: 'paradigmxyz/reth on GitHub',
+          author_link: 'https://example.test/reth',
+          title: 'reth v2.4.0',
+          title_link: 'https://example.test/reth/releases/v2.4.0',
+          text: 'Performance improvements',
+          footer: 'Added by changelogue',
+          actions: [
+            { type: 'button', text: 'Acknowledge' },
+            { type: 'button', text: 'Resolve' }
+          ]
+        }
+      ]
+    })
+
+    expect(onMessage).toHaveBeenCalledTimes(2)
+    const [message] = onMessage.mock.calls[1]!
+    expect(message.text).toContain('<@UBOT>')
+    expect(message.text).toContain('<https://example.test/reth|paradigmxyz/reth on GitHub>')
+    expect(message.text).toContain('Performance improvements')
+    expect(message.text).not.toContain('Acknowledge')
+    expect(message.sender).toEqual({ id: 'BCHANGELOGUE', isBot: true, appId: 'ACHANGELOGUE' })
+  })
+})
+
+describe('verifySlackSignature', () => {
+  const secret = 'slack-signing-secret'
+  const now = 1_720_000_000_000
+  const ts = String(Math.floor(now / 1000))
+  const sign = (rawBody: string, tstamp = ts, sec = secret) =>
+    `v0=${createHmac('sha256', sec).update(`v0:${tstamp}:${rawBody}`).digest('hex')}`
+
+  it('accepts a correct v0 signature over `v0:${timestamp}:${rawBody}`', () => {
+    const raw = Buffer.from(JSON.stringify({ type: 'event_callback', event_id: 'Ev1' }))
+    expect(verifySlackSignature(secret, ts, raw, sign(raw.toString('utf8')), now)).toBe(true)
+  })
+
+  it('rejects a wrong secret, a malformed header, a stale timestamp, and a missing timestamp', () => {
+    const raw = Buffer.from('payload=x')
+    expect(verifySlackSignature(secret, ts, raw, sign(raw.toString('utf8'), ts, 'other'), now)).toBe(false)
+    expect(verifySlackSignature(secret, ts, raw, 'nope', now)).toBe(false)
+    // 6 minutes of skew is outside the 5-minute replay window.
+    expect(verifySlackSignature(secret, ts, raw, sign(raw.toString('utf8')), now + 6 * 60 * 1000)).toBe(false)
+    expect(verifySlackSignature(secret, undefined, raw, sign(raw.toString('utf8')), now)).toBe(false)
+  })
+})

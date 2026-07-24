@@ -1,0 +1,224 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it, vi } from 'vitest'
+import { Daemon } from '../src/daemon.js'
+import { EvaluationEventCollector } from '../src/evaluation/index.js'
+
+const AGENT_ID = 'evaluation-agent'
+
+function scaffold(): string {
+  const root = mkdtempSync(join(tmpdir(), 'ac-evaluation-daemon-'))
+  writeFileSync(
+    join(root, 'config.json'),
+    JSON.stringify({
+      version: 1,
+      controlPlane: { enabled: false },
+      runtimes: { test: { command: 'node', args: ['unused'] } }
+    })
+  )
+  const agentDir = join(root, 'agents', AGENT_ID)
+  mkdirSync(agentDir, { recursive: true })
+  writeFileSync(
+    join(agentDir, 'agent.json'),
+    JSON.stringify({
+      id: AGENT_ID,
+      name: 'Evaluation Agent',
+      status: 'active',
+      runtime: 'test',
+      workspace: { mode: 'from-scratch', path: join(agentDir, 'workspace') },
+      integrations: [],
+      output: { mode: 'medium' }
+    })
+  )
+  return root
+}
+
+function scriptedHost() {
+  let onUpdate!: (sessionId: string, update: unknown) => void
+  const host = {
+    start: vi.fn(async () => {}),
+    newSession: vi.fn(async () => 'eval-session-1'),
+    hasSession: vi.fn(() => true),
+    modelOptions: vi.fn(() => ({ current: 'test-model', models: ['test-model'] })),
+    prompt: vi.fn(async (sessionId: string) => {
+      onUpdate(sessionId, {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'tool-1',
+        title: 'Read fixture',
+        rawInput: { tool: 'read_fixture', arguments: { path: 'README.md' } }
+      })
+      onUpdate(sessionId, {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'tool-1',
+        status: 'completed',
+        rawOutput: { ok: true }
+      })
+      onUpdate(sessionId, {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'evaluation answer' }
+      })
+      return { stopReason: 'end_turn', usage: { totalTokens: 12, inputTokens: 8, outputTokens: 4 } }
+    }),
+    cancel: vi.fn(async () => {}),
+    stop: vi.fn(async () => {})
+  }
+  return {
+    host,
+    factory: (_agent: unknown, update: (sessionId: string, value: unknown) => void) => {
+      onUpdate = update
+      return host as any
+    }
+  }
+}
+
+describe('Daemon evaluation surface', () => {
+  it('drives a full daemon turn and emits ordered semantic evidence without credentials', async () => {
+    const collector = new EvaluationEventCollector()
+    const { factory, host } = scriptedHost()
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: factory,
+      evaluation: {
+        observer: collector,
+        runId: 'eval-run-1',
+        capabilityProfile: { memory: 'configured', collaboration: 'off' }
+      }
+    })
+    await daemon.start()
+
+    const result = await daemon.runEvaluationTurn({
+      agentId: AGENT_ID,
+      conversationId: 'case-1',
+      turnId: 'turn-1',
+      text: 'Inspect the fixture'
+    })
+
+    expect(result).toMatchObject({
+      turnId: 'turn-1',
+      sessionId: 'eval-session-1',
+      output: 'evaluation answer',
+      stopReason: 'end_turn',
+      usage: { used: 12 }
+    })
+    expect(host.prompt).toHaveBeenCalledOnce()
+    await vi.waitFor(() =>
+      expect(collector.events().map((event) => event.type)).toEqual(
+        expect.arrayContaining([
+          'turn.accepted',
+          'memory.recall.requested',
+          'memory.recall.completed',
+          'turn.started',
+          'acp.update',
+          'memory.capture.requested',
+          'memory.capture.completed',
+          'turn.completed'
+        ])
+      )
+    )
+    const events = collector.events()
+    expect(events.map((event) => event.sequence)).toEqual(events.map((_, index) => index + 1))
+    expect(events.find((event) => event.type === 'turn.started')).toMatchObject({
+      runId: 'eval-run-1',
+      agentId: AGENT_ID,
+      sessionId: 'eval-session-1',
+      turnId: `${AGENT_ID}:turn-1`,
+      data: { input: 'Inspect the fixture', model: 'test-model' }
+    })
+    expect(events.find((event) => event.type === 'turn.completed')).toMatchObject({
+      data: { output: 'evaluation answer', usage: { totalTokens: 12 } }
+    })
+    expect(
+      events
+        .filter((event) => event.type === 'memory.capture.requested' || event.type === 'memory.capture.completed')
+        .map((event) => event.turnId)
+    ).toEqual([`${AGENT_ID}:turn-1`, `${AGENT_ID}:turn-1`])
+
+    await daemon.stop()
+    collector.assertValid()
+  }, 15_000)
+
+  it('requires an observer so evaluation calls cannot silently produce no evidence', async () => {
+    const { factory } = scriptedHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    await expect(
+      daemon.runEvaluationTurn({ agentId: AGENT_ID, conversationId: 'case-2', text: 'hello' })
+    ).rejects.toThrow('evaluation observer is not enabled')
+    await daemon.stop()
+  }, 15_000)
+
+  it('rejects a treatment profile without an observer before it can change daemon behavior', () => {
+    const { factory } = scriptedHost()
+    expect(
+      () =>
+        new Daemon({
+          root: scaffold(),
+          hostFactory: factory,
+          evaluation: { capabilityProfile: { memory: 'off', collaboration: 'off' } }
+        })
+    ).toThrow('evaluation capability profile requires an evaluation observer')
+  })
+
+  it('omits memory recall and capture evidence when the treatment is off', async () => {
+    const collector = new EvaluationEventCollector()
+    const { factory } = scriptedHost()
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: factory,
+      evaluation: {
+        observer: collector,
+        runId: 'eval-run-memory-off',
+        capabilityProfile: { memory: 'off', collaboration: 'off' }
+      }
+    })
+    await daemon.start()
+
+    await daemon.runEvaluationTurn({
+      agentId: AGENT_ID,
+      conversationId: 'case-memory-off',
+      turnId: 'turn-memory-off',
+      text: 'Do not use AgentConnect memory'
+    })
+    await daemon.waitForEvaluationIdle()
+
+    expect(collector.events().some((event) => event.type.startsWith('memory.'))).toBe(false)
+    expect(collector.events().map((event) => event.type)).toEqual(
+      expect.arrayContaining(['turn.accepted', 'turn.started', 'turn.completed'])
+    )
+    await daemon.stop()
+    collector.assertValid()
+  }, 15_000)
+
+  it('rejects peer delivery at the execution boundary when collaboration is off', async () => {
+    const collector = new EvaluationEventCollector()
+    const { factory } = scriptedHost()
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: factory,
+      evaluation: {
+        observer: collector,
+        runId: 'eval-run-collaboration-off',
+        capabilityProfile: { memory: 'off', collaboration: 'off' }
+      }
+    })
+    await daemon.start()
+
+    const result = await (daemon as any).messageAgent({
+      callerAgentId: AGENT_ID,
+      platform: 'webchat',
+      callerChannel: 'caller-channel',
+      toAgentId: 'peer-agent',
+      text: 'must not be delivered',
+      channel: 'target-channel'
+    })
+
+    expect(result).toMatchObject({ delivered: false, reason: 'capability_disabled' })
+    expect(collector.events().find((event) => event.type === 'collaboration.delivery.rejected')).toMatchObject({
+      agentId: AGENT_ID,
+      data: { toAgentId: 'peer-agent', reason: 'capability_disabled' }
+    })
+    await daemon.stop()
+    collector.assertValid()
+  }, 15_000)
+})

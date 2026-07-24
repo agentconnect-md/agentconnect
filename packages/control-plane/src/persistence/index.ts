@@ -1,0 +1,50 @@
+/**
+ * Persistence barrel (design §2 `persistence/`).
+ *
+ * The ONLY place above this directory should import is this barrel and
+ * `persistence/ports.ts`. The concrete `Pg*Repo` classes are the sole importers
+ * of `@prisma/client`; services depend on the port interfaces.
+ */
+export * from './ports.js'
+export * from './errors.js'
+export { createPrisma, withTx, disconnectPrisma, type PrismaLike } from './prisma.js'
+
+export { PgDaemonRepo } from './repositories/daemon.repo.js'
+export { PgDaemonLifecycleOpRepo } from './repositories/daemon-lifecycle-op.repo.js'
+export { PgApiKeyRepo } from './repositories/api-key.repo.js'
+export { PgOAuthRepo } from './repositories/oauth.repo.js'
+export { PgRelayRepo } from './repositories/relay.repo.js'
+export { PgAgentRepo } from './repositories/agent.repo.js'
+export { PgGithubInstallationRepo, PgGithubInstallStateStore } from './repositories/github.repo.js'
+export { PgAgentRepoAuthorizationRepo } from './repositories/agent-repo-auth.repo.js'
+export { PgAssignmentRepo } from './repositories/assignment.repo.js'
+export { PgSessionRepo } from './repositories/session.repo.js'
+export { PgSessionUsageRepo } from './repositories/session-usage.repo.js'
+export { PgLaunchRepo } from './repositories/launch.repo.js'
+export { PgSecretLeaseRepo } from './repositories/secret-lease.repo.js'
+export { PgAgentSecretStore } from './repositories/agent-secret.repo.js'
+export { PgAgentConfigWriter } from './repositories/agent-config.writer.js'
+export {
+  PgBotRepo,
+  PgBotSecretStore,
+  PgIntegrationRepo,
+  PgIntegrationChannelRepo
+} from './repositories/integration.repo.js'
+export { PgMcpProviderRepo, PgMcpProviderSecretStore, PgMcpGrantRepo } from './repositories/mcp.repo.js'
+export {
+  PgMemoryPluginInstallationRepo,
+  PgExternalMemoryConnectionRepo,
+  PgExternalMemoryConnectionSecretStore,
+  PgExternalMemoryGrantRepo
+} from './repositories/memory-connection.repo.js'
+export { PgThreadAffinityStore } from './repositories/thread-affinity.repo.js'
+export { PgSlackInstallStore } from './repositories/slack-install.repo.js'
+export { PgSlackUserConfigStore } from './repositories/slack-user-config.repo.js'
+export { PgCronRepo } from './repositories/cron.repo.js'
+export { PgHookRepo, PgHookSecretStore } from './repositories/hook.repo.js'
+export { PgRuntimeProfileRepo } from './repositories/runtime-profile.repo.js'
+export { PgAuditRepo } from './repositories/audit.repo.js'
+export { PgUserRepo } from './repositories/user.repo.js'
+export { PgOrgRepo } from './repositories/org.repo.js'
+export { PgOrgInviteLinkRepo } from './repositories/org-invite-link.repo.js'
+export { PgWaitlistRepo } from './repositories/waitlist.repo.js'

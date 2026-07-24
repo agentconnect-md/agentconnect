@@ -1,0 +1,104 @@
+import { z } from 'zod'
+
+// webchat's content plane is the RELAY, not the daemon↔CP control WS:
+// a browser dials the relay pool with a CP-minted token and the relay bridges the
+// conversation onto the target daemon's rd/* socket. These payloads describe the reply
+// stream + the turn verdict; the relay's `rd/chat` / `rd/ack` frames REUSE them verbatim
+// (packages/protocol/src/frames/relay-daemon.ts). Content never touches the CP.
+
+// The webchat turn verdict — `dispatchWebchatTurn` returns this and the relay path folds
+// it into `rd/ack` (accepted + a fresh turnId that correlates the reply stream; `reason`
+// explains a rejection). Not a wire frame of its own anymore.
+export const WebchatAck = z.object({
+  accepted: z.boolean(),
+  turnId: z.string().uuid(), // correlates the streamed output to this turn
+  reason: z.enum(['queued', 'no_agent', 'busy', 'paused', 'draining']).optional()
+})
+export type WebchatAck = z.infer<typeof WebchatAck>
+
+// One structured chunk of the agent's reply stream. Ordered per-connection (TCP);
+// 'index' is a per-turn monotonic counter for client-side assembly (NOT a global fence).
+export const WebchatEvent = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('message'), text: z.string() }), // from agent_message_chunk
+  z.object({ kind: z.literal('thinking'), text: z.string() }), // from agent_thought_chunk
+  z.object({ kind: z.literal('tool_call'), toolCallId: z.string(), title: z.string(), status: z.string() }),
+  z.object({ kind: z.literal('tool_update'), toolCallId: z.string(), status: z.string() }),
+  // The runtime's auto-generated session title (from ACP session_info_update). The
+  // daemon persists it (session/list surfaces it on the persisted row); this streams
+  // the same value so the LIVE playground session renames itself in place, matching
+  // what a Slack session shows once its title lands.
+  z.object({ kind: z.literal('session_info'), title: z.string() })
+])
+export type WebchatEvent = z.infer<typeof WebchatEvent>
+
+// The session status-bar snapshot (model / context / tokens / cost), rebuilt from
+// the daemon's model selector + folded ACP usage. All fields optional so a partial
+// snapshot is valid: context/cost stream live via ACP `usage_update`, while token
+// totals only refresh at each turn's end. Carried as an extra field on the output
+// payload (see below) rather than a reply-stream event — a status update is not part
+// of the transcript and can arrive with no text chunk of its own.
+export const WebchatStatus = z.object({
+  model: z.string().optional(),
+  effort: z.string().optional(),
+  permissionMode: z.string().optional(),
+  fastMode: z.boolean().optional(),
+  contextUsed: z.number().int().optional(),
+  contextSize: z.number().int().optional(),
+  totalTokens: z.number().int().optional(),
+  costAmount: z.number().optional(),
+  costCurrency: z.string().optional(),
+  // The models this session's runtime advertises as selectable (from the ACP model
+  // config option) — populates the console's model dropdown. Absent ⇒ no selector.
+  models: z.array(z.string()).optional(),
+  // The reasoning-effort levels this session's runtime offers (from the ACP
+  // `thought_level` config option, plus the synthetic `ultracode`/`max` entries on
+  // Claude runtimes) — populates the console's effort dropdown. Absent ⇒ no selector.
+  efforts: z.array(z.string()).optional(),
+  // The runtime's selectable permission/approval modes (ACP `mode` config option).
+  // Values are runtime-owned and omitted when the Agent disables chat-side changes.
+  permissionModes: z.array(z.string()).optional(),
+  // Whether the selected model advertises a fast-mode toggle (the ACP `model_config`
+  // config option only appears once a fast-capable model is selected). Absent/false ⇒
+  // no fast toggle shown.
+  fastModeAvailable: z.boolean().optional(),
+  // The daemon's session id (== acpSessionId) for this conversation, so the console can
+  // deep-link to the session detail page. Absent until the session is created.
+  sessionId: z.string().optional()
+})
+export type WebchatStatus = z.infer<typeof WebchatStatus>
+
+// Daemon→browser reply payload, carried as an `output` item inside relay `rd/chat`:
+// one chunk of a turn's reply and/or a status snapshot. `event` is optional so a
+// status-only payload (no reply chunk) is valid; every payload still carries a
+// monotonic `index` for client-side ordering.
+export const WebchatOutput = z
+  .object({
+    conversationId: z.string().uuid(),
+    turnId: z.string().uuid(),
+    index: z.number().int(),
+    event: WebchatEvent.optional(),
+    status: WebchatStatus.optional()
+  })
+  // A payload must carry at least one of event/status — an empty payload is meaningless.
+  .refine((o) => o.event !== undefined || o.status !== undefined, {
+    message: 'WebchatOutput must carry event and/or status'
+  })
+export type WebchatOutput = z.infer<typeof WebchatOutput>
+
+// Daemon→browser terminal payload, carried as a `done` item inside relay `rd/chat`.
+// `error` is set when the turn ended in FAILURE (agent failed to start, ACP
+// handshake/prompt rejected) rather than completing — a human-readable reason the
+// client renders instead of a normal reply. When present, `stopReason`/`usage` are
+// absent (the turn produced no clean result).
+export const WebchatDone = z.object({
+  conversationId: z.string().uuid(),
+  turnId: z.string().uuid(),
+  stopReason: z.string().optional(),
+  usage: z.object({ used: z.number().int().optional(), cost: z.number().optional() }).optional(),
+  error: z.string().optional()
+})
+export type WebchatDone = z.infer<typeof WebchatDone>
+
+// Browser operations ride relay `rd/msg` as RelayWebchatOp. No webchat content
+// frame is registered on the daemon↔CP control WS, so the CP stays off the
+// webchat hot path.

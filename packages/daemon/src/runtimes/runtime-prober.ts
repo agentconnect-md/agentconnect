@@ -1,0 +1,473 @@
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+import type { McpTransportCapabilities } from '@agentconnect.md/protocol'
+import type { SessionConfigOption } from '@agentclientprotocol/sdk'
+import { AcpHost, type ModelOptions } from '../acp/acp-host.js'
+import type { RuntimeDef } from '../config/config-schema.js'
+import type { Logger } from '../log.js'
+import type { SandboxMechanism } from '../acp/sandbox.js'
+import type { PreparedRuntimeLaunch } from '../acp/runtime-launch.js'
+import { composeRuntimeLaunch } from './launch-policy.js'
+
+const PROCESS_ENV_KEYS = new Set(['PATH', 'PATHEXT', 'SystemRoot'])
+const CERTIFICATE_ENV_KEYS = new Set([
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'NODE_EXTRA_CA_CERTS',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE'
+])
+const PROVIDER_ENV_KEYS = new Set([
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'GOOGLE_API_KEY',
+  'GEMINI_API_KEY',
+  'KIRO_API_KEY',
+  'MOONSHOT_API_KEY',
+  'KIMI_API_KEY',
+  'XAI_API_KEY',
+  'OPENROUTER_API_KEY'
+])
+
+/** Minimal ambient environment for an untrusted disposable compatibility probe. */
+export function curatedProbeEnvironment(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [name, value] of Object.entries(source)) {
+    if (value === undefined) continue
+    if (
+      PROCESS_ENV_KEYS.has(name) ||
+      CERTIFICATE_ENV_KEYS.has(name) ||
+      PROVIDER_ENV_KEYS.has(name) ||
+      /^(?:https?|all|no)_proxy$/i.test(name)
+    ) {
+      env[name] = value
+    }
+  }
+  return env
+}
+
+/** Shared no-op callbacks for disposable discovery sessions (probe + catalog
+ *  enumeration): cancel permissions, decline elicitations, mute child stderr. */
+export const probeCallbacks = {
+  onPermission: async () => ({ outcome: { outcome: 'cancelled' as const } }),
+  onElicit: async () => ({ action: 'decline' as const }),
+  suppressChildStderr: true as const
+}
+
+export type ProbeHostPolicy = typeof probeCallbacks &
+  Partial<Pick<PreparedRuntimeLaunch, 'env' | 'inheritProcessEnv' | 'sandbox'>>
+
+export interface ProbeLaunchPlan extends PreparedRuntimeLaunch {
+  runtime?: RuntimeDef
+  /** Transient private-state values that diagnostics must never expose. */
+  redactValues?: string[]
+}
+
+/**
+ * Runtime probing — actively verify each installed runtime is launchable and
+ * learn the models it advertises.
+ *
+ * The ACP registry says a runtime *could* run here (a launcher/binary is on
+ * `$PATH`), and the host probe (`probe.ts`) says it's plausibly installed. This
+ * module goes one step further: it spawns the agent, runs the ACP `initialize`
+ * handshake, opens a throwaway `session/new`, and reads the session's model
+ * selector (an experimental ACP config option, `category: "model"`). Then it
+ * tears the child down — killing the subprocess closes its in-memory session, so
+ * no `session/close` round-trip is needed.
+ *
+ * This is deliberately kept off the connect hot path: the daemon runs it in the
+ * background after (re)connecting to the CP and emits the results as one
+ * `facts/daemon-runtimes` snapshot.
+ */
+
+export interface RuntimeProbeResult {
+  runtime: string
+  /** True iff the agent initialized and `session/new` succeeded. */
+  ok: boolean
+  /** Model ids advertised via the session's model selector (empty if none). */
+  models: string[]
+  /** The model the agent defaulted the session to, if it exposed a selector. */
+  currentModel?: string
+  /** ACP protocol version negotiated at `initialize` (undefined if the probe failed). */
+  acpProtocolVersion?: number
+  /** The agent's self-reported version from `initialize` (`agentInfo.version`) — the
+   *  ACTUAL running adapter release (e.g. claude-agent-acp 0.59.0), as opposed to the
+   *  registry's declared version. Undefined if the probe failed or the agent reported none. */
+  probedVersion?: string
+  /** Optional MCP transports advertised at `initialize` (stdio is baseline).
+   *  Undefined if the probe failed — callers then assume stdio-only. */
+  mcpCapabilities?: McpTransportCapabilities
+  /** RAW session config options of the probe session (unaugmented, as the agent
+   *  advertised them at `session/new`) — seeds the model-catalog cache with the
+   *  default model's effort/fast caps and the runtime-level permission modes.
+   *  Undefined when the probe failed or the host predates the accessor. */
+  configOptions?: SessionConfigOption[]
+  /** Failure reason when `ok` is false. */
+  error?: string
+  /** The probe was rejected with the ACP auth-required error (-32000): the agent
+   *  launched and spoke ACP, but wants an interactive login before it will open
+   *  a session. Only ever set alongside `ok: false`. */
+  authRequired?: boolean
+}
+
+/** ACP reserves JSON-RPC -32000 for "authentication required" (the SDK's
+ *  `RequestError.authRequired`) — the one failure that means "installed but
+ *  logged out" rather than "broken/unreachable". Shared with the daemon's live
+ *  dispatch path: some adapters (claude-agent-acp) initialize and open sessions
+ *  while logged out and only reject the live prompt with this code. */
+const ACP_AUTH_REQUIRED_CODE = -32000
+
+export function isAuthRequiredError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === ACP_AUTH_REQUIRED_CODE
+}
+
+export interface ProbeOptions {
+  /** Per-runtime hard deadline (spawn + initialize + session/new). Default 30s. */
+  timeoutMs?: number
+  /** Max runtimes probed concurrently (each is a subprocess). Default 3. */
+  concurrency?: number
+  log?: Logger
+  /** Mirrors daemon security.isolateAccountApps for probe subprocesses. */
+  isolateAccountApps?: boolean
+  /** Seam for tests — construct a host for a runtime. Defaults to a real AcpHost. */
+  hostFactory?: (rt: RuntimeDef, id: string, cwd: string, policy: ProbeHostPolicy) => AcpHost
+  /** Curated candidates require a disposable final managed launch plan. */
+  curated?: boolean
+  /** Full host environment used for allowlisted credential seeding and redaction. */
+  hostEnv?: NodeJS.ProcessEnv
+  runInSandbox?: boolean
+  sandboxMechanism?: SandboxMechanism
+  mcpSocketPath?: string
+  /** Prepare the same sandbox/private-HOME or inherited-host launch used by a real agent. */
+  launchFor?: (
+    id: string,
+    rt: RuntimeDef,
+    scopeDir: string,
+    cwd: string,
+    probeEnv: Record<string, string>
+  ) => ProbeLaunchPlan
+}
+
+const DEFAULT_TIMEOUT_MS = 30_000
+const DEFAULT_CONCURRENCY = 3
+
+function makeHost(
+  rt: RuntimeDef,
+  log?: Logger,
+  runtimeId?: string,
+  isolateAccountApps?: boolean,
+  launch?: ReturnType<NonNullable<ProbeOptions['launchFor']>>
+): AcpHost {
+  const prepared = launch
+    ? {
+        env: launch.env,
+        inheritProcessEnv: launch.inheritProcessEnv,
+        ...(launch.sandbox ? { sandbox: launch.sandbox } : {})
+      }
+    : {}
+  // A probe session produces no user-facing turns, so session/update is dropped.
+  return new AcpHost(rt, {
+    onUpdate: () => {},
+    log,
+    runtimeId,
+    isolateAccountApps,
+    ...probeCallbacks,
+    ...prepared
+  })
+}
+
+function sanitizeProbeDiagnostic(error: unknown, env: NodeJS.ProcessEnv, privateValues: string[] = []): string {
+  let message = error instanceof Error ? error.message : String(error)
+  const values = [...PROVIDER_ENV_KEYS].map((name) => env[name]).concat(privateValues)
+  for (const value of values) {
+    if (value && value.length >= 4) message = message.split(value).join('[REDACTED]')
+  }
+  message = message.replace(/(?:[A-Za-z]:\\|\/)[^\s'"`]+/g, '<path>')
+  return message.replace(/[\r\n]+/g, ' ').slice(0, 512)
+}
+
+const MAX_REDACTION_VALUES = 256
+
+function collectStringValues(value: unknown, out: Set<string>): void {
+  if (out.size >= MAX_REDACTION_VALUES) return
+  if (typeof value === 'string') {
+    if (value.length >= 4 && value.length <= 256 * 1024) {
+      out.add(value)
+      try {
+        collectStringValues(JSON.parse(value), out)
+      } catch {
+        // Plain credential string, not nested JSON.
+      }
+    }
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectStringValues(item, out)
+    return
+  }
+  if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) collectStringValues(item, out)
+  }
+}
+
+function collectJsonCredentialValues(path: string, out: Set<string>): void {
+  if (!existsSync(path)) return
+  const stat = lstatSync(path)
+  if (!stat.isFile() || stat.isSymbolicLink()) return
+  try {
+    collectStringValues(JSON.parse(readFileSync(path, 'utf8')), out)
+  } catch {
+    // Invalid auth state will be reported by the runtime; it is not safe input
+    // for the probe process, but should not make diagnostic sanitization throw.
+  }
+}
+
+function collectOmpCredentialValues(path: string, out: Set<string>): void {
+  if (!existsSync(path)) return
+  let db: DatabaseSync | undefined
+  try {
+    db = new DatabaseSync(path, { readOnly: true })
+    for (const table of ['auth_credentials', 'auth_schema_version']) {
+      const rows = db.prepare(`SELECT * FROM "${table}"`).all()
+      for (const row of rows) collectStringValues(row, out)
+    }
+  } catch {
+    // The runtime will surface an unusable private credential database itself.
+  } finally {
+    db?.close()
+  }
+}
+
+/** Collect only values from reviewed credential seeds in the already-private
+ * probe home. They remain transient and are never passed to the child policy. */
+function probeCredentialRedactions(id: string, launch: PreparedRuntimeLaunch): string[] {
+  const out = new Set<string>()
+  if (id === 'hermes-agent' || id === 'hermes') {
+    const root = launch.env.HERMES_HOME
+    if (root) {
+      const dotEnv = join(root, '.env')
+      if (existsSync(dotEnv)) {
+        for (const line of readFileSync(dotEnv, 'utf8').split(/\r?\n/)) {
+          const match = line.match(/^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*(.*)$/)
+          const value = match?.[1]?.replace(/^(?:"(.*)"|'(.*)')$/, '$1$2')
+          if (value) collectStringValues(value, out)
+        }
+      }
+      collectJsonCredentialValues(join(root, '.anthropic_oauth.json'), out)
+      collectJsonCredentialValues(join(root, 'auth.json'), out)
+    }
+  } else if (id === 'open-interpreter') {
+    const root = launch.env.INTERPRETER_HOME
+    if (root) collectJsonCredentialValues(join(root, 'auth.json'), out)
+  } else if (id === 'omp') {
+    const root = launch.env.PI_CODING_AGENT_DIR
+    if (root) collectOmpCredentialValues(join(root, 'agent.db'), out)
+  }
+  return [...out]
+}
+
+/** Hermes loads `.env` inside the child, after the spawn environment has been
+ * filtered. Keep that seed from becoming a back door for credential-path or
+ * unrelated ambient variables: only the reviewed scalar provider keys survive. */
+function sanitizeHermesProbeDotEnv(launch: PreparedRuntimeLaunch): void {
+  const hermesHome = launch.env.HERMES_HOME
+  if (!hermesHome) return
+  const path = join(hermesHome, '.env')
+  if (!existsSync(path)) return
+  const stat = lstatSync(path)
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('private Hermes .env is not a regular file')
+
+  const kept: string[] = []
+  for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/)
+    if (match && PROVIDER_ENV_KEYS.has(match[1]!)) kept.push(`${match[1]}=${match[2]}`)
+  }
+  writeFileSync(path, kept.length ? `${kept.join('\n')}\n` : '', { encoding: 'utf8', mode: 0o600 })
+  chmodSync(path, 0o600)
+}
+
+/** Maki's host config may declare MCP servers. A compatibility probe must not
+ * connect to them, even though real protected launches retain reviewed config. */
+function removeMakiProbeMcpConfig(launch: PreparedRuntimeLaunch): void {
+  const home = launch.runtimeHome ?? launch.env.HOME
+  if (!home) return
+  for (const path of [join(home, '.config', 'maki', 'mcp.toml'), join(home, '.maki', 'mcp.toml')]) {
+    if (!existsSync(path)) continue
+    const stat = lstatSync(path)
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('private Maki MCP config is not a regular file')
+    unlinkSync(path)
+  }
+}
+
+/** Build the disposable launch plan a probe/enumeration child runs under.
+ *  `curated: true` composes the managed isolated-HOME plan (credential seeding +
+ *  per-runtime sanitization); exported so the model-catalog enumerator launches
+ *  through the exact same machinery. */
+export function preparedProbeLaunch(
+  id: string,
+  runtime: RuntimeDef,
+  cwd: string,
+  opts: ProbeOptions
+): ProbeLaunchPlan | undefined {
+  const scopeDir = dirname(cwd)
+  const sourceEnv = opts.hostEnv ?? process.env
+  const probeEnv = curatedProbeEnvironment(sourceEnv)
+  if (opts.launchFor) return opts.launchFor(id, runtime, scopeDir, cwd, probeEnv)
+  if (!opts.curated) return undefined
+
+  const composed = composeRuntimeLaunch({
+    runtimeId: id,
+    runtime,
+    provider: 'managed',
+    scopeDir,
+    cwd,
+    isolateHome: true,
+    runInSandbox: opts.runInSandbox ?? false,
+    sandboxMechanism: opts.sandboxMechanism,
+    mcpSocketPath: opts.mcpSocketPath,
+    stateSourceEnv: sourceEnv,
+    hostEnv: probeEnv
+  })
+  if (id === 'hermes-agent' || id === 'hermes') sanitizeHermesProbeDotEnv(composed.launch)
+  if (id === 'maki') removeMakiProbeMcpConfig(composed.launch)
+  return {
+    runtime: composed.runtime,
+    ...composed.launch,
+    redactValues: probeCredentialRedactions(id, composed.launch)
+  }
+}
+
+/**
+ * Probe one runtime. Never throws: any failure (spawn error, handshake failure,
+ * timeout) is captured in `{ ok: false, error }`. On success, `models` reflects
+ * whatever the agent advertised — an empty list is normal for agents that expose
+ * no model selector, and is not a failure.
+ */
+export async function probeRuntime(
+  id: string,
+  rt: RuntimeDef,
+  cwd: string,
+  opts: ProbeOptions = {}
+): Promise<RuntimeProbeResult> {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  let host: AcpHost | undefined
+  let redactValues: string[] = []
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`probe timed out after ${timeoutMs}ms`)), timeoutMs)
+  })
+
+  try {
+    const launch = preparedProbeLaunch(id, rt, cwd, opts)
+    redactValues = launch?.redactValues ?? []
+    const effectiveRuntime = launch?.runtime ?? rt
+    const hostPolicy: ProbeHostPolicy = {
+      ...probeCallbacks,
+      ...(launch
+        ? {
+            env: launch.env,
+            inheritProcessEnv: launch.inheritProcessEnv,
+            ...(launch.sandbox ? { sandbox: launch.sandbox } : {})
+          }
+        : {})
+    }
+    host = opts.hostFactory
+      ? opts.hostFactory(effectiveRuntime, id, cwd, hostPolicy)
+      : makeHost(effectiveRuntime, opts.log, id, opts.isolateAccountApps, launch)
+    const activeHost = host
+    let probeSessionId: string | undefined
+    const run = async (): Promise<ModelOptions | null> => {
+      await activeHost.start()
+      probeSessionId = await activeHost.newSession(cwd, [])
+      return activeHost.modelOptions()
+    }
+    const opt = await Promise.race([run(), timeout])
+    // Surface the model selector verbatim, including any literal "default" entry
+    // the agent advertises (claude offers one, and it is the fresh-session
+    // currentValue). We never SYNTHESIZE a "default" choice, but we mirror one the
+    // runtime actually returns — the console picker no longer renders its own.
+    const models = opt?.models ?? []
+    const acpProtocolVersion = activeHost.acpProtocolVersion()
+    // Optional calls: fake hosts in older tests may not implement the accessors.
+    const mcpCapabilities = activeHost.mcpCapabilities?.() ?? undefined
+    const info = activeHost.acpAgentInfo?.()
+    const probedVersion = info?.version
+    const configOptions =
+      probeSessionId !== undefined ? (activeHost.sessionConfigOptions?.(probeSessionId) ?? undefined) : undefined
+    opts.log?.info(
+      `probe: ${id} ok (${info?.name ?? 'agent'}${info?.version ? ` v${info.version}` : ''}, models: ${models.length ? models.join(', ') : 'none advertised'})`
+    )
+    return {
+      runtime: id,
+      ok: true,
+      models,
+      currentModel: opt?.current,
+      acpProtocolVersion,
+      mcpCapabilities,
+      probedVersion,
+      configOptions
+    }
+  } catch (err) {
+    const error = sanitizeProbeDiagnostic(err, opts.hostEnv ?? process.env, redactValues)
+    opts.log?.warn(`probe: ${id} failed — ${error}`)
+    return { runtime: id, ok: false, models: [], error, ...(isAuthRequiredError(err) ? { authRequired: true } : {}) }
+  } finally {
+    if (timer) clearTimeout(timer)
+    await host?.stop().catch(() => {}) // best-effort teardown — never mask the probe result
+  }
+}
+
+/**
+ * Probe every runtime with bounded concurrency. Each gets an isolated scope with
+ * `workspace/`; sandboxed probes also get a private runtime `home/`. The whole temp
+ * root is removed after the sweep. Result order is not meaningful — callers key by
+ * `result.runtime`.
+ */
+export async function probeAllRuntimes(
+  runtimes: Record<string, RuntimeDef>,
+  opts: ProbeOptions = {}
+): Promise<RuntimeProbeResult[]> {
+  const ids = Object.keys(runtimes)
+  if (ids.length === 0) return []
+
+  const cwd = mkdtempSync(join(tmpdir(), 'ac-probe-'))
+  const limit = Math.max(1, opts.concurrency ?? DEFAULT_CONCURRENCY)
+  const results: RuntimeProbeResult[] = []
+  let next = 0
+
+  const worker = async (): Promise<void> => {
+    for (let i = next++; i < ids.length; i = next++) {
+      const id = ids[i]!
+      const runtimeDir = join(cwd, Buffer.from(id).toString('base64url'))
+      const runtimeCwd = join(runtimeDir, 'workspace')
+      mkdirSync(runtimeCwd, { recursive: true })
+      results.push(await probeRuntime(id, runtimes[id]!, runtimeCwd, opts))
+    }
+  }
+
+  try {
+    await Promise.all(Array.from({ length: Math.min(limit, ids.length) }, () => worker()))
+  } finally {
+    // Best-effort cleanup — a temp-dir removal failure (e.g. Windows EBUSY) must
+    // never discard the probe results we already gathered.
+    try {
+      rmSync(cwd, { recursive: true, force: true })
+    } catch (err) {
+      opts.log?.debug(`probe: temp cwd cleanup failed for ${cwd}: ${(err as Error).message}`)
+    }
+  }
+  return results
+}

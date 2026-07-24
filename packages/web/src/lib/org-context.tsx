@@ -1,0 +1,231 @@
+'use client'
+
+// Org context — the console's active organization, driven by the URL.
+//
+// The page tree lives at `app/(app)/[slug]/…`: EVERY console URL is `/{slug}/agents`
+// etc., in both modes. The seeded local default org owns the reserved slug `-`
+// (never a legal user slug), so no-auth installs read `/-/agents` with zero
+// special-casing — it's just an org like any other. An unknown slug (e.g. the
+// `/-/…` entry point in a hosted deployment where nobody belongs to the
+// default org) falls back to the last-used / first org and fixes the URL.
+//
+// The resolved org's ID is handed to the API client (`setApiOrgId`) — every
+// org-scoped CP call goes to `/orgs/{orgId}/…`.
+
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useParams, usePathname, useRouter } from 'next/navigation'
+import {
+  fetchOrgs,
+  setApiOrgId,
+  createOrg as apiCreateOrg,
+  updateOrg as apiUpdateOrg,
+  deleteOrg as apiDeleteOrg,
+  type MemberRole,
+  type OrgDto
+} from '@/lib/api'
+
+// Last-used org slug, kept in a COOKIE (not localStorage) so the proxy
+// can send `/` straight to `/{slug}/agents` with one server redirect — no
+// visible hop through the default org.
+const LAST_SLUG_COOKIE = 'ac.org'
+
+function readLastSlug(): string | null {
+  const m = document.cookie.match(/(?:^|;\s*)ac\.org=([^;]+)/)
+  return m ? decodeURIComponent(m[1]!) : null
+}
+
+function writeLastSlug(slug: string): void {
+  try {
+    document.cookie = `${LAST_SLUG_COOKIE}=${encodeURIComponent(slug)}; path=/; max-age=31536000; samesite=lax`
+  } catch {
+    /* cookies unavailable — entries just take the rewrite + client-replace path */
+  }
+}
+
+/** The console path under the org segment: `/acme/agents` → `/agents`.
+ *  During the first-visit rewrite window the address bar may still show a
+ *  BARE path (`/agents`, `/`) — only strip the first segment when it really
+ *  is the current slug param. */
+export function subPath(pathname: string, slug: string): string {
+  const [, first, ...rest] = pathname.split('/')
+  if (first === slug) return `/${rest.join('/') || 'agents'}`
+  return pathname === '/' ? '/agents' : pathname
+}
+
+/** The URL prefix shown next to the org slug ("appears in the URL") — THIS
+ *  deployment's host, not a hardcoded domain. Client-only components call it
+ *  after mount, so `window` is present; SSR falls back to a bare slash. */
+export function orgUrlPrefix(): string {
+  return typeof window !== 'undefined' ? `${window.location.host}/` : '/'
+}
+
+// Deterministic org avatar color (design: brand / purple / gold squares).
+const ORG_COLORS = ['var(--brand)', '#7c5cbf', '#b3831a', '#2f6fd0', '#0f7a48', '#c05621']
+
+export function orgColor(orgId: string): string {
+  let h = 0
+  for (let i = 0; i < orgId.length; i++) h = (h * 31 + orgId.charCodeAt(i)) >>> 0
+  return ORG_COLORS[h % ORG_COLORS.length]!
+}
+
+interface OrgContextValue {
+  /** Every org the user belongs to (empty until loaded / when the CP is down). */
+  orgs: OrgDto[]
+  /** The org the console is acting on; null until resolved. */
+  activeOrg: OrgDto | null
+  /** The caller's role in the active org (drives UI gating); null until loaded. */
+  myRole: MemberRole | null
+  loading: boolean
+  /** Initial/list refresh failure. Existing org rows remain usable when present. */
+  error: string | null
+  /** Prefix a console path with the active org segment (auth mode only):
+   *  `/agents` → `/o/acme/agents`. No-auth keeps bare paths. */
+  orgPath: (path: string) => string
+  /** Switch the active org — navigates to the same page under the new slug. */
+  setActiveOrg: (orgId: string) => void
+  /** Re-pull `GET /orgs` (after create / rename / membership changes). */
+  refreshOrgs: () => Promise<void>
+  /** Create an org (caller becomes owner) and switch into it. Display name optional. */
+  createOrg: (input: { name?: string; slug: string }) => Promise<OrgDto>
+  /** Rename / re-slug an org (owner-only server-side), then re-sync the URL. */
+  renameOrg: (orgId: string, patch: { name?: string; slug?: string }) => Promise<void>
+  /** Delete an org (owner-only; 409 while it has daemons). The console then
+   *  moves to a remaining org — or the self-healed personal one. */
+  deleteOrg: (orgId: string) => Promise<void>
+}
+
+const Ctx = createContext<OrgContextValue | null>(null)
+
+export function OrgProvider({ children }: { children: ReactNode }) {
+  const router = useRouter()
+  const pathname = usePathname()
+  const params = useParams<{ slug?: string }>()
+  const slug = typeof params.slug === 'string' ? decodeURIComponent(params.slug) : '-'
+
+  const [orgs, setOrgs] = useState<OrgDto[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const refreshOrgs = useCallback(async () => {
+    try {
+      setOrgs(await fetchOrgs())
+      setError(null)
+    } catch (cause) {
+      // CP unreachable — leave whatever we had and surface the failure through
+      // the provider instead of issuing requests under a fake org id.
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void refreshOrgs()
+  }, [refreshOrgs])
+
+  // Resolve the URL slug to an org — nothing more: `-` is simply the seeded
+  // default org's slug, not a special case.
+  const activeOrg = useMemo(() => orgs.find((o) => o.slug === slug) ?? null, [orgs, slug])
+
+  // Hand the resolved org to the API client DURING render (parent renders
+  // before children, so data-context's fetch effects see it; an effect here
+  // would run after the children's).
+  setApiOrgId(activeOrg?.id ?? null)
+
+  // URL canonicalization: once orgs are known, the address bar must read
+  // `/{resolved-slug}/…`. Two cases converge here: an unknown slug (the
+  // default-org entry when you don't belong to it, a stale link after a
+  // rename, someone else's org) falls back to the last-used org — a rename
+  // writes the NEW slug first, so this follows the rename instead of racing
+  // it — else the first org; and the first-visit rewrite window, where the
+  // bar still shows the bare entered path.
+  useEffect(() => {
+    if (loading || orgs.length === 0) return
+    const target = activeOrg ?? orgs.find((o) => o.slug === readLastSlug()) ?? orgs[0]!
+    if (pathname.split('/')[1] !== target.slug) {
+      router.replace(`/${target.slug}${subPath(pathname, slug)}${window.location.search}`)
+    }
+  }, [loading, orgs, activeOrg, slug, pathname, router])
+
+  // Remember the resolved org for the next bare-URL entry.
+  useEffect(() => {
+    if (activeOrg) writeLastSlug(activeOrg.slug)
+  }, [activeOrg])
+
+  const orgPath = useCallback((path: string) => `/${activeOrg?.slug ?? slug}${path}`, [activeOrg, slug])
+
+  const setActiveOrg = useCallback(
+    (orgId: string) => {
+      const org = orgs.find((o) => o.id === orgId)
+      if (!org) return
+      writeLastSlug(org.slug)
+      router.push(`/${org.slug}${subPath(pathname, slug)}`)
+    },
+    [orgs, pathname, slug, router]
+  )
+
+  const createOrg = useCallback(
+    async (input: { name?: string; slug: string }) => {
+      const org = await apiCreateOrg(input)
+      // Append optimistically BEFORE switching so activeOrg never goes null.
+      setOrgs((prev) => (prev.some((o) => o.id === org.id) ? prev : [...prev, org]))
+      writeLastSlug(org.slug)
+      router.push(`/${org.slug}${subPath(pathname, slug)}`)
+      await refreshOrgs()
+      return org
+    },
+    [pathname, slug, refreshOrgs, router]
+  )
+
+  const renameOrg = useCallback(
+    async (orgId: string, patch: { name?: string; slug?: string }) => {
+      const updated = await apiUpdateOrg(orgId, patch)
+      // Record the new slug BEFORE the list refreshes — the URL reconciliation
+      // effect fires on the refreshed list (old slug now unknown) and must
+      // resolve to the renamed org, not fall back to the first one.
+      const reslugged = activeOrg?.id === orgId && patch.slug && patch.slug !== activeOrg.slug
+      if (reslugged) writeLastSlug(updated.slug)
+      await refreshOrgs()
+      if (reslugged) {
+        router.replace(`/${updated.slug}${subPath(pathname, slug)}`)
+      }
+    },
+    [activeOrg, pathname, slug, refreshOrgs, router]
+  )
+
+  const deleteOrg = useCallback(
+    async (orgId: string) => {
+      await apiDeleteOrg(orgId)
+      // Re-list (self-heals a fresh personal org when this was the last one).
+      // If the ACTIVE org was deleted, its slug no longer resolves and the
+      // unknown-slug reconciliation moves the console to a remaining org.
+      await refreshOrgs()
+    },
+    [refreshOrgs]
+  )
+
+  const value = useMemo<OrgContextValue>(
+    () => ({
+      orgs,
+      activeOrg,
+      myRole: activeOrg?.role ?? null,
+      loading,
+      error,
+      orgPath,
+      setActiveOrg,
+      refreshOrgs,
+      createOrg,
+      renameOrg,
+      deleteOrg
+    }),
+    [orgs, activeOrg, loading, error, orgPath, setActiveOrg, refreshOrgs, createOrg, renameOrg, deleteOrg]
+  )
+
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>
+}
+
+export function useOrgs(): OrgContextValue {
+  const ctx = useContext(Ctx)
+  if (!ctx) throw new Error('useOrgs must be used within <OrgProvider>')
+  return ctx
+}

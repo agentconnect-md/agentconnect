@@ -1,0 +1,374 @@
+/**
+ * `http/routes/mcp-providers.ts` (design docs/designs/centralized-tool-management.md §4-§7)
+ * — CRUD for org-level MCP providers. A provider is an upstream MCP server the CP
+ * proxies to agents through a relay: agents receive a proxy URL + grant key, never
+ * the upstream url/credential.
+ *
+ * SECRET DISCIPLINE (mirrors integrations/bots): the upstream auth header VALUES live
+ * only in `McpProviderSecretStore` and the plaintext bearer grant key only in
+ * `McpGrantRepo` — neither ever rides a DTO or a log. The create response echoes the
+ * minted grant key EXACTLY ONCE (like a personal API key). The `url` passes a static
+ * SSRF gate here (the relay does the authoritative DNS-time guard on every call).
+ *
+ * v1 policy: `transport:'http'` only, `visibility:'org'` only, exactly one active
+ * grant per provider. The daemon/relay push (double-push of proxy def + rc/mcp-assign)
+ * is wired in a later step; this file is the persistence + REST edge.
+ */
+import type { FastifyInstance } from 'fastify'
+import { z } from 'zod'
+import type { ZodTypeProvider } from '../plugins/zod.js'
+import { Tag } from '../plugins/openapi.js'
+import type { HttpDeps } from '../deps.js'
+import type { McpProviderRecord, McpHeader, McpGrantRepo } from '../../persistence/ports.js'
+import type { OrgId } from '../../domain/ids.js'
+import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
+import { canView, canManageSharing, type ViewCtx } from '../visibility.js'
+import { resolveShareSet } from '../sharing.js'
+import { blockedUpstreamUrl, grantKeyHash } from '../../orchestrator/mcpProvider.js'
+import { makeMcpPush } from '../mcp-push.js'
+import { CONNECTOR_SERVICE_HEADER } from '../../connectors/index.js'
+import {
+  CreateMcpProviderBody,
+  UpdateMcpProviderBody,
+  McpProviderDto,
+  McpProviderListDto,
+  McpProviderCreatedDto,
+  SetSharingBody,
+  ErrorDto,
+  IdParam,
+  type McpProviderDtoT
+} from '../dto/index.js'
+
+/**
+ * Grace-safe grant rotation (v1: one active grant per provider). Captures the prior
+ * active grant(s) BEFORE minting (mintFor does not auto-revoke), pushes the NEW binding
+ * + daemon proxy def into place via the SAME helper create/patch uses, then revokes and
+ * rc/mcp-unassigns each OLD hash — so the new key is live before the old is torn down.
+ * Returns the plaintext new grant key (echoed to the caller exactly once). Pure of
+ * transport/DTO concerns; the route owns HTTP + RBAC. NEVER logs the key.
+ *
+ * Serialized per provider (via {@link serializeByProvider}) so it can't interleave with a
+ * concurrent rotation/patch/delete — see that helper for why.
+ */
+export function rotateProviderGrant(
+  provider: McpProviderRecord,
+  headers: McpHeader[],
+  orgId: OrgId,
+  grants: McpGrantRepo,
+  pushAssign: (p: McpProviderRecord, h: McpHeader[], grantKey: string, org: OrgId) => Promise<void>,
+  unassignHash: (providerId: string, hash: string) => void
+): Promise<string> {
+  return serializeByProvider(provider.id, () => rotateOnce(provider, headers, orgId, grants, pushAssign, unassignHash))
+}
+
+/**
+ * Serialize binding-mutating operations per provider. `rc/mcp-assign` ships the WHOLE
+ * grant-hash allowlist (the relay replaces it), so any two ops that read the active grant
+ * and push a binding can race: two rotations leave >1 active DB grant; a rotation racing a
+ * PATCH/DELETE can republish the just-revoked key (or re-bind a torn-down provider), so the
+ * relay ends up rejecting the key the caller was handed. Chaining every such op per provider
+ * id makes each read-active→push a critical section, so the last push always reflects the
+ * current active grant. ponytail: in-process lock, sufficient because the CP is a single
+ * Fastify process; swap to pg_advisory_xact_lock (see persistence/repositories/hook.repo.ts)
+ * if it goes multi-instance.
+ */
+const providerChains = new Map<string, Promise<unknown>>()
+
+export function serializeByProvider<T>(providerId: string, run: () => Promise<T>): Promise<T> {
+  const prev = providerChains.get(providerId) ?? Promise.resolve()
+  const result = prev.then(run, run)
+  const settled = result.then(
+    () => undefined,
+    () => undefined
+  )
+  providerChains.set(providerId, settled)
+  void settled.finally(() => {
+    if (providerChains.get(providerId) === settled) providerChains.delete(providerId)
+  })
+  return result
+}
+
+async function rotateOnce(
+  provider: McpProviderRecord,
+  headers: McpHeader[],
+  orgId: OrgId,
+  grants: McpGrantRepo,
+  pushAssign: (p: McpProviderRecord, h: McpHeader[], grantKey: string, org: OrgId) => Promise<void>,
+  unassignHash: (providerId: string, hash: string) => void
+): Promise<string> {
+  const prior = await grants.activeForProvider(provider.id) // before mint — both would read active otherwise
+  const fresh = await grants.mintFor(provider.id)
+  await pushAssign(provider, headers, fresh.key, orgId) // new binding + proxy def in place first
+  for (const g of prior) {
+    await grants.revoke(g.id)
+    unassignHash(provider.id, grantKeyHash(g.key))
+  }
+  return fresh.key
+}
+
+function toDto(p: McpProviderRecord, ctx: ViewCtx, headers: McpHeader[]): McpProviderDtoT {
+  // For open_connector providers the service slug rides as a non-secret binding
+  // header — surface it so the console can render the provider's icon.
+  const service =
+    p.kind === 'open_connector' ? headers.find((h) => h.name === CONNECTOR_SERVICE_HEADER)?.value : undefined
+  return {
+    id: p.id,
+    name: p.name,
+    kind: p.kind,
+    transport: p.transport,
+    url: p.url,
+    ...(service ? { service } : {}),
+    visibility: p.visibility,
+    sharedWith: p.sharedWith,
+    createdBy: p.createdByUserId,
+    canManageSharing: canManageSharing(p, ctx),
+    headerNames: headers.map((h) => h.name), // NEVER the values
+    createdAt: p.createdAt.toISOString()
+  }
+}
+
+export function mcpProviderRoutes(deps: HttpDeps) {
+  return async function mcpProviderRoutesPlugin(app: FastifyInstance): Promise<void> {
+    const r = app.withTypeProvider<ZodTypeProvider>()
+
+    // Shared relay+daemon push (also used by the connectors create flow).
+    const { pushAssign, pushUnassign } = makeMcpPush(deps)
+
+    r.get(
+      '/mcp-providers',
+      {
+        schema: {
+          tags: [Tag.Mcp],
+          summary: 'List MCP providers',
+          description: 'Every MCP provider in the active organization (metadata + upstream header names only).',
+          operationId: 'listMcpProviders',
+          response: { 200: McpProviderListDto }
+        }
+      },
+      async (req) => {
+        const ctx = ctxOf(req)
+        const rows = await deps.repos.mcpProvider.listForOrg(orgOf(req), ctx)
+        return Promise.all(rows.map(async (p) => toDto(p, ctx, (await deps.repos.mcpProviderSecret.get(p.id)) ?? [])))
+      }
+    )
+
+    r.get(
+      '/mcp-providers/:id',
+      {
+        schema: {
+          tags: [Tag.Mcp],
+          summary: 'Get an MCP provider',
+          description:
+            "Fetch a single MCP provider by id (scoped to the caller's org; a cross-org id reads as 404). Header values and the grant key are never returned.",
+          operationId: 'getMcpProvider',
+          params: IdParam,
+          response: { 200: McpProviderDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const p = await deps.repos.mcpProvider.get(req.params.id)
+        // A cross-org id OR a restricted provider the caller can't see both read as 404.
+        if (!p || p.orgId !== orgOf(req) || !canView(p, ctxOf(req))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
+        }
+        return toDto(p, ctxOf(req), (await deps.repos.mcpProviderSecret.get(p.id)) ?? [])
+      }
+    )
+
+    r.post(
+      '/mcp-providers',
+      {
+        schema: {
+          tags: [Tag.Mcp],
+          summary: 'Register an MCP provider',
+          description:
+            'Register an org-level upstream MCP server (http transport, org visibility) and mint its bearer grant key. The grant key is returned exactly once and is never retrievable afterward; upstream header values go in and never come back.',
+          operationId: 'createMcpProvider',
+          body: CreateMcpProviderBody,
+          response: { 201: McpProviderCreatedDto, 400: ErrorDto, 403: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        // v1 policy: http transport only (P3 lifts this, §6).
+        if (req.body.transport !== undefined && req.body.transport !== 'http') {
+          return reply
+            .code(400)
+            .send({ error: 'Bad Request', statusCode: 400, message: 'only the http transport is supported' })
+        }
+        const blocked = blockedUpstreamUrl(req.body.url)
+        if (blocked) {
+          return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: blocked })
+        }
+        // sharedWith only bites when restricted; intersect with real org members.
+        const sharedWith =
+          req.body.visibility === 'restricted' && req.body.sharedWith
+            ? await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
+            : undefined
+        const provider = await deps.repos.mcpProvider.create({
+          orgId: orgOf(req),
+          name: req.body.name,
+          url: req.body.url,
+          ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
+          ...(sharedWith ? { sharedWith } : {}),
+          ...(req.principal ? { createdByUserId: req.principal.userId } : {})
+        })
+        await deps.repos.mcpProviderSecret.put(provider.id, req.body.headers)
+        // Exactly one active grant per provider (v1). Plaintext returned once.
+        const grant = await deps.repos.mcpGrant.mintFor(provider.id)
+        await pushAssign(provider, req.body.headers, grant.key, orgOf(req))
+        return reply.code(201).send({ ...toDto(provider, ctxOf(req), req.body.headers), grantKey: grant.key })
+      }
+    )
+
+    r.patch(
+      '/mcp-providers/:id',
+      {
+        schema: {
+          tags: [Tag.Mcp],
+          summary: 'Update an MCP provider',
+          description:
+            'Edit an MCP provider’s url and/or upstream headers. `headers` replaces the stored set wholesale; a changed url passes the SSRF gate. Name, transport, and visibility are immutable through this surface (agents bind by name; recreate to rename).',
+          operationId: 'updateMcpProvider',
+          params: IdParam,
+          body: UpdateMcpProviderBody,
+          response: { 200: McpProviderDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const existing = await deps.repos.mcpProvider.get(req.params.id)
+        if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
+        }
+        // An open_connector row's url (the shared open-connector /mcp endpoint) and headers
+        // (the x-oomol-connector-* binding markers) are CP-managed — editing them here would
+        // sever the connection's binding. Refresh its credential via /connectors/.../reconnect
+        // instead; this surface only touches custom providers' upstream url/headers.
+        if (existing.kind === 'open_connector') {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: 'open-connector connections cannot edit url or headers — reconnect instead'
+          })
+        }
+        if (req.body.url !== undefined) {
+          const blocked = blockedUpstreamUrl(req.body.url)
+          if (blocked) return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: blocked })
+        }
+        // Name is immutable (see UpdateMcpProviderBody): agents bind by name and there's
+        // no atomic rename, so only the url may change the row here.
+        const provider =
+          req.body.url !== undefined
+            ? await deps.repos.mcpProvider.update(existing.id, { url: req.body.url })
+            : existing
+        if (req.body.headers !== undefined) await deps.repos.mcpProviderSecret.put(provider.id, req.body.headers)
+        const headers = req.body.headers ?? (await deps.repos.mcpProviderSecret.get(provider.id)) ?? []
+        // Re-push the binding + proxy def (name/url/headers may have changed). The grant key
+        // is unchanged (patch never re-mints), so read the active one — but INSIDE the
+        // per-provider lock, so a concurrent rotation can't leave us pushing its revoked key.
+        await serializeByProvider(provider.id, async () => {
+          const grant = (await deps.repos.mcpGrant.activeForProvider(provider.id))[0]
+          if (grant) await pushAssign(provider, headers, grant.key, orgOf(req))
+        })
+        return toDto(provider, ctxOf(req), headers)
+      }
+    )
+
+    r.post(
+      '/mcp-providers/:id/grant/rotate',
+      {
+        schema: {
+          tags: [Tag.Mcp],
+          summary: 'Rotate an MCP provider grant key',
+          description:
+            'Mint a fresh bearer grant key for the provider and retire the previous one. The new key + binding are pushed to relays and daemons before the old grant is revoked (grace-safe). Like create, the new grant key is returned exactly once and is never retrievable afterward.',
+          operationId: 'rotateMcpProviderGrant',
+          params: IdParam,
+          response: { 200: McpProviderCreatedDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const provider = await deps.repos.mcpProvider.get(req.params.id)
+        if (!provider || provider.orgId !== orgOf(req) || !canView(provider, ctxOf(req))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
+        }
+        const headers = (await deps.repos.mcpProviderSecret.get(provider.id)) ?? []
+        const grantKey = await rotateProviderGrant(
+          provider,
+          headers,
+          orgOf(req),
+          deps.repos.mcpGrant,
+          pushAssign,
+          (providerId, grantKeyHash) => deps.relayControl.mcpUnassign({ providerId, grantKeyHash })
+        )
+        return reply.code(200).send({ ...toDto(provider, ctxOf(req), headers), grantKey })
+      }
+    )
+
+    // Set who can see this provider (visibility + share set). Same gate as agents
+    // (canManageSharing === canEdit): viewers can't, a collaborator who can't view a
+    // restricted provider 404s. Visibility never rides the wire, so nothing to push.
+    r.put(
+      '/mcp-providers/:id/sharing',
+      {
+        schema: {
+          tags: [Tag.Mcp],
+          summary: 'Set MCP provider sharing',
+          description:
+            'Set the provider’s visibility (org-wide vs restricted) and share set. Requires edit rights; sharedWith is intersected with current org members.',
+          operationId: 'setMcpProviderSharing',
+          params: IdParam,
+          body: SetSharingBody,
+          response: { 200: McpProviderDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const existing = await deps.repos.mcpProvider.get(req.params.id)
+        if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
+        }
+        if (!canManageSharing(existing, ctxOf(req))) {
+          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot change sharing' })
+        }
+        const sharedWith = await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
+        const provider = await deps.repos.mcpProvider.setSharing(existing.id, {
+          visibility: req.body.visibility,
+          sharedWith
+        })
+        return toDto(provider, ctxOf(req), (await deps.repos.mcpProviderSecret.get(provider.id)) ?? [])
+      }
+    )
+
+    r.delete(
+      '/mcp-providers/:id',
+      {
+        schema: {
+          tags: [Tag.Mcp],
+          summary: 'Delete an MCP provider',
+          description:
+            'Delete an MCP provider and cascade-drop its upstream secret and grants. (The relay/daemon unbind is wired in a later step.)',
+          operationId: 'deleteMcpProvider',
+          params: IdParam,
+          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const existing = await deps.repos.mcpProvider.get(req.params.id)
+        if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
+        }
+        // Serialized with rotation/patch: unbind + delete must not interleave with a rotation
+        // that would re-bind a torn-down provider (or mint against a cascade-deleted row).
+        await serializeByProvider(existing.id, async () => {
+          await pushUnassign(existing, orgOf(req)) // unbind relays + affected daemons (before the row is gone)
+          await deps.repos.mcpProvider.delete(existing.id) // FK cascade drops secret + grants
+        })
+        return reply.code(204).send(null)
+      }
+    )
+  }
+}

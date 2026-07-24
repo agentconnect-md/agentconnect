@@ -1,0 +1,625 @@
+/**
+ * Slack config-token AUTO-install funnel + per-user config storage
+ * (docs/designs/slack-install-smoothing.md §Tier B).
+ *
+ * Each user stores their OWN App Configuration token, keyed by (orgId, userId).
+ * When the caller has one, start (apps.manifest.create → pending row → OAuth link)
+ * uses it — rotating it fresh when stale — so the app belongs to them. Then the
+ * unauthenticated OAuth callback (code → bot token, stashed on the row, never handed
+ * to the browser), poll, and finalize (validate the pasted app-level token + the
+ * OAuth bot token → mint the bot + integration → delete the row). Slack is stubbed;
+ * the DB + routes are real.
+ */
+import { describe, it, expect, afterEach } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import { prisma } from '../setup.db.js'
+import { seedDaemon, seedAgent } from '../fixtures/seed.js'
+import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
+import type { RelayChannel } from '../../src/ws/relay-registry.js'
+import { ControlSender } from '../../src/orchestrator/outbound.js'
+import type { IntegrationUpsert } from '@agentconnect.md/protocol'
+import type {
+  SlackConfigApi,
+  SlackAppCreateResult,
+  SlackManifestExportResult,
+  SlackManifestUpdateResult,
+  SlackOAuthExchangeResult,
+  SlackRotateResult
+} from '../../src/http/slack-config-api.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
+
+const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
+const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
+// The PUBLIC form (`/v1` alias mount) — what Slack actually redirects the browser
+// to on a direct-hit deploy; the gateway-rewritten arrival at the internal
+// `/api/v1/…` mount gets its own test below.
+const CALLBACK = '/v1/integrations/slack/oauth/callback'
+const ALL_BOT_PLATFORMS = ['slack', 'telegram', 'discord']
+
+function daemonCapabilities(platforms: string[]) {
+  return { platforms, runtimes: ['claude'], acp: true, features: [] }
+}
+
+let running: HttpApp | undefined
+afterEach(async () => {
+  await running?.close()
+  running = undefined
+})
+
+class SpyControl {
+  readonly upserts: Array<{ daemonId: string; u: IntegrationUpsert }> = []
+  async integrationUpsert(daemonId: string, u: IntegrationUpsert): Promise<void> {
+    this.upserts.push({ daemonId, u })
+  }
+  async integrationRemove(): Promise<void> {}
+}
+
+/** A stub Slack App-management/OAuth API with tweakable results + call capture. */
+class StubConfigApi implements SlackConfigApi {
+  createResult: SlackAppCreateResult = {
+    ok: true,
+    app: {
+      appId: 'A1TEST',
+      clientId: 'cid',
+      clientSecret: 'csecret',
+      signingSecret: 'ssecret',
+      oauthAuthorizeUrl: 'https://slack.com/oauth/v2/authorize?client_id=cid&scope=chat:write'
+    }
+  }
+  exchangeResult: SlackOAuthExchangeResult = {
+    ok: true,
+    result: { botToken: 'xoxb-from-oauth', appId: 'A1TEST', teamName: 'Acme', botUserId: 'U1' }
+  }
+  rotateResult: SlackRotateResult = {
+    ok: true,
+    rotated: {
+      accessToken: 'xoxe.xoxp-rotated',
+      refreshToken: 'xoxe-rotated',
+      accessExpiresAt: new Date(Date.now() + 12 * 3600_000)
+    }
+  }
+  createCalls: Array<{ configToken: string; manifest: unknown }> = []
+  exchangeCalls: Array<{ clientId: string; clientSecret: string; code: string; redirectUri: string }> = []
+  rotateCalls: string[] = []
+  async createApp(configToken: string, manifest: unknown): Promise<SlackAppCreateResult> {
+    this.createCalls.push({ configToken, manifest })
+    return this.createResult
+  }
+  async exportApp(): Promise<SlackManifestExportResult> {
+    return { ok: false, error: 'unused' }
+  }
+  async updateApp(): Promise<SlackManifestUpdateResult> {
+    return { ok: false, error: 'unused' }
+  }
+  async exchangeOAuth(p: {
+    clientId: string
+    clientSecret: string
+    code: string
+    redirectUri: string
+  }): Promise<SlackOAuthExchangeResult> {
+    this.exchangeCalls.push(p)
+    return this.exchangeResult
+  }
+  async rotateConfigToken(refreshToken: string): Promise<SlackRotateResult> {
+    this.rotateCalls.push(refreshToken)
+    return this.rotateResult
+  }
+}
+
+function withFunnel(opts?: {
+  appTokenCheck?: 'ok' | 'invalid'
+  publicCpUrl?: string | null
+  publicRelayUrl?: string
+}): {
+  app: HttpApp
+  spy: SpyControl
+  stub: StubConfigApi
+} {
+  const spy = new SpyControl()
+  const stub = new StubConfigApi()
+  const publicCpUrl = opts?.publicCpUrl === undefined ? 'https://cp.example' : opts.publicCpUrl
+  const app = buildHttpApp(
+    prisma,
+    {
+      ...(publicCpUrl ? { PUBLIC_CP_URL: publicCpUrl } : {}),
+      ...(opts?.publicRelayUrl ? { PUBLIC_RELAY_URL: opts.publicRelayUrl } : {}),
+      PUBLIC_WEB_URL: 'https://console.example'
+    },
+    undefined,
+    spy as unknown as ControlSender,
+    { slackConfigApi: stub, verifySlackAppToken: async () => opts?.appTokenCheck ?? 'ok' }
+  )
+  running = app
+  return { app, spy, stub }
+}
+
+/** Register a fake connected relay so `hasConnectedRelay()` is true (the http paths). */
+function connectRelay(app: HttpApp): void {
+  app.relayReg.add({ relayId: 'r1', send: () => {}, close: () => {} } as RelayChannel)
+}
+
+async function placedAgent(platforms = ALL_BOT_PLATFORMS): Promise<string> {
+  await seedDaemon(prisma, DAEMON, { capabilities: daemonCapabilities(platforms) })
+  const agentId = randomUUID()
+  await seedAgent(prisma, agentId, { daemonId: DAEMON })
+  return agentId
+}
+
+/** Seed the caller's stored App Configuration token (fresh ⇒ used as-is; stale ⇒
+ *  rotated). Keyed to the devAuth principal (DEFAULT_OWNER_ID) so the funnel resolves it. */
+async function seedUserConfig(when: 'fresh' | 'stale' = 'fresh'): Promise<void> {
+  await prisma.slackUserConfig.create({
+    data: {
+      orgId: DEFAULT_ORG_ID,
+      userId: DEFAULT_OWNER_ID,
+      accessToken: 'xoxe.xoxp-stored',
+      refreshToken: 'xoxe-stored',
+      accessExpiresAt: when === 'fresh' ? new Date(Date.now() + 3600_000) : new Date(Date.now() - 60_000)
+    }
+  })
+}
+
+/** Run start → callback so the pending row has a bot token (bot_ready). */
+async function startAndAuthorize(app: HttpApp): Promise<string> {
+  const agentId = await placedAgent()
+  await seedUserConfig()
+  const started = (
+    await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app`,
+      payload: { agentId, name: 'acme-bot' }
+    })
+  ).json() as { installId: string }
+  await app.app.inject({ method: 'GET', url: `${CALLBACK}?code=the-code&state=${started.installId}` })
+  return started.installId
+}
+
+describe('slack auto-install funnel', () => {
+  it('POST /app uses the caller’s config token to create the app + a pending row, returns an install URL (no tokens)', async () => {
+    const agentId = await placedAgent()
+    await seedUserConfig()
+    const { app, stub } = withFunnel()
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app`,
+      payload: { agentId, name: 'acme-bot' }
+    })
+    expect(res.statusCode).toBe(201)
+    const dto = res.json() as { installId: string; appId: string; installUrl: string }
+    expect(dto.appId).toBe('A1TEST')
+    // The stored (fresh) access token created the app.
+    expect(stub.createCalls[0]!.configToken).toBe('xoxe.xoxp-stored')
+    expect(stub.rotateCalls).toHaveLength(0) // fresh ⇒ no rotation
+    // installUrl pins our state + redirect_uri onto Slack's authorize URL.
+    const url = new URL(dto.installUrl)
+    expect(url.searchParams.get('state')).toBe(dto.installId)
+    // The PUBLIC `/v1` form — the internal `/api/v1` variant would 404 at the edge.
+    expect(url.searchParams.get('redirect_uri')).toBe('https://cp.example/v1/integrations/slack/oauth/callback')
+    const manifest = stub.createCalls[0]!.manifest as { oauth_config: { redirect_urls: string[] } }
+    expect(manifest.oauth_config.redirect_urls).toEqual(['https://cp.example/v1/integrations/slack/oauth/callback'])
+    const row = await prisma.slackInstall.findUnique({ where: { id: dto.installId } })
+    expect(row).toMatchObject({ appId: 'A1TEST', clientSecret: 'csecret', botToken: null })
+    expect(JSON.stringify(dto)).not.toContain('csecret')
+  })
+
+  it('POST /app rotates a STALE stored token before creating the app, persisting the fresh pair', async () => {
+    const agentId = await placedAgent()
+    await seedUserConfig('stale')
+    const { app, stub } = withFunnel()
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app`,
+      payload: { agentId }
+    })
+    expect(res.statusCode).toBe(201)
+    expect(stub.rotateCalls).toEqual(['xoxe-stored']) // rotated the stale refresh token
+    expect(stub.createCalls[0]!.configToken).toBe('xoxe.xoxp-rotated') // created with the fresh access token
+    // The rotated pair was persisted.
+    const cfg = await prisma.slackUserConfig.findUnique({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } }
+    })
+    expect(cfg).toMatchObject({ accessToken: 'xoxe.xoxp-rotated', refreshToken: 'xoxe-rotated' })
+  })
+
+  it('POST /app is 409 when the caller has NO stored config token', async () => {
+    const agentId = await placedAgent()
+    const { app } = withFunnel() // no seedUserConfig
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app`,
+      payload: { agentId }
+    })
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).toMatch(/stored your Slack App Configuration token/i)
+    expect(await prisma.slackInstall.count()).toBe(0)
+  })
+
+  it('POST /app on an UNPLACED agent is 409 and creates nothing', async () => {
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId) // no daemon
+    await seedUserConfig()
+    const { app } = withFunnel()
+    const res = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+    expect(res.statusCode).toBe(409)
+    expect(await prisma.slackInstall.count()).toBe(0)
+  })
+
+  it('POST /app refuses a daemon that has not reported the Slack adapter', async () => {
+    const agentId = await placedAgent(['telegram'])
+    await seedUserConfig()
+    const { app, stub } = withFunnel()
+
+    const res = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ error: 'Conflict', statusCode: 409, message: expect.stringContaining('slack') })
+    expect(await prisma.slackInstall.count()).toBe(0)
+    expect(stub.createCalls).toHaveLength(0)
+  })
+
+  it('POST /app maps a Slack rejection to 400 and an unreachable to 502', async () => {
+    const agentId = await placedAgent()
+    await seedUserConfig()
+    const { app, stub } = withFunnel()
+    stub.createResult = { ok: false, error: 'token_expired' }
+    const bad = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+    expect(bad.statusCode).toBe(400)
+
+    stub.createResult = { ok: false, error: 'unreachable' }
+    const down = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+    expect(down.statusCode).toBe(502)
+    expect(await prisma.slackInstall.count()).toBe(0)
+  })
+
+  it('the OAuth callback exchanges the code and stashes the bot token (never in a response)', async () => {
+    const { app, stub } = withFunnel()
+    const agentId = await placedAgent()
+    await seedUserConfig()
+    const started = (
+      await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+    ).json() as { installId: string }
+
+    const before = await app.app.inject({ method: 'GET', url: `${ORG}/integrations/slack/app/${started.installId}` })
+    expect((before.json() as { status: string }).status).toBe('awaiting_oauth')
+
+    const cb = await app.app.inject({ method: 'GET', url: `${CALLBACK}?code=the-code&state=${started.installId}` })
+    expect(cb.statusCode).toBe(200)
+    expect(cb.headers['content-type']).toContain('text/html')
+    expect(cb.body).toContain('Connected to Slack')
+    expect(cb.body).not.toContain('xoxb-') // the page carries no token
+    expect(stub.exchangeCalls[0]).toMatchObject({
+      clientId: 'cid',
+      code: 'the-code',
+      redirectUri: 'https://cp.example/v1/integrations/slack/oauth/callback'
+    })
+    const row = await prisma.slackInstall.findUnique({ where: { id: started.installId } })
+    expect(row?.botToken).toBe('xoxb-from-oauth')
+    const after = await app.app.inject({ method: 'GET', url: `${ORG}/integrations/slack/app/${started.installId}` })
+    expect((after.json() as { status: string }).status).toBe('bot_ready')
+    expect(after.body).not.toContain('xoxb-')
+  })
+
+  it('the callback with an unknown state serves an "expired" page and changes nothing', async () => {
+    const { app } = withFunnel()
+    const res = await app.app.inject({ method: 'GET', url: `${CALLBACK}?code=x&state=${randomUUID()}` })
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toContain('expired')
+  })
+
+  it('the callback also serves at the internal /api/v1 mount (where the edge rewrite lands)', async () => {
+    const { app } = withFunnel()
+    const res = await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/oauth/callback?code=x&state=${randomUUID()}`
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toContain('expired')
+  })
+
+  it('finalize before the OAuth callback is 409 (bot token not in hand yet)', async () => {
+    const { app } = withFunnel()
+    const agentId = await placedAgent()
+    await seedUserConfig()
+    const started = (
+      await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+    ).json() as { installId: string }
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app/${started.installId}/finalize`,
+      payload: { appToken: 'xapp-1-A1TEST-9-abc' }
+    })
+    expect(res.statusCode).toBe(409)
+  })
+
+  it('finalize mints the bot + integration from the stored bot token, deletes the pending row, pushes upsert', async () => {
+    const { app, spy } = withFunnel()
+    const installId = await startAndAuthorize(app)
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app/${installId}/finalize`,
+      payload: { appToken: 'xapp-1-A1TEST-9-abcdef' }
+    })
+    expect(res.statusCode).toBe(201)
+    const dto = res.json() as { id: string; botId: string; name: string }
+    expect(dto.name).toBe('acme-bot')
+    const secret = await prisma.botSecret.findUnique({ where: { botId: dto.botId } })
+    expect(secret).toMatchObject({ botToken: 'xoxb-from-oauth', appToken: 'xapp-1-A1TEST-9-abcdef' })
+    const bot = await prisma.bot.findUnique({ where: { id: dto.botId } })
+    expect(bot?.slackAppId).toBe('A1TEST')
+    expect(await prisma.slackInstall.findUnique({ where: { id: installId } })).toBeNull()
+    expect(spy.upserts).toHaveLength(1)
+    expect(spy.upserts[0]!.u).toMatchObject({ slack: { botToken: 'xoxb-from-oauth' } })
+    expect(JSON.stringify(dto)).not.toContain('xoxb-')
+  })
+
+  it('finalize (http) mints a relay-ingress bot from the OAuth bot token + captured signing secret — no paste', async () => {
+    const { app, spy } = withFunnel()
+    const agentId = await placedAgent()
+    const installId = randomUUID()
+    // A pending HTTP install already through OAuth (bot token stashed). The signing
+    // secret was captured from apps.manifest.create at start; finalize needs no paste.
+    await prisma.slackInstall.create({
+      data: {
+        id: installId,
+        orgId: DEFAULT_ORG_ID,
+        agentId,
+        appId: 'A1TEST',
+        clientId: 'cid',
+        clientSecret: 'csecret',
+        botToken: 'xoxb-from-oauth',
+        name: 'acme-http',
+        transport: 'http',
+        signingSecret: 'ssecret'
+      }
+    })
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app/${installId}/finalize`,
+      payload: { shareable: true } // no app-level token; the shared choice rides the body
+    })
+    expect(res.statusCode).toBe(201)
+    const dto = res.json() as { botId: string }
+    const bot = await prisma.bot.findUnique({ where: { id: dto.botId } })
+    expect(bot?.transport).toBe('http')
+    expect(bot?.shareable).toBe(true) // shareable came from the finalize body, not the row
+    expect(bot?.slackAppId).toBe('A1TEST') // the known manifest app id powers the console deep link
+    // http credentials: signing secret for the relay, NO xapp on the bot secret.
+    const secret = await prisma.botSecret.findUnique({ where: { botId: dto.botId } })
+    expect(secret).toMatchObject({ botToken: 'xoxb-from-oauth', appToken: null, signingSecret: 'ssecret' })
+    expect(await prisma.slackInstall.findUnique({ where: { id: installId } })).toBeNull()
+    // Relay-ingress: the daemon gets no Socket Mode integration/upsert.
+    expect(spy.upserts).toHaveLength(0)
+  })
+
+  it('POST /app with transport:http is 409 when no relay is available (nothing created)', async () => {
+    const { app } = withFunnel()
+    const agentId = await placedAgent()
+    await seedUserConfig()
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app`,
+      payload: { agentId, transport: 'http' }
+    })
+    expect(res.statusCode).toBe(409)
+    expect(await prisma.slackInstall.count()).toBe(0)
+  })
+
+  it('POST /app transport:http creates a pending row carrying the http transport + signing secret, and echoes transport', async () => {
+    const { app } = withFunnel({ publicRelayUrl: 'https://relay.example' })
+    connectRelay(app)
+    const agentId = await placedAgent()
+    await seedUserConfig()
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app`,
+      payload: { agentId, transport: 'http' }
+    })
+    expect(res.statusCode).toBe(201)
+    expect(res.json()).toMatchObject({ transport: 'http' }) // the console pins its steps to this
+    const row = await prisma.slackInstall.findFirst({ where: { agentId } })
+    expect(row).toMatchObject({ transport: 'http', signingSecret: 'ssecret' })
+  })
+
+  it('POST /app transport:http REJECTS a create response with no signing secret (502), creating nothing', async () => {
+    const { app, stub } = withFunnel({ publicRelayUrl: 'https://relay.example' })
+    connectRelay(app)
+    // Slack returned a successful app but WITHOUT credentials.signing_secret ⇒ ''.
+    stub.createResult = {
+      ok: true,
+      app: {
+        appId: 'A1TEST',
+        clientId: 'cid',
+        clientSecret: 'csecret',
+        signingSecret: '',
+        oauthAuthorizeUrl: 'https://slack.com/oauth/v2/authorize?client_id=cid'
+      }
+    }
+    const agentId = await placedAgent()
+    await seedUserConfig()
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app`,
+      payload: { agentId, transport: 'http' }
+    })
+    expect(res.statusCode).toBe(502)
+    expect(await prisma.slackInstall.count()).toBe(0) // no unverifiable pending install minted
+  })
+
+  it('finalize (http) REFUSES a pending row with no signing secret (409), minting no bot', async () => {
+    const { app } = withFunnel()
+    const agentId = await placedAgent()
+    const installId = randomUUID()
+    await prisma.slackInstall.create({
+      // http row that (somehow) never captured a signing secret — must not finalize.
+      data: {
+        id: installId,
+        orgId: DEFAULT_ORG_ID,
+        agentId,
+        appId: 'A1TEST',
+        clientId: 'cid',
+        clientSecret: 'csecret',
+        botToken: 'xoxb-from-oauth',
+        name: 'acme-http',
+        transport: 'http'
+      }
+    })
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app/${installId}/finalize`,
+      payload: {}
+    })
+    expect(res.statusCode).toBe(409)
+    expect(await prisma.bot.count()).toBe(0)
+  })
+
+  it('finalize is blocked while its agent is moving and keeps the pending credentials', async () => {
+    const agentId = await placedAgent()
+    await seedUserConfig()
+    const { app, spy } = withFunnel()
+    const started = (
+      await app.app.inject({
+        method: 'POST',
+        url: `${ORG}/integrations/slack/app`,
+        payload: { agentId, name: 'moving-bot' }
+      })
+    ).json() as { installId: string }
+    await app.app.inject({ method: 'GET', url: `${CALLBACK}?code=the-code&state=${started.installId}` })
+    const releaseMove = app.deps.agentMutations.tryBeginMove(agentId)!
+    try {
+      const res = await app.app.inject({
+        method: 'POST',
+        url: `${ORG}/integrations/slack/app/${started.installId}/finalize`,
+        payload: { appToken: 'xapp-1-A1TEST-9-abcdef' }
+      })
+      expect(res.statusCode).toBe(409)
+      expect(await prisma.bot.count()).toBe(0)
+      expect(await prisma.integration.count()).toBe(0)
+      expect(await prisma.slackInstall.findUnique({ where: { id: started.installId } })).not.toBeNull()
+      expect(spy.upserts).toHaveLength(0)
+    } finally {
+      releaseMove()
+    }
+  })
+
+  it('finalize rechecks the Slack adapter after the daemon capabilities change', async () => {
+    const agentId = await placedAgent()
+    await seedUserConfig()
+    const { app, spy } = withFunnel()
+    const started = (
+      await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+    ).json() as { installId: string }
+    await app.app.inject({ method: 'GET', url: `${CALLBACK}?code=the-code&state=${started.installId}` })
+    await prisma.daemon.update({
+      where: { id: DAEMON },
+      data: { capabilities: daemonCapabilities([]) }
+    })
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app/${started.installId}/finalize`,
+      payload: { appToken: 'xapp-1-A1TEST-9-abcdef' }
+    })
+
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ error: 'Conflict', statusCode: 409, message: expect.stringContaining('slack') })
+    expect(await prisma.bot.count()).toBe(0)
+    expect(await prisma.integration.count()).toBe(0)
+    expect(await prisma.slackInstall.findUnique({ where: { id: started.installId } })).not.toBeNull()
+    expect(spy.upserts).toHaveLength(0)
+  })
+
+  it('finalize with an app-level token Slack refuses is 400 and keeps the pending row', async () => {
+    const { app } = withFunnel({ appTokenCheck: 'invalid' })
+    const installId = await startAndAuthorize(app)
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app/${installId}/finalize`,
+      payload: { appToken: 'xapp-1-A1TEST-9-bad' }
+    })
+    expect(res.statusCode).toBe(400)
+    expect(await prisma.integration.count()).toBe(0)
+    expect(await prisma.slackInstall.findUnique({ where: { id: installId } })).not.toBeNull()
+  })
+
+  it('finalize rejects an app-level token minted for a different Slack app', async () => {
+    const { app } = withFunnel()
+    const installId = await startAndAuthorize(app)
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app/${installId}/finalize`,
+      payload: { appToken: 'xapp-1-AOTHER-9-abcdef' }
+    })
+    expect(res.statusCode).toBe(400)
+    expect(res.json()).toMatchObject({ message: expect.stringContaining('different Slack app') })
+    expect(await prisma.integration.count()).toBe(0)
+    expect(await prisma.slackInstall.findUnique({ where: { id: installId } })).not.toBeNull()
+  })
+
+  it('the funnel routes 404 when PUBLIC_CP_URL / the config API is not configured', async () => {
+    const agentId = await placedAgent()
+    running = buildHttpApp(prisma) // no PUBLIC_CP_URL, no slackConfigApi ⇒ feature off
+    const res = await running.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+    expect(res.statusCode).toBe(404)
+  })
+})
+
+describe('slack per-user config storage', () => {
+  it('PUT validates by rotating, stores the FRESH pair (not the pasted one), and reports configured', async () => {
+    const { app, stub } = withFunnel()
+    const res = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/slack/config`,
+      payload: { accessToken: 'xoxe.xoxp-pasted', refreshToken: 'xoxe-pasted' }
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ configured: true, autoAvailable: true })
+    expect(stub.rotateCalls).toEqual(['xoxe-pasted'])
+    // Stored the rotated pair — never the pasted one; and no token leaks to the DTO.
+    const row = await prisma.slackUserConfig.findUnique({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } }
+    })
+    expect(row).toMatchObject({ accessToken: 'xoxe.xoxp-rotated', refreshToken: 'xoxe-rotated' })
+    expect(JSON.stringify(res.json())).not.toContain('xoxe')
+  })
+
+  it('PUT maps a rotate rejection to 400 and stores nothing', async () => {
+    const { app, stub } = withFunnel()
+    stub.rotateResult = { ok: false, error: 'invalid_refresh_token' }
+    const res = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/slack/config`,
+      payload: { accessToken: 'x', refreshToken: 'bad' }
+    })
+    expect(res.statusCode).toBe(400)
+    expect(await prisma.slackUserConfig.count()).toBe(0)
+  })
+
+  it('GET reflects configured/autoAvailable; DELETE clears it', async () => {
+    const { app } = withFunnel()
+    const empty = await app.app.inject({ method: 'GET', url: `${ORG}/slack/config` })
+    expect(empty.json()).toMatchObject({ configured: false, autoAvailable: false })
+
+    await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/slack/config`,
+      payload: { accessToken: 'a', refreshToken: 'r' }
+    })
+    const set = await app.app.inject({ method: 'GET', url: `${ORG}/slack/config` })
+    expect(set.json()).toMatchObject({ configured: true, autoAvailable: true })
+
+    const del = await app.app.inject({ method: 'DELETE', url: `${ORG}/slack/config` })
+    expect(del.statusCode).toBe(204)
+    expect(await prisma.slackUserConfig.count()).toBe(0)
+  })
+
+  it('autoAvailable is false (but storing still works) when the funnel callback is not configured', async () => {
+    const { app } = withFunnel({ publicCpUrl: null }) // config API present, no PUBLIC_CP_URL
+    const res = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/slack/config`,
+      payload: { accessToken: 'a', refreshToken: 'r' }
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ configured: true, autoAvailable: false })
+  })
+})

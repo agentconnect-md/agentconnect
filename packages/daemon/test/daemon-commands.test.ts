@@ -1,0 +1,1568 @@
+import { describe, it, expect, vi } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  SLACK_STATUS_ACTION,
+  decodeSharedSlackStatusTarget,
+  decodeSlackStatusOverflowValue,
+  type RdMsgIm,
+  type RdMsgSlackAction
+} from '@agentconnect.md/protocol'
+import { Daemon } from '../src/daemon.js'
+import { LocalStore } from '../src/store/local-store.js'
+import { statePath } from '../src/paths.js'
+
+const AGENT_IDENTITY = {
+  displayName: 'Review Bot',
+  iconUrl: 'https://console.example.test/icons/bot-a'
+}
+const STATUS_BAR_POST_OPTIONS = {
+  username: AGENT_IDENTITY.displayName,
+  icon_url: AGENT_IDENTITY.iconUrl,
+  chrome: true
+}
+
+function hasPending(daemon: Daemon, acpSessionId: string): boolean {
+  return [...(daemon as any).pending.values()].some(
+    (pending: any) => pending.agentId === 'bot-a' && pending.acpSessionId === acpSessionId
+  )
+}
+
+function scaffold(identity?: { displayName?: string; iconUrl?: string }): string {
+  const root = mkdtempSync(join(tmpdir(), 'ac-cmd-'))
+  writeFileSync(
+    join(root, 'config.json'),
+    JSON.stringify({
+      version: 1,
+      controlPlane: { enabled: false },
+      runtimes: { claude: { command: 'node', args: ['unused'] } }
+    })
+  )
+  const adir = join(root, 'agents', 'bot-a')
+  mkdirSync(adir, { recursive: true })
+  // No integrations at boot → start() opens no real Slack socket; we attach a
+  // routable DM rule + a fake connection by hand afterwards.
+  writeFileSync(
+    join(adir, 'agent.json'),
+    JSON.stringify({
+      id: 'bot-a',
+      name: 'bot-a',
+      ...(identity?.displayName ? { displayName: identity.displayName } : {}),
+      ...(identity?.iconUrl ? { iconUrl: identity.iconUrl } : {}),
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
+      integrations: [],
+      output: { mode: 'medium' }
+    })
+  )
+  return root
+}
+
+/** A fake ACP host whose first prompt blocks until release() is called. */
+function blockingHost() {
+  let release!: () => void
+  const firstBlocked = new Promise<void>((r) => {
+    release = r
+  })
+  let calls = 0
+  const prompts: string[] = []
+  const host = {
+    start: vi.fn(async () => {}),
+    newSession: vi.fn(async () => 'acp-1'),
+    prompt: vi.fn(async (_sid: string, blocks: { text?: string }[]) => {
+      prompts.push(blocks.map((b) => b.text).join('|'))
+      if (++calls === 1) await firstBlocked
+      return 'end_turn'
+    }),
+    cancel: vi.fn(async () => {}),
+    stop: vi.fn(async () => {})
+  }
+  return { host, prompts, release: () => release() }
+}
+
+/** Make bot-a routable for DMs + explicit @mention and wire a fake reply connection. */
+function makeRoutable(daemon: Daemon) {
+  const a = (daemon as any).agents.get('bot-a')
+  a.integrations = [
+    {
+      id: 'int-a',
+      platform: 'slack',
+      slack: {
+        botToken: 'b',
+        appToken: 'p',
+        botUserId: 'UBOTA',
+        allowedUserIds: [],
+        bindRules: [{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }]
+      }
+    }
+  ]
+  const conn = {
+    setStatus: vi.fn(async () => {}),
+    postMessage: vi.fn(async () => {}),
+    getChannelInfo: vi.fn(async (id: string) => ({ id })),
+    getUserProfile: vi.fn(async (id: string) => ({ id }))
+  }
+  ;(daemon as any).connByIntegration.set('int-a', conn)
+  return conn
+}
+
+const dm = (ts: string, text: string) => ({
+  msgId: `slack:C1:${ts}`,
+  traceId: ts,
+  source: 'user' as const,
+  platform: 'slack' as const,
+  channel: 'C1',
+  thread: 'T1',
+  sender: { id: 'U1', isBot: false },
+  text,
+  mentionedBots: [] as string[],
+  isDm: true,
+  trigger: 'dm' as const
+})
+
+describe('Daemon in-conversation commands', () => {
+  it('!resume explicitly resets a durable loop guard; anonymous events cannot reset it', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    ;(daemon as any).agents.get('bot-a').integrations[0].slack.allowedUserIds = ['U1']
+    const scope = 'slack:C1:dm'
+    ;(daemon as any).store.tripLoopGuard(scope, 1, 'test_loop')
+
+    ;(daemon as any).onInbound({ ...dm('100', '!resume'), sender: { id: 'unknown', isBot: false } })
+    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
+    expect(conn.postMessage).not.toHaveBeenCalled()
+
+    ;(daemon as any).onInbound({ ...dm('150', '!resume'), sender: { id: 'U2', isBot: false } })
+    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
+    expect(conn.postMessage).not.toHaveBeenCalled()
+
+    // CP rules do not carry allowedUserIds. Even if one independently routes U2 to
+    // this agent, concrete-integration command auth must still reject the reset.
+    ;(daemon as any).cpRouting.applyUpdate({
+      routingEpoch: 1,
+      rules: [{ agentId: 'bot-a', match: { kind: 'dm' } }]
+    })
+    ;(daemon as any).onInbound({ ...dm('175', '!resume'), sender: { id: 'U2', isBot: false } })
+    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
+    expect(conn.postMessage).not.toHaveBeenCalled()
+
+    ;(daemon as any).onInbound(dm('200', '!resume'))
+    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Resumed'), 'T1')
+    expect(blocked.prompts).toHaveLength(0) // the control command never becomes a prompt
+    await daemon.stop()
+  })
+
+  it('lets an authorized human recover a top-level loop latch from its ownerless warning thread', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const integration = (daemon as any).agents.get('bot-a').integrations[0]
+    integration.slack.allowedUserIds = ['U1']
+    integration.slack.bindRules = [{ match: { kind: 'mention' } }]
+    const scope = 'slack:C-top:top-level'
+    ;(daemon as any).store.tripLoopGuard(scope, 1, 'automatic_turn_burst')
+    expect((daemon as any).store.listSessions()).toHaveLength(0)
+
+    const resume = (senderId: string) => ({
+      msgId: `slack:C-top:resume-${senderId}`,
+      traceId: `resume-${senderId}`,
+      source: 'user' as const,
+      platform: 'slack' as const,
+      channel: 'C-top',
+      // The rejected ninth top-level event posted its warning under this root,
+      // but that event never created a session/thread owner.
+      thread: '9',
+      sender: { id: senderId, isBot: false },
+      text: '!resume',
+      mentionedBots: [] as string[],
+      isDm: false,
+      trigger: 'mention' as const
+    })
+
+    ;(daemon as any).onInbound(resume('U2'))
+    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
+    expect(conn.postMessage).not.toHaveBeenCalled()
+
+    ;(daemon as any).onInbound(resume('U1'))
+    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
+    expect(conn.postMessage).toHaveBeenCalledWith('C-top', expect.stringContaining('Resumed'), '9')
+    expect(blocked.prompts).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('shared-bot rd/msg(im) only lets an allowed human reset the loop guard', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    ;(daemon as any).agents.get('bot-a').integrations[0].slack.allowedUserIds = ['U1']
+    const scope = 'slack:C1:dm'
+    ;(daemon as any).store.tripLoopGuard(scope, 1, 'test_loop')
+
+    const relayResume = (msgId: string, sender: { id: string; isBot: boolean }): RdMsgIm => ({
+      source: 'im',
+      agentId: 'bot-a',
+      sessionKey: scope,
+      msgId,
+      botId: '11111111-1111-4111-8111-111111111111',
+      integrationId: 'int-a',
+      chatId: 'C1',
+      payload: { ...dm(msgId, '!resume'), sender }
+    })
+
+    // Even an allowlisted identity cannot issue control commands when the event is bot-authored.
+    expect((daemon as any).handleRelayMsg(relayResume('relay-bot', { id: 'U1', isBot: true }), () => {})).toEqual({
+      msgId: 'relay-bot',
+      accepted: false,
+      reason: 'unauthorized'
+    })
+    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
+
+    expect(
+      (daemon as any).handleRelayMsg(relayResume('relay-unauthorized', { id: 'U2', isBot: false }), () => {})
+    ).toEqual({ msgId: 'relay-unauthorized', accepted: false, reason: 'unauthorized' })
+    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
+    expect(conn.postMessage).not.toHaveBeenCalled()
+
+    expect((daemon as any).handleRelayMsg(relayResume('relay-allowed', { id: 'U1', isBot: false }), () => {})).toEqual({
+      msgId: 'relay-allowed',
+      accepted: true
+    })
+    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Resumed'), 'T1')
+    expect(blocked.prompts).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('passes shared-bot rd/msg(im) through Slack name resolution before dispatch', () => {
+    const daemon = new Daemon()
+    const conn = {}
+    const noteMessage = vi.fn()
+    const dispatch = vi.fn(async () => {})
+    ;(daemon as any).agents.set('bot-a', {})
+    ;(daemon as any).connByIntegration.set('int-a', conn)
+    ;(daemon as any).nameResolver = { noteMessage }
+    ;(daemon as any).isSessionMuted = () => false
+    ;(daemon as any).dispatch = dispatch
+    const payload = dm('relay-names', 'hello')
+    const msg: RdMsgIm = {
+      source: 'im',
+      agentId: 'bot-a',
+      sessionKey: 'slack:C1:dm',
+      msgId: 'relay-names',
+      botId: '11111111-1111-4111-8111-111111111111',
+      integrationId: 'int-a',
+      chatId: 'C1',
+      payload
+    }
+
+    expect((daemon as any).handleRelayMsg(msg, () => {})).toEqual({ msgId: 'relay-names', accepted: true })
+    expect(noteMessage).toHaveBeenCalledWith(conn, payload)
+    expect(dispatch).toHaveBeenCalledWith('bot-a', payload, 'int-a')
+  })
+
+  it('shared-bot rd/msg(im) honors a !stop thread mute: implicit traffic drops, an @mention un-mutes', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    // The session the shared bot's inbound keys to (sessionKey(platform, channel, thread, agent)).
+    const muteKey = 'slack:C1:T1:bot-a'
+    ;(daemon as any).store.setSessionMuted(muteKey, true)
+
+    const relayIm = (msgId: string, text: string, trigger: 'dm' | 'mention'): RdMsgIm => ({
+      source: 'im',
+      agentId: 'bot-a',
+      sessionKey: muteKey,
+      msgId,
+      botId: '11111111-1111-4111-8111-111111111111',
+      integrationId: 'int-a',
+      chatId: 'C1',
+      payload: { ...dm(msgId, text), trigger }
+    })
+
+    // Implicit thread traffic while muted: accepted (consumed) but the agent is NOT woken.
+    expect((daemon as any).handleRelayMsg(relayIm('m-implicit', 'still there?', 'dm'), () => {})).toEqual({
+      msgId: 'm-implicit',
+      accepted: true
+    })
+    expect(blocked.prompts).toHaveLength(0)
+    expect((daemon as any).store.isSessionMuted(muteKey)).toBe(true)
+
+    // An explicit @mention clears the mute and dispatches.
+    expect((daemon as any).handleRelayMsg(relayIm('m-mention', 'hey again', 'mention'), () => {})).toEqual({
+      msgId: 'm-mention',
+      accepted: true
+    })
+    await vi.waitFor(() => expect(blocked.prompts).toHaveLength(1))
+    expect((daemon as any).store.isSessionMuted(muteKey)).toBe(false)
+    blocked.release()
+    await daemon.stop()
+  })
+
+  it('!queue buffers a message and dispatches it once the turn goes idle', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    // first message starts a turn whose prompt blocks
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+
+    // queue a follow-up while the turn is in flight
+    ;(daemon as any).onInbound(dm('200', '!queue do it'))
+    expect((daemon as any).serialQueue.get('slack:C1:T1:bot-a')).toHaveLength(1)
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Queued'), 'T1')
+    expect(blocked.prompts).toHaveLength(1) // the 2nd message is queued, not dispatched yet
+    expect(blocked.prompts[0]).toContain('hello') // (prefixed by the injected memory block)
+
+    // let the first turn finish → the queued message is released
+    blocked.release()
+    await turn
+    await vi.waitFor(() => expect(blocked.prompts.length).toBe(2))
+    expect(blocked.prompts[1]).toContain('do it')
+    expect((daemon as any).serialQueue.has('slack:C1:T1:bot-a')).toBe(false)
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('!queue runs immediately when the agent is idle', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+
+    // no in-flight turn for this thread → dispatch right away
+    ;(daemon as any).onInbound(dm('100', '!queue start now'))
+    await vi.waitFor(() => expect(blocked.prompts.length).toBe(1))
+    expect(blocked.prompts[0]).toContain('start now')
+    expect((daemon as any).serialQueue.size).toBe(0)
+
+    blocked.release()
+    await daemon.stop()
+  }, 15_000)
+
+  it('!queue rejects once the per-session cap (10) is reached', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+
+    for (let i = 0; i < 10; i++) (daemon as any).onInbound(dm(`${200 + i}`, `!queue m${i}`))
+    expect((daemon as any).serialQueue.get('slack:C1:T1:bot-a')).toHaveLength(10)
+    ;(daemon as any).onInbound(dm('999', '!queue overflow')) // 11th → rejected
+    expect((daemon as any).serialQueue.get('slack:C1:T1:bot-a')).toHaveLength(10)
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('full'), 'T1')
+
+    blocked.release()
+    await turn
+    await daemon.stop()
+  }, 15_000)
+
+  it('!stop cancels the in-flight turn', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+
+    ;(daemon as any).onInbound(dm('200', '!stop'))
+    expect(blocked.host.cancel).toHaveBeenCalledWith('acp-1')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Stopped'), 'T1')
+
+    blocked.release()
+    await turn
+    await daemon.stop()
+  }, 15_000)
+
+  it('!stop latches mute for a cold head before its session row exists', async () => {
+    let releaseSession!: () => void
+    const sessionBlocked = new Promise<void>((resolve) => (releaseSession = resolve))
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => {
+        await sessionBlocked
+        return 'acp-cold-stop'
+      }),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => 'end_turn'),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const root = scaffold()
+    const daemon = new Daemon({ root, hostFactory: () => host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const key = 'slack:C1:T1:bot-a'
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'cold'), 'int-a')
+    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalled())
+    expect((daemon as any).store.getSession(key)).toBeUndefined()
+    ;(daemon as any).onInbound(dm('200', '!stop'))
+    expect((daemon as any).isSessionMuted(key)).toBe(true)
+    // The mute already exists outside the sessions table, so a daemon restart at
+    // this exact cold point cannot forget the stop.
+    const reopened = new LocalStore(statePath(root))
+    expect(reopened.getSession(key)).toBeUndefined()
+    expect(reopened.isSessionMuted(key)).toBe(true)
+    reopened.close()
+
+    releaseSession()
+    await expect(turn).resolves.toBeNull()
+    expect((daemon as any).store.isSessionMuted(key)).toBe(true)
+    ;(daemon as any).onInbound(dm('300', 'must remain muted'))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(host.prompt).not.toHaveBeenCalled()
+    await daemon.stop()
+  }, 15_000)
+
+  it('!stop targets an exact cold thread instead of the channel latest session', async () => {
+    let releaseSession!: () => void
+    const sessionBlocked = new Promise<void>((resolve) => (releaseSession = resolve))
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => {
+        await sessionBlocked
+        return 'acp-cold-t2'
+      }),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => 'end_turn'),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const oldKey = 'slack:C1:T1:bot-a'
+    const coldKey = 'slack:C1:T2:bot-a'
+    ;(daemon as any).store.upsertSession({
+      key: oldKey,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: 'acp-old',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+
+    const cold = { ...dm('100', 'cold T2'), thread: 'T2' }
+    const turn = (daemon as any).dispatch('bot-a', cold, 'int-a')
+    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalled())
+    expect((daemon as any).store.getSession(coldKey)).toBeUndefined()
+
+    ;(daemon as any).onInbound({ ...dm('200', '!stop'), thread: 'T2' })
+    expect((daemon as any).isSessionMuted(coldKey)).toBe(true)
+    expect((daemon as any).isSessionMuted(oldKey)).toBe(false)
+
+    releaseSession()
+    await expect(turn).resolves.toBeNull()
+    expect(host.prompt).not.toHaveBeenCalled()
+    await daemon.stop()
+  }, 15_000)
+
+  it('!cancel interrupts the in-flight turn WITHOUT muting the thread', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+
+    ;(daemon as any).onInbound(dm('200', '!cancel'))
+    expect(blocked.host.cancel).toHaveBeenCalledWith('acp-1')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Cancelled'), 'T1')
+    // unlike !stop, the session is NOT muted — follow-ups keep dispatching.
+    const store = (daemon as any).store
+    expect(store.isSessionMuted('slack:C1:T1:bot-a')).toBe(false)
+
+    blocked.release()
+    await turn
+    await daemon.stop()
+  }, 15_000)
+
+  it('!cancel with no in-flight turn just reports (no mute)', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    ;(daemon as any).onInbound({ ...dm('400', '!cancel'), thread: 'T9' })
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', 'Nothing is running to cancel.', 'T9')
+    expect((daemon as any).store.isSessionMuted('slack:C1:T9:bot-a')).toBe(false)
+    await daemon.stop()
+  }, 15_000)
+
+  it('!stop drops queued messages so they do not run after cancellation', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+
+    ;(daemon as any).onInbound(dm('200', '!queue later')) // buffered behind the turn
+    expect((daemon as any).serialQueue.get('slack:C1:T1:bot-a')).toHaveLength(1)
+    ;(daemon as any).onInbound(dm('300', '!stop')) // clears the queue + cancels
+    expect((daemon as any).serialQueue.has('slack:C1:T1:bot-a')).toBe(false)
+
+    blocked.release()
+    await turn
+    // give any erroneous flush a chance to fire, then assert it did not
+    await new Promise((r) => setTimeout(r, 20))
+    expect(blocked.prompts).toHaveLength(1) // the follow-up was dropped, not dispatched (memory prefixes the 'hello' turn)
+    expect(blocked.prompts[0]).toContain('hello')
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('!stop mutes the thread: follow-ups are dropped (but transcribed) until an explicit @mention', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const store = (daemon as any).store
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+
+    ;(daemon as any).onInbound(dm('200', '!stop'))
+    expect(store.isSessionMuted('slack:C1:T1:bot-a')).toBe(true)
+    blocked.release()
+    await turn
+
+    // un-mentioned follow-up in the muted thread → not dispatched, but recorded for §8.5 catch-up
+    ;(daemon as any).onInbound(dm('300', 'humans talking amongst themselves'))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(blocked.prompts).toHaveLength(1) // the follow-up was dropped, not dispatched (memory prefixes the 'hello' turn)
+    expect(blocked.prompts[0]).toContain('hello')
+    expect(
+      store.transcriptSince('C1', 'T1', null).some((r: any) => r.text === 'humans talking amongst themselves')
+    ).toBe(true)
+
+    // explicit @mention clears the mute and dispatches (with the missed context replayed)
+    ;(daemon as any).onInbound({ ...dm('400', '<@UBOTA> resume please'), mentionedBots: ['UBOTA'] })
+    await vi.waitFor(() => expect(blocked.prompts.length).toBe(2))
+    expect(store.isSessionMuted('slack:C1:T1:bot-a')).toBe(false)
+    expect(blocked.prompts[1]).toContain('humans talking amongst themselves')
+
+    // thread affinity works again after the un-mute
+    ;(daemon as any).onInbound(dm('500', 'carry on'))
+    await vi.waitFor(() => expect(blocked.prompts.length).toBe(3))
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('a channel command in a thread it does not own is NOT answered via the channel-latest fallback', async () => {
+    // Multi-agent channel leak: agent bot-a owns thread T1. A bare `!stop` (no @mention,
+    // not a DM) typed in a DIFFERENT thread must not resolve to bot-a via the channel's
+    // latest session — otherwise every idle agent in the channel replies "Nothing is
+    // running" to a command meant for whoever owns that thread.
+    const host = quietHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const store = (daemon as any).store
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    expect(store.isSessionMuted('slack:C1:T1:bot-a')).toBe(false)
+
+    // channel message (not a DM, no mention) in a thread bot-a does not own → routeRules
+    // misses, and the guarded channel-latest fallback declines to cross into T-other.
+    const channelStop = {
+      ...dm('200', '!stop'),
+      isDm: false,
+      mentionedBots: [] as string[],
+      thread: 'T-other',
+      trigger: undefined
+    }
+    ;(daemon as any).onInbound(channelStop)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(conn.postMessage).not.toHaveBeenCalled()
+    expect(store.isSessionMuted('slack:C1:T1:bot-a')).toBe(false)
+
+    // A top-level channel command (no thread) still reaches the channel's active session.
+    ;(daemon as any).onInbound({ ...channelStop, msgId: 'slack:C1:300', thread: undefined })
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Nothing is running'), 'slack:C1:300')
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('!stop with no in-flight turn still mutes an open thread; without a session it just reports', async () => {
+    const host = quietHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const store = (daemon as any).store
+
+    // open a session in T1, let its turn finish, then stand the agent down
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    ;(daemon as any).onInbound(dm('200', '!stop'))
+    expect(store.isSessionMuted('slack:C1:T1:bot-a')).toBe(true)
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Muted'), 'T1')
+
+    // follow-up in the muted thread does not start a turn
+    ;(daemon as any).onInbound(dm('300', 'follow up'))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(host.prompt).toHaveBeenCalledTimes(1)
+
+    // a bare !stop from a thread with no session of its own now targets the channel's
+    // latest session (T1): reports it's idle + (re)mutes T1, but still replies in T9.
+    ;(daemon as any).onInbound({ ...dm('400', '!stop'), thread: 'T9' })
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Nothing is running'), 'T9')
+    expect(store.isSessionMuted('slack:C1:T1:bot-a')).toBe(true)
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('!status replies with the session status line; reports when no session exists', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    // open a session in T1, then query it
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    ;(daemon as any).onInbound(dm('200', '!status'))
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining(':bar_chart:'), 'T1')
+
+    // another thread in the SAME channel with no session of its own → falls back to the
+    // channel's latest session (still reports the status line, not "nothing here")
+    ;(daemon as any).onInbound({ ...dm('400', '!status'), thread: 'T9' })
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining(':bar_chart:'), 'T9')
+
+    // a channel with no session at all → a "nothing here" note
+    ;(daemon as any).onInbound({ ...dm('500', '!status'), channel: 'C2', thread: 'T2', msgId: 'slack:C2:500' })
+    expect(conn.postMessage).toHaveBeenCalledWith('C2', expect.stringContaining('No active session'), 'T2')
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('!fast on|off records the sticky override; bare /fast prints usage', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    const store = (daemon as any).store
+    const key = 'slack:C1:T1:bot-a'
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+
+    ;(daemon as any).onInbound(dm('200', '!fast on'))
+    expect(store.getFastModeOverride(key)).toBe(true)
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Fast mode on'), 'T1')
+
+    ;(daemon as any).onInbound(dm('300', '!fast off'))
+    expect(store.getFastModeOverride(key)).toBe(false)
+
+    ;(daemon as any).onInbound(dm('400', '!fast'))
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Usage:'), 'T1')
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('/models · /effort · /permission list the choices and apply a selection', async () => {
+    const host = selectHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    const store = (daemon as any).store
+    const key = 'slack:C1:T1:bot-a'
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+
+    // bare /models lists the options, marking the current one
+    ;(daemon as any).onInbound(dm('200', '/models'))
+    const listed = conn.postMessage.mock.calls.at(-1)![1] as string
+    expect(listed).toContain('opus')
+    expect(listed).toContain('sonnet')
+    expect(listed).toContain('✓ (current)')
+
+    // select by 1-based index → sticky override recorded + applied live
+    ;(daemon as any).onInbound(dm('210', '/models 2'))
+    expect(store.getModelOverride(key)).toBe('sonnet')
+    expect(host.setSessionModel).toHaveBeenCalledWith('acp-1', 'sonnet')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Model set to sonnet'), 'T1')
+
+    // select by name (case-insensitive substring)
+    ;(daemon as any).onInbound(dm('220', '/effort HIGH'))
+    expect(store.getEffortOverride(key)).toBe('high')
+
+    ;(daemon as any).onInbound(dm('230', '/permission plan'))
+    expect(store.getPermissionModeOverride(key)).toBe('plan')
+
+    // an unknown value is rejected with the option list, no override written
+    ;(daemon as any).onInbound(dm('240', '/models haiku'))
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Unknown model'), 'T1')
+    expect(store.getModelOverride(key)).toBe('sonnet')
+
+    // a bare command from a DIFFERENT thread still targets the channel's latest session
+    // (T1) — the override lands on T1's key, and the reply goes to the sender's thread.
+    ;(daemon as any).onInbound({ ...dm('250', '/models 1'), thread: 'T9' })
+    expect(store.getModelOverride(key)).toBe('opus')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Model set to opus'), 'T9')
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('/permission shows Codex desktop-app labels and resolves a choice typed as its label', async () => {
+    const host = {
+      ...selectHost(),
+      permissionModeOptions: vi.fn(() => ({
+        current: 'agent',
+        modes: ['read-only', 'agent', 'agent-full-access']
+      }))
+    }
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const store = (daemon as any).store
+    const key = 'slack:C1:T1:bot-a'
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+
+    // Default-off agents expose no runtime controls to conversation users.
+    ;(daemon as any).onInbound(dm('160', '/models 2'))
+    ;(daemon as any).onInbound(dm('170', '/effort high'))
+    ;(daemon as any).onInbound(dm('180', '!fast on'))
+    ;(daemon as any).onInbound(dm('190', '/permission'))
+    expect(conn.postMessage.mock.calls.at(-1)![1]).toContain('Agent editor')
+    expect(store.getModelOverride(key)).toBeUndefined()
+    expect(store.getEffortOverride(key)).toBeUndefined()
+    expect(store.getFastModeOverride(key)).toBeUndefined()
+    expect(store.getPermissionModeOverride(key)).toBeUndefined()
+
+    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+
+    // bare /permission lists Codex's own preset names (not the raw wire ids); the
+    // default `agent` reads as "Ask for approval", matching Codex's own UI.
+    ;(daemon as any).onInbound(dm('200', '/permission'))
+    const listed = conn.postMessage.mock.calls.at(-1)![1] as string
+    expect(listed).toContain('Read Only')
+    expect(listed).toContain('Ask for approval')
+    expect(listed).toContain('Full Access')
+    expect(listed).not.toContain('agent-full-access')
+
+    // choose by label ("full access") → resolves to the raw wire id, applied live
+    ;(daemon as any).onInbound(dm('210', '/permission full access'))
+    expect(store.getPermissionModeOverride(key)).toBe('agent-full-access')
+    expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent-full-access')
+    expect(conn.postMessage).toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('Permission mode set to Full Access'),
+      'T1'
+    )
+
+    // the default preset resolves from its Codex label too ("ask for approval" → agent)
+    ;(daemon as any).onInbound(dm('220', '/permission ask for approval'))
+    expect(store.getPermissionModeOverride(key)).toBe('agent')
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('a command from a non-routable thread is ignored (no dispatch, no crash)', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    await daemon.start()
+    // no integration attached → routeRules resolves nothing
+    ;(daemon as any).onInbound(dm('100', '!stop'))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(blocked.prompts).toEqual([])
+    await daemon.stop()
+  }, 15_000)
+})
+
+/** A fake ACP host whose prompts complete immediately. */
+function quietHost() {
+  return {
+    start: vi.fn(async () => {}),
+    newSession: vi.fn(async () => 'acp-1'),
+    hasSession: vi.fn(() => false),
+    prompt: vi.fn(async () => 'end_turn'),
+    cancel: vi.fn(async () => {}),
+    stop: vi.fn(async () => {})
+  }
+}
+
+/** A quiet host that also advertises model / effort / permission selectors (a warm
+ *  session), for the /models · /effort · /permission commands. */
+function selectHost() {
+  return {
+    ...quietHost(),
+    hasSession: vi.fn(() => true),
+    modelOptions: vi.fn(() => ({ current: 'opus', models: ['opus', 'sonnet'] })),
+    effortOptions: vi.fn(() => ({ current: 'medium', efforts: ['low', 'medium', 'high'] })),
+    permissionModeOptions: vi.fn(() => ({ current: 'default', modes: ['default', 'plan', 'acceptEdits'] })),
+    fastModeOption: vi.fn(() => null),
+    setSessionModel: vi.fn(async () => true),
+    setSessionEffort: vi.fn(async () => true),
+    setSessionPermissionMode: vi.fn(async () => true)
+  }
+}
+
+describe('Daemon managed-agent bot ingress', () => {
+  it('ignores managed agent bot messages in mention and every-message paths but admits an external bot mention', async () => {
+    const host = quietHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    // This test mutates the in-memory fixture directly; it does not need the agent
+    // directory watcher that start() opens for production hot reload.
+    await (daemon as any).watcher?.close()
+    ;(daemon as any).watcher = undefined
+    const conn = makeRoutable(daemon) as any
+    conn.postBlocks = vi.fn(async () => 'reply-ts')
+    conn.updateBlocks = vi.fn(async () => {})
+    conn.getThreadReplies = vi.fn(async () => [])
+    const integration = (daemon as any).agents.get('bot-a').integrations[0]
+    integration.slack.bindRules = [{ match: { kind: 'mention' } }, { channel: 'C1', match: { kind: 'auto' } }]
+    ;(daemon as any).cpCollab.replace({
+      generation: 1,
+      channels: [
+        {
+          orgId: 'org-1',
+          platform: 'slack',
+          channelId: 'C1',
+          agents: [
+            {
+              agentId: 'managed-peer',
+              daemonId: 'daemon-peer',
+              integrationId: 'integration-peer',
+              botAppId: 'AMANAGED',
+              callPolicy: 'all',
+              allowedCallerAgentIds: []
+            }
+          ]
+        }
+      ]
+    })
+    const botMessage = (ts: string, appId: string, mentionedBots: string[]) => ({
+      ...dm(ts, mentionedBots.length > 0 ? '<@UBOTA> wake up' : 'every-message traffic'),
+      isDm: false,
+      sender: { id: `U-${appId}`, isBot: true, appId },
+      mentionedBots,
+      trigger: mentionedBots.length > 0 ? ('mention' as const) : ('auto' as const)
+    })
+
+    ;(daemon as any).onInbound(botMessage('managed-mention', 'AMANAGED', ['UBOTA']))
+    ;(daemon as any).onInbound(botMessage('managed-auto', 'AMANAGED', []))
+    ;(daemon as any).onInbound(botMessage('external-auto', 'AEXTERNAL', []))
+    expect(host.prompt).not.toHaveBeenCalled()
+
+    const relayManaged = botMessage('relay-managed', 'AMANAGED', ['UBOTA'])
+    const relayAck = (daemon as any).handleRelayMsg(
+      {
+        source: 'im',
+        agentId: 'bot-a',
+        sessionKey: 'slack:C1:T1:bot-a',
+        msgId: relayManaged.msgId,
+        botId: 'shared-bot',
+        integrationId: 'int-a',
+        chatId: 'C1',
+        payload: relayManaged
+      } satisfies RdMsgIm,
+      () => {}
+    )
+    expect(relayAck).toEqual({ msgId: relayManaged.msgId, accepted: true })
+    expect(host.prompt).not.toHaveBeenCalled()
+
+    ;(daemon as any).onInbound(botMessage('external-mention', 'AEXTERNAL', ['UBOTA']))
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1))
+
+    await daemon.stop()
+  }, 15_000)
+})
+
+describe('Daemon transcript recording (§8.5 unrouted)', () => {
+  it('records an unrouted mention into a live thread', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const store = (daemon as any).store
+
+    // open a session in thread T1 via a routable DM
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    expect(store.openSessionAgents('C1', 'T1')).toContain('bot-a')
+
+    // A mention of an unknown bot must not fall back to this thread owner.
+    ;(daemon as any).onInbound({
+      msgId: 'slack:C1:200',
+      traceId: '200',
+      source: 'user',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      sender: { id: 'B999', isBot: true },
+      text: 'beep from another bot',
+      mentionedBots: ['UOTHER'],
+      isDm: false
+    })
+    const rows = store.transcriptSince('C1', 'T1', null)
+    expect(rows.some((r: any) => r.text === 'beep from another bot' && r.sender === 'B999')).toBe(true)
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('backfill relabels the agent’s own bot frames to agentId and folds in attachment mentions', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon) as any
+    conn.botUserId = 'UBOT'
+    conn.botId = 'BBOT'
+    conn.getThreadReplies = vi.fn(async () => [
+      { sender: 'U2', ts: '100.1', text: 'human asks', isBot: false, attachments: [] },
+      // the agent's own prior reply, tagged with the bot's Slack user id
+      { sender: 'UBOT', ts: '100.2', text: 'bot replied', isBot: true, attachments: [] },
+      // a human message that shared a file (empty text is common for file_share)
+      {
+        sender: 'U2',
+        ts: '100.3',
+        text: '',
+        isBot: false,
+        attachments: [{ id: 'F1', name: 'shot.png', mimeType: 'image/png', sourceUrl: 'u' }]
+      }
+    ])
+
+    const out = await (daemon as any).fetchThreadHistory('bot-a', 'C1', 'T1')
+    expect(out).toEqual([
+      { sender: 'U2', ts: '100.1', text: 'human asks' },
+      { sender: 'bot-a', ts: '100.2', text: 'bot replied' }, // own bot frame → agentId
+      { sender: 'U2', ts: '100.3', text: '[attached: shot.png (image/png)]' } // mention synthesized
+    ])
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('backfill preserves a remote agent author carried by a shared Slack bot', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon) as any
+    conn.botUserId = 'USHARED'
+    conn.botId = 'BSHARED'
+    conn.getThreadReplies = vi.fn(async () => [
+      {
+        sender: 'BSHARED',
+        agentAuthorId: 'remote-agent-a',
+        ts: '100.2',
+        text: '@remote-agent-a → @bot-a: review this',
+        isBot: true,
+        attachments: []
+      }
+    ])
+
+    await expect((daemon as any).fetchThreadHistory('bot-a', 'C1', 'T1')).resolves.toEqual([
+      {
+        sender: 'remote-agent-a',
+        ts: '100.2',
+        text: '@remote-agent-a → @bot-a: review this'
+      }
+    ])
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('records an unrouted message while a long turn is in flight even if the session looks idle-stale', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const store = (daemon as any).store
+
+    // start a turn that blocks (simulating a long-running turn)
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+
+    // age the session record so the recency window alone would exclude it
+    const rec = store.getSession('slack:C1:T1:bot-a')
+    store.upsertSession({ ...rec, updatedAt: rec.updatedAt - 60 * 60 * 1000 })
+    expect(store.activeSessionCountSince('C1', 'T1', Date.now() - 900_000)).toBe(0)
+
+    // An unrouted peer mention arrives mid-turn → still recorded (in-flight keeps it active).
+    ;(daemon as any).onInbound({
+      msgId: 'slack:C1:200',
+      traceId: '200',
+      source: 'user',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      sender: { id: 'B999', isBot: true },
+      text: 'mid-turn peer message',
+      mentionedBots: ['UOTHER'],
+      isDm: false
+    })
+    expect(store.transcriptSince('C1', 'T1', null).some((r: any) => r.text === 'mid-turn peer message')).toBe(true)
+
+    blocked.release()
+    await turn
+    await daemon.stop()
+  }, 15_000)
+
+  it('does not record an unrouted message when no session is open in its thread', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const store = (daemon as any).store
+
+    ;(daemon as any).onInbound({
+      msgId: 'slack:C9:500',
+      traceId: '500',
+      source: 'user',
+      platform: 'slack',
+      channel: 'C9',
+      thread: 'T9',
+      sender: { id: 'B777', isBot: true },
+      text: 'orphan chatter',
+      mentionedBots: [],
+      isDm: false
+    })
+    expect(store.transcriptSince('C9', 'T9', null)).toEqual([])
+
+    await daemon.stop()
+  }, 15_000)
+})
+
+describe('Slack interactive status bar', () => {
+  const statusActions = (blocks?: any[]) =>
+    blocks
+      ?.find((block) => block.type === 'section')
+      ?.accessory?.options.map((option: any) => decodeSlackStatusOverflowValue(option.value)?.action)
+
+  /** A blocking host that also advertises a model selector (drives the status bar). */
+  function modelHost() {
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let calls = 0
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      modelOptions: vi.fn(() => ({ current: 'opus-4.8', models: ['opus-4.8', 'sonnet-5'] })),
+      hasSession: vi.fn(() => true),
+      setSessionModel: vi.fn(async () => true),
+      prompt: vi.fn(async () => {
+        if (++calls === 1) await gate
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    return { host, release: () => release() }
+  }
+
+  /** Routable bot-a with a fake connection that captures Block Kit posts/edits. */
+  function routableWithBlocks(daemon: Daemon) {
+    makeRoutable(daemon)
+    let n = 0
+    const conn = {
+      setStatus: vi.fn(async () => {}),
+      postMessage: vi.fn(async () => `m${++n}`),
+      updateMessage: vi.fn(async () => {}),
+      postBlocks: vi.fn(async () => `sb${++n}`),
+      updateBlocks: vi.fn(async () => {}),
+      deleteMessage: vi.fn(async () => true),
+      postContext: vi.fn(async () => {})
+    }
+    ;(daemon as any).connByIntegration.set('int-a', conn)
+    return conn
+  }
+
+  it('posts one session status line and updates it on later turns', async () => {
+    const { host, release } = modelHost()
+    const daemon = new Daemon({ root: scaffold(AGENT_IDENTITY), hostFactory: () => host as any })
+    await daemon.start()
+    const conn = routableWithBlocks(daemon)
+
+    // Turn 1: the status bar posts up front (before the blocked prompt returns).
+    const t1 = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1))
+    expect(host.prompt).toHaveBeenCalledTimes(1) // posted before the reply completes
+    // The status line uses the selected agent identity even in DMs, and remains marked as
+    // chrome so a peer daemon's thread backfill skips it.
+    expect(conn.postBlocks.mock.calls[0]?.[4]).toEqual(STATUS_BAR_POST_OPTIONS)
+    expect(statusActions(conn.postBlocks.mock.calls[0]![1] as any[])).toEqual(['manage', 'cancel'])
+    release()
+    await t1
+    const settledStatus = [...conn.updateBlocks.mock.calls]
+      .reverse()
+      .find((call) => statusActions(call[2] as any[]) !== undefined)
+    expect(statusActions(settledStatus?.[2] as any[])).toEqual(['manage'])
+
+    // Turn 2: update the existing status line instead of posting another one.
+    await (daemon as any).dispatch('bot-a', dm('200', 'again'), 'int-a')
+    expect(conn.postBlocks).toHaveBeenCalledTimes(1)
+    expect(conn.updateBlocks).toHaveBeenCalledWith(
+      'C1',
+      'sb1',
+      expect.any(Array),
+      expect.stringContaining('opus-4.8'),
+      true
+    )
+    // The in-thread message is one section row: status + View Session + overflow.
+    const blocks = conn.postBlocks.mock.calls[0]![1] as { type: string; text?: { text: string }; accessory?: any }[]
+    const section = blocks.find((b) => b.type === 'section')!
+    expect(blocks).toHaveLength(1)
+    expect(section.text!.text).toContain('opus-4.8')
+    expect(section.text!.text).toContain('View Session')
+    expect(section.accessory.action_id).toBe('ac_more')
+    await daemon.stop()
+  }, 15_000)
+
+  it('keeps the session status bar pinned above cards that need human input', async () => {
+    const { host, release } = modelHost()
+    const daemon = new Daemon({ root: scaffold(AGENT_IDENTITY), hostFactory: () => host as any })
+    await daemon.start()
+    const conn = routableWithBlocks(daemon)
+
+    // Turn is blocked mid-prompt: the session status bar (sb1) posts up front.
+    const t1 = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1))
+    const p = [...(daemon as any).pending.values()][0]
+    expect(p.statusBarTs).toBe('sb1')
+
+    // A permission / elicitation card is posted mid-turn (its handler calls this). Other
+    // live output re-anchors below the card, but the session header must remain at sb1.
+    ;(daemon as any).reanchorInPlaceChrome(p)
+    await p.applyChain
+    p.lastStatusBar = undefined // mimic a usage update that changes the visible header
+    ;(daemon as any).emitStatusBar(p)
+    await vi.waitFor(() =>
+      expect(conn.updateBlocks).toHaveBeenCalledWith('C1', 'sb1', expect.any(Array), expect.any(String), true)
+    )
+    expect(p.statusBarTs).toBe('sb1')
+    expect((daemon as any).store.getStatusBarTs(p.sessionKey)).toBe('sb1')
+    expect(conn.postBlocks).toHaveBeenCalledTimes(1)
+    expect(conn.deleteMessage).not.toHaveBeenCalled()
+
+    release()
+    await t1
+    await daemon.stop()
+  }, 15_000)
+
+  it('posts shareable channel status with agent identity and one compact overflow', async () => {
+    const { host, release } = modelHost()
+    const daemon = new Daemon({ root: scaffold(AGENT_IDENTITY), hostFactory: () => host as any })
+    await daemon.start()
+    const conn = routableWithBlocks(daemon)
+    const integration = (daemon as any).agents.get('bot-a').integrations[0]
+    integration.slack.mode = 'shared'
+    integration.slack.shareable = true // multi-agent ⇒ the overflow offers Switch agent
+    delete integration.slack.appToken
+
+    // Use a real shared channel shape to prove status chrome uses the selected agent
+    // identity just like native loading states and ordinary replies.
+    const channelMessage = {
+      ...dm('100', 'hi'),
+      isDm: false,
+      trigger: 'mention' as const,
+      mentionedBots: ['UBOTA']
+    }
+    const turn = (daemon as any).dispatch('bot-a', channelMessage, 'int-a')
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1))
+    const call = conn.postBlocks.mock.calls[0]!
+    const blocks = call[1] as {
+      type: string
+      block_id?: string
+      text?: { text: string }
+      accessory?: any
+      elements?: any[]
+    }[]
+    const [section] = blocks
+
+    expect(blocks.map((b) => b.type)).toEqual(['section'])
+    expect(section!.text!.text).toContain('View Session')
+    expect(section!.text!.text).not.toContain('Agent:')
+    expect(section!.accessory).toMatchObject({
+      type: 'overflow',
+      action_id: SLACK_STATUS_ACTION.more
+    })
+    const choices = section!.accessory.options.map((o: any) => decodeSlackStatusOverflowValue(o.value)?.action)
+    expect(choices).toEqual(['switch-agent', 'manage', 'cancel'])
+    expect(decodeSharedSlackStatusTarget(section!.block_id!)).toEqual({
+      v: 1,
+      agentId: 'bot-a',
+      integrationId: 'int-a',
+      sessionKey: 'slack:C1:T1:bot-a'
+    })
+    expect(call[4]).toEqual(STATUS_BAR_POST_OPTIONS)
+
+    release()
+    await turn
+    await daemon.stop()
+  }, 15_000)
+
+  it('drops Switch agent for a non-shareable shared bot while keeping agent identity + relay routing', async () => {
+    const { host, release } = modelHost()
+    const daemon = new Daemon({ root: scaffold(AGENT_IDENTITY), hostFactory: () => host as any })
+    await daemon.start()
+    const conn = routableWithBlocks(daemon)
+    const integration = (daemon as any).agents.get('bot-a').integrations[0]
+    // A single-agent http bot: relay-routed (mode 'shared') but NOT shareable, so the
+    // in-thread overflow must omit Switch agent (nothing to switch to).
+    integration.slack.mode = 'shared'
+    integration.slack.shareable = false
+    delete integration.slack.appToken
+
+    const channelMessage = {
+      ...dm('100', 'hi'),
+      isDm: false,
+      trigger: 'mention' as const,
+      mentionedBots: ['UBOTA']
+    }
+    const turn = (daemon as any).dispatch('bot-a', channelMessage, 'int-a')
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1))
+    const call = conn.postBlocks.mock.calls[0]!
+    const blocks = call[1] as { type: string; block_id?: string; accessory?: any }[]
+    const [section] = blocks
+
+    const choices = section!.accessory.options.map((o: any) => decodeSlackStatusOverflowValue(o.value)?.action)
+    expect(choices).toEqual(['manage', 'cancel']) // no 'switch-agent'
+    // Overflow still routes through the relay (the block_id is the encoded session target),
+    // so Session options / Cancel run keep working for a single-agent http bot.
+    expect(decodeSharedSlackStatusTarget(section!.block_id!)).toEqual({
+      v: 1,
+      agentId: 'bot-a',
+      integrationId: 'int-a',
+      sessionKey: 'slack:C1:T1:bot-a'
+    })
+    // Agent identity is preserved in shared mode, and the message remains marked as chrome.
+    expect(call[4]).toEqual(STATUS_BAR_POST_OPTIONS)
+
+    release()
+    await turn
+    await daemon.stop()
+  }, 15_000)
+
+  it('handles shared session interactions only for the exact local integration and session owner', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blockingHost().host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const integration = (daemon as any).agents.get('bot-a').integrations[0]
+    integration.slack.mode = 'shared'
+    delete integration.slack.appToken
+
+    const KEY = 'slack:C1:T1:bot-a'
+    const FOREIGN_KEY = 'slack:C1:T2:bot-a'
+    const openStatusModal = vi.fn(async () => {})
+    const updateBlocks = vi.fn(async () => true)
+    ;(daemon as any).connByIntegration.set('int-a', { openStatusModal, updateBlocks })
+    ;(daemon as any).store.upsertSession({
+      key: KEY,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    ;(daemon as any).store.upsertSession({
+      key: FOREIGN_KEY,
+      agentId: 'someone-else',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T2',
+      acpSessionId: 'acp-2',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+
+    const action = (over: Partial<RdMsgSlackAction> = {}): RdMsgSlackAction => ({
+      source: 'slack_action',
+      agentId: 'bot-a',
+      sessionKey: KEY,
+      msgId: 'action-ok',
+      botId: 'shared-bot',
+      integrationId: 'int-a',
+      payload: { kind: 'open-config', triggerId: 'trig-1' },
+      ...over
+    })
+
+    expect((daemon as any).handleRelayMsg(action(), () => {})).toEqual({ msgId: 'action-ok', accepted: true })
+    expect(openStatusModal).toHaveBeenCalledTimes(1)
+
+    const permissionResolved = vi.fn()
+    const permissionRequestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).store.createPermissionRequest({
+      id: permissionRequestId,
+      agentId: 'bot-a',
+      sessionId: 'acp-1',
+      createdAt: Date.now(),
+      requesterId: 'U1',
+      requesterName: 'Test User',
+      command: 'Bash: pnpm test',
+      status: 'pending',
+      resolvedAt: null
+    })
+    ;(daemon as any).pendingChatPermissions.set(permissionRequestId, {
+      agentId: 'bot-a',
+      sessionId: 'acp-1',
+      params: { options: [{ optionId: 'allow_once', name: 'Allow Once', kind: 'allow_once' }] },
+      evaluationParams: {},
+      conn: { updateBlocks },
+      channel: 'C1',
+      ts: 'card-1',
+      resolve: permissionResolved
+    })
+    expect(
+      (daemon as any).handleRelayMsg(
+        action({
+          msgId: 'action-permission',
+          payload: { kind: 'permission-choice', requestId: permissionRequestId, optionId: 'allow_once' }
+        }),
+        () => {}
+      )
+    ).toEqual({ msgId: 'action-permission', accepted: true })
+    expect(permissionResolved).toHaveBeenCalledWith({ outcome: { outcome: 'selected', optionId: 'allow_once' } })
+
+    const elicitationResolved = vi.fn()
+    ;(daemon as any).pendingElicits.set('elicit-1', {
+      agentId: 'bot-a',
+      sessionId: 'acp-1',
+      params: { message: 'Pick one' },
+      propName: 'language',
+      kind: 'enum',
+      approval: false,
+      conn: { updateBlocks },
+      channel: 'C1',
+      ts: 'card-2',
+      resolve: elicitationResolved
+    })
+    expect(
+      (daemon as any).handleRelayMsg(
+        action({
+          msgId: 'action-elicit',
+          payload: { kind: 'elicitation-choice', requestId: 'elicit-1', value: 'TypeScript' }
+        }),
+        () => {}
+      )
+    ).toEqual({ msgId: 'action-elicit', accepted: true })
+    expect(elicitationResolved).toHaveBeenCalledWith({
+      action: 'accept',
+      content: { language: 'TypeScript' }
+    })
+    const [triggerId, sessionKey, privateMetadata] = openStatusModal.mock.calls[0]!
+    expect(triggerId).toBe('trig-1')
+    expect(sessionKey).toBe(KEY)
+    expect(decodeSharedSlackStatusTarget(privateMetadata)).toEqual({
+      v: 1,
+      agentId: 'bot-a',
+      integrationId: 'int-a',
+      sessionKey: KEY
+    })
+
+    // HTTP interactions may be redelivered. A replayed receipt must
+    // not consume the same trigger_id by opening a second modal.
+    expect((daemon as any).handleRelayMsg(action(), () => {})).toEqual({ msgId: 'action-ok', accepted: true })
+    expect(openStatusModal).toHaveBeenCalledTimes(1)
+
+    const rejected = [
+      action({ sessionKey: 'slack:C1:missing:bot-a', msgId: 'action-missing' }),
+      action({ sessionKey: FOREIGN_KEY, msgId: 'action-foreign' }),
+      action({ integrationId: 'int-other', msgId: 'action-integration-mismatch' })
+    ]
+    for (const msg of rejected) {
+      expect((daemon as any).handleRelayMsg(msg, () => {})).toMatchObject({
+        msgId: msg.msgId,
+        accepted: false,
+        reason: 'not_found'
+      })
+    }
+    expect(openStatusModal).toHaveBeenCalledTimes(1)
+
+    await daemon.stop()
+  })
+
+  it('adopts the first existing status line in a Slack thread', async () => {
+    const { host, release } = modelHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    const conn = routableWithBlocks(daemon)
+    ;(conn as any).getThreadReplies = vi.fn(async () => [
+      { sender: 'U1', ts: 'T1', text: 'hi', isBot: false, attachments: [] },
+      { sender: 'B1', ts: '111.1', text: ':bar_chart: *old* - ctx 1.0k', isBot: true, attachments: [] },
+      { sender: 'B1', ts: '222.2', text: ':bar_chart: *newer*', isBot: true, attachments: [] }
+    ])
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
+    await vi.waitFor(() =>
+      expect(conn.updateBlocks).toHaveBeenCalledWith(
+        'C1',
+        '111.1',
+        expect.any(Array),
+        expect.stringContaining('opus-4.8'),
+        true
+      )
+    )
+    expect(conn.postBlocks).not.toHaveBeenCalled()
+    expect((daemon as any).store.getStatusBarTs('slack:C1:T1:bot-a')).toBe('111.1')
+
+    release()
+    await turn
+    await daemon.stop()
+  }, 15_000)
+
+  it('fetchThreadHistory skips daemon chrome (metadata-marked + status-bar text) but keeps conversation', async () => {
+    const { host } = modelHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    const conn = routableWithBlocks(daemon)
+    ;(conn as any).botUserId = 'BOT-A'
+    ;(conn as any).getThreadReplies = vi.fn(async () => [
+      { sender: 'U1', ts: '1.1', text: 'human msg', isBot: false, chrome: false, attachments: [] },
+      {
+        sender: 'B-X',
+        ts: '2.2',
+        text: 'a peer reply',
+        isBot: true,
+        agentAuthorId: 'bot-x',
+        chrome: false,
+        attachments: []
+      },
+      { sender: 'B-X', ts: '3.3', text: 'tool progress', isBot: true, chrome: true, attachments: [] },
+      { sender: 'B-X', ts: '4.4', text: ':bar_chart: *opus* - ctx 1.0k', isBot: true, chrome: false, attachments: [] }
+    ])
+
+    const history = await (daemon as any).fetchThreadHistory('bot-a', 'C1', 'T1')
+
+    // The metadata-marked chrome ('tool progress') and the status-bar-shaped text are dropped;
+    // the human message and the peer's real reply survive.
+    expect(history.map((h: any) => h.text)).toEqual(['human msg', 'a peer reply'])
+    await daemon.stop()
+  }, 15_000)
+
+  it('posts the status bar at turn START even before the model is known (no modelOptions)', async () => {
+    // blockingHost advertises no modelOptions → the model/usage is unknown at turn start.
+    // The bar must still appear as soon as the turn begins (overflow + View), filling in
+    // the model later via chat.update — regression for "no status bar until first message".
+    const blocked = blockingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    await daemon.start()
+    const conn = routableWithBlocks(daemon)
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
+    // Posted while the first prompt is STILL blocked — i.e. before any reply arrives.
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1))
+    const blocks = conn.postBlocks.mock.calls[0]![1] as { type: string; accessory?: any }[]
+    expect(blocks.find((b) => b.type === 'section')!.accessory.action_id).toBe('ac_more')
+
+    blocked.release()
+    await turn
+    await daemon.stop()
+  }, 15_000)
+
+  it('the Configure modal (statusInfoForKey) carries the CP-provided View-session link', async () => {
+    const { host, release } = modelHost()
+    const daemon = new Daemon({ root: scaffold(AGENT_IDENTITY), hostFactory: () => host as any })
+    await daemon.start()
+    routableWithBlocks(daemon)
+    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    // Simulate the CP sending its console origin on auth/ok (no local webAppUrl config).
+    ;(daemon as any).cpWebAppUrl = 'https://console.example.com'
+
+    const t1 = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+    // The connection queries statusInfoForKey to build the modal; it resolves the deep link.
+    const data = (daemon as any).statusInfoForKey('slack:C1:T1:bot-a')
+    expect(data.link).toBe('https://console.example.com/sessions/acp-1')
+    expect(data.info.models).toEqual(['opus-4.8', 'sonnet-5'])
+    expect(data.identity).toMatchObject({
+      name: AGENT_IDENTITY.displayName,
+      agentUrl: 'https://console.example.com/agents/bot-a',
+      iconUrl: AGENT_IDENTITY.iconUrl
+    })
+    expect(data.identity.sessionTitle).toBeUndefined()
+    ;(daemon as any).store.setSessionTitle('slack:C1:T1:bot-a', 'Fix login flow')
+    expect((daemon as any).statusInfoForKey('slack:C1:T1:bot-a').identity.sessionTitle).toBe('Fix login flow')
+    expect(data.cancellable).toBe(true)
+    release()
+    await t1
+    expect((daemon as any).statusInfoForKey('slack:C1:T1:bot-a').cancellable).toBe(false)
+    await daemon.stop()
+  }, 15_000)
+
+  it('uses the local Web App default when neither local nor CP configuration provides an origin', () => {
+    const daemon = new Daemon({ root: scaffold() })
+    ;(daemon as any).cfg = {}
+    expect((daemon as any).sessionLink('acp-1')).toBe('http://localhost:3000/sessions/acp-1')
+    expect((daemon as any).agentLink('bot-a')).toBe('http://localhost:3000/agents/bot-a')
+  })
+
+  it('falls back to the probed runtime models when the persisted session is cold', async () => {
+    const { host, release } = modelHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    routableWithBlocks(daemon)
+
+    const key = 'slack:C1:T1:bot-a'
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+    release()
+    await turn
+
+    // An idle-reaped adapter no longer owns the persisted ACP id, while the
+    // daemon-wide probe result still carries the runtime's model choices.
+    host.hasSession.mockReturnValue(false)
+    ;(host.modelOptions as any).mockReturnValue(null)
+    ;(daemon as any).runtimeModels.set('claude', ['default', 'opus[1m]', 'sonnet', 'haiku'])
+
+    const fallback = (daemon as any).statusInfoForKey(key).info
+    expect(fallback.model).toBe('default')
+    expect(fallback.models).toEqual(['default', 'opus[1m]', 'sonnet', 'haiku'])
+
+    ;(daemon as any).store.setModelOverride(key, 'opus[1m]')
+    const info = (daemon as any).statusInfoForKey(key).info
+    expect(info.model).toBe('opus[1m]')
+    expect(info.models).toEqual(['default', 'opus[1m]', 'sonnet', 'haiku'])
+    await daemon.stop()
+  }, 15_000)
+
+  it('handleStatusAction routes set-model / cancel by session key', async () => {
+    const { host, release } = modelHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    const conn = routableWithBlocks(daemon)
+    const store = (daemon as any).store
+    const key = 'slack:C1:T1:bot-a'
+
+    const t1 = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+
+    // set-model: sticky override persisted + applied live to the running session.
+    ;(daemon as any).handleStatusAction({ kind: 'set-model', sessionKey: key, model: 'sonnet-5' })
+    expect(store.getModelOverride(key)).toBe('sonnet-5')
+    expect(host.setSessionModel).toHaveBeenCalledWith('acp-1', 'sonnet-5')
+
+    // cancel: interrupts the in-flight turn WITHOUT muting.
+    ;(daemon as any).handleStatusAction({ kind: 'cancel', sessionKey: key })
+    expect(host.cancel).toHaveBeenCalledWith('acp-1')
+    expect(store.isSessionMuted(key)).toBe(false)
+    await vi.waitFor(() => {
+      const settledStatus = [...conn.updateBlocks.mock.calls]
+        .reverse()
+        .find((call) => statusActions(call[2] as any[]) !== undefined)
+      expect(statusActions(settledStatus?.[2] as any[])).toEqual(['manage'])
+    })
+
+    release()
+    await t1
+    await daemon.stop()
+  }, 15_000)
+})

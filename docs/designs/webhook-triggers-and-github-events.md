@@ -1,0 +1,488 @@
+# General Webhook Triggers and GitHub Event Integration
+
+This document describes the current webhook trigger implementation. A hook maps
+one inbound delivery to one agent turn. The relay is the public ingress and data
+plane, the daemon runs the turn, and the Control Plane (CP) stores definitions
+and body-free run metadata.
+
+Two hook kinds share this execution path:
+
+- `webhook`: an unguessable capability URL accepts a caller-supplied
+  instruction.
+- `github`: a GitHub App webhook accepts signed repository events, applies
+  subscription and authorization rules, and preserves issue or pull-request
+  session continuity.
+
+For a numbered GitHub thread, `GithubPoster` owns the ordinary reply comment and
+publishes only the completed ACP final answer. A formal pull-request review is a
+separate controlled effect and must use the daemon-owned structured action
+described in
+[github-pr-review-checks.md](github-pr-review-checks.md).
+
+## Architecture
+
+```text
+general caller ──POST /webhooks/in/:token──┐
+                                           │
+GitHub App ─────POST /webhooks/github──────┤
+                                           ▼
+                                      relay ingress
+                              verify → match → rate limit
+                                           │
+                                rd/msg { source: hook }
+                                           │
+                                           ▼
+                                         daemon
+                                 deduplicate → ACP turn
+                                           │
+                          hook/start + hook/report metadata
+                                           │
+                                           ▼
+                                     Control Plane
+```
+
+The relay sends event content directly to the target daemon. Event bodies,
+comments, diffs, and attachment content never pass through the CP. The CP
+receives only configuration, trusted routing metadata, delivery accounting, and
+terminal outcomes.
+
+The CP compiles each enabled, placed hook into an `rc/hook-assign` rule and
+broadcasts it to every connected relay. Hook disablement, deletion, or an
+unplaced agent produces `rc/hook-remove`. A relay starts with an empty in-memory
+table and receives a full replay after registration.
+
+The authoritative implementation surfaces are:
+
+- [hook routes](../../packages/control-plane/src/http/routes/hooks.ts)
+- [hook compiler](../../packages/control-plane/src/hooks/hook.service.ts)
+- [generic ingress](../../packages/relay/src/hooks/ingress.ts)
+- [GitHub ingress](../../packages/relay/src/hooks/github-ingress.ts)
+- [hook protocol](../../packages/protocol/src/frames/hook.ts)
+- [relay protocol](../../packages/protocol/src/frames/relay-cp.ts)
+- [daemon hook message](../../packages/daemon/src/messages/hook-message.ts)
+- [Prisma schema](../../packages/control-plane/prisma/schema.prisma)
+
+## Core Invariants
+
+1. The relay owns public webhook ingress and signature verification.
+2. Event content travels only on the relay-to-daemon data plane.
+3. The CP stores hook definitions and body-free run metadata, never event
+   bodies.
+4. Matching uses numeric GitHub repository IDs and CP-compiled installation
+   membership. Payload ownership fields are filters, not authorization.
+5. Every matched hook names one explicit `agentId`; daemon route arbitration is
+   not involved.
+6. The daemon deduplicates on `(sessionKey, msgId)`, where
+   `msgId = "<hookId>:<deliveryKey>"`.
+7. The relay returns HTTP `202` after verification, matching, and queueing. It
+   does not wait for the agent turn to finish.
+8. A numbered GitHub turn has one ordinary-comment writer:
+   `GithubPoster`.
+9. Secrets are never logged, returned by list APIs, or placed in an agent
+   environment.
+
+## General Webhook
+
+### Creation and Capability URL
+
+Creating a `webhook` hook mints:
+
+- a random `urlToken` with at least 128 bits of entropy;
+- a full ingress URL derived from `PUBLIC_RELAY_URL`; and
+- optionally, a per-hook HMAC signing secret.
+
+The URL is a capability credential. Anyone who holds it can direct the agent,
+so callers must protect it like an API key. The HMAC secret is an optional
+second factor and is returned only in the create response.
+
+The console presents a client-signed test-delivery command. There is no
+server-side `POST /hooks/:id/test` route.
+
+### Ingress Contract
+
+The endpoint is:
+
+```text
+POST /webhooks/in/:token
+Content-Type: application/json
+X-AC-Delivery-Key: <caller-stable-id>        # optional
+X-AC-Signature: sha256=<hex>                 # required when HMAC is enabled
+```
+
+The relay:
+
+1. resolves the token from its in-memory hook table;
+2. verifies `X-AC-Signature` over the raw body when configured;
+3. applies a per-hook token-bucket rate limit;
+4. uses a valid caller delivery key or creates a UUID;
+5. truncates the model-visible body to the protocol limit;
+6. dispatches an `rd/msg` hook frame; and
+7. returns `202` with the delivery key.
+
+An unknown token and an invalid HMAC both return `404`, avoiding a token
+existence oracle. The route accepts JSON with a 128 KiB request limit. Payload
+bodies are never logged.
+
+### Message Semantics
+
+The capability URL authenticates the caller, so the payload is an instruction,
+not untrusted quoted context. The daemon extracts a string field named
+`prompt`, `text`, or `message` as the instruction and attaches remaining JSON
+fields as context. If none exists, the complete payload becomes the message.
+
+A generic hook has no separate trigger prompt. The agent description remains
+standing context.
+
+`sessionMode` controls continuity:
+
+- `perDelivery`: every delivery uses a distinct session;
+- `shared`: all deliveries for the hook reuse one session.
+
+An optional target integration and channel can anchor output using the same
+target model as scheduled triggers. Without a target, the turn is headless.
+
+## GitHub Hooks
+
+### Repository Authorization
+
+A GitHub hook watches one repository covered by a live GitHub App installation
+owned by the organization. The server resolves the repository name to its
+numeric `repoId`; clients cannot supply the numeric ID directly.
+
+The watched repository must also be either:
+
+- the agent workspace repository; or
+- an explicit `AgentRepoAuthorization`.
+
+Agent-visible credentials remain clamped to the workspace repository plus the
+explicit authorization set. A hook does not implicitly broaden `GH_TOKEN`.
+
+`GithubPoster` requests a separate repository-scoped token with
+`purpose: github_hook_reply` and the relay-delivered `hookId`. The CP
+revalidates the enabled hook by immutable hook and repository identity before
+minting issue or pull-request comment permission. That token never enters the
+agent environment.
+
+### Signature and Attribution
+
+`POST /webhooks/github` is registered only when
+`GITHUB_APP_WEBHOOK_SECRET` is configured on the relay. Every request requires a
+valid timing-safe `X-Hub-Signature-256` comparison over the raw body.
+
+After signature verification:
+
+- `ping` returns `204`;
+- verified unmatched deliveries return `202`;
+- `installation` and `installation_repositories` events become
+  `rc/github-installation` doorbells;
+- subscription events are matched by numeric `repository.id`; and
+- every candidate rule must contain the payload `installation.id` in its
+  CP-compiled installation set.
+
+The CP treats an installation doorbell as cache invalidation. It pulls the
+installation from GitHub and updates stored facts from that authenticated API
+response. The webhook payload is not the source of truth.
+
+The route accepts JSON with a 1 MiB request limit and never logs the payload.
+If the webhook secret is absent, the route is not registered.
+
+### Supported Events and Matching
+
+The relay recognizes these subscription event families:
+
+- `issues`
+- `pull_request`
+- `issue_comment`
+- `pull_request_review_comment`
+- `push`
+
+Stored patterns use `family:action`, with `family:*` as a wildcard. Label
+filters require at least one current subject label to match.
+`commentFamilies` distinguishes issue comments from pull-request conversation
+comments because GitHub sends both through `issue_comment`.
+
+The matcher always rejects `sender.type === "Bot"` to prevent self-reply loops
+and agent-to-agent mention loops.
+
+Closed, reopened, and edited issue or pull-request lifecycle events do not
+start turns. A diff-line review comment may match a shared
+`issue_comment` subscription or an explicit
+`pull_request_review_comment` subscription.
+
+### Summon and Collaborator Gates
+
+With `mentionOnly` enabled, authored event text must contain either:
+
+- `@<agent-name>` to select one agent; or
+- `@<app-slug>` to broadcast to all matching hooks in the repository.
+
+The App handle wins when both forms are present. Unrelated mentions do not
+change the candidate set.
+
+Every comment also passes the collaborator gate. Trusted payload associations
+are `OWNER`, `MEMBER`, and `COLLABORATOR`. When the payload does not provide a
+trusted association, the relay asks the CP for a live, body-free permission
+decision. A comment does not reach the daemon unless the author has current
+write-level authority.
+
+A native `pull_request:review_requested` event can explicitly request the App
+bot as reviewer. It bypasses cadence, labels, and mention filters only after a
+live maintainer authorization.
+
+### External Pull Requests
+
+Pull-request bodies and diffs are attacker-controlled input. A lifecycle event
+from an author outside the repository write boundary does not run an agent
+automatically.
+
+For revision-bearing events such as open, synchronize, ready-for-review, and
+draft conversion, the system records a body-free
+`review_request_required` outcome and may project an informational Check with a
+maintainer action. A maintainer can then request execution through:
+
+- the Check action;
+- a comment mention; or
+- GitHub's reviewer request or re-request controls.
+
+Each path revalidates current repository authority before opening a review
+generation.
+
+### Session Affinity
+
+GitHub hooks always use `perThread`. The relay forms the session key from the
+hook's immutable `githubSessionKey` prefix and the issue or pull-request number.
+New rows use a numeric-repository-based prefix, so repository renames do not
+split the conversation.
+
+The daemon maps this to its normal session identity and resumes the same ACP
+session on later matching events. No GitHub-specific session store exists.
+
+### Prompt Boundary
+
+GitHub content is untrusted external input. The daemon wraps model-visible
+event text in an explicit untrusted-content delimiter and supplies only bounded
+excerpts in the delivery frame. The agent reads the authoritative issue,
+pull-request, comments, or diff through an authorized GitHub read path when it
+needs more context.
+
+The trust boundary depends on runtime permissions and repository credentials:
+
+- public issue text can contain prompt injection;
+- external pull requests require a maintainer request;
+- repository tokens are narrowed to the required repository and capability;
+- ordinary comment mutation is unavailable to the agent during a numbered
+  hook turn; and
+- formal reviews require the structured, action-time-authorized review path.
+
+## GitHub Output Ownership
+
+### Ordinary Reply
+
+`GithubPoster` is always enabled for a numbered GitHub turn. It collects ACP
+updates in daemon memory but publishes only the completed final answer. It
+does not publish commentary, progress, tool output, temporary placeholders, or
+an incomplete answer.
+
+The poster:
+
+1. waits for all turn tools to finish;
+2. selects the authoritative final-answer message;
+3. obtains its purpose-bound comment token;
+4. performs one bounded comment `POST`; and
+5. records failure locally without changing the agent result.
+
+An empty or incomplete final produces no comment.
+
+During this turn, the agent must not create, update, or delete ordinary GitHub
+comments through `gh`, MCP, connectors, raw REST, or GraphQL. The single-writer
+rule prevents duplicate and overwrite races.
+
+### Formal Review
+
+Formal pull-request review submission is not an ordinary poster comment. It
+uses the daemon-owned `submitGithubReview` action, a complete configuration and
+dispatch fence, CP authorization, and a broker-only token.
+
+A formal review attempt and the fallback ordinary reply are mutually
+exclusive. If a review is submitted, the poster does not add an ordinary
+comment. If the review attempt deterministically ends `not_submitted`, the
+final ordinary reply remains available as fallback. Ambiguous review effects
+fail closed pending reconciliation.
+
+Informational Check projection and formal review details are defined in
+[github-pr-review-checks.md](github-pr-review-checks.md).
+
+## Protocol
+
+### CP to Relay
+
+- `rc/hook-assign`: upsert one compiled hook rule.
+- `rc/hook-remove`: remove one rule.
+
+A compiled rule includes:
+
+- hook, agent, and placed daemon identity;
+- configuration and dispatch revisions;
+- session mode and optional output target;
+- a generic capability token and optional HMAC secret; or
+- GitHub repository identity, event filters, mention handles, installation
+  membership, and review/reporting policy.
+
+The HMAC secret is sensitive and must never appear in logs.
+
+### Relay to Daemon
+
+The relay sends `rd/msg` with `source: "hook"`. It contains:
+
+- explicit `agentId`;
+- stable `hookId` and `deliveryKey`;
+- daemon deduplication key;
+- computed session key;
+- bounded context;
+- trusted, signature-verified GitHub revision metadata when applicable; and
+- the exact configuration/dispatch snapshot when available.
+
+The daemon acknowledges message admission through `rd/ack`.
+
+### Delivery and Completion Accounting
+
+The relay emits body-free `rc/run-report` metadata:
+
+- `accepted` opens a running `HookRun`;
+- `failed` records a delivery-stage failure.
+
+Immediately before an accepted GitHub turn enters the model prompt, the daemon
+sends correlated `hook/start`. The CP durably attaches the authoritative
+revision and advances any informational projection before acknowledging the
+barrier.
+
+At turn completion, the daemon sends correlated `hook/report`. A metadata-only
+daemon outbox retains the report until the CP acknowledges it. The report
+closes the run with status, duration, session ID, and normalized review outcome
+when present.
+
+`HookRun` is unique on `(hookId, deliveryKey)`, so duplicate delivery reports
+and redeliveries converge on one record. A reaper marks stale running rows as
+`failed(orphaned)`; an exact late completion may still replace that outcome.
+
+## Persistence
+
+The Prisma schema is authoritative. The main records are:
+
+- `HookDef`: definition, repository identity, event filters, session policy,
+  immutable revision fences, review/reporting policy, optional anchor, and
+  owning agent.
+- `HookSecret`: the generic hook's HMAC secret, separated from normal hook
+  reads and DTOs.
+- `HookRun`: body-free delivery, dispatch, revision, review, projection,
+  session, and redelivery metadata.
+- `HookReviewProjection`: durable external Check or reporting state that can be
+  cleaned up even if its owning hook is deleted.
+
+A hook belongs to one agent and has no independent visibility setting. Access
+inherits the owning agent's visibility. Agent deletion cascades to hook
+definitions and secrets. Projection records intentionally do not depend on that
+foreign key so cleanup can still converge.
+
+The CP never stores webhook bodies, GitHub comment text, pull-request diffs, or
+attachment bytes.
+
+## REST and Console
+
+Organization-scoped routes provide:
+
+```text
+POST   /hooks
+GET    /agents/:agentId/hooks
+GET    /hooks/:id
+PUT    /hooks/:id
+DELETE /hooks/:id
+GET    /hooks/:id/runs
+```
+
+There is no organization-wide hook list and no hook sharing endpoint. By-ID
+reads apply the owning agent's visibility and return `404` for unknown,
+cross-organization, or inaccessible rows.
+
+Creation requires:
+
+- a configured public relay URL;
+- at least one live relay;
+- a visible owning agent;
+- a valid target integration when anchoring is requested; and
+- for GitHub, a configured App, a covered repository, and appropriate explicit
+  repository authorization.
+
+GitHub review and reporting settings are validated both at configuration time
+and again at effect time. Unsupported required gates and commit-status
+reporting are rejected.
+
+The agent detail Integrations card lists hooks alongside integrations. Generic
+hook creation reveals the capability URL and optional HMAC secret once. GitHub
+creation uses the App installation and repository picker. Recent runs show
+status, delivery key, duration, and a session deep link.
+
+## Redelivery and Failure Semantics
+
+The HTTP response only confirms that ingress accepted the delivery for
+asynchronous dispatch. It does not promise that the daemon admitted or
+completed the turn.
+
+| Failure                            | General webhook                                                                              | GitHub hook                                                              |
+| ---------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| CP unavailable                     | Existing relay rules can still dispatch; accounting and configuration changes may be delayed | Same; installation doorbells and projections may be delayed              |
+| One relay unavailable              | Another relay with the replayed rule can accept the request                                  | Same                                                                     |
+| All relays unavailable             | Caller receives an HTTP failure and must retry                                               | GitHub delivery reconciliation requests redelivery after recovery        |
+| Assigned daemon offline            | Delivery records `daemon_offline`                                                            | One durable automatic retry is scheduled after a short backoff           |
+| Dispatch acknowledgement ambiguous | Records terminal `dispatch_timeout`; no automatic replay                                     | Same, because the daemon may already have admitted the turn              |
+| GitHub unavailable                 | No effect                                                                                    | Source reads, permission checks, posting, and projection may fail closed |
+
+`HookRedeliveryReconciler` compares recent GitHub App deliveries with stored
+run metadata. It requests redelivery for missing eligible deliveries and for
+the closed set of explicitly retryable delivery-stage failures. The current
+retryable set contains only `daemon_offline`.
+
+Reconciliation does not retry an ambiguous dispatch, an agent/business
+rejection, or any row that may already have produced an effect. Partial
+`review_request_required` fanout is retried only when every observed sibling
+proves that no agent or external review effect occurred.
+
+Cron has a different availability boundary: a daemon-local schedule can fire
+without the relay, while a webhook always requires a public ingress process.
+
+## Security Checklist
+
+- Capability tokens have at least 128 bits of entropy.
+- Unknown tokens and invalid optional HMAC signatures are indistinguishable.
+- GitHub signature verification is mandatory before matching or doorbells.
+- Repository matching uses numeric IDs.
+- Installation membership comes from CP-owned records.
+- Bot senders never trigger GitHub hooks.
+- Comment authors pass collaborator or live-permission checks.
+- External pull requests require a maintainer request.
+- Event bodies remain relay-to-daemon only.
+- Logs contain identifiers and outcomes, never payload text or secrets.
+- `HookSecret` is absent from normal hook queries and DTOs.
+- App private-key material remains in the CP trust domain.
+- The GitHub webhook secret remains in the relay trust domain.
+- Purpose-bound poster and review tokens never enter the agent environment.
+- Ordinary replies have one writer.
+- Formal reviews require action-time authorization and exact revision fences.
+
+## Unsupported Capabilities
+
+The implementation does not provide:
+
+- synchronous webhook responses containing agent output;
+- arbitrary payload transformation or filter programs;
+- structured GitLab or Bitbucket event semantics;
+- per-repository webhook registration managed by AgentConnect;
+- daemon polling as an alternative public ingress;
+- queueing arbitrary generic deliveries while a daemon is offline;
+- automatic replay of ambiguous dispatches;
+- required GitHub review gates;
+- commit-status reporting; or
+- per-organization custom GitHub Apps or GitHub Enterprise Server support.
+
+These omissions are explicit compatibility and trust-boundary constraints, not
+hidden fallbacks.

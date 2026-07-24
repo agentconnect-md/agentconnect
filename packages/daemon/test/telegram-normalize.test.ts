@@ -1,0 +1,143 @@
+import { describe, it, expect } from 'vitest'
+import { normalizeTelegramMessage, telegramThread, type TelegramMessage } from '../src/telegram/normalize.js'
+
+const ctx = { traceId: 'trace-1' }
+
+function msg(over: Partial<TelegramMessage> = {}): TelegramMessage {
+  return {
+    message_id: 10,
+    chat: { id: -100123, type: 'supergroup', title: 'devs' },
+    from: { id: 42, is_bot: false, first_name: 'Ada', username: 'ada' },
+    text: 'hello',
+    ...over
+  }
+}
+
+describe('normalizeTelegramMessage', () => {
+  it('maps a plain group message: channel = chat id, thread undefined (channel-root), sender', () => {
+    const n = normalizeTelegramMessage(msg(), ctx)
+    expect(n).toMatchObject({
+      msgId: 'telegram:-100123:10',
+      traceId: 'trace-1',
+      source: 'user',
+      platform: 'telegram',
+      channel: '-100123',
+      sender: { id: '42', isBot: false },
+      text: 'hello',
+      mentionedBots: [],
+      isDm: false
+    })
+    expect(n.thread).toBeUndefined()
+    expect(n.attachments).toBeUndefined()
+  })
+
+  it('flags a private chat as a DM', () => {
+    const n = normalizeTelegramMessage(msg({ chat: { id: 42, type: 'private' } }), ctx)
+    expect(n.isDm).toBe(true)
+    expect(n.channel).toBe('42')
+  })
+
+  it('marks a bot sender as isBot', () => {
+    const n = normalizeTelegramMessage(msg({ from: { id: 7, is_bot: true, username: 'somebot' } }), ctx)
+    expect(n.sender).toEqual({ id: '7', isBot: true })
+  })
+
+  it('carries a forum-topic message_thread_id in telegramTopicId (thread left to the daemon)', () => {
+    const n = normalizeTelegramMessage(
+      msg({ message_thread_id: 555, is_topic_message: true, reply_to_message: { message_id: 999 } }),
+      ctx
+    )
+    // normalize no longer owns Telegram threading — it surfaces the topic id + reply
+    // target and leaves `thread` for the daemon's canonicalizeTelegramThread.
+    expect(n.thread).toBeUndefined()
+    expect(n.telegramTopicId).toBe('555')
+    expect(n.telegramThreadRoot).toBeUndefined()
+    expect(n.replyTo).toBe('999')
+  })
+
+  it('carries a plain-supergroup message_thread_id as telegramThreadRoot (NOT a topic)', () => {
+    // A reply in a non-forum supergroup: message_thread_id is the reply-thread ROOT, not
+    // a forum topic — so it must not post back as message_thread_id.
+    const n = normalizeTelegramMessage(msg({ message_thread_id: 6, reply_to_message: { message_id: 7 } }), ctx)
+    expect(n.thread).toBeUndefined()
+    expect(n.telegramTopicId).toBeUndefined()
+    expect(n.telegramThreadRoot).toBe('6')
+    expect(n.replyTo).toBe('7')
+  })
+
+  it('carries reply_to_message id in replyTo (no thread root) for a basic-group reply', () => {
+    const n = normalizeTelegramMessage(msg({ reply_to_message: { message_id: 999 } }), ctx)
+    expect(n.thread).toBeUndefined()
+    expect(n.telegramTopicId).toBeUndefined()
+    expect(n.telegramThreadRoot).toBeUndefined()
+    expect(n.replyTo).toBe('999')
+  })
+
+  it('extracts @username mentions (without @) and text_mention numeric ids', () => {
+    const text = 'ping @mybot and @ghost here'
+    const n = normalizeTelegramMessage(
+      msg({
+        text,
+        entities: [
+          { type: 'mention', offset: text.indexOf('@mybot'), length: '@mybot'.length },
+          { type: 'mention', offset: text.indexOf('@ghost'), length: '@ghost'.length },
+          { type: 'text_mention', offset: 0, length: 4, user: { id: 314 } }
+        ]
+      }),
+      ctx
+    )
+    expect(n.mentionedBots).toEqual(['mybot', 'ghost', '314'])
+  })
+
+  it('reads text + entities from caption/caption_entities when there is no text', () => {
+    const caption = 'see @mybot'
+    const n = normalizeTelegramMessage(
+      msg({
+        text: undefined,
+        caption,
+        caption_entities: [{ type: 'mention', offset: caption.indexOf('@mybot'), length: '@mybot'.length }],
+        photo: [{ file_id: 'small' }, { file_id: 'big', file_size: 2048, file_unique_id: 'uq' }]
+      }),
+      ctx
+    )
+    expect(n.text).toBe('see @mybot')
+    expect(n.mentionedBots).toEqual(['mybot'])
+  })
+
+  it('picks the largest photo rendition as an image attachment', () => {
+    const n = normalizeTelegramMessage(
+      msg({
+        photo: [
+          { file_id: 'sm', file_size: 100 },
+          { file_id: 'lg', file_size: 9000, file_unique_id: 'uq9' }
+        ]
+      }),
+      ctx
+    )
+    expect(n.attachments).toEqual([{ id: 'lg', name: 'uq9.jpg', mimeType: 'image/jpeg', size: 9000, sourceUrl: 'lg' }])
+  })
+
+  it('maps a document attachment, carrying file_id in sourceUrl', () => {
+    const n = normalizeTelegramMessage(
+      msg({ document: { file_id: 'DOC1', file_name: 'report.pdf', mime_type: 'application/pdf', file_size: 512 } }),
+      ctx
+    )
+    expect(n.attachments).toEqual([
+      { id: 'DOC1', name: 'report.pdf', mimeType: 'application/pdf', size: 512, sourceUrl: 'DOC1' }
+    ])
+  })
+
+  it('handles a missing sender (e.g. channel post) as unknown/non-bot', () => {
+    const n = normalizeTelegramMessage(msg({ from: undefined }), ctx)
+    expect(n.sender).toEqual({ id: 'unknown', isBot: false })
+  })
+})
+
+describe('telegramThread (forum topic only)', () => {
+  it('returns the forum-topic id, ignoring any reply', () => {
+    expect(telegramThread(msg({ message_thread_id: 1, reply_to_message: { message_id: 2 } }))).toBe('1')
+    // A reply outside a topic is no longer a thread — the daemon resolves it.
+    expect(telegramThread(msg({ reply_to_message: { message_id: 2 } }))).toBeUndefined()
+    expect(telegramThread(msg())).toBeUndefined()
+  })
+})

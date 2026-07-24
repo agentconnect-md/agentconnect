@@ -1,0 +1,903 @@
+import { describe, it, expect, vi } from 'vitest'
+import { encodeSlackStatusOverflowValue } from '@agentconnect.md/protocol'
+import { consolidate, SlackConnection } from '../src/slack/connection.js'
+import type { Agent } from '../src/agents/agent-schema.js'
+
+const mk = (id: string, appToken: string, botToken: string): Agent =>
+  ({
+    id,
+    name: id,
+    status: 'active',
+    runtime: 'claude',
+    workspace: { mode: 'from-scratch', path: '/tmp', gitBranch: 'main', pullOnNewSession: true, skills: [] },
+    integrations: [
+      {
+        id: `${id}-int`,
+        platform: 'slack',
+        slack: {
+          botToken,
+          appToken,
+          allowedUserIds: [],
+          bindRules: []
+        }
+      }
+    ],
+    output: { mode: 'medium' },
+    permissions: { policy: 'ask', autoApprove: [] },
+    crons: []
+  }) as Agent
+
+describe('consolidate', () => {
+  it('opens one connection per unique appToken and groups integrations', () => {
+    const groups = consolidate([mk('a', 'xapp-1', 'xoxb-a'), mk('b', 'xapp-1', 'xoxb-a'), mk('c', 'xapp-2', 'xoxb-c')])
+    expect(groups.size).toBe(2)
+    expect(groups.get('xapp-1')!.integrations).toHaveLength(2)
+    expect(groups.get('xapp-2')!.integrations).toHaveLength(1)
+  })
+})
+
+function fakeAppWith(
+  setStatus: (a: any) => Promise<unknown>,
+  setTitle: (a: any) => Promise<unknown> = async () => undefined
+) {
+  return {
+    message() {},
+    event() {},
+    action() {},
+    client: {
+      auth: { test: async () => ({ user_id: 'U1' }) },
+      chat: { postMessage: async () => ({}) },
+      assistant: { threads: { setStatus, setTitle } }
+    },
+    start: async () => {},
+    stop: async () => {}
+  }
+}
+
+const deps = () => ({
+  group: { appToken: 'xapp-1', botToken: 'xoxb-a', integrations: [] },
+  onMessage: () => {},
+  newTraceId: () => 't'
+})
+
+describe('SlackConnection.listBotChannels', () => {
+  const fakeAppWithConversations = (pages: any[], fail = false) => {
+    let call = 0
+    return {
+      message() {},
+      event() {},
+      action() {},
+      client: {
+        auth: { test: async () => ({ user_id: 'U1' }) },
+        users: {
+          conversations: async () => {
+            if (fail) throw new Error('missing_scope')
+            return pages[call++] ?? { channels: [] }
+          }
+        }
+      },
+      start: async () => {},
+      stop: async () => {}
+    }
+  }
+
+  it('paginates users.conversations and maps to {id,name,isPrivate}, skipping DMs', async () => {
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        fakeAppWithConversations([
+          {
+            channels: [
+              { id: 'C1', name: 'deploys' },
+              { id: 'D1', is_im: true }, // DM — excluded
+              { id: 'C2', name: 'ops', is_private: true }
+            ],
+            response_metadata: { next_cursor: 'page2' }
+          },
+          { channels: [{ id: 'C3', name: 'releases' }] }
+        ]) as any
+    )
+    const channels = await conn.listBotChannels()
+    expect(channels).toEqual([
+      { id: 'C1', name: 'deploys' },
+      { id: 'C2', name: 'ops', isPrivate: true },
+      { id: 'C3', name: 'releases' }
+    ])
+  })
+
+  it('returns null on an API failure (never mistaken for "left all channels")', async () => {
+    const conn = new SlackConnection(deps() as any, () => fakeAppWithConversations([], true) as any)
+    expect(await conn.listBotChannels()).toBeNull()
+  })
+
+  it('uses bot membership for listChannels instead of workspace-wide conversations.list', async () => {
+    const conversationsList = vi.fn(async () => {
+      throw new Error('conversations.list should not be called')
+    })
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        ({
+          message() {},
+          event() {},
+          action() {},
+          client: {
+            auth: { test: async () => ({ user_id: 'U1' }) },
+            users: {
+              conversations: async () => ({
+                channels: [
+                  { id: 'C1', name: 'joined-public' },
+                  { id: 'C2', name: 'joined-private', is_private: true }
+                ]
+              })
+            },
+            conversations: { list: conversationsList }
+          },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+
+    await expect(conn.listChannels()).resolves.toEqual([
+      { id: 'C1', name: 'joined-public' },
+      { id: 'C2', name: 'joined-private', isPrivate: true }
+    ])
+    expect(conversationsList).not.toHaveBeenCalled()
+  })
+})
+
+describe('SlackConnection.getThreadReplies', () => {
+  it('bounds an incremental thread snapshot by the delivered watermark and wall-clock cutoff', async () => {
+    const replies = vi.fn(async () => ({
+      messages: [{ ts: '100.3', user: 'U1', text: 'latest unread' }],
+      has_more: false
+    }))
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        ({
+          message() {},
+          event() {},
+          action() {},
+          client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+
+    await conn.getThreadReplies('C1', '100.1', 200, { oldest: '100.2', latest: '100.4' })
+    expect(replies).toHaveBeenCalledWith({
+      channel: 'C1',
+      ts: '100.1',
+      limit: 200,
+      include_all_metadata: true,
+      oldest: '100.2',
+      latest: '100.4',
+      inclusive: false
+    })
+  })
+
+  it('recovers an AgentConnect author id from shared-bot message metadata', async () => {
+    const replies = vi.fn(async () => ({
+      messages: [
+        {
+          ts: '100.3',
+          bot_id: 'BSHARED',
+          text: '@agent-a → @agent-b: review this',
+          metadata: {
+            event_type: 'agentconnect_thread_event',
+            event_payload: { author_agent_id: 'agent-a' }
+          }
+        }
+      ],
+      has_more: false
+    }))
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        ({
+          message() {},
+          event() {},
+          action() {},
+          client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+
+    await expect(conn.getThreadReplies('C1', '100.1')).resolves.toEqual([
+      expect.objectContaining({ sender: 'BSHARED', agentAuthorId: 'agent-a', isBot: true })
+    ])
+  })
+
+  it('recovers visible legacy attachment text when backfilling a thread', async () => {
+    const replies = vi.fn(async () => ({
+      messages: [
+        {
+          ts: '100.2',
+          bot_id: 'BCHANGELOGUE',
+          text: '<@UBOT>',
+          attachments: [
+            {
+              title: 'reth v2.4.0',
+              title_link: 'https://example.test/reth/releases/v2.4.0',
+              text: 'Performance improvements',
+              actions: [{ type: 'button', text: 'Acknowledge' }]
+            }
+          ]
+        }
+      ],
+      has_more: false
+    }))
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        ({
+          message() {},
+          event() {},
+          action() {},
+          client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+
+    const [message] = await conn.getThreadReplies('C1', '100.1')
+    expect(message?.text).toContain('<https://example.test/reth/releases/v2.4.0|reth v2.4.0>')
+    expect(message?.text).toContain('Performance improvements')
+    expect(message?.text).not.toContain('Acknowledge')
+  })
+
+  it('flags daemon chrome from its metadata event_type so the backfill can skip it', async () => {
+    const replies = vi.fn(async () => ({
+      messages: [
+        {
+          ts: '100.2',
+          bot_id: 'BSHARED',
+          text: ':bar_chart: opus',
+          metadata: { event_type: 'agentconnect_chrome', event_payload: {} }
+        },
+        { ts: '100.3', user: 'U1', text: 'a human message' }
+      ],
+      has_more: false
+    }))
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        ({
+          message() {},
+          event() {},
+          action() {},
+          client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+
+    await expect(conn.getThreadReplies('C1', '100.1')).resolves.toEqual([
+      expect.objectContaining({ ts: '100.2', chrome: true }),
+      expect.objectContaining({ ts: '100.3', chrome: false })
+    ])
+  })
+})
+
+describe('SlackConnection membership events', () => {
+  const fakeAppWithEvents = (
+    handlers: Map<string, (a: { event: unknown }) => unknown>,
+    actions?: Map<string, (a: any) => unknown>,
+    opened?: any[]
+  ) => ({
+    message() {},
+    event(type: string, h: (a: { event: unknown }) => unknown) {
+      handlers.set(type, h)
+    },
+    action(id: string, h: (a: any) => unknown) {
+      actions?.set(id, h)
+    },
+    client: {
+      auth: { test: async () => ({ user_id: 'UBOT' }) },
+      views: { open: async (a: any) => void opened?.push(a), update: async () => {} }
+    },
+    start: async () => {},
+    stop: async () => {}
+  })
+
+  it('fires onChannelsChanged when the BOT joins, and on channel_left/group_left', async () => {
+    const handlers = new Map<string, (a: { event: unknown }) => unknown>()
+    let changed = 0
+    const conn = new SlackConnection(
+      { ...deps(), onChannelsChanged: () => changed++ } as any,
+      () => fakeAppWithEvents(handlers) as any
+    )
+    await conn.start()
+    // Another user joining is NOT a membership change for us.
+    await handlers.get('member_joined_channel')!({ event: { user: 'USOMEONE', channel: 'C1' } })
+    expect(changed).toBe(0)
+    await handlers.get('member_joined_channel')!({ event: { user: 'UBOT', channel: 'C1' } })
+    expect(changed).toBe(1)
+    await handlers.get('channel_left')!({ event: { channel: 'C1' } })
+    await handlers.get('group_left')!({ event: { channel: 'G1' } })
+    expect(changed).toBe(3)
+  })
+
+  it('opens the controls modal on Configure and routes status actions by session key', async () => {
+    const KEY = 'slack:C1:T1:bot-a'
+    const handlers = new Map<string, (a: { event: unknown }) => unknown>()
+    const actions = new Map<string, (a: any) => unknown>()
+    const opened: any[] = []
+    const seen: { kind: string; sessionKey: string; model?: string }[] = []
+    const conn = new SlackConnection(
+      {
+        ...deps(),
+        onStatusAction: (a: any) => seen.push(a),
+        onStatusInfo: (k: string) => ({
+          info: { model: 'opus-4.8', models: ['opus-4.8'] },
+          identity: {
+            name: 'Review Bot',
+            agentUrl: 'https://app/agents/review-bot',
+            iconUrl: 'https://app/icons/review-bot.png',
+            sessionTitle: 'Fix login flow'
+          },
+          link: `https://app/s/${k}`,
+          cancellable: true
+        })
+      } as any,
+      () => fakeAppWithEvents(handlers, actions, opened) as any
+    )
+    await conn.start()
+    const ack = async () => {}
+
+    // Configure: opens a modal (via trigger_id) carrying the session key in private_metadata.
+    await actions.get('ac_manage')!({ ack, action: { value: KEY }, body: { trigger_id: 'trig-1' } })
+    expect(opened).toHaveLength(1)
+    expect(opened[0].trigger_id).toBe('trig-1')
+    expect(opened[0].view.private_metadata).toBe(KEY)
+    expect(opened[0].view.blocks[0]).toEqual({
+      type: 'context',
+      elements: [
+        { type: 'image', image_url: 'https://app/icons/review-bot.png', alt_text: 'Review Bot' },
+        { type: 'mrkdwn', text: '<https://app/agents/review-bot|Review Bot> ·' },
+        { type: 'mrkdwn', text: `<https://app/s/${KEY}|View session>` }
+      ]
+    })
+    expect(opened[0].view.title.text).toBe('Session · Fix login flow')
+
+    // The compact overflow uses the same modal and cancel paths.
+    await actions.get('ac_more')!({
+      ack,
+      action: { block_id: KEY, selected_option: { value: encodeSlackStatusOverflowValue('manage') } },
+      body: { trigger_id: 'trig-2' }
+    })
+    expect(opened).toHaveLength(2)
+    expect(opened[1].view.private_metadata).toBe(KEY)
+    await actions.get('ac_more')!({
+      ack,
+      action: { selected_option: { value: JSON.stringify({ v: 1, action: 'manage', target: KEY }) } },
+      body: { trigger_id: 'trig-legacy' }
+    })
+    expect(opened).toHaveLength(3)
+    expect(opened[2].view.private_metadata).toBe(KEY)
+    await actions.get('ac_more')!({
+      ack,
+      action: { block_id: KEY, selected_option: { value: encodeSlackStatusOverflowValue('cancel') } },
+      body: {}
+    })
+
+    // Inside the modal, the session key comes from view.private_metadata.
+    await actions.get('ac_set_model')!({
+      ack,
+      action: { selected_option: { value: 'opus-4.8' } },
+      body: { view: { id: 'V1', private_metadata: KEY } }
+    })
+    await actions.get('ac_cancel')!({ ack, action: {}, body: { view: { id: 'V1', private_metadata: KEY } } })
+
+    expect(seen).toEqual([
+      { kind: 'cancel', sessionKey: KEY },
+      { kind: 'set-model', sessionKey: KEY, model: 'opus-4.8' },
+      { kind: 'cancel', sessionKey: KEY }
+    ])
+  })
+
+  it('openStatusModal lets a forwarded shared click override view.private_metadata', async () => {
+    const KEY = 'slack:C1:T1:bot-a'
+    const TARGET = JSON.stringify({ v: 1, agentId: 'bot-a', integrationId: 'int-a', sessionKey: KEY })
+    const opened: any[] = []
+    const conn = new SlackConnection(
+      {
+        ...deps(),
+        onStatusInfo: (k: string) => ({
+          info: { model: 'opus-4.8' },
+          link: `https://app/s/${k}`,
+          cancellable: true
+        })
+      } as any,
+      () => fakeAppWithEvents(new Map(), new Map(), opened) as any
+    )
+
+    await conn.openStatusModal('trig-shared', KEY, TARGET)
+
+    expect(opened).toHaveLength(1)
+    expect(opened[0]).toMatchObject({
+      trigger_id: 'trig-shared',
+      view: { private_metadata: TARGET }
+    })
+  })
+})
+
+describe('SlackConnection assistant DM threads', () => {
+  it('rebases DM message events onto the active assistant thread', async () => {
+    let messageHandler!: (a: { message: unknown }) => unknown
+    const events = new Map<string, (a: { event: unknown }) => unknown>()
+    const delivered: unknown[] = []
+    const conn = new SlackConnection(
+      {
+        ...deps(),
+        onMessage: (msg: unknown) => delivered.push(msg)
+      } as any,
+      () =>
+        ({
+          message(h: (a: { message: unknown }) => unknown) {
+            messageHandler = h
+          },
+          event(type: string, h: (a: { event: unknown }) => unknown) {
+            events.set(type, h)
+          },
+          action() {},
+          client: {
+            auth: { test: async () => ({ user_id: 'UBOT' }) },
+            views: { open: async () => {}, update: async () => {} }
+          },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+
+    await conn.start()
+    await events.get('assistant_thread_started')!({
+      event: {
+        type: 'assistant_thread_started',
+        assistant_thread: {
+          user_id: 'U1',
+          channel_id: 'D1',
+          thread_ts: '1729999327.187299'
+        }
+      }
+    })
+    await messageHandler({
+      message: {
+        type: 'message',
+        channel: 'D1',
+        channel_type: 'im',
+        ts: '1730000000.000001',
+        user: 'U1',
+        text: 'hello'
+      }
+    })
+
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0]).toMatchObject({
+      channel: 'D1',
+      thread: '1729999327.187299',
+      isDm: true,
+      text: 'hello'
+    })
+  })
+
+  it('ignores structural and Slack system events while retaining human and peer-bot chat', async () => {
+    let messageHandler!: (a: { message: unknown }) => unknown
+    const delivered: any[] = []
+    const conn = new SlackConnection(
+      {
+        ...deps(),
+        onMessage: (msg: unknown) => delivered.push(msg)
+      } as any,
+      () =>
+        ({
+          message(h: (a: { message: unknown }) => unknown) {
+            messageHandler = h
+          },
+          event() {},
+          action() {},
+          client: {
+            auth: { test: async () => ({ user_id: 'UBOT', bot_id: 'BSELF' }) },
+            views: { open: async () => {}, update: async () => {} }
+          },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+
+    await conn.start()
+    await messageHandler({
+      message: {
+        type: 'message',
+        subtype: 'message_changed',
+        hidden: true,
+        channel: 'D1',
+        channel_type: 'im',
+        ts: '1727484103.018100',
+        message: {
+          type: 'message',
+          subtype: 'assistant_app_thread',
+          user: 'UBOT',
+          text: 'Updated title',
+          thread_ts: '1727484091.821349',
+          ts: '1727484091.821349'
+        }
+      }
+    })
+    await messageHandler({
+      message: {
+        type: 'message',
+        subtype: 'message_deleted',
+        channel: 'D1',
+        channel_type: 'im',
+        ts: '1727484104.000000'
+      }
+    })
+    // Slack documents that Events API message_replied wrappers can omit subtype.
+    // Hidden+nested shape and the lack of a top-level author must still exclude it.
+    await messageHandler({
+      message: {
+        type: 'message',
+        hidden: true,
+        channel: 'D1',
+        channel_type: 'im',
+        ts: '1727484104.500000',
+        message: {
+          type: 'message',
+          user: 'U1',
+          text: 'thread root update',
+          thread_ts: '1727484091.821349',
+          ts: '1727484091.821349'
+        }
+      }
+    })
+    await messageHandler({
+      message: {
+        type: 'message',
+        subtype: 'assistant_app_thread',
+        channel: 'D1',
+        channel_type: 'im',
+        ts: '1727484105.000000',
+        user: 'U1',
+        text: 'thread metadata'
+      }
+    })
+    await messageHandler({
+      message: {
+        type: 'message',
+        channel: 'D1',
+        channel_type: 'im',
+        ts: '1727484105.500000',
+        user: 'USLACK',
+        text: '<@U1> added you to <#C1>.'
+      }
+    })
+    expect(delivered).toEqual([])
+
+    await messageHandler({
+      message: {
+        type: 'message',
+        channel: 'D1',
+        channel_type: 'im',
+        ts: '1727484106.000000',
+        user: 'U1',
+        text: 'hello'
+      }
+    })
+    await messageHandler({
+      message: {
+        type: 'message',
+        subtype: 'file_share',
+        channel: 'D1',
+        channel_type: 'im',
+        ts: '1727484107.000000',
+        user: 'U1',
+        text: 'see attachment'
+      }
+    })
+    await messageHandler({
+      message: {
+        type: 'message',
+        subtype: 'thread_broadcast',
+        channel: 'C1',
+        ts: '1727484108.000000',
+        thread_ts: '1727484000.000000',
+        user: 'U1',
+        text: 'also send to channel'
+      }
+    })
+    await messageHandler({
+      message: {
+        type: 'message',
+        subtype: 'me_message',
+        channel: 'C1',
+        ts: '1727484109.000000',
+        user: 'U1',
+        text: 'is checking the deployment'
+      }
+    })
+    const botMessage = { type: 'message', subtype: 'bot_message', channel: 'C1' }
+    await messageHandler({
+      message: { ...botMessage, ts: '1727484109.500000', bot_id: 'BSELF', text: 'self echo' }
+    })
+    await messageHandler({
+      message: { ...botMessage, ts: '1727484110.000000', bot_id: 'BPEER', text: 'peer bot update' }
+    })
+
+    expect(delivered.map((msg) => msg.text)).toEqual([
+      'hello',
+      'see attachment',
+      'also send to channel',
+      'is checking the deployment',
+      'peer bot update'
+    ])
+  })
+})
+
+describe('SlackConnection.setStatus', () => {
+  it('maps args to assistant.threads.setStatus including loading messages and agent identity', async () => {
+    const calls: any[] = []
+    const conn = new SlackConnection(deps() as any, () => fakeAppWith(async (a) => void calls.push(a)) as any)
+    await conn.setStatus('C1', '123.45', 'is thinking…', ['Working on it…'], {
+      username: '  Release Captain  ',
+      icon_url: '  https://console.example.test/icons/bot-a  '
+    })
+    expect(calls[0]).toEqual({
+      channel_id: 'C1',
+      thread_ts: '123.45',
+      status: 'is thinking…',
+      loading_messages: ['Working on it…'],
+      username: 'Release Captain',
+      icon_url: 'https://console.example.test/icons/bot-a'
+    })
+  })
+
+  it('omits loading messages and identity when clearing', async () => {
+    const calls: any[] = []
+    const conn = new SlackConnection(deps() as any, () => fakeAppWith(async (a) => void calls.push(a)) as any)
+    await conn.setStatus('C1', '123.45', '', undefined, {
+      username: 'Release Captain',
+      icon_url: 'https://console.example.test/icons/bot-a'
+    })
+    expect(calls[0]).toEqual({ channel_id: 'C1', thread_ts: '123.45', status: '' })
+  })
+
+  it('swallows errors and never rejects (best-effort)', async () => {
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        fakeAppWith(async () => {
+          throw new Error('not_an_assistant_thread')
+        }) as any
+    )
+    await expect(conn.setStatus('C1', '123.45', 'is thinking…')).resolves.toBeUndefined()
+  })
+})
+
+describe('SlackConnection.setTitle', () => {
+  it('maps args to assistant.threads.setTitle', async () => {
+    const calls: any[] = []
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        fakeAppWith(
+          async () => undefined,
+          async (a) => void calls.push(a)
+        ) as any
+    )
+    await conn.setTitle('D1', '123.45', 'Runtime summary')
+    expect(calls[0]).toEqual({ channel_id: 'D1', thread_ts: '123.45', title: 'Runtime summary' })
+  })
+
+  it('swallows errors and never rejects (best-effort)', async () => {
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        fakeAppWith(
+          async () => undefined,
+          async () => {
+            throw new Error('invalid_thread_ts')
+          }
+        ) as any
+    )
+    await expect(conn.setTitle('D1', '123.45', 'Runtime summary')).resolves.toBeUndefined()
+  })
+})
+
+describe('SlackConnection.updateBlocks', () => {
+  const withUpdate = (update: (payload: any) => Promise<unknown>) => ({
+    message() {},
+    event() {},
+    action() {},
+    client: { chat: { update } },
+    start: async () => {},
+    stop: async () => {}
+  })
+
+  it('can replace visible blocks without resending the original top-level text', async () => {
+    const calls: any[] = []
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () => withUpdate(async (payload) => void calls.push(payload)) as any
+    )
+    const blocks = [
+      { type: 'markdown', text: 'answer' },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: 'sent by bot (runtime · model) · open in session' }] }
+    ]
+
+    await expect(conn.updateBlocks('C1', '123.45', blocks)).resolves.toBe(true)
+
+    expect(calls).toEqual([
+      {
+        channel: 'C1',
+        ts: '123.45',
+        blocks,
+        unfurl_links: false,
+        unfurl_media: false
+      }
+    ])
+  })
+
+  it('returns false when the best-effort update fails so callers can retry cleanup', async () => {
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () =>
+        withUpdate(async () => {
+          throw new Error('ratelimited')
+        }) as any
+    )
+
+    await expect(conn.updateBlocks('C1', '123.45', [{ type: 'markdown', text: 'answer' }])).resolves.toBe(false)
+  })
+
+  it('also normalizes an outer send-queue timeout rejection to false', async () => {
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () => withUpdate(async () => undefined) as any
+    )
+    ;(conn as any).queue = {
+      enqueue: vi.fn(async () => {
+        throw new Error('SlackSendQueue: task exceeded 30000ms — abandoned')
+      })
+    }
+
+    await expect(conn.updateBlocks('C1', '123.45', [{ type: 'markdown', text: 'answer' }])).resolves.toBe(false)
+  })
+})
+
+describe('SlackConnection custom message username', () => {
+  const withPostMessage = (postMessage: (payload: any) => Promise<{ ts?: string }>) => ({
+    message() {},
+    event() {},
+    action() {},
+    client: { chat: { postMessage } },
+    start: async () => {},
+    stop: async () => {}
+  })
+
+  it('persists the stable agent author in Slack message metadata', async () => {
+    const calls: any[] = []
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () => withPostMessage(async (payload) => (calls.push(payload), { ts: '100.2' })) as any
+    )
+
+    await conn.postMessage('C1', '@agent-a → @agent-b: review', '100.1', {
+      username: 'Agent A',
+      agentAuthorId: 'agent-a'
+    })
+
+    expect(calls[0]).toMatchObject({
+      username: 'Agent A',
+      metadata: {
+        event_type: 'agentconnect_thread_event',
+        event_payload: { author_agent_id: 'agent-a' }
+      }
+    })
+  })
+
+  it('posts linked trailing context with the reply and disables unfurls on the initial post', async () => {
+    const calls: any[] = []
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () => withPostMessage(async (payload) => (calls.push(payload), { ts: `t${calls.length}` })) as any
+    )
+    const options = { username: 'deploy-bot' }
+    const footer = [{ type: 'context', elements: [{ type: 'mrkdwn', text: '<https://app|open>' }] }]
+
+    await conn.postMessage('C1', 'body', '100.1', { ...options, trailingBlocks: footer })
+    await conn.postBlocks('C1', [{ type: 'section' }], 'fallback', '100.1', options)
+
+    expect(calls).toHaveLength(2)
+    expect(calls.map((payload) => payload.username)).toEqual([options.username, options.username])
+    expect(calls[0]).toMatchObject({
+      channel: 'C1',
+      thread_ts: '100.1',
+      text: 'body',
+      blocks: [{ type: 'markdown', text: 'body' }, ...footer],
+      unfurl_links: false,
+      unfurl_media: false
+    })
+  })
+
+  it('passes the agent icon_url through, and drops it with username on a missing customize scope', async () => {
+    const calls: any[] = []
+    const missingCustomize = Object.assign(new Error('An API error occurred: missing_scope'), {
+      data: { error: 'missing_scope', needed: 'chat:write.customize', provided: 'chat:write' }
+    })
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () =>
+        withPostMessage(async (payload) => {
+          calls.push(payload)
+          if (payload.icon_url) throw missingCustomize
+          return { ts: `t${calls.length}` }
+        }) as any
+    )
+    const footer = [{ type: 'context', elements: [{ type: 'mrkdwn', text: '<https://app|open>' }] }]
+    const options = {
+      username: 'deploy-bot',
+      icon_url: 'https://cp/v1/agents/a1/icon?v=3',
+      trailingBlocks: footer
+    }
+
+    // First send carries username + icon_url; on missing scope it retries with neither.
+    await conn.postMessage('C1', 'body', '100.1', options)
+    expect(calls[0]).toMatchObject({ username: options.username, icon_url: options.icon_url })
+    expect(calls[1]).not.toHaveProperty('icon_url')
+    expect(calls[1]).not.toHaveProperty('username')
+    expect(calls[1]).toMatchObject({
+      blocks: [{ type: 'markdown', text: 'body' }, ...footer],
+      unfurl_links: false,
+      unfurl_media: false
+    })
+  })
+
+  it('retries without username, backs off, then re-probes chat:write.customize', async () => {
+    const calls: any[] = []
+    const missingCustomize = Object.assign(new Error('An API error occurred: missing_scope'), {
+      data: { error: 'missing_scope', needed: 'chat:write.customize', provided: 'chat:write' }
+    })
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () =>
+        withPostMessage(async (payload) => {
+          calls.push(payload)
+          if (payload.username) throw missingCustomize
+          return { ts: `t${calls.length}` }
+        }) as any
+    )
+    const options = { username: 'support-bot' }
+
+    await expect(conn.postMessage('C1', 'first', '100.1', options)).resolves.toBe('t2')
+    await expect(conn.postMessage('C1', 'second', '100.1', options)).resolves.toBe('t3')
+    ;(conn as any).customUsernameRetryAt = 0
+    await expect(conn.postMessage('C1', 'third', '100.1', options)).resolves.toBe('t5')
+
+    expect(calls[0]).toMatchObject({ username: options.username })
+    expect(calls[1]).not.toHaveProperty('username')
+    expect(calls[2]).not.toHaveProperty('username')
+    expect(calls[3]).toMatchObject({ username: options.username })
+    expect(calls[4]).not.toHaveProperty('username')
+  })
+
+  it('does not retry an unrelated missing scope and risk a duplicate send', async () => {
+    const calls: any[] = []
+    const missingChatWrite = Object.assign(new Error('An API error occurred: missing_scope'), {
+      data: { error: 'missing_scope', needed: 'chat:write', provided: '' }
+    })
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () =>
+        withPostMessage(async (payload) => {
+          calls.push(payload)
+          throw missingChatWrite
+        }) as any
+    )
+
+    await expect(conn.postMessage('C1', 'body', '100.1', { username: 'support-bot' })).rejects.toBe(missingChatWrite)
+    expect(calls).toHaveLength(1)
+  })
+})

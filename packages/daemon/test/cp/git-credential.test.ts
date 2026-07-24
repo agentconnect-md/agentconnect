@@ -1,0 +1,330 @@
+/**
+ * GitCredentialCache — monotonic expiry + the 10min handout threshold,
+ * per-agent single-flight, serve-cached degradation while the CP is down,
+ * terminal SCOPE_DENIED, and password-matched invalidation (the `erase` hook).
+ */
+import { describe, it, expect } from 'vitest'
+import type { GitCredGrant } from '@agentconnect.md/protocol'
+import { GitCredentialCache, GitCredUnavailableError } from '../../src/cp/git-credential.js'
+
+const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const HOOK = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+
+function grant(token: string, ttlSec: number): GitCredGrant {
+  return {
+    username: 'x-access-token',
+    token,
+    ttlSec,
+    expiresAt: '2026-07-06T13:00:00.000Z',
+    repoFullName: 'acme/infra',
+    access: 'write'
+  }
+}
+
+interface Harness {
+  cache: GitCredentialCache
+  calls: () => number
+  advance: (ms: number) => void
+}
+
+function build(responder: (n: number) => GitCredGrant | Promise<GitCredGrant>): Harness {
+  let calls = 0
+  let mono = 0
+  const cache = new GitCredentialCache({
+    request: async () => {
+      calls += 1
+      return responder(calls)
+    },
+    log: { warn: () => {} },
+    monoNow: () => mono
+  })
+  return { cache, calls: () => calls, advance: (ms) => (mono += ms) }
+}
+
+describe('GitCredentialCache', () => {
+  it('serves cached while >10min remain on the monotonic clock, re-pulls after', async () => {
+    const h = build((n) => grant(`ghs_${n}`, 3540)) // 59min of life
+    expect((await h.cache.get(AGENT, 'clone')).token).toBe('ghs_1')
+    expect((await h.cache.get(AGENT, 'push')).token).toBe('ghs_1')
+    expect(h.calls()).toBe(1)
+
+    h.advance(50 * 60 * 1000) // 9min left < 10min threshold
+    expect((await h.cache.get(AGENT, 'push')).token).toBe('ghs_2')
+    expect(h.calls()).toBe(2)
+  })
+
+  it('coalesces concurrent cold-cache pulls into one WS request', async () => {
+    const h = build((n) => grant(`ghs_${n}`, 3540))
+    const [a, b, c] = await Promise.all([
+      h.cache.get(AGENT, 'clone'),
+      h.cache.get(AGENT, 'helper'),
+      h.cache.get(AGENT, 'pull')
+    ])
+    expect(h.calls()).toBe(1)
+    expect(a.token).toBe('ghs_1')
+    expect(b.token).toBe('ghs_1')
+    expect(c.token).toBe('ghs_1')
+  })
+
+  it('degrades to the UNEXPIRED cached token when the CP is unreachable', async () => {
+    const h = build((n) => {
+      if (n === 1) return grant('ghs_1', 3540)
+      throw Object.assign(new Error('control plane unreachable'), { code: 'INTERNAL' })
+    })
+    await h.cache.get(AGENT, 'clone')
+    h.advance(50 * 60 * 1000) // below handout threshold → refresh attempt fails → cached still alive
+    expect((await h.cache.get(AGENT, 'push')).token).toBe('ghs_1')
+
+    h.advance(10 * 60 * 1000) // now past expiry — no silent resurrection
+    await expect(h.cache.get(AGENT, 'push')).rejects.toBeInstanceOf(GitCredUnavailableError)
+  })
+
+  it('treats SCOPE_DENIED as terminal until a new spec clears it', async () => {
+    const h = build((n) => {
+      if (n === 1) throw Object.assign(new Error('agent is not placed on this daemon'), { code: 'SCOPE_DENIED' })
+      return grant(`ghs_${n}`, 3540)
+    })
+    await expect(h.cache.get(AGENT, 'push')).rejects.toMatchObject({ terminal: true })
+    // still denied — and crucially, no second WS request was made
+    await expect(h.cache.get(AGENT, 'push')).rejects.toMatchObject({ terminal: true })
+    expect(h.calls()).toBe(1)
+
+    h.cache.clearDenied(AGENT) // agent/upsert replicated a fresh spec
+    expect((await h.cache.get(AGENT, 'push')).token).toBe('ghs_2')
+  })
+
+  it('invalidates only when the presented password matches (stale erase races)', async () => {
+    const h = build((n) => grant(`ghs_${n}`, 3540))
+    await h.cache.get(AGENT, 'clone')
+
+    h.cache.invalidate(AGENT, 'ghs_OLD') // a stale erase must not wipe a fresh token
+    expect((await h.cache.get(AGENT, 'push')).token).toBe('ghs_1')
+    expect(h.calls()).toBe(1)
+
+    h.cache.invalidate(AGENT, 'ghs_1') // the real rejection
+    expect((await h.cache.get(AGENT, 'push')).token).toBe('ghs_2')
+  })
+
+  it('remove() drops the entry with the agent', async () => {
+    const h = build((n) => grant(`ghs_${n}`, 3540))
+    await h.cache.get(AGENT, 'clone')
+    h.cache.remove(AGENT)
+    expect((await h.cache.get(AGENT, 'clone')).token).toBe('ghs_2')
+  })
+
+  describe('gh credential plane', () => {
+    function buildRecording(actionsSupported: () => boolean = () => false) {
+      let calls = 0
+      const payloads: Array<{
+        agentId: string
+        reason?: string
+        capabilities?: string[]
+        repoFullName?: string
+        purpose?: string
+        hookId?: string
+        forceRefresh?: boolean
+      }> = []
+      let mono = 0
+      const cache = new GitCredentialCache({
+        request: async (p) => {
+          calls += 1
+          payloads.push(p as never)
+          // A correct CP ECHOES the requested repo (the daemon's identity guard
+          // is an equality check); a repo-less (workspace) ask keeps the default.
+          return { ...grant(`ghs_${calls}`, 3540), ...(p.repoFullName ? { repoFullName: p.repoFullName } : {}) }
+        },
+        log: { warn: () => {} },
+        actionsSupported,
+        monoNow: () => mono
+      })
+      return { cache, payloads, calls: () => calls, advance: (ms: number) => (mono += ms) }
+    }
+
+    it('getPostToken requests a repo-scoped issues/PR grant under a per-repo key', async () => {
+      const h = buildRecording()
+      const a = await h.cache.getPostToken(AGENT, 'acme/infra', HOOK)
+      const b = await h.cache.getPostToken(AGENT, 'acme/other', HOOK) // different repo ⇒ different token
+      expect(h.calls()).toBe(2)
+      expect(a.token).toBe('ghs_1')
+      expect(b.token).toBe('ghs_2')
+      expect(h.payloads[0]).toMatchObject({
+        repoFullName: 'acme/infra',
+        capabilities: ['issues', 'pull_requests'],
+        purpose: 'github_hook_reply',
+        hookId: HOOK
+      })
+      expect(h.payloads[1]!.repoFullName).toBe('acme/other')
+      // Same repo again ⇒ cached (no contents scope requested — poster is comment-only).
+      await h.cache.getPostToken(AGENT, 'acme/infra', HOOK)
+      expect(h.calls()).toBe(2)
+      expect(h.payloads.every((p) => !p.capabilities?.includes('contents'))).toBe(true)
+    })
+
+    it('invalidates only the matching cached poster token after an auth rejection', async () => {
+      const h = buildRecording()
+      await h.cache.getPostToken(AGENT, 'acme/infra', HOOK)
+
+      h.cache.invalidatePost(AGENT, 'acme/infra', 'ghs_stale')
+      expect((await h.cache.getPostToken(AGENT, 'acme/infra', HOOK)).token).toBe('ghs_1')
+
+      h.cache.invalidatePost(AGENT, 'acme/infra', 'ghs_1')
+      expect((await h.cache.getPostToken(AGENT, 'acme/infra', HOOK)).token).toBe('ghs_2')
+      expect(h.payloads.at(-1)).toMatchObject({ forceRefresh: true, hookId: HOOK })
+    })
+
+    it('requests the widened capability set and caches under its OWN key', async () => {
+      const h = buildRecording()
+      const git = await h.cache.get(AGENT, 'clone')
+      const gh = await h.cache.get(AGENT, 'helper', { plane: 'gh' })
+      // Two distinct grants — a capability set is a distinct token.
+      expect(h.calls()).toBe(2)
+      expect(git.token).toBe('ghs_1')
+      expect(gh.token).toBe('ghs_2')
+      expect(h.payloads[0]!.capabilities).toBeUndefined() // plain git grant unchanged
+      expect(h.payloads[1]!.capabilities).toEqual(['contents', 'issues', 'pull_requests'])
+      // Both served from cache afterwards.
+      await h.cache.get(AGENT, 'push')
+      await h.cache.get(AGENT, 'helper', { plane: 'gh' })
+      expect(h.calls()).toBe(2)
+    })
+
+    it('adds Actions after CP feature negotiation without reusing the legacy gh grant', async () => {
+      let supported = false
+      const h = buildRecording(() => supported)
+
+      await h.cache.get(AGENT, 'helper', { plane: 'gh' })
+      expect(h.payloads[0]!.capabilities).toEqual(['contents', 'issues', 'pull_requests'])
+
+      supported = true
+      await h.cache.get(AGENT, 'helper', { plane: 'gh' })
+      expect(h.calls()).toBe(2)
+      expect(h.payloads[1]!.capabilities).toEqual(['contents', 'issues', 'pull_requests', 'actions'])
+    })
+
+    it('honors the handout threshold independently per key', async () => {
+      const h = buildRecording()
+      await h.cache.get(AGENT, 'helper', { plane: 'gh' })
+      h.advance(50 * 60 * 1000) // 9min left < threshold
+      expect((await h.cache.get(AGENT, 'helper', { plane: 'gh' })).token).toBe('ghs_2')
+    })
+
+    it('remove() clears the gh entry too', async () => {
+      const h = buildRecording()
+      await h.cache.get(AGENT, 'helper', { plane: 'gh' })
+      h.cache.remove(AGENT)
+      expect((await h.cache.get(AGENT, 'helper', { plane: 'gh' })).token).toBe('ghs_2')
+    })
+
+    it('SCOPE_DENIED on the gh grant is terminal for the gh key only', async () => {
+      let calls = 0
+      const cache = new GitCredentialCache({
+        request: async (p) => {
+          calls += 1
+          if ((p as { capabilities?: string[] }).capabilities) {
+            throw Object.assign(new Error('denied'), { code: 'SCOPE_DENIED' })
+          }
+          return grant(`ghs_${calls}`, 3540)
+        },
+        log: { warn: () => {} },
+        monoNow: () => 0
+      })
+      await expect(cache.get(AGENT, 'helper', { plane: 'gh' })).rejects.toMatchObject({ terminal: true })
+      // The plain git channel keeps working (separate denial memo).
+      expect((await cache.get(AGENT, 'clone')).token).toMatch(/^ghs_/)
+      // clearDenied (a replicated spec change) re-enables the gh key as well.
+      cache.clearDenied(AGENT)
+      await expect(cache.get(AGENT, 'helper', { plane: 'gh' })).rejects.toMatchObject({ terminal: true }) // still SCOPE_DENIED from the CP
+    })
+  })
+
+  describe('per-repo keying (multi-repo authorization, #457)', () => {
+    function repoGrant(token: string, repoFullName: string, ttlSec = 3540): GitCredGrant {
+      return { ...grant(token, ttlSec), repoFullName }
+    }
+
+    function buildRepos(responder: (n: number, p: { repoFullName?: string }) => GitCredGrant | never) {
+      let calls = 0
+      const payloads: Array<{ agentId: string; capabilities?: string[]; repoFullName?: string }> = []
+      let mono = 0
+      const cache = new GitCredentialCache({
+        request: async (p) => {
+          calls += 1
+          payloads.push(p as never)
+          return responder(calls, p as never)
+        },
+        log: { warn: () => {} },
+        monoNow: () => mono
+      })
+      return { cache, payloads, calls: () => calls, advance: (ms: number) => (mono += ms) }
+    }
+
+    it('keys tokens per (plane, repo): each repo is its own grant, coalesced per key', async () => {
+      const h = buildRepos((n, p) => repoGrant(`ghs_${n}`, p.repoFullName ?? 'acme/infra'))
+      const ws = await h.cache.get(AGENT, 'helper')
+      const other = await h.cache.get(AGENT, 'helper', { repo: 'other-org/tools' })
+      const otherGh = await h.cache.get(AGENT, 'helper', { plane: 'gh', repo: 'other-org/tools' })
+      expect(h.calls()).toBe(3)
+      expect(ws.repoFullName).toBe('acme/infra')
+      expect(other.repoFullName).toBe('other-org/tools')
+      expect(h.payloads[1]!.repoFullName).toBe('other-org/tools')
+      expect(h.payloads[1]!.capabilities).toBeUndefined() // git plane stays contents-only
+      expect(h.payloads[2]!.capabilities).toEqual(['contents', 'issues', 'pull_requests'])
+      expect(otherGh.token).toBe('ghs_3')
+      // Case-insensitive repo key: OTHER-ORG/Tools hits the cached entry.
+      expect((await h.cache.get(AGENT, 'push', { repo: 'OTHER-ORG/Tools' })).token).toBe('ghs_2')
+      expect(h.calls()).toBe(3)
+    })
+
+    it('repo-keyed SCOPE_DENIED is a 60s negative cache, not terminal', async () => {
+      const h = buildRepos((n, p) => {
+        if (p.repoFullName && n < 3) {
+          throw Object.assign(new Error('repo not authorized'), { code: 'SCOPE_DENIED' })
+        }
+        return repoGrant(`ghs_${n}`, p.repoFullName ?? 'acme/infra')
+      })
+      await expect(h.cache.get(AGENT, 'helper', { repo: 'other-org/tools' })).rejects.toMatchObject({
+        terminal: false
+      })
+      // Inside the window: refused locally, no second WS request.
+      await expect(h.cache.get(AGENT, 'helper', { repo: 'other-org/tools' })).rejects.toBeInstanceOf(
+        GitCredUnavailableError
+      )
+      expect(h.calls()).toBe(1)
+      // The workspace key is untouched by a repo denial.
+      expect((await h.cache.get(AGENT, 'clone')).repoFullName).toBe('acme/infra')
+      // Past the window: asks again (the operator may have authorized it by now).
+      h.advance(61 * 1000)
+      expect((await h.cache.get(AGENT, 'helper', { repo: 'other-org/tools' })).token).toBe('ghs_3')
+    })
+
+    it('refuses a grant whose repo mismatches the request (old-CP guard) and does not cache it', async () => {
+      const h = buildRepos(() => repoGrant('ghs_ws', 'acme/infra')) // CP strips the field → workspace grant
+      await expect(h.cache.get(AGENT, 'helper', { repo: 'other-org/tools' })).rejects.toThrow(/too old/)
+      // Nothing poisoned the repo key — a later (fixed) CP answer works.
+      const h2calls = h.calls()
+      await expect(h.cache.get(AGENT, 'helper', { repo: 'other-org/tools' })).rejects.toThrow(/too old/)
+      expect(h.calls()).toBe(h2calls + 1) // asked again — mismatch is not a negative cache
+    })
+
+    it('a repo revoked mid-life breaks on the DISCOVERING call — no serve-stale of the purged token', async () => {
+      const h = buildRepos((n, p) => {
+        if (n === 1) return repoGrant('ghs_1', p.repoFullName ?? 'acme/infra')
+        throw Object.assign(new Error('repo not authorized'), { code: 'SCOPE_DENIED' })
+      })
+      // Warm the cache with a live token, then drop below the handout threshold
+      // (unexpired, but a refresh is forced) — the entry is still servable-stale.
+      expect((await h.cache.get(AGENT, 'helper', { repo: 'other-org/tools' })).token).toBe('ghs_1')
+      h.advance(50 * 60 * 1000) // 9min left < 10min handout threshold, > 0 (unexpired)
+      // The operator revoked authorization; the CP now SCOPE_DENIES. The discovering
+      // call must THROW, not resurrect the token the denial just purged.
+      await expect(h.cache.get(AGENT, 'push', { repo: 'other-org/tools' })).rejects.toMatchObject({ terminal: false })
+    })
+
+    it('remove() drops repo-keyed entries and denials with the agent', async () => {
+      const h = buildRepos((n, p) => repoGrant(`ghs_${n}`, p.repoFullName ?? 'acme/infra'))
+      await h.cache.get(AGENT, 'helper', { repo: 'other-org/tools' })
+      h.cache.remove(AGENT)
+      expect((await h.cache.get(AGENT, 'helper', { repo: 'other-org/tools' })).token).toBe('ghs_2')
+    })
+  })
+})

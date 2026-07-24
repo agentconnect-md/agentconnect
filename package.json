@@ -1,0 +1,51 @@
+{
+  "private": true,
+  "name": "agentconnect",
+  "version": "1.0.0-dev",
+  "description": "Daemon-centric multi-agent platform bridging IM platforms to AI coding agents",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "clean": "pnpm -r clean",
+    "dev": "pnpm -r --parallel dev",
+    "eval:addons": "pnpm --filter @agentconnect.md/daemon build && node evals/run-addons.mjs",
+    "eval:addons:view": "promptfoo view -n",
+    "eval:contracts": "vitest run packages/daemon/test/evaluation-events.test.ts packages/daemon/test/evaluation-atif.test.ts packages/daemon/test/evaluation-permission.test.ts packages/daemon/test/evaluation-runner.test.ts packages/daemon/test/daemon-evaluation.test.ts evals/test/outcome.test.ts evals/test/provider.test.ts evals/test/paired-summary.test.ts",
+    "eval:validate": "node evals/run-validate.mjs && tsc -p evals/tsconfig.json",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "prepare": "sh ./scripts/setup-hooks.sh",
+    "test": "pnpm -r test",
+    "test:unit": "pnpm -r test:unit && node --test scripts/*.test.mjs",
+    "typecheck": "pnpm -r typecheck",
+    "typecheck:ci": "pnpm --filter @agentconnect.md/control-plane --filter @agentconnect.md/daemon --config.enable-pre-post-scripts=false -r typecheck"
+  },
+  "devDependencies": {
+    "@semantic-release/exec": "^7.1.0",
+    "@semantic-release/github": "^12.0.8",
+    "@types/node": "^24.13.2",
+    "@typescript-eslint/parser": "^8.62.0",
+    "conventional-changelog-conventionalcommits": "^9.3.1",
+    "eslint": "^10.6.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-import-resolver-typescript": "^4.4.5",
+    "eslint-plugin-import-x": "^4.17.0",
+    "eslint-plugin-unused-imports": "^4.4.1",
+    "lint-staged": "^17.0.8",
+    "prettier": "^3.9.0",
+    "prettier-package-json": "^2.8.0",
+    "prettier-plugin-sh": "^0.18.1",
+    "promptfoo": "0.121.19",
+    "semantic-release": "^25.0.5",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.62.0",
+    "vitest": "^4.1.9",
+    "yaml": "^2.9.0"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@11.9.0"
+}

@@ -1,0 +1,664 @@
+import { describe, it, expect, vi } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Daemon } from '../src/daemon.js'
+import type { TranscriptEntry } from '../src/store/local-store.js'
+
+function scaffold(mode: 'minimal' | 'low' | 'medium' | 'high', agentExtra: Record<string, unknown> = {}): string {
+  const root = mkdtempSync(join(tmpdir(), 'ac-tx-'))
+  writeFileSync(
+    join(root, 'config.json'),
+    JSON.stringify({
+      version: 1,
+      controlPlane: { enabled: false },
+      // Set so onFinal emits the done-footer (gated on a Web App URL) — lets the
+      // footer test assert it's posted to Slack but never recorded in the transcript.
+      webAppUrl: 'https://app.example.com',
+      runtimes: { claude: { command: 'node', args: ['unused'] } }
+    })
+  )
+  const adir = join(root, 'agents', 'bot-a')
+  mkdirSync(adir, { recursive: true })
+  writeFileSync(
+    join(adir, 'agent.json'),
+    JSON.stringify({
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
+      integrations: [],
+      output: { mode },
+      ...agentExtra
+    })
+  )
+  return root
+}
+
+/** A fake host that replays a scripted list of session/update events during prompt. */
+function streamingHost(updates: unknown[]) {
+  let onUpdate!: (sid: string, u: unknown) => void
+  const host = {
+    start: vi.fn(async () => {}),
+    newSession: vi.fn(async () => 'acp-1'),
+    prompt: vi.fn(async (sid: string) => {
+      for (const u of updates) onUpdate(sid, u)
+      return 'end_turn'
+    }),
+    cancel: vi.fn(async () => {}),
+    stop: vi.fn(async () => {})
+  }
+  const factory = (_agent: unknown, cb: (sid: string, u: unknown) => void) => {
+    onUpdate = cb
+    return host as any
+  }
+  return { factory, host }
+}
+
+/** A fake host that streams one agent_message_chunk (the reply) during prompt. */
+function replyingHost(reply: string) {
+  return streamingHost([{ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: reply } }])
+}
+
+const text = (t: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: t } })
+const thought = (t: string) => ({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: t } })
+const tool = (toolCallId: string, title: string) => ({ sessionUpdate: 'tool_call', toolCallId, title })
+
+function makeRoutable(daemon: Daemon) {
+  const a = (daemon as any).agents.get('bot-a')
+  a.integrations = [
+    {
+      id: 'int-a',
+      platform: 'slack',
+      slack: { botToken: 'b', appToken: 'p', allowedUserIds: [], bindRules: [{ match: { kind: 'dm' } }] }
+    }
+  ]
+  let n = 0
+  const conn = {
+    setStatus: vi.fn(async () => {}),
+    // Hand back a distinct ts per post so transcript rows don't collide on PK.
+    postMessage: vi.fn(async () => `reply-${++n}`),
+    postBlocks: vi.fn(async () => 'status-bar'),
+    updateBlocks: vi.fn(async () => {})
+  }
+  ;(daemon as any).connByIntegration.set('int-a', conn)
+  return conn
+}
+
+const dm = (ts: string, text: string) => ({
+  msgId: `slack:C1:${ts}`,
+  traceId: ts,
+  source: 'user' as const,
+  platform: 'slack' as const,
+  channel: 'C1',
+  thread: 'T1',
+  sender: { id: 'U1', isBot: false },
+  text,
+  mentionedBots: [] as string[],
+  isDm: true,
+  trigger: 'dm' as const
+})
+
+function transcript(daemon: Daemon): TranscriptEntry[] {
+  return (daemon as any).store.transcriptSince('C1', 'T1', null)
+}
+
+/** Full activity log (all kinds), insertion order — what the Web UI reads. */
+function activity(daemon: Daemon): { kind: string; sender: string; text: string }[] {
+  return (daemon as any).store
+    .threadTranscript('C1', 'T1')
+    .map((r: any) => ({ kind: r.kind, sender: r.sender, text: r.text }))
+}
+
+function classicFooter(botName = 'bot-a', runtime = 'claude', model = 'default') {
+  return {
+    type: 'context',
+    elements: [
+      {
+        type: 'mrkdwn',
+        text: `sent by <https://app.example.com/agents/bot-a|${botName}> (${runtime} · ${model}) · <https://app.example.com/sessions/acp-1|open in session>`
+      }
+    ]
+  }
+}
+
+describe('Daemon transcript records the agent reply', () => {
+  it('medium mode: the buffered reply (flushed at onFinal) lands as a bot-a row', async () => {
+    const { factory } = replyingHost('here is my answer')
+    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    await daemon.start()
+    makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'question?'), 'int-a')
+
+    const rows = transcript(daemon).map((r) => ({ ts: r.ts, sender: r.sender, kind: r.kind, text: r.text }))
+    // inbound user message + the agent's reply
+    expect(rows).toEqual([
+      { ts: '100', sender: 'U1', kind: 'text', text: 'question?' },
+      { ts: 'reply-1', sender: 'bot-a', kind: 'text', text: 'here is my answer' }
+    ])
+    await daemon.stop()
+  }, 15_000)
+
+  it('records provider-neutral post-turn memory only after the user-visible reply is delivered', async () => {
+    const { factory } = replyingHost('here is my answer')
+    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    let releaseDelivery!: () => void
+    const deliveryBlocked = new Promise<void>((resolve) => (releaseDelivery = resolve))
+    conn.postMessage.mockImplementation(async () => {
+      await deliveryBlocked
+      return 'reply-1'
+    })
+    const recordTurn = vi.fn(async () => {})
+    ;(daemon as any).memory.recordTurnForBinding = recordTurn
+    const capturedBinding = (daemon as any).agents.get('bot-a').memory
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'question?'), 'int-a')
+    await vi.waitFor(() => expect(conn.postMessage).toHaveBeenCalled())
+    expect(recordTurn).not.toHaveBeenCalled()
+
+    releaseDelivery()
+    await turn
+    await vi.waitFor(() => expect(recordTurn).toHaveBeenCalledOnce())
+    expect(recordTurn).toHaveBeenCalledWith(
+      { agentId: 'bot-a', sessionId: 'acp-1' },
+      {
+        turnId: 'bot-a:slack:C1:100',
+        sessionId: 'acp-1',
+        input: 'question?',
+        output: 'here is my answer'
+      },
+      capturedBinding,
+      undefined
+    )
+    await daemon.stop()
+  }, 15_000)
+
+  it('uses the stable bot name in linked attribution instead of the display name', async () => {
+    const { factory, host } = replyingHost('the answer')
+    ;(host as any).modelOptions = vi.fn(() => ({ current: 'claude-sonnet-4-5' }))
+    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).runtimeNames.claude = 'Claude Code'
+    ;(daemon as any).agents.get('bot-a').displayName = 'Repo Bot'
+    const conn = makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
+
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', 'the answer', 'T1', {
+      username: 'Repo Bot',
+      trailingBlocks: [classicFooter('bot-a', 'Claude Code', 'claude-sonnet-4-5')]
+    })
+    expect(conn.updateBlocks).not.toHaveBeenCalledWith('C1', 'reply-1', expect.any(Array))
+    // Only the reply, never the footer chrome, is in the transcript.
+    const botRows = transcript(daemon).filter((r) => r.sender === 'bot-a')
+    expect(botRows.map((r) => r.text)).toEqual(['the answer'])
+    await daemon.stop()
+  }, 15_000)
+
+  it('uses session-scoped model metadata refreshed at turn completion', async () => {
+    const { factory, host } = replyingHost('the answer')
+    let model = 'model-before-prompt'
+    ;(host as any).modelOptions = vi.fn(() => ({ current: model }))
+    const prompt = host.prompt
+    host.prompt = vi.fn(async (sid: string) => {
+      const result = await prompt(sid)
+      model = 'model-after-prompt'
+      return result
+    })
+    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
+
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', 'the answer', 'T1', {
+      username: 'bot-a',
+      trailingBlocks: [classicFooter('bot-a', 'claude', 'model-after-prompt')]
+    })
+    await daemon.stop()
+  }, 15_000)
+
+  it('never resends linked footer blocks when model metadata changes after an early flush', async () => {
+    let onUpdate!: (sid: string, update: unknown) => void
+    let model = 'model-before-prompt'
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      modelOptions: vi.fn(() => ({ current: model })),
+      prompt: vi.fn(async (sid: string) => {
+        onUpdate(sid, text('early answer'))
+        onUpdate(sid, tool('t1', 'Read file.ts'))
+        await vi.waitFor(() =>
+          expect(conn.postMessage).toHaveBeenCalledWith('C1', 'early answer', 'T1', expect.anything())
+        )
+        model = 'model-after-prompt'
+        return 'end_turn'
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      root: scaffold('low'),
+      hostFactory: (_agent, callback) => {
+        onUpdate = callback
+        return host as any
+      }
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
+
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', 'early answer', 'T1', {
+      username: 'bot-a',
+      trailingBlocks: [classicFooter('bot-a', 'claude', 'model-before-prompt')]
+    })
+    const linkedReplyUpdates = conn.updateBlocks.mock.calls.filter(
+      (call) => call[1] === 'reply-1' && JSON.stringify(call[2]).includes('open in session')
+    )
+    expect(linkedReplyUpdates).toEqual([])
+    await daemon.stop()
+  }, 15_000)
+
+  it('minimal mode: includes the footer in the initial live-reply post', async () => {
+    const { factory } = replyingHost('here is my answer')
+    const daemon = new Daemon({ root: scaffold('minimal'), hostFactory: factory })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
+
+    // The live reply is born with the footer instead of flashing body-only until finalization.
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', 'here is my answer', 'T1', {
+      username: 'bot-a',
+      trailingBlocks: [classicFooter()]
+    })
+    expect(conn.updateBlocks).not.toHaveBeenCalledWith('C1', 'reply-1', expect.any(Array))
+    const separateFooter = conn.postBlocks.mock.calls.find((c) => JSON.stringify(c).includes('open in session'))
+    expect(separateFooter).toBeUndefined()
+    await daemon.stop()
+  }, 15_000)
+
+  it('minimal mode: delivers an over-limit final reply across messages and attaches the footer last', async () => {
+    const reply = `${'a'.repeat(12_000)}\nsecond section`
+    const { factory } = replyingHost(reply)
+    const daemon = new Daemon({ root: scaffold('minimal'), hostFactory: factory })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
+
+    const replyPosts = conn.postMessage.mock.calls.map((call) => call[1] as string)
+    expect(replyPosts.length).toBeGreaterThan(1)
+    expect(replyPosts.join('')).toBe(reply)
+    const postOptions = conn.postMessage.mock.calls.map((call) => call[3])
+    expect(postOptions.every((options) => JSON.stringify(options?.trailingBlocks).includes('open in session'))).toBe(
+      true
+    )
+    expect(conn.updateBlocks).toHaveBeenCalledWith('C1', 'reply-1', [{ type: 'markdown', text: replyPosts[0] }])
+    expect(conn.updateBlocks).not.toHaveBeenCalledWith(
+      'C1',
+      `reply-${replyPosts.length}`,
+      expect.any(Array),
+      replyPosts.at(-1)
+    )
+    expect(
+      transcript(daemon)
+        .filter((row) => row.sender === 'bot-a')
+        .map((row) => row.text)
+        .join('')
+    ).toBe(reply)
+    await daemon.stop()
+  }, 15_000)
+
+  it('minimal mode: re-anchors the live reply below a card that needs human input', async () => {
+    let onUpdate!: (sid: string, update: unknown) => void
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      prompt: vi.fn(async (sid: string) => {
+        // Segment 1 streams and settles into the single live reply (reply-1).
+        onUpdate(sid, text('first part'))
+        onUpdate(sid, tool('t1', 'Read one'))
+        await vi.waitFor(() =>
+          expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('first part'), 'T1', {
+            username: 'bot-a',
+            trailingBlocks: [classicFooter()]
+          })
+        )
+        // A permission / elicitation card is posted mid-turn (its handler calls this). The
+        // live reply (reply-1) now sits ABOVE the card, so the next segment must start a
+        // FRESH reply BELOW it — not edit reply-1 in place above the question.
+        const p = [...(daemon as any).pending.values()][0]
+        ;(daemon as any).reanchorInPlaceChrome(p)
+        await p.applyChain
+        onUpdate(sid, text('second part'))
+        onUpdate(sid, tool('t2', 'Read two'))
+        await vi.waitFor(() =>
+          expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('second part'), 'T1', {
+            username: 'bot-a',
+            trailingBlocks: [classicFooter()]
+          })
+        )
+        return 'end_turn'
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      root: scaffold('minimal'),
+      hostFactory: (_agent, callback) => {
+        onUpdate = callback
+        return host as any
+      }
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    ;(conn as any).updateMessage = vi.fn(async () => {})
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
+
+    // Each segment is its OWN posted message — reply-1 above the card, reply-2 below it.
+    const posts = conn.postMessage.mock.calls.map((c) => String(c[1]))
+    expect(posts.some((t) => t.includes('first part'))).toBe(true)
+    expect(posts.some((t) => t.includes('second part'))).toBe(true)
+    expect(conn.updateBlocks).toHaveBeenCalledWith('C1', 'reply-1', [{ type: 'markdown', text: 'first part' }])
+    // reply-1 (above the card) is never edited to show the post-card segment.
+    expect((conn as any).updateMessage).not.toHaveBeenCalledWith(
+      'C1',
+      'reply-1',
+      expect.stringContaining('second part')
+    )
+    await daemon.stop()
+  }, 15_000)
+
+  it('serializes a human-input card behind chrome already queued on the apply chain', async () => {
+    // The card must not race pre-card chrome: both funnel through the connection's send-queue
+    // in call order, so a reply/status message whose applyChain step hasn't run yet would be
+    // sent AFTER — and land BELOW — the card. Serializing the post on the chain keeps it above.
+    const { factory } = replyingHost('x')
+    const daemon = new Daemon({ root: scaffold('minimal'), hostFactory: factory })
+    await daemon.start()
+
+    const order: string[] = []
+    let releaseChrome!: () => void
+    const chromeSent = new Promise<void>((r) => (releaseChrome = r))
+    const conn = {
+      postBlocks: vi.fn(async () => {
+        order.push('card')
+        return 'card-ts'
+      })
+    }
+    // A pre-card chrome send is already queued on the chain but has not flushed yet.
+    const p: any = { conn, applyChain: chromeSent.then(() => void order.push('chrome')) }
+
+    const cardPromise = (daemon as any).postCardSerialized(p, (sc: any) => sc.postBlocks())
+    // Give microtasks a chance: the card still must NOT post while the queued chrome is pending.
+    await new Promise((r) => setTimeout(r, 10))
+    expect(conn.postBlocks).not.toHaveBeenCalled()
+    expect(order).toEqual([])
+
+    releaseChrome()
+    const ts = await cardPromise
+    expect(ts).toBe('card-ts')
+    expect(order).toEqual(['chrome', 'card']) // pre-card chrome above, card below
+    await daemon.stop()
+  }, 15_000)
+
+  it('moves the attached footer to the latest body section across a flush boundary', async () => {
+    const { factory } = streamingHost([text('first section'), tool('t1', 'Read file.ts'), text('last section')])
+    const daemon = new Daemon({ root: scaffold('low'), hostFactory: factory })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
+
+    expect(conn.postMessage.mock.calls.map((call) => call[1])).toEqual(['first section', 'last section'])
+    expect(conn.postMessage.mock.calls.map((call) => call[3]?.trailingBlocks)).toEqual([
+      [classicFooter()],
+      [classicFooter()]
+    ])
+    expect(conn.updateBlocks).toHaveBeenCalledWith('C1', 'reply-1', [{ type: 'markdown', text: 'first section' }])
+    expect(conn.updateBlocks).not.toHaveBeenCalledWith('C1', 'reply-2', expect.any(Array))
+    await daemon.stop()
+  }, 15_000)
+
+  it('retries a failed stale-footer cleanup at finalization', async () => {
+    const { factory } = streamingHost([text('first section'), tool('t1', 'Read file.ts'), text('last section')])
+    const daemon = new Daemon({ root: scaffold('low'), hostFactory: factory })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    ;(conn.updateBlocks as any).mockRejectedValueOnce(new Error('queue timeout')).mockResolvedValueOnce(true)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
+
+    expect(conn.updateBlocks.mock.calls.filter((call) => call[1] === 'reply-1')).toEqual([
+      ['C1', 'reply-1', [{ type: 'markdown', text: 'first section' }]],
+      ['C1', 'reply-1', [{ type: 'markdown', text: 'first section' }]]
+    ])
+    await daemon.stop()
+  }, 15_000)
+
+  it('keeps the prior footer when a later body post returns no timestamp', async () => {
+    const { factory } = streamingHost([text('first section'), tool('t1', 'Read file.ts'), text('last section')])
+    const daemon = new Daemon({ root: scaffold('low'), hostFactory: factory })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    ;(conn.postMessage as any).mockResolvedValueOnce('reply-1').mockResolvedValueOnce(undefined)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
+
+    expect(conn.postMessage.mock.calls.map((call) => call[1])).toEqual(['first section', 'last section'])
+    expect(conn.updateBlocks).not.toHaveBeenCalledWith('C1', 'reply-1', [{ type: 'markdown', text: 'first section' }])
+    await daemon.stop()
+  }, 15_000)
+
+  it('does not create an orphan attribution message when the turn has no reply body', async () => {
+    const { factory } = streamingHost([tool('t1', 'Read file.ts')])
+    const daemon = new Daemon({ root: scaffold('high'), hostFactory: factory })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
+
+    // High mode still posts tool-progress chrome, but that is not an agent reply body
+    // and must not become the attribution target. It's marked `chrome` so the backfill skips it.
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Read file.ts'), 'T1', {
+      chrome: true
+    })
+    expect(conn.postMessage.mock.calls.some((call) => call[3]?.trailingBlocks)).toBe(false)
+    await daemon.stop()
+  }, 15_000)
+
+  it('does not attach agent attribution to a daemon-generated failure notice', async () => {
+    const { factory, host } = streamingHost([])
+    host.prompt = vi.fn(async () => {
+      throw new Error('runtime exploded')
+    })
+    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    await expect((daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')).rejects.toThrow('runtime exploded')
+
+    const failure = conn.postMessage.mock.calls.find((call) => String(call[1]).includes('Agent failed to respond'))
+    expect(failure?.[3]?.trailingBlocks).toBeUndefined()
+    await daemon.stop()
+  }, 15_000)
+
+  it('retries stale-footer cleanup when prompt failure bypasses normal attribution finalization', async () => {
+    let onUpdate!: (sid: string, update: unknown) => void
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      prompt: vi.fn(async (sid: string) => {
+        onUpdate(sid, text('first section'))
+        onUpdate(sid, tool('t1', 'Read one'))
+        await vi.waitFor(() =>
+          expect(conn.postMessage).toHaveBeenCalledWith('C1', 'first section', 'T1', expect.anything())
+        )
+        onUpdate(sid, text('second section'))
+        onUpdate(sid, tool('t2', 'Read two'))
+        await vi.waitFor(() =>
+          expect(conn.postMessage).toHaveBeenCalledWith('C1', 'second section', 'T1', expect.anything())
+        )
+        throw new Error('runtime exploded')
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      root: scaffold('low'),
+      hostFactory: (_agent, callback) => {
+        onUpdate = callback
+        return host as any
+      }
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    ;(conn.updateBlocks as any).mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+
+    await expect((daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')).rejects.toThrow('runtime exploded')
+
+    expect(conn.updateBlocks.mock.calls.filter((call) => call[1] === 'reply-1')).toEqual([
+      ['C1', 'reply-1', [{ type: 'markdown', text: 'first section' }]],
+      ['C1', 'reply-1', [{ type: 'markdown', text: 'first section' }]]
+    ])
+    await daemon.stop()
+  }, 15_000)
+
+  it('a replayed reply is filtered out of its own author’s catch-up context', async () => {
+    const { factory } = replyingHost('my first reply')
+    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    await daemon.start()
+    makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'first'), 'int-a')
+    await (daemon as any).dispatch('bot-a', dm('200', 'second'), 'int-a')
+
+    // The agent's own reply is in the transcript but must never be replayed back to it
+    // as "context you may have missed" — only the human's intervening message would be.
+    const sessionThread = (daemon as any).sessions
+    const { blocks } = await sessionThread.handle('bot-a', dm('300', 'third'))
+    const replayed = (blocks as { text: string }[]).map((b) => b.text).join('\n')
+    expect(replayed).not.toContain('my first reply')
+    expect(replayed).toContain('third')
+    await daemon.stop()
+  }, 15_000)
+})
+
+describe('Daemon transcript captures the full activity log (mode-independent)', () => {
+  const turn = [
+    thought('let me think about'),
+    thought(' this problem'),
+    tool('t1', 'Read file.ts'),
+    text('here is the answer')
+  ]
+
+  // The agent's tool calls + reasoning must land in the transcript in EVERY output
+  // mode — output mode only gates what reaches Slack, never what is recorded.
+  for (const mode of ['low', 'medium', 'high'] as const) {
+    it(`${mode} mode: tool + reasoning + text are all recorded with their kind`, async () => {
+      const { factory } = streamingHost(turn)
+      const daemon = new Daemon({ root: scaffold(mode), hostFactory: factory })
+      await daemon.start()
+      makeRoutable(daemon)
+
+      await (daemon as any).dispatch('bot-a', dm('100', 'go'), 'int-a')
+
+      expect(activity(daemon)).toEqual([
+        { kind: 'text', sender: 'U1', text: 'go' },
+        { kind: 'reasoning', sender: 'bot-a', text: 'let me think about this problem' },
+        { kind: 'tool', sender: 'bot-a', text: 'Read file.ts' },
+        { kind: 'text', sender: 'bot-a', text: 'here is the answer' }
+      ])
+      await daemon.stop()
+    }, 15_000)
+  }
+
+  it('tool/reasoning rows are excluded from §8.5 catch-up replay', async () => {
+    const { factory } = streamingHost(turn)
+    const daemon = new Daemon({ root: scaffold('low'), hostFactory: factory })
+    await daemon.start()
+    makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'go'), 'int-a')
+
+    // A *different* agent replaying the thread sees conversational text only — never
+    // bot-a's tool calls or reasoning fed back as "context you may have missed".
+    const gap = (daemon as any).store.transcriptSince('C1', 'T1', null)
+    expect(gap.every((r: TranscriptEntry) => r.kind === 'text')).toBe(true)
+    expect(gap.map((r: TranscriptEntry) => r.text)).toEqual(['go', 'here is the answer'])
+    await daemon.stop()
+  }, 15_000)
+
+  it('masks write-only secret values out of every recorded and delivered surface', async () => {
+    // The agent echoes the secret in its reply text, tool title, rawInput, and
+    // rawOutput (the classic `env | grep` case) — none of them may reach the
+    // transcript (console "View detail") or the Slack post in plaintext.
+    const { factory } = streamingHost([
+      {
+        sessionUpdate: 'tool_call',
+        toolCallId: 't1',
+        title: 'env | grep TestSA',
+        rawInput: { command: 'curl -H "Authorization: s3cret-value"' }
+      },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 't1',
+        status: 'completed',
+        rawOutput: { output: 'TestSA=s3cret-value\n' }
+      },
+      thought('the secret is s3cret-value'),
+      text('yes, TestSA is set to s3cret-value')
+    ])
+    const daemon = new Daemon({
+      root: scaffold('medium', {
+        runtimeOverrides: { secrets: [{ name: 'TestSA', value: 's3cret-value' }] }
+      }),
+      hostFactory: factory
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'is TestSA in the env?'), 'int-a')
+
+    const rows = (daemon as any).store.threadTranscript('C1', 'T1')
+    expect(JSON.stringify(rows)).not.toContain('s3cret-value')
+    const reply = rows.find((r: any) => r.kind === 'text' && r.sender === 'bot-a')
+    expect(reply.text).toBe('yes, TestSA is set to [secret:TestSA]')
+    const toolRow = rows.find((r: any) => r.kind === 'tool')
+    expect(toolRow.body).toContain('[secret:TestSA]')
+    // nothing that went to Slack (reply, status bar, cards) carries the value either
+    const posted = JSON.stringify([
+      conn.postMessage.mock.calls,
+      conn.postBlocks.mock.calls,
+      conn.updateBlocks.mock.calls
+    ])
+    expect(posted).not.toContain('s3cret-value')
+    expect(posted).toContain('[secret:TestSA]')
+    await daemon.stop()
+  }, 15_000)
+
+  it('a burst of tool_call_update for one call collapses to a single tool row', async () => {
+    const { factory } = streamingHost([
+      tool('t1', 'Edit file.ts'),
+      { sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'in_progress' },
+      { sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed' },
+      text('done')
+    ])
+    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    await daemon.start()
+    makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'go'), 'int-a')
+
+    const tools = activity(daemon).filter((r) => r.kind === 'tool')
+    expect(tools).toEqual([{ kind: 'tool', sender: 'bot-a', text: 'Edit file.ts' }])
+    await daemon.stop()
+  }, 15_000)
+})

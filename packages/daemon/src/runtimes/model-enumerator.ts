@@ -1,0 +1,149 @@
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { RuntimeDef } from '../config/config-schema.js'
+import type { Logger } from '../log.js'
+import type { SandboxMechanism } from '../acp/sandbox.js'
+import { AcpHost } from '../acp/acp-host.js'
+import { preparedProbeLaunch, probeCallbacks, type ProbeHostPolicy, type ProbeLaunchPlan } from './runtime-prober.js'
+import { capsFromConfigOptions } from './config-caps.js'
+import type { EnumerateFn } from './model-catalog.js'
+
+/**
+ * The real ACP per-model enumerator behind ModelCatalogService (design doc
+ * runtime-model-catalog.md §3.2): one disposable session in an ISOLATED HOME,
+ * serial `set_config_option` per model, each response's raw config options
+ * distilled into that model's capability entry.
+ *
+ * Isolation is a hard precondition — some agents persist set values as the
+ * user's defaults, so enumeration must never touch the real HOME. The launch
+ * reuses the curated probe plan (`composeRuntimeLaunch` with a private seeded
+ * HOME); when that plan can't be built the enumerator returns `undefined` and
+ * the runtime keeps phase-1-only data.
+ */
+export interface ModelEnumeratorDeps {
+  log?: Logger
+  isolateAccountApps?: boolean
+  sandboxMechanism?: SandboxMechanism
+  mcpSocketPath?: string
+  /** Test seam — mirrors ProbeOptions.hostFactory. */
+  hostFactory?: (rt: RuntimeDef, id: string, cwd: string, policy: ProbeHostPolicy) => AcpHost
+}
+
+/** Kept short so restore-before-kill always fits inside the total budget. */
+const RESTORE_GRACE_MS = 5_000
+
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms)
+  })
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer)) as Promise<T>
+}
+
+export function makeModelEnumerator(deps: ModelEnumeratorDeps): EnumerateFn {
+  return async (runtimeId, rt, modelIds, budget) => {
+    const scope = mkdtempSync(join(tmpdir(), 'ac-catalog-'))
+    const cwd = join(scope, 'workspace')
+    mkdirSync(cwd, { recursive: true })
+    let host: AcpHost | undefined
+    try {
+      let launch: ProbeLaunchPlan | undefined
+      try {
+        launch = preparedProbeLaunch(runtimeId, rt, cwd, {
+          curated: true, // curated plan = isolated seeded HOME, even without an OS sandbox
+          log: deps.log,
+          hostEnv: process.env,
+          runInSandbox: deps.sandboxMechanism !== undefined,
+          sandboxMechanism: deps.sandboxMechanism,
+          mcpSocketPath: deps.mcpSocketPath
+        })
+      } catch (err) {
+        deps.log?.debug(`catalog: ${runtimeId} isolation unavailable, skipping enumeration: ${(err as Error).message}`)
+        return undefined
+      }
+      if (!launch) return undefined
+
+      const policy: ProbeHostPolicy = {
+        ...probeCallbacks,
+        env: launch.env,
+        inheritProcessEnv: launch.inheritProcessEnv,
+        ...(launch.sandbox ? { sandbox: launch.sandbox } : {})
+      }
+      const effectiveRuntime = launch.runtime ?? rt
+      host = deps.hostFactory
+        ? deps.hostFactory(effectiveRuntime, runtimeId, cwd, policy)
+        : new AcpHost(effectiveRuntime, {
+            onUpdate: () => {},
+            log: deps.log,
+            runtimeId,
+            isolateAccountApps: deps.isolateAccountApps,
+            ...policy
+          })
+      const activeHost = host
+
+      const deadline = Date.now() + budget.totalMs
+      await withTimeout(activeHost.start(), budget.perModelMs, `${runtimeId} start`)
+      const sid = await withTimeout(activeHost.newSession(cwd, []), budget.perModelMs, `${runtimeId} session/new`)
+      const initial = activeHost.sessionConfigOptions?.(sid)
+      if (!initial) return { models: [], aborted: 'runtime advertises no session config options' }
+      const initialModel = capsFromConfigOptions(initial).currentModel
+
+      const collected: Awaited<ReturnType<EnumerateFn>> & object = { models: [] }
+      for (const id of modelIds) {
+        if (id === 'default') continue // "no explicit model", not an enumerable entry
+        if (Date.now() > deadline - RESTORE_GRACE_MS) {
+          collected.aborted = 'total budget exhausted'
+          break
+        }
+        try {
+          await withTimeout(activeHost.setSessionModel(sid, id), budget.perModelMs, `${runtimeId} set model ${id}`)
+        } catch (err) {
+          deps.log?.debug(`catalog: ${runtimeId} model "${id}" skipped: ${(err as Error).message}`)
+          continue
+        }
+        const after = activeHost.sessionConfigOptions?.(sid)
+        const caps = after ? capsFromConfigOptions(after) : undefined
+        if (!caps || caps.currentModel !== id) {
+          // The selector is advertised but the write path is a no-op (real
+          // ecosystem behavior) — a response describing the OLD model would
+          // poison every entry, so give up on enumeration entirely.
+          collected.aborted = `set_config_option did not switch the model (asked "${id}", still "${caps?.currentModel ?? 'unknown'}")`
+          break
+        }
+        // Deliberately NO defaultEffort here: after a model switch the effort
+        // select's currentValue is carry-over session state (a supported level
+        // survives the switch; verified against claude-agent-acp 0.59.0), not
+        // the model's own default. Only phase 1 (fresh-session initial state)
+        // and native drivers may claim a default.
+        collected.models.push({
+          id,
+          ...(caps.modelName ? { name: caps.modelName } : {}),
+          efforts: caps.efforts,
+          fastMode: caps.fastMode
+        })
+      }
+
+      // Restore the initial selection BEFORE teardown — second line of defense in
+      // case home isolation was misconfigured; runs on the abort paths too.
+      if (
+        initialModel &&
+        initialModel !== capsFromConfigOptions(activeHost.sessionConfigOptions?.(sid) ?? []).currentModel
+      ) {
+        await withTimeout(
+          activeHost.setSessionModel(sid, initialModel),
+          RESTORE_GRACE_MS,
+          `${runtimeId} restore model`
+        ).catch((err) => deps.log?.debug(`catalog: ${runtimeId} restore selection failed: ${(err as Error).message}`))
+      }
+      return collected
+    } finally {
+      await host?.stop().catch(() => {})
+      try {
+        rmSync(scope, { recursive: true, force: true })
+      } catch {
+        // best-effort cleanup — never mask the enumeration result
+      }
+    }
+  }
+}

@@ -1,0 +1,113 @@
+name: Test
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+  # Release calls this workflow as its quality gate for main/release pushes.
+  # Keeping the jobs here avoids duplicating CI logic between PRs and releases.
+  workflow_call:
+
+# Cancel superseded runs for the same PR (a newer push makes the old one moot).
+# Reusable release-gate calls use a run-scoped group so their tests can proceed
+# independently; release.yaml serializes only the publishing job.
+concurrency:
+  group: test-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Keep the Docker-bound integration suite separate from static checks and unit
+# tests so either workload can be scheduled independently.
+jobs:
+  # Build + all static analysis + the fast (Docker-free) unit tests. The tsc and
+  # Next builds already typecheck their packages; the parallel no-emit check only
+  # covers daemon (tsdown) and control-plane files excluded from its production build.
+  # Prisma is generated once before the group, and CI skips duplicate pre-hooks.
+  # Unit tests run after the resource-heavy build/static group so their short
+  # per-test timeouts measure code rather than runner scheduling delay.
+  test:
+    name: Build & Test
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      # Run before any workspace build so source-checkout export resolution
+      # cannot be accidentally masked by protocol/connection dist artifacts.
+      - name: Evaluation config validation · clean checkout
+        env:
+          PROMPTFOO_DISABLE_TELEMETRY: '1'
+        run: pnpm eval:validate
+      - name: Generate Prisma client
+        run: pnpm -r prisma:generate
+      - name: Build · Lint · Format · Typecheck
+        env:
+          pnpm_config_enable_pre_post_scripts: false
+        run: pnpm --workspace-concurrency=5 run "/^(build|lint|format:check|typecheck:ci)$/"
+      - name: Unit tests
+        env:
+          pnpm_config_enable_pre_post_scripts: false
+          VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
+        run: pnpm test:unit
+      - name: Evaluation contracts
+        env:
+          PROMPTFOO_DISABLE_TELEMETRY: '1'
+        run: pnpm eval:contracts
+      - name: Publish unit test summary
+        if: ${{ !cancelled() }}
+        env:
+          VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
+        run: |
+          node scripts/merge-vitest-summaries.mjs \
+            'Unit test report' \
+            'protocol=@agentconnect.md/protocol' \
+            'connection=@agentconnect.md/connection' \
+            'control-plane=@agentconnect.md/control-plane' \
+            'relay=@agentconnect.md/relay' \
+            'daemon=@agentconnect.md/daemon' \
+            'cli=@agentconnect.md/cli'
+
+  # control-plane integration tests against a real Postgres booted by
+  # Testcontainers. Each Vitest worker gets an isolated database cloned from one
+  # migrated template, so files run concurrently without cross-test TRUNCATEs.
+  # It needs Docker, so it gets its own runner off the critical path.
+  # No build needed — the suite resolves workspace deps from source.
+  integration:
+    name: Integration tests
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm -r prisma:generate
+      - name: Integration tests
+        env:
+          VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
+        run: pnpm --filter @agentconnect.md/control-plane test:int
+      - name: Publish integration test summary
+        if: ${{ !cancelled() }}
+        env:
+          VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
+        run: |
+          node scripts/merge-vitest-summaries.mjs \
+            'Integration test report' \
+            'control-plane=@agentconnect.md/control-plane'

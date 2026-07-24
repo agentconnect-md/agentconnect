@@ -1,0 +1,481 @@
+import { describe, it, expect } from 'vitest'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+import { LocalStore, sessionKey } from '../src/store/local-store.js'
+import { createSessionReader } from '../src/cp/session-reader.js'
+
+const AGENT = '11111111-1111-4111-8111-111111111111'
+
+function store(): LocalStore {
+  return new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-reader-')), 'local.sqlite'))
+}
+
+function seedHistorySession(s: LocalStore, { platform = 'slack', channel = 'C1', thread = 'T1' } = {}): void {
+  s.upsertSession({
+    key: sessionKey(platform, channel, thread, AGENT),
+    agentId: AGENT,
+    platform,
+    channel,
+    thread,
+    acpSessionId: 'acp-1',
+    state: 'idle',
+    lastDeliveredTs: null,
+    updatedAt: 1
+  })
+}
+
+describe('SessionReader', () => {
+  it('list joins cached channel/triggeredBy names; unresolved ids omit the fields', () => {
+    const s = store()
+    s.upsertSession({
+      key: sessionKey('slack', 'C1', 'T1', AGENT),
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1,
+      triggeredBy: 'U1',
+      originSessionId: 'acp-parent'
+    })
+    s.upsertSession({
+      key: sessionKey('slack', 'C2', 'T2', AGENT),
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C2',
+      thread: 'T2',
+      acpSessionId: 'acp-2',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 2
+    })
+    s.setDisplayName('C1', 'deploys', 1)
+    s.setDisplayName('U1', 'Dana Reyes', 1)
+    s.setSessionTitle(sessionKey('slack', 'C1', 'T1', AGENT), 'Roll back the deploy')
+
+    const reader = createSessionReader(s)
+    const { sessions } = reader.list({})
+    const byId = new Map(sessions.map((x) => [x.sessionId, x]))
+    expect(byId.get('acp-1')).toMatchObject({
+      parentSessionId: 'acp-parent',
+      title: 'Roll back the deploy',
+      channelName: 'deploys',
+      triggeredBy: 'U1',
+      triggeredByName: 'Dana Reyes'
+    })
+    // No cached names / no triggeredBy / no title → optional fields simply absent, ids intact.
+    const bare = byId.get('acp-2')!
+    expect(bare.sessionKey.channel).toBe('C2')
+    expect(bare.title).toBeUndefined()
+    expect(bare.channelName).toBeUndefined()
+    expect(bare.triggeredBy).toBeUndefined()
+    expect(bare.triggeredByName).toBeUndefined()
+    s.close()
+  })
+
+  it('falls back to the first user message as the title when the runtime pushed none', () => {
+    const s = store()
+    // A webchat/playground session: the runtime never pushed a session/info title.
+    s.upsertSession({
+      key: sessionKey('webchat', 'conv-1', 'webchat:conv-1', AGENT),
+      agentId: AGENT,
+      platform: 'webchat',
+      channel: 'conv-1',
+      thread: 'webchat:conv-1',
+      acpSessionId: 'acp-wc',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 3,
+      triggeredBy: 'alice'
+    })
+    // The triggering user message, then the agent's reply (must NOT be used as a title).
+    s.appendTranscript({
+      channel: 'conv-1',
+      thread: 'webchat:conv-1',
+      ts: '1',
+      sender: 'alice',
+      kind: 'text',
+      text: "what's your model?"
+    })
+    s.appendTranscript({
+      channel: 'conv-1',
+      thread: 'webchat:conv-1',
+      ts: '2',
+      sender: AGENT,
+      kind: 'text',
+      text: 'I am Claude.'
+    })
+
+    // A session that DOES have a runtime title — the fallback must not override it.
+    s.upsertSession({
+      key: sessionKey('slack', 'C9', 'T9', AGENT),
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C9',
+      thread: 'T9',
+      acpSessionId: 'acp-titled',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 4
+    })
+    s.appendTranscript({ channel: 'C9', thread: 'T9', ts: '1', sender: 'U9', kind: 'text', text: 'the first message' })
+    s.setSessionTitle(sessionKey('slack', 'C9', 'T9', AGENT), 'Runtime summary')
+
+    const byId = new Map(
+      createSessionReader(s)
+        .list({})
+        .sessions.map((x) => [x.sessionId, x])
+    )
+    // Untitled webchat session ⇒ named from its first user message (never the agent reply).
+    expect(byId.get('acp-wc')!.title).toBe("what's your model?")
+    // Runtime title wins over the first-message fallback.
+    expect(byId.get('acp-titled')!.title).toBe('Runtime summary')
+    s.close()
+  })
+
+  it('first-message fallback takes one line, caps length, and rewrites <@U…> mentions', () => {
+    const s = store()
+    s.upsertSession({
+      key: sessionKey('slack', 'C1', 'T1', AGENT),
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    const long = 'x'.repeat(200)
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: 'U1',
+      kind: 'text',
+      text: `<@U1> ${long}\nsecond line`
+    })
+    s.setDisplayName('U1', 'Dana Reyes', 1)
+
+    const title = createSessionReader(s)
+      .list({})
+      .sessions.find((x) => x.sessionId === 'acp-1')!.title!
+    expect(title.startsWith('@Dana Reyes ')).toBe(true) // leading mention rewritten to @name
+    expect(title.endsWith('…')).toBe(true) // long body truncated with an ellipsis
+    expect(title).not.toContain('second line') // only the first line is used
+    s.close()
+  })
+
+  it('builds a Slack threadUrl from the agent workspace URL; absent without a resolver or for non-Slack', () => {
+    const s = store()
+    // Slack session with a realistic thread-root ts.
+    s.upsertSession({
+      key: sessionKey('slack', 'C1', '1710799200.123456', AGENT),
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C1',
+      thread: '1710799200.123456',
+      acpSessionId: 'acp-slack',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 2
+    })
+    // Telegram session — no Slack archives link even with a resolver.
+    s.upsertSession({
+      key: sessionKey('telegram', 'chat1', 'T1', AGENT),
+      agentId: AGENT,
+      platform: 'telegram',
+      channel: 'chat1',
+      thread: 'T1',
+      acpSessionId: 'acp-tg',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+
+    // With a resolver: the Slack row gets a permalink, the Telegram row does not.
+    const withUrl = createSessionReader(s, () => 'https://acme.slack.com/')
+    const byId = new Map(withUrl.list({}).sessions.map((x) => [x.sessionId, x]))
+    expect(byId.get('acp-slack')!.threadUrl).toBe('https://acme.slack.com/archives/C1/p1710799200123456')
+    expect(byId.get('acp-tg')!.threadUrl).toBeUndefined()
+
+    // No resolver (or one returning undefined) ⇒ field simply absent.
+    expect(
+      createSessionReader(s)
+        .list({})
+        .sessions.find((x) => x.sessionId === 'acp-slack')!.threadUrl
+    ).toBeUndefined()
+    expect(
+      createSessionReader(s, () => undefined)
+        .list({})
+        .sessions.find((x) => x.sessionId === 'acp-slack')!.threadUrl
+    ).toBeUndefined()
+    s.close()
+  })
+
+  it('history labels senders with cached names and leaves unknown ids raw', () => {
+    const s = store()
+    s.upsertSession({
+      key: sessionKey('slack', 'C1', 'T1', AGENT),
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    // The inbound message is delivered TO this agent (recipient), the reply is FROM it.
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: 'U1',
+      recipient: AGENT,
+      kind: 'text',
+      text: 'hi'
+    })
+    s.appendTranscript({ channel: 'C1', thread: 'T1', ts: '2', sender: AGENT, kind: 'text', text: 'hello' })
+    s.setDisplayName('U1', 'Dana Reyes', 1)
+
+    const reader = createSessionReader(s)
+    const { messages } = reader.history({ sessionId: 'acp-1', limit: 50 })
+    expect(messages.map((m) => [m.sender, m.senderName])).toEqual([
+      ['U1', 'Dana Reyes'],
+      [AGENT, undefined] // agent-id senders have no display_names entry → omitted
+    ])
+    s.close()
+  })
+
+  it('history scopes to what THIS agent received or produced (no peer cross-talk)', () => {
+    const s = store()
+    s.upsertSession({
+      key: sessionKey('slack', 'C1', 'T1', AGENT),
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    // Delivered to THIS agent + its own reply.
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: 'U1',
+      recipient: AGENT,
+      kind: 'text',
+      text: 'to-me'
+    })
+    s.appendTranscript({ channel: 'C1', thread: 'T1', ts: '2', sender: AGENT, kind: 'text', text: 'my-reply' })
+    // A peer sharing this (channel, thread): a message addressed to it + its own reply and
+    // PRIVATE reasoning must NOT surface in this agent's session view.
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '3',
+      sender: 'U1',
+      recipient: 'other-agent',
+      kind: 'text',
+      text: 'to-other'
+    })
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '4',
+      sender: 'other-agent',
+      kind: 'text',
+      text: 'other-reply'
+    })
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '5',
+      sender: 'other-agent',
+      kind: 'reasoning',
+      text: 'other-thinks'
+    })
+
+    const reader = createSessionReader(s)
+    const { messages } = reader.history({ sessionId: 'acp-1', limit: 50 })
+    expect(messages.map((m) => m.text)).toEqual(['to-me', 'my-reply'])
+    s.close()
+  })
+
+  it('orders Slack history by event time when older thread rows are backfilled after the trigger', () => {
+    const s = store()
+    seedHistorySession(s)
+
+    // The trigger is recorded first. The warm-thread snapshot then discovers two
+    // older Slack replies and appends them with later seq values. Internal activity
+    // uses epoch milliseconds, so the history order must normalize both units.
+    for (const row of [
+      { ts: '1784098696.100000', sender: 'U1', kind: 'text' as const, text: 'first request' },
+      { ts: '1784098843.000000', sender: 'peer-agent', kind: 'text' as const, text: 'current trigger' },
+      { ts: '1784098711.000000', sender: 'ops-bot', kind: 'text' as const, text: 'first backfilled reply' },
+      { ts: '1784098787.000000', sender: 'ops-bot', kind: 'text' as const, text: 'second backfilled reply' },
+      { ts: '1784098844000', sender: AGENT, kind: 'reasoning' as const, text: 'thinking after trigger' }
+    ]) {
+      s.appendTranscript({
+        channel: 'C1',
+        thread: 'T1',
+        ...row,
+        ...(row.kind === 'text' ? { recipient: AGENT } : {})
+      })
+    }
+
+    const { messages } = createSessionReader(s).history({ sessionId: 'acp-1', limit: 50 })
+    expect(messages.map((m) => m.text)).toEqual([
+      'first request',
+      'first backfilled reply',
+      'second backfilled reply',
+      'current trigger',
+      'thinking after trigger'
+    ])
+    s.close()
+  })
+
+  it('keeps chronological Slack order across history page boundaries', () => {
+    const s = store()
+    seedHistorySession(s)
+
+    // Deliberately different event-time vs insertion orders. A per-page cosmetic
+    // sort is insufficient: every page must be cut from the same global ordering.
+    for (const n of [1, 6, 2, 5, 3, 4]) {
+      s.appendTranscript({
+        channel: 'C1',
+        thread: 'T1',
+        ts: `178409870${n}.000000`,
+        sender: 'U1',
+        recipient: AGENT,
+        kind: 'text',
+        text: `message-${n}`
+      })
+    }
+
+    const reader = createSessionReader(s)
+    const all: string[] = []
+    let cursor: string | undefined
+    for (let pageNo = 0; pageNo < 10; pageNo++) {
+      const page = reader.history({ sessionId: 'acp-1', limit: 2, ...(cursor ? { cursor } : {}) })
+      all.unshift(...page.messages.map((m) => m.text))
+      if (!page.nextCursor) break
+      cursor = page.nextCursor
+    }
+
+    expect(all).toEqual(['message-1', 'message-2', 'message-3', 'message-4', 'message-5', 'message-6'])
+    s.close()
+  })
+
+  it('uses seq as a deterministic cross-page tie-breaker for equal event times', () => {
+    const s = store()
+    seedHistorySession(s)
+    for (const text of ['same-time-1', 'same-time-2', 'same-time-3']) {
+      s.appendTranscript({
+        channel: 'C1',
+        thread: 'T1',
+        ts: '1784098701500',
+        sender: AGENT,
+        kind: 'reasoning',
+        text
+      })
+    }
+
+    const reader = createSessionReader(s)
+    const all: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = reader.history({ sessionId: 'acp-1', limit: 1, ...(cursor ? { cursor } : {}) })
+      all.unshift(...page.messages.map((m) => m.text))
+      cursor = page.nextCursor
+    } while (cursor)
+
+    expect(all).toEqual(['same-time-1', 'same-time-2', 'same-time-3'])
+    s.close()
+  })
+
+  it('finishes an in-flight legacy numeric-cursor walk in seq order', () => {
+    const s = store()
+    seedHistorySession(s)
+    for (const n of [1, 4, 2, 3]) {
+      s.appendTranscript({
+        channel: 'C1',
+        thread: 'T1',
+        ts: `178409870${n}.000000`,
+        sender: 'U1',
+        recipient: AGENT,
+        kind: 'text',
+        text: `seq-${n}`
+      })
+    }
+
+    // Cursor "3" means the old client already saw seq >= 3. Do not reinterpret it
+    // as an event-time cursor partway through that request's pagination loop.
+    const page = createSessionReader(s).history({ sessionId: 'acp-1', cursor: '3', limit: 50 })
+    expect(page.messages.map((m) => m.text)).toEqual(['seq-1', 'seq-4'])
+    expect(page.nextCursor).toBeUndefined()
+    s.close()
+  })
+
+  it('preserves insertion ordering for non-Slack platform message ids', () => {
+    const s = store()
+    seedHistorySession(s, { platform: 'telegram', channel: 'chat-1', thread: 'T1' })
+    for (const row of [
+      { ts: '100', sender: 'user-1', kind: 'text' as const, text: 'telegram message 100' },
+      { ts: '1784098701500', sender: AGENT, kind: 'reasoning' as const, text: 'reasoning after 100' },
+      { ts: '101', sender: 'user-1', kind: 'text' as const, text: 'telegram message 101' }
+    ]) {
+      s.appendTranscript({
+        channel: 'chat-1',
+        thread: 'T1',
+        ...row,
+        ...(row.kind === 'text' ? { recipient: AGENT } : {})
+      })
+    }
+
+    expect(
+      createSessionReader(s)
+        .history({ sessionId: 'acp-1', limit: 50 })
+        .messages.map((m) => m.text)
+    ).toEqual(['telegram message 100', 'reasoning after 100', 'telegram message 101'])
+    s.close()
+  })
+
+  it('repairs chronological reads from a pre-upgrade transcript table', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-reader-order-mig-')), 'local.sqlite')
+    const legacy = new DatabaseSync(path)
+    legacy.exec(`
+      CREATE TABLE transcript (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
+        sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
+        tool_call_id TEXT, body TEXT, recipient TEXT
+      );
+      INSERT INTO transcript (channel, thread, ts, sender, kind, text, recipient) VALUES
+        ('C1', 'T1', '1784098701.000000', 'U1', 'text', 'first', '${AGENT}'),
+        ('C1', 'T1', '1784098703.000000', 'U1', 'text', 'third-trigger', '${AGENT}'),
+        ('C1', 'T1', '1784098702.000000', 'ops-bot', 'text', 'second-backfilled', '${AGENT}');
+    `)
+    legacy.close()
+
+    // Opening the upgraded store must make already-persisted sessions read correctly;
+    // the fix cannot depend on rewriting only future appends.
+    const s = new LocalStore(path)
+    seedHistorySession(s)
+
+    expect(
+      createSessionReader(s)
+        .history({ sessionId: 'acp-1', limit: 50 })
+        .messages.map((m) => m.text)
+    ).toEqual(['first', 'second-backfilled', 'third-trigger'])
+    s.close()
+  })
+})

@@ -1,0 +1,265 @@
+# Architecture Design: Daemon-Centric Messaging and Agent Execution
+
+> Status: Implemented (current architecture) — the architecture described here has been implemented in `packages/{protocol,daemon,control-plane,relay}` and serves as the upstream anchor for the detailed design documents
+> Scope: A new system that bridges messaging platforms (such as Slack and Telegram) to AI coding agents
+> Keywords: daemon-owned platform integrations, local ACP, control-plane/data-plane separation
+
+---
+
+## 1. Background and Motivation
+
+The system connects user requests from messaging platforms such as Slack and Telegram to AI agents such as Claude and Codex running across multiple machines, then returns the results.
+
+The central design question is: **should message ingestion and processing live centrally, or on the execution nodes?** This design chooses the latter: **platform integration logic runs locally on each execution node (daemon)**, while the center (Control Plane) is responsible only for orchestration.
+
+The direct consequences are:
+
+- The center is not on the hot path of any user message.
+- Interaction between an agent and its driver protocol (ACP) happens over a **local connection** inside the daemon, with no network hop.
+- Each daemon is a self-contained "message processing + agent execution" unit that can scale and tolerate failures independently.
+
+---
+
+## 2. Goals and Non-Goals
+
+### Goals
+
+- Keep the Control Plane off the messaging hot path. The control connection
+  carries orchestration and telemetry plus bounded, authorized, on-demand reads
+  of daemon-local data for the Web UI; those reads are not persisted by the
+  Control Plane.
+- Close the platform-integration (Slack/Telegram) and agent-execution loop locally within the daemon to reduce message latency.
+- Allow daemons to scale horizontally and independently, so one daemon failure does not affect other daemons.
+- Run multiple agents on one daemon, with a separate ACP adapter for each agent type.
+- Allow established sessions to continue sending, receiving, and executing locally on the daemon while the Control Plane is temporarily unavailable (degraded availability).
+
+### Non-Goals
+
+- This design does not introduce a message queue or event bus. Either may be an evolution path for future high-throughput scenarios.
+- This design does not change the protocol between agents and models; all agents use ACP.
+- This design does not solve strongly consistent coordination across daemons. See the open questions in §13.
+
+---
+
+## 3. Architecture Overview
+
+![Daemon-centric architecture](daemon-centric-architecture.png)
+
+The equivalent ASCII representation below makes the same design easier to diff
+and search.
+
+```
+                 ┌──────────────────────────────┐
+                 │ Control Plane (orchestration) │
+                 │  ┌────────────┐ ┌──────────┐  │
+                 │  │Orchestrator│ │  Web UI  │  │
+                 │  └────────────┘ └──────────┘  │
+                 └───────┬───────────────┬───────┘
+              WebSocket  │ control + BFF  │  WebSocket
+                         │ bounded reads  │
+        ┌────────────────▼───┐      ┌────▼───────────────┐
+ Slack ─┤ Computer A · daemon │      │ Computer B · daemon │── Slack/Telegram
+ Tg   ──┤  slack-adapter      │      │  (same topology)    │
+        │  telegram-adapter   │      │                     │
+        │      │ local ACP    │      │                     │
+        │  ┌───▼────────────┐ │      │                     │
+        │  │ claude-agent-acp│ │      │   claude-agent-acp  │
+        │  │ codex-acp       │ │      │   codex-acp         │
+        │  └───┬────────────┘ │      │                     │
+        │   ┌──▼───┐ ┌──────┐ │      │   Claude / Codex     │
+        │   │Claude│ │Codex │ │      │                     │
+        │   └──────┘ └──────┘ │      └─────────────────────┘
+        └─────────────────────┘
+```
+
+### Components
+
+| Component             | Role                                                                                                                                                                                                           |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Control Plane**     | Orchestration, scheduling, scaling, Web UI, and registry; does not handle live platform message traffic or integrate with platforms                                                                            |
+| **daemon (Computer)** | Platform integration + agent runtime; a self-contained message-processing and execution unit                                                                                                                   |
+| **relay**             | Unified ingress plane: inbound shared-bot, webhook, and webchat traffic passes through the relay pool to daemons; daemons still send outbound traffic directly. See [shared-bot-relay.md](shared-bot-relay.md) |
+| **Platform adapters** | `slack-adapter`, `telegram-adapter`, Discord, Feishu, and others; handle platform I/O and message normalization                                                                                                |
+| **ACP adapters**      | `claude-agent-acp` and `codex-acp`; implement ACP and drive models locally                                                                                                                                     |
+| **Agent instances**   | Claude and Codex model processes                                                                                                                                                                               |
+
+---
+
+## 4. Component Details
+
+### 4.1 Control Plane
+
+Its responsibilities are deliberately narrow:
+
+- **Orchestration, scheduling, and scaling**: decide which daemon hosts each workspace or session, and start, stop, and assign agents on a daemon according to load. Users run daemon processes themselves; daemons establish outbound connections to the CP, and the CP does not start or stop daemon processes.
+- **Registry/Auth**: daemon registration and health, routing policies, and authentication policies.
+- **Web UI**: configuration, editing, and runtime monitoring.
+
+**Explicitly excluded**: it does not connect to Slack or Telegram, receive platform messages, or participate in the message loop. Even when the Control Plane is temporarily unavailable, **established sessions continue sending, receiving, and executing locally on their daemons** (degraded availability).
+
+### 4.2 daemon (Computer)
+
+A daemon is a **self-contained message-processing + agent-execution unit**:
+
+- It includes `slack-adapter` and `telegram-adapter` and connects directly to each platform's bot API.
+- It normalizes platform messages locally, then drives the agent through **local ACP**.
+- It maintains one WebSocket to the Control Plane for control/telemetry and
+  correlated, bounded read-back requests made by authorized Web UI callers.
+  Those reads are transient and do not put live platform traffic or ACP output
+  streams on the CP path.
+
+### 4.3 Platform Adapters (`slack-adapter`, `telegram-adapter`, etc.)
+
+- Handle platform connections, authentication, message sending and receiving, rich-text and attachment normalization, and inbound/outbound mapping.
+- Hold platform credentials. See §9, Security.
+- Produce normalized internal messages and pass them through the daemon's local routing layer to the agent.
+
+### 4.4 ACP Adapters (`claude-agent-acp`, `codex-acp`)
+
+- Implement ACP and provide the entry point to an agent.
+- Receive ACP calls **locally from the daemon**, through an in-process call, local IPC, or a local socket.
+- Start and drive the corresponding model process (Claude or Codex) locally.
+
+---
+
+## 5. Connections and Protocols
+
+### 5.1 Platform ↔ daemon: Direct or Relay-Assisted Ingress
+
+- Dedicated-bot ingress connects directly to the daemon.
+- Shared-bot, webhook, and webchat ingress enters through the relay pool, which forwards the normalized request to the owning daemon.
+- Outbound platform traffic is sent directly by the daemon.
+- Neither ingress model puts the Control Plane on the message hot path. See [shared-bot-relay.md](shared-bot-relay.md).
+
+### 5.2 Control Plane ↔ daemon: WebSocket (Control and Bounded Read-Back)
+
+- The daemon initiates a WebSocket connection to the Control Plane.
+- **Allowed payloads**: registration, heartbeats and health, orchestration
+  commands, status and metrics reports, and correlated requests that proxy
+  bounded daemon-local session, tool-body, memory, or workspace data to an
+  authorized Web UI caller without persistence.
+- **Excluded payloads**: live ACP update streams and platform ingress or reply
+  traffic. Those messaging paths stay on the daemon or relay data plane.
+
+### 5.3 Inside the daemon: Local ACP
+
+- Calls from a platform adapter to an ACP adapter are **in-process or local IPC** ACP calls, with no network hop.
+- This is the defining characteristic of the architecture: **ACP is a local protocol inside the daemon, not a network protocol**.
+
+---
+
+## 6. Key Data Flows
+
+### 6.1 Inbound Message Lifecycle
+
+```
+User (Slack)
+  → dedicated bot or shared-bot relay (receive and normalize)
+  → daemon local ingress
+  → daemon local routing (select an agent by session/routing table)
+  → [local ACP] → claude-agent-acp
+  → Claude executes
+  → [local ACP] response → daemon.slack-adapter
+  → User (Slack)
+```
+
+The Control Plane is not involved at any point.
+
+### 6.2 Orchestration Flow (Decoupled from Messages)
+
+```
+daemon ←→ Control Plane (WebSocket)
+  - daemon registration + heartbeat + capability report (supported platforms/agents)
+  - Control Plane commands: session assignment, agent start/stop, configuration, scaling
+  - daemon reports: runtime status, usage, health
+```
+
+Orchestration happens on the control plane and **never blocks or enters** the path of a user message.
+
+---
+
+## 7. Orchestration Model
+
+The Control Plane achieves "orchestration without touching messages" over the control WebSocket:
+
+- **Session ownership**: decide which daemon is responsible for a workspace or session. The daemon then takes over that session's platform traffic itself.
+- **Agent lifecycle**: instruct a daemon to start or stop a particular type of agent (Claude or Codex).
+- **Scaling and placement**: make agent- and session-level placement and scaling decisions from the load and health reported by daemons. It does not start or stop daemon processes.
+- **Degraded semantics**: if the Control Plane is unavailable, daemons keep existing sessions running. New-session assignment and scaling pause, then catch up after recovery.
+
+---
+
+## 8. Multiple Agents and Multiple Daemons
+
+- **Multiple agents per daemon**: one daemon runs multiple agents concurrently, each driven by an independent ACP adapter (`claude-agent-acp` or `codex-acp`).
+- **Multiple daemons**: every daemon has the same topology and platform-integration capabilities; the Control Plane orchestrates how they share sessions and load.
+- **Horizontal scaling**: adding a daemon adds throughput. With no central hot path, scaling is approximately linear.
+
+---
+
+## 9. Security and Credential Management
+
+> Platform credentials are distributed across edge nodes, making this the part of the architecture that needs the most careful design.
+
+- **Credential delivery**: the Control Plane persists managed integration
+  credentials through the configured `SecretCipher`; the stored representation
+  depends on the runtime-configured cipher. It sends assigned values to
+  daemons or relays through `integration/*` control frames over encrypted
+  transport. A daemon persists assigned integration configuration in its local,
+  secret-bearing `agent.json` so established integrations can recover while the
+  Control Plane is unavailable. Credential values must never be logged. The
+  protocol separately reserves lease-based `secrets/*` frames for
+  secret-manager references.
+- **Least privilege**: a daemon receives credentials only for the workspaces and platforms for which it is responsible.
+- **Control-plane authentication**: long-lived, revocable opaque API keys authenticate daemon, user, relay, and OAuth principals. The Control Plane stores only an HMAC lookup value, validates keys during authentication, and supports rotation and revocation. These credentials are independent of machine scope-attestation capabilities. See [daemon-api-key-auth.md](daemon-api-key-auth.md).
+- **Isolation**: sessions and credentials for different workspaces are logically isolated inside the daemon. Requirements for stronger isolation can dedicate a daemon to each workspace.
+
+---
+
+## 10. Observability
+
+- **Challenge**: messages do not pass through the center, weakening centralized observability.
+- **Mitigation**: daemons emit metrics and traces through the configured
+  OpenTelemetry path. Session milestones, usage summaries, health, and
+  capability facts use the control WebSocket; credential and message content
+  are excluded from telemetry.
+- **Tracing**: inject a trace ID into normalized messages and carry it through the platform adapter, local ACP, and agent for end-to-end tracing.
+
+---
+
+## 11. Failures and Recovery
+
+| Failure                | Impact                                      | Behavior                                                                                                           |
+| ---------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Control Plane outage   | Orchestration pauses                        | **Existing sessions continue locally on daemons**; new assignments and scaling pause, then catch up after recovery |
+| One daemon fails       | Sessions owned by that daemon are disrupted | The failure domain is isolated; the Control Plane detects the failure and reassigns sessions to another daemon     |
+| Platform adapter fails | Traffic for that platform is affected       | The daemon reconnects or retries locally and reports an alert                                                      |
+| Agent process crashes  | One agent task fails                        | The ACP adapter restarts the agent locally and reports the failure when necessary                                  |
+
+---
+
+## 12. Advantages and Drawbacks
+
+### Advantages
+
+- **No central hot path**: messages do not pass through the Control Plane, so the center is neither a throughput bottleneck nor a single point of failure.
+- **Low latency**: the message loop stays local to the daemon and ACP calls are local, avoiding network round trips.
+- **Strong failure isolation**: one daemon failure affects only its sessions, producing a small blast radius.
+- **Near-linear scaling**: adding daemons adds throughput without a central bottleneck.
+- **Degradable control plane**: established sessions keep running while the Control Plane is unavailable.
+- **Proximity deployment**: daemons can run near their users or platforms to reduce cross-region latency.
+
+### Drawbacks
+
+- **Distributed credentials**: platform credentials move to each daemon, complicating management and rotation, expanding the security surface, and creating a strong dependency on secret management.
+- **Heavier daemons**: platform integration, local routing, and agent execution all reside in the daemon, increasing operational, deployment, and upgrade complexity.
+- **Weaker centralized observability**: because messages do not pass through the center, additional reporting and end-to-end tracing are required.
+- **Difficult cross-daemon coordination**: agents on different daemons cannot collaborate directly and need either the platform or another channel as an intermediary.
+- **Complex session rebalancing**: sessions have daemon affinity, so load migration and rebalancing require a lossless migration mechanism.
+
+---
+
+## 13. Open Questions and Future Work
+
+1. **Session affinity and routing tables**: how should the Control Plane routing table coordinate with local daemon routing? How can session migration (rebalancing) avoid disruption?
+2. **High-throughput evolution**: introduce a Gateway + Message Bus between daemons and the Control Plane, fully separating the control and data planes, as an upgrade path for higher-throughput and multi-tenant scenarios.

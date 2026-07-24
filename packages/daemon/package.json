@@ -1,0 +1,81 @@
+{
+  "name": "@agentconnect.md/daemon",
+  "version": "1.0.0-dev",
+  "description": "AgentConnect daemon — edge message + agent execution unit",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "dist/index.js",
+  "bin": {
+    "agentconnect-daemon": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "agent:chat": "tsx src/index.ts --agents-dir ./test/fixtures/sample-agent chat",
+    "agent:run": "tsx src/index.ts --agents-dir ./test/fixtures/sample-agent run",
+    "build": "pnpm --filter '{.}^...' build && tsdown && node scripts/assert-self-contained.mjs",
+    "clean": "rm -rf dist",
+    "dev": "tsx watch src/index.ts run",
+    "prepack": "pnpm run build",
+    "start": "node dist/index.js run",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.typecheck.json"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.2.1",
+    "@agentconnect.md/connection": "workspace:*",
+    "@agentconnect.md/protocol": "workspace:*",
+    "@larksuiteoapi/node-sdk": "^1.70.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/instrumentation-http": "^0.220.0",
+    "@opentelemetry/instrumentation-undici": "^0.30.0",
+    "@opentelemetry/resources": "^2.9.0",
+    "@opentelemetry/sdk-node": "^0.220.0",
+    "@opentelemetry/semantic-conventions": "^1.41.1",
+    "@slack/bolt": "^4.7.3",
+    "@slack/web-api": "^7.17.0",
+    "chokidar": "^5.0.0",
+    "commander": "^15.0.0",
+    "croner": "^10.0.1",
+    "discord.js": "^14.26.4",
+    "grammy": "^1.44.0",
+    "https-proxy-agent": "^9.1.0",
+    "simple-git": "^3.36.0",
+    "systeminformation": "^5.31.12",
+    "ws": "^8.21.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.2",
+    "@types/ws": "^8.18.1",
+    "json": "^11.0.0",
+    "tsdown": "^0.22.3",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  },
+  "keywords": [
+    "acp",
+    "agentconnect",
+    "agents",
+    "cli",
+    "daemon"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
