@@ -42,7 +42,7 @@ jobs:
   # per-test timeouts measure code rather than runner scheduling delay.
   test:
     name: Build & Test
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     outputs:
       summary: ${{ steps.export-summary.outputs.markdown }}
     steps:
@@ -52,6 +52,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@v6
+        with:
+          cache: true
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -118,7 +120,7 @@ jobs:
   # No build needed — the suite resolves workspace deps from source.
   integration:
     name: Integration tests
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     outputs:
       summary: ${{ steps.export-summary.outputs.markdown }}
     steps:
@@ -128,6 +130,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@v6
+        with:
+          cache: true
       - uses: actions/setup-node@v6
         with:
           node-version: 24
