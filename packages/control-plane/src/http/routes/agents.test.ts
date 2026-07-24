@@ -4,7 +4,16 @@
  * come out as explicit `null`s so the zod response schema passes serialization.
  */
 import { describe, it, expect } from 'vitest'
-import { toWorkspaceFilesDto, toWorkspaceFileDto, toWorkspaceGitStatusDto, toWorkspaceGitPullDto } from './agents.js'
+import {
+  toWorkspaceFilesDto,
+  toWorkspaceFileDto,
+  toWorkspaceGitStatusDto,
+  toWorkspaceGitPullDto,
+  toDreamDto,
+  toDreamListDto,
+  toDreamFilesDto,
+  toDreamFileDto
+} from './agents.js'
 
 describe('toWorkspaceFilesDto', () => {
   it('null-coalesces optional entry fields and the cursor', () => {
@@ -173,5 +182,121 @@ describe('toWorkspaceGitPullDto', () => {
       insertions: null,
       deletions: null
     })
+  })
+})
+
+describe('toDreamDto', () => {
+  it('null-coalesces optional job metadata fields', () => {
+    expect(
+      toDreamDto({
+        dreamId: 'drm-1',
+        agentId: 'a1',
+        status: 'pending',
+        trigger: 'manual',
+        sessionIds: ['s1', 's2'],
+        snapshotDigest: 'sha256:abc',
+        createdAt: '2026-07-24T00:00:00Z'
+        // instructions / skills / usage / error / endedAt absent
+      })
+    ).toEqual({
+      dreamId: 'drm-1',
+      agentId: 'a1',
+      status: 'pending',
+      trigger: 'manual',
+      sessionIds: ['s1', 's2'],
+      snapshotDigest: 'sha256:abc',
+      instructions: null,
+      skills: null,
+      usage: null,
+      error: null,
+      createdAt: '2026-07-24T00:00:00Z',
+      endedAt: null
+    })
+  })
+
+  it('passes populated metadata through', () => {
+    const dto = toDreamDto({
+      dreamId: 'drm-2',
+      agentId: 'a1',
+      status: 'completed',
+      trigger: 'schedule',
+      sessionIds: [],
+      snapshotDigest: 'sha256:def',
+      instructions: 'focus on prefs',
+      usage: { inputBytes: 100, outputBytes: 40 },
+      createdAt: '2026-07-24T00:00:00Z',
+      endedAt: '2026-07-24T00:05:00Z'
+    })
+    expect(dto).toMatchObject({
+      status: 'completed',
+      instructions: 'focus on prefs',
+      usage: { inputBytes: 100, outputBytes: 40 },
+      endedAt: '2026-07-24T00:05:00Z',
+      skills: null,
+      error: null
+    })
+  })
+})
+
+describe('toDreamListDto / toDreamFilesDto / toDreamFileDto', () => {
+  it('maps a dream list', () => {
+    const dto = toDreamListDto({
+      agentId: 'a1',
+      dreams: [
+        {
+          dreamId: 'drm-1',
+          agentId: 'a1',
+          status: 'adopted',
+          trigger: 'manual',
+          sessionIds: [],
+          snapshotDigest: 'sha256:x',
+          createdAt: '2026-07-24T00:00:00Z'
+        }
+      ]
+    })
+    expect(dto.dreams).toHaveLength(1)
+    expect(dto.dreams[0]).toMatchObject({ dreamId: 'drm-1', status: 'adopted', endedAt: null })
+  })
+
+  it('keeps a staged-files listing (exists:false is data)', () => {
+    expect(toDreamFilesDto({ agentId: 'a1', dreamId: 'd', exists: false, entries: [] })).toEqual({
+      exists: false,
+      files: []
+    })
+    expect(
+      toDreamFilesDto({
+        agentId: 'a1',
+        dreamId: 'd',
+        exists: true,
+        entries: [{ name: 'MEMORY.md', size: 12, mtime: '2026-07-24T00:00:00Z' }]
+      })
+    ).toEqual({ exists: true, files: [{ name: 'MEMORY.md', size: 12, mtime: '2026-07-24T00:00:00Z' }] })
+  })
+
+  it('null-coalesces a staged file slice; exists:false stays data', () => {
+    expect(toDreamFileDto({ agentId: 'a1', dreamId: 'd', path: 'prefs.md', exists: false })).toEqual({
+      path: 'prefs.md',
+      exists: false,
+      size: null,
+      mtime: null,
+      content: null,
+      offset: null,
+      nextOffset: null,
+      truncated: null
+    })
+    expect(
+      toDreamFileDto({
+        agentId: 'a1',
+        dreamId: 'd',
+        path: 'prefs.md',
+        exists: true,
+        size: 20,
+        mtime: '2026-07-24T00:00:00Z',
+        content: '- uses tabs',
+        offset: 0,
+        nextOffset: 11,
+        truncated: true
+      })
+    ).toMatchObject({ exists: true, content: '- uses tabs', nextOffset: 11, truncated: true })
   })
 })

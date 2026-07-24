@@ -1900,6 +1900,58 @@ export const UpdateMemoryRecordBody = z
   })
   .strict()
 export const DeleteMemoryRecordBody = z.object({ version: z.string().min(1).max(512).optional() }).strict()
+
+// ── memory dreaming (docs/designs/memory-dreaming.md §10) — job metadata + staged review ──
+/** One mined skill candidate's review state (D-3; present once skill mining ships). */
+export const DreamSkillDto = z.object({
+  name: z.string(),
+  description: z.string(),
+  state: z.enum(['proposed', 'accepted', 'dismissed'])
+})
+/** A dream job's metadata (never staged bodies). Mirrors protocol `DreamInfo`. */
+export const DreamDto = z.object({
+  dreamId: z.string(),
+  agentId: z.string(),
+  status: z.enum(['pending', 'running', 'completed', 'failed', 'canceled', 'adopted', 'discarded']),
+  trigger: z.enum(['manual', 'schedule', 'auto']),
+  sessionIds: z.array(z.string()),
+  snapshotDigest: z.string(),
+  instructions: z.string().nullable(),
+  skills: z.array(DreamSkillDto).nullable(),
+  usage: z.object({ inputBytes: z.number(), outputBytes: z.number() }).nullable(),
+  error: z.object({ type: z.string(), message: z.string() }).nullable(),
+  createdAt: z.string(), // RFC3339
+  endedAt: z.string().nullable() // RFC3339
+})
+/** `GET …/dreams` — the agent's dream jobs, newest first. */
+export const DreamListDto = z.object({ dreams: z.array(DreamDto) })
+/** Body for starting a dream: per-run overrides of the agent's dreaming policy. */
+export const StartDreamBody = z
+  .object({
+    sessionWindow: z.number().int().min(1).max(100).optional(),
+    instructions: z.string().max(4096).optional()
+  })
+  .strict()
+/** Body for adopting a dream: fenced by default; `force` overrides the snapshot fence. */
+export const AdoptDreamBody = z.object({ force: z.boolean().optional() }).strict()
+/** `GET …/dreams/:dreamId/files` — the staged output store's files (index + topics). */
+export const DreamFilesDto = z.object({
+  exists: z.boolean(), // false ⇒ nothing staged (yet)
+  files: z.array(MemoryFileEntryDto)
+})
+/** `GET …/dreams/:dreamId/file` — one byte slice of a staged file (memory/read semantics). */
+export const DreamFileDto = z.object({
+  path: z.string(),
+  exists: z.boolean(),
+  size: z.number().nullable(),
+  mtime: z.string().nullable(),
+  content: z.string().nullable(),
+  offset: z.number().nullable(),
+  nextOffset: z.number().nullable(),
+  truncated: z.boolean().nullable()
+})
+export const DreamIdParam = z.object({ id: z.string().uuid(), dreamId: z.string().min(1).max(128) })
+
 export const WorkspaceGitFileDto = z.object({
   path: z.string(),
   index: z.string(), // staged (X) status char
@@ -2015,6 +2067,10 @@ export type MemoryRecordResultDtoT = z.infer<typeof MemoryRecordResultDto>
 export type MemoryRecordGetResultDtoT = z.infer<typeof MemoryRecordGetResultDto>
 export type MemoryRecordDeleteResultDtoT = z.infer<typeof MemoryRecordDeleteResultDto>
 export type MemoryRecordHistoryPageDtoT = z.infer<typeof MemoryRecordHistoryPageDto>
+export type DreamDtoT = z.infer<typeof DreamDto>
+export type DreamListDtoT = z.infer<typeof DreamListDto>
+export type DreamFilesDtoT = z.infer<typeof DreamFilesDto>
+export type DreamFileDtoT = z.infer<typeof DreamFileDto>
 export type WorkspaceGitStatusDtoT = z.infer<typeof WorkspaceGitStatusDto>
 export type WorkspaceGitPullDtoT = z.infer<typeof WorkspaceGitPullDto>
 export type ErrorDtoT = z.infer<typeof ErrorDto>

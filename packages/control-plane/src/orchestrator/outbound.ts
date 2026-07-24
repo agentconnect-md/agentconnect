@@ -66,6 +66,18 @@ import type {
   MemoryRecordDeleteResult,
   MemoryRecordHistoryReq,
   MemoryRecordHistoryPage,
+  DreamStartReq,
+  DreamCancelReq,
+  DreamListReq,
+  DreamListPage,
+  DreamGetReq,
+  DreamAdoptReq,
+  DreamDiscardReq,
+  DreamFilesReq,
+  DreamFilesPage,
+  DreamFileReadReq,
+  DreamFileReadContent,
+  DreamState,
   RelayRosterEntry,
   CollabRoutesSnapshot,
   AgentPermissionRequestList,
@@ -454,6 +466,50 @@ export class ControlSender {
   async memoryRecordHistory(daemonId: string, req: MemoryRecordHistoryReq): Promise<MemoryRecordHistoryPage> {
     const c = this.must(daemonId)
     return c.conn.request<MemoryRecordHistoryPage>('memory/record/history', req, { epoch: c.sessionEpoch })
+  }
+
+  // ── memory dreaming (docs/designs/memory-dreaming.md §10) — the CP relays the
+  //    dream lifecycle + staged-output review, persisting only DreamInfo metadata.
+  //    Staged bodies ride byte-sliced correlated replies, exactly like memory/read.
+
+  async dreamStart(daemonId: string, req: DreamStartReq): Promise<DreamState> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamState>('memory/dream/start', req, { epoch: c.sessionEpoch })
+  }
+
+  async dreamCancel(daemonId: string, req: DreamCancelReq): Promise<DreamState> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamState>('memory/dream/cancel', req, { epoch: c.sessionEpoch })
+  }
+
+  async dreamList(daemonId: string, req: DreamListReq): Promise<DreamListPage> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamListPage>('memory/dream/list', req, { epoch: c.sessionEpoch })
+  }
+
+  async dreamGet(daemonId: string, req: DreamGetReq): Promise<DreamState> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamState>('memory/dream/get', req, { epoch: c.sessionEpoch })
+  }
+
+  async dreamAdopt(daemonId: string, req: DreamAdoptReq): Promise<DreamState> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamState>('memory/dream/adopt', req, { epoch: c.sessionEpoch })
+  }
+
+  async dreamDiscard(daemonId: string, req: DreamDiscardReq): Promise<DreamState> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamState>('memory/dream/discard', req, { epoch: c.sessionEpoch })
+  }
+
+  async dreamFiles(daemonId: string, req: DreamFilesReq): Promise<DreamFilesPage> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamFilesPage>('memory/dream/files', req, { epoch: c.sessionEpoch })
+  }
+
+  async dreamFileRead(daemonId: string, req: DreamFileReadReq): Promise<DreamFileReadContent> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamFileReadContent>('memory/dream/file/read', req, { epoch: c.sessionEpoch })
   }
 
   /**
