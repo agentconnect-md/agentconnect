@@ -625,6 +625,34 @@ describe('slack per-user config storage', () => {
     expect((res.json() as { message: string }).message).toMatch(/expired/i)
   })
 
+  it('POST /app DROPS a rejected access-only config (auth error) so the console re-prompts', async () => {
+    const { app, stub } = withFunnel()
+    stub.createResult = { ok: false, error: 'invalid_auth' } // Slack rejects the token at create
+    const agentId = await placedAgent()
+    await prisma.slackUserConfig.create({
+      data: {
+        orgId: DEFAULT_ORG_ID,
+        userId: DEFAULT_OWNER_ID,
+        accessToken: 'xoxe.xoxp-bad',
+        refreshToken: null, // access-only ⇒ no recovery
+        accessExpiresAt: new Date(Date.now() + 3600_000) // fresh window, but the token is bad
+      }
+    })
+    const res = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+    expect(res.statusCode).toBe(400)
+    expect(await prisma.slackUserConfig.count()).toBe(0) // dropped ⇒ next status re-prompts
+  })
+
+  it('POST /app KEEPS a durable config when Slack rejects app creation', async () => {
+    const { app, stub } = withFunnel()
+    stub.createResult = { ok: false, error: 'invalid_auth' }
+    const agentId = await placedAgent()
+    await seedUserConfig() // durable (has a refresh token)
+    const res = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+    expect(res.statusCode).toBe(400)
+    expect(await prisma.slackUserConfig.count()).toBe(1) // retained — its refresh was just validated
+  })
+
   it('PUT maps a rotate rejection to 400 and stores nothing', async () => {
     const { app, stub } = withFunnel()
     stub.rotateResult = { ok: false, error: 'invalid_refresh_token' }

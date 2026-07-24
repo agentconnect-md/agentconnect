@@ -17,7 +17,6 @@ import {
   getSlackInstall,
   fetchSlackConfig,
   saveSlackConfig,
-  deleteSlackConfig,
   fetchAgentHooks,
   fetchAgentRepos,
   fetchAllGithubRepos,
@@ -1123,12 +1122,19 @@ export default function AddIntegrationModal({
       window.open(started.installUrl, '_blank', 'noopener,noreferrer')
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
-      // The token we just stored was never validated (Slack rejected it, or the call
-      // failed). Drop it so this stays on the inline entry and a reopen re-prompts instead
-      // of trusting an unverified row until its 12h deadline. Fields are kept so the caller
-      // can correct the token and retry in place.
-      await deleteSlackConfig().catch(() => {})
-      setAutoUsable(false)
+      // The app wasn't created. Re-read status rather than blindly deleting: the CP drops
+      // only a rejected ACCESS-ONLY token server-side, so autoAvailable now reflects reality
+      // — a rejected access-only token flips false and stays on the inline entry (re-prompt,
+      // fields kept for correction), while a durable config or a transient failure stays
+      // usable so a retry works.
+      try {
+        const c = await fetchSlackConfig()
+        setAutoUsable(c.autoAvailable)
+        setRelayAvailable(c.relayAvailable)
+        setRelayPublicUrl(c.relayPublicUrl)
+      } catch {
+        setAutoUsable(false)
+      }
     } finally {
       setSaving(false)
       busyRef.current = false
@@ -1154,6 +1160,16 @@ export default function AddIntegrationModal({
       window.open(started.installUrl, '_blank', 'noopener,noreferrer')
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
+      // Re-read status: if the CP invalidated a rejected access-only token (incl. one saved
+      // from Profile), autoAvailable flips false and the modal falls back to the inline
+      // config-token entry so the caller can re-enter it; a durable config stays usable so
+      // "Create & install" can retry.
+      try {
+        const c = await fetchSlackConfig()
+        setAutoUsable(c.autoAvailable)
+      } catch {
+        /* keep current state */
+      }
     } finally {
       setSaving(false)
       busyRef.current = false

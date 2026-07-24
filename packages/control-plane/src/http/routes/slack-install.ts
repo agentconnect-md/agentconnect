@@ -52,6 +52,19 @@ export function relayHttpBase(publicRelayUrl: string | undefined): string | null
   return publicRelayUrl.replace(/^ws(s?):\/\//i, 'http$1://').replace(/\/$/, '')
 }
 
+/** Slack error strings from `apps.manifest.create` that mean the config token itself is
+ *  invalid/expired (as opposed to a transient error or a rate limit). An ACCESS-ONLY stored
+ *  token that hits one of these is dropped so the console re-prompts; other errors keep it. */
+const SLACK_CONFIG_AUTH_ERRORS = new Set([
+  'invalid_auth',
+  'not_authed',
+  'token_expired',
+  'token_revoked',
+  'account_inactive',
+  'no_permission',
+  'missing_scope'
+])
+
 export function slackInstallRoutes(deps: HttpDeps) {
   return async function slackInstallRoutesPlugin(app: FastifyInstance): Promise<void> {
     const api = deps.slackConfigApi
@@ -159,6 +172,17 @@ export function slackInstallRoutes(deps: HttpDeps) {
         if (!created.ok) {
           if (created.error === 'unreachable') {
             return reply.code(502).send({ error: 'Bad Gateway', statusCode: 502, message: 'could not reach Slack' })
+          }
+          // Slack rejected the config token as invalid/expired. An ACCESS-ONLY row (no
+          // refresh, so no recovery, and never validated before now) is dead — drop it so
+          // the console re-prompts on the next status. A DURABLE (refresh-backed) config is
+          // retained: its refresh was just validated by the rotate on resolve, so a create
+          // rejection isn't its fault; non-auth errors (rate limit, etc.) keep the row too.
+          if (SLACK_CONFIG_AUTH_ERRORS.has(created.error)) {
+            const stored = await deps.repos.slackUserConfig.get(orgId, req.principal.userId)
+            if (stored && !stored.refreshToken) {
+              await deps.repos.slackUserConfig.delete(orgId, req.principal.userId)
+            }
           }
           return reply.code(400).send({
             error: 'Bad Request',
