@@ -124,8 +124,18 @@ export interface ExternalMemoryRecallPolicy {
   timeoutMs: number
 }
 
+/** Offline consolidation policy for the managed store (docs/designs/memory-dreaming.md). */
+export interface MemoryDreamingConfig {
+  enabled: boolean
+  sessionWindow?: number // recent sessions to mine (1–100)
+  schedule?: string // cron expression for scheduled dreams
+  instructions?: string // operator steering text (≤4096 chars)
+  mineSkills?: boolean // also mine reusable procedures (D-3)
+  autoAdopt?: boolean // adopt automatically on completion (trusted runtimes only)
+}
+
 export type AgentMemoryConfig =
-  | { provider: 'managed'; autoDistill?: boolean }
+  | { provider: 'managed'; autoDistill?: boolean; dreaming?: MemoryDreamingConfig }
   | { provider: 'native' | 'none'; autoDistill?: boolean }
   | {
       provider: 'external'
@@ -1274,6 +1284,7 @@ export function agentFromDto(d: AgentDto): Agent {
     // Memory backend (unset ⇒ managed default).
     memoryProvider: d.memory?.provider ?? 'managed',
     memoryAutoDistill: d.memory?.provider === 'managed' ? (d.memory.autoDistill ?? false) : false,
+    ...(d.memory?.provider === 'managed' && d.memory.dreaming ? { memoryDreaming: d.memory.dreaming } : {}),
     ...(d.memory?.provider === 'external'
       ? {
           memoryConnectionId: d.memory.connectionId,
@@ -1755,6 +1766,95 @@ export async function updateAgentMemory(
     `${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/file${q}`,
     ifMatchMtime ? { content, ifMatchMtime } : { content }
   )
+}
+
+// ── memory dreaming (docs/designs/memory-dreaming.md §10) — offline consolidation jobs ──
+
+export type DreamStatus = 'pending' | 'running' | 'completed' | 'failed' | 'canceled' | 'adopted' | 'discarded'
+
+export interface DreamDto {
+  dreamId: string
+  agentId: string
+  status: DreamStatus
+  trigger: 'manual' | 'schedule' | 'auto'
+  sessionIds: string[]
+  snapshotDigest: string
+  instructions: string | null
+  skills: { name: string; description: string; state: 'proposed' | 'accepted' | 'dismissed' }[] | null
+  usage: { inputBytes: number; outputBytes: number } | null
+  error: { type: string; message: string } | null
+  createdAt: string
+  endedAt: string | null
+}
+
+export interface DreamFilesDto {
+  exists: boolean
+  files: MemoryFileEntry[]
+}
+
+/** A dream is terminal (won't change) once it reaches one of these states. */
+export function isDreamTerminal(status: DreamStatus): boolean {
+  return status !== 'pending' && status !== 'running'
+}
+
+const dreamBase = (agentId: string) => `${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/dreams`
+
+/** Start a manual dream (per-run overrides of the agent's dreaming policy). */
+export async function startDream(
+  agentId: string,
+  opts: { sessionWindow?: number; instructions?: string } = {}
+): Promise<DreamDto> {
+  return apiPost<DreamDto>(dreamBase(agentId), opts)
+}
+
+export async function listDreams(agentId: string, limit?: number): Promise<DreamDto[]> {
+  const q = limit ? `?limit=${limit}` : ''
+  return (await apiGet<{ dreams: DreamDto[] }>(`${dreamBase(agentId)}${q}`)).dreams
+}
+
+export async function getDream(agentId: string, dreamId: string): Promise<DreamDto> {
+  return apiGet<DreamDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}`)
+}
+
+export async function cancelDream(agentId: string, dreamId: string): Promise<DreamDto> {
+  return apiPost<DreamDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/cancel`, {})
+}
+
+/** Adopt a completed dream's staged store. `force` overrides the snapshot fence. */
+export async function adoptDream(agentId: string, dreamId: string, force = false): Promise<DreamDto> {
+  return apiPost<DreamDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/adopt`, force ? { force } : {})
+}
+
+export async function discardDream(agentId: string, dreamId: string): Promise<DreamDto> {
+  return apiPost<DreamDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/discard`, {})
+}
+
+/** List a dream's staged output files (the review surface). */
+export async function listDreamFiles(agentId: string, dreamId: string): Promise<DreamFilesDto> {
+  return apiGet<DreamFilesDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/files`)
+}
+
+/** Read a staged dream file WHOLE (pages every slice, like fetchAgentMemoryFull). */
+export async function fetchDreamFileFull(
+  agentId: string,
+  dreamId: string,
+  path: string
+): Promise<{ exists: boolean; content: string }> {
+  let offset = 0
+  let content = ''
+  let exists = false
+  for (let guard = 0; guard < 4096; guard++) {
+    const q = new URLSearchParams({ path, offset: String(offset) })
+    const slice = await apiGet<AgentMemoryDto>(
+      `${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/file?${q.toString()}`
+    )
+    exists = slice.exists
+    if (!slice.exists) break
+    content += slice.content ?? ''
+    if (!slice.truncated || slice.nextOffset == null || slice.nextOffset <= offset) break
+    offset = slice.nextOffset
+  }
+  return { exists, content }
 }
 
 export type MemoryRecordCapability = 'recall' | 'capture' | 'list' | 'get' | 'create' | 'update' | 'delete' | 'history'

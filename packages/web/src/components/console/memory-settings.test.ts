@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   MEMORY_PROVIDER_OPTIONS,
+  dreamingConfigForDraft,
   memoryBackendChanged,
   memoryConfigForDraft,
   memorySettingsBlocker,
@@ -84,5 +85,35 @@ describe('memory settings UX model', () => {
         memorySettingsDraft({ provider: 'external', autoDistill: false, connectionId: CONNECTION_A })
       )
     ).toMatchObject({ provider: 'external', connectionId: CONNECTION_A })
+  })
+
+  it('models managed dreaming as an optional binding', () => {
+    // Off by default: an untouched managed agent emits no `dreaming` binding.
+    const off = memorySettingsDraft({ provider: 'managed', autoDistill: false })
+    expect(off.dreaming).toEqual({ enabled: false, schedule: '', instructions: '' })
+    expect(memoryConfigForDraft(off)).toEqual({ provider: 'managed', autoDistill: false })
+    expect(dreamingConfigForDraft(off.dreaming)).toBeUndefined()
+
+    // Enabling (and edits to schedule/instructions) are tracked as unsaved changes.
+    const enabled = { ...off, dreaming: { enabled: true, schedule: '0 4 * * *', instructions: 'focus on prefs' } }
+    expect(memorySettingsChanged(off, enabled)).toBe(true)
+    expect(memoryConfigForDraft(enabled)).toEqual({
+      provider: 'managed',
+      autoDistill: false,
+      dreaming: { enabled: true, schedule: '0 4 * * *', instructions: 'focus on prefs' }
+    })
+
+    // Round-trips from the wire config, and trims blank schedule/instructions out.
+    const fromWire = memorySettingsDraft({
+      provider: 'managed',
+      autoDistill: true,
+      dreaming: { enabled: true }
+    })
+    expect(fromWire.dreaming).toEqual({ enabled: true, schedule: '', instructions: '' })
+    expect(memoryConfigForDraft(fromWire)).toEqual({
+      provider: 'managed',
+      autoDistill: true,
+      dreaming: { enabled: true }
+    })
   })
 })

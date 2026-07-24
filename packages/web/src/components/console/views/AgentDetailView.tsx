@@ -1570,6 +1570,7 @@ export default function AgentDetailView() {
           canEdit={!da.name.startsWith(MOCK_PREFIX)}
           memoryProvider={da.memoryProvider}
           autoDistill={da.memoryAutoDistill}
+          memoryDreaming={da.memoryDreaming}
           memoryConnectionId={da.memoryConnectionId}
           memoryRecall={da.memoryRecall}
           memoryCaptureMode={da.memoryCaptureMode}
