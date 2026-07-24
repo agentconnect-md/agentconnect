@@ -888,12 +888,13 @@ export interface SessionRepo {
   /** Visible-child lookup for the session detail page. Parent ids are opaque and
    *  deliberately not foreign-keyed, so this remains a metadata query. */
   listChildren(parentSessionId: SessionId, agentIds: AgentId[]): Promise<SessionMetaRecord[]>
-  /** Resolve the agent that owns a `(channel, thread)` — the most-recently-active, still-open
-   *  session keyed there that has a routable daemon. Backstop for shared-bot thread-affinity
-   *  lookup: a daemon-created session (e.g. an agent's own channel-root post, session-concept
-   *  §7.2 case 2a) never goes through the relay's mention/switch REPORT leg, so no `thread-assign`
-   *  seeds the affinity store — this lets `lookupThread` still find the owner. Null when none. */
-  findThreadOwner(channel: string, thread: string): Promise<{ agentId: string; daemonId: string } | null>
+  /** Resolve the agent that owns a bot's `(channel, thread)` — the most-recently-active session
+   *  keyed there whose agent still has an active integration for that bot and a current daemon
+   *  placement. Backstop for shared-bot thread-affinity lookup: a daemon-created session (e.g.
+   *  an agent's own channel-root post, session-concept §7.2 case 2a) never goes through the
+   *  relay's mention/switch REPORT leg, so no `thread-assign` seeds the affinity store — this
+   *  lets `lookupThread` still find the owner. Null when none. */
+  findThreadOwner(botId: BotId, channel: string, thread: string): Promise<{ agentId: string; daemonId: string } | null>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

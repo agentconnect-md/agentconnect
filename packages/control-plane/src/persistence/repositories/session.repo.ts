@@ -24,7 +24,7 @@ import type {
   SessionPhase,
   ActivityState
 } from '../ports.js'
-import { AgentId, DaemonId, LaunchId, SessionId } from '../../domain/ids.js'
+import { AgentId, BotId, DaemonId, LaunchId, SessionId } from '../../domain/ids.js'
 
 function toRecord(s: SessionMeta): SessionMetaRecord {
   return {
@@ -458,19 +458,31 @@ export class PgSessionRepo implements SessionRepo {
     return rows.map(toRecord)
   }
 
-  async findThreadOwner(channel: string, thread: string): Promise<{ agentId: string; daemonId: string } | null> {
-    // Most-recently-active session on this (channel, thread) that has a routable daemon
-    // (`daemonId` is stamped by the CP from the authenticated WS conn — trusted).
+  async findThreadOwner(
+    botId: BotId,
+    channel: string,
+    thread: string
+  ): Promise<{ agentId: string; daemonId: string } | null> {
+    // Most-recently-active session on this bot's (channel, thread) whose agent is currently
+    // placed. The session's daemonId is provenance; routing follows current agent placement.
     // NOTE: do NOT filter on `endedAt` — a session emits `phase:'end'` (→ `endedAt`) at the end
     // of EVERY turn, so an idle-between-turns session (the normal state of a thread's owner
     // between messages) has `endedAt` set yet is still the valid target; the daemon resumes it on
     // delivery. Filtering `endedAt: null` here made the affinity fallback miss essentially every
     // real thread (incl. a case-2a spawned session after its one headless turn).
     const row = await this.db.sessionMeta.findFirst({
-      where: { channel, thread, daemonId: { not: null } },
+      where: {
+        channel,
+        thread,
+        daemonId: { not: null },
+        agent: {
+          daemonId: { not: null },
+          integrations: { some: { botId, status: 'active' } }
+        }
+      },
       orderBy: [{ lastActivityAt: 'desc' }, { startedAt: 'desc' }],
-      select: { agentId: true, daemonId: true }
+      select: { agentId: true, agent: { select: { daemonId: true } } }
     })
-    return row && row.daemonId ? { agentId: row.agentId, daemonId: row.daemonId } : null
+    return row?.agent.daemonId ? { agentId: row.agentId, daemonId: row.agent.daemonId } : null
   }
 }
