@@ -56,6 +56,7 @@ import { MemoryPanel } from '@/components/console/MemoryPanel'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { VisibilityValue } from '@/components/console/VisibilityField'
 import { AgentIconView, AgentMark, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
+import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { NotFound } from '@/components/console/NotFound'
 import { Button, Icon } from '@/components/ui'
@@ -350,6 +351,12 @@ export default function AgentDetailView() {
       ? rawTab
       : 'config'
 
+  // Effective agent-call reachability over the whole roster: an A→B edge exists
+  // only when A's outbound AND B's inbound both permit it. The read-only Access
+  // summary shows these intersected sets (not this agent's one-sided policy), so
+  // it never lists a peer as callable when the peer's own policy blocks the edge.
+  const agentReach = useMemo(() => buildAgentReachabilityGraph(agents), [agents])
+
   const da = getAgent(id)
   // Unknown id (a stale deep link, or a demo agent that's hidden outside mock mode) —
   // show a not-found notice rather than crash on the `da.*` reads below. While the
@@ -398,6 +405,9 @@ export default function AgentDetailView() {
   const agentInts = integrations.filter((i) => i.agentId === da.id)
   // Peer agents for the read-only Access card's agent-call summary (self excluded).
   const agentPeers = agents.filter((peer) => peer.id !== da.id)
+  // Effective (intersection) peer sets for the read-only Access summary.
+  const inboundEffectiveIds = agentReach.incomingByAgentId.get(da.id) ?? []
+  const outboundEffectiveIds = agentReach.outgoingByAgentId.get(da.id) ?? []
   // Webhook triggers share the Integrations card (the Add modal offers both);
   // `agentHooks` is fetched per-agent above.
   const hasInt = agentInts.length > 0 || agentHooks.length > 0
@@ -991,13 +1001,13 @@ export default function AgentDetailView() {
                   <AgentVisibilitySummary
                     direction="inbound"
                     mode={da.callPolicy}
-                    selectedIds={da.allowedCallerAgentIds}
+                    effectiveIds={inboundEffectiveIds}
                     peers={agentPeers}
                   />
                   <AgentVisibilitySummary
                     direction="outbound"
                     mode={da.outboundPolicy}
-                    selectedIds={da.allowedTargetAgentIds}
+                    effectiveIds={outboundEffectiveIds}
                     peers={agentPeers}
                   />
                 </div>
@@ -1838,22 +1848,24 @@ export default function AgentDetailView() {
 }
 
 // Read-only per-direction agent-call summary for the Access card (design): the
-// direction eyebrow + "All agents" / "Selected agents" state + an overlapping
-// avatar stack of the relevant peers. Editing happens in the Edit-agent modal's
-// Access section, so this never mutates.
+// direction eyebrow + this agent's configured "All agents" / "Selected agents"
+// state + an overlapping avatar stack of the peers that EFFECTIVELY have the
+// edge. The stack is the reachability intersection (both directions' policies
+// agree), NOT this agent's one-sided policy — so it never lists a peer as
+// callable when the peer's own policy blocks the edge. Editing happens in the
+// Edit-agent modal's Access section, so this never mutates.
 function AgentVisibilitySummary({
   direction,
   mode,
-  selectedIds,
+  effectiveIds,
   peers
 }: {
   direction: 'inbound' | 'outbound'
   mode: AgentCallPolicy
-  selectedIds: string[]
+  effectiveIds: string[]
   peers: Agent[]
 }) {
-  const selectedPeers = selectedIds.flatMap((id) => peers.find((p) => p.id === id) ?? [])
-  const stack = mode === 'all' ? peers : selectedPeers
+  const stack = effectiveIds.flatMap((id) => peers.find((p) => p.id === id) ?? [])
   const shown = stack.slice(0, 4)
   const extra = stack.length - shown.length
   return (
@@ -1896,7 +1908,11 @@ function AgentVisibilitySummary({
         </div>
       ) : (
         <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-          {mode === 'all' ? 'No other agents' : 'None selected'}
+          {peers.length === 0
+            ? 'No other agents'
+            : direction === 'inbound'
+              ? 'No agents can call it'
+              : 'Can’t call any agent'}
         </span>
       )}
     </div>
