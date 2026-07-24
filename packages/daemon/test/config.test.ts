@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../src/config/load-config.js'
@@ -25,6 +25,16 @@ describe('loadConfig', () => {
     expect(cfg.security.isolateAccountApps).toBe(true)
     expect(cfg.limits.maxAgents).toBeGreaterThan(0) // default applied
     expect(cfg.agentsDir).toContain('agents')
+  })
+
+  it.skipIf(process.platform === 'win32')('repairs an existing config file to owner-only permissions', () => {
+    const root = tmpRoot({ version: 1 })
+    const file = join(root, 'config.json')
+    chmodSync(file, 0o644)
+
+    loadConfig({ root })
+
+    expect(statSync(file).mode & 0o777).toBe(0o600)
   })
 
   it('rejects an invalid config (bad version)', () => {
@@ -53,6 +63,7 @@ describe('loadConfig', () => {
     const cfg = loadConfig({ root, autoCreate: true })
     expect(existsSync(file)).toBe(true) // file was generated
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ version: 1 })
+    if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600)
     expect(cfg.controlPlane?.enabled).toBe(false) // fully local, no CP
     expect(cfg.limits.maxAgents).toBeGreaterThan(0) // defaults applied
   })

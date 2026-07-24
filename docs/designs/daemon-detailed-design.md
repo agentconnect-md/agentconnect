@@ -292,6 +292,11 @@ The layout keeps machine configuration, per-agent desired state, durable runtime
 }
 ```
 
+On POSIX hosts, AgentConnect removes group/other access from existing
+`config.json` and `agent.json` files; newly created or rewritten files use mode
+`0600`. Agent directories created by the daemon use `0700`; existing custom
+agent directories and higher custom parents are left unchanged.
+
 #### 3.3.1 Default Runtimes Come from the ACP Registry
 
 `config.json.runtimes` is **optional**. At daemon/`chat` startup, `resolveRuntimes` merges registry defaults with configuration overrides by name, with config taking priority. An `agent.json` containing only `"runtime": "claude-acp"` therefore works without runtime setup.
