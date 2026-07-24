@@ -8,7 +8,8 @@ import {
   MAX_HISTORY_VALUE_BYTES,
   listMemory,
   memoryDir,
-  readMemoryFile
+  readMemoryFile,
+  withMemoryDirLock
 } from './memory.js'
 import {
   MEMORY_DREAM_SYSTEM_PROMPT,
@@ -79,6 +80,9 @@ export interface DreamRunnerDeps {
   extract(agentId: string, systemPrompt: string, prompt: string): Promise<string>
   log: { info(msg: string): void; warn(msg: string): void }
   now?(): Date
+  /** Test seam: invoked immediately after staging finishes, before the
+   *  cancel-wins recheck. Production leaves it unset. */
+  onStaged?(agentId: string, dreamId: string): void | Promise<void>
 }
 
 const DEFAULT_SESSION_WINDOW = 20
@@ -253,6 +257,14 @@ export class DreamRunner {
       }
 
       await this.stage(base, proposal)
+      await this.deps.onStaged?.(agentId, dreamId)
+
+      // stage() is several awaited writes; a cancel can land while it runs.
+      // Cancel-wins: honor it, drop the partial output, don't flip to completed.
+      if (this.deps.store.getDream(agentId, dreamId)?.status !== 'running') {
+        await fsp.rm(join(base, 'output'), { recursive: true, force: true }).catch(() => {})
+        return
+      }
       this.finish(agentId, dreamId, {
         status: 'completed',
         usage: { inputBytes: Buffer.byteLength(prompt), outputBytes: Buffer.byteLength(output) }
@@ -333,10 +345,14 @@ export class DreamRunner {
    * failure rolls the previous store back. Fenced against post-snapshot writes
    * unless `force`.
    *
-   * Note (design §8): full serialization against live console/tool/distillation
-   * writes lands in D-2 (the distillation-rebase rule). Here the fence still
-   * detects any interleaving write and refuses (or the caller forces), and the
-   * swap window is a single rename rather than a multi-write span.
+   * The non-force fence is authoritative *under the shared memory-dir lock*: the
+   * replacement is built first (no touch to `memory/`), then the digest is
+   * re-validated and the swap committed while `withMemoryDirLock` excludes every
+   * `writeMemoryFile` caller (console, tool, distillation). So a live write can
+   * never land between the fence and the swap — a non-forced adoption cannot
+   * silently lose a post-snapshot write. (§8's distillation-rebase — adopting
+   * *over* additive distill writes instead of refusing — is still D-2; here such
+   * a write simply makes the fence refuse.)
    */
   async adopt(agentId: string, dreamId: string, force: boolean): Promise<DreamInfo> {
     const dir = this.dirFor(agentId)
@@ -344,13 +360,6 @@ export class DreamRunner {
       const dream = this.getDream(agentId, dreamId)
       if (dream.status !== 'completed') throw new DreamStateError(`cannot adopt a ${dream.status} dream`)
       if (this.active.has(agentId)) throw new DreamStateError('a dream is in flight for this agent; wait or cancel it')
-
-      if (!force) {
-        const liveDigest = storeDigest(await this.readLiveStore(dir))
-        if (liveDigest !== dream.snapshotDigest) {
-          throw new DreamStateError('the live store changed since this dream was snapshotted; rerun the dream or force')
-        }
-      }
 
       const out = join(this.dreamDir(agentId, dreamId), 'output')
       const staged = (await fsp.readdir(out, { withFileTypes: true }))
@@ -362,7 +371,8 @@ export class DreamRunner {
       const at = this.nowIso()
 
       // 1) Build the complete replacement in a temp sibling dir. `memory/` is
-      //    untouched until step 2, so any failure here leaves the live store intact.
+      //    untouched, so this needs no lock and any failure here leaves the live
+      //    store intact.
       const replacement = join(dir, `.memory.adopting-${dreamId}`)
       await fsp.rm(replacement, { recursive: true, force: true })
       await fsp.mkdir(replacement, { recursive: true })
@@ -387,41 +397,58 @@ export class DreamRunner {
       }
       await fsp.writeFile(join(replacement, MEMORY_HISTORY_FILENAME), history, 'utf8')
 
-      // 2) Swap. Move the live store aside, move the replacement in. The window
-      //    where `memory/` is absent is a single rename; roll back on failure.
-      const backupsRoot = join(dir, BACKUPS_DIRNAME)
-      await fsp.mkdir(backupsRoot, { recursive: true })
-      const backup = join(backupsRoot, `${at.replace(/[:.]/g, '-')}-pre-${dreamId}`)
-      let hadLiveStore = true
+      // 2) Fence + swap under the shared memory-dir lock, so no writeMemoryFile
+      //    caller can interleave between the digest re-check and the rename.
       try {
-        await fsp.rename(live, backup)
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
-        hadLiveStore = false // brand-new store: nothing to back up
-      }
-      try {
-        await fsp.rename(replacement, live)
-      } catch (err) {
-        // Roll back to the previous store and drop the temp; the dream stays
-        // `completed` and reviewable.
-        if (hadLiveStore) await fsp.rename(backup, live).catch(() => {})
-        await fsp.rm(replacement, { recursive: true, force: true }).catch(() => {})
-        throw err
-      }
-
-      // 3) The backup is the undo path for THIS adoption; older ones are superseded.
-      if (hadLiveStore) {
-        for (const entry of await fsp.readdir(backupsRoot)) {
-          if (join(backupsRoot, entry) !== backup) {
-            await fsp.rm(join(backupsRoot, entry), { recursive: true, force: true })
+        return await withMemoryDirLock(dir, async () => {
+          if (!force) {
+            const liveDigest = storeDigest(await this.readLiveStore(dir))
+            if (liveDigest !== dream.snapshotDigest) {
+              throw new DreamStateError(
+                'the live store changed since this dream was snapshotted; rerun the dream or force'
+              )
+            }
           }
-        }
-      }
 
-      const adopted: DreamInfo = { ...this.getDream(agentId, dreamId), status: 'adopted', endedAt: this.nowIso() }
-      this.deps.store.updateDream(adopted)
-      this.deps.log.info(`dream ${dreamId} adopted for agent ${agentId} (${staged.length} files)`)
-      return adopted
+          const backupsRoot = join(dir, BACKUPS_DIRNAME)
+          await fsp.mkdir(backupsRoot, { recursive: true })
+          const backup = join(backupsRoot, `${at.replace(/[:.]/g, '-')}-pre-${dreamId}`)
+          let hadLiveStore = true
+          try {
+            await fsp.rename(live, backup)
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+            hadLiveStore = false // brand-new store: nothing to back up
+          }
+          try {
+            await fsp.rename(replacement, live)
+          } catch (err) {
+            // Roll back to the previous store and drop the temp; the dream stays
+            // `completed` and reviewable.
+            if (hadLiveStore) await fsp.rename(backup, live).catch(() => {})
+            await fsp.rm(replacement, { recursive: true, force: true }).catch(() => {})
+            throw err
+          }
+
+          // The backup is the undo path for THIS adoption; older ones superseded.
+          if (hadLiveStore) {
+            for (const entry of await fsp.readdir(backupsRoot)) {
+              if (join(backupsRoot, entry) !== backup) {
+                await fsp.rm(join(backupsRoot, entry), { recursive: true, force: true })
+              }
+            }
+          }
+
+          const adopted: DreamInfo = { ...this.getDream(agentId, dreamId), status: 'adopted', endedAt: this.nowIso() }
+          this.deps.store.updateDream(adopted)
+          this.deps.log.info(`dream ${dreamId} adopted for agent ${agentId} (${staged.length} files)`)
+          return adopted
+        })
+      } finally {
+        // If the fence refused (or a failure escaped the swap), never leave the
+        // temp replacement lying around.
+        await fsp.rm(replacement, { recursive: true, force: true }).catch(() => {})
+      }
     })
   }
 

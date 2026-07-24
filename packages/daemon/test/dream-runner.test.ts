@@ -163,6 +163,31 @@ describe('DreamRunner pipeline', () => {
     expect(done.error?.type).toBe('unparseable_proposal')
   })
 
+  it('cancel-wins when it lands during staging: no completed status, staging removed', async () => {
+    // onStaged fires right after the staging writes, standing in for a cancel
+    // that lands mid-staging. The post-stage recheck must honor it.
+    let runner!: DreamRunner
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    ensureMemory(dir, 'bot')
+    await writeMemoryFile(dir, 'prefs.md', '- seed\n', undefined, 'tool')
+    const store = new FakeStore()
+    let started: { dreamId: string } | undefined
+    runner = new DreamRunner({
+      agentDirByAgent: () => dir,
+      dreamingPolicyFor: () => ({ enabled: true }),
+      store,
+      extract: async () => PROPOSAL,
+      onStaged: (agentId, dreamId) => {
+        runner.cancel(agentId, dreamId) // cancel after staging, before completion
+      },
+      log: silent
+    })
+    started = await runner.start('a1', { trigger: 'manual' })
+    const done = await settle(store, started.dreamId)
+    expect(done.status).toBe('canceled') // NOT overwritten to completed
+    expect(await runner.stagedFiles('a1', started.dreamId)).toBeNull() // partial output dropped
+  })
+
   it('cancel during extraction wins: the late output is never staged', async () => {
     let release!: (v: string) => void
     const gate = new Promise<string>((r) => (release = r))
@@ -198,6 +223,22 @@ describe('DreamRunner adoption', () => {
     const history = await readFile(join(memoryDir(dir), MEMORY_HISTORY_FILENAME), 'utf8')
     expect(history).toContain('"source":"dream"')
     expect(history).toContain('"source":"tool"') // pre-adoption rows preserved
+  })
+
+  it('never loses a write racing adoption (shared memory-dir lock)', async () => {
+    const { dir, store, runner } = await setup({})
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+
+    // Fire a live write and a non-forced adopt concurrently. They share
+    // withMemoryDirLock, so whichever wins, the write survives: either it lands
+    // first and the fence refuses, or adopt swaps first and the write applies to
+    // the new store. The marker must be present in the final live store.
+    await Promise.allSettled([
+      runner.adopt('a1', started.dreamId, false),
+      writeMemoryFile(dir, 'marker.md', '- concurrent write\n', undefined, 'console')
+    ])
+    expect(await readMemoryFile(dir, 'marker.md')).toContain('concurrent write')
   })
 
   it('fences adoption against post-snapshot writes unless forced', async () => {

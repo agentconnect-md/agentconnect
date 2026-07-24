@@ -88,6 +88,30 @@ export function memoryDir(agentDir: string): string {
   return join(agentDir, MEMORY_DIRNAME)
 }
 
+/**
+ * Per-memory-directory serial mutex shared by ALL managed-store writers
+ * (`writeMemoryFile` below, and dream adoption via `DreamRunner`). This is the
+ * shared exclusion the dream adoption fence relies on: a console/tool/distill
+ * write cannot land between adoption's final digest re-check and its swap, so a
+ * non-forced adoption can never silently overwrite a post-fence write. Keyed by
+ * the resolved memory dir; a rejected critical section never wedges the chain.
+ */
+const memoryDirLocks = new Map<string, Promise<unknown>>()
+
+export function withMemoryDirLock<T>(agentDir: string, fn: () => Promise<T>): Promise<T> {
+  const key = memoryDir(agentDir)
+  const prev = memoryDirLocks.get(key) ?? Promise.resolve()
+  const result = prev.then(fn, fn)
+  memoryDirLocks.set(
+    key,
+    result.then(
+      () => {},
+      () => {}
+    )
+  )
+  return result
+}
+
 /** Resolve a memory-dir-relative path to an absolute one, contained to the dir.
  *  Rejects absolute paths, `..` escapes, and any nested directory (flat only). */
 export function resolveInMemoryDir(agentDir: string, relPath: string): string {
@@ -167,12 +191,24 @@ export async function appendHistory(agentDir: string, record: MemoryHistoryRecor
  *    must equal it, else {@link MemoryConflictError} — so a console edit can't
  *    clobber a newer write. A brand-new file (no mtime) matches `ifMatchMtime`
  *    only when the caller passes none (or the empty string). */
-export async function writeMemoryFile(
+export function writeMemoryFile(
   agentDir: string,
   relPath: string,
   content: string,
   ifMatchMtime?: string,
   source: MemoryWriteSource = 'tool'
+): Promise<{ size: number; mtime: string }> {
+  // Serialize every write behind the shared per-dir lock so it can't interleave
+  // with a dream adoption's fence-and-swap (nor another write).
+  return withMemoryDirLock(agentDir, () => writeMemoryFileImpl(agentDir, relPath, content, ifMatchMtime, source))
+}
+
+async function writeMemoryFileImpl(
+  agentDir: string,
+  relPath: string,
+  content: string,
+  ifMatchMtime: string | undefined,
+  source: MemoryWriteSource
 ): Promise<{ size: number; mtime: string }> {
   if (Buffer.byteLength(content) > MAX_MEMORY_FILE_BYTES) {
     throw new MemoryTooLargeError(`memory file exceeds the ${MAX_MEMORY_FILE_BYTES}-byte limit`)
