@@ -54,4 +54,12 @@ export class PgSlackUserConfigStore implements SlackUserConfigStore {
   async delete(orgId: OrgId, userId: string): Promise<void> {
     await this.prisma.slackUserConfig.deleteMany({ where: { orgId, userId } })
   }
+
+  async deleteIfUnchanged(orgId: OrgId, userId: string, updatedAt: Date): Promise<number> {
+    // `updatedAt` is the optimistic-concurrency version: a concurrent upsert bumps it
+    // (@updatedAt), so scoping the delete to the attempted value drops the row iff nothing
+    // replaced it in the meantime. One atomic statement — no read-then-delete race.
+    const res = await this.prisma.slackUserConfig.deleteMany({ where: { orgId, userId, updatedAt } })
+    return res.count
+  }
 }

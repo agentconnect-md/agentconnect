@@ -78,12 +78,18 @@ class StubConfigApi implements SlackConfigApi {
       accessExpiresAt: new Date(Date.now() + 12 * 3600_000)
     }
   }
+  // When non-empty, createApp shifts one result per call (models create → rotate → retry).
+  createResultQueue: SlackAppCreateResult[] = []
+  // Runs at the START of createApp — lets a test mutate the stored row mid-request to
+  // exercise the concurrent-replacement race.
+  onCreateApp?: () => Promise<void>
   createCalls: Array<{ configToken: string; manifest: unknown }> = []
   exchangeCalls: Array<{ clientId: string; clientSecret: string; code: string; redirectUri: string }> = []
   rotateCalls: string[] = []
   async createApp(configToken: string, manifest: unknown): Promise<SlackAppCreateResult> {
     this.createCalls.push({ configToken, manifest })
-    return this.createResult
+    if (this.onCreateApp) await this.onCreateApp()
+    return this.createResultQueue.length ? this.createResultQueue.shift()! : this.createResult
   }
   async exportApp(): Promise<SlackManifestExportResult> {
     return { ok: false, error: 'unused' }
@@ -259,16 +265,22 @@ describe('slack auto-install funnel', () => {
 
   it('POST /app maps a Slack rejection to 400 and an unreachable to 502', async () => {
     const agentId = await placedAgent()
-    await seedUserConfig()
     const { app, stub } = withFunnel()
+
+    await seedUserConfig()
+    // Auth rejection on both the create and the durable retry ⇒ 400 (and the config, proven
+    // unrecoverable, is invalidated — so the next case re-seeds).
     stub.createResult = { ok: false, error: 'token_expired' }
     const bad = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
     expect(bad.statusCode).toBe(400)
 
+    await seedUserConfig()
+    // unreachable is transient (not an auth error) ⇒ 502, and the config is kept.
     stub.createResult = { ok: false, error: 'unreachable' }
     const down = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
     expect(down.statusCode).toBe(502)
     expect(await prisma.slackInstall.count()).toBe(0)
+    expect(await prisma.slackUserConfig.count()).toBe(1) // transient failure keeps the config
   })
 
   it('the OAuth callback exchanges the code and stashes the bot token (never in a response)', async () => {
@@ -643,14 +655,65 @@ describe('slack per-user config storage', () => {
     expect(await prisma.slackUserConfig.count()).toBe(0) // dropped ⇒ next status re-prompts
   })
 
-  it('POST /app KEEPS a durable config when Slack rejects app creation', async () => {
+  it('POST /app RECOVERS a durable config on auth rejection by rotating a fresh token and retrying', async () => {
+    const { app, stub } = withFunnel()
+    // resolve() returns the fresh (unexpired) access token WITHOUT re-validating it, so the
+    // first create is rejected. A durable config force-rotates and retries — that succeeds
+    // (the 2nd create falls back to the default ok result once the queue drains).
+    stub.createResultQueue = [{ ok: false, error: 'invalid_auth' }]
+    const agentId = await placedAgent()
+    await seedUserConfig() // durable + fresh
+    const res = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+    expect(res.statusCode).toBe(201) // recovered — no re-prompt
+    expect(stub.rotateCalls).toEqual(['xoxe-stored']) // forced a rotation despite the fresh window
+    expect(stub.createCalls.map((c) => c.configToken)).toEqual(['xoxe.xoxp-stored', 'xoxe.xoxp-rotated'])
+    const cfg = await prisma.slackUserConfig.findUnique({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } }
+    })
+    expect(cfg).toMatchObject({ accessToken: 'xoxe.xoxp-rotated', refreshToken: 'xoxe-rotated' }) // fresh pair kept
+  })
+
+  it('POST /app INVALIDATES a durable config when even a rotated token is rejected', async () => {
+    const { app, stub } = withFunnel()
+    stub.createResultQueue = [
+      { ok: false, error: 'invalid_auth' }, // stored token rejected
+      { ok: false, error: 'invalid_auth' } // rotated token also rejected ⇒ unrecoverable
+    ]
+    const agentId = await placedAgent()
+    await seedUserConfig() // durable + fresh
+    const res = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+    expect(res.statusCode).toBe(400)
+    expect(stub.rotateCalls).toEqual(['xoxe-stored']) // attempted recovery before giving up
+    expect(await prisma.slackUserConfig.count()).toBe(0) // dropped ⇒ next status re-prompts
+  })
+
+  it('POST /app does NOT erase a config replaced concurrently while create was in flight', async () => {
     const { app, stub } = withFunnel()
     stub.createResult = { ok: false, error: 'invalid_auth' }
     const agentId = await placedAgent()
-    await seedUserConfig() // durable (has a refresh token)
+    await prisma.slackUserConfig.create({
+      data: {
+        orgId: DEFAULT_ORG_ID,
+        userId: DEFAULT_OWNER_ID,
+        accessToken: 'xoxe.xoxp-attempted',
+        refreshToken: null,
+        accessExpiresAt: new Date(Date.now() + 3600_000)
+      }
+    })
+    // Another tab saves a fresh access-only token while apps.manifest.create is mid-flight;
+    // this bumps updatedAt, so the version-scoped invalidation must NOT delete the newcomer.
+    stub.onCreateApp = async () => {
+      await prisma.slackUserConfig.update({
+        where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } },
+        data: { accessToken: 'xoxe.xoxp-replacement', accessExpiresAt: new Date(Date.now() + 3600_000) }
+      })
+    }
     const res = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
-    expect(res.statusCode).toBe(400)
-    expect(await prisma.slackUserConfig.count()).toBe(1) // retained — its refresh was just validated
+    expect(res.statusCode).toBe(400) // the token we attempted was still rejected
+    const cfg = await prisma.slackUserConfig.findUnique({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } }
+    })
+    expect(cfg?.accessToken).toBe('xoxe.xoxp-replacement') // preserved — a different version than we attempted
   })
 
   it('PUT maps a rotate rejection to 400 and stores nothing', async () => {
