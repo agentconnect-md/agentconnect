@@ -4,7 +4,7 @@
  * `route/*`, `agent/*`, `event/session`). Scoped to the caller's org (the
  * devAuth/OIDC principal). Placement/launch happen over the WS edge — not here.
  */
-import type { FastifyInstance, FastifyRequest } from 'fastify'
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type {
@@ -21,7 +21,11 @@ import type {
   MemoryRecordCreateResult,
   MemoryRecordUpdateResult,
   MemoryRecordDeleteResult,
-  MemoryRecordHistoryPage
+  MemoryRecordHistoryPage,
+  DreamInfo,
+  DreamListPage,
+  DreamFilesPage,
+  DreamFileReadContent
 } from '@agentconnect.md/protocol'
 import { gitRepoLabel, normalizeGitUrl } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
@@ -77,6 +81,13 @@ import {
   CreateMemoryRecordBody,
   UpdateMemoryRecordBody,
   DeleteMemoryRecordBody,
+  DreamDto,
+  DreamListDto,
+  DreamFilesDto,
+  DreamFileDto,
+  DreamIdParam,
+  StartDreamBody,
+  AdoptDreamBody,
   type AgentDtoT,
   type WorkspaceFilesDtoT,
   type WorkspaceFileDtoT,
@@ -89,7 +100,11 @@ import {
   type MemoryRecordResultDtoT,
   type MemoryRecordGetResultDtoT,
   type MemoryRecordDeleteResultDtoT,
-  type MemoryRecordHistoryPageDtoT
+  type MemoryRecordHistoryPageDtoT,
+  type DreamDtoT,
+  type DreamListDtoT,
+  type DreamFilesDtoT,
+  type DreamFileDtoT
 } from '../dto/index.js'
 import { provisionDaemonConnect } from '../onboarding.js'
 import { Tag } from '../plugins/openapi.js'
@@ -244,6 +259,45 @@ export function toAgentMemoryDto(rep: MemoryReadContent): AgentMemoryDtoT {
 /** Wire REP → HTTP body for a memory-dir listing. */
 export function toMemoryFilesDto(rep: MemoryListPage): MemoryFilesDtoT {
   return { exists: rep.exists, files: rep.entries }
+}
+
+/** Wire REP → HTTP body for one dream job's metadata (never staged bodies). */
+export function toDreamDto(dream: DreamInfo): DreamDtoT {
+  return {
+    dreamId: dream.dreamId,
+    agentId: dream.agentId,
+    status: dream.status,
+    trigger: dream.trigger,
+    sessionIds: dream.sessionIds,
+    snapshotDigest: dream.snapshotDigest,
+    instructions: dream.instructions ?? null,
+    skills: dream.skills ?? null,
+    usage: dream.usage ?? null,
+    error: dream.error ?? null,
+    createdAt: dream.createdAt,
+    endedAt: dream.endedAt ?? null
+  }
+}
+
+export function toDreamListDto(rep: DreamListPage): DreamListDtoT {
+  return { dreams: rep.dreams.map(toDreamDto) }
+}
+
+export function toDreamFilesDto(rep: DreamFilesPage): DreamFilesDtoT {
+  return { exists: rep.exists, files: rep.entries }
+}
+
+export function toDreamFileDto(rep: DreamFileReadContent): DreamFileDtoT {
+  return {
+    path: rep.path,
+    exists: rep.exists,
+    size: rep.size ?? null,
+    mtime: rep.mtime ?? null,
+    content: rep.content ?? null,
+    offset: rep.offset ?? null,
+    nextOffset: rep.nextOffset ?? null,
+    truncated: rep.truncated ?? null
+  }
 }
 
 export function toMemorySurfaceDto(rep: MemorySurfaceInfo): MemorySurfaceDtoT {
@@ -2396,6 +2450,302 @@ export function agentRoutes(deps: HttpDeps) {
             return reply
               .code(failure.status)
               .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+          throw err
+        }
+      }
+    )
+
+    // ── Memory dreaming (docs/designs/memory-dreaming.md §10) ──────────────────
+    // Offline consolidation jobs over the managed store. The CP is a pure relay
+    // here: lifecycle + staged-output review are forwarded to the owning daemon
+    // and nothing (metadata or bodies) is persisted CP-side — list/get require a
+    // live daemon (offline metadata caching is deferred, design §8/§10).
+    // Managed-provider only; a non-managed agent is a 400. Lifecycle mutations
+    // require edit rights (viewers get 403).
+
+    /** Guard: managed provider + a live daemon, or the right 4xx/503 reply.
+     *  `edit: true` additionally requires edit rights (403 for a viewer) — dream
+     *  lifecycle mutations run agent work or replace the live store, so they must
+     *  match the viewer-read-only invariant of the other memory mutations. */
+    const dreamAgentOrReply = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      id: string,
+      edit = false
+    ): Promise<(AgentRecord & { daemonId: string }) | null> => {
+      const agent = await getOrgAgent(req, id)
+      if (!agent) {
+        await reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        return null
+      }
+      if (edit && !canEdit(agent, ctxOf(req))) {
+        await reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        return null
+      }
+      if (agent.memory?.provider !== undefined && agent.memory.provider !== 'managed') {
+        await reply
+          .code(400)
+          .send({ error: 'Bad Request', statusCode: 400, message: 'dreaming requires the managed memory provider' })
+        return null
+      }
+      if (!agent.daemonId) {
+        await reply
+          .code(503)
+          .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        return null
+      }
+      return agent as AgentRecord & { daemonId: string }
+    }
+
+    const sendDreamFailure = (reply: FastifyReply, err: unknown): boolean => {
+      const failure = memoryAdminFailure(err)
+      if (!failure) return false
+      void reply
+        .code(failure.status)
+        .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+      return true
+    }
+
+    // Start a dream (manual trigger).
+    r.post(
+      '/agents/:id/memory/dreams',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Start a memory dream',
+          description:
+            'Kick off an offline consolidation job over the managed store on the owning daemon. Returns the pending job; poll it for status. 400 if dreaming is not enabled, 409 if one is already in flight, 503 when the daemon is offline.',
+          operationId: 'startAgentMemoryDream',
+          params: IdParam,
+          body: StartDreamBody,
+          response: { 200: DreamDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id, true)
+        if (!agent) return
+        try {
+          const { dream } = await deps.control.dreamStart(agent.daemonId, {
+            agentId: agent.id,
+            trigger: 'manual',
+            ...(req.body.sessionWindow !== undefined ? { sessionWindow: req.body.sessionWindow } : {}),
+            ...(req.body.instructions !== undefined ? { instructions: req.body.instructions } : {})
+          })
+          return toDreamDto(dream)
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // List an agent's dream jobs (newest first).
+    r.get(
+      '/agents/:id/memory/dreams',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'List memory dreams',
+          description: "List the agent's memory dream jobs (newest first), proxied from the owning daemon.",
+          operationId: 'listAgentMemoryDreams',
+          params: IdParam,
+          querystring: z.object({ limit: z.coerce.number().int().positive().max(50).optional() }),
+          response: { 200: DreamListDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id)
+        if (!agent) return
+        try {
+          return toDreamListDto(
+            await deps.control.dreamList(agent.daemonId, { agentId: agent.id, limit: req.query.limit ?? 20 })
+          )
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Fetch one dream job's metadata.
+    r.get(
+      '/agents/:id/memory/dreams/:dreamId',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Get a memory dream',
+          description: "Fetch one dream job's metadata (never staged bodies), proxied from the owning daemon.",
+          operationId: 'getAgentMemoryDream',
+          params: DreamIdParam,
+          response: { 200: DreamDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id)
+        if (!agent) return
+        try {
+          const { dream } = await deps.control.dreamGet(agent.daemonId, {
+            agentId: agent.id,
+            dreamId: req.params.dreamId
+          })
+          return toDreamDto(dream)
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Cancel a pending|running dream.
+    r.post(
+      '/agents/:id/memory/dreams/:dreamId/cancel',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Cancel a memory dream',
+          description:
+            'Cancel a pending or running dream on the owning daemon (cancel-wins; a late extraction result is never staged). 409 if the dream is already terminal.',
+          operationId: 'cancelAgentMemoryDream',
+          params: DreamIdParam,
+          response: { 200: DreamDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id, true)
+        if (!agent) return
+        try {
+          const { dream } = await deps.control.dreamCancel(agent.daemonId, {
+            agentId: agent.id,
+            dreamId: req.params.dreamId
+          })
+          return toDreamDto(dream)
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Adopt a completed dream's staged store (fenced; `force` overrides the fence).
+    r.post(
+      '/agents/:id/memory/dreams/:dreamId/adopt',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Adopt a memory dream',
+          description:
+            "Atomically replace the agent's live managed store with this dream's staged output (with a backup). Fenced against changes since the snapshot unless `force` is set. 409 on a fence conflict or a non-completed dream.",
+          operationId: 'adoptAgentMemoryDream',
+          params: DreamIdParam,
+          body: AdoptDreamBody,
+          response: { 200: DreamDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id, true)
+        if (!agent) return
+        try {
+          const { dream } = await deps.control.dreamAdopt(agent.daemonId, {
+            agentId: agent.id,
+            dreamId: req.params.dreamId,
+            force: req.body.force ?? false
+          })
+          return toDreamDto(dream)
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Discard a terminal dream's staged output (keeps the job record).
+    r.post(
+      '/agents/:id/memory/dreams/:dreamId/discard',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Discard a memory dream',
+          description:
+            "Delete a terminal dream's staged output on the owning daemon, keeping the job record for history. 409 if the dream is not in a terminal state.",
+          operationId: 'discardAgentMemoryDream',
+          params: DreamIdParam,
+          response: { 200: DreamDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id, true)
+        if (!agent) return
+        try {
+          const { dream } = await deps.control.dreamDiscard(agent.daemonId, {
+            agentId: agent.id,
+            dreamId: req.params.dreamId
+          })
+          return toDreamDto(dream)
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // List a dream's staged output files (the review surface).
+    r.get(
+      '/agents/:id/memory/dreams/:dreamId/files',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: "List a dream's staged files",
+          description:
+            "List the files in this dream's staged output store (index + topics). Nothing staged yet is data (exists:false), not an error.",
+          operationId: 'listAgentMemoryDreamFiles',
+          params: DreamIdParam,
+          response: { 200: DreamFilesDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id)
+        if (!agent) return
+        try {
+          return toDreamFilesDto(
+            await deps.control.dreamFiles(agent.daemonId, { agentId: agent.id, dreamId: req.params.dreamId })
+          )
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Read one byte slice of a dream's staged file (memory/read semantics).
+    r.get(
+      '/agents/:id/memory/dreams/:dreamId/file',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: "Read a dream's staged file",
+          description:
+            'Proxy one byte slice of a staged output file (default the MEMORY.md index) live from the owning daemon. `nextOffset` is authoritative — clients must not recompute it.',
+          operationId: 'readAgentMemoryDreamFile',
+          params: DreamIdParam,
+          querystring: MemoryFileQueryDto,
+          response: { 200: DreamFileDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id)
+        if (!agent) return
+        try {
+          return toDreamFileDto(
+            await deps.control.dreamFileRead(agent.daemonId, {
+              agentId: agent.id,
+              dreamId: req.params.dreamId,
+              path: req.query.path ?? 'MEMORY.md',
+              offset: req.query.offset ?? 0,
+              limit: req.query.limit ?? 65536
+            })
+          )
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
           throw err
         }
       }
