@@ -56,7 +56,13 @@ import {
   type HookReportingMode,
   type HookReviewPolicy
 } from '@/lib/github-review-settings'
-import { slackAppIdFromAppToken, slackAppOAuthUrl, slackAppSettingsUrl, slackCreateAppUrl } from '@/lib/slack-manifest'
+import {
+  slackAppIdFromAppToken,
+  slackAppOAuthUrl,
+  slackAppSettingsUrl,
+  slackCreateAppUrl,
+  slackManifestJson
+} from '@/lib/slack-manifest'
 import { agentIconBackgroundColor } from '@/lib/agent-icon'
 import { discordApplicationIdFromToken, discordBotInviteUrl } from '@/lib/discord-invite'
 
@@ -584,6 +590,7 @@ export default function AddIntegrationModal({
     backgroundColor: agentIconBackgroundColor(agent.icon),
     ...(relayPublicUrl ? { relayUrl: relayPublicUrl } : {})
   }
+  const manifestJson = slackManifestJson(manifestNames, manifestOpts)
   const createUrl = slackCreateAppUrl(manifestNames, manifestOpts)
 
   // Webhook path: create the hook (secret always minted), then flip to the reveal
@@ -1949,8 +1956,8 @@ export default function AddIntegrationModal({
               </div>
             ) : (
               <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-                {/* Step 1 — create & install from our manifest. The app name is
-                    prefilled INTO the manifest (agent name), so no name field here. */}
+                {/* Step 1 — create & install from our manifest. The agent name is
+                    built into the manifest, so no separate name field here. */}
                 <div className="mb-3 flex gap-[10px]">
                   <span className="mono mt-[1px] flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
                     1
@@ -1963,16 +1970,18 @@ export default function AddIntegrationModal({
                       href={createUrl}
                       target="_blank"
                       rel="noopener noreferrer"
+                      onClick={() => void navigator.clipboard?.writeText?.(manifestJson)?.catch?.(() => {})}
                       className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
                     >
                       <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
                         <PlatformMark platform="slack" />
                       </span>
-                      Add to Slack with manifest
+                      Copy manifest &amp; open Slack
                       <Icon name="external-link" size={14} />
                     </a>
                     <div className="mt-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                      Opens Slack with our manifest prefilled. Install the app, then paste its tokens.
+                      In Slack, choose <span className="font-medium text-(--text-secondary)">From a manifest</span>,
+                      paste, select a workspace, then create and install the app.
                     </div>
                     <SlackDeliveryLine
                       transport={effTransport}

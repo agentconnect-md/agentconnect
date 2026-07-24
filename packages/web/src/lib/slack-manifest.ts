@@ -1,7 +1,6 @@
-// The Slack app manifest AgentConnect installs from. A user creates their own
-// Slack app pre-filled with this manifest (the "create app from manifest" deep
-// link below), installs it to their workspace, then pastes the tokens back into
-// the Add-integration modal.
+// The Slack app manifest AgentConnect installs from. The create-app link includes
+// it for Slack's documented prefill flow; the UI also copies it as a fallback for
+// Slack's newer creation dialog, which currently drops the prefilled value.
 //
 // TWO transports, selected via `buildSlackManifest`'s `mode` option:
 //   - `socket` (default): the daemon opens a Socket Mode connection with the
@@ -153,8 +152,9 @@ export function slackManifestJson(names: SlackAppNames, opts?: SlackManifestOpts
 }
 
 /**
- * Slack's "create a new app from a manifest" deep link. Opens api.slack.com with
- * the manifest pre-loaded so the user only has to pick a workspace and create.
+ * Slack's documented "create a new app from a manifest" deep link. Slack's newer
+ * creation dialog currently drops the prefilled value, so callers should also
+ * offer the manifest on the clipboard as a fallback.
  */
 export function slackCreateAppUrl(names: SlackAppNames, opts?: SlackManifestOpts): string {
   const manifest = encodeURIComponent(JSON.stringify(buildSlackManifest(names, opts)))
