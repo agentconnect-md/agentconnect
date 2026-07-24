@@ -30,7 +30,7 @@ import { resolveWebAppUrl } from '../../config/env.js'
 import { buildInstallManifest, slackOAuthRedirectUri } from '../slack-manifest.js'
 import { agentIconBackgroundColor } from '../../agents/agent-icon.js'
 import { installNewSlackBot, slackAppIdFromAppToken } from '../install-slack.js'
-import { resolveUserConfigAccessToken } from '../slack-user-config.js'
+import { CONFIG_ACCESS_TTL_MS, configUsable, resolveUserConfigAccessToken } from '../slack-user-config.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
 import {
   SlackAppStartBody,
@@ -127,7 +127,9 @@ export function slackInstallRoutes(deps: HttpDeps) {
           const message =
             config.reason === 'not_configured'
               ? 'You haven’t stored your Slack App Configuration token — add it to enable one-click installs.'
-              : 'Your stored Slack App Configuration token is invalid or expired — re-add it.'
+              : config.reason === 'expired'
+                ? 'Your Slack App Configuration token expired — re-enter it (add a refresh token to keep it from expiring).'
+                : 'Your stored Slack App Configuration token is invalid or expired — re-add it.'
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
         }
 
@@ -409,12 +411,17 @@ export function slackConfigRoutes(deps: HttpDeps) {
     // paste into Slack), ws→http normalized. Null when PUBLIC_RELAY_URL is unset.
     const relayPublicUrl = relayHttpBase(deps.config.PUBLIC_RELAY_URL)
 
-    const statusOf = async (orgId: OrgId, userId: string) => {
+    const statusOf = async (orgId: OrgId, userId: string, now = new Date()) => {
       const row = await deps.repos.slackUserConfig.get(orgId, userId)
+      // Durable = a refresh token is stored (the pair auto-rotates). Usable now = durable
+      // or the access-only token is still fresh; a lapsed access-only token forces re-entry.
+      const durable = !!row?.refreshToken
       return {
         configured: !!row,
+        durable,
         funnelEnabled,
-        autoAvailable: !!row && funnelEnabled,
+        autoAvailable: funnelEnabled && configUsable(row, now),
+        accessExpiresAt: row ? row.accessExpiresAt.toISOString() : null,
         // HTTP mode is offerable here: a public relay origin is configured AND ≥1 relay
         // is connected to receive the Events API POSTs.
         relayAvailable: !!relayPublicUrl && deps.sharedBot.hasConnectedRelay(),
@@ -450,7 +457,7 @@ export function slackConfigRoutes(deps: HttpDeps) {
           tags: [Tag.Integrations],
           summary: 'Store Slack config token',
           description:
-            'Save (or replace) the caller’s own Slack App Configuration token, validated + normalized by rotating it once. Forces the create modal into auto-install for this caller.',
+            'Save (or replace) the caller’s own Slack App Configuration token. With a refresh token it is validated + normalized by rotating once (durable, never expires); access-token-only is stored as-is with Slack’s ~12h lifetime and verified at install time. Forces the create modal into auto-install for this caller.',
           operationId: 'putSlackConfig',
           body: SlackConfigBody,
           response: { 200: SlackConfigDto, 400: ErrorDto, 401: ErrorDto, 403: ErrorDto, 502: ErrorDto }
@@ -462,22 +469,36 @@ export function slackConfigRoutes(deps: HttpDeps) {
           return reply.code(401).send({ error: 'Unauthorized', statusCode: 401, message: 'authentication required' })
         }
         const orgId = orgIdOf(req)
-        // Validate + normalize by rotating the refresh token: confirms it works AND
-        // yields the exact expiry. Each rotate issues a NEW pair (the pasted access
-        // token is accepted for parity with Slack's UI but superseded by the rotate).
-        const rotated = await api.rotateConfigToken(req.body.refreshToken)
-        if (!rotated.ok) {
-          if (rotated.error === 'unreachable') {
-            return reply.code(502).send({ error: 'Bad Gateway', statusCode: 502, message: 'could not reach Slack' })
+        const now = new Date()
+        if (req.body.refreshToken) {
+          // Refresh token supplied ⇒ validate + normalize by rotating it: confirms the
+          // pair works AND yields the exact expiry. Each rotate issues a NEW pair (the
+          // pasted access token is accepted for parity with Slack's UI but superseded by
+          // the rotate). The stored pair auto-rotates from here on — durable.
+          const rotated = await api.rotateConfigToken(req.body.refreshToken)
+          if (!rotated.ok) {
+            if (rotated.error === 'unreachable') {
+              return reply.code(502).send({ error: 'Bad Gateway', statusCode: 502, message: 'could not reach Slack' })
+            }
+            return reply.code(400).send({
+              error: 'Bad Request',
+              statusCode: 400,
+              message: `Slack rejected the config token (${rotated.error}). Regenerate it at api.slack.com/apps → “Your App Configuration Tokens”.`
+            })
           }
-          return reply.code(400).send({
-            error: 'Bad Request',
-            statusCode: 400,
-            message: `Slack rejected the config token (${rotated.error}). Regenerate it at api.slack.com/apps → “Your App Configuration Tokens”.`
+          await deps.repos.slackUserConfig.put(orgId, req.principal.userId, rotated.rotated)
+        } else {
+          // Access-only ⇒ nothing to rotate. Store the access token as-is with Slack's
+          // documented ~12h lifetime; it is verified when the caller starts an install
+          // (apps.manifest.create rejects a bad/expired token with a clear message). Once
+          // it lapses the caller re-enters it, or adds a refresh token to make it durable.
+          await deps.repos.slackUserConfig.put(orgId, req.principal.userId, {
+            accessToken: req.body.accessToken,
+            refreshToken: null,
+            accessExpiresAt: new Date(now.getTime() + CONFIG_ACCESS_TTL_MS)
           })
         }
-        await deps.repos.slackUserConfig.put(orgId, req.principal.userId, rotated.rotated)
-        return statusOf(orgId, req.principal.userId)
+        return statusOf(orgId, req.principal.userId, now)
       }
     )
 

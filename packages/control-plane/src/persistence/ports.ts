@@ -2026,8 +2026,8 @@ export interface SlackInstallStore {
 /** The token material + its rotation clock. Written on save and on each rotate. */
 export interface SlackUserConfigMaterial {
   accessToken: string // xoxe.xoxp-…
-  refreshToken: string // xoxe-…
-  accessExpiresAt: Date // when accessToken expires (drives rotation)
+  refreshToken: string | null // xoxe-… — null ⇒ access-only (no auto-rotate; re-enter after it expires)
+  accessExpiresAt: Date // when accessToken expires (drives rotation / re-entry)
 }
 
 export interface SlackUserConfigRecord extends SlackUserConfigMaterial {

@@ -1438,8 +1438,8 @@ model SlackUserConfig {
   orgId           String
   userId          String
   accessToken     String // xoxe.xoxp-… — the App Configuration access token
-  refreshToken    String // xoxe-… — used to rotate a fresh access token
-  accessExpiresAt DateTime @db.Timestamptz(6) // when accessToken expires (~12h; drives rotation)
+  refreshToken    String? // xoxe-… — used to rotate a fresh access token; null ⇒ access-only (expires ~12h, then re-enter)
+  accessExpiresAt DateTime @db.Timestamptz(6) // when accessToken expires (~12h; drives rotation / re-entry)
   createdAt       DateTime @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime @updatedAt @db.Timestamptz(6)
 
