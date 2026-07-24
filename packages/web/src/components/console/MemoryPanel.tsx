@@ -171,6 +171,14 @@ export function MemoryPanel({
   const [providerError, setProviderError] = useState<string | null>(null)
   const [confirmingBackendChange, setConfirmingBackendChange] = useState(false)
   const [previewRequest, setPreviewRequest] = useState(0)
+  // The settings form is collapsed behind a one-line summary by default so the
+  // memory content itself stays the page's focus. Closing the form discards any
+  // unsaved draft — a closed form always summarizes the persisted settings.
+  const [settingsOpen, setSettingsOpen] = useState(false)
+
+  useEffect(() => {
+    setSettingsOpen(false)
+  }, [agentId])
 
   // Polling replaces the agent DTO (and its recall object) even when the
   // persisted values are unchanged. Depend on the semantic fields so an
@@ -225,6 +233,7 @@ export function MemoryPanel({
       await updateAgent(agentId, { memory: memoryConfigForDraft(settings) })
       setPersistedSettings(cloneMemorySettings(settings))
       setConfirmingBackendChange(false)
+      setSettingsOpen(false)
     } catch (e) {
       setProviderError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -252,6 +261,34 @@ export function MemoryPanel({
     setProviderError(null)
     setConfirmingBackendChange(false)
   }
+
+  const closeSettings = () => {
+    if (savingProvider) return
+    discardMemorySettings()
+    setSettingsOpen(false)
+  }
+
+  // One-line summary of the PERSISTED settings for the collapsed bar. Scope is
+  // always named — memory is agent-scoped and shared across users.
+  const settingsSummary = (() => {
+    switch (persistedProvider) {
+      case 'managed':
+        return `Managed directory · Auto-distill ${persistedSettings.autoDistill ? 'on' : 'off'} · Agent scope`
+      case 'native':
+        return 'Runtime-native memory · Agent scope'
+      case 'external': {
+        const { connectionId, recall, captureMode } = persistedSettings.external
+        return [
+          connectionId ? `Connection ${connectionId.slice(0, 8)}` : 'No connection',
+          `Recall ${recall.mode === 'auto' ? 'every turn' : 'tool only'}`,
+          `Capture ${captureMode === 'turn' ? 'every turn' : 'manual'}`,
+          'Agent scope'
+        ].join(' · ')
+      }
+      case 'none':
+        return 'Persistent memory is off'
+    }
+  })()
 
   // Load the file list once (and refresh it after a create/save).
   const loadList = useCallback(async () => {
@@ -512,107 +549,137 @@ export function MemoryPanel({
 
   return (
     <div className="p-4 desktop:p-0">
-      {/* Memory backend — one draft-first form, regardless of provider. */}
-      <div className="mb-4 flex flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <span className="font-sans text-[13px] font-semibold leading-normal">Backend</span>
-          <MemoryProviderPicker value={provider} onChange={selectProvider} disabled={!canEdit || savingProvider} />
-          <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-            {provider === 'external'
-              ? 'An owner-reviewed external plugin; configure exactly what may be recalled and captured below.'
-              : provider === 'native'
-                ? "The runtime's own memory (Claude / Codex), isolated under the agent root."
-                : provider === 'none'
-                  ? 'No persistent memory is loaded or saved.'
-                  : 'A memory directory we keep for the agent.'}
-          </span>
-        </div>
-
-        <MemoryScopeField />
-
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-sans text-[11.5px] font-normal leading-normal">
-          <span className="text-(--text-secondary)">
-            Currently using: <strong className="font-semibold">{persistedProviderLabel}</strong>
-          </span>
-          {settingsChanged ? (
-            <span className="text-(--amber-500)" aria-live="polite">
-              {provider !== persistedProvider
-                ? `Unsaved selection: ${memoryProviderLabel(provider)}`
-                : `Unsaved settings for ${memoryProviderLabel(provider)}`}
+      {/* Memory backend — a collapsed one-line summary; expanding it edits one
+          explicit draft. Closing without saving discards the draft, so the
+          summary and the content below always describe the persisted backend. */}
+      <section className="card mb-4 overflow-hidden max-desktop:rounded-lg">
+        <div className="flex items-center justify-between gap-3 px-4 py-3">
+          <div className="flex min-w-0 flex-col gap-[3px]">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-sans text-[13px] font-semibold leading-normal">Memory backend</span>
+              <span className="badge bg-(--surface-active) text-(--text-secondary)">{persistedProviderLabel}</span>
+              {settingsChanged ? (
+                <span
+                  className="font-sans text-[11px] font-semibold leading-normal text-(--amber-500)"
+                  aria-live="polite"
+                >
+                  Unsaved changes
+                </span>
+              ) : null}
+            </div>
+            <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+              {settingsSummary}
             </span>
-          ) : null}
+          </div>
+          <Button
+            variant="secondary"
+            size="xs"
+            disabled={savingProvider}
+            onClick={() => (settingsOpen ? closeSettings() : setSettingsOpen(true))}
+          >
+            {settingsOpen ? (
+              settingsChanged ? (
+                'Cancel'
+              ) : (
+                'Close'
+              )
+            ) : canEdit ? (
+              <>
+                <Icon name="pencil" size={13} />
+                Edit
+              </>
+            ) : (
+              'Details'
+            )}
+          </Button>
         </div>
 
-        {provider === 'managed' ? (
-          <label className="flex items-center gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-            <input
-              type="checkbox"
-              checked={settings.autoDistill}
-              disabled={!canEdit || savingProvider}
-              onChange={() => {
-                setSettings((current) => ({ ...current, autoDistill: !current.autoDistill }))
-                setProviderError(null)
-              }}
-            />
-            Automatically distill durable facts after each turn (uses an additional model call; currently Claude
-            runtimes only).
-          </label>
-        ) : null}
+        {settingsOpen ? (
+          <div className="flex flex-col gap-4 border-t border-(--border-subtle) px-4 py-4">
+            <div className="flex flex-col gap-2">
+              <span className="font-sans text-[13px] font-semibold leading-normal">Backend</span>
+              <MemoryProviderPicker value={provider} onChange={selectProvider} disabled={!canEdit || savingProvider} />
+              <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                {provider === 'external'
+                  ? 'An owner-reviewed external plugin; configure exactly what may be recalled and captured below.'
+                  : provider === 'native'
+                    ? "The runtime's own memory (Claude / Codex), isolated under the agent root."
+                    : provider === 'none'
+                      ? 'No persistent memory is loaded or saved.'
+                      : 'A memory directory we keep for the agent.'}
+              </span>
+            </div>
 
-        {provider === 'external' ? (
-          <div className="flex flex-col gap-3">
-            <ExternalMemoryBindingFields
-              value={settings.external}
-              onChange={(external) => {
-                setSettings((current) => ({ ...current, external }))
-                setProviderError(null)
-              }}
-              disabled={!canEdit || savingProvider}
-              emptySelectionDisabled={
-                persistedProvider === 'external' && Boolean(persistedSettings.external.connectionId)
-              }
-            />
-            {settingsBlocker ? (
-              <div className="font-sans text-[12px] font-normal leading-normal text-(--red-600)" role="alert">
-                {settingsBlocker} The agent is still using {persistedProviderLabel}.
+            <MemoryScopeField />
+
+            {provider === 'managed' ? (
+              <label className="flex items-center gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+                <input
+                  type="checkbox"
+                  checked={settings.autoDistill}
+                  disabled={!canEdit || savingProvider}
+                  onChange={() => {
+                    setSettings((current) => ({ ...current, autoDistill: !current.autoDistill }))
+                    setProviderError(null)
+                  }}
+                />
+                Automatically distill durable facts after each turn (uses an additional model call; currently Claude
+                runtimes only).
+              </label>
+            ) : null}
+
+            {provider === 'external' ? (
+              <div className="flex flex-col gap-3">
+                <ExternalMemoryBindingFields
+                  value={settings.external}
+                  onChange={(external) => {
+                    setSettings((current) => ({ ...current, external }))
+                    setProviderError(null)
+                  }}
+                  disabled={!canEdit || savingProvider}
+                  emptySelectionDisabled={
+                    persistedProvider === 'external' && Boolean(persistedSettings.external.connectionId)
+                  }
+                />
+                {settingsBlocker ? (
+                  <div className="font-sans text-[12px] font-normal leading-normal text-(--red-600)" role="alert">
+                    {settingsBlocker} The agent is still using {persistedProviderLabel}.
+                  </div>
+                ) : null}
               </div>
             ) : null}
-            <div className="rounded-md border border-(--border-subtle) bg-(--surface-sunken) p-3 text-[11.5px] leading-[1.5] text-(--text-secondary)">
-              Changing provider or connection does not migrate old memory. Pending capture stays with its original
-              connection; the old backend keeps its data but is no longer injected after you save.
-            </div>
-          </div>
-        ) : null}
 
-        {backendChanged ? (
-          <div className="font-sans text-[11px] font-normal leading-normal text-(--amber-500)">
-            Saving will switch the memory backend or connection. Existing memory is not migrated.
-          </div>
-        ) : null}
+            {providerError ? (
+              <div className="font-sans text-[12px] font-normal leading-normal text-(--red-600)" role="alert">
+                {providerError}
+              </div>
+            ) : null}
 
-        {providerError ? (
-          <div className="font-sans text-[12px] font-normal leading-normal text-(--red-600)" role="alert">
-            {providerError}
-          </div>
-        ) : null}
-
-        {canEdit ? (
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              disabled={savingProvider || !settingsChanged || Boolean(settingsBlocker)}
-              onClick={() => void saveMemorySettings()}
-            >
-              {savingProvider ? 'Saving…' : 'Save memory settings'}
-            </Button>
-            {settingsChanged ? (
-              <Button variant="ghost" size="sm" disabled={savingProvider} onClick={discardMemorySettings}>
-                Discard changes
-              </Button>
+            {canEdit ? (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-(--border-subtle) pt-3">
+                <Button
+                  size="sm"
+                  disabled={savingProvider || !settingsChanged || Boolean(settingsBlocker)}
+                  onClick={() => void saveMemorySettings()}
+                >
+                  {savingProvider ? 'Saving…' : 'Save memory settings'}
+                </Button>
+                <Button variant="ghost" size="sm" disabled={savingProvider} onClick={closeSettings}>
+                  Cancel
+                </Button>
+                {settingsChanged ? (
+                  <span
+                    className="font-sans text-[11.5px] font-normal leading-normal text-(--amber-500)"
+                    aria-live="polite"
+                  >
+                    {persistedProviderLabel} stays active until you save.
+                  </span>
+                ) : null}
+              </div>
             ) : null}
           </div>
         ) : null}
-      </div>
+      </section>
 
       {backendChanged ? (
         <div

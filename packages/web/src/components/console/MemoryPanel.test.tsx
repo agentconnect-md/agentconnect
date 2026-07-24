@@ -70,7 +70,48 @@ const recallPolicy = () => ({
   timeoutMs: 3000
 })
 
+/** The settings form is collapsed behind the summary bar; expand it. */
+const openSettings = async (host: HTMLElement) => {
+  const editButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Edit')
+  expect(editButton).toBeTruthy()
+  await act(async () => editButton?.click())
+}
+
 describe('MemoryPanel settings draft', () => {
+  it('collapses the settings form behind a summary of the persisted backend', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <MemoryPanel
+          agentId="22222222-2222-4222-8222-222222222222"
+          canEdit
+          memoryProvider="managed"
+          autoDistill={false}
+        />
+      )
+    })
+
+    // Collapsed: no provider picker, but the summary names the active backend
+    // and scope; the persisted memory content is shown.
+    expect(container.querySelector('[data-memory-provider="managed"]')).toBeNull()
+    expect(container.textContent).toContain('Managed')
+    expect(container.textContent).toContain('Agent scope')
+    expect(container.querySelector('[data-testid="file-memory-view"]')).not.toBeNull()
+
+    await openSettings(container)
+    expect(container.querySelector('[data-memory-provider="managed"]')).not.toBeNull()
+
+    // Closing without changes collapses it again.
+    const closeButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Close'
+    )
+    await act(async () => closeButton?.click())
+    expect(container.querySelector('[data-memory-provider="managed"]')).toBeNull()
+  })
+
   it('shows the fixed agent scope and explains that memory is shared across users', async () => {
     container = document.createElement('div')
     document.body.append(container)
@@ -87,6 +128,7 @@ describe('MemoryPanel settings draft', () => {
       )
     })
 
+    await openSettings(container)
     const scope = container.querySelector<HTMLButtonElement>('[data-memory-scope="agent"]')
     expect(scope?.textContent).toBe('Agent')
     expect(scope?.disabled).toBe(true)
@@ -116,6 +158,7 @@ describe('MemoryPanel settings draft', () => {
     })
 
     expect(container.querySelector('[data-testid="file-memory-view"]')).not.toBeNull()
+    await openSettings(container)
     await act(async () => {
       container?.querySelector<HTMLButtonElement>('[data-memory-provider="external"]')?.click()
     })
@@ -124,12 +167,14 @@ describe('MemoryPanel settings draft', () => {
     expect(container.querySelector('[data-testid="record-memory-view"]')).toBeNull()
     expect(container.textContent).toContain('Save memory settings to switch to External and view its memory.')
 
-    const discardButton = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Discard changes'
+    const cancelButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Cancel'
     )
-    await act(async () => discardButton?.click())
+    await act(async () => cancelButton?.click())
 
     expect(container.querySelector('[data-testid="file-memory-view"]')).not.toBeNull()
+    // Cancelling also collapses the form back to the summary bar.
+    expect(container.querySelector('[data-memory-provider="external"]')).toBeNull()
   })
 
   it('preserves unsaved edits when refreshed props contain an equivalent recall object', async () => {
@@ -149,6 +194,7 @@ describe('MemoryPanel settings draft', () => {
       root?.render(<MemoryPanel {...props} memoryRecall={recallPolicy()} />)
     })
 
+    await openSettings(container)
     const nativeButton = container.querySelector<HTMLButtonElement>('[data-memory-provider="native"]')
     expect(nativeButton).not.toBeNull()
     await act(async () => {
@@ -190,6 +236,7 @@ describe('MemoryPanel settings draft', () => {
       )
     })
 
+    await openSettings(container)
     await act(async () => {
       container?.querySelector<HTMLButtonElement>('[data-memory-provider="native"]')?.click()
     })
@@ -211,5 +258,7 @@ describe('MemoryPanel settings draft', () => {
     expect(mocks.updateAgent).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', {
       memory: { provider: 'native', autoDistill: false }
     })
+    // A successful save collapses the form back to the summary bar.
+    expect(container.querySelector('[data-memory-provider="native"]')).toBeNull()
   })
 })

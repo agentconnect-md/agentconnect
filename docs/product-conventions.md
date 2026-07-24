@@ -168,6 +168,12 @@ the draft differs, show both the currently active backend and the unsaved select
 settings. Content and records continue to reflect the active backend until Save
 succeeds.
 
+On the agent Memory page the settings form is collapsed by default behind a one-line
+summary of the persisted backend (backend name, its key policy values, and the fixed
+Agent scope) so the memory content itself stays the page's focus. Expanding the form
+edits the draft; closing or cancelling it discards the draft, so a collapsed form
+always describes the persisted settings. A successful save collapses the form again.
+
 External memory always requires a connection. If no connection is selected, explain
 inline that the draft cannot be saved and that the current backend remains active. An
 already-bound external agent must not offer an empty selection that merely looks
