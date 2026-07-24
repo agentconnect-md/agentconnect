@@ -44,6 +44,7 @@ import { cleanupConfigFiles, materializeConfigFiles } from './agents/config-file
 import { writeGhShim } from './cp/gh-shim.js'
 import { GitCredServer, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
 import { gitCredentialEnv, initGitInjection, probeGitVersion, sessionGitEnv } from './workspace/git-injection.js'
+import { configureWorkspaceGitOrigins } from './workspace/git-origin-policy.js'
 import { buildMcpServers } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
 import { toolsForIntegrations, MEMORY_TOOL_NAMES, ALL_TOOL_NAMES, GITHUB_REVIEW_TOOLS } from './mcp/tools.js'
@@ -1365,6 +1366,7 @@ export class Daemon {
   constructor(
     private opts: {
       root?: string
+      configPath?: string
       overrides?: FlatOverrides
       agentName?: string
       hostFactory?: (agent: Agent, onUpdate: (sid: string, u: any) => void) => AcpHost
@@ -1509,8 +1511,15 @@ export class Daemon {
 
   async start(): Promise<void> {
     const root = resolveRoot(this.opts.root)
-    const cfg = loadConfig({ root, overrides: this.opts.overrides, optional: !!this.opts.agentName, autoCreate: true })
+    const cfg = loadConfig({
+      root,
+      configPath: this.opts.configPath,
+      overrides: this.opts.overrides,
+      optional: !!this.opts.agentName,
+      autoCreate: true
+    })
     this.cfg = cfg
+    configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
     if (cfg.security.requireSandbox && !this.sandboxMechanism) {
       throw new Error('daemon startup refused: security.requireSandbox is true but this host has no bwrap/sandbox-exec')
     }
@@ -1566,7 +1575,7 @@ export class Daemon {
     probeGitVersion((m) => this.log.warn(m))
     if (!cfg.daemonId && !cpKeyOnboarding) {
       cfg.daemonId = randomUUID()
-      persistDaemonId(root, cfg.daemonId)
+      persistDaemonId(root, cfg.daemonId, this.opts.configPath)
     }
     this.log = makeLogger(cfg.logging.level)
     this.log.info(`starting daemon (root=${root})`)
@@ -11721,7 +11730,7 @@ export class Daemon {
       cur.length === next.length && next.every((r) => cur.some((c) => c.relayId === r.relayId && c.url === r.url))
     if (!same) {
       this.cfg.relays = next
-      persistRelays(this.root, next)
+      persistRelays(this.root, next, this.opts.configPath)
     }
   }
 
@@ -11966,7 +11975,7 @@ export class Daemon {
       ...(echoDaemonId ? { daemonId: echoDaemonId } : {}),
       onDaemonId: (id) => {
         this.cfg.daemonId = id
-        persistDaemonId(root, id)
+        persistDaemonId(root, id, this.opts.configPath)
         this.log.info(`cp: adopted daemonId ${id} from auth/ok`)
       },
       onWebAppUrl: (url) => {

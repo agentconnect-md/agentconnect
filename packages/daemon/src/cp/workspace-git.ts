@@ -16,14 +16,20 @@ import { existsSync, promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import type { SimpleGit } from 'simple-git'
 import {
-  normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   type WorkspaceGitStatus,
   type WorkspaceGitPullResult,
   type WorkspaceGitFile,
   type WorkspaceGitCommit
 } from '@agentconnect.md/protocol'
-import { gitFor, pullWorkspaceRef, workspaceGitEnvBase } from '../workspace/git-injection.js'
+import {
+  assertSafeWorkspaceGitConfig,
+  gitFor,
+  pullWorkspaceRef,
+  workspaceGitLocalEnv,
+  workspaceGitPullTarget
+} from '../workspace/git-injection.js'
+import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
 import { WorkspaceViolationError } from './workspace-reader.js'
 
 /** On-demand pull is interactive, so allow more headroom than the 4.5s
@@ -70,7 +76,7 @@ export function createWorkspaceGit(
     const raw = input.trim()
     if (!/^(?:https|ssh):\/\//i.test(raw) && !/^[\w.-]+@[\w.-]+:/.test(raw)) return undefined
     try {
-      return normalizeGitCloneUrl(raw)
+      return authorizeWorkspaceGitUrl(raw)
     } catch {
       return undefined
     }
@@ -81,7 +87,7 @@ export function createWorkspaceGit(
       const root = rootFor(agentId)
       if (!isRepo(root)) return { agentId, isRepo: false, clean: true }
 
-      const git = gitFor(root).env(workspaceGitEnvBase())
+      const git = gitFor(root).env(workspaceGitLocalEnv())
       const s = await git.status()
       const files: WorkspaceGitFile[] = s.files
         .slice(0, MAX_STATUS_FILES)
@@ -111,35 +117,36 @@ export function createWorkspaceGit(
       // forced reset. Bounded by a timeout so an offline remote can't hang the REP.
       let timer: ReturnType<typeof setTimeout> | undefined
       try {
-        const git = gitFor(root).env(workspaceGitEnvBase())
+        const git = gitFor(root).env(workspaceGitLocalEnv())
         const target = workspaceTargetByAgent(agentId)
         let currentOrigin: string | undefined
-        let expectedOrigin: string | undefined
+        let expectedOrigin: string
         try {
           currentOrigin = safeExplicitOrigin(await git.raw(['remote', 'get-url', 'origin']))
-          expectedOrigin =
-            target === undefined
-              ? undefined
-              : target.githubApp
-                ? normalizeGithubRepoUrl(target.repo)
-                : normalizeGitCloneUrl(target.repo)
+          if (!target) throw new Error('workspace target is unavailable')
+          expectedOrigin = authorizeWorkspaceGitUrl(
+            target.githubApp ? normalizeGithubRepoUrl(target.repo) : target.repo
+          )
         } catch {
           return { agentId, isRepo: true, ok: false, detail: 'workspace origin is not a safe remote' }
         }
         if (
           !currentOrigin ||
-          (target?.githubApp === true &&
-            expectedOrigin !== undefined &&
-            currentOrigin.toLowerCase() !== expectedOrigin.toLowerCase())
+          (target.githubApp === true && currentOrigin.toLowerCase() !== expectedOrigin.toLowerCase())
         ) {
           return { agentId, isRepo: true, ok: false, detail: 'workspace origin is not a safe remote' }
         }
-        const pullOrigin = expectedOrigin ?? currentOrigin
-        const pullBranch = target?.branch ?? 'HEAD'
+        await assertSafeWorkspaceGitConfig(root)
+        const pullBranch = target.branch
+        const pullTarget = workspaceGitPullTarget(expectedOrigin)
         const res = await Promise.race([
           pullWorkspaceRef(
-            git.env({ ...workspaceGitEnvBase(), ...credentialEnvByAgent(agentId), GIT_TERMINAL_PROMPT: '0' }),
-            pullOrigin,
+            git.env({
+              ...pullTarget.env,
+              ...credentialEnvByAgent(agentId),
+              GIT_TERMINAL_PROMPT: '0'
+            }),
+            pullTarget.remote,
             pullBranch
           ),
           new Promise<never>((_, rej) => {

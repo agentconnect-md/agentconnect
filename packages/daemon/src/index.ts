@@ -72,6 +72,7 @@ program
     try {
       await runForeground({
         root: opts.root,
+        configPath: opts.config,
         agentName: opts.agent,
         // The launcher (CLI respawn shell or launchd/systemd unit) declares how
         // this daemon is supervised; the daemon can no longer self-detect it now

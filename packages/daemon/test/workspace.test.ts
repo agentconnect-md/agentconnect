@@ -72,7 +72,7 @@ function gitRepoAgent(path: string, agentDir?: string): Agent {
     workspace: {
       mode: 'git-repo',
       path,
-      gitRepo: 'https://example.com/repo.git',
+      gitRepo: 'https://github.com/acme/repo.git',
       gitBranch: 'main',
       ...(agentDir !== undefined ? { agentDir } : {}),
       pullOnNewSession: true,
@@ -122,7 +122,7 @@ describe('prepareWorkspace', () => {
     const cwd = await prepareWorkspace(gitRepoAgent(path))
     expect(cwd).toBe(realpathSync(path))
     expect(cloneImpl).toHaveBeenCalledTimes(1)
-    expect(cloneImpl).toHaveBeenCalledWith('https://example.com/repo.git', path, [
+    expect(cloneImpl).toHaveBeenCalledWith('https://github.com/acme/repo.git', path, [
       '--branch',
       'main',
       '--single-branch'
@@ -134,26 +134,27 @@ describe('prepareWorkspace', () => {
   it('keeps ssh clone targets working', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'co')
     const agent = gitRepoAgent(path)
-    agent.workspace.gitRepo = 'ssh://git@example.com/acme/repo.git'
+    agent.workspace.gitRepo = 'ssh://git@github.com/acme/repo.git'
 
     await prepareWorkspace(agent)
 
-    expect(cloneImpl).toHaveBeenCalledWith('ssh://git@example.com/acme/repo.git', path, [
+    expect(cloneImpl).toHaveBeenCalledWith('ssh://git@github.com/acme/repo.git', path, [
       '--branch',
       'main',
       '--single-branch'
     ])
   })
 
-  it('rejects a hand-edited unsafe target before clone or pull', async () => {
-    const fresh = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'fresh')
-    const existing = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'existing')
-    mkdirSync(join(existing, '.git'), { recursive: true })
-
-    for (const path of [fresh, existing]) {
-      const agent = gitRepoAgent(path)
-      agent.workspace.gitRepo = 'file:///var/lib/agentconnect/other-workspace'
-      await expect(prepareWorkspace(agent)).rejects.toThrow()
+  it('rejects a hand-edited transport or unconfigured origin before clone or pull', async () => {
+    for (const gitRepo of ['file:///var/lib/agentconnect/other-workspace', 'https://git.example/acme/repo.git']) {
+      const fresh = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'fresh')
+      const existing = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'existing')
+      mkdirSync(join(existing, '.git'), { recursive: true })
+      for (const path of [fresh, existing]) {
+        const agent = gitRepoAgent(path)
+        agent.workspace.gitRepo = gitRepo
+        await expect(prepareWorkspace(agent)).rejects.toThrow()
+      }
     }
 
     expect(cloneImpl).not.toHaveBeenCalled()
@@ -188,9 +189,12 @@ describe('prepareWorkspace', () => {
     mkdirSync(join(dir, '.git'), { recursive: true })
     await prepareWorkspace(gitRepoAgent(dir))
     expect(cloneImpl).not.toHaveBeenCalled()
-    expect(pullMock).toHaveBeenCalledWith('https://example.com/repo.git', '+refs/heads/main:refs/remotes/origin/main', [
-      '--ff-only'
-    ])
+    expect(pullMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^agentconnect-[0-9a-f-]+$/),
+      '+refs/heads/main:refs/remotes/origin/main',
+      ['--ff-only', '--no-recurse-submodules']
+    )
+    expect(Object.values(lastGitEnv ?? {})).toContain('https://github.com/acme/repo.git')
   })
 
   it('ignores a checkout-controlled upstream when pulling an existing workspace', async () => {
@@ -205,10 +209,11 @@ describe('prepareWorkspace', () => {
     await prepareWorkspace(agent)
 
     expect(pullMock).toHaveBeenCalledWith(
-      'https://example.com/repo.git',
+      expect.stringMatching(/^agentconnect-[0-9a-f-]+$/),
       '+refs/heads/release/v2:refs/remotes/origin/release/v2',
-      ['--ff-only']
+      ['--ff-only', '--no-recurse-submodules']
     )
+    expect(Object.values(lastGitEnv ?? {})).toContain('https://github.com/acme/repo.git')
   })
 
   it('returns the canonical configured repository subdirectory', async () => {
@@ -265,7 +270,7 @@ describe('prefetchWorkspace (reconcile-time eager clone)', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'co')
     await prefetchWorkspace(gitRepoAgent(path))
     expect(cloneImpl).toHaveBeenCalledTimes(1)
-    expect(cloneImpl).toHaveBeenCalledWith('https://example.com/repo.git', path, [
+    expect(cloneImpl).toHaveBeenCalledWith('https://github.com/acme/repo.git', path, [
       '--branch',
       'main',
       '--single-branch'
@@ -472,7 +477,7 @@ describe('prepareWorkspaceForActivation', () => {
     })
     const target = {
       ...current,
-      workspace: { ...current.workspace, gitRepo: 'https://example.com/another.git', gitBranch: 'next' }
+      workspace: { ...current.workspace, gitRepo: 'https://github.com/acme/another.git', gitBranch: 'next' }
     } as Agent
     // A crash can leave the target spec on disk before materialization. The next
     // detach must not overwrite the source marker merely because it sees that spec.
@@ -545,7 +550,7 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
     process.env.GIT_DIR = '/tmp/attacker-controlled-git-dir'
     rawMock.mockImplementation(async (args: string[]) => {
       expect(lastGitEnv).not.toHaveProperty('GIT_DIR')
-      expect(lastGitEnv?.GIT_ALLOW_PROTOCOL).toBe('https:ssh')
+      expect(lastGitEnv?.GIT_ALLOW_PROTOCOL).toBe('')
       return args[0] === 'remote' && args[1] === 'get-url' ? 'https://github.com/acme/old-name\n' : ''
     })
 
@@ -594,7 +599,7 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-ws-repin-'))
     mkdirSync(join(dir, '.git'))
     rawMock.mockImplementation(async (args: string[]) =>
-      args[0] === 'remote' && args[1] === 'get-url' ? 'https://example.com/repo.git\n' : ''
+      args[0] === 'remote' && args[1] === 'get-url' ? 'https://github.com/acme/repo.git\n' : ''
     )
 
     await prepareWorkspace(gitRepoAgent(dir))
@@ -604,7 +609,7 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
       'remote',
       'set-url',
       'origin',
-      'https://example.com/repo.git'
+      'https://github.com/acme/repo.git'
     ])
   })
 
@@ -613,7 +618,7 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
     mkdirSync(join(dir, '.git'))
     rawMock.mockImplementation(async (args: string[]) =>
       args[0] === 'remote' && args[1] === 'get-url'
-        ? 'https://legacy-user:legacy-token@example.com/repo.git?token=query-secret\n'
+        ? 'https://legacy-user:legacy-token@github.com/acme/repo.git?token=query-secret\n'
         : ''
     )
 
@@ -623,7 +628,7 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
       'remote',
       'set-url',
       'origin',
-      'https://example.com/repo.git'
+      'https://github.com/acme/repo.git'
     ])
     expect(pullMock).toHaveBeenCalled()
   })

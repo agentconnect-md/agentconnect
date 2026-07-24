@@ -83,9 +83,9 @@ export function loadConfig(
  * per install. Best-effort: a write failure is swallowed (the daemon still runs
  * with the in-memory id this session).
  */
-export function persistDaemonId(root: string | undefined, daemonId: string): void {
+export function persistDaemonId(root: string | undefined, daemonId: string, customConfigPath?: string): void {
   try {
-    const file = configPath(resolveRoot(root))
+    const file = customConfigPath ?? configPath(resolveRoot(root))
     protectConfigFile(file)
     const raw = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { version: 1 }
     raw.daemonId = daemonId
@@ -102,9 +102,9 @@ export function persistDaemonId(root: string | undefined, daemonId: string): voi
  * Best-effort — a write failure is swallowed (the in-memory roster still drives
  * this session's dials).
  */
-export function persistRelays(root: string | undefined, relays: RelayRosterEntry[]): void {
+export function persistRelays(root: string | undefined, relays: RelayRosterEntry[], customConfigPath?: string): void {
   try {
-    const file = configPath(resolveRoot(root))
+    const file = customConfigPath ?? configPath(resolveRoot(root))
     protectConfigFile(file)
     const raw = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { version: 1 }
     raw.relays = relays

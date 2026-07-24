@@ -23,6 +23,7 @@ describe('loadConfig', () => {
     expect(cfg.version).toBe(1)
     expect(cfg.runtimes.claude.command).toBe('npx')
     expect(cfg.security.isolateAccountApps).toBe(true)
+    expect(cfg.security.workspaceGitAllowedOrigins).toEqual(['https://github.com', 'ssh://github.com'])
     expect(cfg.limits.maxAgents).toBeGreaterThan(0) // default applied
     expect(cfg.agentsDir).toContain('agents')
   })
@@ -86,6 +87,30 @@ describe('loadConfig', () => {
   it('allows the daemon to opt out of account-app isolation explicitly', () => {
     const root = tmpRoot({ version: 1, security: { isolateAccountApps: false } })
     expect(loadConfig({ root }).security.isolateAccountApps).toBe(false)
+  })
+
+  it('normalizes an operator-owned workspace Git origin allowlist', () => {
+    const root = tmpRoot({
+      version: 1,
+      security: {
+        workspaceGitAllowedOrigins: ['HTTPS://Git.Example.:443/', 'ssh://git.example:2222']
+      }
+    })
+    expect(loadConfig({ root }).security.workspaceGitAllowedOrigins).toEqual([
+      'https://git.example',
+      'ssh://git.example:2222'
+    ])
+  })
+
+  it('allows remote Git to be disabled and rejects path-scoped origin rules', () => {
+    expect(
+      loadConfig({ root: tmpRoot({ version: 1, security: { workspaceGitAllowedOrigins: [] } }) }).security
+    ).toMatchObject({ workspaceGitAllowedOrigins: [] })
+    const root = tmpRoot({
+      version: 1,
+      security: { workspaceGitAllowedOrigins: ['https://git.example/acme'] }
+    })
+    expect(() => loadConfig({ root })).toThrow(/workspace Git origins/)
   })
 
   it('passing --cp-url/--cp-key enables the control plane (defaults off)', () => {

@@ -482,7 +482,9 @@ function applySpecFields(
     delete existing.agentDir
     if (ws.mode === 'github') {
       // Keep old CPs safe too: strip historical URL secrets, then reject any
-      // transport a current daemon would refuse at the clone boundary.
+      // transport a current daemon would refuse. Origin authorization remains
+      // daemon-local and happens at the clone/pull boundary: one incompatible
+      // roster entry must not prevent the daemon from completing CP register.
       existing.gitRepo =
         ws.gitCredential === 'github-app'
           ? normalizeGithubRepoUrl(ws.gitRepo)

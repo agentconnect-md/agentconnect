@@ -185,6 +185,20 @@ describe('CpAgentRegistry (filesystem-backed)', () => {
     expect(ws.path).toBe('./keep-me') // never overwritten on update
   })
 
+  it('persists a valid custom origin for daemon-local authorization at execution time', () => {
+    const dir = agentsDir()
+    const { reg } = makeReg(dir)
+
+    reg.upsert(
+      A1,
+      spec({
+        workspace: { mode: 'github', gitRepo: 'https://git.example/acme/repo.git', branch: 'main' }
+      })
+    )
+
+    expect((readAgent(dir, 'helper').workspace as any).gitRepo).toBe('https://git.example/acme/repo.git')
+  })
+
   it('upsert MERGES by internal id into a custom-named dir (dir name != id), not a duplicate at <dir>/<id>', () => {
     const dir = agentsDir()
     // hand-authored agent: id A1 but living under a differently-named folder
