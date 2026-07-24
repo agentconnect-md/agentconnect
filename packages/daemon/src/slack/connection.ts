@@ -269,6 +269,7 @@ function isRoutableMessageEvent(ev: SlackMessageEvent): boolean {
 
 /** Cap on members enriched per `listChannelMembers` call (bounds users.info fan-out). */
 const MEMBER_ENRICH_CAP = 50
+const SLACK_FILE_ORIGIN = 'https://files.slack.com'
 
 /**
  * Build a chat.postMessage/update payload that renders the body as a Block Kit
@@ -809,33 +810,48 @@ export class SlackConnection {
    * stay daemon-local.
    */
   async downloadFile(sourceUrl: string, maxBytes = 8 * 1024 * 1024): Promise<Buffer | null> {
+    let url: URL
     try {
-      const res = await fetch(sourceUrl, { headers: { Authorization: `Bearer ${this.deps.group.botToken}` } })
+      url = new URL(sourceUrl)
+    } catch {
+      this.deps.log?.debug('slack: downloadFile rejected an invalid file URL')
+      return null
+    }
+    if (url.protocol !== 'https:' || url.origin !== SLACK_FILE_ORIGIN || url.username || url.password) {
+      this.deps.log?.debug('slack: downloadFile rejected a non-Slack file URL')
+      return null
+    }
+
+    try {
+      const res = await fetch(url.href, {
+        headers: { Authorization: `Bearer ${this.deps.group.botToken}` },
+        redirect: 'error'
+      })
       if (!res.ok) {
-        this.deps.log?.debug(`slack: downloadFile ${sourceUrl} → HTTP ${res.status}`)
+        this.deps.log?.debug(`slack: downloadFile ${url.href} → HTTP ${res.status}`)
         return null
       }
       const declared = Number(res.headers.get('content-length'))
       if (Number.isFinite(declared) && declared > maxBytes) {
-        this.deps.log?.debug(`slack: downloadFile ${sourceUrl} skipped — ${declared} bytes > cap ${maxBytes}`)
+        this.deps.log?.debug(`slack: downloadFile ${url.href} skipped — ${declared} bytes > cap ${maxBytes}`)
         return null
       }
       // An unauthorized url_private fetch is redirected to an HTML login page
       // (HTTP 200, text/html) rather than 401 — never mistake that for the file.
       const ctype = res.headers.get('content-type') ?? ''
       if (ctype.includes('text/html')) {
-        this.deps.log?.debug(`slack: downloadFile ${sourceUrl} got text/html (login page?) — treating as inaccessible`)
+        this.deps.log?.debug(`slack: downloadFile ${url.href} got text/html (login page?) — treating as inaccessible`)
         return null
       }
       // Defensively bound the read even when content-length is absent/untrustworthy.
       const buf = Buffer.from(await res.arrayBuffer())
       if (buf.byteLength > maxBytes) {
-        this.deps.log?.debug(`slack: downloadFile ${sourceUrl} discarded — ${buf.byteLength} bytes > cap ${maxBytes}`)
+        this.deps.log?.debug(`slack: downloadFile ${url.href} discarded — ${buf.byteLength} bytes > cap ${maxBytes}`)
         return null
       }
       return buf
     } catch (err) {
-      this.deps.log?.debug(`slack: downloadFile ${sourceUrl} failed: ${(err as Error).message}`)
+      this.deps.log?.debug(`slack: downloadFile ${url.href} failed: ${(err as Error).message}`)
       return null
     }
   }

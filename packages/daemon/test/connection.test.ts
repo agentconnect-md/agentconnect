@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { encodeSlackStatusOverflowValue } from '@agentconnect.md/protocol'
 import { consolidate, SlackConnection } from '../src/slack/connection.js'
 import type { Agent } from '../src/agents/agent-schema.js'
@@ -58,6 +58,43 @@ const deps = () => ({
   group: { appToken: 'xapp-1', botToken: 'xoxb-a', integrations: [] },
   onMessage: () => {},
   newTraceId: () => 't'
+})
+
+describe('SlackConnection.downloadFile', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('sends the bot token only to canonical Slack file URLs and disables redirects', async () => {
+    const fetchMock = vi.fn(async () => new Response('file contents', { headers: { 'content-type': 'text/plain' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const conn = new SlackConnection(deps() as any, () => fakeAppWith(async () => undefined) as any)
+    const url = 'https://files.slack.com/files-pri/T0123-F0456/download/note.txt'
+
+    await expect(conn.downloadFile(url)).resolves.toEqual(Buffer.from('file contents'))
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledWith(url, {
+      headers: { Authorization: 'Bearer xoxb-a' },
+      redirect: 'error'
+    })
+  })
+
+  it('rejects URL confusion and off-origin destinations before making a request', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const conn = new SlackConnection(deps() as any, () => fakeAppWith(async () => undefined) as any)
+
+    for (const url of [
+      'not a URL',
+      'blob:https://files.slack.com/files-pri/T-F/file',
+      'http://files.slack.com/files-pri/T-F/file',
+      'https://files.slack.com.evil.example/files-pri/T-F/file',
+      'https://user@files.slack.com/files-pri/T-F/file',
+      'https://files.slack.com:8443/files-pri/T-F/file',
+      'https://attacker.example/file'
+    ]) {
+      await expect(conn.downloadFile(url)).resolves.toBeNull()
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })
 
 describe('SlackConnection.listBotChannels', () => {
