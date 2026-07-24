@@ -83,6 +83,10 @@ export interface DreamRunnerDeps {
   extract(agentId: string, systemPrompt: string, prompt: string, signal: AbortSignal): Promise<string>
   log: { info(msg: string): void; warn(msg: string): void }
   now?(): Date
+  /** Grace period after a cancel before the runner ABANDONS the extraction and
+   *  releases the reservation regardless of whether `extract` ever settles — the
+   *  hard backstop for a runtime that ignores `session/cancel`. Default 30 s. */
+  cancelGraceMs?: number
   /** Test seam: invoked immediately after staging finishes, before the
    *  cancel-wins recheck. Production leaves it unset. */
   onStaged?(agentId: string, dreamId: string): void | Promise<void>
@@ -253,10 +257,13 @@ export class DreamRunner {
       // A cancel that landed before extraction wins: skip the expensive call.
       if (this.deps.store.getDream(agentId, dreamId)?.status !== 'running') return
 
-      const output = await this.deps.extract(agentId, MEMORY_DREAM_SYSTEM_PROMPT, prompt, signal)
+      const extracted = await this.extractWithBackstop(agentId, prompt, signal)
 
-      // A cancel that landed mid-extraction wins: drop the output unstaged.
-      if (this.deps.store.getDream(agentId, dreamId)?.status !== 'running') return
+      // A cancel that landed mid-extraction wins: drop the output unstaged. This
+      // also covers the backstop firing (extraction ignored the cancel and never
+      // settled within the grace window) — the reservation is released either way.
+      if (this.deps.store.getDream(agentId, dreamId)?.status !== 'running' || extracted.abandoned) return
+      const output = extracted.output
 
       const proposal = parseDreamProposal(output)
       if (!proposal) {
@@ -295,6 +302,42 @@ export class DreamRunner {
           error: { type: 'pipeline_error', message: err instanceof Error ? err.message : 'unknown error' }
         })
       }
+    }
+  }
+
+  /**
+   * Await `deps.extract`, but ABANDON it if a cancel fires and the extraction
+   * hasn't settled within `cancelGraceMs`. daemon.ts drives the ACP
+   * `session/cancel` on abort; this is the hard backstop for a runtime that
+   * ignores it — the runner never waits forever, so a canceled dream's
+   * reservation is always released within the grace window even if the prompt
+   * never returns. (The orphaned extraction resolves into nothing; its ACP
+   * session is discarded daemon-side.)
+   */
+  private async extractWithBackstop(
+    agentId: string,
+    prompt: string,
+    signal: AbortSignal
+  ): Promise<{ abandoned: false; output: string } | { abandoned: true; output: '' }> {
+    const graceMs = this.deps.cancelGraceMs ?? 30_000
+    const extraction = this.deps.extract(agentId, MEMORY_DREAM_SYSTEM_PROMPT, prompt, signal).then(
+      (output) => ({ abandoned: false as const, output }),
+      (err) => {
+        throw err
+      }
+    )
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const backstop = new Promise<{ abandoned: true; output: '' }>((resolve) => {
+      const arm = () => {
+        timer = setTimeout(() => resolve({ abandoned: true, output: '' }), graceMs)
+      }
+      if (signal.aborted) arm()
+      else signal.addEventListener('abort', arm, { once: true })
+    })
+    try {
+      return await Promise.race([extraction, backstop])
+    } finally {
+      if (timer) clearTimeout(timer)
     }
   }
 

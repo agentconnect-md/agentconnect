@@ -52,6 +52,7 @@ const PROPOSAL = JSON.stringify({
 async function setup(opts: {
   extract?: (agentId: string, systemPrompt: string, prompt: string, signal: AbortSignal) => Promise<string>
   policy?: MemoryDreamingPolicy
+  cancelGraceMs?: number
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
   ensureMemory(dir, 'bot')
@@ -66,6 +67,7 @@ async function setup(opts: {
       prompts.push({ systemPrompt, prompt })
       return opts.extract ? opts.extract(agentId, systemPrompt, prompt, signal) : PROPOSAL
     },
+    ...(opts.cancelGraceMs !== undefined ? { cancelGraceMs: opts.cancelGraceMs } : {}),
     log: silent
   })
   return { dir, store, runner, prompts }
@@ -208,6 +210,38 @@ describe('DreamRunner pipeline', () => {
     await new Promise((r) => setTimeout(r, 20))
     expect(store.dreams.get(started.dreamId)?.status).toBe('canceled')
     expect(await runner.stagedFiles('a1', started.dreamId)).toBeNull()
+  })
+
+  it('backstops a runtime that ignores cancel: abandons the extraction and frees the agent', async () => {
+    // The extraction never settles and never honors the abort signal — models an
+    // ACP runtime that drops session/cancel. The runner's grace window must still
+    // release the reservation so a replacement dream can run.
+    let calls = 0
+    const { store, runner } = await setup({
+      cancelGraceMs: 20,
+      extract: (_a, _s, _p, _signal) => {
+        if (calls++ > 0) return Promise.resolve(PROPOSAL)
+        return new Promise<string>(() => {}) // never resolves, ignores abort
+      }
+    })
+    const first = await runner.start('a1', { trigger: 'manual' })
+    await new Promise((r) => setTimeout(r, 10))
+    runner.cancel('a1', first.dreamId)
+    const done = await settle(store, first.dreamId)
+    expect(done.status).toBe('canceled')
+
+    // Within the grace window the reservation frees even though extract hangs.
+    let second: { dreamId: string } | undefined
+    for (let i = 0; i < 100 && !second; i++) {
+      try {
+        second = await runner.start('a1', { trigger: 'manual' })
+      } catch {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+    }
+    expect(second).toBeDefined()
+    await settle(store, second!.dreamId)
+    expect(store.dreams.get(second!.dreamId)?.status).toBe('completed')
   })
 
   it('cancel aborts the extraction signal and releases the reservation for a replacement', async () => {

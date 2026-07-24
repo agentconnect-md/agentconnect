@@ -411,6 +411,12 @@ function reviewResultForWire(effect: GithubReviewEffect): HookReviewResult {
 // grow `queued` without bound. Past the cap we reject with a clear message.
 const MAX_QUEUED_PER_SESSION = 10
 
+/** Bounded hard-stop for a dream extraction whose runtime ignores `session/cancel`:
+ *  how long after the abort the daemon stops awaiting `host.prompt` and discards
+ *  the isolated ACP session, rather than wedging forever. The runner's own grace
+ *  window (DreamRunnerDeps.cancelGraceMs) releases the reservation independently. */
+const DREAM_CANCEL_FORCE_MS = 15_000
+
 // Last-resort feedback-loop protection. The lower automatic threshold catches
 // agent/system/platform-echo chains; the higher all-turn threshold still stops a
 // platform bug that accidentally labels its own events as ordinary human messages.
@@ -3217,6 +3223,11 @@ export class Daemon {
       cwd = await mkdtemp(join(tmpdir(), 'agentconnect-memory-distill-'))
       this.memoryExtractionDirs.set(agentId, cwd)
     }
+    // Abort can land during the awaited setup below, before any prompt exists —
+    // then `session/cancel` has nothing to cancel. Guard on the signal after each
+    // await and immediately before dispatch so a canceled dream bails instead of
+    // launching an uncancellable prompt.
+    if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
     const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
     // On cancel, drive the ACP turn-cancel path so a hung/long prompt actually
     // stops instead of pinning the dream's one-in-flight reservation.
@@ -3224,6 +3235,7 @@ export class Daemon {
     if (signal.aborted) onAbort()
     else signal.addEventListener('abort', onAbort, { once: true })
     try {
+      if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
       // HARD GATE: require a verified non-mutating mode. Fail closed if the
       // runtime advertises none or the switch is rejected — never run an
       // injection-exposed extraction with write access.
@@ -3232,6 +3244,8 @@ export class Daemon {
       if (!readOnlyMode || !(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
         throw new Error('runtime lacks a verified read-only/plan mode; dream extraction cannot run safely')
       }
+      // Final guard immediately before dispatch — abort during permission setup.
+      if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
 
       const key = pendingTurnKey(agentId, sessionId)
       const chunks: string[] = []
@@ -3239,7 +3253,11 @@ export class Daemon {
       try {
         this.rematerializeConfigFiles(agentId)
         const text = trusted ? prompt : `${systemPrompt}\n\n${prompt}`
-        await host.prompt(sessionId, [{ type: 'text', text }])
+        // Bounded backstop: if the runtime ignores `session/cancel` and never
+        // yields, stop awaiting after DREAM_CANCEL_FORCE_MS from the abort so the
+        // `finally` discards the ACP session instead of leaking it. The runner's
+        // own grace window already releases the reservation independently.
+        await this.promptWithCancelBackstop(host, sessionId, text, signal)
         return chunks.join('')
       } finally {
         this.memoryExtractionCollectors.delete(key)
@@ -3247,6 +3265,33 @@ export class Daemon {
     } finally {
       signal.removeEventListener('abort', onAbort)
       host.discardSession(sessionId)
+    }
+  }
+
+  /** Await `host.prompt`, but stop waiting `DREAM_CANCEL_FORCE_MS` after an abort
+   *  if the runtime never yields — so a runtime that ignores `session/cancel`
+   *  can't wedge this call (and its ACP session) forever. */
+  private async promptWithCancelBackstop(
+    host: AcpHost,
+    sessionId: string,
+    text: string,
+    signal: AbortSignal
+  ): Promise<void> {
+    const done = host.prompt(sessionId, [{ type: 'text', text }])
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const backstop = new Promise<never>((_resolve, reject) => {
+      const arm = () =>
+        (timer = setTimeout(
+          () => reject(new Error('dream extraction ignored session/cancel; detached after backstop')),
+          DREAM_CANCEL_FORCE_MS
+        ))
+      if (signal.aborted) arm()
+      else signal.addEventListener('abort', arm, { once: true })
+    })
+    try {
+      await Promise.race([done, backstop])
+    } finally {
+      if (timer) clearTimeout(timer)
     }
   }
 
