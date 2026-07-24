@@ -2866,3 +2866,20 @@
     transform: scale(0.9);
   }
 }
+
+/* Plain animation classes — reference the keyframes above from WITHIN this file so the
+   CSS optimizer keeps them. Tailwind arbitrary `animate-[name_…]` utilities live in a
+   separate output the optimizer can't see as a reference, so it would otherwise prune
+   these @keyframes and the animations would silently not play. */
+.slack-hint-blink {
+  animation: slackHintBlink 1.1s ease-in-out infinite;
+}
+.cfg-scroll {
+  animation: cfgScroll 4.6s ease-in-out infinite;
+}
+.cfg-click-a {
+  animation: cfgClickA 4.6s ease-in-out infinite;
+}
+.cfg-click-b {
+  animation: cfgClickB 4.6s ease-in-out infinite;
+}

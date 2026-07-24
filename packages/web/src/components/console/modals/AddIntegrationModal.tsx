@@ -310,7 +310,7 @@ function SlackManifestPreview() {
         </div>
         <div className="grid grid-cols-2 gap-2">
           <div className="relative rounded-lg border-2 border-[#1264a3] bg-white p-2.5">
-            <span className="pointer-events-none absolute -inset-0.5 animate-[slackHintBlink_1.1s_ease-in-out_infinite] rounded-[10px] ring-2 ring-[#1264a3]" />
+            <span className="pointer-events-none absolute -inset-0.5 slack-hint-blink rounded-[10px] ring-2 ring-[#1264a3]" />
             <span className="mb-1.5 flex h-6 w-6 items-center justify-center rounded-md bg-[#f4f4f4] text-[#454545]">
               <Icon name="scroll-text" size={14} />
             </span>
@@ -354,7 +354,7 @@ function SlackConfigTokenPreview() {
           </span>
         </div>
         <div className="h-[140px] overflow-hidden bg-(--surface-card)">
-          <div className="animate-[cfgScroll_4.6s_ease-in-out_infinite] px-2.5 py-2">
+          <div className="cfg-scroll px-2.5 py-2">
             <div className="mb-1.5 font-sans text-[10px] font-bold leading-tight text-(--text-primary)">Your apps</div>
             {[0, 1].map((i) => (
               <div
@@ -387,11 +387,11 @@ function SlackConfigTokenPreview() {
                 <span className="font-mono text-[9px] leading-normal text-(--text-secondary)">your-workspace</span>
                 <span className="relative rounded border border-(--border-default) bg-(--surface-card) px-1.5 py-[3px] font-sans text-[8.5px] font-semibold leading-normal text-(--text-secondary)">
                   Copy
-                  <span className="pointer-events-none absolute -inset-[3px] animate-[cfgClickA_4.6s_ease-in-out_infinite] rounded ring-2 ring-(--brand)" />
+                  <span className="pointer-events-none absolute -inset-[3px] cfg-click-a rounded ring-2 ring-(--brand)" />
                 </span>
                 <span className="relative rounded border border-(--border-default) bg-(--surface-card) px-1.5 py-[3px] font-sans text-[8.5px] font-semibold leading-normal text-(--text-secondary)">
                   Copy
-                  <span className="pointer-events-none absolute -inset-[3px] animate-[cfgClickB_4.6s_ease-in-out_infinite] rounded ring-2 ring-(--brand)" />
+                  <span className="pointer-events-none absolute -inset-[3px] cfg-click-b rounded ring-2 ring-(--brand)" />
                 </span>
               </div>
               <div className="mt-1 font-sans text-[8px] leading-normal text-(--text-tertiary)">Expires in 5 hours</div>
