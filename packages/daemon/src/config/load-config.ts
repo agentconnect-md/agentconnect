@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
+import { chmodSync, readFileSync, existsSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { RelayRosterEntry } from '@agentconnect.md/protocol'
 import { ConfigSchema, type Config } from './config-schema.js'
@@ -15,6 +15,29 @@ export interface FlatOverrides {
   requireSandbox?: boolean
 }
 
+function protectConfigFile(file: string, writable = false): void {
+  if (!existsSync(file)) return
+  try {
+    const current = statSync(file).mode & 0o777
+    const desired = writable ? 0o600 : current & 0o700
+    if (current !== desired) chmodSync(file, desired)
+  } catch (err) {
+    // Windows does not provide enforceable POSIX mode semantics. On POSIX,
+    // never keep using a secret-bearing config if owner-only access cannot be
+    // established.
+    if (process.platform !== 'win32') throw err
+  }
+}
+
+function writeConfigFile(file: string, raw: unknown): void {
+  // `mode` protects new paths; chmod also repairs a legacy file created under a
+  // loose umask. Do not chmod an existing custom parent directory.
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+  protectConfigFile(file, true)
+  writeFileSync(file, JSON.stringify(raw, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 })
+  protectConfigFile(file, true)
+}
+
 export function loadConfig(
   opts: { root?: string; configPath?: string; overrides?: FlatOverrides; optional?: boolean; autoCreate?: boolean } = {}
 ): Config {
@@ -27,11 +50,11 @@ export function loadConfig(
   // user has a file to edit later — no `agentconnect login` required.
   let raw: unknown
   if (existsSync(file)) {
+    protectConfigFile(file)
     raw = JSON.parse(readFileSync(file, 'utf8'))
   } else if (opts.autoCreate) {
     raw = { version: 1 }
-    mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(file, JSON.stringify(raw, null, 2) + '\n')
+    writeConfigFile(file, raw)
   } else if (opts.optional) {
     raw = { version: 1 }
   } else {
@@ -63,10 +86,10 @@ export function loadConfig(
 export function persistDaemonId(root: string | undefined, daemonId: string): void {
   try {
     const file = configPath(resolveRoot(root))
+    protectConfigFile(file)
     const raw = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { version: 1 }
     raw.daemonId = daemonId
-    mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(file, JSON.stringify(raw, null, 2) + '\n')
+    writeConfigFile(file, raw)
   } catch {
     // ignore — non-fatal
   }
@@ -82,10 +105,10 @@ export function persistDaemonId(root: string | undefined, daemonId: string): voi
 export function persistRelays(root: string | undefined, relays: RelayRosterEntry[]): void {
   try {
     const file = configPath(resolveRoot(root))
+    protectConfigFile(file)
     const raw = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { version: 1 }
     raw.relays = relays
-    mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(file, JSON.stringify(raw, null, 2) + '\n')
+    writeConfigFile(file, raw)
   } catch {
     // ignore — non-fatal
   }

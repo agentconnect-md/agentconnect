@@ -22,6 +22,7 @@
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, renameSync, readdirSync } from 'node:fs'
 import { join, dirname, relative, resolve, isAbsolute, sep } from 'node:path'
 import { normalizeGitUrl, normalizeRepoSubdir, type AgentSpec } from '@agentconnect.md/protocol'
+import { ensurePrivateAgentDirectory, protectAgentJson, writeAgentJson } from './agent-json-file.js'
 import { findAgentFiles } from './load-agents.js'
 
 export interface WriteAgentDeps {
@@ -64,7 +65,7 @@ function writeMoveStage(agentsDir: string, agentId: string, metadata: AgentMoveS
   const root = stagedAgentDir(agentsDir, agentId)
   const file = join(root, MOVE_META_FILE)
   const temp = join(root, `${MOVE_META_FILE}.tmp`)
-  mkdirSync(root, { recursive: true })
+  ensurePrivateAgentDirectory(root)
   try {
     writeFileSync(temp, JSON.stringify(metadata, null, 2) + '\n')
     renameSync(temp, file)
@@ -91,6 +92,7 @@ export function stageAgentMove(
 export function readAgentMoveStage(agentsDir: string, agentId: string): AgentMoveStageMetadata | undefined {
   const root = stagedAgentDir(agentsDir, agentId)
   if (!existsSync(root)) return undefined
+  ensurePrivateAgentDirectory(root)
   try {
     const raw = JSON.parse(readFileSync(join(root, MOVE_META_FILE), 'utf8')) as Partial<AgentMoveStageMetadata>
     if (typeof raw.moveId === 'string' && (raw.state === 'staging' || raw.state === 'committed')) {
@@ -146,11 +148,12 @@ function detachedDataDir(agentsDir: string, agentId: string): string {
 }
 
 function scrubAgentIntegrations(file: string): string {
+  protectAgentJson(file)
   const original = readFileSync(file, 'utf8')
   const raw = JSON.parse(original) as Record<string, unknown>
   if (Array.isArray(raw.integrations) && raw.integrations.length === 0) return original
   raw.integrations = []
-  writeFileSync(file, JSON.stringify(raw, null, 2) + '\n')
+  writeAgentJson(file, JSON.stringify(raw, null, 2) + '\n')
   return original
 }
 
@@ -164,6 +167,7 @@ export function archiveAgent(agentsDir: string, agentId: string): 'archived' | '
   const archived = detachedDataDir(agentsDir, agentId)
   if (!file) {
     if (!existsSync(archived)) return 'missing'
+    ensurePrivateAgentDirectory(detachedAgentDir(agentsDir, agentId))
     const archivedFile = findAgentFileById(archived, agentId)
     if (!archivedFile) throw new Error(`cannot detach agent "${agentId}": detached archive is incomplete`)
     // Idempotent security convergence: an archive produced by an interrupted or
@@ -193,7 +197,7 @@ export function archiveAgent(agentsDir: string, agentId: string): 'archived' | '
   try {
     // The archive keeps workspace/memory/local files, but bot credentials are CP
     // authority and must not remain forever on the historical source daemon.
-    mkdirSync(archiveRoot, { recursive: true })
+    ensurePrivateAgentDirectory(archiveRoot)
     scrubAgentIntegrations(file)
     writeFileSync(join(archiveRoot, DETACHED_META_FILE), JSON.stringify(metadata, null, 2) + '\n')
     renameSync(activeDir, archived)
@@ -203,7 +207,7 @@ export function archiveAgent(agentsDir: string, agentId: string): 'archived' | '
     // either metadata write or rename fails, so rolling this root back is safe.
     // rename is atomic: on failure the active file remains at `file`, so put its
     // exact original text (including local formatting/templates) back.
-    if (existsSync(file)) writeFileSync(file, originalAgentJson)
+    if (existsSync(file)) writeAgentJson(file, originalAgentJson)
     rmSync(archiveRoot, { recursive: true, force: true })
     throw err
   }
@@ -215,6 +219,7 @@ export function restoreArchivedAgent(agentsDir: string, agentId: string): boolea
   const archiveRoot = detachedAgentDir(agentsDir, agentId)
   const archived = detachedDataDir(agentsDir, agentId)
   if (!existsSync(archiveRoot)) return false
+  ensurePrivateAgentDirectory(archiveRoot)
   if (!existsSync(archived)) throw new Error(`cannot activate agent "${agentId}": detached archive is incomplete`)
 
   let metadata: DetachedAgentMetadata
@@ -300,7 +305,7 @@ export function pruneMovedAgentDependents(
       changed = true
     }
   }
-  if (changed) writeFileSync(file, JSON.stringify(raw, null, 2) + '\n')
+  if (changed) writeAgentJson(file, JSON.stringify(raw, null, 2) + '\n')
 
   const finalIntegrations = new Set(
     (Array.isArray(raw.integrations) ? raw.integrations : []).flatMap((integration) => {
@@ -343,6 +348,7 @@ function mapWorkspaceMode(mode: 'scratch' | 'github'): 'from-scratch' | 'git-rep
  */
 export function findAgentFileById(agentsDir: string, agentId: string): string | undefined {
   for (const file of findAgentFiles(agentsDir)) {
+    protectAgentJson(file)
     try {
       const raw = JSON.parse(readFileSync(file, 'utf8')) as { id?: unknown }
       if (raw.id === agentId) return file
@@ -522,7 +528,7 @@ export function writeAgentSpec(agentsDir: string, agentId: string, spec: AgentSp
   if (existingFile) {
     const raw = JSON.parse(readFileSync(existingFile, 'utf8')) as Record<string, unknown>
     applySpecFields(raw, spec, { agentId, agentDir: dirname(existingFile), creating: false })
-    writeFileSync(existingFile, JSON.stringify(raw, null, 2) + '\n')
+    writeAgentJson(existingFile, JSON.stringify(raw, null, 2) + '\n')
     return
   }
 
@@ -546,8 +552,7 @@ export function writeAgentSpec(agentsDir: string, agentId: string, spec: AgentSp
   }
   applySpecFields(raw, spec, { agentId, agentDir, creating: true })
 
-  mkdirSync(agentDir, { recursive: true })
-  writeFileSync(file, JSON.stringify(raw, null, 2) + '\n')
+  writeAgentJson(file, JSON.stringify(raw, null, 2) + '\n')
 }
 
 /**

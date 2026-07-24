@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, isAbsolute } from 'node:path'
 import { loadAgents, discoverAgents, selectAgent } from '../src/agents/load-agents.js'
@@ -71,6 +71,32 @@ describe('loadAgents', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-agents-'))
     writeAgent(dir, 'bad', { id: 'bad' }) // missing required fields
     expect(() => loadAgents(dir)).toThrow(/bad/)
+  })
+
+  it.skipIf(process.platform === 'win32')('repairs a legacy detached agent.json without discovering it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-agents-'))
+    writeAgent(dir, 'bot-a', slackAgent('bot-a'))
+    const archivedDir = join(dir, '.detached', 'bot-old', 'agent')
+    mkdirSync(archivedDir, { recursive: true })
+    const archivedFile = join(archivedDir, 'agent.json')
+    writeFileSync(
+      archivedFile,
+      JSON.stringify({ ...slackAgent('bot-old'), runtimeOverrides: { secrets: { API_TOKEN: 'secret' } } })
+    )
+    chmodSync(archivedFile, 0o644)
+
+    expect(loadAgents(dir).map((agent) => agent.id)).toEqual(['bot-a'])
+    expect(statSync(archivedFile).mode & 0o777).toBe(0o600)
+  })
+
+  it.skipIf(process.platform === 'win32')('preserves an owner-only read-only agent.json while loading it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-agents-'))
+    writeAgent(dir, 'bot-a', slackAgent('bot-a'))
+    const file = join(dir, 'bot-a', 'agent.json')
+    chmodSync(file, 0o400)
+
+    expect(loadAgents(dir)).toHaveLength(1)
+    expect(statSync(file).mode & 0o777).toBe(0o400)
   })
 })
 

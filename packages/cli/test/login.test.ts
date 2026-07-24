@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
+import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -46,6 +46,7 @@ describe('persistCredentials', () => {
     expect(raw.controlPlane.url).toBe('wss://cp.example/daemon/ws')
     expect(raw.controlPlane.key).toBe('tok-123')
     expect(raw.controlPlane.enabled).toBe(true)
+    if (process.platform !== 'win32') expect(statSync(join(root, 'config.json')).mode & 0o777).toBe(0o600)
   })
 
   it('persists daemonId only when explicitly provided', () => {
@@ -69,6 +70,17 @@ describe('persistCredentials', () => {
     expect(raw.logging.level).toBe('debug')
     expect(raw.runtimes.claude.command).toBe('npx')
     expect(raw.controlPlane.key).toBe('tok')
+  })
+
+  it.skipIf(process.platform === 'win32')('repairs an existing credential file to owner-only permissions', () => {
+    const root = emptyRoot()
+    const file = join(root, 'config.json')
+    writeFileSync(file, JSON.stringify({ version: 1 }), { mode: 0o644 })
+    chmodSync(file, 0o644)
+
+    persistCredentials({ root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' })
+
+    expect(statSync(file).mode & 0o777).toBe(0o600)
   })
 })
 

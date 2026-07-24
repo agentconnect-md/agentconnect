@@ -14,9 +14,10 @@
  * the parsed `LoadedAgent`, whose `workspace.path` has been rewritten absolute.
  * Editing the raw file preserves the original relative path.
  */
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import type { IntegrationSpec } from '@agentconnect.md/protocol'
 import type { Integration } from './agent-schema.js'
+import { protectAgentJson, writeAgentJson } from './agent-json-file.js'
 import { findAgentFiles } from './load-agents.js'
 import { findAgentFileById } from './write-agent.js'
 
@@ -108,7 +109,7 @@ export function writeIntegrationSpec(agentsDir: string, spec: IntegrationSpec, d
   if (idx >= 0) list[idx] = next
   else list.push(next)
   raw.integrations = list
-  writeFileSync(file, JSON.stringify(raw, null, 2) + '\n')
+  writeAgentJson(file, JSON.stringify(raw, null, 2) + '\n')
   return true
 }
 
@@ -119,6 +120,7 @@ export function writeIntegrationSpec(agentsDir: string, spec: IntegrationSpec, d
  */
 export function removeIntegration(agentsDir: string, integrationId: string): boolean {
   for (const file of findAgentFiles(agentsDir)) {
+    protectAgentJson(file)
     let raw: Record<string, unknown>
     try {
       raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
@@ -132,7 +134,7 @@ export function removeIntegration(agentsDir: string, integrationId: string): boo
     )
     if (idx === -1) continue
     list.splice(idx, 1)
-    writeFileSync(file, JSON.stringify(raw, null, 2) + '\n')
+    writeAgentJson(file, JSON.stringify(raw, null, 2) + '\n')
     return true
   }
   return false
