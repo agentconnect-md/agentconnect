@@ -16,9 +16,9 @@
  * is an authorization gate, availability never widens it.
  *
  * Semantics (design open question #7):
- *  - need=read  ⇒ any effective permission, or the repo is public;
+ *  - need=read  ⇒ any effective permission;
  *  - need=write ⇒ effective write/admin (GitHub collapses maintain→write) —
- *    public repos do NOT satisfy write;
+ *    repository visibility alone never satisfies either tier;
  *  - no GitHub identity on the account (Google sign-in, deleted at provider)
  *    ⇒ GITHUB_IDENTITY_REQUIRED, never a silent allow;
  *  - authorization is asserted at pick/create time; the daemon keeps running
@@ -161,21 +161,22 @@ export class GithubUserAuthzService {
     return {
       permission,
       repoPrivate,
-      canRead: permission !== 'none' || !repoPrivate,
+      canRead: permission !== 'none',
       canWrite: permission === 'admin' || permission === 'write'
     }
   }
 
   /**
-   * List filter for the picker: keep public repos and private repos the caller
-   * can read on GitHub — so no-access repo NAMES never render in the console.
-   * Private repos are probed with the same cached permission unit as the gates
-   * (bounded concurrency; a cold 100-private page costs that many Metadata:read
+   * List filter for the picker: keep only repos on which the caller has an
+   * effective GitHub permission — so no-access repo NAMES never render in the
+   * console, even when the repository is public. Repos are probed with the same
+   * cached permission unit as the gates
+   * (bounded concurrency; a cold 100-repository page costs that many Metadata:read
    * calls once per user per 5 minutes — fine at realistic grant sizes, and the
    * GraphQL alias batch is the tracked upgrade if an org outgrows it). Throws
    * GITHUB_IDENTITY_REQUIRED like every other check — never a silent allow.
    */
-  async filterReposForUser<T extends { fullName: string; private: boolean }>(
+  async filterReposForUser<T extends { fullName: string }>(
     userId: string,
     ins: GithubInstallationRecord,
     repos: T[]
@@ -188,10 +189,6 @@ export class GithubUserAuthzService {
         const i = next++
         if (i >= repos.length) return
         const r = repos[i]!
-        if (!r.private) {
-          results[i] = true
-          continue
-        }
         const [owner, repo] = r.fullName.split('/')
         if (!owner || !repo) continue
         results[i] = (await this.permissionOf(login, ins, owner, repo)) !== 'none'

@@ -165,14 +165,16 @@ describe('GithubUserAuthzService', () => {
     })
   })
 
-  it('private + none ⇒ no read; public + none ⇒ read but never write', async () => {
+  it('none denies read regardless of repository visibility', async () => {
     const closed = authz({ login: 'me', repo: { private: true }, permission: 'none' })
     await expect(closed.svc.assertAccess('u1', INS, 'o', 'r', 'read')).rejects.toMatchObject({
       code: 'USER_NO_ACCESS'
     })
 
     const open = authz({ login: 'me', repo: { private: false }, permission: 'none' })
-    await expect(open.svc.assertAccess('u1', INS, 'o', 'r', 'read')).resolves.toMatchObject({ canRead: true })
+    await expect(open.svc.assertAccess('u1', INS, 'o', 'r', 'read')).rejects.toMatchObject({
+      code: 'USER_NO_ACCESS'
+    })
     await expect(open.svc.assertAccess('u1', INS, 'o', 'r', 'write')).rejects.toMatchObject({
       code: 'USER_NO_ACCESS'
     })
@@ -207,19 +209,20 @@ describe('GithubUserAuthzService', () => {
     expect(calls.permission).toBe(2)
   })
 
-  it('filters the repo list: public stays, readable private stays, no-access private drops', async () => {
+  it('filters the repo list by effective permission, including public repositories', async () => {
     const { svc, calls } = authz({
       login: 'me',
-      permissions: { 'o/readable': 'read', 'o/secret': 'none' }
+      permissions: { 'o/pub': 'none', 'o/public-member': 'read', 'o/readable': 'read', 'o/secret': 'none' }
     })
     const page = [
       { fullName: 'o/pub', private: false },
+      { fullName: 'o/public-member', private: false },
       { fullName: 'o/readable', private: true },
       { fullName: 'o/secret', private: true }
     ]
     const visible = await svc.filterReposForUser('u1', INS, page)
-    expect(visible.map((r) => r.fullName)).toEqual(['o/pub', 'o/readable'])
-    expect(calls.permission).toBe(2) // public repos are never probed
+    expect(visible.map((r) => r.fullName)).toEqual(['o/public-member', 'o/readable'])
+    expect(calls.permission).toBe(4)
   })
 
   it('list filter reuses the same permission cache as the gates', async () => {
