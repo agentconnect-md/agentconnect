@@ -2424,20 +2424,30 @@ export function agentRoutes(deps: HttpDeps) {
     )
 
     // ── Memory dreaming (docs/designs/memory-dreaming.md §10) ──────────────────
-    // Offline consolidation jobs over the managed store. The CP relays lifecycle
-    // + staged-output review to the owning daemon and persists nothing but the
-    // job metadata it returns; staged bodies are proxied live (body-locality).
-    // Managed-provider only; a non-managed agent is a 400.
+    // Offline consolidation jobs over the managed store. The CP is a pure relay
+    // here: lifecycle + staged-output review are forwarded to the owning daemon
+    // and nothing (metadata or bodies) is persisted CP-side — list/get require a
+    // live daemon (offline metadata caching is deferred, design §8/§10).
+    // Managed-provider only; a non-managed agent is a 400. Lifecycle mutations
+    // require edit rights (viewers get 403).
 
-    /** Guard: managed provider + a live daemon, or the right 4xx/503 reply. */
+    /** Guard: managed provider + a live daemon, or the right 4xx/503 reply.
+     *  `edit: true` additionally requires edit rights (403 for a viewer) — dream
+     *  lifecycle mutations run agent work or replace the live store, so they must
+     *  match the viewer-read-only invariant of the other memory mutations. */
     const dreamAgentOrReply = async (
       req: FastifyRequest,
       reply: FastifyReply,
-      id: string
+      id: string,
+      edit = false
     ): Promise<(AgentRecord & { daemonId: string }) | null> => {
       const agent = await getOrgAgent(req, id)
       if (!agent) {
         await reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        return null
+      }
+      if (edit && !canEdit(agent, ctxOf(req))) {
+        await reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         return null
       }
       if (agent.memory?.provider !== undefined && agent.memory.provider !== 'managed') {
@@ -2476,11 +2486,11 @@ export function agentRoutes(deps: HttpDeps) {
           operationId: 'startAgentMemoryDream',
           params: IdParam,
           body: StartDreamBody,
-          response: { 200: DreamDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          response: { 200: DreamDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
-        const agent = await dreamAgentOrReply(req, reply, req.params.id)
+        const agent = await dreamAgentOrReply(req, reply, req.params.id, true)
         if (!agent) return
         try {
           const { dream } = await deps.control.dreamStart(agent.daemonId, {
@@ -2532,6 +2542,7 @@ export function agentRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'Get a memory dream',
+          description: "Fetch one dream job's metadata (never staged bodies), proxied from the owning daemon.",
           operationId: 'getAgentMemoryDream',
           params: DreamIdParam,
           response: { 200: DreamDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
@@ -2560,13 +2571,15 @@ export function agentRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'Cancel a memory dream',
+          description:
+            'Cancel a pending or running dream on the owning daemon (cancel-wins; a late extraction result is never staged). 409 if the dream is already terminal.',
           operationId: 'cancelAgentMemoryDream',
           params: DreamIdParam,
-          response: { 200: DreamDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          response: { 200: DreamDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
-        const agent = await dreamAgentOrReply(req, reply, req.params.id)
+        const agent = await dreamAgentOrReply(req, reply, req.params.id, true)
         if (!agent) return
         try {
           const { dream } = await deps.control.dreamCancel(agent.daemonId, {
@@ -2593,11 +2606,11 @@ export function agentRoutes(deps: HttpDeps) {
           operationId: 'adoptAgentMemoryDream',
           params: DreamIdParam,
           body: AdoptDreamBody,
-          response: { 200: DreamDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          response: { 200: DreamDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
-        const agent = await dreamAgentOrReply(req, reply, req.params.id)
+        const agent = await dreamAgentOrReply(req, reply, req.params.id, true)
         if (!agent) return
         try {
           const { dream } = await deps.control.dreamAdopt(agent.daemonId, {
@@ -2620,13 +2633,15 @@ export function agentRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'Discard a memory dream',
+          description:
+            "Delete a terminal dream's staged output on the owning daemon, keeping the job record for history. 409 if the dream is not in a terminal state.",
           operationId: 'discardAgentMemoryDream',
           params: DreamIdParam,
-          response: { 200: DreamDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          response: { 200: DreamDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
-        const agent = await dreamAgentOrReply(req, reply, req.params.id)
+        const agent = await dreamAgentOrReply(req, reply, req.params.id, true)
         if (!agent) return
         try {
           const { dream } = await deps.control.dreamDiscard(agent.daemonId, {

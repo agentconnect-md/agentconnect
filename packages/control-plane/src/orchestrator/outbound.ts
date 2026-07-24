@@ -469,8 +469,9 @@ export class ControlSender {
   }
 
   // ── memory dreaming (docs/designs/memory-dreaming.md §10) — the CP relays the
-  //    dream lifecycle + staged-output review, persisting only DreamInfo metadata.
-  //    Staged bodies ride byte-sliced correlated replies, exactly like memory/read.
+  //    dream lifecycle + staged-output review to the owning daemon and persists
+  //    nothing (offline metadata caching is deferred). Staged bodies ride
+  //    byte-sliced correlated replies, exactly like memory/read.
 
   async dreamStart(daemonId: string, req: DreamStartReq): Promise<DreamState> {
     const c = this.must(daemonId)
