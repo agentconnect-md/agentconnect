@@ -2883,3 +2883,21 @@
 .cfg-click-b {
   animation: cfgClickB 4.6s ease-in-out infinite;
 }
+
+/* Reduced motion: no loops. Leave a useful STATIC preview — the config-token popover is
+   parked at the bottom (the "Your App Configuration Tokens" section, the destination), the
+   Copy-pulse rings are hidden, and the manifest tile keeps its (static) highlight. */
+@media (prefers-reduced-motion: reduce) {
+  .slack-hint-blink {
+    animation: none;
+  }
+  .cfg-scroll {
+    animation: none;
+    transform: translateY(calc(-100% + 140px));
+  }
+  .cfg-click-a,
+  .cfg-click-b {
+    animation: none;
+    opacity: 0;
+  }
+}

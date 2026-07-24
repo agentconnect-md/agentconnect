@@ -17,6 +17,7 @@ import {
   getSlackInstall,
   fetchSlackConfig,
   saveSlackConfig,
+  deleteSlackConfig,
   fetchAgentHooks,
   fetchAgentRepos,
   fetchAllGithubRepos,
@@ -1101,23 +1102,33 @@ export default function AddIntegrationModal({
         accessToken: cfgAccess.trim(),
         ...(refreshTrim ? { refreshToken: refreshTrim } : {})
       })
-      setAutoUsable(s.autoAvailable)
       setRelayAvailable(s.relayAvailable)
       setRelayPublicUrl(s.relayPublicUrl)
-      setCfgAccess('')
-      setCfgRefresh('')
-      // Create the app with the just-stored config token and open the Slack OAuth tab.
+      // Create the app BEFORE flipping to the auto flow: this is where Slack first
+      // validates the config token (access-only tokens aren't validated on save). Keeping
+      // the flip until AFTER success means a rejected/typo'd or already-expired token stays
+      // recoverable in the inline entry (fields kept, still on the config-setup branch).
       const nextTransport = transport ?? (s.relayAvailable ? 'http' : 'socket')
       const started = await startSlackInstall({
         agentId: agent.id,
         transport: nextTransport,
         ...(appName.trim() ? { name: appName.trim() } : {})
       })
+      // App + pending install created ⇒ now it's safe to move to the auto flow.
+      setAutoUsable(true)
       setInstall(started)
       setAutoPhase('authorizing')
+      setCfgAccess('')
+      setCfgRefresh('')
       window.open(started.installUrl, '_blank', 'noopener,noreferrer')
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
+      // The token we just stored was never validated (Slack rejected it, or the call
+      // failed). Drop it so this stays on the inline entry and a reopen re-prompts instead
+      // of trusting an unverified row until its 12h deadline. Fields are kept so the caller
+      // can correct the token and retry in place.
+      await deleteSlackConfig().catch(() => {})
+      setAutoUsable(false)
     } finally {
       setSaving(false)
       busyRef.current = false
@@ -1240,6 +1251,9 @@ export default function AddIntegrationModal({
   // fallback the user can switch to. Default to config when the funnel is enabled.
   const slackMethod: 'config' | 'bot' = createMethod ?? (slackFunnel === true ? 'config' : 'bot')
   const selectMethod = (m: 'config' | 'bot') => {
+    // Locked once an auto-install has created the app + pending row: switching methods
+    // here would route the footer through the manual `submit()` and orphan that install.
+    if (install) return
     setCreateMethod(m)
     setShowErrors(false)
     setErr(null)
@@ -2013,10 +2027,12 @@ export default function AddIntegrationModal({
                           <button
                             key={m}
                             type="button"
+                            disabled={!!install}
                             onClick={() => selectMethod(m)}
+                            title={install ? 'Install in progress — “Start over” to switch method' : undefined}
                             className={`rounded-[6px] px-[11px] py-[5px] font-sans text-[12px] font-semibold leading-normal ${
                               on ? 'bg-(--brand-soft) text-(--brand)' : 'bg-transparent text-(--text-tertiary)'
-                            }`}
+                            } ${install ? 'cursor-not-allowed opacity-50' : ''}`}
                           >
                             {m === 'config' ? 'Config token' : 'Bot token'}
                           </button>
