@@ -49,6 +49,8 @@ import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-
 import { toolsForIntegrations, MEMORY_TOOL_NAMES, ALL_TOOL_NAMES, GITHUB_REVIEW_TOOLS } from './mcp/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, trustedExtractionMode } from './agents/memory-distiller.js'
+import { DreamRunner } from './agents/dream-runner.js'
+import { createDreamReader } from './cp/dream-reader.js'
 import { routeRules, type RouteVia } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
 import { rulesFromAgent, resolveCpRule, resolveAgentIntegration, type RoutingRule } from './router/routing-rule.js'
@@ -409,6 +411,12 @@ function reviewResultForWire(effect: GithubReviewEffect): HookReviewResult {
 // Cap per-session `!queue` depth so a hung turn or a user spamming `!queue` can't
 // grow `queued` without bound. Past the cap we reject with a clear message.
 const MAX_QUEUED_PER_SESSION = 10
+
+/** Bounded hard-stop for a dream extraction whose runtime ignores `session/cancel`:
+ *  how long after the abort the daemon stops awaiting `host.prompt` and discards
+ *  the isolated ACP session, rather than wedging forever. The runner's own grace
+ *  window (DreamRunnerDeps.cancelGraceMs) releases the reservation independently. */
+const DREAM_CANCEL_FORCE_MS = 15_000
 
 // Last-resort feedback-loop protection. The lower automatic threshold catches
 // agent/system/platform-echo chains; the higher all-turn threshold still stops a
@@ -1068,6 +1076,8 @@ export class Daemon {
   private memoryExtractionDirs = new Map<string, string>()
   /** Host instances that failed the trusted/read-only preflight; retry only after host replacement. */
   private memoryExtractionUnavailable = new WeakSet<AcpHost>()
+  /** Lazily-built dream-job engine (docs/designs/memory-dreaming.md §4). */
+  private dreamRunnerInstance?: DreamRunner
   private gitCreds!: GitCredentialCache
   /** Public commit attribution selected by the CP deployment's GitHub App. */
   private gitCommitIdentity?: GitCommitIdentity
@@ -3178,6 +3188,133 @@ export class Daemon {
     } finally {
       this.memoryExtractionCollectors.delete(key)
     }
+  }
+
+  /**
+   * Run one isolated dream-extraction session (docs/designs/memory-dreaming.md §5).
+   * Unlike the long-lived distillation session, every dream gets a FRESH session
+   * and discards it — dreams are rare and their huge prompts should not linger in
+   * a cached context.
+   *
+   * Two independent trust dimensions, deliberately gated differently:
+   *
+   * - **Side effects during the run — HARD GATE (fail closed).** The mined
+   *   transcript is attacker-controlled; a prompt injection could drive the
+   *   runtime's native shell/file/network tools before it ever returns JSON, and
+   *   staged-output review only contains the *memory result*, not tool side
+   *   effects. So we REQUIRE a verified non-mutating (read-only/plan) permission
+   *   mode and throw if the runtime has none or the switch doesn't take — the
+   *   dream then fails rather than running with write access. (Passing `[]`
+   *   mcpServers only drops our MCP tools, not the runtime's built-ins.)
+   * - **Trusted system-prompt channel — SOFT.** When the runtime carries the
+   *   system prompt via `_meta.systemPrompt` the dream policy rides it; otherwise
+   *   the policy is prepended to the user prompt. That fallback is acceptable
+   *   because the output is staged and reviewed — bad *content* can't reach the
+   *   live store. `autoAdopt` (D-2) is what stays gated on the trusted channel.
+   */
+  private async runDreamExtraction(
+    agentId: string,
+    systemPrompt: string,
+    prompt: string,
+    signal: AbortSignal
+  ): Promise<string> {
+    const agent = this.agents.get(agentId)
+    if (!agent) throw new Error(`unknown agent ${agentId}`)
+    const host = await this.ensureHostAsync(agentId)
+    const trusted = host.usesMetaSystemPrompt()
+    let cwd = this.memoryExtractionDirs.get(agentId)
+    if (!cwd) {
+      cwd = await mkdtemp(join(tmpdir(), 'agentconnect-memory-distill-'))
+      this.memoryExtractionDirs.set(agentId, cwd)
+    }
+    // Abort can land during the awaited setup below, before any prompt exists —
+    // then `session/cancel` has nothing to cancel. Guard on the signal after each
+    // await and immediately before dispatch so a canceled dream bails instead of
+    // launching an uncancellable prompt.
+    if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
+    const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
+    // On cancel, drive the ACP turn-cancel path so a hung/long prompt actually
+    // stops instead of pinning the dream's one-in-flight reservation.
+    const onAbort = () => void host.cancel(sessionId).catch(() => {})
+    if (signal.aborted) onAbort()
+    else signal.addEventListener('abort', onAbort, { once: true })
+    try {
+      if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
+      // HARD GATE: require a verified non-mutating mode. Fail closed if the
+      // runtime advertises none or the switch is rejected — never run an
+      // injection-exposed extraction with write access.
+      const modes = host.permissionModeOptions()?.modes ?? []
+      const readOnlyMode = modes.find((mode) => mode === 'read-only') ?? modes.find((mode) => mode === 'plan')
+      if (!readOnlyMode || !(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
+        throw new Error('runtime lacks a verified read-only/plan mode; dream extraction cannot run safely')
+      }
+      // Final guard immediately before dispatch — abort during permission setup.
+      if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
+
+      const key = pendingTurnKey(agentId, sessionId)
+      const chunks: string[] = []
+      this.memoryExtractionCollectors.set(key, chunks)
+      try {
+        this.rematerializeConfigFiles(agentId)
+        const text = trusted ? prompt : `${systemPrompt}\n\n${prompt}`
+        // Bounded backstop: if the runtime ignores `session/cancel` and never
+        // yields, stop awaiting after DREAM_CANCEL_FORCE_MS from the abort so the
+        // `finally` discards the ACP session instead of leaking it. The runner's
+        // own grace window already releases the reservation independently.
+        await this.promptWithCancelBackstop(host, sessionId, text, signal)
+        return chunks.join('')
+      } finally {
+        this.memoryExtractionCollectors.delete(key)
+      }
+    } finally {
+      signal.removeEventListener('abort', onAbort)
+      host.discardSession(sessionId)
+    }
+  }
+
+  /** Await `host.prompt`, but stop waiting `DREAM_CANCEL_FORCE_MS` after an abort
+   *  if the runtime never yields — so a runtime that ignores `session/cancel`
+   *  can't wedge this call (and its ACP session) forever. */
+  private async promptWithCancelBackstop(
+    host: AcpHost,
+    sessionId: string,
+    text: string,
+    signal: AbortSignal
+  ): Promise<void> {
+    const done = host.prompt(sessionId, [{ type: 'text', text }])
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const backstop = new Promise<never>((_resolve, reject) => {
+      const arm = () =>
+        (timer = setTimeout(
+          () => reject(new Error('dream extraction ignored session/cancel; detached after backstop')),
+          DREAM_CANCEL_FORCE_MS
+        ))
+      if (signal.aborted) arm()
+      else signal.addEventListener('abort', arm, { once: true })
+    })
+    try {
+      await Promise.race([done, backstop])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  /** The daemon's single dream-job engine, built on first use (the local store
+   *  must exist for the boot-time crash-recovery sweep). */
+  private dreamRunner(): DreamRunner {
+    this.dreamRunnerInstance ??= new DreamRunner({
+      agentDirByAgent: (id) => this.agents.get(id)?.dir,
+      dreamingPolicyFor: (id) => {
+        const memory = this.agents.get(id)?.memory
+        // Absent binding ⇒ managed default, but dreaming stays opt-in (no policy).
+        return memory?.provider === 'managed' ? memory.dreaming : undefined
+      },
+      store: this.store,
+      extract: (agentId, systemPrompt, prompt, signal) =>
+        this.runDreamExtraction(agentId, systemPrompt, prompt, signal),
+      log: this.log
+    })
+    return this.dreamRunnerInstance
   }
 
   /** Whether this agent is backed by Codex ACP. Registry ids are canonical, while
@@ -11861,6 +11998,7 @@ export class Daemon {
         }
       ),
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),
+      dreamReader: createDreamReader(this.dreamRunner()),
       // webchat is no longer a CP control-WS integration (milestone A4) — it rides the
       // relay's rd/* wire, wired through RelayManager.onRelayMsg below.
       clock: systemClock,
