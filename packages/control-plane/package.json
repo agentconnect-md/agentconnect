@@ -44,7 +44,7 @@
     "@fastify/otel": "^0.19.0",
     "@fastify/swagger": "^9.7.0",
     "@fastify/swagger-ui": "^6.0.0",
-    "@modelcontextprotocol/server": "2.0.0-beta.4",
+    "@modelcontextprotocol/server": "2.0.0-beta.5",
     "@octokit/auth-app": "^8.2.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/instrumentation-http": "^0.220.0",
