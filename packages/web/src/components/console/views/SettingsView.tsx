@@ -9,7 +9,7 @@
 // the Roles explainer. In no-auth mode the devAuth principal owns the local
 // default org, so the page is fully editable with no picker.
 
-import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import useSWR from 'swr'
 import { Avatar, Button, Icon, Toggle } from '@/components/ui'
 import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
@@ -98,6 +98,13 @@ const MEMBER_GRID = 'grid-cols-[2fr_1.4fr_auto]'
 // actions. The 100px action track fits refresh + platform link + delete and stays
 // identical across rows; below 480px "Created by" is dropped to preserve space.
 const BOT_GRID = 'grid-cols-[2fr_0.9fr_1.5fr_100px] min-[480px]:grid-cols-[2fr_0.9fr_1.5fr_1fr_100px]'
+const BOT_PLATFORMS = [
+  { platform: 'slack', label: 'Slack', noun: 'app' },
+  { platform: 'discord', label: 'Discord', noun: 'bot' },
+  { platform: 'telegram', label: 'Telegram', noun: 'bot' },
+  { platform: 'feishu', label: 'Feishu', noun: 'bot' }
+] as const
+type BotPlatform = (typeof BOT_PLATFORMS)[number]['platform']
 
 // One merged channel row for a bot's expandable roster.
 interface BotChannelView {
@@ -540,78 +547,12 @@ export default function SettingsView() {
 
       {isOwner && activeOrg && <InviteLinksCard orgId={activeOrg.id} />}
 
-      {/* One card per IM platform, each listing that platform's durable bot
-          identities. Rows carry the Sharable toggle + installed-agent stack and
-          expand to the bot's channel roster (a SHARED bot's channels each get an
-          active-agent picker). Slack rows deep-link to the app's settings; Discord
-          rows offer a ready-made "Add to Discord" invite (preset scopes +
-          permissions) built from the persisted application id. The per-user
-          auto-install config token is managed on the Profile page, not here. */}
-      <PlatformBotsCard
-        platform="slack"
-        label="Slack"
-        noun="app"
-        canWrite={canWrite}
-        me={me}
-        onDelete={setDeletingBot}
-        rowLink={(b) =>
-          b.slackAppId ? (
-            <a
-              href={slackAppSettingsUrl(b.slackAppId)}
-              target="_blank"
-              rel="noopener noreferrer"
-              title="Configure on Slack"
-              aria-label="Configure on Slack"
-              className="iconbtn h-7 w-7 flex-none"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <Icon name="external-link" size={12} />
-            </a>
-          ) : null
-        }
-      />
-
-      <PlatformBotsCard
-        platform="discord"
-        label="Discord"
-        noun="bot"
-        canWrite={canWrite}
-        me={me}
-        onDelete={setDeletingBot}
-        rowLink={(b) =>
-          b.discordAppId ? (
-            <a
-              href={discordBotInviteUrl(b.discordAppId)}
-              target="_blank"
-              rel="noopener noreferrer"
-              title="Invite this bot to a Discord server — preset scopes &amp; permissions"
-              aria-label="Add this bot to a Discord server"
-              className="iconbtn h-7 w-7 flex-none"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <Icon name="external-link" size={12} />
-            </a>
-          ) : null
-        }
-      />
-
-      <PlatformBotsCard
-        platform="telegram"
-        label="Telegram"
-        noun="bot"
-        canWrite={canWrite}
-        me={me}
-        onDelete={setDeletingBot}
-      />
-
-      <PlatformBotsCard
-        platform="feishu"
-        label="Feishu"
-        noun="bot"
-        canWrite={canWrite}
-        me={me}
-        onDelete={setDeletingBot}
-      />
+      {/* One tabbed card for every IM platform's durable bot identities. Rows carry
+          the Sharable toggle + installed-agent stack and expand to the bot's
+          channel roster (a SHARED bot's channels each get an active-agent picker).
+          Slack rows deep-link to the app's settings; Discord rows offer a ready-made
+          "Add to Discord" invite built from the persisted application id. */}
+      <BotsCard canWrite={canWrite} me={me} onDelete={setDeletingBot} />
 
       <GithubCard canWrite={canWrite} isOwner={isOwner} />
 
@@ -640,38 +581,14 @@ export default function SettingsView() {
   )
 }
 
-// ── Per-platform bots card ────────────────────────────────────────────────────
-// One card per IM platform (Slack / Discord / Telegram), listing that platform's
-// durable bot identities. Default view hides in-use bots; the per-card "Show in
-// use" toggle reveals the full roster (in-use is judged on `agentIds` — NOT
-// `inUseByAgentId`, which is always null for a shareable bot even while several
-// agents are installed on it). Each row carries the Sharable toggle (PATCH
-// /bots/:id; the CP's 409 reason renders inline) + the installed-agent stack, and
-// expands to the bot's channel roster — a SHARED bot's channels each get an
-// active-agent picker. `rowLink` renders a per-bot deep link in the right actions;
-// `footer` hangs extra config off the card (Slack's auto-install token). `noun`
-// drives the header / empty-state / delete copy ("app" vs "bot").
-function PlatformBotsCard({
-  platform,
-  label,
-  noun,
-  canWrite,
-  me,
-  onDelete,
-  rowLink,
-  footer
-}: {
-  platform: string
-  label: string
-  noun: string
-  canWrite: boolean
-  me: MeDto | null
-  onDelete: (b: BotDto) => void
-  rowLink?: (b: BotDto) => ReactNode
-  footer?: ReactNode
-}) {
+// ── Tabbed IM bots card ───────────────────────────────────────────────────────
+// The platform tabs select one complete roster at a time — in-use and free bots
+// are always shown together. Each row carries the Sharable toggle (PATCH
+// /bots/:id; the CP's 409 reason renders inline) + installed-agent stack and
+// expands to the bot's channel roster.
+function BotsCard({ canWrite, me, onDelete }: { canWrite: boolean; me: MeDto | null; onDelete: (b: BotDto) => void }) {
   const { bots, integrations, getAgent, setBotShareable, setChannelAgent, loading: dataLoading } = useConsoleData()
-  const [showInUse, setShowInUse] = useState(false)
+  const [platform, setPlatform] = useState<BotPlatform>('slack')
   // Bot row expanded to its channel roster (one at a time), the bot whose
   // shareable PATCH is in flight, and the last toggle denial to surface (the CP
   // 409s with a reason: no relay connected / still shared by several agents).
@@ -681,8 +598,8 @@ function PlatformBotsCard({
   const [slackRefreshBusyId, setSlackRefreshBusyId] = useState<string | null>(null)
   const [slackRefresh, setSlackRefresh] = useState<Record<string, { result?: SlackBotRefreshDto; error?: string }>>({})
 
+  const { label, noun } = BOT_PLATFORMS.find((item) => item.platform === platform)!
   const platformBots = bots.filter((b) => b.platform === platform)
-  const visible = platformBots.filter((b) => b.agentIds.length === 0 || showInUse)
 
   const flipShareable = async (b: BotDto, next: boolean) => {
     if (botBusyId) return
@@ -716,17 +633,28 @@ function PlatformBotsCard({
 
   return (
     <div className="card mt-[18px]">
-      <div className="cardhead justify-between">
-        <span className="cardtitle flex items-center gap-2">
-          <span className="imark h-[15px] w-[15px] border-0 bg-transparent">
-            <PlatformMark platform={platform} />
-          </span>
-          {label}
-        </span>
-        <label className="inline-flex cursor-pointer items-center gap-2">
-          <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">Show in use</span>
-          <Toggle checked={showInUse} onChange={setShowInUse} />
-        </label>
+      <div className="cardhead gap-0 overflow-x-auto py-0" role="tablist" aria-label="Bot platform">
+        {BOT_PLATFORMS.map((item) => {
+          const selected = item.platform === platform
+          return (
+            <button
+              key={item.platform}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              className={`${selected ? 'tab on' : 'tab'} mr-[5px] flex items-center gap-[5px] whitespace-nowrap last:mr-0 desktop:mr-[22px] desktop:gap-[6px]`}
+              onClick={() => {
+                setPlatform(item.platform)
+                setOpenBotId(null)
+              }}
+            >
+              <span className="flex h-[14px] w-[14px] flex-none items-center justify-center">
+                <PlatformMark platform={item.platform} fillPct={100} />
+              </span>
+              {item.label}
+            </button>
+          )
+        })}
       </div>
       {/* gap must match the data rows' or the narrow tracks drift out of line. */}
       <div className={`row h ${BOT_GRID} gap-[11px]`}>
@@ -736,7 +664,7 @@ function PlatformBotsCard({
         <span className="whitespace-nowrap max-[479px]:hidden">Created by</span>
         <span />
       </div>
-      {visible.map((b) => {
+      {platformBots.map((b) => {
         const free = b.agentIds.length === 0
         const open = openBotId === b.id
         const channels = open ? botChannels(b, integrations) : []
@@ -840,7 +768,32 @@ function PlatformBotsCard({
                     />
                   </button>
                 )}
-                {rowLink?.(b)}
+                {platform === 'slack' && b.slackAppId && (
+                  <a
+                    href={slackAppSettingsUrl(b.slackAppId)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Configure on Slack"
+                    aria-label="Configure on Slack"
+                    className="iconbtn h-7 w-7 flex-none"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Icon name="external-link" size={12} />
+                  </a>
+                )}
+                {platform === 'discord' && b.discordAppId && (
+                  <a
+                    href={discordBotInviteUrl(b.discordAppId)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Invite this bot to a Discord server — preset scopes &amp; permissions"
+                    aria-label="Add this bot to a Discord server"
+                    className="iconbtn h-7 w-7 flex-none"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Icon name="external-link" size={12} />
+                  </a>
+                )}
                 {free && canWrite ? (
                   <button className="iconbtn h-7 w-7 flex-none" title={`Delete ${noun}`} onClick={() => onDelete(b)}>
                     <Icon name="trash-2" size={14} />
@@ -924,13 +877,6 @@ function PlatformBotsCard({
             </div>
           </div>
         ))}
-      {platformBots.length > 0 && visible.length === 0 && (
-        <div className="px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          Every {noun} is in use — turn on Show in use to see them.
-        </div>
-      )}
-
-      {footer}
     </div>
   )
 }
