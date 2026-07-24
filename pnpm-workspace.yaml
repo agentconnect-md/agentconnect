@@ -18,6 +18,7 @@ allowBuilds:
   '@swc/core': false
   core-js: false
 
+minimumReleaseAge: 60
 minimumReleaseAgeExclude:
   - '@posthog/browser-common@0.2.0'
   - posthog-js@1.406.2
