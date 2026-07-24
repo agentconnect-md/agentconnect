@@ -238,12 +238,21 @@ import type {
   GithubHookMetadata,
   GitCommitIdentity,
   GithubReviewAuthorized,
-  HookReviewResult
+  HookReviewResult,
+  FeishuRegion
 } from '@agentconnect.md/protocol'
 
 /** Format an error for logs, surfacing a JSON-RPC/ACP RequestError's `code` and
  *  `data` — for an agent-side `Internal error` the actionable detail (the adapter's
  *  underlying exception) lives in `data`, which a bare `.stack` discards. */
+/** Identity of a desired Feishu connection: appId + gateway region. A region change on
+ *  the same appId yields a different key, so it is treated as a distinct connection for
+ *  reuse-matching, mapping-eviction, and the in-flight guard (`|` can't collide — an
+ *  appId `cli_…` and the region literals `feishu`/`lark` contain none). */
+function feishuConnKey(appId: string, region: string): string {
+  return `${appId}|${region}`
+}
+
 function formatErr(err: unknown): string {
   const e = err as { name?: string; message?: string; code?: number; data?: unknown; stack?: string }
   if (e && typeof e.code === 'number') {
@@ -2247,10 +2256,12 @@ export class Daemon {
     const discordByIntegration = new Map<string, string>()
     for (const group of discord.values())
       for (const { integrationId } of group.integrations) discordByIntegration.set(integrationId, group.botToken)
-    // Feishu keys on appId (one WSClient per self-built app), not a bot token.
+    // Feishu keys on appId (one WSClient per self-built app), not a bot token — plus the
+    // region, so a gateway change on the same appId is treated as a different desired conn.
     const feishuByIntegration = new Map<string, string>()
     for (const group of feishu.values())
-      for (const { integrationId } of group.integrations) feishuByIntegration.set(integrationId, group.appId)
+      for (const { integrationId } of group.integrations)
+        feishuByIntegration.set(integrationId, feishuConnKey(group.appId, group.region))
 
     const allDesiredIds = new Set([
       ...directByIntegration.keys(),
@@ -2294,7 +2305,10 @@ export class Daemon {
       }
     }
     for (const [integrationId, conn] of this.fsConnByIntegration) {
-      if (conn.appId !== feishuByIntegration.get(integrationId)) {
+      // Compare appId AND region: a region flip on the same appId must evict the stale
+      // mapping here (not only when a replacement start succeeds), so a failed replacement
+      // never leaves an integration routed at the stopped old-domain client.
+      if (feishuConnKey(conn.appId, conn.region) !== feishuByIntegration.get(integrationId)) {
         this.fsConnByIntegration.delete(integrationId)
         dropIdentity(integrationId)
       }
@@ -2618,6 +2632,16 @@ export class Daemon {
     this.backfillChannelNames()
   }
 
+  /** The live desired gateway region for a Feishu appId, or undefined if no agent
+   *  currently has a feishu integration on that appId. Lets an in-flight connect detect a
+   *  region change (or removal) that landed during its handshake and self-discard instead
+   *  of publishing an old-domain mapping. */
+  private desiredFeishuRegion(appId: string): FeishuRegion | undefined {
+    for (const group of consolidateFeishu([...this.agents.values()]).values())
+      if (group.appId === appId) return group.region
+    return undefined
+  }
+
   /**
    * Reconcile the connection-derived Feishu state (`botUserIds`, `fsConnByIntegration`,
    * open WSClient long-connections) against the live `agents`. Parallel to
@@ -2642,10 +2666,12 @@ export class Daemon {
         }
         continue
       }
-      // Another connect for this appId is already in flight (not yet pushed onto
+      // A connect for this appId+region is already in flight (not yet pushed onto
       // feishuConns, so `find()` above can't see it). Skip to avoid opening a duplicate;
-      // that connect binds this group's integrations when it resolves.
-      if (this.feishuConnecting.has(group.appId)) continue
+      // that connect binds this group's integrations when it resolves. Keyed on region
+      // too, so a NEW-region reconcile is NOT blocked by an in-flight OLD-region connect.
+      const connectKey = feishuConnKey(group.appId, group.region)
+      if (this.feishuConnecting.has(connectKey)) continue
       const conn: FeishuConnection = new FeishuConnection({
         group,
         newTraceId: () => randomUUID(),
@@ -2655,7 +2681,7 @@ export class Daemon {
         },
         log: this.log
       })
-      this.feishuConnecting.add(group.appId)
+      this.feishuConnecting.add(connectKey)
       try {
         this.log.info(
           `feishu: connecting (${group.integrations.length} integration(s): ${group.integrations
@@ -2663,6 +2689,18 @@ export class Daemon {
             .join(', ')})…`
         )
         await conn.start()
+        // The handshake can take seconds; a region change for this appId may have landed
+        // meanwhile. Re-check the live desired region before publishing — otherwise this
+        // now-stale (old-domain) connect would bind its mapping over the newer region.
+        const desired = this.desiredFeishuRegion(group.appId)
+        if (desired !== group.region) {
+          await conn.stop().catch(() => {})
+          this.log.info(
+            `feishu: discarding connect for app ${conn.appId} (${group.region}) — desired region is now ` +
+              `${desired ?? 'none'} (superseded mid-handshake)`
+          )
+          continue
+        }
         this.log.info(`feishu: WSClient connected for app ${conn.appId} (bot ${conn.botOpenId || '?'})`)
         for (const { integrationId } of group.integrations) {
           // Mention-routing matches the bot's own open_id (normalize's mentionedBots are open_ids).
@@ -2674,7 +2712,7 @@ export class Daemon {
         await conn.stop().catch(() => {})
         this.log.error(`feishu: failed to open WSClient for an appId — leaving others intact: ${formatErr(err)}`)
       } finally {
-        this.feishuConnecting.delete(group.appId)
+        this.feishuConnecting.delete(connectKey)
       }
     }
     // Label existing sessions' channels now that connections are up (per-message
