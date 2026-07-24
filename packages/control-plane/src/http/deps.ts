@@ -26,6 +26,7 @@ import type {
   McpProviderRepo,
   McpProviderSecretStore,
   McpGrantRepo,
+  SkillSourceRepo,
   MemoryPluginInstallationRepo,
   ExternalMemoryConnectionRepo,
   ExternalMemoryConnectionSecretStore,
@@ -149,6 +150,8 @@ export interface HttpDeps {
     mcpProviderSecret: McpProviderSecretStore
     /** Plaintext bearer grant keys for MCP providers (store-only, echoed once on create). */
     mcpGrant: McpGrantRepo
+    /** Org-level shared-skills sources (metadata only; content stays daemon-side). */
+    skillSource: SkillSourceRepo
     /** Owner-reviewed external-memory plugin installations (metadata only). */
     memoryPluginInstallation: MemoryPluginInstallationRepo
     /** Org external-memory connections and revision-fenced probe state. */

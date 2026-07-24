@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AgentMemoryBinding } from '@agentconnect.md/protocol'
+import { AgentMemoryBinding, AgentSkillEntry } from '@agentconnect.md/protocol'
 
 export const BindMatchSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('mention') }),
@@ -172,6 +172,12 @@ export const AgentSchema = z.object({
   // at ACP session/new|load, after the daemon's own bridge entry. Empty ⇒ none;
   // unknown names are skipped with a warn (see mcp/resolve-servers.ts).
   mcpServers: z.array(z.string()).default([]),
+  // Skill sources to install into the workspace via `npx skills` after clone and
+  // before the ACP host spawns (design: docs/designs/shared-skills.md). CP-owned,
+  // shipped inline on AgentSpec.skills — each entry is self-contained so the daemon
+  // needs nothing but agent.json to install. Supersedes the deprecated
+  // `workspace.skills` string list below (which is now an unused no-op).
+  skills: z.array(AgentSkillEntry).default([]),
   // Agent→agent call authorization (design §2.5), replicated from the CP so the
   // daemon enforces it LOCALLY when another agent uses `messageAgent` to wake this
   // one. `all` (the default) ⇒ any org peer may call; `selected` ⇒ only agents in
@@ -209,6 +215,8 @@ export const AgentSchema = z.object({
     // CP-minted short-lived installation tokens — nothing durable on this host.
     gitCredential: z.enum(['github-app']).optional(),
     pullOnNewSession: z.boolean().default(true),
+    // DEPRECATED: superseded by the top-level `skills` field (AgentSkillEntry[]).
+    // Kept so historical agent.json files still parse; nothing consumes it.
     skills: z.array(z.string()).default([])
   }),
   integrations: z.array(IntegrationSchema).default([]),

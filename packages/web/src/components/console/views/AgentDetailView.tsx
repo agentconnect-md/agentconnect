@@ -43,6 +43,7 @@ import { IntegrationMarks } from '@/components/console/IntegrationMarks'
 import { AgentApiPanel } from '@/components/console/AgentApiPanel'
 import { AgentSecretsCard } from '@/components/console/AgentSecretsCard'
 import { AgentToolsCard } from '@/components/console/AgentToolsCard'
+import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
 import { AgentVisibilityCard } from '@/components/console/AgentVisibilityCard'
 import { IntegrationChannelList } from '@/components/console/IntegrationChannelList'
 import { discordBotInviteUrl } from '@/lib/discord-invite'
@@ -1588,6 +1589,7 @@ export default function AgentDetailView() {
             daemon={owningDaemon}
             canEdit={!da.name.startsWith(MOCK_PREFIX)}
           />
+          <AgentSkillsCard agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX)} />
           <div className="card overflow-hidden max-desktop:rounded-lg desktop:max-w-[760px]">
             <div className="flex items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:py-[13px]">
               <span className="font-sans text-[14px] font-semibold leading-normal">Loaded from workspace</span>

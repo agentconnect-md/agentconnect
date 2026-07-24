@@ -1,0 +1,433 @@
+/**
+ * `http/routes/skill-sources.ts` (design docs/designs/shared-skills.md §4).
+ *
+ * CRUD for org-level shared-skills sources. A source records only WHERE skills
+ * come from (a repo / git URL / tree path) plus an optional ref + skill filter —
+ * skill CONTENT never touches the CP. The daemon installs enabled skills via
+ * `npx skills` after clone and before the ACP host spawns.
+ *
+ * There is NO secret side-table and NO grant (unlike MCP providers): skills carry
+ * no upstream credential. This release supports PUBLIC sources only — a private
+ * repo has no daemon authorization path yet, so create rejects a confirmed-private
+ * source (a dedicated read-only grant is a follow-up). The definition is not pushed
+ * on its own frame either — it
+ * rides INLINE on each enabling agent's AgentSpec.skills (resolved by
+ * agentSpecAssembler). So a source change fans out to `agent/upsert` for every
+ * agent that references it (§4 trade-off).
+ */
+import type { FastifyInstance, FastifyReply } from 'fastify'
+import { z } from 'zod'
+import type { ZodTypeProvider } from '../plugins/zod.js'
+import { Tag } from '../plugins/openapi.js'
+import type { HttpDeps } from '../deps.js'
+import type { AgentRecord, SkillSourceRecord } from '../../persistence/ports.js'
+import type { OrgId } from '../../domain/ids.js'
+import { NoConnection } from '../../orchestrator/outbound.js'
+import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
+import { canView, canManageSharing, type ViewCtx } from '../visibility.js'
+import { resolveShareSet } from '../sharing.js'
+import { parseSkillRef } from '../../orchestrator/skillSource.js'
+import {
+  CreateSkillSourceBody,
+  UpdateSkillSourceBody,
+  PreviewSkillSourceBody,
+  SkillSourcePreviewDto,
+  SkillSourceSkillsDto,
+  SkillSourceDto,
+  SkillSourceListDto,
+  SetSharingBody,
+  ErrorDto,
+  IdParam,
+  type SkillSourceDtoT
+} from '../dto/index.js'
+
+/** Extract `{owner, repo, ref?}` from a source string (shorthand, https, or ssh
+ *  GitHub form). Returns null for a non-GitHub / unparseable source. */
+function parseGithubRepo(source: string): { owner: string; repo: string; ref?: string; subDir?: string } | null {
+  const s = source.trim().replace(/\.git$/, '')
+  let m = /^https?:\/\/github\.com\/([^/]+)\/([^/]+)(?:\/tree\/([^/]+)(?:\/(.+))?)?/i.exec(s)
+  if (m) return { owner: m[1]!, repo: m[2]!, ...(m[3] ? { ref: m[3] } : {}), ...(m[4] ? { subDir: m[4] } : {}) }
+  m = /^git@github\.com:([^/]+)\/([^/]+)$/i.exec(s)
+  if (m) return { owner: m[1]!, repo: m[2]! }
+  m = /^([^/\s:]+)\/([^/\s]+)$/.exec(s)
+  if (m) return { owner: m[1]!, repo: m[2]! }
+  return null
+}
+
+function toDto(s: SkillSourceRecord, ctx: ViewCtx): SkillSourceDtoT {
+  return {
+    id: s.id,
+    name: s.name,
+    source: s.source,
+    githubRepoId: s.githubRepoId !== null ? s.githubRepoId.toString() : null,
+    ref: s.ref,
+    subDir: s.subDir,
+    skills: s.skills,
+    visibility: s.visibility,
+    sharedWith: s.sharedWith,
+    createdBy: s.createdByUserId,
+    canManageSharing: canManageSharing(s, ctx),
+    createdAt: s.createdAt.toISOString()
+  }
+}
+
+/** Parse the optional numeric github repo id carried as a string on the wire. */
+function parseRepoId(raw: string | null | undefined): bigint | null | undefined {
+  if (raw === undefined) return undefined
+  if (raw === null) return null
+  try {
+    return BigInt(raw)
+  } catch {
+    return undefined
+  }
+}
+
+export function skillSourceRoutes(deps: HttpDeps) {
+  return async function skillSourceRoutesPlugin(app: FastifyInstance): Promise<void> {
+    const r = app.withTypeProvider<ZodTypeProvider>()
+
+    // A `subDir` source needs a ref (the CLI's tree/<ref>/<subdir> form requires one),
+    // and the daemon must not assume `main`. When a subdir is given without a ref,
+    // resolve the repo's ACTUAL default branch here and persist it as the ref. Returns
+    // the ref unchanged when there's nothing to resolve (no subdir, ref already set,
+    // non-GitHub source, or no installation).
+    const resolveRefForSubdir = async (
+      orgId: OrgId,
+      source: string,
+      ref: string | undefined,
+      subDir: string | undefined
+    ): Promise<string | undefined> => {
+      if (ref || !subDir) return ref
+      const gh = deps.github
+      const parsed = parseGithubRepo(source)
+      if (!gh || !parsed) return ref
+      const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(orgId, parsed.owner)
+      if (!ins) return ref
+      const meta = await gh.getRepoMeta(ins, parsed.owner, parsed.repo).catch(() => null)
+      return meta?.defaultBranch ?? ref
+    }
+
+    // True only when we can CONFIRM the source repo is private (GitHub source + org
+    // installation + a readable meta saying private). Unknown ⇒ false (treated public).
+    const isPrivateRepo = async (orgId: OrgId, source: string): Promise<boolean> => {
+      const gh = deps.github
+      const parsed = parseGithubRepo(source)
+      if (!gh || !parsed) return false
+      const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(orgId, parsed.owner)
+      if (!ins) return false
+      const meta = await gh.getRepoMeta(ins, parsed.owner, parsed.repo).catch(() => null)
+      return meta?.private === true
+    }
+
+    // Re-inline a source's definition onto every agent that enables it and push
+    // the refreshed spec. Best-effort per agent (the register/ok roster is the
+    // reconnect backstop), mirroring the agents route's replicateUpsert.
+    const fanOutToReferrers = async (orgId: OrgId, sourceName: string): Promise<void> => {
+      const agents = await deps.repos.agent.list(orgId)
+      const referrers = agents.filter(
+        (a) => a.daemonId && a.skills.some((ref) => parseSkillRef(ref).source === sourceName)
+      )
+      for (const a of referrers) await replicate(a)
+    }
+
+    const replicate = async (agent: AgentRecord): Promise<void> => {
+      if (!agent.daemonId) return
+      const spec = await deps.agentSpecs.assemble(agent)
+      try {
+        await deps.control.agentUpsert(agent.daemonId, { agentId: agent.id, spec })
+      } catch (err) {
+        if (err instanceof NoConnection) {
+          app.log.debug({ agentId: agent.id, daemonId: agent.daemonId }, 'skill fan-out: daemon offline')
+        } else {
+          app.log.warn({ err, agentId: agent.id }, 'skill fan-out agent/upsert failed (backstop: reconnect roster)')
+        }
+      }
+    }
+
+    r.get(
+      '/skill-sources',
+      {
+        schema: {
+          tags: [Tag.Skills],
+          summary: 'List skill sources',
+          description:
+            'Every shared-skills source in the active organization (metadata only; content stays daemon-side).',
+          operationId: 'listSkillSources',
+          response: { 200: SkillSourceListDto }
+        }
+      },
+      async (req) => {
+        const ctx = ctxOf(req)
+        const rows = await deps.repos.skillSource.listForOrg(orgOf(req), ctx)
+        return rows.map((s) => toDto(s, ctx))
+      }
+    )
+
+    r.get(
+      '/skill-sources/:id',
+      {
+        schema: {
+          tags: [Tag.Skills],
+          summary: 'Get a skill source',
+          description: "Fetch a single skill source by id (scoped to the caller's org; a cross-org id reads as 404).",
+          operationId: 'getSkillSource',
+          params: IdParam,
+          response: { 200: SkillSourceDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const s = await deps.repos.skillSource.get(req.params.id)
+        if (!s || s.orgId !== orgOf(req) || !canView(s, ctxOf(req))) return notFound(reply)
+        return toDto(s, ctxOf(req))
+      }
+    )
+
+    r.get(
+      '/skill-sources/:id/skills',
+      {
+        schema: {
+          tags: [Tag.Skills],
+          summary: 'List a skill source’s skills',
+          description:
+            'Best-effort scan of the source repo for its SKILL.md manifest, for the per-agent skill picker. Returns resolvable:false + an empty list when the source is not a scannable GitHub repo reachable by an installation (the UI then offers whole-source enablement only).',
+          operationId: 'listSkillSourceSkills',
+          params: IdParam,
+          response: { 200: SkillSourceSkillsDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const s = await deps.repos.skillSource.get(req.params.id)
+        if (!s || s.orgId !== orgOf(req) || !canView(s, ctxOf(req))) return notFound(reply)
+        const gh = deps.github
+        const parsed = parseGithubRepo(s.source)
+        if (!gh || !parsed) return { resolvable: false, skills: [] }
+        const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(orgOf(req), parsed.owner)
+        if (!ins) return { resolvable: false, skills: [] }
+        try {
+          // Scan the SAME ref/subdir composeSource installs from, so the manifest
+          // reflects the source's actual scope.
+          const scan = await gh.scanSkillSource(
+            ins,
+            parsed.owner,
+            parsed.repo,
+            s.ref ?? parsed.ref,
+            s.subDir ?? parsed.subDir
+          )
+          // Honor the source's own skill filter: never offer skills the resolver
+          // would later drop (`resolveAgentSkillEntries` intersects with s.skills).
+          const allowed = s.skills.length > 0 ? new Set(s.skills) : null
+          const skills = allowed ? scan.skills.filter((sk) => allowed.has(sk.name)) : scan.skills
+          return { resolvable: true, skills }
+        } catch {
+          return { resolvable: false, skills: [] }
+        }
+      }
+    )
+
+    r.post(
+      '/skill-sources/preview',
+      {
+        schema: {
+          tags: [Tag.Skills],
+          summary: 'Preview a GitHub skill source',
+          description:
+            'Best-effort scan of a repo for the import dialog: branch + tag choices and the SKILL.md manifest. Requires a GitHub App installation reachable by the caller; scan failure yields an empty skill list (install all).',
+          operationId: 'previewSkillSource',
+          body: PreviewSkillSourceBody,
+          response: { 200: SkillSourcePreviewDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const gh = deps.github
+        if (!gh) return notFound(reply) // github-app feature off — no scan possible
+        const ins = await deps.repos.githubInstallation.get(req.body.installationId)
+        if (!ins || ins.orgId !== orgOf(req) || ins.revokedAt) return notFound(reply)
+        const [branches, scan] = await Promise.all([
+          gh.listBranches(ins, req.body.owner, req.body.repo).catch(() => [] as string[]),
+          gh.scanSkillSource(ins, req.body.owner, req.body.repo, req.body.ref)
+        ])
+        return { branches, tags: scan.tags, skills: scan.skills }
+      }
+    )
+
+    r.post(
+      '/skill-sources',
+      {
+        schema: {
+          tags: [Tag.Skills],
+          summary: 'Register a skill source',
+          description:
+            'Register an org-level shared-skills source (a repo / git URL / tree path fed to `npx skills`). `skills` empty ⇒ install every skill the source exposes.',
+          operationId: 'createSkillSource',
+          body: CreateSkillSourceBody,
+          response: { 201: SkillSourceDto, 400: ErrorDto, 403: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const sharedWith =
+          req.body.visibility === 'restricted' && req.body.sharedWith
+            ? await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
+            : undefined
+        const repoId = parseRepoId(req.body.githubRepoId)
+        // Scope this release to PUBLIC sources: the daemon has no authorization path to
+        // clone a private skill repo yet (a dedicated read-only grant is a follow-up).
+        // Reject a source we can confirm is private rather than silently accept one that
+        // can never install. Undeterminable privacy (no installation) is allowed through
+        // as public — a private repo with no installation can't be scanned/cloned anyway.
+        if (await isPrivateRepo(orgOf(req), req.body.source)) return reply.code(400).send(privateNotSupported)
+        const ref = await resolveRefForSubdir(orgOf(req), req.body.source, req.body.ref, req.body.subDir)
+        // A subdir source needs a ref; if we couldn't resolve one (owner has no org
+        // installation, non-GitHub source) reject rather than let the daemon assume `main`.
+        if (req.body.subDir && !ref) return reply.code(400).send(subdirNeedsRef)
+        const source = await deps.repos.skillSource.create({
+          orgId: orgOf(req),
+          name: req.body.name,
+          source: req.body.source,
+          ...(repoId !== undefined ? { githubRepoId: repoId } : {}),
+          ...(ref !== undefined ? { ref } : {}),
+          ...(req.body.subDir !== undefined ? { subDir: req.body.subDir } : {}),
+          skills: req.body.skills,
+          ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
+          ...(sharedWith ? { sharedWith } : {}),
+          ...(req.principal ? { createdByUserId: req.principal.userId } : {})
+        })
+        return reply.code(201).send(toDto(source, ctxOf(req)))
+      }
+    )
+
+    r.patch(
+      '/skill-sources/:id',
+      {
+        schema: {
+          tags: [Tag.Skills],
+          summary: 'Update a skill source',
+          description:
+            'Edit a source’s source string, ref, subdir, or skill filter. `skills` replaces the stored filter wholesale. Name is immutable (agents bind by name; recreate to rename). Changes re-push every agent that enables this source.',
+          operationId: 'updateSkillSource',
+          params: IdParam,
+          body: UpdateSkillSourceBody,
+          response: { 200: SkillSourceDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const existing = await deps.repos.skillSource.get(req.params.id)
+        if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) return notFound(reply)
+        // Same public-only guard as create, on the EFFECTIVE source — a PATCH that
+        // points an existing source at a (now-confirmed) private repo is rejected too.
+        if (await isPrivateRepo(orgOf(req), req.body.source ?? existing.source)) {
+          return reply.code(400).send(privateNotSupported)
+        }
+        const repoId = parseRepoId(req.body.githubRepoId)
+        // Preserve an explicit ref across an unrelated PATCH: only resolve a default
+        // branch when the EFFECTIVE ref is absent (untouched-and-existing counts as
+        // present), so a `skills`-only edit can't silently rewrite the pinned ref.
+        const refTouched = req.body.ref !== undefined
+        const currentRef = refTouched ? (req.body.ref ?? undefined) : (existing.ref ?? undefined)
+        const effSubDir =
+          req.body.subDir === undefined ? (existing.subDir ?? undefined) : (req.body.subDir ?? undefined)
+        const resolvedRef = await resolveRefForSubdir(
+          orgOf(req),
+          req.body.source ?? existing.source,
+          currentRef,
+          effSubDir
+        )
+        // A subdir source needs a ref; reject if we couldn't resolve one rather than
+        // let the daemon assume `main`.
+        if (effSubDir && !resolvedRef) return reply.code(400).send(subdirNeedsRef)
+        const source = await deps.repos.skillSource.update(existing.id, {
+          ...(req.body.source !== undefined ? { source: req.body.source } : {}),
+          ...(repoId !== undefined ? { githubRepoId: repoId } : {}),
+          ...(resolvedRef !== undefined
+            ? { ref: resolvedRef }
+            : refTouched && req.body.ref === null
+              ? { ref: null }
+              : {}),
+          ...(req.body.subDir !== undefined ? { subDir: req.body.subDir } : {}),
+          ...(req.body.skills !== undefined ? { skills: req.body.skills } : {})
+        })
+        await fanOutToReferrers(orgOf(req), source.name)
+        return toDto(source, ctxOf(req))
+      }
+    )
+
+    r.put(
+      '/skill-sources/:id/sharing',
+      {
+        schema: {
+          tags: [Tag.Skills],
+          summary: 'Set skill source sharing',
+          description:
+            'Set the source’s visibility (org-wide vs restricted) and share set. Requires edit rights; sharedWith is intersected with current org members.',
+          operationId: 'setSkillSourceSharing',
+          params: IdParam,
+          body: SetSharingBody,
+          response: { 200: SkillSourceDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const existing = await deps.repos.skillSource.get(req.params.id)
+        if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) return notFound(reply)
+        if (!canManageSharing(existing, ctxOf(req))) {
+          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot change sharing' })
+        }
+        const sharedWith = await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
+        const source = await deps.repos.skillSource.setSharing(existing.id, {
+          visibility: req.body.visibility,
+          sharedWith
+        })
+        return toDto(source, ctxOf(req))
+      }
+    )
+
+    r.delete(
+      '/skill-sources/:id',
+      {
+        schema: {
+          tags: [Tag.Skills],
+          summary: 'Delete a skill source',
+          description:
+            'Delete a skill source. Rejected with 409 while any agent still enables it — unselect it from those agents first.',
+          operationId: 'deleteSkillSource',
+          params: IdParam,
+          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const existing = await deps.repos.skillSource.get(req.params.id)
+        if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) return notFound(reply)
+        const agents = await deps.repos.agent.list(orgOf(req))
+        const referenced = agents.some((a) => a.skills.some((ref) => parseSkillRef(ref).source === existing.name))
+        if (referenced) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'skill source is still enabled by one or more agents; unselect it there first'
+          })
+        }
+        await deps.repos.skillSource.delete(existing.id)
+        return reply.code(204).send(null)
+      }
+    )
+  }
+}
+
+function notFound(reply: FastifyReply) {
+  return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'skill source not found' })
+}
+
+const subdirNeedsRef = {
+  error: 'Bad Request',
+  statusCode: 400,
+  message: 'a subdir skill source needs a ref; provide one, or ensure the org GitHub App can reach the repo'
+}
+
+const privateNotSupported = {
+  error: 'Bad Request',
+  statusCode: 400,
+  message: 'private skill sources are not supported yet — use a public repository'
+}

@@ -49,6 +49,14 @@ import {
   type McpProviderCreatedDto,
   type CreateMcpProviderInput,
   type UpdateMcpProviderInput,
+  fetchSkillSources,
+  createSkillSource as apiCreateSkillSource,
+  updateSkillSource as apiUpdateSkillSource,
+  deleteSkillSource as apiDeleteSkillSource,
+  updateSkillSourceSharing as apiUpdateSkillSourceSharing,
+  type SkillSourceDto,
+  type CreateSkillSourceInput,
+  type UpdateSkillSourceInput,
   fetchConnectorsConfig,
   createConnectorConnection as apiCreateConnectorConnection,
   reconnectConnectorConnection as apiReconnectConnectorConnection,
@@ -120,6 +128,16 @@ interface ConsoleData {
   updateMcpProvider: (id: string, patch: UpdateMcpProviderInput) => Promise<void>
   /** Delete an MCP provider (cascade-drops its secret + grants), then re-pull. */
   deleteMcpProvider: (id: string) => Promise<void>
+  /** Org shared-skills sources registry — the Skills admin view and the per-agent
+   *  enable-list candidate set both read this. */
+  skillSources: SkillSourceDto[]
+  skillSourcesLoading: boolean
+  /** Register a skills source, then re-pull. */
+  createSkillSource: (input: CreateSkillSourceInput) => Promise<SkillSourceDto>
+  /** Edit a skills source (source / ref / subDir / skill filter), then re-pull. */
+  updateSkillSource: (id: string, patch: UpdateSkillSourceInput) => Promise<void>
+  /** Delete a skills source (409 while any agent enables it), then re-pull. */
+  deleteSkillSource: (id: string) => Promise<void>
   /** Whether the open-connector integration is configured on the CP (gates the
    *  "Add connectors" menu item). */
   connectorsEnabled: boolean
@@ -146,7 +164,7 @@ interface ConsoleData {
    *  /sharing write when created restricted). */
   createAgent: (input: CreateAgentInput) => Promise<string>
   /** Set a resource's visibility + share set (PUT .../:id/sharing), then re-pull. */
-  saveSharing: (kind: 'agents' | 'daemons' | 'crons' | 'mcp', id: string, body: SharingInput) => Promise<void>
+  saveSharing: (kind: 'agents' | 'daemons' | 'crons' | 'mcp' | 'skill', id: string, body: SharingInput) => Promise<void>
   /** Set which peer agents may call this agent as a sub-agent, then re-pull. */
   saveAgentCallPolicy: (agentId: string, body: AgentCallPolicyInput) => Promise<void>
   /** Delete an agent (CP spec + daemon teardown), then re-pull. */
@@ -490,6 +508,11 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     isLoading: mcpProvidersIsLoading,
     mutate: mutateMcpProviders
   } = useSWR<McpProviderDto[]>(consoleKeys.mcpProviders(orgKey), ([, orgId]) => fetchMcpProviders(orgId as string))
+  const {
+    data: skillSources = [],
+    isLoading: skillSourcesIsLoading,
+    mutate: mutateSkillSources
+  } = useSWR<SkillSourceDto[]>(consoleKeys.skillSources(orgKey), ([, orgId]) => fetchSkillSources(orgId as string))
   // Cheap feature gate for the connectors integration; mock mode reports it on so
   // the demo console shows the "Add connectors" flow.
   const { data: connectorsConfig } = useSWR<{ enabled: boolean }>(
@@ -679,17 +702,19 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   // Separate from the content write so the sharing gate (canManageSharing) is
   // exercised on its own endpoint.
   const saveSharing = useCallback(
-    async (kind: 'agents' | 'daemons' | 'crons' | 'mcp', id: string, body: SharingInput) => {
+    async (kind: 'agents' | 'daemons' | 'crons' | 'mcp' | 'skill', id: string, body: SharingInput) => {
       if (kind === 'agents') await apiUpdateAgentSharing(id, body)
       else if (kind === 'daemons') await apiUpdateDaemonSharing(id, body)
       else if (kind === 'mcp') await apiUpdateMcpProviderSharing(id, body)
+      else if (kind === 'skill') await apiUpdateSkillSourceSharing(id, body)
       else await apiUpdateCronSharing(id, body)
       if (kind === 'agents') settleInBackground(mutateAgents())
       else if (kind === 'daemons') settleInBackground(mutateDaemons())
       else if (kind === 'mcp') settleInBackground(mutateMcpProviders())
+      else if (kind === 'skill') settleInBackground(mutateSkillSources())
       else settleInBackground(mutateCrons())
     },
-    [mutateAgents, mutateDaemons, mutateCrons, mutateMcpProviders]
+    [mutateAgents, mutateDaemons, mutateCrons, mutateMcpProviders, mutateSkillSources]
   )
 
   const saveAgentCallPolicy = useCallback(
@@ -849,6 +874,31 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateMcpProviders]
   )
 
+  const createSkillSource = useCallback(
+    async (input: CreateSkillSourceInput): Promise<SkillSourceDto> => {
+      const created = await apiCreateSkillSource(input)
+      settleInBackground(mutateSkillSources())
+      return created
+    },
+    [mutateSkillSources]
+  )
+
+  const updateSkillSource = useCallback(
+    async (id: string, patch: UpdateSkillSourceInput) => {
+      await apiUpdateSkillSource(id, patch)
+      settleInBackground(mutateSkillSources())
+    },
+    [mutateSkillSources]
+  )
+
+  const deleteSkillSource = useCallback(
+    async (id: string) => {
+      await apiDeleteSkillSource(id)
+      settleInBackground(mutateSkillSources())
+    },
+    [mutateSkillSources]
+  )
+
   // Flip one channel's trigger (@-mention vs any message). Update the local row
   // immediately (the PATCH response is authoritative but identical), no full re-pull —
   // a toggle shouldn't flash every other view.
@@ -979,6 +1029,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const daemonsLoading = waitingForOrg || daemonsIsLoading
   const cronsLoading = waitingForOrg || cronsIsLoading
   const mcpProvidersLoading = waitingForOrg || mcpProvidersIsLoading
+  const skillSourcesLoading = waitingForOrg || skillSourcesIsLoading
   const connectorsEnabled = connectorsConfig?.enabled ?? false
   const loading =
     waitingForOrg ||
@@ -1007,6 +1058,11 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       createMcpProvider,
       updateMcpProvider,
       deleteMcpProvider,
+      skillSources,
+      skillSourcesLoading,
+      createSkillSource,
+      updateSkillSource,
+      deleteSkillSource,
       connectorsEnabled,
       createConnectorConnection,
       reconnectConnectorConnection,
@@ -1062,6 +1118,11 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       createMcpProvider,
       updateMcpProvider,
       deleteMcpProvider,
+      skillSources,
+      skillSourcesLoading,
+      createSkillSource,
+      updateSkillSource,
+      deleteSkillSource,
       connectorsEnabled,
       createConnectorConnection,
       reconnectConnectorConnection,

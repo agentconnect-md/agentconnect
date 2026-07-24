@@ -140,6 +140,9 @@ export class SessionManager {
     private deps: {
       store: LocalStore
       hostFor: (agentId: string) => Promise<AcpHost>
+      /** Whether the runtime process is already running (so hostFor won't cold-start
+       *  it). When it's cold, the workspace + skills must be prepared before hostFor. */
+      isHostRunning?: (agentId: string) => boolean
       agentById: (id: string) => LoadedAgent | undefined
       /** The agent memory provider — seeds the memory dir and supplies the index
        *  injected at the start of a fresh session. */
@@ -301,6 +304,15 @@ export class SessionManager {
     // once persisted, is what authorizes SessionTarget replies to the parent on later
     // human-triggered turns that have no per-turn CallMeta.
     const effectiveOriginSessionId = rec?.originSessionId ?? originSessionId
+    // Prepare the workspace (clone/pull + skill install) BEFORE acquiring the host,
+    // but ONLY when the runtime process is COLD — that's when hostFor spawns it, so
+    // skills must be on disk first (design §6). This covers both a brand-new session
+    // and a persisted session whose host was evicted/restarted (resume cold-start). A
+    // warm turn on a live host must NOT re-run prepareWorkspace: pulling/reconciling
+    // would mutate a checkout the running ACP process is using — the per-branch
+    // prepareWorkspace below handles the warm-host new-session/resume cases instead.
+    const hostCold = !(this.deps.isHostRunning?.(agentId) ?? false)
+    const preparedCwd = hostCold ? await abortable(() => prepareWorkspace(agent), signal) : undefined
     const host = await abortable(() => this.deps.hostFor(agentId), signal)
     // The sticky per-session effort override rides session `_meta` on new/load so the
     // `ultracode` sentinel (rejected by the `thought_level` select) takes effect;
@@ -464,8 +476,9 @@ export class SessionManager {
     // the CP already knows). Drives the daemon's one-shot `event/session` start emit.
     let created = false
     if (!rec || !rec.acpSessionId) {
-      // brand-new session for this (channel, thread, agent)
-      const cwd = await abortable(() => prepareWorkspace(agent), signal)
+      // brand-new session; use the pre-host preparation when the host was cold, else
+      // prepare now (warm host — ordering vs spawn is moot).
+      const cwd = preparedCwd ?? (await abortable(() => prepareWorkspace(agent), signal))
       const mcpServers =
         this.deps.mcpServersFor?.({
           agent,
@@ -502,7 +515,9 @@ export class SessionManager {
       // (session/load — the agent restores its own history, so the §8.5 gap replay
       // below only re-feeds messages it missed). If the agent can't load it, recreate
       // a fresh session and replay the whole thread as context (lastDeliveredTs=null).
-      const cwd = await abortable(() => prepareWorkspace(agent), signal)
+      // Resume: use the pre-host preparation when the host cold-started here (persisted
+      // session after restart/eviction — skills must precede spawn), else prepare now.
+      const cwd = preparedCwd ?? (await abortable(() => prepareWorkspace(agent), signal))
       // Resolved once, shared by both paths: session/load must re-attach the same
       // MCP servers a fresh session would get (the agent doesn't persist them
       // across processes), and resolving twice would register two bridge tokens.

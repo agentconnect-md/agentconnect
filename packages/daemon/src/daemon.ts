@@ -1808,6 +1808,9 @@ export class Daemon {
       // Must hand back a *started* host: handle() calls host.newSession() immediately,
       // which needs the ACP connection that start() establishes.
       hostFor: (agentId) => this.ensureHostAsync(agentId),
+      // Whether the runtime process is already up. When it isn't, hostFor cold-starts
+      // it, so the workspace (and skills) must be prepared first — see SessionManager.
+      isHostRunning: (agentId) => this.hosts.has(agentId),
       agentById: (id) => this.agents.get(id),
       memory: this.memory,
       onMemoryRecallError: (agentId, error) =>

@@ -523,6 +523,7 @@ export interface CreateAgentInput {
   // NOTE: write-only secret env vars are NOT part of the agent row — they live behind
   // the AgentSecretStore seam (routes write them there after create).
   mcpServers?: string[] // daemon-configured MCP server names to attach at session/new (AgentSpec.mcpServers)
+  skills?: string[] // enabled skills, "<sourceName>/<skillName>" or "<sourceName>/*" (shared-skills.md)
   memory?: AgentMemoryBinding // memory backend
   icon?: AgentIcon // console avatar; absent ⇒ the repo assigns a random glyph+color combo
   daemonId?: DaemonId // the owning machine, if chosen at create time
@@ -567,6 +568,7 @@ export interface UpdateAgentInput {
   // NOTE: write-only secrets are NOT a repo patch field — the PATCH route merges
   // them through the AgentSecretStore seam (key-by-key; see AgentSecretStore.merge).
   mcpServers?: string[] | null // replaced wholesale when provided; null clears
+  skills?: string[] | null // enabled skills; replaced wholesale when provided; null clears
   memory?: AgentMemoryBinding | null // memory backend
   // Workspace repository identity is not a generic PATCH field. The dedicated
   // cold editor drains the daemon and reconciles its local materialization;
@@ -604,6 +606,7 @@ export interface AgentRecord {
   // serialization guard, like BotSecret): key names come from AgentSecretStore.keys,
   // values only from AgentSecretStore.get on the wire-projection paths.
   mcpServers: string[] // from runtimeOverrides.mcpServers ([] when unset ⇒ none attached)
+  skills: string[] // from runtimeOverrides.skills — enabled "<source>/<skill>" / "<source>/*" ([] ⇒ none)
   memory: AgentMemoryBinding | null // runtimeOverrides.memory
   status: 'active' | 'inactive' | 'paused'
   daemonId: DaemonId | null
@@ -2650,6 +2653,63 @@ export interface McpGrantRepo {
   activeForProvider(providerId: string): Promise<McpGrantRecord[]>
   /** Mark a grant revoked (idempotent). */
   revoke(grantId: string): Promise<void>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Shared skills registry (docs/designs/shared-skills.md)
+//   SkillSource = the org-level record of a skills source (repo / git URL / tree
+//   path). The CP stores ONLY the source metadata; content is fetched daemon-side
+//   by `npx skills`. One port (no secret store / no grant — skills carry no
+//   upstream credential). Shareable, so the same visibility policy as agents/MCP.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Domain view of a `skill_source` row. Shareable (visibility + sharedWith +
+ *  createdByUserId). Nothing here is secret. */
+export interface SkillSourceRecord extends Shareable {
+  id: string
+  orgId: OrgId
+  name: string // reference key (unique per org); the agent enable-list keys on it
+  source: string // fed to `npx skills add`
+  githubRepoId: bigint | null
+  ref: string | null
+  subDir: string | null
+  skills: string[] // empty ⇒ install every skill; else only these
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface CreateSkillSourceInput {
+  orgId: OrgId
+  name: string
+  source: string
+  githubRepoId?: bigint | null
+  ref?: string | null
+  subDir?: string | null
+  skills?: string[]
+  visibility?: ResourceVisibility // default 'org'
+  sharedWith?: string[]
+  createdByUserId?: string
+}
+
+export interface UpdateSkillSourceInput {
+  name?: string
+  source?: string
+  githubRepoId?: bigint | null
+  ref?: string | null
+  subDir?: string | null
+  skills?: string[]
+}
+
+export interface SkillSourceRepo {
+  create(input: CreateSkillSourceInput): Promise<SkillSourceRecord>
+  get(id: string): Promise<SkillSourceRecord | null>
+  /** The org's sources, filtered to what `viewer` may see (see {@link visibilityWhere}). */
+  listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<SkillSourceRecord[]>
+  /** Look up a source by its org-unique name (used to resolve an agent's enable-list). */
+  getByName(orgId: OrgId, name: string): Promise<SkillSourceRecord | null>
+  setSharing(id: string, sharing: { visibility: ResourceVisibility; sharedWith: string[] }): Promise<SkillSourceRecord>
+  update(id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceRecord>
+  delete(id: string): Promise<void>
 }
 
 // ── External-memory plugin control plane (memory-evolution M-5A) ──

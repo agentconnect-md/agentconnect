@@ -13,7 +13,8 @@
  * Editing the raw file preserves the original relative `workspace.path`.
  *
  * Locally-owned keys (id, status, integrations, permissions, crons,
- * workspace.path / pullOnNewSession / skills) are preserved untouched.
+ * workspace.path / pullOnNewSession, and the deprecated workspace.skills) are
+ * preserved untouched. The top-level `skills` (AgentSkillEntry[]) is CP-owned.
  * `runtime` and `output.mode` are CP-owned when the spec carries them (a spec
  * without the key leaves the local value alone — hand-authored agent.json keeps
  * working).
@@ -407,6 +408,9 @@ function applySpecFields(
   }
   if (spec.pause !== undefined) raw.pause = spec.pause
   if (spec.mcpServers !== undefined) raw.mcpServers = spec.mcpServers
+  // Skill sources are CP-owned and self-contained (design: shared-skills.md); mirror
+  // the mcpServers contract — always shipped, so an emptied list clears on disk.
+  if (spec.skills !== undefined) raw.skills = spec.skills
   // Agent→agent call policy (§2.5). callPolicy absent ⇒ leave alone (like pause);
   // allowedCallerAgentIds always ships from the CP so removing the last caller replicates.
   if (spec.callPolicy !== undefined) raw.callPolicy = spec.callPolicy

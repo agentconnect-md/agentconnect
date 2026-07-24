@@ -77,7 +77,7 @@ describe('AgentSpecAssembler', () => {
     const specs = new AgentSpecAssembler(counting)
     const pinned = await specs.secretsOf(AGENT) // the move snapshot's one read
     expect(reads).toBe(1)
-    expect(specs.project(AGENT, pinned).secrets).toEqual({ LIVE: 'now' })
+    expect(specs.project(AGENT, pinned, []).secrets).toEqual({ LIVE: 'now' })
     expect(reads).toBe(1) // project() added none
   })
 

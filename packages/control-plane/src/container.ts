@@ -53,6 +53,7 @@ import {
   PgMcpProviderRepo,
   PgMcpProviderSecretStore,
   PgMcpGrantRepo,
+  PgSkillSourceRepo,
   PgMemoryPluginInstallationRepo,
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
@@ -209,6 +210,7 @@ export function buildContainer(
     mcpProvider: new PgMcpProviderRepo(prisma),
     mcpProviderSecret: new PgMcpProviderSecretStore(prisma, secretCipher),
     mcpGrant: new PgMcpGrantRepo(prisma, secretCipher),
+    skillSource: new PgSkillSourceRepo(prisma),
     memoryPluginInstallation: new PgMemoryPluginInstallationRepo(prisma),
     externalMemoryConnection: new PgExternalMemoryConnectionRepo(prisma),
     externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, secretCipher),
@@ -307,7 +309,7 @@ export function buildContainer(
   // The ONE assembler of CP→daemon AgentSpecs — owns secret loading (the only
   // AgentSecretStore VALUE reader) + icon bases, shared by every emission path:
   // reconcile roster, agent/upsert replicate, icon refresh, move activation.
-  const agentSpecs = new AgentSpecAssembler(repos.agentSecret, iconBases)
+  const agentSpecs = new AgentSpecAssembler(repos.agentSecret, iconBases, repos.skillSource)
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
   // {userId, user, agentId, orgId}. The relay delegates verification here via
@@ -567,6 +569,7 @@ export function buildContainer(
       mcpProvider: repos.mcpProvider,
       mcpProviderSecret: repos.mcpProviderSecret,
       mcpGrant: repos.mcpGrant,
+      skillSource: repos.skillSource,
       memoryPluginInstallation: repos.memoryPluginInstallation,
       externalMemoryConnection: repos.externalMemoryConnection,
       externalMemoryConnectionSecret: repos.externalMemoryConnectionSecret,

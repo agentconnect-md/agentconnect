@@ -31,6 +31,7 @@ export {
   PgIntegrationChannelRepo
 } from './repositories/integration.repo.js'
 export { PgMcpProviderRepo, PgMcpProviderSecretStore, PgMcpGrantRepo } from './repositories/mcp.repo.js'
+export { PgSkillSourceRepo } from './repositories/skill-source.repo.js'
 export {
   PgMemoryPluginInstallationRepo,
   PgExternalMemoryConnectionRepo,

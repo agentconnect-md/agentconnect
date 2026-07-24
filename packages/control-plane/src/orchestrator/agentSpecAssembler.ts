@@ -14,9 +14,10 @@
  * The instance also owns the icon URL bases, so the four call sites stop
  * re-deriving `{cp, store}` from config independently.
  */
-import type { AgentSpec } from '@agentconnect.md/protocol'
-import type { AgentRecord, AgentSecretStore } from '../persistence/ports.js'
+import type { AgentSkillEntry, AgentSpec } from '@agentconnect.md/protocol'
+import type { AgentRecord, AgentSecretStore, SkillSourceRepo } from '../persistence/ports.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../agents/agent-icon.js'
+import { resolveAgentSkillEntries } from './skillSource.js'
 
 /** The wire spec plus the id it is keyed by on `agent/upsert` / the roster. */
 export type AssembledAgentSpec = AgentSpec & { agentId: string }
@@ -24,12 +25,19 @@ export type AssembledAgentSpec = AgentSpec & { agentId: string }
 export class AgentSpecAssembler {
   constructor(
     private readonly secrets: AgentSecretStore,
-    private readonly iconBases: IconUrlBases = {}
+    private readonly iconBases: IconUrlBases = {},
+    // Optional: resolves the agent's skill enable-list into self-contained
+    // AgentSpec.skills entries. Absent (some tests / minimal graphs) ⇒ no skills.
+    private readonly skillSources?: SkillSourceRepo
   ) {}
 
-  /** Fetch the agent's secret values from the store seam and project the spec. */
+  /** Fetch the agent's secret values + resolve its skills, then project the spec. */
   async assemble(a: AgentRecord): Promise<AssembledAgentSpec> {
-    return this.project(a, await this.secrets.get(a.id))
+    const [secrets, skillEntries] = await Promise.all([
+      this.secrets.get(a.id),
+      resolveAgentSkillEntries(a, this.skillSources)
+    ])
+    return this.project(a, secrets, skillEntries)
   }
 
   /** Batch form for the reconcile roster (one store read per owned agent). */
@@ -43,13 +51,25 @@ export class AgentSpecAssembler {
     return this.secrets.get(a.id)
   }
 
+  /** Resolve the agent's skill entries — pinned into the move {@link MoveBundle} so
+   *  the authoritative `agent/activate` path ships them (a bare `project` would
+   *  default to [], which `writeAgentSpec` reads as "clear", wiping skills on move). */
+  skillsOf(a: Pick<AgentRecord, 'orgId' | 'skills'>): Promise<AgentSkillEntry[]> {
+    return resolveAgentSkillEntries(a, this.skillSources)
+  }
+
   /**
    * Pure projection over ALREADY-FETCHED secrets. The agent-move path calls this
    * with its snapshotted `MoveBundle.secrets` so the activation fingerprint
    * compares stable inputs; everything else should prefer {@link assemble}.
+   *
+   * `skillEntries` is REQUIRED (not defaulted): the move/activation path is
+   * authoritative and `writeAgentSpec` reads an omitted skills list as "clear", so
+   * a silent default would wipe skills on every move/workspace edit. The move bundle
+   * snapshots the resolved entries and passes them here; callers with none pass [].
    */
-  project(a: AgentRecord, secrets: Record<string, string>): AssembledAgentSpec {
-    return agentRecordToSpec(a, secrets, this.iconBases)
+  project(a: AgentRecord, secrets: Record<string, string>, skillEntries: AgentSkillEntry[]): AssembledAgentSpec {
+    return agentRecordToSpec(a, secrets, this.iconBases, skillEntries)
   }
 }
 
@@ -64,7 +84,8 @@ export class AgentSpecAssembler {
 export function agentRecordToSpec(
   a: AgentRecord,
   secrets: Record<string, string>,
-  iconBases?: IconUrlBases
+  iconBases?: IconUrlBases,
+  skillEntries: AgentSkillEntry[] = []
 ): AssembledAgentSpec {
   // Domain AgentWorkspace uses `gitBranch`; the wire AgentWorkspace uses `branch`.
   // App-backed GitHub workspaces have one implicit repo. Scratch workspaces have
@@ -127,6 +148,10 @@ export function agentRecordToSpec(
     secrets,
     // Likewise always shipped (even []) so disabling the last MCP server replicates.
     mcpServers: a.mcpServers,
+    // Self-contained skill sources (shared-skills.md), resolved from the agent's
+    // enable-list against the org SkillSource registry. Always shipped (even []) so
+    // disabling the last skill replicates.
+    skills: skillEntries,
     // Agent→agent call authorization (§2.5), replicated so the owning daemon enforces
     // it locally on same-daemon `messageAgent` delivery. Always ship both (allowedCallerAgentIds
     // even []) so a policy loosen/tighten or an emptied allow-list replicates.

@@ -159,6 +159,7 @@ export interface AgentDto {
   workspaceRepoId?: string | null
   capabilities: string[]
   mcpServers: string[] // daemon-configured MCP server names attached at session/new; empty ⇒ none
+  skills: string[] // enabled shared-skills "<source>/<skill>" / "<source>/*"; empty ⇒ none
   memory: AgentMemoryConfig | null // memory backend; null ⇒ managed default
   createdAt: string // ISO-8601
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
@@ -587,6 +588,8 @@ export interface UpdateAgentInput {
   capabilities?: string[]
   /** Replaced wholesale when provided; [] clears all servers. */
   mcpServers?: string[]
+  /** Enabled shared-skills; replaced wholesale when provided; [] clears all. */
+  skills?: string[]
   /** Memory backend; null clears (revert to managed default). */
   memory?: AgentMemoryConfig | null
 }
@@ -730,6 +733,8 @@ export interface CreateAgentInput {
   capabilities?: string[]
   /** Daemon-configured MCP server names to attach at session/new; absent ⇒ none. */
   mcpServers?: string[]
+  /** Enabled shared-skills "<source>/<skill>" / "<source>/*"; absent ⇒ none. */
+  skills?: string[]
   /** Memory backend; absent ⇒ managed default. */
   memory?: AgentMemoryConfig
   /** Request an OS sandbox for this agent; absent ⇒ false unless daemon policy requires it. */
@@ -2725,6 +2730,94 @@ export async function deleteMcpProvider(id: string): Promise<void> {
 // from the content PATCH; gated server-side by canManageSharing (=== canEdit).
 export async function updateMcpProviderSharing(id: string, body: SharingInput): Promise<McpProviderDto> {
   return apiPut<McpProviderDto>(`${orgBase()}/mcp-providers/${encodeURIComponent(id)}/sharing`, body)
+}
+
+// ── shared-skills sources (docs/designs/shared-skills.md) ────────────────────
+// Org-level skills sources the daemon installs via `npx skills`. Pure metadata —
+// nothing secret. The daemon fetches content directly from the source.
+export interface SkillSourceDto {
+  id: string
+  name: string
+  source: string // the string fed to `npx skills add`
+  githubRepoId: string | null // BigInt rendered as string
+  ref: string | null // branch/tag/commit
+  subDir: string | null
+  skills: string[] // the source's own skill filter ([] ⇒ install all)
+  visibility: ResourceVisibility
+  sharedWith: string[]
+  createdBy: string | null
+  canManageSharing: boolean
+  createdAt: string // ISO-8601
+}
+
+export interface CreateSkillSourceInput {
+  name: string
+  source: string
+  githubRepoId?: string
+  ref?: string
+  subDir?: string
+  skills?: string[]
+  visibility?: ResourceVisibility
+  sharedWith?: string[]
+}
+
+// PATCH body — at least one field. `skills` REPLACES the stored filter wholesale.
+// Name is immutable (agents bind by name; recreate to rename).
+export interface UpdateSkillSourceInput {
+  source?: string
+  githubRepoId?: string | null
+  ref?: string | null
+  subDir?: string | null
+  skills?: string[]
+}
+
+// POST /skill-sources/preview body + response — a best-effort GitHub scan for the
+// import dialog (branch/tag choices + the SKILL.md manifest).
+export interface PreviewSkillSourceInput {
+  installationId: string
+  owner: string
+  repo: string
+  ref?: string
+}
+export interface SkillSourcePreviewDto {
+  branches: string[]
+  tags: string[]
+  skills: Array<{ name: string; dirPath: string }>
+}
+
+export async function fetchSkillSources(orgId?: string): Promise<SkillSourceDto[]> {
+  return apiGet<SkillSourceDto[]>(`${orgBase(orgId)}/skill-sources`)
+}
+
+// A source's discovered SKILL.md manifest for the agent editor's per-skill picker.
+// `resolvable:false` (empty skills) ⇒ the source isn't a scannable GitHub repo, so
+// the UI offers whole-source enablement only.
+export interface SkillSourceSkillsDto {
+  resolvable: boolean
+  skills: Array<{ name: string; dirPath: string }>
+}
+export async function fetchSkillSourceSkills(id: string): Promise<SkillSourceSkillsDto> {
+  return apiGet<SkillSourceSkillsDto>(`${orgBase()}/skill-sources/${encodeURIComponent(id)}/skills`)
+}
+
+export async function previewSkillSource(input: PreviewSkillSourceInput): Promise<SkillSourcePreviewDto> {
+  return apiPost<SkillSourcePreviewDto>(`${orgBase()}/skill-sources/preview`, input)
+}
+
+export async function createSkillSource(input: CreateSkillSourceInput): Promise<SkillSourceDto> {
+  return apiPost<SkillSourceDto>(`${orgBase()}/skill-sources`, input)
+}
+
+export async function updateSkillSource(id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceDto> {
+  return apiPatch<SkillSourceDto>(`${orgBase()}/skill-sources/${encodeURIComponent(id)}`, patch)
+}
+
+export async function deleteSkillSource(id: string): Promise<void> {
+  await apiDelete<void>(`${orgBase()}/skill-sources/${encodeURIComponent(id)}`)
+}
+
+export async function updateSkillSourceSharing(id: string, body: SharingInput): Promise<SkillSourceDto> {
+  return apiPut<SkillSourceDto>(`${orgBase()}/skill-sources/${encodeURIComponent(id)}/sharing`, body)
 }
 
 // ── open-connector connectors (docs: connectors integration) ─────────────────

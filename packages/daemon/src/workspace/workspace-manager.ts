@@ -13,6 +13,8 @@ import {
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { normalizeGitUrl, normalizeRepoSubdir } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
+import { makeLogger } from '../log.js'
+import { installSkills } from '../skills/install-skills.js'
 import {
   cloneGitEnv,
   gitCredentialEnv,
@@ -21,6 +23,27 @@ import {
   preWarmGitCred,
   writeRepoHelperConfig
 } from './git-injection.js'
+
+const skillsLog = makeLogger('info')
+
+/**
+ * Post-clone skills step (docs/designs/shared-skills.md §6). Installs the agent's
+ * enabled skills into its resolved ACP cwd via `npx skills`, then returns that cwd.
+ * Best-effort and non-blocking: `installSkills` never throws, and the common
+ * no-skills path is a single stat. Kept out of the return expressions so both the
+ * scratch and git-repo branches funnel through one install point.
+ */
+async function withSkills(agent: Agent, acpCwd: string): Promise<string> {
+  await installSkills(agent, acpCwd, {
+    env: {
+      ...gitEnvBase(),
+      GIT_TERMINAL_PROMPT: '0',
+      ...(usesGithubApp(agent) ? gitCredentialEnv(agent.id) : {})
+    },
+    warn: (msg) => skillsLog.warn(msg)
+  })
+  return acpCwd
+}
 
 const PULL_TIMEOUT_MS = 4500
 const MATERIALIZATION_FILE = 'workspace-materialization.json'
@@ -122,7 +145,7 @@ export async function prepareWorkspace(agent: Agent): Promise<string> {
     // The agent's memory file lives at the agent ROOT (outside the workspace) and
     // is seeded separately (see agents/memory.ts `ensureMemory`), so from-scratch
     // just needs the (empty) workspace dir to exist.
-    return cwd
+    return withSkills(agent, cwd)
   }
 
   // git-repo, first session: no checkout yet → clone. Unlike pull, a clone has no
@@ -130,7 +153,7 @@ export async function prepareWorkspace(agent: Agent): Promise<string> {
   // surfaces) rather than silently proceeding with an empty dir (design §4.3).
   if (!existsSync(join(cwd, '.git'))) {
     await cloneRepo(agent)
-    return resolveAcpCwd(cwd, agentDir)
+    return withSkills(agent, resolveAcpCwd(cwd, agentDir))
   }
 
   // git-repo, existing checkout: the repo-local helper pin may carry a previous
@@ -171,7 +194,7 @@ export async function prepareWorkspace(agent: Agent): Promise<string> {
       clearTimeout(timer)
     }
   }
-  return resolveAcpCwd(cwd, agentDir)
+  return withSkills(agent, resolveAcpCwd(cwd, agentDir))
 }
 
 /** Resolve the checked path ACP receives, closing symlink and prefix-containment gaps. */

@@ -194,6 +194,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       env: {}, // always shipped — an absent env would read as "leave alone" on the daemon
       secrets: {}, // write-only secrets ride the same wire as env; always shipped (even {})
       mcpServers: [], // likewise always shipped (disabling the last server must replicate)
+      skills: [], // resolved skill entries; always shipped (disabling the last skill must replicate)
       // Agent→agent call policy (§2.5), always shipped so a policy/allow-list change replicates.
       callPolicy: 'all',
       allowedCallerAgentIds: [],

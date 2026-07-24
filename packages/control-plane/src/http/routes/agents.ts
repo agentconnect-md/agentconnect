@@ -153,6 +153,7 @@ function toDto(
     // write-only and never on the record). Sorted for a stable DTO.
     secretKeys: [...secretKeys].sort(),
     mcpServers: a.mcpServers,
+    skills: a.skills,
     memory: a.memory,
     status: a.status,
     daemonId: a.daemonId,
@@ -482,6 +483,28 @@ export function agentRoutes(deps: HttpDeps) {
       return blocked.length ? `cannot enable MCP provider you don't have access to: ${blocked.join(', ')}` : null
     }
 
+    // Skills enablement authorization (shared-skills.md §9). A skill-ref is
+    // "<source>/<skill>" / "<source>/*" / "<source>"; its self-contained definition
+    // is pushed to the daemon, so a caller may only ADD refs to sources they can see.
+    // Newly-added refs to an unknown OR unviewable source are blocked, so the
+    // enable-list surface mirrors source visibility (same rule as MCP providers);
+    // removing/keeping a ref to a source they can't see is allowed. `before` is [] on create.
+    const enablingUnseenSkillDenied = async (
+      orgId: OrgId,
+      ctx: ViewCtx,
+      before: readonly string[],
+      after: readonly string[]
+    ): Promise<string | null> => {
+      const sourceOf = (ref: string) => (ref.includes('/') ? ref.slice(0, ref.indexOf('/')) : ref)
+      const addedSources = [...new Set(after.filter((r) => !before.includes(r)).map(sourceOf))]
+      if (addedSources.length === 0) return null
+      const visible = new Set((await deps.repos.skillSource.listForOrg(orgId, ctx)).map((s) => s.name))
+      const blocked = addedSources.filter((n) => !visible.has(n))
+      return blocked.length
+        ? `cannot enable skills from a source you don't have access to: ${blocked.join(', ')}`
+        : null
+    }
+
     const validateExternalMemoryBinding = async (
       memory: AgentRecord['memory'] | undefined,
       orgId: OrgId
@@ -727,6 +750,10 @@ export function agentRoutes(deps: HttpDeps) {
           const denied = await enablingUnseenDenied(orgOf(req), ctxOf(req), [], req.body.mcpServers)
           if (denied) return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: denied })
         }
+        if (Array.isArray(req.body.skills)) {
+          const denied = await enablingUnseenSkillDenied(orgOf(req), ctxOf(req), [], req.body.skills)
+          if (denied) return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: denied })
+        }
         const memoryRelease = deps.memoryConnectionMutations.tryBeginMutation(
           externalMemoryConnectionIds(req.body.memory)
         )
@@ -781,6 +808,7 @@ export function agentRoutes(deps: HttpDeps) {
               restrictFileAccess,
               ...(req.body.env !== undefined ? { env: req.body.env } : {}),
               ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
+              ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
               ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
               ...(req.body.daemonId !== undefined ? { daemonId: DaemonId(req.body.daemonId) } : {}),
               ...(req.body.workspace !== undefined ? { workspace: req.body.workspace } : {}),
@@ -1119,6 +1147,10 @@ export function agentRoutes(deps: HttpDeps) {
           // array can add a provider.
           if (Array.isArray(req.body.mcpServers)) {
             const denied = await enablingUnseenDenied(orgOf(req), ctxOf(req), existing.mcpServers, req.body.mcpServers)
+            if (denied) return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: denied })
+          }
+          if (Array.isArray(req.body.skills)) {
+            const denied = await enablingUnseenSkillDenied(orgOf(req), ctxOf(req), existing.skills, req.body.skills)
             if (denied) return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: denied })
           }
           const memoryError = await validateExternalMemoryBinding(targetMemory ?? undefined, orgOf(req))
