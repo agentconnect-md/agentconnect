@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1.7
+
 #
 # Unified image build for the deployable services. The build context is the repo
 # root; pick a service with --target:
