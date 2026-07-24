@@ -1,6 +1,7 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
+import type { DreamInfo } from '@agentconnect.md/protocol'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 
 // node:sqlite binds named params as a generic Record and returns rows as
@@ -573,6 +574,26 @@ export class LocalStore {
         observedAt INTEGER NOT NULL,
         PRIMARY KEY (runtimeId, modelId)
       );
+      -- Memory dream jobs (docs/designs/memory-dreaming.md §4). METADATA ONLY —
+      -- staged store bodies live on disk under <agent-root>/memory-dreams/ and
+      -- never enter this DB. Column shapes mirror protocol DreamInfo; the JSON
+      -- columns hold its array/object fields verbatim.
+      CREATE TABLE IF NOT EXISTS dreams (
+        dreamId TEXT PRIMARY KEY,
+        agentId TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN
+          ('pending', 'running', 'completed', 'failed', 'canceled', 'adopted', 'discarded')),
+        triggerKind TEXT NOT NULL,
+        sessionIds TEXT NOT NULL,         -- JSON string[]
+        snapshotDigest TEXT NOT NULL,
+        instructions TEXT,
+        skills TEXT,                      -- JSON DreamSkillInfo[]
+        usage TEXT,                       -- JSON {inputBytes, outputBytes}
+        error TEXT,                       -- JSON {type, message}
+        createdAt TEXT NOT NULL,
+        endedAt TEXT
+      );
+      CREATE INDEX IF NOT EXISTS dreams_agent_created ON dreams (agentId, createdAt DESC);
     `)
     this.migrateSessionUsage()
     this.migrateSessionMutes()
@@ -1351,6 +1372,117 @@ export class LocalStore {
       }
     }
     return rows
+  }
+
+  // ── memory dream jobs (docs/designs/memory-dreaming.md §4; DreamStorePort) ──
+
+  private dreamToRow(dream: DreamInfo): SqlParams {
+    return {
+      dreamId: dream.dreamId,
+      agentId: dream.agentId,
+      status: dream.status,
+      triggerKind: dream.trigger,
+      sessionIds: JSON.stringify(dream.sessionIds),
+      snapshotDigest: dream.snapshotDigest,
+      instructions: dream.instructions ?? null,
+      skills: dream.skills ? JSON.stringify(dream.skills) : null,
+      usage: dream.usage ? JSON.stringify(dream.usage) : null,
+      error: dream.error ? JSON.stringify(dream.error) : null,
+      createdAt: dream.createdAt,
+      endedAt: dream.endedAt ?? null
+    }
+  }
+
+  private dreamFromRow(row: Record<string, unknown>): DreamInfo {
+    return {
+      dreamId: row.dreamId as string,
+      agentId: row.agentId as string,
+      status: row.status as DreamInfo['status'],
+      trigger: row.triggerKind as DreamInfo['trigger'],
+      sessionIds: JSON.parse(row.sessionIds as string) as string[],
+      snapshotDigest: row.snapshotDigest as string,
+      ...(row.instructions ? { instructions: row.instructions as string } : {}),
+      ...(row.skills ? { skills: JSON.parse(row.skills as string) as DreamInfo['skills'] } : {}),
+      ...(row.usage ? { usage: JSON.parse(row.usage as string) as DreamInfo['usage'] } : {}),
+      ...(row.error ? { error: JSON.parse(row.error as string) as DreamInfo['error'] } : {}),
+      createdAt: row.createdAt as string,
+      ...(row.endedAt ? { endedAt: row.endedAt as string } : {})
+    }
+  }
+
+  insertDream(dream: DreamInfo): void {
+    this.db
+      .prepare(
+        `INSERT INTO dreams (dreamId, agentId, status, triggerKind, sessionIds, snapshotDigest,
+           instructions, skills, usage, error, createdAt, endedAt)
+         VALUES (@dreamId, @agentId, @status, @triggerKind, @sessionIds, @snapshotDigest,
+           @instructions, @skills, @usage, @error, @createdAt, @endedAt)`
+      )
+      .run(this.dreamToRow(dream))
+  }
+
+  updateDream(dream: DreamInfo): void {
+    this.db
+      .prepare(
+        `UPDATE dreams SET status = @status, sessionIds = @sessionIds, snapshotDigest = @snapshotDigest,
+           instructions = @instructions, skills = @skills, usage = @usage, error = @error, endedAt = @endedAt
+         WHERE dreamId = @dreamId AND agentId = @agentId`
+      )
+      .run(this.dreamToRow(dream))
+  }
+
+  getDream(agentId: string, dreamId: string): DreamInfo | undefined {
+    const row = this.db.prepare('SELECT * FROM dreams WHERE dreamId = ? AND agentId = ?').get(dreamId, agentId) as
+      Record<string, unknown> | undefined
+    return row ? this.dreamFromRow(row) : undefined
+  }
+
+  listDreams(agentId: string, limit: number): DreamInfo[] {
+    return (
+      this.db
+        .prepare('SELECT * FROM dreams WHERE agentId = ? ORDER BY createdAt DESC, dreamId DESC LIMIT ?')
+        .all(agentId, limit) as Record<string, unknown>[]
+    ).map((row) => this.dreamFromRow(row))
+  }
+
+  /** Non-terminal dreams — the boot-time crash-recovery sweep. */
+  openDreams(): DreamInfo[] {
+    return (
+      this.db.prepare("SELECT * FROM dreams WHERE status IN ('pending', 'running')").all() as Record<string, unknown>[]
+    ).map((row) => this.dreamFromRow(row))
+  }
+
+  /** Newest-first addressable sessions to mine as dream transcript sources. */
+  dreamSessionSources(agentId: string, limit: number): { sessionId: string; channel: string; thread: string }[] {
+    return this.db
+      .prepare(
+        `SELECT acpSessionId AS sessionId, channel, thread FROM sessions
+         WHERE agentId = ? AND acpSessionId IS NOT NULL
+         ORDER BY updatedAt DESC LIMIT ?`
+      )
+      .all(agentId, limit) as { sessionId: string; channel: string; thread: string }[]
+  }
+
+  /** Chronological conversational text of one session thread, scoped like
+   *  `transcriptPageForAgent` (a peer's private rows never enter a dream). */
+  dreamTranscriptText(
+    channel: string,
+    thread: string,
+    agentId: string,
+    limit: number
+  ): { sender: string; text: string }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT sender, text FROM transcript
+         WHERE channel = ? AND thread = ? AND kind = 'text'
+           AND (sender = ? OR recipient = ? OR EXISTS (
+             SELECT 1 FROM transcript_recipient tr
+             WHERE tr.channel = transcript.channel AND tr.thread = transcript.thread
+               AND tr.ts = transcript.ts AND tr.agentId = ?))
+         ORDER BY seq DESC LIMIT ?`
+      )
+      .all(channel, thread, agentId, agentId, agentId, limit) as { sender: string; text: string }[]
+    return rows.reverse()
   }
 
   appendTranscript(e: TranscriptEntry): void {

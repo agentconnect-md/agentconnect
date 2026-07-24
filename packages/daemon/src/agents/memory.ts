@@ -41,7 +41,7 @@ export const MEMORY_HISTORY_FILENAME = '.history'
 export const MAX_HISTORY_VALUE_BYTES = 4_000
 
 /** Where a memory write originated — for change-log provenance. */
-export type MemoryWriteSource = 'tool' | 'console' | 'distill'
+export type MemoryWriteSource = 'tool' | 'console' | 'distill' | 'dream'
 
 /** One line in the memory change log (`.history`). `event` is `add` on a first write,
  *  `update` on an overwrite; `delete` is reserved (no delete op exists today — a

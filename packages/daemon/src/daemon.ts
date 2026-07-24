@@ -49,6 +49,8 @@ import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-
 import { toolsForIntegrations, MEMORY_TOOL_NAMES, ALL_TOOL_NAMES, GITHUB_REVIEW_TOOLS } from './mcp/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, trustedExtractionMode } from './agents/memory-distiller.js'
+import { DreamRunner } from './agents/dream-runner.js'
+import { createDreamReader } from './cp/dream-reader.js'
 import { routeRules, type RouteVia } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
 import { rulesFromAgent, resolveCpRule, resolveAgentIntegration, type RoutingRule } from './router/routing-rule.js'
@@ -1067,6 +1069,8 @@ export class Daemon {
   private memoryExtractionDirs = new Map<string, string>()
   /** Host instances that failed the trusted/read-only preflight; retry only after host replacement. */
   private memoryExtractionUnavailable = new WeakSet<AcpHost>()
+  /** Lazily-built dream-job engine (docs/designs/memory-dreaming.md §4). */
+  private dreamRunnerInstance?: DreamRunner
   private gitCreds!: GitCredentialCache
   /** Public commit attribution selected by the CP deployment's GitHub App. */
   private gitCommitIdentity?: GitCommitIdentity
@@ -3174,6 +3178,68 @@ export class Daemon {
     } finally {
       this.memoryExtractionCollectors.delete(key)
     }
+  }
+
+  /**
+   * Run one isolated dream-extraction session (docs/designs/memory-dreaming.md §5).
+   * Unlike the long-lived distillation session, every dream gets a FRESH session
+   * and discards it — dreams are rare and their huge prompts should not linger in
+   * a cached context. Trust handling also differs: on a runtime with a trusted
+   * system-prompt channel the dream policy rides `_meta.systemPrompt` (+ read-only
+   * mode, like distillation); otherwise the policy is prepended to the user
+   * prompt — acceptable ONLY because dream output is staged and reviewed, never
+   * written to the live store by the pipeline.
+   */
+  private async runDreamExtraction(agentId: string, systemPrompt: string, prompt: string): Promise<string> {
+    const agent = this.agents.get(agentId)
+    if (!agent) throw new Error(`unknown agent ${agentId}`)
+    const host = await this.ensureHostAsync(agentId)
+    const trusted = host.usesMetaSystemPrompt()
+    let cwd = this.memoryExtractionDirs.get(agentId)
+    if (!cwd) {
+      cwd = await mkdtemp(join(tmpdir(), 'agentconnect-memory-distill-'))
+      this.memoryExtractionDirs.set(agentId, cwd)
+    }
+    const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
+    try {
+      // Best-effort read-only: the staged pipeline never needs writes, so take a
+      // non-mutating mode when the runtime offers one; unlike distillation this
+      // is not a hard gate (staging + review is the containment).
+      const modes = host.permissionModeOptions()?.modes ?? []
+      const readOnlyMode = modes.find((mode) => mode === 'read-only') ?? modes.find((mode) => mode === 'plan')
+      if (readOnlyMode) await host.setSessionPermissionMode(sessionId, readOnlyMode)
+
+      const key = pendingTurnKey(agentId, sessionId)
+      const chunks: string[] = []
+      this.memoryExtractionCollectors.set(key, chunks)
+      try {
+        this.rematerializeConfigFiles(agentId)
+        const text = trusted ? prompt : `${systemPrompt}\n\n${prompt}`
+        await host.prompt(sessionId, [{ type: 'text', text }])
+        return chunks.join('')
+      } finally {
+        this.memoryExtractionCollectors.delete(key)
+      }
+    } finally {
+      host.discardSession(sessionId)
+    }
+  }
+
+  /** The daemon's single dream-job engine, built on first use (the local store
+   *  must exist for the boot-time crash-recovery sweep). */
+  private dreamRunner(): DreamRunner {
+    this.dreamRunnerInstance ??= new DreamRunner({
+      agentDirByAgent: (id) => this.agents.get(id)?.dir,
+      dreamingPolicyFor: (id) => {
+        const memory = this.agents.get(id)?.memory
+        // Absent binding ⇒ managed default, but dreaming stays opt-in (no policy).
+        return memory?.provider === 'managed' ? memory.dreaming : undefined
+      },
+      store: this.store,
+      extract: (agentId, systemPrompt, prompt) => this.runDreamExtraction(agentId, systemPrompt, prompt),
+      log: this.log
+    })
+    return this.dreamRunnerInstance
   }
 
   /** Whether this agent is backed by Codex ACP. Registry ids are canonical, while
@@ -11848,6 +11914,7 @@ export class Daemon {
         }
       ),
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),
+      dreamReader: createDreamReader(this.dreamRunner()),
       // webchat is no longer a CP control-WS integration (milestone A4) — it rides the
       // relay's rd/* wire, wired through RelayManager.onRelayMsg below.
       clock: systemClock,

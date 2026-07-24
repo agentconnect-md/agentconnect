@@ -50,7 +50,16 @@ import type {
   MemoryRecordUpdateReq,
   MemoryRecordDeleteReq,
   MemoryRecordHistoryReq,
-  MemoryConnectionFact
+  MemoryConnectionFact,
+  DreamStartReq,
+  DreamCancelReq,
+  DreamListReq,
+  DreamGetReq,
+  DreamAdoptReq,
+  DreamDiscardReq,
+  DreamFilesReq,
+  DreamFileReadReq,
+  DreamSkillReviewReq
 } from '@agentconnect.md/protocol'
 import { buildEnvelope, decodeEnvelope, encode, MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import type { SessionReader } from './session-reader.js'
@@ -63,6 +72,8 @@ import {
   type MemoryReader
 } from './memory-reader.js'
 import type { WorkspaceGit } from './workspace-git.js'
+import type { DreamReader } from './dream-reader.js'
+import { DreamViolationError, DreamStateError } from '../agents/dream-runner.js'
 import { ReqRep, WireError, type Clock, type TimerHandle, type Transport } from '@agentconnect.md/connection'
 import type { ConfigApply } from './config-apply.js'
 import type { Logger } from '../log.js'
@@ -110,6 +121,8 @@ export interface CpClientDeps {
   workspaceGit: WorkspaceGit
   /** Read/write seam over the agents' memory dirs (`<agent-root>/memory/`, §1/§12). */
   memoryReader: MemoryReader
+  /** Dream-job lifecycle + staged-output review seam (docs/designs/memory-dreaming.md §10). */
+  dreamReader: DreamReader
   // webchat content no longer rides this control WS (milestone A4) — the daemon serves
   // webchat over the relay's rd/* wire (RelayClient / Daemon.handleRelayMsg) instead.
   clock: Clock
@@ -903,6 +916,77 @@ export class CpClient {
           .catch((err) => this.memoryError(frame.id, 'memory/record/history', err))
         return
       }
+      // ── memory dreaming — job metadata + staged-body review (bodies stay daemon-local) ──
+      case 'memory/dream/start': {
+        this.deps.dreamReader
+          .start(frame.payload as DreamStartReq)
+          .then((state) => this.reply(frame, 'memory/dream/start/ok', state))
+          .catch((err) => this.dreamError(frame.id, 'memory/dream/start', err))
+        return
+      }
+      case 'memory/dream/cancel': {
+        this.deps.dreamReader
+          .cancel(frame.payload as DreamCancelReq)
+          .then((state) => this.reply(frame, 'memory/dream/cancel/ok', state))
+          .catch((err) => this.dreamError(frame.id, 'memory/dream/cancel', err))
+        return
+      }
+      case 'memory/dream/list': {
+        this.deps.dreamReader
+          .list(frame.payload as DreamListReq)
+          .then((page) => this.reply(frame, 'memory/dream/list/page', page))
+          .catch((err) => this.dreamError(frame.id, 'memory/dream/list', err))
+        return
+      }
+      case 'memory/dream/get': {
+        this.deps.dreamReader
+          .get(frame.payload as DreamGetReq)
+          .then((state) => this.reply(frame, 'memory/dream/get/result', state))
+          .catch((err) => this.dreamError(frame.id, 'memory/dream/get', err))
+        return
+      }
+      case 'memory/dream/adopt': {
+        this.deps.dreamReader
+          .adopt(frame.payload as DreamAdoptReq)
+          .then((state) => this.reply(frame, 'memory/dream/adopt/ok', state))
+          .catch((err) => this.dreamError(frame.id, 'memory/dream/adopt', err))
+        return
+      }
+      case 'memory/dream/discard': {
+        this.deps.dreamReader
+          .discard(frame.payload as DreamDiscardReq)
+          .then((state) => this.reply(frame, 'memory/dream/discard/ok', state))
+          .catch((err) => this.dreamError(frame.id, 'memory/dream/discard', err))
+        return
+      }
+      case 'memory/dream/files': {
+        this.deps.dreamReader
+          .files(frame.payload as DreamFilesReq)
+          .then((page) => this.reply(frame, 'memory/dream/files/page', page))
+          .catch((err) => this.dreamError(frame.id, 'memory/dream/files', err))
+        return
+      }
+      case 'memory/dream/file/read': {
+        this.deps.dreamReader
+          .fileRead(frame.payload as DreamFileReadReq)
+          .then((content) => this.reply(frame, 'memory/dream/file/read/content', content))
+          .catch((err) => this.dreamError(frame.id, 'memory/dream/file/read', err))
+        return
+      }
+      case 'memory/dream/skill/accept': {
+        this.deps.dreamReader
+          .skillAccept(frame.payload as DreamSkillReviewReq)
+          .then((state) => this.reply(frame, 'memory/dream/skill/accept/ok', state))
+          .catch((err) => this.dreamError(frame.id, 'memory/dream/skill/accept', err))
+        return
+      }
+      case 'memory/dream/skill/dismiss': {
+        this.deps.dreamReader
+          .skillDismiss(frame.payload as DreamSkillReviewReq)
+          .then((state) => this.reply(frame, 'memory/dream/skill/dismiss/ok', state))
+          .catch((err) => this.dreamError(frame.id, 'memory/dream/skill/dismiss', err))
+        return
+      }
       // webchat content moved off this control WS (milestone A4) — it rides the relay's
       // rd/* wire now. Any stray legacy webchat/* frame falls through to the no-op default.
       default:
@@ -918,6 +1002,22 @@ export class CpClient {
   private workspaceError(corr: string, op: string, err: unknown): void {
     if (err instanceof WorkspaceViolationError) {
       this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false)
+      return
+    }
+    this.deps.log.warn(`cp: ${op} failed: ${(err as Error)?.message}`)
+    this.sendError(corr, 'INTERNAL', `${op} failed`, false)
+  }
+
+  /** Unknown agent/dream/path → BAD_PAYLOAD; a legal request against the wrong
+   *  lifecycle state → CONFLICT; anything else → INTERNAL with a generic message
+   *  (raw fs errors embed absolute host paths that must not leak to the CP/UI). */
+  private dreamError(corr: string, op: string, err: unknown): void {
+    if (err instanceof DreamViolationError) {
+      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false)
+      return
+    }
+    if (err instanceof DreamStateError) {
+      this.sendError(corr, 'CONFLICT', `${op} failed: ${err.message}`, false)
       return
     }
     this.deps.log.warn(`cp: ${op} failed: ${(err as Error)?.message}`)
