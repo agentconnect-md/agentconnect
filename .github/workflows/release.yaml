@@ -22,9 +22,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Reuse the same two-job quality gate as pull requests. The reusable workflow
-  # runs Build & Test and Integration tests in parallel against this exact SHA;
-  # the publishing job below cannot start unless both succeed.
+  # Reuse the same quality gate as pull requests. The reusable workflow runs
+  # Build, Check, Unit Test, and sharded Integration tests in parallel against
+  # this exact SHA; the publishing job below waits for all of them.
   test:
     name: Test
     uses: ./.github/workflows/test.yaml
@@ -93,7 +93,7 @@ jobs:
       # GitHub orders job summaries by job completion. The quality-gate jobs
       # therefore return their markdown instead of publishing it before this
       # job starts; append it only after semantic-release writes the notes.
-      - name: Append Build & Test summary
+      - name: Append Unit Test summary
         if: ${{ !cancelled() && needs.test.outputs.build_test_summary != '' }}
         env:
           TEST_SUMMARY: ${{ needs.test.outputs.build_test_summary }}
