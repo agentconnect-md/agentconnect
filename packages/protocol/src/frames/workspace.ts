@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 /**
- * Agent workspace file browsing (C→D REQ → REP) — the console's on-demand pulls.
+ * Agent workspace files (C→D REQ → REP) — the console's on-demand access.
  *
  * The CP stores NO workspace data — directory listings and file bytes are pulled
  * live from the owning daemon and proxied to the console, never persisted
@@ -16,7 +16,14 @@ import { z } from 'zod'
  *   ends the slice on a UTF-8 character boundary. `nextOffset` is the authoritative
  *   byte offset to request next — callers must NOT recompute it from the decoded
  *   `content` (a split multi-byte char would make the byte count drift).
+ * - `workspace/write`: create a text file when `ifMatchMtime` is absent, or
+ *   replace one when it matches the last read. Content is base64 so arbitrary
+ *   UTF-8 text has a predictable wire size.
  */
+
+/** Raw UTF-8 ceiling for one console workspace-file edit. Base64 expansion still
+ * leaves enough envelope headroom under the shared 256 KiB frame cap. */
+export const MAX_WORKSPACE_EDIT_BYTES = 180_000
 
 /** One directory entry in a workspace listing (name-only; not a full path). */
 export const WorkspaceEntry = z.object({
@@ -69,6 +76,31 @@ export const WorkspaceReadContent = z.object({
   truncated: z.boolean().optional() // true ⇒ nextOffset < size (more bytes remain)
 })
 export type WorkspaceReadContent = z.infer<typeof WorkspaceReadContent>
+
+const CanonicalBase64 = z
+  .string()
+  .max(Math.ceil(MAX_WORKSPACE_EDIT_BYTES / 3) * 4)
+  .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/)
+
+/** C→D REQ: atomically create or replace one scratch-workspace text file.
+ * Omitting `ifMatchMtime` is an exclusive create; supplying it is an optimistic
+ * replace, so neither operation silently overwrites a concurrent change. */
+export const WorkspaceWriteReq = z.object({
+  agentId: z.string().min(1), // local agent id (NOT a wire UUID)
+  path: z.string().min(1).max(4096), // workspace-relative POSIX path to a regular file
+  contentBase64: CanonicalBase64, // complete new UTF-8 contents
+  ifMatchMtime: z.string().datetime().optional()
+})
+export type WorkspaceWriteReq = z.infer<typeof WorkspaceWriteReq>
+
+/** D→C REP (corr = the req id): the atomically written file state. */
+export const WorkspaceWriteOk = z.object({
+  agentId: z.string(),
+  path: z.string(),
+  size: z.number().int().nonnegative(),
+  mtime: z.string()
+})
+export type WorkspaceWriteOk = z.infer<typeof WorkspaceWriteOk>
 
 /**
  * Agent workspace git ops (C→D REQ → REP) — the console's on-demand controls for

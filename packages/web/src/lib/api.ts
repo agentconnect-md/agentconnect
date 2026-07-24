@@ -1651,6 +1651,9 @@ export interface WorkspaceFileDto {
   truncated: boolean | null
 }
 
+/** Mirrors the daemon wire ceiling; base64 expansion still fits one control frame. */
+export const MAX_WORKSPACE_EDIT_BYTES = 180_000
+
 // One page of a workspace directory listing (GET /agents/:id/workspace/files),
 // proxied live from the agent's owning daemon — the CP never stores workspace
 // bytes (body-locality). 503 when that daemon is offline / the agent is unplaced.
@@ -1677,6 +1680,41 @@ export async function fetchWorkspaceFile(
   if (opts.offset) q.set('offset', String(opts.offset))
   if (opts.limit) q.set('limit', String(opts.limit))
   return apiGet<WorkspaceFileDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file?${q.toString()}`)
+}
+
+/** Read one workspace text file whole before editing it. Every slice must describe
+ * the same mtime so a multi-page load cannot assemble two agent revisions. */
+export async function fetchWorkspaceFileFull(agentId: string, path: string): Promise<WorkspaceFileDto> {
+  let offset = 0
+  let content = ''
+  let mtime: string | null | undefined
+  for (let page = 0; page < 16; page++) {
+    const slice = await fetchWorkspaceFile(agentId, { path, offset })
+    if (!slice.exists || slice.encoding !== 'utf8') return slice
+    if ((slice.size ?? 0) > MAX_WORKSPACE_EDIT_BYTES) {
+      throw new Error('Files larger than 180 KB cannot be edited here.')
+    }
+    if (mtime === undefined) mtime = slice.mtime
+    else if (slice.mtime !== mtime) throw new Error('The file changed while it was loading. Open it again to edit.')
+    content += slice.content ?? ''
+    if (!slice.truncated) {
+      return { ...slice, content, offset: 0, nextOffset: slice.size, truncated: false }
+    }
+    if (slice.nextOffset == null || slice.nextOffset <= offset) break
+    offset = slice.nextOffset
+  }
+  throw new Error('The workspace file is too large to load safely.')
+}
+
+export function writeWorkspaceFile(
+  agentId: string,
+  path: string,
+  body: { content: string; ifMatchMtime?: string }
+): Promise<{ path: string; size: number; mtime: string }> {
+  return apiPut<{ path: string; size: number; mtime: string }>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file?path=${encodeURIComponent(path)}`,
+    body
+  )
 }
 
 // One slice of an agent's memory file (GET /agents/:id/memory) — a single markdown

@@ -40,6 +40,8 @@ import type {
   WorkspaceListPage,
   WorkspaceReadReq,
   WorkspaceReadContent,
+  WorkspaceWriteReq,
+  WorkspaceWriteOk,
   WorkspaceGitStatusReq,
   WorkspaceGitStatus,
   WorkspaceGitPullReq,
@@ -418,6 +420,12 @@ export class ControlSender {
   async workspaceRead(daemonId: string, req: WorkspaceReadReq): Promise<WorkspaceReadContent> {
     const c = this.must(daemonId)
     return c.conn.request<WorkspaceReadContent>('workspace/read', req, { epoch: c.sessionEpoch })
+  }
+
+  /** Create or replace one scratch-workspace text file on the owning daemon. */
+  async workspaceWrite(daemonId: string, req: WorkspaceWriteReq): Promise<WorkspaceWriteOk> {
+    const c = this.must(daemonId)
+    return c.conn.request<WorkspaceWriteOk>('workspace/write', req, { epoch: c.sessionEpoch })
   }
 
   /**

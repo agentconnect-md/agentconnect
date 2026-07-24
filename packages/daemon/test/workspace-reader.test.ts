@@ -1,9 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync, symlinkSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
-import { createWorkspaceReader, WorkspaceViolationError, type WorkspaceReader } from '../src/cp/workspace-reader.js'
+import {
+  createWorkspaceReader,
+  WorkspaceConflictError,
+  WorkspaceViolationError,
+  type WorkspaceReader,
+  type WorkspaceWriteCoordinator
+} from '../src/cp/workspace-reader.js'
 
 const AGENT = 'bot-a'
 
@@ -11,6 +17,7 @@ let base: string // scratch dir; ws = the workspace root, outside/ = sibling sec
 let ws: string
 let outside: string
 let reader: WorkspaceReader
+const directWrite: WorkspaceWriteCoordinator = (_agentId, write) => write()
 
 const listReq = (over: Partial<Parameters<WorkspaceReader['list']>[0]> = {}) => ({
   agentId: AGENT,
@@ -25,6 +32,23 @@ const readReq = (path: string, over: Partial<Parameters<WorkspaceReader['read']>
   limit: 65536,
   ...over
 })
+const writeReq = (
+  path: string,
+  content: string,
+  ifMatchMtime: string,
+  over: Partial<Parameters<WorkspaceReader['write']>[0]> = {}
+) => ({
+  agentId: AGENT,
+  path,
+  contentBase64: Buffer.from(content, 'utf8').toString('base64'),
+  ifMatchMtime,
+  ...over
+})
+const createReq = (path: string, content: string): Parameters<WorkspaceReader['write']>[0] => ({
+  agentId: AGENT,
+  path,
+  contentBase64: Buffer.from(content, 'utf8').toString('base64')
+})
 
 beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), 'ws-reader-'))
@@ -32,7 +56,7 @@ beforeEach(() => {
   outside = join(base, 'outside')
   mkdirSync(ws)
   mkdirSync(outside)
-  reader = createWorkspaceReader((id) => (id === AGENT ? ws : undefined))
+  reader = createWorkspaceReader((id) => (id === AGENT ? { root: ws, scratch: true } : undefined), directWrite)
 })
 
 afterEach(() => {
@@ -119,6 +143,11 @@ describe('path containment', () => {
     writeFileSync(join(outside, 'secret.env'), 'TOKEN=x')
     await expect(reader.list(listReq({ path: '../outside' }))).rejects.toBeInstanceOf(WorkspaceViolationError)
     await expect(reader.read(readReq('../outside/secret.env'))).rejects.toBeInstanceOf(WorkspaceViolationError)
+    await expect(
+      reader.write(
+        writeReq('../outside/secret.env', 'changed', statSync(join(outside, 'secret.env')).mtime.toISOString())
+      )
+    ).rejects.toBeInstanceOf(WorkspaceViolationError)
     // deeper mixed escape too
     await expect(reader.read(readReq('src/../../outside/secret.env'))).rejects.toBeInstanceOf(WorkspaceViolationError)
   })
@@ -222,6 +251,52 @@ describe('workspace read', () => {
     expect(r.encoding).toBe('utf8')
     expect(r.truncated).toBe(true) // shrunk below the raw 64 KiB request
     expect(Buffer.byteLength(JSON.stringify(r))).toBeLessThan(MAX_FRAME_BYTES)
+  })
+})
+
+describe('workspace write', () => {
+  it('creates a new text file without overwriting a concurrent creator', async () => {
+    mkdirSync(join(ws, 'notes'))
+
+    const outcomes = await Promise.allSettled([
+      reader.write(createReq('notes/todo.md', 'first')),
+      reader.write(createReq('notes/todo.md', 'second'))
+    ])
+
+    expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1)
+    const rejected = outcomes.find((outcome) => outcome.status === 'rejected')
+    expect(rejected).toMatchObject({ reason: expect.any(WorkspaceConflictError) })
+    expect(['first', 'second']).toContain(readFileSync(join(ws, 'notes', 'todo.md'), 'utf8'))
+  })
+
+  it('atomically replaces one existing scratch text file and returns its new state', async () => {
+    const target = join(ws, 'notes.md')
+    writeFileSync(target, '# Before\n')
+    const before = statSync(target)
+
+    const result = await reader.write(writeReq('notes.md', '# After\n', before.mtime.toISOString()))
+
+    expect(readFileSync(target, 'utf8')).toBe('# After\n')
+    expect(result).toMatchObject({ agentId: AGENT, path: 'notes.md', size: 8 })
+    expect(result.mtime).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+  })
+
+  it('rejects stale edits and any write outside a scratch workspace', async () => {
+    const target = join(ws, 'notes.md')
+    writeFileSync(target, 'current')
+
+    await expect(reader.write(writeReq('notes.md', 'stale', '2026-01-01T00:00:00.000Z'))).rejects.toBeInstanceOf(
+      WorkspaceConflictError
+    )
+
+    const repoReader = createWorkspaceReader(
+      (id) => (id === AGENT ? { root: ws, scratch: false } : undefined),
+      directWrite
+    )
+    await expect(
+      repoReader.write(writeReq('notes.md', 'changed', statSync(target).mtime.toISOString()))
+    ).rejects.toBeInstanceOf(WorkspaceViolationError)
+    expect(readFileSync(target, 'utf8')).toBe('current')
   })
 })
 

@@ -27,7 +27,7 @@ import type {
   DreamFilesPage,
   DreamFileReadContent
 } from '@agentconnect.md/protocol'
-import { gitRepoLabel, normalizeGitUrl } from '@agentconnect.md/protocol'
+import { MAX_WORKSPACE_EDIT_BYTES, gitRepoLabel, normalizeGitUrl } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { type AgentRecord, type AgentWorkspace, isSyntheticEmail } from '../../persistence/ports.js'
@@ -61,6 +61,9 @@ import {
   WorkspaceFilesDto,
   WorkspaceFileQueryDto,
   WorkspaceFileDto,
+  PutWorkspaceFileQueryDto,
+  PutWorkspaceFileBody,
+  WorkspaceFileWriteDto,
   WorkspaceGitStatusDto,
   WorkspaceGitPullDto,
   AgentMemoryDto,
@@ -1854,6 +1857,91 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toWorkspaceFileDto(rep)
         } catch (err) {
+          const unavailable = daemonEdgeFailure(err)
+          if (unavailable !== null) {
+            return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
+          }
+          throw err
+        }
+      }
+    )
+
+    // Create or replace one scratch-workspace text file. The caller must be able
+    // to edit the agent; bytes transit to the daemon and are never persisted here.
+    r.put(
+      '/agents/:id/workspace/file',
+      {
+        schema: {
+          tags: [Tag.Workspace],
+          summary: 'Create or replace a scratch workspace file',
+          description:
+            'Atomically create or replace one UTF-8 file in a scratch workspace on the owning daemon. Requires edit access to the agent. Creation never overwrites an existing file; replacement requires the mtime returned by the last read. Conflicts return 409. GitHub workspaces remain read-only. The control plane stores no file content.',
+          operationId: 'putAgentWorkspaceFile',
+          params: IdParam,
+          querystring: PutWorkspaceFileQueryDto,
+          body: PutWorkspaceFileBody,
+          response: {
+            200: WorkspaceFileWriteDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (!canEdit(agent, ctxOf(req))) {
+          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        }
+        if (agent.workspace.mode !== 'scratch') {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: 'workspace files are editable only in scratch workspaces'
+          })
+        }
+        if (Buffer.byteLength(req.body.content, 'utf8') > MAX_WORKSPACE_EDIT_BYTES) {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: `workspace file exceeds the ${MAX_WORKSPACE_EDIT_BYTES}-byte edit limit`
+          })
+        }
+        if (!agent.daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+
+        const daemon = await deps.registry.get(agent.daemonId)
+        if (!daemon?.capabilities.features.includes('workspace-file-edit-v1')) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'this agent version does not support workspace file editing'
+          })
+        }
+
+        try {
+          const writeReq = {
+            agentId: agent.id,
+            path: req.query.path,
+            contentBase64: Buffer.from(req.body.content, 'utf8').toString('base64'),
+            ...(req.body.ifMatchMtime ? { ifMatchMtime: req.body.ifMatchMtime } : {})
+          }
+          const ok = await deps.control.workspaceWrite(agent.daemonId, writeReq)
+          return { path: ok.path, size: ok.size, mtime: ok.mtime }
+        } catch (err) {
+          if (err instanceof ProtocolError && err.code === 'CONFLICT') {
+            return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: err.message })
+          }
+          if (err instanceof ProtocolError && err.code === 'BAD_PAYLOAD') {
+            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: err.message })
+          }
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
