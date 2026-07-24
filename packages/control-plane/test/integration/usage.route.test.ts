@@ -49,7 +49,7 @@ describe('usage/report handler — persists per-session token usage', () => {
   it('upserts the session usage; re-sending the cumulative snapshot is latest-wins (not additive)', async () => {
     const h = buildWsHarness(prisma)
     const { stub } = await connectReady(h)
-    await seedAgent(prisma, AGENT_A)
+    await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
 
     stub.inject('usage/report', {
       sessionId: 'acp-sess-1',
@@ -85,6 +85,41 @@ describe('usage/report handler — persists per-session token usage', () => {
     expect(row!.totalTokens).toBe(9000) // replaced, not 4820 + 9000
     expect(row!.outputTokens).toBe(2200)
     expect(stub.lastSent('error')).toBeUndefined()
+  })
+
+  it('drops usage for an agent not placed on the reporting daemon', async () => {
+    const h = buildWsHarness(prisma)
+    const { stub } = await connectReady(h)
+    await seedAgent(prisma, AGENT_B)
+    const recordUsage = vi.spyOn(h.deps.sessionUsage, 'record')
+    const beginMutation = h.deps.agentMutations.tryBeginMutation.bind(h.deps.agentMutations)
+    let finish!: () => void
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    vi.spyOn(h.deps.agentMutations, 'tryBeginMutation').mockImplementation((agentIds) => {
+      const release = beginMutation(agentIds)
+      if (!release) return null
+      return () => {
+        release()
+        finish()
+      }
+    })
+
+    stub.inject('usage/report', {
+      sessionId: 'foreign-session',
+      agentId: AGENT_B,
+      lastActivityAt: new Date().toISOString(),
+      usage: { totalTokens: 1234 }
+    })
+
+    await finished
+    expect(recordUsage).not.toHaveBeenCalled()
+    expect(
+      await prisma.sessionUsage.findUnique({
+        where: { agentId_sessionId: { agentId: AGENT_B, sessionId: 'foreign-session' } }
+      })
+    ).toBeNull()
   })
 })
 
