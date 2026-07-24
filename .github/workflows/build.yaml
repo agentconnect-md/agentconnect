@@ -43,9 +43,6 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  # Bake runs after the release summary is written. Suppress its automatic job
-  # summary so the release notes remain the first summary on the Release run.
-  DOCKER_BUILD_SUMMARY: false
 
 jobs:
   build-push:
