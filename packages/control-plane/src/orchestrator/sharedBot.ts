@@ -220,7 +220,7 @@ export class SharedBotOrchestrator {
     if (slash > 0) {
       const channel = m.sessionKey.slice(0, slash)
       const thread = m.sessionKey.slice(slash + 1)
-      const owner = await this.sessions.findThreadOwner(channel, thread)
+      const owner = await this.sessions.findThreadOwner(BotId(m.botId), channel, thread)
       if (owner) return { botId: m.botId, sessionKey: m.sessionKey, target: owner }
     }
     return { botId: m.botId, sessionKey: m.sessionKey, target: null }

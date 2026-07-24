@@ -98,6 +98,7 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
   let upserts: { daemonId: string; spec: { platform: string; slack?: { mode?: string } } }[]
   // Drives the SessionRepo.findThreadOwner fallback in lookupThread (null = no daemon session).
   let threadOwner: { agentId: string; daemonId: string } | null
+  let threadOwnerLookup: { botId: BotId; channel: string; thread: string } | null
 
   function makeOrch(): SharedBotOrchestrator {
     const agents: Record<string, AgentRecord> = {
@@ -153,7 +154,10 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       integrationUpsert: async (daemonId: string, spec: unknown) => void upserts.push({ daemonId, spec: spec as never })
     }
     const sessions: Pick<SessionRepo, 'findThreadOwner'> = {
-      findThreadOwner: async () => threadOwner
+      findThreadOwner: async (botId, channel, thread) => {
+        threadOwnerLookup = { botId, channel, thread }
+        return threadOwner
+      }
     }
     return new SharedBotOrchestrator(
       bots as BotRepo,
@@ -178,6 +182,7 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     channels = [channel({ integrationId: INT_B, channelId: 'C1', agentId: BOB, trigger: 'mention' })]
     upserts = []
     threadOwner = null
+    threadOwnerLookup = null
   })
 
   describe('lookupThread — SessionMeta fallback on affinity miss (§7.2 case 2a)', () => {
@@ -191,6 +196,7 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       threadOwner = { agentId: ALICE, daemonId: D1 }
       const res = await orch.lookupThread({ botId: BOT, sessionKey: SK })
       expect(res).toEqual({ botId: BOT, sessionKey: SK, target: { agentId: ALICE, daemonId: D1 } })
+      expect(threadOwnerLookup).toEqual({ botId: BOT, channel: 'C1', thread: '1784297789.871789' })
     })
 
     it('returns null when neither affinity nor a SessionMeta owner exists', async () => {

@@ -10,12 +10,13 @@
 import { describe, it, expect } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
-import { seedAgent, seedDaemon, seedLaunch } from '../fixtures/seed.js'
-import { AgentId, DaemonId, LaunchId, SessionId } from '../../src/domain/ids.js'
+import { DEF_ORG, seedAgent, seedDaemon, seedLaunch } from '../fixtures/seed.js'
+import { AgentId, BotId, DaemonId, LaunchId, SessionId } from '../../src/domain/ids.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const OTHER_AGENT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const DAEMON = 'd1111111-1111-4111-8111-111111111111'
+const OTHER_DAEMON = 'd2222222-2222-4222-8222-222222222222'
 const LAUNCH = '11111111-1111-4111-8111-111111111111'
 const SESSION = '55555555-5555-4555-8555-555555555555'
 
@@ -222,6 +223,80 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
 
     expect(await repo.list({ platform: 'slack', channel: 'C1' })).toHaveLength(1)
     expect(await repo.list({ platform: 'telegram' })).toHaveLength(0)
+  })
+
+  it("scopes shared-bot thread fallback to the bot's active, currently placed agent", async () => {
+    await fixtures()
+    await seedDaemon(prisma, OTHER_DAEMON)
+    await seedAgent(prisma, OTHER_AGENT, { daemonId: OTHER_DAEMON })
+    await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: DAEMON, status: 'active' } })
+    const repo = new PgSessionRepo(prisma)
+    const botId = '22222222-2222-4222-8222-222222222221'
+    const otherBotId = '22222222-2222-4222-8222-222222222222'
+    const integrationId = '66666666-6666-4666-8666-666666666661'
+
+    await prisma.bot.createMany({
+      data: [
+        { id: botId, orgId: DEF_ORG, platform: 'slack', name: 'requested-bot' },
+        { id: otherBotId, orgId: DEF_ORG, platform: 'slack', name: 'other-bot' }
+      ]
+    })
+    await prisma.integration.createMany({
+      data: [
+        { id: integrationId, orgId: DEF_ORG, agentId: AGENT, botId, name: 'requested-bot' },
+        {
+          id: '66666666-6666-4666-8666-666666666662',
+          orgId: DEF_ORG,
+          agentId: OTHER_AGENT,
+          botId: otherBotId,
+          name: 'other-bot'
+        }
+      ]
+    })
+    await repo.recordMilestone(
+      ev('start', {
+        sessionId: SessionId('requested-bot-session'),
+        daemonId: DaemonId(DAEMON),
+        lastActivityAt: new Date('2026-07-05T08:08:00.000Z')
+      })
+    )
+    await repo.recordMilestone(
+      ev('start', {
+        sessionId: SessionId('other-bot-session'),
+        agentId: AgentId(OTHER_AGENT),
+        launchId: undefined,
+        daemonId: DaemonId(OTHER_DAEMON),
+        lastActivityAt: new Date('2026-07-05T10:51:00.000Z')
+      })
+    )
+
+    expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toEqual({
+      agentId: AGENT,
+      daemonId: DAEMON
+    })
+    expect(await repo.findThreadOwner(BotId(otherBotId), 'C1', 'T1')).toEqual({
+      agentId: OTHER_AGENT,
+      daemonId: OTHER_DAEMON
+    })
+
+    await prisma.integration.update({ where: { id: integrationId }, data: { status: 'revoked' } })
+    expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toBeNull()
+
+    await prisma.integration.update({ where: { id: integrationId }, data: { status: 'active' } })
+    await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: OTHER_DAEMON } })
+    expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toEqual({
+      agentId: AGENT,
+      daemonId: OTHER_DAEMON
+    })
+
+    await prisma.daemon.delete({ where: { id: DAEMON } })
+    expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toEqual({
+      agentId: AGENT,
+      daemonId: OTHER_DAEMON
+    })
+
+    await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: null, status: 'inactive' } })
+    expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toBeNull()
   })
 
   it('joins usage into list() and sorts by latest activity', async () => {
