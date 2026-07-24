@@ -3,10 +3,10 @@
 [![daemon rc](https://img.shields.io/npm/v/%40agentconnect.md%2Fdaemon/rc?label=daemon%20rc)](https://www.npmjs.com/package/@agentconnect.md/daemon/v/rc)
 [![daemon latest](https://img.shields.io/npm/v/%40agentconnect.md%2Fdaemon/latest?label=daemon%20latest)](https://www.npmjs.com/package/@agentconnect.md/daemon/v/latest)
 
-AgentConnect is a daemon-centric platform for running AI coding agents on your own
-machines and connecting them to the places where work happens. Claude, Codex, and
-other ACP-compatible runtimes can participate in Slack, Telegram, Discord, Feishu,
-webchat, GitHub events, webhooks, and scheduled tasks.
+AgentConnect is a daemon-centric platform for running AI coding agents on
+infrastructure you control and connecting them to the places where work happens.
+Claude, Codex, and other ACP-compatible runtimes can participate in Slack, Telegram,
+Discord, Feishu, webchat, GitHub events, webhooks, and scheduled tasks.
 
 The execution daemon stays close to the agent and its workspace. The Control Plane
 coordinates configuration and placement but is never on the message hot path, so
@@ -14,7 +14,7 @@ established sessions continue to run when it is temporarily unavailable.
 
 ## Highlights
 
-- Run multiple ACP agents across multiple machines from one Web console.
+- Run multiple ACP agents across multiple daemon instances from one Web console.
 - Keep message bodies, attachment bytes, and ACP session streams out of the
   Control Plane.
 - Connect direct platform bots or shared ingress for chat, webhooks, GitHub, and
@@ -26,12 +26,12 @@ established sessions continue to run when it is temporarily unavailable.
 
 ## Architecture
 
-![Daemon-centric architecture](docs/designs/daemon-centric-architecture.png)
+![Daemon-centric architecture with optional relay ingress](docs/designs/daemon-centric-architecture.svg)
 
-- The **daemon** owns agent execution, local ACP sessions, workspace access, and
-  direct platform connections.
-- The optional **relay** accepts shared bot, webhook, and webchat traffic and routes
-  it to the owning daemon without putting the Control Plane in the data path.
+- The **daemon** owns agent execution, local ACP sessions, workspace access, direct
+  platform connections, and provider API egress.
+- The optional **relay** accepts Slack HTTP callbacks, GitHub and generic webhooks,
+  and webchat traffic, then routes inbound content directly to the owning daemon.
 - The **Control Plane and Web UI** manage metadata, authentication, configuration,
   placement, and observability.
 
