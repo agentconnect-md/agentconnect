@@ -866,20 +866,18 @@ export default function AgentDetailView() {
                     {da.allowRuntimeChangesInChat ? 'Allowed' : 'Off'}
                   </span>
                 </div>
-                <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
-                  <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    Pause
-                  </span>
-                  <span
-                    className={
-                      da.pause
-                        ? 'badge bg-(--status-paused-soft) text-(--amber-500) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
-                        : 'badge bg-(--surface-active) text-(--text-tertiary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
-                    }
-                  >
-                    {da.pause ? 'Paused' : 'Off'}
-                  </span>
-                </div>
+                {/* Pause is a transient runtime action, not a config default — only
+                    surface it when the agent is actually paused (hide the "Off" noise). */}
+                {da.pause && (
+                  <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
+                    <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
+                      Pause
+                    </span>
+                    <span className="badge bg-(--status-paused-soft) text-(--amber-500) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]">
+                      Paused
+                    </span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
                     Output mode

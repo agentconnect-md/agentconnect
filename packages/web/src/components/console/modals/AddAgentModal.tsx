@@ -76,15 +76,24 @@ type RepoCheckState = 'idle' | 'checking' | 'missing' | 'found'
 // labels the runtime *behavior* group rather than plain "Runtime" — the runtime
 // picker itself lives in Basics, and two things named Runtime would send you to
 // the wrong place.
-type SectionId = 'basics' | 'runtime' | 'workspace' | 'access' | 'memory'
+type SectionId = 'basics' | 'runtime' | 'workspace' | 'access' | 'environment' | 'memory'
 
 const SECTIONS: ReadonlyArray<{ id: SectionId; label: string; icon: string }> = [
   { id: 'basics', label: 'Basics', icon: 'id-card' },
   { id: 'runtime', label: 'Runtime behavior', icon: 'sliders-horizontal' },
   { id: 'workspace', label: 'Workspace', icon: 'folder-git-2' },
   { id: 'access', label: 'Access', icon: 'lock' },
+  { id: 'environment', label: 'Environment', icon: 'braces' },
   { id: 'memory', label: 'Memory', icon: 'database' }
 ]
+
+// Env/secret key rule (mirrors the CP's AgentEnvBody / AgentSecretsPatchBody) and
+// the compact mono field chrome shared with the detail-page Env & Secrets cards.
+const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/
+const KV_FIELD =
+  'w-full min-w-0 rounded-md border border-(--border-default) bg-(--surface-card) px-[9px] font-mono text-[12px] font-medium text-(--text-primary) outline-none focus:border-(--border-focus) focus:ring-[3px] focus:ring-(--brand-ring)'
+const KV_INPUT = `h-7 ${KV_FIELD}`
+const KV_VALUE = `min-h-14 resize-y py-[5px] leading-[1.5] ${KV_FIELD}`
 
 const RAIL_ITEM_ON =
   'flex flex-none cursor-pointer items-center gap-[9px] rounded-sm border-0 bg-(--surface-card) px-[10px] py-[7px] text-left font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary) shadow-(--shadow-xs)'
@@ -242,6 +251,10 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // Default 'all' (the CP's default); selected callers are picked from peers.
   const [callPolicy, setCallPolicy] = useState<AgentCallPolicy>('all')
   const [allowedCallers, setAllowedCallers] = useState<string[]>([])
+  // Optional env vars + write-only secrets to seed at create (createAgent accepts
+  // both). Same key/value editor as the detail-page Env & Secrets cards.
+  const [envRows, setEnvRows] = useState<Array<{ k: string; v: string }>>([])
+  const [secretRows, setSecretRows] = useState<Array<{ k: string; v: string }>>([])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [activeSection, setActiveSection] = useState<SectionId>('basics')
@@ -711,6 +724,10 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       setErr('Select an external-memory connection, or choose another memory backend.')
       return
     }
+    if (envSecretError) {
+      setErr(envSecretError)
+      return
+    }
     let normalizedAgentDir: string | undefined
     if (wsMode === 'github') {
       try {
@@ -773,6 +790,8 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
             ? { memory: { provider: memoryProvider as 'native' | 'none' } }
             : {}),
         restrictFileAccess: effectiveRunInSandbox,
+        ...(envKept.length ? { env: Object.fromEntries(envKept.map((r) => [r.k, r.v])) } : {}),
+        ...(secretsKept.length ? { secrets: Object.fromEntries(secretsKept.map((r) => [r.k, r.v])) } : {}),
         permissionMode: selectedPermissionMode,
         allowRuntimeChangesInChat,
         workspace,
@@ -820,6 +839,21 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // in the footer, the first one you have to go fix. These mirror `submit`'s
   // guards, so the dots clear exactly when the button starts working. Access
   // never appears: visibility always carries a value (org by default).
+  // Env & secrets (optional): drop fully-blank rows, then validate keys + dups.
+  // Secrets must carry a value (write-only — nothing to fall back to at create).
+  const envKept = envRows.map((r) => ({ k: r.k.trim(), v: r.v })).filter((r) => r.k || r.v)
+  const secretsKept = secretRows.map((r) => ({ k: r.k.trim(), v: r.v })).filter((r) => r.k || r.v)
+  const envSecretError = ((): string | null => {
+    for (const r of envKept) if (!ENV_KEY.test(r.k)) return `“${r.k || '(empty)'}” is not a valid variable name`
+    if (new Set(envKept.map((r) => r.k)).size !== envKept.length) return 'Duplicate variable names'
+    for (const r of secretsKept) {
+      if (!ENV_KEY.test(r.k)) return `“${r.k || '(empty)'}” is not a valid secret name`
+      if (r.v === '') return `Enter a value for secret “${r.k}”`
+    }
+    if (new Set(secretsKept.map((r) => r.k)).size !== secretsKept.length) return 'Duplicate secret names'
+    return null
+  })()
+
   const blockers: Partial<Record<SectionId, string>> = {}
   if (!(agentSlugFinalize(name) || agentSlugFinalize(displayName))) blockers.basics = 'name is required'
   else if (!daemon) blockers.basics = 'no daemon available'
@@ -827,6 +861,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   else if (usingPicker && ghDenied) blockers.workspace = 'no access to this repository'
   else if (usingPicker && !picked && !publicRepo) blockers.workspace = 'pick a repository'
   else if (wsMode === 'github' && !usingPicker && !repo.trim()) blockers.workspace = 'add a repository'
+  if (envSecretError) blockers.environment = envSecretError
   if (memoryProvider === 'external' && !externalMemory.connectionId) blockers.memory = 'select a connection'
   const firstBlocker = SECTIONS.find((s) => blockers[s.id])
   const blockerHint = firstBlocker ? `${firstBlocker.label}: ${blockers[firstBlocker.id]}` : null
@@ -1340,6 +1375,112 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
             <div className="mt-[14px] flex items-center gap-2 rounded-md bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
               <Icon name="info" size={14} />
               You&apos;ll assign an integration after the agent is created.
+            </div>
+          </section>
+
+          <section ref={sectionRef('environment')} className="mt-5 border-t border-(--border-subtle) pt-5">
+            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Environment</div>
+            <div className="mt-[13px] flex flex-col gap-5">
+              <div className="fld">
+                <span className="fldlbl">Environment variables</span>
+                <div className="flex flex-col gap-[10px]">
+                  {envRows.map((r, i) => (
+                    <div key={i} className="flex flex-col gap-[6px]">
+                      <div className="flex items-center gap-[6px]">
+                        <input
+                          className={KV_INPUT}
+                          placeholder="KEY"
+                          value={r.k}
+                          onChange={(e) =>
+                            setEnvRows((rs) => rs.map((x, j) => (j === i ? { ...x, k: e.target.value } : x)))
+                          }
+                          aria-label="Variable name"
+                        />
+                        <button
+                          type="button"
+                          className="iconbtn h-7 w-7 flex-none"
+                          title="Remove"
+                          onClick={() => setEnvRows((rs) => rs.filter((_, j) => j !== i))}
+                        >
+                          <Icon name="x" size={13} />
+                        </button>
+                      </div>
+                      <textarea
+                        className={KV_VALUE}
+                        placeholder="Value"
+                        value={r.v}
+                        onChange={(e) =>
+                          setEnvRows((rs) => rs.map((x, j) => (j === i ? { ...x, v: e.target.value } : x)))
+                        }
+                        spellCheck={false}
+                        autoComplete="off"
+                        aria-label="Variable value"
+                      />
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    className="lnk self-start text-[12.5px]"
+                    onClick={() => setEnvRows((rs) => [...rs, { k: '', v: '' }])}
+                  >
+                    <Icon name="plus" size={13} />
+                    Add variable
+                  </button>
+                </div>
+                <span className="mt-[6px] text-[11px] text-(--text-secondary)">
+                  Injected into the runtime by the daemon.
+                </span>
+              </div>
+              <div className="fld">
+                <span className="fldlbl">Secrets</span>
+                <div className="flex flex-col gap-[10px]">
+                  {secretRows.map((r, i) => (
+                    <div key={i} className="flex flex-col gap-[6px]">
+                      <div className="flex items-center gap-[6px]">
+                        <input
+                          className={KV_INPUT}
+                          placeholder="SECRET_KEY"
+                          value={r.k}
+                          onChange={(e) =>
+                            setSecretRows((rs) => rs.map((x, j) => (j === i ? { ...x, k: e.target.value } : x)))
+                          }
+                          aria-label="Secret name"
+                        />
+                        <button
+                          type="button"
+                          className="iconbtn h-7 w-7 flex-none"
+                          title="Remove"
+                          onClick={() => setSecretRows((rs) => rs.filter((_, j) => j !== i))}
+                        >
+                          <Icon name="x" size={13} />
+                        </button>
+                      </div>
+                      <textarea
+                        className={KV_VALUE}
+                        placeholder="Value"
+                        value={r.v}
+                        onChange={(e) =>
+                          setSecretRows((rs) => rs.map((x, j) => (j === i ? { ...x, v: e.target.value } : x)))
+                        }
+                        spellCheck={false}
+                        autoComplete="off"
+                        aria-label="Secret value"
+                      />
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    className="lnk self-start text-[12.5px]"
+                    onClick={() => setSecretRows((rs) => [...rs, { k: '', v: '' }])}
+                  >
+                    <Icon name="plus" size={13} />
+                    Add secret
+                  </button>
+                </div>
+                <span className="mt-[6px] text-[11px] text-(--text-secondary)">
+                  Write-only — values can’t be viewed after the agent is created.
+                </span>
+              </div>
             </div>
           </section>
 
