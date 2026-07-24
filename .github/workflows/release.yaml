@@ -23,7 +23,7 @@ on:
 
 jobs:
   # Reuse the same quality gate as pull requests. The reusable workflow runs
-  # Build & Check, Unit Test, and sharded Integration tests in parallel against
+  # Build, Check, Unit Test, and sharded Integration tests in parallel against
   # this exact SHA; the publishing job below waits for all of them.
   test:
     name: Test

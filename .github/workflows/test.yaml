@@ -31,14 +31,11 @@ concurrency:
   group: test-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Keep static checks, Docker-free unit tests, and the Docker-bound integration
-# suite separate so all three workloads can be scheduled independently.
+# Keep builds, static checks, Docker-free unit tests, and the Docker-bound
+# integration suite separate so all four workloads can be scheduled independently.
 jobs:
-  # The tsc and Next builds already typecheck their packages; the parallel
-  # no-emit check only covers daemon (tsdown) and control-plane files excluded
-  # from their production builds. CI skips duplicate pre-hooks.
   build:
-    name: Build & Check
+    name: Build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -61,6 +58,33 @@ jobs:
             ${{ runner.os }}-nextjs-${{ hashFiles('pnpm-lock.yaml') }}-
       - name: Install
         run: pnpm install --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm -r prisma:generate
+      - name: Build
+        env:
+          pnpm_config_enable_pre_post_scripts: false
+        run: pnpm build
+
+  # The tsc and Next builds already typecheck their packages; the parallel
+  # no-emit check only covers daemon (tsdown) and control-plane files excluded
+  # from their production builds. CI skips duplicate pre-hooks.
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install
+        run: pnpm install --frozen-lockfile
       # Run before any workspace build so source-checkout export resolution
       # cannot be accidentally masked by protocol/connection dist artifacts.
       - name: Evaluation config validation · clean checkout
@@ -69,10 +93,10 @@ jobs:
         run: pnpm eval:validate
       - name: Generate Prisma client
         run: pnpm -r prisma:generate
-      - name: Build · Lint · Format · Typecheck
+      - name: Lint · Format · Typecheck
         env:
           pnpm_config_enable_pre_post_scripts: false
-        run: pnpm --workspace-concurrency=5 run "/^(build|lint|format:check|typecheck:ci)$/"
+        run: pnpm --workspace-concurrency=5 run "/^(lint|format:check|typecheck:ci)$/"
 
   # Keep the fast, Docker-free suites away from the resource-heavy build group
   # so their short per-test timeouts measure code rather than runner contention.
