@@ -19,7 +19,7 @@ on:
 
 jobs:
   release:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Mint GitHub App token
         id: app-token
