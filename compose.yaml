@@ -1,0 +1,182 @@
+name: agentconnect
+
+x-control-plane-image: &control-plane-image
+  image: ${AGENTCONNECT_IMAGE_REGISTRY:-ghcr.io/agentconnect-md}/control-plane:${AGENTCONNECT_VERSION:-latest}
+  platform: ${AGENTCONNECT_PLATFORM:-linux/amd64}
+  pull_policy: missing
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: agentconnect
+      POSTGRES_PASSWORD: ${AGENTCONNECT_POSTGRES_PASSWORD:-agentconnect-local-only}
+      POSTGRES_USER: agentconnect
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U agentconnect -d agentconnect']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    volumes:
+      # PostgreSQL 18+ keeps PGDATA in a versioned child directory.
+      - postgres-data:/var/lib/postgresql
+
+  migration-files:
+    <<: *control-plane-image
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        rm -rf /migration/prisma
+        mkdir -p /migration/prisma
+        cp /app/packages/control-plane/prisma/schema.prisma /migration/prisma/schema.prisma
+        cp -R /app/packages/control-plane/prisma/migrations /migration/prisma/migrations
+    restart: 'no'
+    volumes:
+      - migration-files:/migration
+
+  migrate:
+    image: ${AGENTCONNECT_IMAGE_REGISTRY:-ghcr.io/agentconnect-md}/prisma-cli:${AGENTCONNECT_PRISMA_CLI_VERSION:-7.8.0-node24-r1}
+    platform: ${AGENTCONNECT_PLATFORM:-linux/amd64}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/prisma-cli.Dockerfile
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        prisma migrate deploy
+        prisma db execute --file /bootstrap/bootstrap-local.sql
+    depends_on:
+      migration-files:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://agentconnect:${AGENTCONNECT_POSTGRES_PASSWORD:-agentconnect-local-only}@postgres:5432/agentconnect?schema=public
+    restart: 'no'
+    volumes:
+      - ./docker/bootstrap-local.sql:/bootstrap/bootstrap-local.sql:ro
+      - migration-files:/migration:ro
+
+  control-plane:
+    <<: *control-plane-image
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: control-plane
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+      - HOST=0.0.0.0
+      - DATABASE_URL=postgresql://agentconnect:${AGENTCONNECT_POSTGRES_PASSWORD:-agentconnect-local-only}@postgres:5432/agentconnect?schema=public
+      - API_KEY_PEPPER=${AGENTCONNECT_API_KEY_PEPPER:-local-only-api-key-pepper-0000000000000000}
+      - RELAY_TOKEN=${AGENTCONNECT_RELAY_TOKEN:-local-only-relay-token-0000000000000000}
+      - PUBLIC_CP_URL=${AGENTCONNECT_PUBLIC_CP_URL:-http://localhost:${AGENTCONNECT_CP_PORT:-8080}}
+      - PUBLIC_WEB_URL=${AGENTCONNECT_PUBLIC_WEB_URL:-http://localhost:${AGENTCONNECT_WEB_PORT:-3000}}
+      - PUBLIC_RELAY_URL=${AGENTCONNECT_PUBLIC_RELAY_URL:-http://localhost:${AGENTCONNECT_RELAY_PORT:-8090}}
+      - CORS_ORIGIN=${AGENTCONNECT_PUBLIC_WEB_URL:-http://localhost:${AGENTCONNECT_WEB_PORT:-3000}}
+      - OIDC_ISSUER
+      - OIDC_AUDIENCE
+      - LOGTO_MGMT_ENDPOINT
+      - LOGTO_MGMT_APP_ID
+      - LOGTO_MGMT_APP_SECRET
+      - LOGTO_MGMT_RESOURCE
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:8080/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    init: true
+    ports:
+      - ${AGENTCONNECT_BIND_ADDRESS:-127.0.0.1}:${AGENTCONNECT_CP_PORT:-8080}:8080
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  relay:
+    image: ${AGENTCONNECT_IMAGE_REGISTRY:-ghcr.io/agentconnect-md}/relay:${AGENTCONNECT_VERSION:-latest}
+    platform: ${AGENTCONNECT_PLATFORM:-linux/amd64}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: relay
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+      - HOST=0.0.0.0
+      - CP_URL=http://control-plane:8080
+      - RELAY_NAME=local-relay
+      - DAEMON_DIAL_URL=${AGENTCONNECT_RELAY_DAEMON_URL:-ws://localhost:${AGENTCONNECT_RELAY_PORT:-8090}}
+      - RELAY_TOKEN=${AGENTCONNECT_RELAY_TOKEN:-local-only-relay-token-0000000000000000}
+      - GITHUB_APP_WEBHOOK_SECRET
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:8080/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    init: true
+    ports:
+      - ${AGENTCONNECT_BIND_ADDRESS:-127.0.0.1}:${AGENTCONNECT_RELAY_PORT:-8090}:8080
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  web:
+    image: ${AGENTCONNECT_IMAGE_REGISTRY:-ghcr.io/agentconnect-md}/web:${AGENTCONNECT_VERSION:-latest}
+    platform: ${AGENTCONNECT_PLATFORM:-linux/amd64}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: web
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      relay:
+        condition: service_healthy
+    environment:
+      - PORT=8080
+      - HOSTNAME=0.0.0.0
+      - CP_URL=${AGENTCONNECT_PUBLIC_CP_URL:-http://localhost:${AGENTCONNECT_CP_PORT:-8080}}/api/v1
+      - RELAY_URL=${AGENTCONNECT_PUBLIC_RELAY_URL:-http://localhost:${AGENTCONNECT_RELAY_PORT:-8090}}
+      - LOGTO_ENDPOINT
+      - LOGTO_APP_ID
+      - LOGTO_API_RESOURCE
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:8080/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    init: true
+    ports:
+      - ${AGENTCONNECT_BIND_ADDRESS:-127.0.0.1}:${AGENTCONNECT_WEB_PORT:-3000}:8080
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  migration-files:
+  postgres-data:

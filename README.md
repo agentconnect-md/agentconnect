@@ -39,6 +39,20 @@ See the
 [daemon-centric architecture](docs/designs/daemon-centric-architecture.md) for the
 full trust boundaries and failure model.
 
+## Self-host locally
+
+Start the Web console, Control Plane, Relay, and their PostgreSQL dependency with
+Docker Compose:
+
+```bash
+docker compose up -d --pull always
+```
+
+Open `http://localhost:3000`. The default stack is bound to `127.0.0.1` and uses
+no-auth mode for local evaluation. See the
+[self-hosting guide](https://docs.agentconnect.md/docs/self-hosting) for
+configuration, Logto sign-in, updates, and cleanup.
+
 ## Monorepo layout
 
 This repository is a pnpm workspace with eight packages:
