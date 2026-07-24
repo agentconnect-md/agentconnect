@@ -57,6 +57,13 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+      - name: Restore Next.js build cache
+        uses: actions/cache@v6
+        with:
+          path: packages/web/.next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('packages/web/**') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ hashFiles('pnpm-lock.yaml') }}-
       - name: Install
         run: pnpm install --frozen-lockfile
       # Run before any workspace build so source-checkout export resolution
@@ -119,10 +126,14 @@ jobs:
   # It needs Docker, so it gets its own runner off the critical path.
   # No build needed — the suite resolves workspace deps from source.
   integration:
-    name: Integration tests
+    name: Integration tests (${{ matrix.shard }})
     runs-on: ubuntu-latest
     outputs:
       summary: ${{ steps.export-summary.outputs.markdown }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['1/2', '2/2']
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -143,7 +154,7 @@ jobs:
         env:
           CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/integration-test-summary.md
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
-        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm --filter @agentconnect.md/control-plane test:int
+        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm --filter @agentconnect.md/control-plane test:int --shard=${{ matrix.shard }}
       - name: Merge integration test summaries
         if: ${{ !cancelled() }}
         env:
@@ -151,7 +162,7 @@ jobs:
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
         run: |
           GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" node scripts/merge-vitest-summaries.mjs \
-            'Integration test report' \
+            'Integration test report · shard ${{ matrix.shard }}' \
             'control-plane=@agentconnect.md/control-plane'
       - name: Publish integration test summary
         if: ${{ !cancelled() && !inputs.defer_summaries }}
