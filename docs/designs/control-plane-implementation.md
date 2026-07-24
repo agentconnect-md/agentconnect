@@ -703,7 +703,7 @@ model AuditEvent {
 - **Raw-SQL escape hatches** (DSL can't express) live in hand-edited migration SQL:
   1. `ALTER TABLE assignment ADD COLUMN thread_key text GENERATED ALWAYS AS (COALESCE(thread,'')) STORED;` (drop the Prisma `@default("")` placeholder in the same migration).
   2. `CREATE UNIQUE INDEX assignment_session_active_uq ON assignment (platform, channel, thread_key) WHERE state IN ('active','draining','frozen');`
-- **Seed** (`prisma/seed.ts` via `prisma db seed`): one default `Org` + an owner `User` so single-tenant installs and the test harness have FKs to hang off.
+- **No-auth bootstrap:** Control Plane startup idempotently ensures one default `Org` + owner `User` when OIDC is disabled, so single-tenant installs have FK anchors. `prisma/seed.ts` reuses the same operation for the test harness and explicit maintenance.
 - **Fencing-counter allocation:** `sessionEpoch` and `routingEpoch` are bumped
   inside the **same transaction** as the state change they fence, via
   `UPDATE … RETURNING` (`prisma.$transaction`). This keeps "bump epoch on

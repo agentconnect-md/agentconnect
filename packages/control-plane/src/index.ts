@@ -15,10 +15,18 @@ import { startControlPlaneOpenTelemetry } from './observability.js'
 const telemetry = startControlPlaneOpenTelemetry()
 
 async function main(): Promise<void> {
-  const [{ loadConfig }, { systemClock }, { createPrisma }, { makeSecretsProvider }, { buildApp }] = await Promise.all([
+  const [
+    { loadConfig },
+    { systemClock },
+    { createPrisma },
+    { ensureDefaultTenant },
+    { makeSecretsProvider },
+    { buildApp }
+  ] = await Promise.all([
     import('./config/env.js'),
     import('./domain/clock.js'),
     import('./persistence/prisma.js'),
+    import('./persistence/ensure-default-tenant.js'),
     import('./secrets/providers/memory.js'),
     import('./app.js')
   ])
@@ -28,6 +36,9 @@ async function main(): Promise<void> {
 
   // 2. The single Prisma touch in the process; the only seam the bootstrap owns.
   const prisma = createPrisma(config.DATABASE_URL)
+  if (!config.OIDC_ISSUER) {
+    await ensureDefaultTenant(prisma)
+  }
 
   // 3. Assemble the identical graph prod and tests share.
   const app = buildApp({

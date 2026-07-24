@@ -44,13 +44,7 @@ services:
     build:
       context: .
       dockerfile: docker/prisma-cli.Dockerfile
-    command:
-      - /bin/sh
-      - -c
-      - |
-        set -eu
-        prisma migrate deploy
-        prisma db execute --file /bootstrap/bootstrap-local.sql
+    command: ['prisma', 'migrate', 'deploy']
     depends_on:
       migration-files:
         condition: service_completed_successfully
@@ -60,7 +54,6 @@ services:
       DATABASE_URL: postgresql://agentconnect:${AGENTCONNECT_POSTGRES_PASSWORD:-agentconnect-local-only}@postgres:5432/agentconnect?schema=public
     restart: 'no'
     volumes:
-      - ./docker/bootstrap-local.sql:/bootstrap/bootstrap-local.sql:ro
       - migration-files:/migration:ro
 
   control-plane:

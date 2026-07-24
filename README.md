@@ -49,9 +49,13 @@ docker compose up -d --pull always
 ```
 
 Open `http://localhost:3000`. The default stack is bound to `127.0.0.1` and uses
-no-auth mode for local evaluation. Copy
-[`compose.env.example`](compose.env.example) to `compose.env` for version, port,
-secret, public URL, and optional Logto overrides.
+no-auth mode for local evaluation. To set version, port, secret, public URL, or
+optional Logto overrides, copy the example and load it explicitly:
+
+```bash
+cp compose.env.example compose.env
+docker compose --env-file compose.env up -d --pull always
+```
 
 ## Monorepo layout
 
