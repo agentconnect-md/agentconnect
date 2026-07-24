@@ -19,6 +19,7 @@ import { HookRateLimiter } from './rate-limit.js'
 import {
   registerGithubIngress,
   githubRuleMatches,
+  githubRuleVerdict,
   buildGithubContext,
   buildTrustedGithubMetadata,
   GITHUB_BODY_EXCERPT_MAX
@@ -660,6 +661,12 @@ describe('github ingress', () => {
         await post('pull_request', pullPayload({ action }))
         await flush()
 
+        expect(h.authzRequests).toEqual([
+          expect.objectContaining({
+            repoId: String(REPO_ID),
+            senderLogin: 'alice'
+          })
+        ])
         expect(h.sent).toHaveLength(0)
         expect(h.reports).toEqual([
           expect.objectContaining({
@@ -729,6 +736,45 @@ describe('github ingress', () => {
       await flush()
 
       expect(h.authzRequests).toHaveLength(0)
+      expect(h.sent).toHaveLength(2)
+      expect(h.reports).toHaveLength(2)
+      expect(h.reports.every((report) => report.status === 'accepted')).toBe(true)
+    })
+
+    it('resolves a stale NONE association once before dispatching the complete PR fan-out', async () => {
+      h.table.upsert(rule({}, { events: ['pull_request:*'] }))
+      h.table.upsert(
+        rule(
+          {
+            hookId: HOOK_B,
+            agentId: AGENT_B,
+            daemonId: DAEMON_B,
+            dispatchDaemonId: DAEMON_B
+          },
+          { events: ['pull_request:*'] }
+        )
+      )
+      h.onlineDaemons.add(DAEMON_B)
+      h.authzResult = true
+      const pullRequest = pullPayload().pull_request as Record<string, unknown>
+
+      await post(
+        'pull_request',
+        pullPayload({
+          sender: { login: 'release-manager', type: 'User' },
+          pull_request: { ...pullRequest, user: { login: 'pr-author' } }
+        })
+      )
+      await flush()
+
+      expect(h.authzRequests).toEqual([
+        expect.objectContaining({
+          hookId: HOOK,
+          repoId: String(REPO_ID),
+          senderLogin: 'pr-author',
+          siblingFences: [{ hookId: HOOK_B, configRevision: '3', dispatchRevision: '5' }]
+        })
+      ])
       expect(h.sent).toHaveLength(2)
       expect(h.reports).toHaveLength(2)
       expect(h.reports.every((report) => report.status === 'accepted')).toBe(true)
@@ -1867,7 +1913,14 @@ describe('githubRuleMatches (pure predicate)', () => {
   it('keeps PR synchronize while vetoing every edited action', () => {
     const r = rule({}, { events: ['pull_request:*'] })
     const pr = { ...ctx, event: 'pull_request' }
-    expect(githubRuleMatches(r, { ...pr, eventAction: 'pull_request:synchronize' })).toBe(true)
+    expect(githubRuleVerdict(r, { ...pr, eventAction: 'pull_request:synchronize' })).toBe('needs-authz')
+    expect(
+      githubRuleMatches(r, {
+        ...pr,
+        eventAction: 'pull_request:synchronize',
+        pullAuthorAssociation: 'MEMBER'
+      })
+    ).toBe(true)
     expect(githubRuleMatches(r, { ...pr, eventAction: 'pull_request:edited' })).toBe(false)
   })
 
