@@ -16,14 +16,14 @@ Managed memory (`memory.provider: 'managed'`) accumulates writes three ways:
 the agent's own `writeMemory` tool calls, console edits, and (opt-in) per-turn
 auto-distillation. All three paths are **additive and local**: the distiller is
 explicitly forbidden from rewriting or deleting existing memories
-(`memory-distiller.ts` system policy), and nothing ever reads *across*
+(`memory-distiller.ts` system policy), and nothing ever reads _across_
 sessions. Over weeks a store therefore collects duplicates, contradictions,
 relative dates that lost meaning, and stale one-off notes — and the injected
 `MEMORY.md` index degrades, because it is the only part of the store every
 fresh session sees.
 
 **Dreaming** is the counterpart to distillation: a periodic, offline
-consolidation pass that reads the whole store *and* recent session
+consolidation pass that reads the whole store _and_ recent session
 transcripts, then produces a reorganized store — duplicates merged, stale or
 contradicted entries replaced with the latest value, relative dates made
 absolute, new durable insights mined from the transcripts, and the index
@@ -39,7 +39,7 @@ Scope constraints for v1:
   behind a plugin ABI whose reorganization semantics are backend-specific —
   both are out of scope (§11).
 - **Every supported agent harness.** The managed store is daemon-owned and
-  harness-agnostic already; the dreaming *executor* must be too. It therefore
+  harness-agnostic already; the dreaming _executor_ must be too. It therefore
   runs through the generic ACP host seam (the same one auto-distillation
   uses), never through any runtime-specific memory feature.
 
@@ -121,8 +121,8 @@ export const BuiltInMemoryBinding = z
 
 `memory-settings.ts` (console) grows a **Background memory** section rendered
 only when the Managed provider is selected, presenting the two mechanisms as
-one feature with two switches: *Capture (per turn)* — the existing
-`autoDistill` — and *Consolidate (dreaming)* with its schedule, skill-mining,
+one feature with two switches: _Capture (per turn)_ — the existing
+`autoDistill` — and _Consolidate (dreaming)_ with its schedule, skill-mining,
 and auto-adopt sub-controls.
 
 ## 4. The dream job (daemon)
@@ -139,8 +139,8 @@ interface DreamRecord {
   agentId: string
   status: 'pending' | 'running' | 'completed' | 'failed' | 'canceled' | 'adopted' | 'discarded'
   trigger: 'manual' | 'schedule' | 'auto'
-  sessionIds: string[]      // transcripts mined
-  snapshotDigest: string    // digest of the live store at snapshot time (adoption fence)
+  sessionIds: string[] // transcripts mined
+  snapshotDigest: string // digest of the live store at snapshot time (adoption fence)
   instructions?: string
   /** Candidate skills staged by this dream (§7), with per-skill review state. */
   skills?: { name: string; state: 'proposed' | 'accepted' | 'dismissed' }[]
@@ -160,7 +160,7 @@ interface DreamRecord {
    this agent from the daemon store. For memory consolidation only user/agent
    text rows are used; when `mineSkills` is set, tool rows are included as
    **titles plus truncated inputs** (command lines, file paths — enough to see
-   *what* the agent did) while raw tool outputs stay excluded, both for
+   _what_ the agent did) while raw tool outputs stay excluded, both for
    context-budget and for secret-hygiene reasons. Everything is clamped per
    session and overall, newest first until the byte budget is spent.
 3. **Dream.** Run an isolated ACP session on the agent's runtime host through
@@ -193,7 +193,7 @@ with the same injection posture and a five-phase pipeline:
   instructions; embedded instructions cannot change the rules.
 - Phases: **orient** over the existing store → **gather signal**: mine the
   transcripts for corrections, preference shifts, decisions, and recurring
-  patterns → **consolidate**: merge duplicates, keep the *latest* value where
+  patterns → **consolidate**: merge duplicates, keep the _latest_ value where
   entries contradict, convert relative dates to absolute, drop transient task
   progress and secrets → **prune & index**: rebuild the index with one line
   per topic, under the injection cap, demoting verbose entries into topic
@@ -205,8 +205,8 @@ with the same injection posture and a five-phase pipeline:
   point — but only inside the returned proposal.
 - Output is JSON only:
   `{"files":[{"path":"topic.md","content":"..."}], "index":"...",
-  "skills":[{"name":"...","description":"...","skill":"<SKILL.md body>",
-  "scripts":[{"path":"...","content":"..."}]}]}` — `skills` present only when
+"skills":[{"name":"...","description":"...","skill":"<SKILL.md body>",
+"scripts":[{"path":"...","content":"..."}]}]}` — `skills` present only when
   mining is enabled.
 - The operator's `instructions` string is appended to the system prompt (it is
   operator-, not model- or user-supplied — same trust class as the rest of the
@@ -214,7 +214,7 @@ with the same injection posture and a five-phase pipeline:
 
 Where the runtime has no trusted system-prompt channel (today: Codex ACP),
 the policy text is prepended to the user prompt instead. That is acceptable
-*only* because of invariant 3 + staged output: a prompt-injected dream can at
+_only_ because of invariant 3 + staged output: a prompt-injected dream can at
 worst produce a bad candidate the review step catches. `autoAdopt` remains
 gated on `trustedExtractionMode` (§6), so the unattended path never runs on an
 untrusted channel.
@@ -294,8 +294,8 @@ dream whose store proposal was discarded.
 Distillation and dreaming are two layers of one background-memory system —
 per-turn additive capture and periodic reconstructive consolidation. The
 constraints are deliberately coupled: distillation may write to the live store
-unreviewed *because* it is additive-only and rides a trusted channel; dreaming
-may rewrite and delete *because* its output is staged and reviewed. Neither
+unreviewed _because_ it is additive-only and rides a trusted channel; dreaming
+may rewrite and delete _because_ its output is staged and reviewed. Neither
 subsumes the other: capture keeps facts available in near-real-time; dreaming
 compacts what capture accumulates and catches cross-session patterns capture
 cannot see. On runtimes where distillation is unavailable (no trusted
@@ -391,9 +391,9 @@ skill bodies in events or logs (same rule as the capture path).
 
 ## 12. Phasing
 
-| Phase | Scope |
-| ----- | ----- |
-| D-1 | Protocol schema (`MemoryDreamingPolicy`), shared extraction-session helper, daemon `DreamRunner` + staged store pipeline, manual trigger via frames, console review + adopt/discard. |
-| D-2 | Scheduled dreams (cron), `autoAdopt` behind `trustedExtractionMode` with the distillation rebase rule, backup pruning, evaluation-event dashboards. |
-| D-3 | Skill mining (`mineSkills`): extract-procedures phase, staged skill candidates, console recommendations with accept/dismiss, integration with the shared-skills install flow. |
-| D-4 | Idle-trigger heuristic; revisit external-provider dreaming. |
+| Phase | Scope                                                                                                                                                                                |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| D-1   | Protocol schema (`MemoryDreamingPolicy`), shared extraction-session helper, daemon `DreamRunner` + staged store pipeline, manual trigger via frames, console review + adopt/discard. |
+| D-2   | Scheduled dreams (cron), `autoAdopt` behind `trustedExtractionMode` with the distillation rebase rule, backup pruning, evaluation-event dashboards.                                  |
+| D-3   | Skill mining (`mineSkills`): extract-procedures phase, staged skill candidates, console recommendations with accept/dismiss, integration with the shared-skills install flow.        |
+| D-4   | Idle-trigger heuristic; revisit external-provider dreaming.                                                                                                                          |
