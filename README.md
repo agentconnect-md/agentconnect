@@ -49,9 +49,9 @@ docker compose up -d --pull always
 ```
 
 Open `http://localhost:3000`. The default stack is bound to `127.0.0.1` and uses
-no-auth mode for local evaluation. See the
-[self-hosting guide](https://docs.agentconnect.md/docs/self-hosting) for
-configuration, Logto sign-in, updates, and cleanup.
+no-auth mode for local evaluation. Copy
+[`compose.env.example`](compose.env.example) to `compose.env` for version, port,
+secret, public URL, and optional Logto overrides.
 
 ## Monorepo layout
 
