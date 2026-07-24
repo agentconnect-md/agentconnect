@@ -3202,7 +3202,12 @@ export class Daemon {
    *   because the output is staged and reviewed — bad *content* can't reach the
    *   live store. `autoAdopt` (D-2) is what stays gated on the trusted channel.
    */
-  private async runDreamExtraction(agentId: string, systemPrompt: string, prompt: string): Promise<string> {
+  private async runDreamExtraction(
+    agentId: string,
+    systemPrompt: string,
+    prompt: string,
+    signal: AbortSignal
+  ): Promise<string> {
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     const host = await this.ensureHostAsync(agentId)
@@ -3213,6 +3218,11 @@ export class Daemon {
       this.memoryExtractionDirs.set(agentId, cwd)
     }
     const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
+    // On cancel, drive the ACP turn-cancel path so a hung/long prompt actually
+    // stops instead of pinning the dream's one-in-flight reservation.
+    const onAbort = () => void host.cancel(sessionId).catch(() => {})
+    if (signal.aborted) onAbort()
+    else signal.addEventListener('abort', onAbort, { once: true })
     try {
       // HARD GATE: require a verified non-mutating mode. Fail closed if the
       // runtime advertises none or the switch is rejected — never run an
@@ -3235,6 +3245,7 @@ export class Daemon {
         this.memoryExtractionCollectors.delete(key)
       }
     } finally {
+      signal.removeEventListener('abort', onAbort)
       host.discardSession(sessionId)
     }
   }
@@ -3250,7 +3261,8 @@ export class Daemon {
         return memory?.provider === 'managed' ? memory.dreaming : undefined
       },
       store: this.store,
-      extract: (agentId, systemPrompt, prompt) => this.runDreamExtraction(agentId, systemPrompt, prompt),
+      extract: (agentId, systemPrompt, prompt, signal) =>
+        this.runDreamExtraction(agentId, systemPrompt, prompt, signal),
       log: this.log
     })
     return this.dreamRunnerInstance

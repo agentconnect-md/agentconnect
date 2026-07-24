@@ -50,7 +50,7 @@ const PROPOSAL = JSON.stringify({
 })
 
 async function setup(opts: {
-  extract?: (agentId: string, systemPrompt: string, prompt: string) => Promise<string>
+  extract?: (agentId: string, systemPrompt: string, prompt: string, signal: AbortSignal) => Promise<string>
   policy?: MemoryDreamingPolicy
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
@@ -62,9 +62,9 @@ async function setup(opts: {
     agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
     dreamingPolicyFor: () => opts.policy ?? { enabled: true },
     store,
-    extract: async (agentId, systemPrompt, prompt) => {
+    extract: async (agentId, systemPrompt, prompt, signal) => {
       prompts.push({ systemPrompt, prompt })
-      return opts.extract ? opts.extract(agentId, systemPrompt, prompt) : PROPOSAL
+      return opts.extract ? opts.extract(agentId, systemPrompt, prompt, signal) : PROPOSAL
     },
     log: silent
   })
@@ -201,6 +201,48 @@ describe('DreamRunner pipeline', () => {
     await new Promise((r) => setTimeout(r, 20))
     expect(store.dreams.get(started.dreamId)?.status).toBe('canceled')
     expect(await runner.stagedFiles('a1', started.dreamId)).toBeNull()
+  })
+
+  it('cancel aborts the extraction signal and releases the reservation for a replacement', async () => {
+    // A "hung" extraction that only settles when its abort signal fires — models
+    // the daemon driving host.cancel() on abort. Without the abort wiring this
+    // never resolves and the one-in-flight reservation is pinned forever.
+    let sawAbort = false
+    let calls = 0
+    const { store, runner } = await setup({
+      extract: (_a, _s, _p, signal) => {
+        // First extraction hangs until aborted; the replacement completes normally.
+        if (calls++ > 0) return Promise.resolve(PROPOSAL)
+        return new Promise<string>((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            sawAbort = true
+            reject(new Error('aborted'))
+          })
+        })
+      }
+    })
+    const first = await runner.start('a1', { trigger: 'manual' })
+    await new Promise((r) => setTimeout(r, 10))
+    runner.cancel('a1', first.dreamId)
+    const done = await settle(store, first.dreamId)
+    expect(sawAbort).toBe(true)
+    expect(done.status).toBe('canceled')
+
+    // The reservation is released once the aborted extraction settles (the run
+    // promise's finally), which lands a tick after the status flip — retry until
+    // a replacement can start, proving the agent is no longer pinned.
+    let second: { dreamId: string } | undefined
+    for (let i = 0; i < 50 && !second; i++) {
+      try {
+        second = await runner.start('a1', { trigger: 'manual' })
+      } catch {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+    }
+    expect(second).toBeDefined()
+    expect(second!.dreamId).not.toBe(first.dreamId)
+    await settle(store, second!.dreamId)
+    expect(store.dreams.get(second!.dreamId)?.status).toBe('completed')
   })
 })
 

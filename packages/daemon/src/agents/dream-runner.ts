@@ -76,8 +76,11 @@ export interface DreamRunnerDeps {
   dreamingPolicyFor(agentId: string): MemoryDreamingPolicy | undefined
   store: DreamStorePort
   /** Run one isolated dream extraction and return the streamed text. daemon.ts
-   *  owns the session/trust mechanics; the prompt is fully assembled here. */
-  extract(agentId: string, systemPrompt: string, prompt: string): Promise<string>
+   *  owns the session/trust mechanics; the prompt is fully assembled here. The
+   *  `signal` aborts on cancel — the implementation MUST propagate it to the
+   *  host's session-cancel path so a hung/long prompt doesn't pin the agent's
+   *  one-in-flight reservation forever. */
+  extract(agentId: string, systemPrompt: string, prompt: string, signal: AbortSignal): Promise<string>
   log: { info(msg: string): void; warn(msg: string): void }
   now?(): Date
   /** Test seam: invoked immediately after staging finishes, before the
@@ -103,6 +106,11 @@ export class DreamRunner {
    *  cancel does not release it early, so a canceled dream's still-running
    *  extraction can never overlap a replacement). */
   private readonly active = new Map<string, string>()
+
+  /** Abort handle for the in-flight extraction, keyed by dreamId. `cancel`
+   *  aborts it so daemon.ts can drive the host's session-cancel path and the
+   *  extraction promise settles promptly (releasing the reservation). */
+  private readonly aborters = new Map<string, AbortController>()
 
   /** Per-agent serial mutex over the mutating critical sections (snapshot+reserve,
    *  the adopt fence/swap, discard). Ordering matters: the adopt swap must not
@@ -196,8 +204,11 @@ export class DreamRunner {
       }
       this.deps.store.insertDream(dream)
       this.active.set(agentId, dream.dreamId)
+      const aborter = new AbortController()
+      this.aborters.set(dream.dreamId, aborter)
 
-      void this.run(dream, files, sources).finally(() => {
+      void this.run(dream, files, sources, aborter.signal).finally(() => {
+        this.aborters.delete(dream.dreamId)
         if (this.active.get(agentId) === dream.dreamId) this.active.delete(agentId)
       })
       return dream
@@ -215,7 +226,8 @@ export class DreamRunner {
   private async run(
     dream: DreamInfo,
     files: { name: string; content: string }[],
-    sources: { sessionId: string; channel: string; thread: string }[]
+    sources: { sessionId: string; channel: string; thread: string }[],
+    signal: AbortSignal
   ): Promise<void> {
     const { agentId, dreamId } = dream
     try {
@@ -241,7 +253,7 @@ export class DreamRunner {
       // A cancel that landed before extraction wins: skip the expensive call.
       if (this.deps.store.getDream(agentId, dreamId)?.status !== 'running') return
 
-      const output = await this.deps.extract(agentId, MEMORY_DREAM_SYSTEM_PROMPT, prompt)
+      const output = await this.deps.extract(agentId, MEMORY_DREAM_SYSTEM_PROMPT, prompt, signal)
 
       // A cancel that landed mid-extraction wins: drop the output unstaged.
       if (this.deps.store.getDream(agentId, dreamId)?.status !== 'running') return
@@ -323,6 +335,9 @@ export class DreamRunner {
     // `finally` releases it once the promise actually settles.
     const canceled: DreamInfo = { ...dream, status: 'canceled', endedAt: this.nowIso() }
     this.deps.store.updateDream(canceled)
+    // Abort the in-flight extraction so daemon.ts drives the host session-cancel
+    // path — otherwise a hung/long prompt would pin the reservation forever.
+    this.aborters.get(dreamId)?.abort()
     return canceled
   }
 
