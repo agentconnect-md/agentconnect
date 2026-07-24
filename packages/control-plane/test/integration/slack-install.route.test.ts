@@ -80,15 +80,11 @@ class StubConfigApi implements SlackConfigApi {
   }
   // When non-empty, createApp shifts one result per call (models create → rotate → retry).
   createResultQueue: SlackAppCreateResult[] = []
-  // Runs at the START of createApp — lets a test mutate the stored row mid-request to
-  // exercise the concurrent-replacement race.
-  onCreateApp?: () => Promise<void>
   createCalls: Array<{ configToken: string; manifest: unknown }> = []
   exchangeCalls: Array<{ clientId: string; clientSecret: string; code: string; redirectUri: string }> = []
   rotateCalls: string[] = []
   async createApp(configToken: string, manifest: unknown): Promise<SlackAppCreateResult> {
     this.createCalls.push({ configToken, manifest })
-    if (this.onCreateApp) await this.onCreateApp()
     return this.createResultQueue.length ? this.createResultQueue.shift()! : this.createResult
   }
   async exportApp(): Promise<SlackManifestExportResult> {
@@ -685,35 +681,6 @@ describe('slack per-user config storage', () => {
     expect(res.statusCode).toBe(400)
     expect(stub.rotateCalls).toEqual(['xoxe-stored']) // attempted recovery before giving up
     expect(await prisma.slackUserConfig.count()).toBe(0) // dropped ⇒ next status re-prompts
-  })
-
-  it('POST /app does NOT erase a config replaced concurrently while create was in flight', async () => {
-    const { app, stub } = withFunnel()
-    stub.createResult = { ok: false, error: 'invalid_auth' }
-    const agentId = await placedAgent()
-    await prisma.slackUserConfig.create({
-      data: {
-        orgId: DEFAULT_ORG_ID,
-        userId: DEFAULT_OWNER_ID,
-        accessToken: 'xoxe.xoxp-attempted',
-        refreshToken: null,
-        accessExpiresAt: new Date(Date.now() + 3600_000)
-      }
-    })
-    // Another tab saves a fresh access-only token while apps.manifest.create is mid-flight;
-    // this bumps updatedAt, so the version-scoped invalidation must NOT delete the newcomer.
-    stub.onCreateApp = async () => {
-      await prisma.slackUserConfig.update({
-        where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } },
-        data: { accessToken: 'xoxe.xoxp-replacement', accessExpiresAt: new Date(Date.now() + 3600_000) }
-      })
-    }
-    const res = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
-    expect(res.statusCode).toBe(400) // the token we attempted was still rejected
-    const cfg = await prisma.slackUserConfig.findUnique({
-      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } }
-    })
-    expect(cfg?.accessToken).toBe('xoxe.xoxp-replacement') // preserved — a different version than we attempted
   })
 
   it('PUT maps a rotate rejection to 400 and stores nothing', async () => {

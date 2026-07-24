@@ -166,39 +166,28 @@ export function slackInstallRoutes(deps: HttpDeps) {
         // the app image itself) — its avatar plate → the manifest background_color.
         const bgColor = agentIconBackgroundColor(agent.icon)
         const manifest = buildInstallManifest(name, redirectUri, httpBase, bgColor)
-        // Snapshot the credential we're about to attempt (post-resolve, so it reflects any
-        // rotation resolve already did). If the attempt fails we invalidate exactly THIS
-        // version — never a fresher token a concurrent tab may have written since.
-        let snapshot = await deps.repos.slackUserConfig.get(orgId, req.principal.userId)
         let created = await api.createApp(config.accessToken, manifest)
 
-        // Slack rejected the config token as invalid/expired. resolve() hands back a fresh
-        // (unexpired) access token WITHOUT re-validating it, so a DURABLE (refresh-backed)
-        // config can still hold a bad-but-unexpired access token: force one rotation to mint
-        // a genuinely new token from Slack and retry. If that still auth-fails the config is
-        // unrecoverable and gets invalidated; an ACCESS-ONLY config (no refresh) can't be
-        // rotated, so it's invalidated outright. Non-auth errors (rate limit, etc.) and
-        // transient unreachable keep the row. Every delete is conditional on the attempted
-        // row's version, so a concurrent replacement is never erased.
-        if (!created.ok && SLACK_CONFIG_AUTH_ERRORS.has(created.error) && snapshot) {
-          if (snapshot.refreshToken) {
-            const rotated = await api.rotateConfigToken(snapshot.refreshToken)
+        // Slack rejected the config token. resolve() hands back a fresh (unexpired) access
+        // token WITHOUT re-validating it, so a refresh-backed config may still hold a
+        // bad-but-unexpired token: force one rotation to mint a new token and retry. If the
+        // retry still auth-fails — or the token is access-only, with nothing to rotate — the
+        // config can't work, so drop it and the console re-prompts. Non-auth errors (rate
+        // limit, etc.) and transient unreachable keep the row.
+        if (!created.ok && SLACK_CONFIG_AUTH_ERRORS.has(created.error)) {
+          const stored = await deps.repos.slackUserConfig.get(orgId, req.principal.userId)
+          if (stored?.refreshToken) {
+            const rotated = await api.rotateConfigToken(stored.refreshToken)
             if (rotated.ok) {
               await deps.repos.slackUserConfig.put(orgId, req.principal.userId, rotated.rotated)
-              snapshot = (await deps.repos.slackUserConfig.get(orgId, req.principal.userId)) ?? snapshot
               created = await api.createApp(rotated.rotated.accessToken, manifest)
             } else if (rotated.error === 'unreachable') {
               // Couldn't reach Slack to rotate — transient, not a dead config. Keep the row.
               return reply.code(502).send({ error: 'Bad Gateway', statusCode: 502, message: 'could not reach Slack' })
             }
-            // rotate ok but the retry still auth-failed, OR rotate itself was rejected
-            // (refresh revoked): the config can't produce a working token ⇒ invalidate it.
-            if (!created.ok && created.error !== 'unreachable' && SLACK_CONFIG_AUTH_ERRORS.has(created.error)) {
-              await deps.repos.slackUserConfig.deleteIfUnchanged(orgId, req.principal.userId, snapshot.updatedAt)
-            }
-          } else {
-            // Access-only, definitively rejected ⇒ drop it (conditional on the attempted version).
-            await deps.repos.slackUserConfig.deleteIfUnchanged(orgId, req.principal.userId, snapshot.updatedAt)
+          }
+          if (!created.ok && SLACK_CONFIG_AUTH_ERRORS.has(created.error)) {
+            await deps.repos.slackUserConfig.delete(orgId, req.principal.userId)
           }
         }
 

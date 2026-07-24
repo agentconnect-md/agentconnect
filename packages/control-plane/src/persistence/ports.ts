@@ -2041,13 +2041,6 @@ export interface SlackUserConfigStore {
   /** Upsert the caller's config (save from the console, or overwrite with a rotated pair). */
   put(orgId: OrgId, userId: string, material: SlackUserConfigMaterial): Promise<void>
   delete(orgId: OrgId, userId: string): Promise<void>
-  /**
-   * Compare-and-delete: remove the row ONLY if it still carries the `updatedAt` of the
-   * credential the caller actually attempted. A concurrent replacement (another tab
-   * saving a fresh config while an install was mid-flight) bumps `updatedAt`, so this
-   * no-ops rather than erasing the newer token. Returns the rows deleted (0 ⇒ superseded).
-   */
-  deleteIfUnchanged(orgId: OrgId, userId: string, updatedAt: Date): Promise<number>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
