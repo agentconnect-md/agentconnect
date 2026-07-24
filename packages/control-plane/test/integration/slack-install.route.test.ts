@@ -572,7 +572,7 @@ describe('slack per-user config storage', () => {
       payload: { accessToken: 'xoxe.xoxp-pasted', refreshToken: 'xoxe-pasted' }
     })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toMatchObject({ configured: true, autoAvailable: true })
+    expect(res.json()).toMatchObject({ configured: true, durable: true, autoAvailable: true })
     expect(stub.rotateCalls).toEqual(['xoxe-pasted'])
     // Stored the rotated pair — never the pasted one; and no token leaks to the DTO.
     const row = await prisma.slackUserConfig.findUnique({
@@ -580,6 +580,49 @@ describe('slack per-user config storage', () => {
     })
     expect(row).toMatchObject({ accessToken: 'xoxe.xoxp-rotated', refreshToken: 'xoxe-rotated' })
     expect(JSON.stringify(res.json())).not.toContain('xoxe')
+  })
+
+  it('PUT with only the config token stores an access-only row (durable:false, no rotate)', async () => {
+    const { app, stub } = withFunnel()
+    const res = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/slack/config`,
+      payload: { accessToken: 'xoxe.xoxp-access-only' } // no refresh token
+    })
+    expect(res.statusCode).toBe(200)
+    // Usable right now (fresh ~12h access token) even though it isn't durable.
+    expect(res.json()).toMatchObject({ configured: true, durable: false, autoAvailable: true })
+    expect((res.json() as { accessExpiresAt: string | null }).accessExpiresAt).toBeTruthy()
+    expect(stub.rotateCalls).toHaveLength(0) // nothing to rotate
+    // Stored the pasted access token as-is with no refresh token.
+    const row = await prisma.slackUserConfig.findUnique({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } }
+    })
+    expect(row?.accessToken).toBe('xoxe.xoxp-access-only')
+    expect(row?.refreshToken).toBeNull()
+    expect(JSON.stringify(res.json())).not.toContain('xoxe')
+  })
+
+  it('POST /app is 409 (expired) when only an EXPIRED access-only token is stored', async () => {
+    const { app } = withFunnel()
+    const agentId = await placedAgent()
+    // Access-only, already past expiry ⇒ nothing to rotate ⇒ must re-enter.
+    await prisma.slackUserConfig.create({
+      data: {
+        orgId: DEFAULT_ORG_ID,
+        userId: DEFAULT_OWNER_ID,
+        accessToken: 'xoxe.xoxp-old',
+        refreshToken: null,
+        accessExpiresAt: new Date(Date.now() - 60_000)
+      }
+    })
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app`,
+      payload: { agentId }
+    })
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).toMatch(/expired/i)
   })
 
   it('PUT maps a rotate rejection to 400 and stores nothing', async () => {
