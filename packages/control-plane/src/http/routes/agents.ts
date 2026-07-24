@@ -744,6 +744,7 @@ export function agentRoutes(deps: HttpDeps) {
         // these answer 409 — installations and their grant sets are org-level
         // infrastructure (visibility taxonomy), so a 409 is not an oracle.
         const ws = req.body.workspace
+        let workspace = ws
         let workspaceRepoId: bigint | undefined
         if (ws?.mode === 'github' && ws.installationId === undefined && ws.gitAccess === 'write') {
           return conflict('github write access requires a GitHub App installation')
@@ -754,8 +755,11 @@ export function agentRoutes(deps: HttpDeps) {
           if (!ins || ins.orgId !== req.orgCtx!.orgId || ins.revokedAt) {
             return conflict('github installation not found in this org')
           }
-          const [owner, repo] = gitRepoLabel(ws.gitRepo).split('/')
-          if (!owner || !repo) return conflict('workspace gitRepo is not a github repository')
+          const repoParts = gitRepoLabel(ws.gitRepo).split('/')
+          const [owner, repo] = repoParts
+          if (repoParts.length !== 2 || !owner || !repo) {
+            return conflict('workspace gitRepo is not a github repository')
+          }
           if (owner.toLowerCase() !== ins.accountLogin.toLowerCase()) {
             return conflict(`repo owner ${owner} does not match the installation account ${ins.accountLogin}`)
           }
@@ -765,6 +769,9 @@ export function agentRoutes(deps: HttpDeps) {
               return conflict(`${owner}/${repo} is not granted to the installation — re-select it on GitHub`)
             }
             workspaceRepoId = ref.repoId
+            // The installation lookup, not the caller's clone host/path, is the
+            // authority for an App-backed workspace.
+            workspace = { ...ws, gitRepo: normalizeGitUrl(ref.fullName) }
             // Per-user gate (identity assertion, open question #7) — the SECURITY check;
             // the picker's preflight is UX only. The creator must hold the
             // access level the agent will run with: gitAccess=write (the
@@ -865,7 +872,7 @@ export function agentRoutes(deps: HttpDeps) {
               ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
               ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
               ...(req.body.daemonId !== undefined ? { daemonId: DaemonId(req.body.daemonId) } : {}),
-              ...(req.body.workspace !== undefined ? { workspace: req.body.workspace } : {}),
+              ...(workspace !== undefined ? { workspace } : {}),
               ...(workspaceRepoId !== undefined ? { workspaceRepoId } : {}),
               ...(req.principal ? { createdByUserId: req.principal.userId } : {}),
               ...(req.body.visibility ? { visibility: req.body.visibility } : {}),

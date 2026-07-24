@@ -3,7 +3,7 @@
  */
 import { Prisma } from '../../generated/prisma/client.js'
 import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js'
-import type { AgentMemoryBinding } from '@agentconnect.md/protocol'
+import { redactGitUrlSecrets, type AgentMemoryBinding } from '@agentconnect.md/protocol'
 import type { PrismaLike } from '../prisma.js'
 import type {
   AgentCallPolicy,
@@ -92,7 +92,10 @@ function workspaceOf(a: Agent): AgentWorkspace {
   if (a.workspaceMode === 'github') {
     return {
       mode: 'github',
-      gitRepo: a.gitRepo ?? '',
+      // Legacy rows may predate the credential-free clone URL invariant. Keep
+      // reads total, but never let URL userinfo/query secrets enter DTOs or wire
+      // projections through the domain record.
+      gitRepo: redactGitUrlSecrets(a.gitRepo ?? ''),
       ...(a.gitBranch !== null ? { gitBranch: a.gitBranch } : {}),
       ...(a.agentDir !== null ? { agentDir: a.agentDir } : {}),
       ...(a.installationId !== null ? { installationId: a.installationId, gitAccess: a.gitAccess } : {})

@@ -55,6 +55,10 @@ function under(root: string, p: string): boolean {
   return p === root || p.startsWith(root + path.sep)
 }
 
+function containsGitInternals(relPath: string): boolean {
+  return relPath.split(/[\\/]+/).some((part) => part.toLowerCase() === '.git')
+}
+
 export function createWorkspaceReader(workspaceRootByAgent: (agentId: string) => string | undefined): WorkspaceReader {
   function rootFor(agentId: string): string {
     const root = workspaceRootByAgent(agentId)
@@ -71,6 +75,9 @@ export function createWorkspaceReader(workspaceRootByAgent: (agentId: string) =>
     root: string,
     relPath: string
   ): Promise<{ resolved: string; realRoot: string | null }> {
+    if (containsGitInternals(relPath)) {
+      throw new WorkspaceViolationError('git internals are not readable')
+    }
     if (path.isAbsolute(relPath)) throw new WorkspaceViolationError('absolute paths are not allowed')
     const resolved = path.resolve(root, relPath)
     if (!under(root, resolved)) throw new WorkspaceViolationError('path escapes the workspace root')
@@ -88,6 +95,9 @@ export function createWorkspaceReader(workspaceRootByAgent: (agentId: string) =>
   async function canonicalUnder(realRoot: string, abs: string): Promise<string> {
     const canon = await fs.realpath(abs)
     if (!under(realRoot, canon)) throw new WorkspaceViolationError('path resolves outside the workspace root')
+    if (containsGitInternals(path.relative(realRoot, canon))) {
+      throw new WorkspaceViolationError('git internals are not readable')
+    }
     return canon
   }
 

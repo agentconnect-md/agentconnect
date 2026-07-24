@@ -195,6 +195,38 @@ async function makeUser(sub: string, role: OrgMemberRole): Promise<string> {
 }
 
 describe('agent repo authorizations REST — grant, list, revoke, gates', () => {
+  it('canonicalizes an App-backed workspace to the repository authorized by GitHub', async () => {
+    await seedInstallation()
+    const installation = await prisma.githubInstallation.findFirstOrThrow({
+      where: { orgId: DEFAULT_ORG_ID, installationId: INSTALLATION }
+    })
+    const a = app()
+
+    const created = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: {
+        name: 'canonical-workspace',
+        runtime: 'claude',
+        workspace: {
+          mode: 'github',
+          gitRepo: 'https://other-host.example/acme/infra',
+          installationId: installation.id,
+          gitAccess: 'read'
+        }
+      }
+    })
+
+    expect(created.statusCode).toBe(201)
+    expect(created.json()).toMatchObject({
+      workspace: { gitRepo: 'https://github.com/acme/infra' },
+      workspaceRepoId: '100'
+    })
+    expect((await prisma.agent.findFirstOrThrow({ where: { name: 'canonical-workspace' } })).gitRepo).toBe(
+      'https://github.com/acme/infra'
+    )
+  })
+
   it('PATCH upgrades an App-backed workspace from read to write after checking the caller', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = await workspaceAgent()

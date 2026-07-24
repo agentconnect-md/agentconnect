@@ -104,6 +104,17 @@ describe('workspace list', () => {
 })
 
 describe('path containment', () => {
+  it('rejects direct reads of git internals', async () => {
+    mkdirSync(join(ws, '.git'))
+    writeFileSync(join(ws, '.git', 'config'), 'url = https://user:token@example.test/repo')
+    symlinkSync(join(ws, '.git'), join(ws, 'metadata'))
+
+    await expect(reader.list(listReq({ path: '.git' }))).rejects.toBeInstanceOf(WorkspaceViolationError)
+    await expect(reader.read(readReq('.git/config'))).rejects.toBeInstanceOf(WorkspaceViolationError)
+    await expect(reader.list(listReq({ path: 'metadata' }))).rejects.toBeInstanceOf(WorkspaceViolationError)
+    await expect(reader.read(readReq('metadata/config'))).rejects.toBeInstanceOf(WorkspaceViolationError)
+  })
+
   it("rejects '..' escapes on list and read", async () => {
     writeFileSync(join(outside, 'secret.env'), 'TOKEN=x')
     await expect(reader.list(listReq({ path: '../outside' }))).rejects.toBeInstanceOf(WorkspaceViolationError)

@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { simpleGit } from 'simple-git'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../src/cp/gitcred-server.js'
@@ -11,7 +12,9 @@ import {
   gitFor,
   initGitInjection,
   parseGitVersion,
-  sessionGitEnv
+  pullWorkspaceRef,
+  sessionGitEnv,
+  workspaceGitEnvBase
 } from '../src/workspace/git-injection.js'
 
 // simple-git ≥3.36 refuses a NAME blocklist of env vars (presence-based, value
@@ -31,7 +34,17 @@ const POLLUTED = {
   GIT_SSH_COMMAND: 'ssh -i /k',
   GIT_ASKPASS: '/bin/echo',
   SSH_ASKPASS: '/bin/echo',
+  GIT_ALTERNATE_OBJECT_DIRECTORIES: '/elsewhere/alternate-objects',
+  GIT_COMMON_DIR: '/elsewhere/common.git',
   GIT_DIR: '/elsewhere/.git',
+  GIT_GRAFT_FILE: '/elsewhere/grafts',
+  GIT_IMPLICIT_WORK_TREE: '0',
+  GIT_INDEX_FILE: '/elsewhere/index',
+  GIT_NO_REPLACE_OBJECTS: '1',
+  GIT_OBJECT_DIRECTORY: '/elsewhere/objects',
+  GIT_REPLACE_REF_BASE: 'refs/elsewhere/',
+  GIT_SHALLOW_FILE: '/elsewhere/shallow',
+  GIT_ALLOW_PROTOCOL: 'file:ext:git:https:ssh',
   GIT_CONFIG_COUNT: '1',
   GIT_CONFIG_KEY_0: 'core.editor',
   GIT_CONFIG_VALUE_0: 'vim'
@@ -65,7 +78,80 @@ afterAll(() => {
 describe('gitEnvBase', () => {
   it('strips every checker-blocked name (case-insensitively) and host GIT_CONFIG_*', () => {
     const env = gitEnvBase()
-    for (const k of Object.keys(POLLUTED)) expect(env, k).not.toHaveProperty(k)
+    for (const k of Object.keys(POLLUTED)) {
+      if (k !== 'GIT_ALLOW_PROTOCOL') expect(env, k).not.toHaveProperty(k)
+    }
+  })
+
+  it('limits workspace git without narrowing skill-source git', () => {
+    expect(gitEnvBase().GIT_ALLOW_PROTOCOL).toBe(POLLUTED.GIT_ALLOW_PROTOCOL)
+    expect(workspaceGitEnvBase().GIT_ALLOW_PROTOCOL).toBe('https:ssh')
+  })
+
+  it('keeps an explicit checkout bound when the host exports GIT_COMMON_DIR', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'git-context-test-'))
+    const workspace = join(root, 'workspace')
+    const override = join(root, 'override')
+    const cleanEnv = workspaceGitEnvBase()
+    execFileSync('git', ['init', workspace], { env: cleanEnv, stdio: 'ignore' })
+    execFileSync('git', ['init', override], { env: cleanEnv, stdio: 'ignore' })
+    execFileSync('git', ['-C', workspace, 'remote', 'add', 'origin', 'https://other-host.example/acme/repo'], {
+      env: cleanEnv
+    })
+    execFileSync('git', ['-C', override, 'remote', 'add', 'origin', 'https://github.com/acme/repo'], {
+      env: cleanEnv
+    })
+    const poisonedEnv = { ...cleanEnv, GIT_COMMON_DIR: join(override, '.git') }
+    expect(
+      execFileSync('git', ['-C', workspace, 'remote', 'get-url', 'origin'], {
+        encoding: 'utf8',
+        env: poisonedEnv
+      }).trim()
+    ).toBe('https://github.com/acme/repo')
+
+    try {
+      await expect(
+        gitFor(workspace).env(workspaceGitEnvBase()).raw(['remote', 'get-url', 'origin'])
+      ).resolves.toContain('https://other-host.example/acme/repo')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('updates the origin tracking ref when an explicit URL pull advances HEAD', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'git-pull-refspec-test-'))
+    const remote = join(root, 'remote.git')
+    const seed = join(root, 'seed')
+    const workspace = join(root, 'workspace')
+    const env = { ...workspaceGitEnvBase(), GIT_ALLOW_PROTOCOL: 'file:https:ssh' }
+    const run = (args: string[]) => execFileSync('git', args, { env, stdio: 'ignore' })
+
+    try {
+      run(['init', '--bare', remote])
+      run(['init', '-b', 'main', seed])
+      run(['-C', seed, 'config', 'user.name', 'Test'])
+      run(['-C', seed, 'config', 'user.email', 'test@example.invalid'])
+      run(['-C', seed, 'commit', '--allow-empty', '-m', 'initial'])
+      run(['-C', seed, 'remote', 'add', 'origin', remote])
+      run(['-C', seed, 'push', 'origin', 'main'])
+      run(['clone', '--branch', 'main', remote, workspace])
+      run(['-C', seed, 'commit', '--allow-empty', '-m', 'advance'])
+      run(['-C', seed, 'push', 'origin', 'main'])
+
+      const git = gitFor(workspace).env(env)
+      await pullWorkspaceRef(git, pathToFileURL(remote).href, 'main')
+
+      const [head, tracking, status] = await Promise.all([
+        git.raw(['rev-parse', 'HEAD']),
+        git.raw(['rev-parse', 'refs/remotes/origin/main']),
+        git.status()
+      ])
+      expect(head.trim()).toBe(tracking.trim())
+      expect(status.ahead).toBe(0)
+      expect(status.behind).toBe(0)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('keeps ambient host capabilities', () => {
