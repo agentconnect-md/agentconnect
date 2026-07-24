@@ -36,11 +36,17 @@ function ws(repo: boolean): string {
   return dir
 }
 
+const githubTarget = () => ({
+  repo: 'https://github.com/acme/repo.git',
+  branch: 'main',
+  githubApp: false
+})
+
 beforeEach(() => {
   statusImpl = vi.fn()
   pullImpl = vi.fn()
   envImpl = vi.fn()
-  rawImpl = vi.fn().mockResolvedValue('https://example.com/acme/repo.git\n')
+  rawImpl = vi.fn().mockResolvedValue('https://github.com/acme/repo.git\n')
   // Default: empty repo (no commits) ⇒ git log errors ⇒ lastCommit omitted.
   logImpl = vi.fn().mockRejectedValue(new Error('does not have any commits yet'))
 })
@@ -67,7 +73,7 @@ describe('createWorkspaceGit.status', () => {
     const s = await git.status('a')
     expect(s).toMatchObject({ agentId: 'a', isRepo: true, clean: true, branch: 'main', tracking: 'origin/main' })
     expect(s.files).toBeUndefined()
-    expect(envImpl).toHaveBeenCalledWith(expect.objectContaining({ GIT_ALLOW_PROTOCOL: 'https:ssh' }))
+    expect(envImpl).toHaveBeenCalledWith(expect.objectContaining({ GIT_ALLOW_PROTOCOL: '' }))
   })
 
   it('maps a dirty checkout: clean:false + changed files (index/workingDir chars)', async () => {
@@ -163,13 +169,14 @@ describe('createWorkspaceGit.pull', () => {
     pullImpl = vi.fn().mockResolvedValue({ files: ['a.ts', 'b.ts'], summary: { insertions: 10, deletions: 3 } })
     const git = createWorkspaceGit(
       () => dir,
-      () => ({ AC_GITCRED_CAPABILITY: 'cap-a' })
+      () => ({ AC_GITCRED_CAPABILITY: 'cap-a' }),
+      githubTarget
     )
     const r = await git.pull('a')
     expect(pullImpl).toHaveBeenCalledWith(
-      'https://example.com/acme/repo.git',
-      '+refs/heads/HEAD:refs/remotes/origin/HEAD',
-      ['--ff-only']
+      expect.stringMatching(/^agentconnect-[0-9a-f-]+$/),
+      '+refs/heads/main:refs/remotes/origin/main',
+      ['--ff-only', '--no-recurse-submodules']
     )
     expect(envImpl).toHaveBeenCalledWith(
       expect.objectContaining({ AC_GITCRED_CAPABILITY: 'cap-a', GIT_ALLOW_PROTOCOL: 'https:ssh' })
@@ -186,13 +193,21 @@ describe('createWorkspaceGit.pull', () => {
       expect(envImpl).toHaveBeenCalled()
       const firstEnv = (envImpl as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, string>
       expect(firstEnv).not.toHaveProperty('GIT_DIR')
-      expect(firstEnv.GIT_ALLOW_PROTOCOL).toBe('https:ssh')
-      return 'https://example.com/acme/repo.git\n'
+      expect(firstEnv.GIT_ALLOW_PROTOCOL).toBe('')
+      return 'https://github.com/acme/repo.git\n'
     })
     pullImpl = vi.fn().mockResolvedValue({ files: [], summary: { insertions: 0, deletions: 0 } })
 
     try {
-      await expect(createWorkspaceGit(() => dir).pull('a')).resolves.toMatchObject({ ok: true })
+      await expect(
+        createWorkspaceGit(
+          () => dir,
+          () => ({}),
+          githubTarget
+        ).pull('a')
+      ).resolves.toMatchObject({
+        ok: true
+      })
     } finally {
       if (previousGitDir === undefined) delete process.env.GIT_DIR
       else process.env.GIT_DIR = previousGitDir
@@ -202,7 +217,11 @@ describe('createWorkspaceGit.pull', () => {
   it('reports "Already up to date." when nothing changed', async () => {
     const dir = ws(true)
     pullImpl = vi.fn().mockResolvedValue({ files: [], summary: { insertions: 0, deletions: 0 } })
-    const git = createWorkspaceGit(() => dir)
+    const git = createWorkspaceGit(
+      () => dir,
+      () => ({}),
+      githubTarget
+    )
     const r = await git.pull('a')
     expect(r.ok).toBe(true)
     expect(r.detail).toBe('Already up to date.')
@@ -211,7 +230,11 @@ describe('createWorkspaceGit.pull', () => {
   it('refuses an unsafe origin without running pull or echoing its secrets', async () => {
     const dir = ws(true)
     rawImpl = vi.fn().mockResolvedValue('https://legacy-user:super-secret@invalid.invalid/repo?token=query-secret\n')
-    const git = createWorkspaceGit(() => dir)
+    const git = createWorkspaceGit(
+      () => dir,
+      () => ({}),
+      githubTarget
+    )
 
     const result = await git.pull('a')
 
@@ -228,7 +251,7 @@ describe('createWorkspaceGit.pull', () => {
 
   it('refuses a safe but mismatched origin for an App-backed workspace', async () => {
     const dir = ws(true)
-    rawImpl = vi.fn().mockResolvedValue('https://other-host.example/acme/repo.git\n')
+    rawImpl = vi.fn().mockResolvedValue('git@github.com:acme/repo.git\n')
     const git = createWorkspaceGit(
       () => dir,
       () => ({}),
@@ -239,6 +262,41 @@ describe('createWorkspaceGit.pull', () => {
       isRepo: true,
       ok: false,
       detail: 'workspace origin is not a safe remote'
+    })
+    expect(pullImpl).not.toHaveBeenCalled()
+  })
+
+  it('refuses to pull without the configured workspace target', async () => {
+    const dir = ws(true)
+    const git = createWorkspaceGit(() => dir)
+
+    expect(await git.pull('a')).toMatchObject({
+      isRepo: true,
+      ok: false,
+      detail: 'workspace origin is not a safe remote'
+    })
+    expect(pullImpl).not.toHaveBeenCalled()
+  })
+
+  it('refuses checkout-owned URL rewrites before pull', async () => {
+    const dir = ws(true)
+    rawImpl = vi
+      .fn()
+      .mockImplementation(async (args: string[]) =>
+        args[0] === 'remote'
+          ? 'https://github.com/acme/repo.git\n'
+          : 'url.https://127.0.0.1.invalid/redirected/.insteadof\0'
+      )
+    const git = createWorkspaceGit(
+      () => dir,
+      () => ({}),
+      githubTarget
+    )
+
+    expect(await git.pull('a')).toMatchObject({
+      isRepo: true,
+      ok: false,
+      detail: 'workspace Git configuration contains a disallowed network override'
     })
     expect(pullImpl).not.toHaveBeenCalled()
   })
@@ -258,16 +316,25 @@ describe('createWorkspaceGit.pull', () => {
     await expect(git.pull('a')).resolves.toMatchObject({ ok: true })
 
     expect(pullImpl).toHaveBeenCalledWith(
-      'https://github.com/acme/repo.git',
+      expect.stringMatching(/^agentconnect-[0-9a-f-]+$/),
       '+refs/heads/release/v2:refs/remotes/origin/release/v2',
-      ['--ff-only']
+      ['--ff-only', '--no-recurse-submodules']
     )
+    expect(
+      (envImpl as ReturnType<typeof vi.fn>).mock.calls.some((call) =>
+        Object.values(call[0] as Record<string, string>).includes('https://github.com/acme/repo.git')
+      )
+    ).toBe(true)
   })
 
   it('surfaces a failed pull as ok:false and scrubs the host path out of the detail', async () => {
     const dir = ws(true)
     pullImpl = vi.fn().mockRejectedValue(new Error(`cannot fast-forward in ${dir}/x`))
-    const git = createWorkspaceGit(() => dir)
+    const git = createWorkspaceGit(
+      () => dir,
+      () => ({}),
+      githubTarget
+    )
     const r = await git.pull('a')
     expect(r.ok).toBe(false)
     expect(r.detail).not.toContain(dir) // absolute host path must not leak

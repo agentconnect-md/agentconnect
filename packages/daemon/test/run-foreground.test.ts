@@ -9,9 +9,12 @@ describe('runForeground', () => {
     let handler: (() => void) | undefined
 
     const p = runForeground(
-      {},
+      { configPath: '/operator/config.json' },
       {
-        createDaemon: () => ({ start, stop }),
+        createDaemon: (opts) => {
+          expect(opts.configPath).toBe('/operator/config.json')
+          return { start, stop }
+        },
         onSignal: (h) => {
           handler = h
         },

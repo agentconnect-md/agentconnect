@@ -7,6 +7,7 @@ import type { FlatOverrides } from '../config/load-config.js'
 
 export interface ForegroundOpts {
   root?: string
+  configPath?: string
   agentName?: string
   overrides?: FlatOverrides
   /** Supervisor marker (AGENTCONNECT_SUPERVISOR) forwarded to the Daemon so it

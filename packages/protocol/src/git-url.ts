@@ -17,6 +17,10 @@ const SCP_RE = /^[\w.-]+@[\w.-]+:(.+)$/
 const SCP_PARTS_RE = /^([\w.-]+)@([\w.-]+):(.+)$/
 const CONTROL_RE = /[\u0000-\u001f\u007f]/
 
+/** Conservative daemon default. Operators may explicitly add exact origins
+ * for GitLab, Bitbucket, or self-managed Git services. */
+export const DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS = ['https://github.com', 'ssh://github.com'] as const
+
 export class GitCloneUrlError extends Error {
   constructor(message: string) {
     super(message)
@@ -62,9 +66,10 @@ function hasLocalPathPrefix(value: string): boolean {
 /**
  * Normalize and validate an untrusted git clone target.
  *
- * Public Git hosts remain host-agnostic. Only credential-free HTTPS and SSH
- * transports are accepted; local paths and Git's executable/legacy transports
- * are rejected before the value can reach `git clone`.
+ * This shared codec remains host-agnostic so the CP can store repositories for
+ * different daemon deployments. Only credential-free HTTPS and SSH transports
+ * are accepted; the daemon applies its operator-owned exact-origin policy at
+ * the execution boundary.
  */
 export function normalizeGitCloneUrl(input: string): string {
   if (CONTROL_RE.test(input)) invalidCloneUrl('git clone url must not contain control characters')
@@ -120,6 +125,83 @@ export function normalizeGitCloneUrl(input: string): string {
     invalidCloneUrl('git clone url must identify a remote repository')
   }
 
+  return normalized
+}
+
+function canonicalGitOrigin(protocol: 'https:' | 'ssh:', hostname: string, port: string): string {
+  // A final DNS root dot does not select a different host. WHATWG already
+  // does this for special schemes; reparse through HTTPS because SSH is a
+  // non-special scheme and otherwise preserves case / percent-encoded IDNs.
+  let host: string
+  try {
+    host = new URL(`https://${hostname}`).hostname.toLowerCase().replace(/\.+$/, '')
+  } catch {
+    invalidCloneUrl('git origin must identify a valid host')
+  }
+  if (!host) invalidCloneUrl('git origin must identify a host')
+  const defaultPort = protocol === 'https:' ? '443' : '22'
+  return `${protocol}//${host}${port && port !== defaultPort ? `:${port}` : ''}`
+}
+
+/**
+ * Normalize an operator-owned allowlist entry to an exact scheme/host/port
+ * origin. Paths, credentials, wildcards, queries, and fragments are not policy
+ * syntax: repository paths remain tenant-selected within an allowed origin.
+ */
+export function normalizeWorkspaceGitOrigin(input: string): string {
+  if (CONTROL_RE.test(input)) invalidCloneUrl('git origin must not contain control characters')
+  const raw = input.trim()
+  if (!raw || /\s/.test(raw) || raw.includes('\\') || raw.includes('*')) {
+    invalidCloneUrl('git origin must be an exact https or ssh origin')
+  }
+
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    invalidCloneUrl('git origin must be a valid absolute URL')
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'ssh:') {
+    invalidCloneUrl('git origin must use https or ssh')
+  }
+  const authorityStart = raw.indexOf('://') + 3
+  const pathStart = raw.indexOf('/', authorityStart)
+  const authority = raw.slice(authorityStart, pathStart < 0 ? raw.length : pathStart)
+  const path = pathStart < 0 ? '' : raw.slice(pathStart)
+  if (
+    authority.includes('@') ||
+    raw.includes('?') ||
+    raw.includes('#') ||
+    url.username ||
+    url.password ||
+    (path !== '' && path !== '/')
+  ) {
+    invalidCloneUrl('git origin must not contain credentials, a path, query, or fragment')
+  }
+  return canonicalGitOrigin(url.protocol, url.hostname, url.port)
+}
+
+/** Return the canonical exact origin selected by a validated clone URL. */
+export function workspaceGitOriginOf(input: string): string {
+  const normalized = normalizeGitCloneUrl(input)
+  const scp = SCP_PARTS_RE.exec(normalized)
+  if (scp) return canonicalGitOrigin('ssh:', scp[2]!, '')
+
+  const url = new URL(normalized)
+  return canonicalGitOrigin(url.protocol as 'https:' | 'ssh:', url.hostname, url.port)
+}
+
+/**
+ * Normalize a clone URL and require its exact scheme/host/port origin to be in
+ * the deployment policy. The caller owns the list; tenant input can never add
+ * to it.
+ */
+export function normalizeAllowedWorkspaceGitUrl(input: string, allowedOrigins: readonly string[]): string {
+  const normalized = normalizeGitCloneUrl(input)
+  const allowed = new Set(allowedOrigins.map(normalizeWorkspaceGitOrigin))
+  if (!allowed.has(workspaceGitOriginOf(normalized))) {
+    invalidCloneUrl('git clone origin is not allowed by this daemon')
+  }
   return normalized
 }
 

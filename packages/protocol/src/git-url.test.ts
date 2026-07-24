@@ -1,11 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import {
+  DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS,
   GitCloneUrlError,
+  normalizeAllowedWorkspaceGitUrl,
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   normalizeGitUrl,
+  normalizeWorkspaceGitOrigin,
   redactGitUrlSecrets,
-  gitRepoLabel
+  gitRepoLabel,
+  workspaceGitOriginOf
 } from './git-url.js'
 
 describe('normalizeGitUrl', () => {
@@ -97,6 +101,51 @@ describe('normalizeGitCloneUrl', () => {
       'ssh://git@github.com/acme/infra#'
     ]) {
       expect(() => normalizeGitCloneUrl(url), url).toThrow(GitCloneUrlError)
+    }
+  })
+})
+
+describe('workspace git origin policy', () => {
+  it('canonicalizes exact HTTPS, SSH, and scp-style origins', () => {
+    expect(normalizeWorkspaceGitOrigin('HTTPS://GitHub.COM.:443/')).toBe('https://github.com')
+    expect(normalizeWorkspaceGitOrigin('ssh://GIT.EXAMPLE.:22')).toBe('ssh://git.example')
+    expect(workspaceGitOriginOf('git@github.com:acme/infra.git')).toBe('ssh://github.com')
+    expect(workspaceGitOriginOf('ssh://git@git.example:2222/acme/infra.git')).toBe('ssh://git.example:2222')
+  })
+
+  it('requires an exact allowed scheme, host, and port', () => {
+    expect(normalizeAllowedWorkspaceGitUrl('acme/infra', DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS)).toBe(
+      'https://github.com/acme/infra'
+    )
+    expect(
+      normalizeAllowedWorkspaceGitUrl('git@github.com:acme/infra.git', DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS)
+    ).toBe('git@github.com:acme/infra.git')
+
+    for (const url of [
+      'https://gitlab.com/group/repo',
+      'https://github.com.evil.example/acme/infra',
+      'https://github.com:8443/acme/infra',
+      'ssh://git@github.com:2222/acme/infra'
+    ]) {
+      expect(() => normalizeAllowedWorkspaceGitUrl(url, DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS), url).toThrow(
+        'git clone origin is not allowed'
+      )
+    }
+  })
+
+  it('rejects ambiguous allowlist entries', () => {
+    for (const origin of [
+      'https://*.example.com',
+      'https://user@git.example',
+      'https://@git.example',
+      'https://git.example/group',
+      'https://git.example/./',
+      'https://git.example?target=other',
+      'https://git.example?',
+      'https://git.example#',
+      'git.example'
+    ]) {
+      expect(() => normalizeWorkspaceGitOrigin(origin), origin).toThrow(GitCloneUrlError)
     }
   })
 })

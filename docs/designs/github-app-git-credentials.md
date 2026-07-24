@@ -32,7 +32,9 @@
 AgentConnect supports anonymous public-URL workspaces and GitHub App
 workspaces. GitHub App mode lets the console select an authorized repository
 and lets both daemon-managed and agent-initiated Git operations authenticate
-without a host PAT, SSH key, or credential-manager entry.
+without a host PAT, SSH key, or credential-manager entry. Both App-backed and
+manual workspace URLs remain subject to the daemon operator's exact
+`security.workspaceGitAllowedOrigins` policy.
 
 The sign-in and repository-access flows may share one GitHub App while using
 independent credential tracks. Sign-in uses the App's user authorization

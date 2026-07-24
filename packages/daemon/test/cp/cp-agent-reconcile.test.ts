@@ -284,7 +284,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
         workspace: {
           mode: 'git-repo',
           path: workspace,
-          gitRepo: 'https://example.com/acme/repo.git',
+          gitRepo: 'https://github.com/acme/repo.git',
           gitBranch: 'main'
         },
         integrations: [],
@@ -316,7 +316,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
           runtime: 'claude',
           workspace: {
             mode: 'github',
-            gitRepo: 'https://example.com/acme/repo.git',
+            gitRepo: 'https://github.com/acme/repo.git',
             branch: 'main'
           }
         },

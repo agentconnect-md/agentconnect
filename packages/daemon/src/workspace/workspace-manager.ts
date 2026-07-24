@@ -22,6 +22,7 @@ import type { Agent } from '../agents/agent-schema.js'
 import { makeLogger } from '../log.js'
 import { installSkills } from '../skills/install-skills.js'
 import {
+  assertSafeWorkspaceGitConfig,
   cloneGitEnv,
   gitCredentialEnv,
   gitEnvBase,
@@ -29,8 +30,11 @@ import {
   preWarmGitCred,
   pullWorkspaceRef,
   workspaceGitEnvBase,
+  workspaceGitLocalEnv,
+  workspaceGitPullTarget,
   writeRepoHelperConfig
 } from './git-injection.js'
+import { authorizeWorkspaceGitUrl } from './git-origin-policy.js'
 
 const skillsLog = makeLogger('info')
 
@@ -69,9 +73,9 @@ function gitRepoOf(agent: Agent): string {
   if (agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo) {
     throw new Error(`workspace clone: agent "${agent.id}" has git-repo mode but no gitRepo configured`)
   }
-  return usesGithubApp(agent)
-    ? normalizeGithubRepoUrl(agent.workspace.gitRepo)
-    : normalizeGitCloneUrl(agent.workspace.gitRepo)
+  return authorizeWorkspaceGitUrl(
+    usesGithubApp(agent) ? normalizeGithubRepoUrl(agent.workspace.gitRepo) : agent.workspace.gitRepo
+  )
 }
 
 class UntrustedGithubWorkspaceOriginError extends Error {
@@ -99,7 +103,7 @@ async function convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path)
   if (clone) await clone
   if (!existsSync(join(cwd, '.git'))) return
   const expected = gitRepoOf(agent)
-  const git = gitFor(cwd).env(workspaceGitEnvBase())
+  const git = gitFor(cwd).env(workspaceGitLocalEnv())
   let current: string
   try {
     current = (await git.raw(['remote', 'get-url', 'origin'])).trim()
@@ -113,7 +117,7 @@ async function convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path)
   const normalizedCurrent = normalizeGitUrl(current)
   let unsafeCurrent = redactGitUrlSecrets(current) !== normalizedCurrent
   try {
-    normalizeGitCloneUrl(current)
+    authorizeWorkspaceGitUrl(current)
     if (!/^(?:https|ssh):\/\//i.test(current) && !/^[\w.-]+@[\w.-]+:/.test(current)) unsafeCurrent = true
   } catch {
     unsafeCurrent = true
@@ -266,12 +270,15 @@ export async function prepareWorkspace(agent: Agent): Promise<string> {
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
     try {
+      const repository = gitRepoOf(agent)
+      await assertSafeWorkspaceGitConfig(cwd)
+      const pullTarget = workspaceGitPullTarget(repository)
       const git = gitFor(cwd, abort.signal).env({
-        ...workspaceGitEnvBase(),
+        ...pullTarget.env,
         ...(usesGithubApp(agent) ? gitCredentialEnv(agent.id) : {}),
         GIT_TERMINAL_PROMPT: '0'
       })
-      await pullWorkspaceRef(git, gitRepoOf(agent), agent.workspace.gitBranch)
+      await pullWorkspaceRef(git, pullTarget.remote, agent.workspace.gitBranch)
     } catch {
       // offline / timed out / non-fast-forward: proceed with the on-disk checkout
     } finally {
@@ -494,8 +501,8 @@ async function cloneRepoAt(agent: Agent, cwd: string): Promise<void> {
     // yet). SPREAD over process.env — simple-git's .env() REPLACES the child env.
     if (githubApp) await preWarmGitCred(agent.id, 'clone')
     const git = githubApp
-      ? gitFor().env({ ...workspaceGitEnvBase(), ...cloneGitEnv(agent.id) })
-      : gitFor().env({ ...workspaceGitEnvBase(), GIT_TERMINAL_PROMPT: '0' })
+      ? gitFor().env({ ...workspaceGitEnvBase(gitRepo), ...cloneGitEnv(agent.id, gitRepo) })
+      : gitFor().env({ ...workspaceGitEnvBase(gitRepo), GIT_TERMINAL_PROMPT: '0' })
     try {
       await git.clone(gitRepo, cwd, ['--branch', branch, '--single-branch'])
     } catch (e) {
