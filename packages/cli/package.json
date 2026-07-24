@@ -3,6 +3,11 @@
   "version": "1.0.0-dev",
   "description": "AgentConnect CLI — daemon version management, service install, restart/upgrade",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentconnect-md/agentconnect.git",
+    "directory": "packages/cli"
+  },
   "type": "module",
   "exports": {
     ".": {

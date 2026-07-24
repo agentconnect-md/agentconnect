@@ -3,6 +3,11 @@
   "version": "1.0.0-dev",
   "description": "AgentConnect daemon — edge message + agent execution unit",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentconnect-md/agentconnect.git",
+    "directory": "packages/daemon"
+  },
   "type": "module",
   "exports": {
     ".": {

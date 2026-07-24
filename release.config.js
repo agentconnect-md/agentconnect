@@ -30,9 +30,9 @@ export default {
     ],
     [
       // Publish ONLY the daemon to npm, as the self-contained build bundle.
-      // The CP/web ship as Docker images (build.yaml), not npm packages. tsdown
-      // inlines every dependency into dist/, so the published manifest is
-      // stripped to zero runtime deps before publish.
+      // The CP/web ship as Docker images through build.yaml, not npm packages.
+      // tsdown inlines every dependency into dist/, so the published manifest
+      // is stripped to zero runtime deps before publish.
       // pnpm (not @semantic-release/npm → npm) because this is a pnpm workspace:
       // npm cannot resolve the `workspace:` protocol on the daemon's deps.
       '@semantic-release/exec',
@@ -59,14 +59,13 @@ export default {
         // the manifest changed by prepareCmd before any later release step runs.
         publishCmd:
           'sh scripts/publish-daemon-if-changed.sh "${lastRelease.gitTag}" "${nextRelease.version.includes("-") ? "rc" : "latest"}"',
-        // Write the version + notes to the GitHub Actions job summary — restores
-        // the "Release Summary" we lost when moving off cycjimmy/semantic-release-
-        // action (whose step outputs went away) to `pnpm exec semantic-release`.
-        // Notes come straight from semantic-release's release context; the quoted
-        // heredoc keeps markdown/backticks/$ literal under /bin/sh. Runs only when
-        // a release is actually published.
+        // Expose the published tag to release.yaml so image publication can run
+        // next in the same workflow. Also write the version + notes to the job
+        // summary. Both happen only when a release is actually published. Notes
+        // come straight from semantic-release's release context; the quoted
+        // heredoc keeps markdown/backticks/$ literal under /bin/sh.
         successCmd:
-          '[ -n "$GITHUB_STEP_SUMMARY" ] && cat >> "$GITHUB_STEP_SUMMARY" <<\'__ACP_NOTES__\'\n### 🚀 Released ${nextRelease.gitTag}\n\n${nextRelease.notes}\n__ACP_NOTES__\n'
+          '[ -n "$GITHUB_OUTPUT" ] && echo \'version=${nextRelease.gitTag}\' >> "$GITHUB_OUTPUT"; [ -n "$GITHUB_STEP_SUMMARY" ] && cat >> "$GITHUB_STEP_SUMMARY" <<\'__ACP_NOTES__\'\n### 🚀 Released ${nextRelease.gitTag}\n\n${nextRelease.notes}\n__ACP_NOTES__\n'
       }
     ],
     [

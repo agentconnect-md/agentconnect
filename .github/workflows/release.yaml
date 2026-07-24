@@ -4,12 +4,11 @@ name: Release
 # release → stable `x.y.z` (npm dist-tag `latest`)
 # See release.config.js for the branch/channel mapping.
 #
-# Every published version also ships Docker images: semantic-release pushes the
-# vX.Y.Z(-rc.N) tag with a GitHub App installation token (minted per-run below;
-# the built-in GITHUB_TOKEN's pushes never trigger workflows, but an App token's
-# do), so the tag-push event fires build.yaml, which builds/pushes the images
-# tagged with the version and notifies the configured workflow repository,
-# which owns all downstream actions.
+# Every published version also ships Docker images: semantic-release exposes the
+# vX.Y.Z(-rc.N) tag as a job output, then this workflow calls build.yaml to
+# build/push the images and notify the configured workflow repository. Keeping
+# that call downstream of `release` also keeps the release summary first on the
+# run summary page.
 # App: needs RELEASE_APP_CLIENT_ID (var) + RELEASE_APP_PRIVATE_KEY
 # (secret), installed on this repo with Contents + Issues write.
 on:
@@ -32,6 +31,8 @@ jobs:
 
   release:
     needs: test
+    outputs:
+      version: ${{ steps.semantic-release.outputs.version }}
     # Serialize only publication, not the quality gate above. Never cancel:
     # semantic-release pushes the tag before the git note
     # (refs/notes/semantic-release), so cancellation between the two can strand
@@ -46,10 +47,9 @@ jobs:
       pull-requests: write
       id-token: write # npm OIDC trusted publishing — no NPM_TOKEN needed
     steps:
-      # Mint a short-lived GitHub App installation token. semantic-release pushes
-      # the release tag with it (see the Semantic Release step) so the tag-push
-      # fires build.yaml — a built-in GITHUB_TOKEN push wouldn't. Scoped to this
-      # repo, expires in ~1h, nothing long-lived to rotate.
+      # Mint a short-lived GitHub App installation token for semantic-release to
+      # publish the tag and stable GitHub Release. Scoped to this repo, expires
+      # in ~1h, nothing long-lived to rotate.
       - name: Mint GitHub App token
         id: app-token
         uses: actions/create-github-app-token@v3
@@ -80,14 +80,12 @@ jobs:
       # build step: the daemon's prepack build compiles its workspace deps
       # (@agentconnect.md/protocol) first, so dist/ exists when the bundle runs.
       - name: Semantic Release
+        id: semantic-release
         run: pnpm exec semantic-release
         env:
-          # The App token (NOT the built-in one): semantic-release pushes every
-          # tag and creates GitHub Releases for stable versions only. Events from
-          # the built-in GITHUB_TOKEN never trigger workflows, but App-token
-          # pushes do — the v* tag push must fire build.yaml (which builds the
-          # images and notifies downstream workflow automation). Tags and stable
-          # Releases are authored by the configured release App.
+          # Tags and stable GitHub Releases are authored by the configured
+          # release App. release.config.js exposes the published tag through
+          # this step's `version` output; no-release runs leave it empty.
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
       # Stable releases only (the `release` branch): refresh the public API
@@ -105,3 +103,17 @@ jobs:
             --slug openapi.json \
             --branch stable \
             --confirm-overwrite
+
+  # build.yaml suppresses Bake's downstream auto-summary, leaving this release
+  # job as the last summary-producing job so its release notes stay at the top.
+  build-images:
+    name: Build & Push Images
+    needs: release
+    if: needs.release.outputs.version != ''
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/build.yaml
+    with:
+      version: ${{ needs.release.outputs.version }}
+    secrets: inherit

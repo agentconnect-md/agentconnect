@@ -4,11 +4,10 @@ name: Build & Push Images
 # and pushes them to GHCR tagged with the semantic-release version (the git tag:
 # `v1.2.3` stable, `v1.2.3-rc.4` prerelease). Stable releases also move `:latest`.
 #
-# Subscribes to the v* tags semantic-release pushes (rc from `main`, stable
-# from `release`) — release.yaml pushes them with a GitHub App token because the
-# built-in GITHUB_TOKEN's pushes never trigger workflows. Plain pushes to `main`
-# that don't produce a release don't build images. Manual rebuild:
-# workflow_dispatch, picking a vX.Y.Z(-rc.N) tag as the ref.
+# Called by release.yaml after semantic-release publishes a version, so image
+# publication appears in the same Release run. Plain pushes that don't produce
+# a release don't call this workflow. Manual rebuild: workflow_dispatch, picking
+# a vX.Y.Z(-rc.N) tag as the ref.
 #
 # Per-component effective versions: most releases don't touch every component,
 # and a component whose build inputs are unchanged since the previous release
@@ -30,20 +29,27 @@ name: Build & Push Images
 # repository's concern and is documented there.
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_call:
+    inputs:
+      version:
+        description: 'Release tag produced by semantic-release'
+        required: true
+        type: string
   workflow_dispatch:
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ inputs.version || github.ref }}
   cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
+  # Bake runs after the release summary is written. Suppress its automatic job
+  # summary so the release notes remain the first summary on the Release run.
+  DOCKER_BUILD_SUMMARY: false
 
 jobs:
   build-push:
+    name: Build & push
     runs-on: self-hosted
     permissions:
       contents: read
@@ -56,24 +62,29 @@ jobs:
       mem0: ${{ steps.components.outputs.mem0 }}
       mem0Backend: ${{ steps.components.outputs.mem0Backend }}
     steps:
-      # Image tags come from the release tag this run fired on. The guard only
-      # bites manual workflow_dispatch runs: refuse anything that isn't a v*
-      # tag ref — a branch ref would mint a mutable image tag like `main` and
-      # break version→commit provenance.
+      # Reusable calls receive the tag semantic-release just published. Manual
+      # runs still derive it from the selected ref and reject branch refs, which
+      # would otherwise mint a mutable image tag such as `main`.
       - name: Resolve release version
         id: meta
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
-            echo "::error::Must run at a release tag ref, got ${GITHUB_REF}. Re-run picking a vX.Y.Z(-rc.N) tag."
-            exit 1
+          version="$RELEASE_VERSION"
+          if [ -z "$version" ]; then
+            if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+              echo "::error::Must run at a release tag ref, got ${GITHUB_REF}. Re-run picking a vX.Y.Z(-rc.N) tag."
+              exit 1
+            fi
+            version="$GITHUB_REF_NAME"
           fi
-          case "$GITHUB_REF_NAME" in
+          case "$version" in
             v[0-9]*) ;;
-            *) echo "::error::'${GITHUB_REF_NAME}' is not a vX.Y.Z(-rc.N) release tag."; exit 1 ;;
+            *) echo "::error::'${version}' is not a vX.Y.Z(-rc.N) release tag."; exit 1 ;;
           esac
-          echo "version=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           # Only stable releases (no prerelease suffix) move `:latest`.
-          case "$GITHUB_REF_NAME" in
+          case "$version" in
             *-*) echo "latest=false" >> "$GITHUB_OUTPUT" ;;
             *)   echo "latest=true"  >> "$GITHUB_OUTPUT" ;;
           esac
@@ -85,6 +96,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ inputs.version || github.ref }}
 
       # Per-component effective versions on this tag's channel (see the
       # header): a component whose inputs didn't change since the channel's
@@ -197,6 +209,7 @@ jobs:
           alias_unchanged mem0-server "$MEM0_BACKEND_EFFECTIVE"
 
   notify-workflow:
+    name: Notify workflow
     needs: build-push
     runs-on: self-hosted
     steps:
