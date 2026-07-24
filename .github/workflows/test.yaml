@@ -10,6 +10,19 @@ on:
   # Release calls this workflow as its quality gate for main/release pushes.
   # Keeping the jobs here avoids duplicating CI logic between PRs and releases.
   workflow_call:
+    inputs:
+      defer_summaries:
+        description: 'Return job summaries to the caller instead of publishing them here'
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      build_test_summary:
+        description: 'Build and unit test summary markdown'
+        value: ${{ jobs.test.outputs.summary }}
+      integration_test_summary:
+        description: 'Integration test summary markdown'
+        value: ${{ jobs.integration.outputs.summary }}
 
 # Cancel superseded runs for the same PR (a newer push makes the old one moot).
 # Reusable release-gate calls use a run-scoped group so their tests can proceed
@@ -30,6 +43,8 @@ jobs:
   test:
     name: Build & Test
     runs-on: self-hosted
+    outputs:
+      summary: ${{ steps.export-summary.outputs.markdown }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -56,19 +71,22 @@ jobs:
         run: pnpm --workspace-concurrency=5 run "/^(build|lint|format:check|typecheck:ci)$/"
       - name: Unit tests
         env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/build-test-summary.md
           pnpm_config_enable_pre_post_scripts: false
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
-        run: pnpm test:unit
+        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm test:unit
       - name: Evaluation contracts
         env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/build-test-summary.md
           PROMPTFOO_DISABLE_TELEMETRY: '1'
-        run: pnpm eval:contracts
-      - name: Publish unit test summary
+        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm eval:contracts
+      - name: Merge unit test summaries
         if: ${{ !cancelled() }}
         env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/build-test-summary.md
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
         run: |
-          node scripts/merge-vitest-summaries.mjs \
+          GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" node scripts/merge-vitest-summaries.mjs \
             'Unit test report' \
             'protocol=@agentconnect.md/protocol' \
             'connection=@agentconnect.md/connection' \
@@ -76,6 +94,22 @@ jobs:
             'relay=@agentconnect.md/relay' \
             'daemon=@agentconnect.md/daemon' \
             'cli=@agentconnect.md/cli'
+      - name: Publish unit test summary
+        if: ${{ !cancelled() && !inputs.defer_summaries }}
+        env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/build-test-summary.md
+        run: cat "$CAPTURED_JOB_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+      - name: Export unit test summary
+        id: export-summary
+        if: ${{ !cancelled() && inputs.defer_summaries }}
+        env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/build-test-summary.md
+        run: |
+          {
+            echo 'markdown<<__AGENTCONNECT_BUILD_TEST_SUMMARY__'
+            cat "$CAPTURED_JOB_SUMMARY"
+            echo '__AGENTCONNECT_BUILD_TEST_SUMMARY__'
+          } >> "$GITHUB_OUTPUT"
 
   # control-plane integration tests against a real Postgres booted by
   # Testcontainers. Each Vitest worker gets an isolated database cloned from one
@@ -85,6 +119,8 @@ jobs:
   integration:
     name: Integration tests
     runs-on: self-hosted
+    outputs:
+      summary: ${{ steps.export-summary.outputs.markdown }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -101,13 +137,31 @@ jobs:
         run: pnpm -r prisma:generate
       - name: Integration tests
         env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/integration-test-summary.md
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
-        run: pnpm --filter @agentconnect.md/control-plane test:int
-      - name: Publish integration test summary
+        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm --filter @agentconnect.md/control-plane test:int
+      - name: Merge integration test summaries
         if: ${{ !cancelled() }}
         env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/integration-test-summary.md
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
         run: |
-          node scripts/merge-vitest-summaries.mjs \
+          GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" node scripts/merge-vitest-summaries.mjs \
             'Integration test report' \
             'control-plane=@agentconnect.md/control-plane'
+      - name: Publish integration test summary
+        if: ${{ !cancelled() && !inputs.defer_summaries }}
+        env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/integration-test-summary.md
+        run: cat "$CAPTURED_JOB_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+      - name: Export integration test summary
+        id: export-summary
+        if: ${{ !cancelled() && inputs.defer_summaries }}
+        env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/integration-test-summary.md
+        run: |
+          {
+            echo 'markdown<<__AGENTCONNECT_INTEGRATION_TEST_SUMMARY__'
+            cat "$CAPTURED_JOB_SUMMARY"
+            echo '__AGENTCONNECT_INTEGRATION_TEST_SUMMARY__'
+          } >> "$GITHUB_OUTPUT"
