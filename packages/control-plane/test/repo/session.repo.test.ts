@@ -289,6 +289,12 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
       daemonId: OTHER_DAEMON
     })
 
+    await prisma.daemon.delete({ where: { id: DAEMON } })
+    expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toEqual({
+      agentId: AGENT,
+      daemonId: OTHER_DAEMON
+    })
+
     await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: null, status: 'inactive' } })
     expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toBeNull()
   })

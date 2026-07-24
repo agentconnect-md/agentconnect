@@ -464,7 +464,8 @@ export class PgSessionRepo implements SessionRepo {
     thread: string
   ): Promise<{ agentId: string; daemonId: string } | null> {
     // Most-recently-active session on this bot's (channel, thread) whose agent is currently
-    // placed. The session's daemonId is provenance; routing follows current agent placement.
+    // placed. The session's daemonId is provenance only and may be null after its reporting
+    // daemon is deleted; routing follows current agent placement.
     // NOTE: do NOT filter on `endedAt` — a session emits `phase:'end'` (→ `endedAt`) at the end
     // of EVERY turn, so an idle-between-turns session (the normal state of a thread's owner
     // between messages) has `endedAt` set yet is still the valid target; the daemon resumes it on
@@ -474,7 +475,6 @@ export class PgSessionRepo implements SessionRepo {
       where: {
         channel,
         thread,
-        daemonId: { not: null },
         agent: {
           daemonId: { not: null },
           integrations: { some: { botId, status: 'active' } }
