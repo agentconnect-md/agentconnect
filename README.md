@@ -72,7 +72,7 @@ host beside that host's workspaces and credentials. Use the Web console to
 provision a daemon after the stack is ready.
 
 To override the image version, ports, secrets, public URLs, or optional Logto
-configuration, load the provided environment file explicitly:
+and GitHub App configuration, load the provided environment file explicitly:
 
 ```bash
 cp compose.env.example compose.env
