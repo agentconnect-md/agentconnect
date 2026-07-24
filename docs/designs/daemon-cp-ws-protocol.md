@@ -438,7 +438,10 @@ const EventSession = z.object({
 The exact schema in `packages/protocol/src/frames/telemetry.ts` also carries
 the dashboard metadata and effective execution configuration. It remains
 metadata-only. The reporting daemon is not echoed; CP stamps `daemonId` from
-the authenticated WebSocket connection.
+the authenticated WebSocket connection. CP accepts `event/session` and
+`usage/report` only when the reported agent is currently placed on that daemon,
+with placement moves excluded while the write runs. A `sessionId` is bound to
+the first accepted `agentId` and can never be reassigned by a later report.
 
 Phase state machine: `start → (plan ↔ problem)* → end`. The daemon collapses
 ACP `session/update` streams into these milestones; CP persists the metadata,

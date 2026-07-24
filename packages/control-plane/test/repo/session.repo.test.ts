@@ -14,6 +14,7 @@ import { seedAgent, seedDaemon, seedLaunch } from '../fixtures/seed.js'
 import { AgentId, DaemonId, LaunchId, SessionId } from '../../src/domain/ids.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const OTHER_AGENT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const DAEMON = 'd1111111-1111-4111-8111-111111111111'
 const LAUNCH = '11111111-1111-4111-8111-111111111111'
 const SESSION = '55555555-5555-4555-8555-555555555555'
@@ -128,6 +129,55 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     // still exactly one row — it's an upsert, not an append
     const all = await repo.list({ agentId: AgentId(AGENT) })
     expect(all).toHaveLength(1)
+  })
+
+  it('never rebinds an existing session id to another agent', async () => {
+    await fixtures()
+    await seedAgent(prisma, OTHER_AGENT, { daemonId: DAEMON })
+    const repo = new PgSessionRepo(prisma)
+
+    expect(await repo.recordMilestone(ev('start', { title: 'Original', daemonId: DaemonId(DAEMON) }))).toBe(true)
+    expect(
+      await repo.recordMilestone(
+        ev('end', {
+          agentId: AgentId(OTHER_AGENT),
+          launchId: undefined,
+          title: 'Forged',
+          daemonId: DaemonId(DAEMON)
+        })
+      )
+    ).toBe(false)
+
+    const got = await repo.get(SessionId(SESSION))
+    expect(got?.agentId).toBe(AGENT)
+    expect(got?.title).toBe('Original')
+    expect(got?.phase).toBe('start')
+  })
+
+  it('atomically assigns a concurrently reported session id to only one agent', async () => {
+    await fixtures()
+    await seedAgent(prisma, OTHER_AGENT, { daemonId: DAEMON })
+    const repo = new PgSessionRepo(prisma)
+
+    const accepted = await Promise.all([
+      repo.recordMilestone(ev('start', { title: 'Agent A', daemonId: DaemonId(DAEMON) })),
+      repo.recordMilestone(
+        ev('end', {
+          agentId: AgentId(OTHER_AGENT),
+          launchId: undefined,
+          title: 'Agent B',
+          daemonId: DaemonId(DAEMON)
+        })
+      )
+    ])
+
+    expect(accepted.filter(Boolean)).toHaveLength(1)
+    const got = await repo.get(SessionId(SESSION))
+    if (accepted[0]) {
+      expect(got).toMatchObject({ agentId: AGENT, title: 'Agent A', phase: 'start' })
+    } else {
+      expect(got).toMatchObject({ agentId: OTHER_AGENT, title: 'Agent B', phase: 'end' })
+    }
   })
 
   it('does not regress a terminal phase on later metadata refreshes', async () => {

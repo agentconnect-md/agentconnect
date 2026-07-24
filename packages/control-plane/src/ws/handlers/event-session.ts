@@ -8,45 +8,54 @@
  * deep-link (`…/sessions/:id`) resolvable from CP-stored metadata, even when the
  * daemon is offline. Metadata only — list/detail fields and sessionKey echo —
  * never the message stream (that stays daemon-local, §1/§12).
+ *
+ * Trust boundary: the reported agent must still be placed on the authenticated
+ * daemon, and an existing sessionId remains bound to its first agent.
  */
 import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, LaunchId, SessionId } from '../../domain/ids.js'
 import type { Handler } from './index.js'
+import { runForReportingAgent } from './reporting-agent.js'
 
 export const handleEventSession: Handler = async (frame, conn, deps) => {
   if (!isFrame('event/session')(frame)) return
   const p = frame.payload
-  await deps.session.recordMilestone({
-    sessionId: SessionId(p.sessionId),
-    ...(p.parentSessionId !== undefined ? { parentSessionId: SessionId(p.parentSessionId) } : {}),
-    agentId: AgentId(p.agentId),
-    ...(p.launchId !== undefined ? { launchId: LaunchId(p.launchId) } : {}),
-    phase: p.phase,
-    ...(p.platform !== undefined ? { platform: p.platform } : {}),
-    ...(p.channel !== undefined ? { channel: p.channel } : {}),
-    ...(p.thread !== undefined ? { thread: p.thread } : {}),
-    ...(p.link !== undefined ? { link: p.link } : {}),
-    ...(p.summary !== undefined ? { summary: p.summary } : {}),
-    ...(p.title !== undefined ? { title: p.title } : {}),
-    ...(p.status !== undefined ? { status: p.status } : {}),
-    ...(p.lastActivityAt !== undefined ? { lastActivityAt: new Date(p.lastActivityAt) } : {}),
-    ...(p.triggeredBy !== undefined ? { triggeredBy: p.triggeredBy } : {}),
-    ...(p.channelName !== undefined ? { channelName: p.channelName } : {}),
-    ...(p.triggeredByName !== undefined ? { triggeredByName: p.triggeredByName } : {}),
-    ...(p.threadUrl !== undefined ? { threadUrl: p.threadUrl } : {}),
-    ...(p.runtime !== undefined ? { runtime: p.runtime } : {}),
-    ...(p.model !== undefined ? { model: p.model } : {}),
-    ...(p.effort !== undefined ? { effort: p.effort } : {}),
-    ...(p.fastMode !== undefined ? { fastMode: p.fastMode } : {}),
-    ...(p.permissionMode !== undefined ? { permissionMode: p.permissionMode } : {}),
-    ...(p.outputMode !== undefined ? { outputMode: p.outputMode } : {}),
-    // The reporting daemon comes from the AUTHENTICATED connection, not the
-    // frame payload — a daemon cannot attribute a session to another daemon.
-    daemonId: DaemonId(conn.daemonId),
-    at: new Date(p.ts)
+  const agentId = AgentId(p.agentId)
+  const daemonId = DaemonId(conn.daemonId)
+  await runForReportingAgent(agentId, daemonId, deps, async () => {
+    const recorded = await deps.session.recordMilestone({
+      sessionId: SessionId(p.sessionId),
+      ...(p.parentSessionId !== undefined ? { parentSessionId: SessionId(p.parentSessionId) } : {}),
+      agentId,
+      ...(p.launchId !== undefined ? { launchId: LaunchId(p.launchId) } : {}),
+      phase: p.phase,
+      ...(p.platform !== undefined ? { platform: p.platform } : {}),
+      ...(p.channel !== undefined ? { channel: p.channel } : {}),
+      ...(p.thread !== undefined ? { thread: p.thread } : {}),
+      ...(p.link !== undefined ? { link: p.link } : {}),
+      ...(p.summary !== undefined ? { summary: p.summary } : {}),
+      ...(p.title !== undefined ? { title: p.title } : {}),
+      ...(p.status !== undefined ? { status: p.status } : {}),
+      ...(p.lastActivityAt !== undefined ? { lastActivityAt: new Date(p.lastActivityAt) } : {}),
+      ...(p.triggeredBy !== undefined ? { triggeredBy: p.triggeredBy } : {}),
+      ...(p.channelName !== undefined ? { channelName: p.channelName } : {}),
+      ...(p.triggeredByName !== undefined ? { triggeredByName: p.triggeredByName } : {}),
+      ...(p.threadUrl !== undefined ? { threadUrl: p.threadUrl } : {}),
+      ...(p.runtime !== undefined ? { runtime: p.runtime } : {}),
+      ...(p.model !== undefined ? { model: p.model } : {}),
+      ...(p.effort !== undefined ? { effort: p.effort } : {}),
+      ...(p.fastMode !== undefined ? { fastMode: p.fastMode } : {}),
+      ...(p.permissionMode !== undefined ? { permissionMode: p.permissionMode } : {}),
+      ...(p.outputMode !== undefined ? { outputMode: p.outputMode } : {}),
+      // The reporting daemon comes from the AUTHENTICATED connection, not the
+      // frame payload.
+      daemonId,
+      at: new Date(p.ts)
+    })
+    if (!recorded) return
+    // Publish only after the metadata commit. Browser subscribers use this as an
+    // invalidation signal and immediately re-read `/sessions`; publishing first
+    // would race that GET against the upsert and leave the new row invisible.
+    deps.events.publish(daemonId, p)
   })
-  // Publish only after the metadata commit. Browser subscribers use this as an
-  // invalidation signal and immediately re-read `/sessions`; publishing first
-  // would race that GET against the upsert and leave the new row invisible.
-  deps.events.publish(DaemonId(conn.daemonId), p)
 }

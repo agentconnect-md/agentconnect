@@ -872,8 +872,9 @@ export interface SessionFacetIndex {
 }
 
 export interface SessionRepo {
-  /** Upsert the converged milestone for a session (advance `phase`; NO message body). */
-  recordMilestone(ev: EventSessionInput): Promise<void>
+  /** Upsert the converged milestone for a session (advance `phase`; NO message body).
+   *  False means the global session id is already bound to a different agent. */
+  recordMilestone(ev: EventSessionInput): Promise<boolean>
   /** Filter, keyset-page, and order in Postgres; usage is hydrated only for the
    *  returned page. `total` is computed only when explicitly requested. */
   listPage(q: SessionPageQuery): Promise<SessionPageRecord>
