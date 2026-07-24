@@ -14,14 +14,16 @@
  */
 import { existsSync, promises as fs } from 'node:fs'
 import { join } from 'node:path'
-import { simpleGit } from 'simple-git'
-import type {
-  WorkspaceGitStatus,
-  WorkspaceGitPullResult,
-  WorkspaceGitFile,
-  WorkspaceGitCommit
+import type { SimpleGit } from 'simple-git'
+import {
+  normalizeGitCloneUrl,
+  normalizeGithubRepoUrl,
+  type WorkspaceGitStatus,
+  type WorkspaceGitPullResult,
+  type WorkspaceGitFile,
+  type WorkspaceGitCommit
 } from '@agentconnect.md/protocol'
-import { gitEnvBase, gitFor } from '../workspace/git-injection.js'
+import { gitFor, pullWorkspaceRef, workspaceGitEnvBase } from '../workspace/git-injection.js'
 import { WorkspaceViolationError } from './workspace-reader.js'
 
 /** On-demand pull is interactive, so allow more headroom than the 4.5s
@@ -36,9 +38,16 @@ export interface WorkspaceGit {
   pull(agentId: string): Promise<WorkspaceGitPullResult>
 }
 
+export interface WorkspaceGitTarget {
+  repo: string
+  branch: string
+  githubApp: boolean
+}
+
 export function createWorkspaceGit(
   workspaceRootByAgent: (agentId: string) => string | undefined,
-  credentialEnvByAgent: (agentId: string) => Record<string, string> = () => ({})
+  credentialEnvByAgent: (agentId: string) => Record<string, string> = () => ({}),
+  workspaceTargetByAgent: (agentId: string) => WorkspaceGitTarget | undefined = () => undefined
 ): WorkspaceGit {
   function rootFor(agentId: string): string {
     const root = workspaceRootByAgent(agentId)
@@ -57,12 +66,22 @@ export function createWorkspaceGit(
     return msg.split(root).join('<workspace>').trim()
   }
 
+  function safeExplicitOrigin(input: string): string | undefined {
+    const raw = input.trim()
+    if (!/^(?:https|ssh):\/\//i.test(raw) && !/^[\w.-]+@[\w.-]+:/.test(raw)) return undefined
+    try {
+      return normalizeGitCloneUrl(raw)
+    } catch {
+      return undefined
+    }
+  }
+
   return {
     async status(agentId) {
       const root = rootFor(agentId)
       if (!isRepo(root)) return { agentId, isRepo: false, clean: true }
 
-      const git = simpleGit(root)
+      const git = gitFor(root).env(workspaceGitEnvBase())
       const s = await git.status()
       const files: WorkspaceGitFile[] = s.files
         .slice(0, MAX_STATUS_FILES)
@@ -92,10 +111,37 @@ export function createWorkspaceGit(
       // forced reset. Bounded by a timeout so an offline remote can't hang the REP.
       let timer: ReturnType<typeof setTimeout> | undefined
       try {
+        const git = gitFor(root).env(workspaceGitEnvBase())
+        const target = workspaceTargetByAgent(agentId)
+        let currentOrigin: string | undefined
+        let expectedOrigin: string | undefined
+        try {
+          currentOrigin = safeExplicitOrigin(await git.raw(['remote', 'get-url', 'origin']))
+          expectedOrigin =
+            target === undefined
+              ? undefined
+              : target.githubApp
+                ? normalizeGithubRepoUrl(target.repo)
+                : normalizeGitCloneUrl(target.repo)
+        } catch {
+          return { agentId, isRepo: true, ok: false, detail: 'workspace origin is not a safe remote' }
+        }
+        if (
+          !currentOrigin ||
+          (target?.githubApp === true &&
+            expectedOrigin !== undefined &&
+            currentOrigin.toLowerCase() !== expectedOrigin.toLowerCase())
+        ) {
+          return { agentId, isRepo: true, ok: false, detail: 'workspace origin is not a safe remote' }
+        }
+        const pullOrigin = expectedOrigin ?? currentOrigin
+        const pullBranch = target?.branch ?? 'HEAD'
         const res = await Promise.race([
-          gitFor(root)
-            .env({ ...gitEnvBase(), ...credentialEnvByAgent(agentId), GIT_TERMINAL_PROMPT: '0' })
-            .pull(['--ff-only']),
+          pullWorkspaceRef(
+            git.env({ ...workspaceGitEnvBase(), ...credentialEnvByAgent(agentId), GIT_TERMINAL_PROMPT: '0' }),
+            pullOrigin,
+            pullBranch
+          ),
           new Promise<never>((_, rej) => {
             timer = setTimeout(() => rej(new Error('pull timed out')), PULL_TIMEOUT_MS)
           })
@@ -122,7 +168,7 @@ export function createWorkspaceGit(
 
 /** The HEAD commit (sha / short sha / subject / committer date), or null for an
  *  empty repo with no commits yet. `%cI` is git's strict-ISO committer date. */
-async function headCommit(git: ReturnType<typeof simpleGit>): Promise<WorkspaceGitCommit | null> {
+async function headCommit(git: SimpleGit): Promise<WorkspaceGitCommit | null> {
   try {
     const log = await git.log({ maxCount: 1, format: { hash: '%H', date: '%cI', subject: '%s' } })
     const c = log.latest

@@ -14,7 +14,14 @@
  * The instance also owns the icon URL bases, so the four call sites stop
  * re-deriving `{cp, store}` from config independently.
  */
-import type { AgentSkillEntry, AgentSpec } from '@agentconnect.md/protocol'
+import {
+  GitCloneUrlError,
+  normalizeGitCloneUrl,
+  normalizeGithubRepoUrl,
+  redactGitUrlSecrets,
+  type AgentSkillEntry,
+  type AgentSpec
+} from '@agentconnect.md/protocol'
 import type { AgentRecord, AgentSecretStore, SkillSourceRepo } from '../persistence/ports.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../agents/agent-icon.js'
 import { resolveAgentSkillEntries } from './skillSource.js'
@@ -40,9 +47,25 @@ export class AgentSpecAssembler {
     return this.project(a, secrets, skillEntries)
   }
 
-  /** Batch form for the reconcile roster (one store read per owned agent). */
-  assembleAll(agents: readonly AgentRecord[]): Promise<AssembledAgentSpec[]> {
-    return Promise.all(agents.map((a) => this.assemble(a)))
+  /** Batch form for the reconcile roster (one store read per owned agent).
+   * Historical unsafe clone targets are quarantined individually; every other
+   * failure still rejects the roster so infrastructure errors remain visible. */
+  async assembleAll(
+    agents: readonly AgentRecord[],
+    onUnsafeAgent?: (agent: AgentRecord, error: GitCloneUrlError) => void
+  ): Promise<AssembledAgentSpec[]> {
+    const settled = await Promise.allSettled(agents.map((a) => this.assemble(a)))
+    const assembled: AssembledAgentSpec[] = []
+    for (const [index, result] of settled.entries()) {
+      if (result.status === 'fulfilled') {
+        assembled.push(result.value)
+      } else if (result.reason instanceof GitCloneUrlError) {
+        onUnsafeAgent?.(agents[index]!, result.reason)
+      } else {
+        throw result.reason
+      }
+    }
+    return assembled
   }
 
   /** The store read the agent-move snapshot pins into its {@link MoveBundle} —
@@ -95,7 +118,12 @@ export function agentRecordToSpec(
     a.workspace.mode === 'github'
       ? {
           mode: 'github',
-          gitRepo: a.workspace.gitRepo,
+          // Defense in depth for historical/non-Prisma records: never send
+          // credentials or an unsupported transport to any daemon version.
+          gitRepo:
+            a.workspace.installationId !== undefined
+              ? normalizeGithubRepoUrl(a.workspace.gitRepo)
+              : normalizeGitCloneUrl(redactGitUrlSecrets(a.workspace.gitRepo)),
           branch: a.workspace.gitBranch ?? 'main',
           ...(a.workspace.agentDir !== undefined ? { agentDir: a.workspace.agentDir } : {}),
           ...(a.workspace.installationId !== undefined ? { gitCredential: 'github-app' as const } : {})

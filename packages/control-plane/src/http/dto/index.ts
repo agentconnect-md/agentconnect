@@ -14,8 +14,10 @@ import {
   MemoryPluginHistoryEvent,
   MemoryPluginOperation,
   RESERVED_MCP_SERVER_NAME,
+  GitCloneUrlError,
   RepoSubdirError,
-  normalizeGitUrl,
+  normalizeGitCloneUrl,
+  redactGitUrlSecrets,
   normalizeRepoSubdir
 } from '@agentconnect.md/protocol'
 import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
@@ -233,15 +235,12 @@ export const MintedKeyDto = z.object({
 })
 
 // ── agents ────────────────────────────────────────────────────────────────
-/** `gitRepo` is STORED as a full cloneable address — user shorthand ("acme/infra",
- *  "github.com/acme/infra") is expanded at this boundary; the console shortens it
- *  back to org/repo for display. A `codec` (not `.transform()`) because the schema
- *  is reused in response DTOs and the zod serializer runs the ENCODE direction —
- *  a one-way transform would throw there. Encode also normalizes, so responses
- *  repair pre-normalization rows. */
-const GitRepo = z.codec(z.string().min(1), z.string(), {
-  decode: normalizeGitUrl,
-  encode: normalizeGitUrl
+/** Response-only git address codec. Historical rows stay readable even when
+ * they predate clone-target validation; the total sanitizer only removes URL
+ * secrets and never rejects an old value during response serialization. */
+const GitRepoOutput = z.codec(z.string(), z.string(), {
+  decode: redactGitUrlSecrets,
+  encode: redactGitUrlSecrets
 })
 
 /** Where the agent runs (inline; path is daemon-generated). Mirrors protocol AgentWorkspace.
@@ -250,7 +249,7 @@ export const AgentWorkspaceBody = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('scratch') }),
   z.object({
     mode: z.literal('github'),
-    gitRepo: GitRepo,
+    gitRepo: GitRepoOutput,
     gitBranch: z.string().optional(),
     agentDir: z.string().optional(),
     // github-app credential mode: the GithubInstallation picked in the console
@@ -275,6 +274,22 @@ function normalizeAgentDir(value: string, ctx: z.RefinementCtx): string | undefi
   }
 }
 
+function normalizeAgentGitRepo(value: string, ctx: z.RefinementCtx): string {
+  try {
+    return normalizeGitCloneUrl(value)
+  } catch (err) {
+    if (!(err instanceof GitCloneUrlError)) throw err
+    // Deliberately do not include the supplied URL or the thrown message: URL
+    // userinfo/query fields may contain a credential.
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'gitRepo must be a credential-free HTTPS or SSH repository URL, or owner/repo shorthand'
+    })
+    return z.NEVER
+  }
+}
+
+const GitRepoInput = z.string().min(1).transform(normalizeAgentGitRepo)
 const AgentDirCreateInput = z.string().transform(normalizeAgentDir)
 const AgentDirPatchInput = z
   .union([z.string(), z.null()])
@@ -285,7 +300,7 @@ const AgentWorkspaceInputBody = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('scratch') }),
   z.object({
     mode: z.literal('github'),
-    gitRepo: GitRepo,
+    gitRepo: GitRepoInput,
     gitBranch: z.string().optional(),
     agentDir: AgentDirCreateInput.optional(),
     installationId: z.string().uuid().optional(),

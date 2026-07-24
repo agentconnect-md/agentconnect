@@ -316,16 +316,13 @@ export class Placement implements ReconcileService {
       this.integrations.activeForDaemon(daemonId)
     ])
 
-    // Integrations FILTERED to this daemon (via agent.daemonId) — each carries
-    // plaintext tokens, so this must never be the org-wide set. Tokens are pulled
-    // from the secret store (the only decrypt/read seam); NEVER log this array.
-    // ALL platforms belong in the roster (Slack + Telegram): the roster is the
-    // backstop when the live integration/upsert was skipped (daemon offline) or
-    // no-op'd (agent.json not on disk yet), so filtering to one platform silently
-    // strands the others' tokens off the daemon. integrationToSpec emits the
-    // right per-platform variant.
-    const desiredIntegrations = (
-      await Promise.all(
+    const quarantinedAgentIds = new Set<string>()
+    const [desiredAgents, assembledIntegrations] = await Promise.all([
+      this.specs.assembleAll(ownedAgents, (agent) => {
+        quarantinedAgentIds.add(agent.id)
+        this.orch?.log?.warn({ agentId: agent.id }, 'quarantining agent with an unsafe historical git repository')
+      }),
+      Promise.all(
         activeIntegrations.map(async (i) => {
           const [secret, channels, bot] = await Promise.all([
             this.botSecrets.get(i.botId),
@@ -340,21 +337,37 @@ export class Placement implements ReconcileService {
             : integrationToSpec(i, secret, channels)
         })
       )
-    ).filter((s): s is IntegrationSpec => s !== null)
+    ])
 
-    const desiredAssignments = activeAssignments.map(assignmentToRoute)
+    // Integrations FILTERED to this daemon (via agent.daemonId) — each carries
+    // plaintext tokens, so this must never be the org-wide set. Tokens are pulled
+    // from the secret store (the only decrypt/read seam); NEVER log this array.
+    // ALL platforms belong in the roster (Slack + Telegram): the roster is the
+    // backstop when the live integration/upsert was skipped (daemon offline) or
+    // no-op'd (agent.json not on disk yet), so filtering to one platform silently
+    // strands the others' tokens off the daemon. integrationToSpec emits the
+    // right per-platform variant.
+    const desiredIntegrations = assembledIntegrations.filter(
+      (spec): spec is IntegrationSpec => spec !== null && !quarantinedAgentIds.has(spec.agentId)
+    )
+
+    const desiredAssignments = activeAssignments
+      .filter((assignment) => !quarantinedAgentIds.has(assignment.agentId))
+      .map(assignmentToRoute)
     // The agent-config replica for THIS daemon: only the agents placed on it
     // (1 agent : 1 machine). A daemon never receives specs for agents owned by
     // other machines. Unplaced agents (daemonId null) go to no daemon. The daemon
     // converges its replica to this set (CP wins); live edits ride
     // `agent/upsert`/`agent/remove`; this snapshot is the reconnect backstop.
     // The assembler owns secret loading + icon bases — same spec shape as the
-    // live agent/upsert emit, structurally.
-    const desiredAgents = await this.specs.assembleAll(ownedAgents)
+    // live agent/upsert emit, structurally. Historical unsafe repository rows
+    // are quarantined above without stranding the rest of this daemon's roster.
     // Crons FILTERED to this daemon (via agent.daemonId) — a cron drives one
     // agent, so its def lands only on that agent's daemon (same rule as
     // integrations above). Orphaned rows map to null and are never pushed.
-    const desiredCrons = daemonCrons.map(cronToUpsert).filter((c): c is CronUpsert => c !== null)
+    const desiredCrons = daemonCrons
+      .map(cronToUpsert)
+      .filter((cron): cron is CronUpsert => cron !== null && !quarantinedAgentIds.has(cron.agentId))
     const desiredLeases = activeLeases.map(leaseToGrant)
 
     // Bot-agnostic collaboration routing snapshot (agent-collaboration §2.3/§6.2/§6.5) —
@@ -393,6 +406,10 @@ export class Placement implements ReconcileService {
     const orgIntegrationIds = new Set(orgIntegrations.map((integration) => integration.id as string))
     const dropAgents: RegisterOk['drop']['agents'] = []
     for (const local of staleAgentCandidates) {
+      if (quarantinedAgentIds.has(local.agentId)) {
+        dropAgents.push({ agentId: local.agentId, action: 'detach' })
+        continue
+      }
       const record = orgAgentById.get(local.agentId)
       // An unplaced CP row (daemonId=null) belongs on no daemon, so detach its
       // preserved local workspace just like a replica moved to another daemon.

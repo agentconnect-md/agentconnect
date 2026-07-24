@@ -382,6 +382,55 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
     expect((readJson(file).workspace as { agentDir?: string }).agentDir).toBe('services/api')
   })
 
+  it('sanitizes legacy clone credentials and refuses unsafe replicated transports', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'git-repo', path: './workspace' }
+    })
+
+    writeAgentSpec(
+      dir,
+      'bot-a',
+      baseSpec({
+        workspace: {
+          mode: 'github',
+          gitRepo: 'https://legacy-user:legacy-token@example.com/repo?token=query-secret',
+          branch: 'main'
+        }
+      }),
+      deps
+    )
+    expect((readJson(file).workspace as { gitRepo: string }).gitRepo).toBe('https://example.com/repo')
+
+    writeAgentSpec(
+      dir,
+      'bot-a',
+      baseSpec({
+        workspace: {
+          mode: 'github',
+          gitRepo: 'https://legacy-user:legacy-token@other-host.example/acme/repo?token=query-secret',
+          branch: 'main',
+          gitCredential: 'github-app'
+        }
+      }),
+      deps
+    )
+    expect((readJson(file).workspace as { gitRepo: string }).gitRepo).toBe('https://github.com/acme/repo')
+
+    expect(() =>
+      writeAgentSpec(
+        dir,
+        'bot-a',
+        baseSpec({ workspace: { mode: 'github', gitRepo: 'file:///tmp/repo', branch: 'main' } }),
+        deps
+      )
+    ).toThrow('git clone url must use https or ssh')
+  })
+
   it('clears a stale working subdirectory for repo-root and scratch specs', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
     const file = seedAgent(dir, 'bot-a', {

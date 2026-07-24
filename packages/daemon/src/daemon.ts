@@ -2140,14 +2140,21 @@ export class Daemon {
       if (previous?.allowRuntimeChangesInChat === true && !a.allowRuntimeChangesInChat) {
         this.restoreConfiguredRuntimeSettings(a as LoadedAgent)
       }
+      let workspaceNeedsColdRecovery = change.workspace
       // A GitHub rename changes only the canonical remote URL for the same
-      // App-backed repository. Keep active/queued turns and the cached host
-      // intact; update origin in place so subsequent git commands use the new
-      // address without waiting for another session to prepare the workspace.
+      // App-backed repository. Keep active/queued turns and the cached host only
+      // after origin convergence succeeds. Otherwise fall back to the ordinary
+      // cold workspace path so a live host cannot keep serving an untrusted or
+      // stale checkout.
       if (change.workspaceRepoRename) {
-        await convergeGithubAppWorkspaceRename(a as LoadedAgent).catch((err) =>
-          this.log.warn(`workspace: canonical rename convergence for "${a.id}" failed: ${formatErr(err)}`)
-        )
+        try {
+          await convergeGithubAppWorkspaceRename(a as LoadedAgent)
+        } catch (err) {
+          workspaceNeedsColdRecovery = true
+          this.log.warn(
+            `workspace: canonical rename convergence for "${a.id}" failed; evicting its host: ${formatErr(err)}`
+          )
+        }
       }
       // Pause is an operator stop, not merely a gate for the next message. Publish the
       // gate first so no new turn can enter, then interrupt every active logical session
@@ -2159,14 +2166,14 @@ export class Daemon {
       // host-spawn or workspace change → evict the cached host (once) so the next
       // session lazily re-spawns it with fresh env and/or re-materializes cwd via
       // prepareWorkspace. Soft-only and integration-only changes never touch the host.
-      if (change.hostRespawn || change.workspace) {
+      if (change.hostRespawn || workspaceNeedsColdRecovery) {
         // A config-triggered respawn keeps the agent in the roster, so install a
         // temporary admission gate around the generation-safe teardown, preserving any
         // older lifecycle gate intact.
         const wasDraining = this.drainingAgents.has(a.id)
         this.drainingAgents.add(a.id)
         this.interruptAgentTurns(a.id, 'stop')
-        if (change.workspace) {
+        if (workspaceNeedsColdRecovery) {
           this.gitCreds.remove(a.id)
           this.gitCredServer?.revoke(a.id)
         }
@@ -2191,7 +2198,7 @@ export class Daemon {
       // workspace change → eagerly (re-)materialize the checkout in the background so
       // a re-pointed git-repo is warm before the next message, instead of paying the
       // clone latency on that first session.
-      if (change.workspace) this.prefetchClone(a as LoadedAgent)
+      if (workspaceNeedsColdRecovery) this.prefetchClone(a as LoadedAgent)
       // Defer platform convergence until EVERY agent delta has been installed.
       // This preserves a token handed from one agent to another in the same batch:
       // reconciling midway through the diff would briefly see zero references and
@@ -12039,6 +12046,16 @@ export class Daemon {
         (id) => {
           const workspace = this.agents.get(id)?.workspace
           return workspace?.mode === 'git-repo' && workspace.gitCredential === 'github-app' ? gitCredentialEnv(id) : {}
+        },
+        (id) => {
+          const workspace = this.agents.get(id)?.workspace
+          return workspace?.mode === 'git-repo' && workspace.gitRepo
+            ? {
+                repo: workspace.gitRepo,
+                branch: workspace.gitBranch,
+                githubApp: workspace.gitCredential === 'github-app'
+              }
+            : undefined
         }
       ),
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),

@@ -93,9 +93,19 @@ const HOST_ENV_STRIP = new Set([
   'GIT_EXTERNAL_DIFF',
   'GIT_PROXY_COMMAND',
   'GIT_TEMPLATE_DIR',
+  // `git rev-parse --local-env-vars`: none of the caller's repository context
+  // may redirect daemon-managed operations away from their explicit cwd.
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_COMMON_DIR',
   'GIT_DIR',
-  'GIT_WORK_TREE',
+  'GIT_GRAFT_FILE',
+  'GIT_IMPLICIT_WORK_TREE',
   'GIT_INDEX_FILE',
+  'GIT_NO_REPLACE_OBJECTS',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_REPLACE_REF_BASE',
+  'GIT_SHALLOW_FILE',
+  'GIT_WORK_TREE',
   'GIT_NAMESPACE',
   'GIT_CONFIG',
   'GIT_CONFIG_GLOBAL',
@@ -120,6 +130,31 @@ export function gitEnvBase(): Record<string, string> {
     env[k] = v
   }
   return env
+}
+
+/** Workspace clone/pull policy. Keep this separate from `gitEnvBase`: skill
+ * installation intentionally supports a broader set of operator-chosen sources. */
+export function workspaceGitEnvBase(): Record<string, string> {
+  const env = gitEnvBase()
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === 'GIT_ALLOW_PROTOCOL') delete env[key]
+  }
+  // Git applies this allowlist after url.*.insteadOf rewriting.
+  env.GIT_ALLOW_PROTOCOL = 'https:ssh'
+  return env
+}
+
+/**
+ * Pull exactly the daemon-authorized repository and branch. Supplying both
+ * operands keeps checkout-controlled branch.*.remote / branch.*.merge config
+ * out of daemon-managed network selection; the explicit destination also keeps
+ * origin/<branch> current for status. check-ref-format prevents a configured
+ * branch from being interpreted as an option or refspec.
+ */
+export async function pullWorkspaceRef(git: SimpleGit, repository: string, branch: string) {
+  await git.raw(['check-ref-format', '--branch', branch])
+  const refspec = `+refs/heads/${branch}:refs/remotes/origin/${branch}`
+  return git.pull(repository, refspec, ['--ff-only'])
 }
 
 /** Module-level init (workspace-manager is functional; mirrors cloneInFlight). */
@@ -223,7 +258,7 @@ export function sessionGitEnv(agentId: string, commitIdentity?: GitCommitIdentit
 
 /** Post-clone: pin the repo-local helper so agent-run git in the checkout works. */
 export async function writeRepoHelperConfig(cwd: string, agentId: string): Promise<void> {
-  const git = gitFor(cwd)
+  const git = gitFor(cwd).env(workspaceGitEnvBase())
   // `--replace-all` on the first write resets any stale helper list from a
   // previous agent generation; addConfig(append=true) accumulates the rest.
   await git.raw(['config', '--replace-all', 'credential.https://github.com.helper', ''])

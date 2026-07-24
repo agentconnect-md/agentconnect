@@ -11,7 +11,13 @@ import {
   writeFileSync
 } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
-import { normalizeGitUrl, normalizeRepoSubdir } from '@agentconnect.md/protocol'
+import {
+  normalizeGitCloneUrl,
+  normalizeGithubRepoUrl,
+  normalizeGitUrl,
+  normalizeRepoSubdir,
+  redactGitUrlSecrets
+} from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import { makeLogger } from '../log.js'
 import { installSkills } from '../skills/install-skills.js'
@@ -21,6 +27,8 @@ import {
   gitEnvBase,
   gitFor,
   preWarmGitCred,
+  pullWorkspaceRef,
+  workspaceGitEnvBase,
   writeRepoHelperConfig
 } from './git-injection.js'
 
@@ -57,25 +65,75 @@ function usesGithubApp(agent: Agent): boolean {
   return agent.workspace.mode === 'git-repo' && agent.workspace.gitCredential === 'github-app'
 }
 
-async function convergeGithubAppOrigin(agent: Agent, cwd = agent.workspace.path): Promise<void> {
-  if (!usesGithubApp(agent)) return
+function gitRepoOf(agent: Agent): string {
+  if (agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo) {
+    throw new Error(`workspace clone: agent "${agent.id}" has git-repo mode but no gitRepo configured`)
+  }
+  return usesGithubApp(agent)
+    ? normalizeGithubRepoUrl(agent.workspace.gitRepo)
+    : normalizeGitCloneUrl(agent.workspace.gitRepo)
+}
+
+class UntrustedGithubWorkspaceOriginError extends Error {
+  constructor(options?: ErrorOptions) {
+    super('workspace origin is not a trusted GitHub remote', options)
+    this.name = 'UntrustedGithubWorkspaceOriginError'
+  }
+}
+
+function isTrustedGithubOrigin(input: string): boolean {
+  const raw = input.trim()
+  if (raw.includes('\\')) return false
+  const scp = /^[\w.-]+@([\w.-]+):/.exec(raw)
+  if (scp) return scp[1]!.toLowerCase() === 'github.com'
+  if (!/^(?:https|ssh):\/\//i.test(raw)) return false
+  try {
+    return new URL(normalizeGitCloneUrl(redactGitUrlSecrets(raw))).hostname.toLowerCase() === 'github.com'
+  } catch {
+    return false
+  }
+}
+
+async function convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path): Promise<void> {
   const clone = cloneInFlight.get(cwd)
   if (clone) await clone
   if (!existsSync(join(cwd, '.git'))) return
-  const expected = normalizeGitUrl(agent.workspace.gitRepo ?? '')
-  if (!expected) return
-  const git = gitFor(cwd)
-  const current = (await git.raw(['remote', 'get-url', 'origin'])).trim()
-  if (normalizeGitUrl(current).toLowerCase() !== expected.toLowerCase()) {
-    await git.raw(['remote', 'set-url', 'origin', expected])
+  const expected = gitRepoOf(agent)
+  const git = gitFor(cwd).env(workspaceGitEnvBase())
+  let current: string
+  try {
+    current = (await git.raw(['remote', 'get-url', 'origin'])).trim()
+  } catch (cause) {
+    if (usesGithubApp(agent)) throw new UntrustedGithubWorkspaceOriginError({ cause })
+    return
   }
+  if (usesGithubApp(agent) && !isTrustedGithubOrigin(current)) {
+    throw new UntrustedGithubWorkspaceOriginError()
+  }
+  const normalizedCurrent = normalizeGitUrl(current)
+  let unsafeCurrent = redactGitUrlSecrets(current) !== normalizedCurrent
+  try {
+    normalizeGitCloneUrl(current)
+    if (!/^(?:https|ssh):\/\//i.test(current) && !/^[\w.-]+@[\w.-]+:/.test(current)) unsafeCurrent = true
+  } catch {
+    unsafeCurrent = true
+  }
+  const mismatched = normalizedCurrent.toLowerCase() !== expected.toLowerCase()
+  if ((!mismatched && !unsafeCurrent) || (!unsafeCurrent && !usesGithubApp(agent))) return
+  // App-backed mismatches and unsafe anonymous origins must converge before
+  // daemon-managed Git can proceed. A failed rewrite is fail-closed.
+  await git.raw(['remote', 'set-url', 'origin', expected])
 }
 
 function materializationKey(agent: Agent): string {
   if (agent.workspace.mode === 'from-scratch') return JSON.stringify({ mode: 'scratch' })
+  const repo = gitRepoOf(agent)
   return JSON.stringify({
     mode: 'github',
-    repo: normalizeGitUrl(agent.workspace.gitRepo ?? '').toLowerCase(),
+    // GitHub treats the conventional `.git` suffix as the same repository.
+    // Ignoring it here prevents a harmless CP canonicalization from replacing
+    // an existing checkout during an access/agentDir-only edit.
+    repo: (usesGithubApp(agent) ? repo.replace(/\.git$/i, '') : repo).toLowerCase(),
     branch: agent.workspace.gitBranch
   })
 }
@@ -94,6 +152,29 @@ function readMaterialization(agent: Agent): string | undefined {
   }
 }
 
+function sameMaterialization(agent: Agent, previous: string | undefined, target: string): boolean {
+  if (previous === target) return true
+  if (!usesGithubApp(agent) || previous === undefined) return false
+  try {
+    const left = JSON.parse(previous) as { mode?: unknown; repo?: unknown; branch?: unknown }
+    const right = JSON.parse(target) as { mode?: unknown; repo?: unknown; branch?: unknown }
+    if (
+      left.mode !== 'github' ||
+      right.mode !== 'github' ||
+      typeof left.repo !== 'string' ||
+      typeof right.repo !== 'string'
+    ) {
+      return false
+    }
+    return (
+      left.repo.replace(/\.git$/i, '').toLowerCase() === right.repo.replace(/\.git$/i, '').toLowerCase() &&
+      left.branch === right.branch
+    )
+  } catch {
+    return false
+  }
+}
+
 /** Snapshot the currently-live workspace definition before a cold detach. */
 export function recordWorkspaceMaterialization(agent: Agent): void {
   const file = materializationFile(agent)
@@ -109,13 +190,12 @@ export function recordWorkspaceMaterialization(agent: Agent): void {
 }
 
 /** Converge the durable identity and remote of an App-backed checkout after a
- * canonical GitHub rename. Record the new materialization first: a failed
- * best-effort origin update may safely retry later, while a stale marker could
- * make a subsequent preservation-only edit replace local files. */
+ * canonical GitHub rename. Advance the marker first within this update so
+ * origin convergence is fail-closed and retryable while the target marker holds. */
 export async function convergeGithubAppWorkspaceRename(agent: Agent): Promise<void> {
   if (!usesGithubApp(agent)) return
   recordWorkspaceMaterialization(agent)
-  await convergeGithubAppOrigin(agent)
+  await convergeWorkspaceOrigin(agent)
 }
 
 /** Seed the marker for a pre-v2 workspace without overwriting an earlier
@@ -137,8 +217,9 @@ function restoreWorkspaceMaterialization(agent: Agent, key: string | undefined):
 
 export async function prepareWorkspace(agent: Agent): Promise<string> {
   const cwd = agent.workspace.path
-  // Fail unsafe lexical config before any clone/pull or filesystem mutation.
+  // Fail unsafe config before using either a fresh or existing checkout.
   const agentDir = agent.workspace.mode === 'git-repo' ? normalizeRepoSubdir(agent.workspace.agentDir) : undefined
+  if (agent.workspace.mode === 'git-repo') gitRepoOf(agent)
   mkdirSync(cwd, { recursive: true })
 
   if (agent.workspace.mode === 'from-scratch') {
@@ -164,8 +245,12 @@ export async function prepareWorkspace(agent: Agent): Promise<string> {
   if (usesGithubApp(agent)) {
     // The CP follows repository renames by numeric repo id. Repoint the existing
     // checkout instead of treating that canonical URL refresh as a new workspace.
-    await convergeGithubAppOrigin(agent, cwd).catch(() => undefined)
+    await convergeWorkspaceOrigin(agent, cwd)
     await writeRepoHelperConfig(cwd, agent.id).catch(() => undefined)
+  } else {
+    // Historical anonymous checkouts may still have credential-bearing or
+    // disallowed origins even after their CP row has been sanitized.
+    await convergeWorkspaceOrigin(agent, cwd)
   }
 
   // Best-effort ff-only pull; never block/throw on offline (design §4.3) —
@@ -181,13 +266,12 @@ export async function prepareWorkspace(agent: Agent): Promise<string> {
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
     try {
-      await gitFor(cwd, abort.signal)
-        .env({
-          ...gitEnvBase(),
-          ...(usesGithubApp(agent) ? gitCredentialEnv(agent.id) : {}),
-          GIT_TERMINAL_PROMPT: '0'
-        })
-        .pull(['--ff-only'])
+      const git = gitFor(cwd, abort.signal).env({
+        ...workspaceGitEnvBase(),
+        ...(usesGithubApp(agent) ? gitCredentialEnv(agent.id) : {}),
+        GIT_TERMINAL_PROMPT: '0'
+      })
+      await pullWorkspaceRef(git, gitRepoOf(agent), agent.workspace.gitBranch)
     } catch {
       // offline / timed out / non-fast-forward: proceed with the on-disk checkout
     } finally {
@@ -268,7 +352,7 @@ export async function prepareWorkspaceForActivation(
   mkdirSync(cwd, { recursive: true })
   const previousMaterialization = reconcileMaterialization ? readMaterialization(agent) : undefined
   const targetMaterialization = materializationKey(agent)
-  const replace = reconcileMaterialization && previousMaterialization !== targetMaterialization
+  let replace = reconcileMaterialization && !sameMaterialization(agent, previousMaterialization, targetMaterialization)
   const restoreMarker = () => {
     if (reconcileMaterialization) restoreWorkspaceMaterialization(agent, previousMaterialization)
   }
@@ -292,9 +376,20 @@ export async function prepareWorkspaceForActivation(
       if (!allowExistingCheckout) {
         throw new Error('workspace changed after its empty check; retry after making it empty')
       }
-      resolveAcpCwd(cwd, normalizeRepoSubdir(agent.workspace.agentDir))
-      if (reconcileMaterialization) recordWorkspaceMaterialization(agent)
-      return restoreMarker
+      try {
+        await convergeWorkspaceOrigin(agent, cwd)
+      } catch (err) {
+        if (!(reconcileMaterialization && err instanceof UntrustedGithubWorkspaceOriginError)) throw err
+        // A historical App-backed checkout from a non-GitHub origin cannot be
+        // trusted merely by rewriting .git/config: replace its working tree
+        // from the installation-authorized GitHub repository.
+        replace = true
+      }
+      if (!replace) {
+        resolveAcpCwd(cwd, normalizeRepoSubdir(agent.workspace.agentDir))
+        if (reconcileMaterialization) recordWorkspaceMaterialization(agent)
+        return restoreMarker
+      }
     }
     // A different repo/branch is cloned below before the old checkout is
     // removed, so network/auth failures leave the current workspace intact.
@@ -370,7 +465,11 @@ export async function prepareWorkspaceForActivation(
 export async function prefetchWorkspace(agent: Agent): Promise<void> {
   if (agent.workspace.mode !== 'git-repo') return
   const cwd = agent.workspace.path
-  if (existsSync(join(cwd, '.git'))) return
+  gitRepoOf(agent)
+  if (existsSync(join(cwd, '.git'))) {
+    await convergeWorkspaceOrigin(agent, cwd)
+    return
+  }
   mkdirSync(cwd, { recursive: true })
   await cloneRepo(agent)
 }
@@ -384,11 +483,9 @@ async function cloneRepoAt(agent: Agent, cwd: string): Promise<void> {
   const inflight = cloneInFlight.get(cwd)
   if (inflight) return inflight
 
-  // Stored value should already be a full address, but normalize defensively —
-  // a hand-edited or pre-normalization agent.json may still say "org/repo",
-  // which git would treat as a local path ("repository ... does not exist").
-  const gitRepo = agent.workspace.gitRepo && normalizeGitUrl(agent.workspace.gitRepo)
-  if (!gitRepo) throw new Error(`workspace clone: agent "${agent.id}" has git-repo mode but no gitRepo configured`)
+  // Validate again at the execution boundary: a hand-edited/legacy agent.json
+  // must not turn daemon-managed git into a local-path or remote-helper launcher.
+  const gitRepo = gitRepoOf(agent)
   const branch = agent.workspace.gitBranch
   const githubApp = usesGithubApp(agent)
 
@@ -397,8 +494,8 @@ async function cloneRepoAt(agent: Agent, cwd: string): Promise<void> {
     // yet). SPREAD over process.env — simple-git's .env() REPLACES the child env.
     if (githubApp) await preWarmGitCred(agent.id, 'clone')
     const git = githubApp
-      ? gitFor().env({ ...gitEnvBase(), ...cloneGitEnv(agent.id) })
-      : gitFor().env({ ...gitEnvBase(), GIT_TERMINAL_PROMPT: '0' })
+      ? gitFor().env({ ...workspaceGitEnvBase(), ...cloneGitEnv(agent.id) })
+      : gitFor().env({ ...workspaceGitEnvBase(), GIT_TERMINAL_PROMPT: '0' })
     try {
       await git.clone(gitRepo, cwd, ['--branch', branch, '--single-branch'])
     } catch (e) {

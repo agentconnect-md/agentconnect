@@ -21,7 +21,13 @@
  */
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, renameSync, readdirSync } from 'node:fs'
 import { join, dirname, relative, resolve, isAbsolute, sep } from 'node:path'
-import { normalizeGitUrl, normalizeRepoSubdir, type AgentSpec } from '@agentconnect.md/protocol'
+import {
+  normalizeGitCloneUrl,
+  normalizeGithubRepoUrl,
+  normalizeRepoSubdir,
+  redactGitUrlSecrets,
+  type AgentSpec
+} from '@agentconnect.md/protocol'
 import { ensurePrivateAgentDirectory, protectAgentJson, writeAgentJson } from './agent-json-file.js'
 import { findAgentFiles } from './load-agents.js'
 
@@ -475,9 +481,12 @@ function applySpecFields(
     // clears a previously replicated cwd rather than preserving a stale local value.
     delete existing.agentDir
     if (ws.mode === 'github') {
-      // agent.json stores the FULL cloneable address; a spec replicated from a
-      // pre-normalization CP row may still carry the "org/repo" shorthand.
-      existing.gitRepo = normalizeGitUrl(ws.gitRepo)
+      // Keep old CPs safe too: strip historical URL secrets, then reject any
+      // transport a current daemon would refuse at the clone boundary.
+      existing.gitRepo =
+        ws.gitCredential === 'github-app'
+          ? normalizeGithubRepoUrl(ws.gitRepo)
+          : normalizeGitCloneUrl(redactGitUrlSecrets(ws.gitRepo))
       existing.gitBranch = ws.branch
       if (ws.agentDir !== undefined) {
         try {
