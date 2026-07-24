@@ -500,8 +500,15 @@ export class DreamRunner {
     names.sort((a, b) => (a === MEMORY_INDEX ? -1 : b === MEMORY_INDEX ? 1 : a.localeCompare(b)))
     const entries = []
     for (const name of names) {
-      const st = await fsp.stat(join(out, name))
-      entries.push({ name, size: st.size, mtime: st.mtime.toISOString() })
+      // A file can vanish between readdir and stat if a cancel/discard is
+      // removing the staging concurrently — skip it rather than throw.
+      try {
+        const st = await fsp.stat(join(out, name))
+        entries.push({ name, size: st.size, mtime: st.mtime.toISOString() })
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw err
+      }
     }
     return entries
   }

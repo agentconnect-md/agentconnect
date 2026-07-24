@@ -185,7 +185,14 @@ describe('DreamRunner pipeline', () => {
     const started = await runner.start('a1', { trigger: 'manual' })
     const done = await settle(store, started.dreamId)
     expect(done.status).toBe('canceled') // NOT overwritten to completed
-    expect(await runner.stagedFiles('a1', started.dreamId)).toBeNull() // partial output dropped
+    // The staging removal in run() runs a tick after the status flips settle()
+    // observes; poll until it lands (stagedFiles tolerates the concurrent rm).
+    let staged = await runner.stagedFiles('a1', started.dreamId)
+    for (let i = 0; i < 50 && staged !== null; i++) {
+      await new Promise((r) => setTimeout(r, 5))
+      staged = await runner.stagedFiles('a1', started.dreamId)
+    }
+    expect(staged).toBeNull() // partial output dropped
   })
 
   it('cancel during extraction wins: the late output is never staged', async () => {
