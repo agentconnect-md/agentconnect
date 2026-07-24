@@ -155,6 +155,7 @@ AGENTS.override.md
 .claude/settings.local.json
 .claude/worktrees/
 CLAUDE.local.md
+.superpowers/
 
 # JetBrains IDE
 .idea/

@@ -3,27 +3,69 @@
 [![daemon rc](https://img.shields.io/npm/v/%40agentconnect.md%2Fdaemon/rc?label=daemon%20rc)](https://www.npmjs.com/package/@agentconnect.md/daemon/v/rc)
 [![daemon latest](https://img.shields.io/npm/v/%40agentconnect.md%2Fdaemon/latest?label=daemon%20latest)](https://www.npmjs.com/package/@agentconnect.md/daemon/v/latest)
 
-Daemon-centric multi-agent platform that bridges IM platforms (Slack / Telegram / Discord)
-to AI coding agents (Claude, Codex) over ACP. See [`docs/designs/`](docs/designs/) for the
-architecture and detailed design.
+AgentConnect is a daemon-centric platform for running AI coding agents on your own
+machines and connecting them to the places where work happens. Claude, Codex, and
+other ACP-compatible runtimes can participate in Slack, Telegram, Discord, Feishu,
+webchat, GitHub events, webhooks, and scheduled tasks.
+
+The execution daemon stays close to the agent and its workspace. The Control Plane
+coordinates configuration and placement but is never on the message hot path, so
+established sessions continue to run when it is temporarily unavailable.
+
+## Highlights
+
+- Run multiple ACP agents across multiple machines from one Web console.
+- Keep message bodies, attachment bytes, and ACP session streams out of the
+  Control Plane.
+- Connect direct platform bots or shared ingress for chat, webhooks, GitHub, and
+  webchat.
+- Give agents managed, native, external, or disabled persistent memory.
+- Delegate work between agents with directional discovery and call policies.
+- Manage workspaces, repositories, secrets, integrations, schedules, and sessions
+  without moving execution into the cloud.
+
+## Architecture
+
+![Daemon-centric architecture](docs/designs/daemon-centric-architecture.png)
+
+- The **daemon** owns agent execution, local ACP sessions, workspace access, and
+  direct platform connections.
+- The optional **relay** accepts shared bot, webhook, and webchat traffic and routes
+  it to the owning daemon without putting the Control Plane in the data path.
+- The **Control Plane and Web UI** manage metadata, authentication, configuration,
+  placement, and observability.
+
+See the
+[daemon-centric architecture](docs/designs/daemon-centric-architecture.md) for the
+full trust boundaries and failure model.
 
 ## Monorepo layout
 
-pnpm workspace with three packages:
+This repository is a pnpm workspace with eight packages:
 
-| Package                          | Path                                               | Stack                      | Role                                                     |
-| -------------------------------- | -------------------------------------------------- | -------------------------- | -------------------------------------------------------- |
-| `@agentconnect.md/web`           | [`packages/web`](packages/web)                     | Next.js + React + Tailwind | Config / monitoring Web UI                               |
-| `@agentconnect.md/control-plane` | [`packages/control-plane`](packages/control-plane) | Fastify                    | Orchestration / registry / BFF (no message hot path)     |
-| `@agentconnect.md/daemon`        | [`packages/daemon`](packages/daemon)               | Node CLI (commander)       | Edge message + agent execution unit (`agentconnect` CLI) |
+| Package                               | Path                                                         | Role                                                              |
+| ------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------- |
+| `@agentconnect.md/cli`                | [`packages/cli`](packages/cli)                               | Stable `agentconnect` entry point, daemon lifecycle, and upgrades |
+| `@agentconnect.md/connection`         | [`packages/connection`](packages/connection)                 | Shared WebSocket transport, correlation, backoff, and keepalive   |
+| `@agentconnect.md/control-plane`      | [`packages/control-plane`](packages/control-plane)           | Orchestration, registry, authentication, and Web UI BFF           |
+| `@agentconnect.md/daemon`             | [`packages/daemon`](packages/daemon)                         | Edge message processing and agent execution unit                  |
+| `@agentconnect.md/memory-plugin-mem0` | [`packages/memory-plugin-mem0`](packages/memory-plugin-mem0) | Mem0 Cloud and OSS memory-plugin profiles                         |
+| `@agentconnect.md/protocol`           | [`packages/protocol`](packages/protocol)                     | Shared daemon, relay, and Control Plane wire contracts            |
+| `@agentconnect.md/relay`              | [`packages/relay`](packages/relay)                           | Shared bot, webhook, GitHub, and webchat ingress                  |
+| `@agentconnect.md/web`                | [`packages/web`](packages/web)                               | Next.js configuration and monitoring console                      |
 
 ## Develop
+
+Requires Node >= 24 and pnpm 11. Docker is also required for the Control Plane
+integration tests.
 
 ```bash
 pnpm install
 pnpm dev       # run all packages in parallel
 pnpm build     # build all packages
 pnpm typecheck # type-check all packages
+pnpm lint      # lint the workspace
+pnpm test      # test all packages
 
 # single package
 pnpm --filter @agentconnect.md/daemon dev
@@ -31,7 +73,16 @@ pnpm --filter @agentconnect.md/control-plane dev
 pnpm --filter @agentconnect.md/web dev
 ```
 
-Requires Node >= 24 and pnpm 11.
+For a complete local Control Plane and Postgres setup, follow the
+[Control Plane quickstart](packages/control-plane/README.md#local-dev-quickstart).
+
+## Documentation
+
+- [Product conventions](docs/product-conventions.md)
+- [Architecture and detailed designs](docs/designs/)
+- [CLI and daemon split](docs/designs/cli-daemon-split.md)
+- [Daemon configuration](docs/designs/daemon-detailed-design.md)
+- [Add-on evaluation harness](evals/README.md)
 
 ## Evaluate AgentConnect add-ons
 
