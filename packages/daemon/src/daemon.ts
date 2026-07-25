@@ -485,6 +485,13 @@ const SELECT_CODE_KIND = { m: 'model', e: 'effort', p: 'permission' } as const s
 // kind + JSON escaping of control chars, up to a 6× blowup) can never push a chunk
 // over the wire limit. Long agent output is split across several chunks at this size.
 const WEBCHAT_CHUNK_BYTES = 32 * 1024
+// A reconnectable turn keeps a bounded in-memory output window on the daemon,
+// where the stream originates. This survives a browser moving between relay
+// instances without putting message bodies on the Control Plane or disk.
+const WEBCHAT_REPLAY_MAX_EVENTS = 256
+const WEBCHAT_REPLAY_MAX_BYTES = 1024 * 1024
+const WEBCHAT_REPLAY_MAX_STREAMS = 64
+const WEBCHAT_REPLAY_TTL_MS = 5 * 60_000
 
 /** Split `text` into pieces whose UTF-8 byte length each stays under WEBCHAT_CHUNK_BYTES
  *  so no single relay `rd/chat` payload exceeds the 256 KiB cap. Splits on byte budget
@@ -768,7 +775,7 @@ interface QueueEntry {
    *  host-stop backstop, including non-host awaits such as workspace/history I/O. */
   initAbort: AbortController
   integrationId?: string
-  webchat?: { conversationId: string; turnId: string; sink: WebchatSink; doneSent?: boolean }
+  webchat?: WebchatTurnContext
   callMeta?: CallMeta
   hookContext?: HookDispatchContext
   /** Best-effort lifecycle notification after ACP session initialization but
@@ -957,14 +964,7 @@ interface Pending {
    * accumulates the agent's message chunks so the finished reply is recorded to the
    * transcript once (webchat has no Slack post boundary where text is otherwise saved).
    */
-  webchat?: {
-    conversationId: string
-    turnId: string
-    index: number
-    replyText: string
-    sink: WebchatSink
-    doneSent?: boolean
-  }
+  webchat?: WebchatTurnContext & { index: number; replyText: string }
 }
 
 /** Visible Slack thread messages that establish a new chronological boundary. Any live
@@ -990,6 +990,32 @@ interface SessionDeliveryBinding {
 export interface WebchatSink {
   output(o: WebchatOutput): void
   done(d: WebchatDone): void
+}
+
+interface BufferedWebchatEvent {
+  event: RdChatEvent
+  bytes: number
+}
+
+interface WebchatTurnContext {
+  conversationId: string
+  turnId: string
+  sink: WebchatSink
+  doneSent?: boolean
+}
+
+/** One daemon-owned turn stream. `sink` is stable for the turn engine; `transport`
+ * is rebound when a browser resumes through any relay. The replay window is
+ * ephemeral, bounded, and never written to disk. */
+interface WebchatTurnStream extends WebchatTurnContext {
+  agentId: string
+  transport: WebchatSink
+  replay: BufferedWebchatEvent[]
+  replayBytes: number
+  replayFloor: number
+  replayDisabled: boolean
+  lastOutputIndex: number
+  completedAt?: number
 }
 
 export interface DaemonEvaluationOptions {
@@ -3680,7 +3706,8 @@ export class Daemon {
       this.log.warn(`webchat: queue full for session ${key} — rejecting turn`)
       return { accepted: false, turnId, reason: 'busy' }
     }
-    void this.dispatch(result.agentId, msg, undefined, { conversationId: chatId, turnId, sink }).catch((err) =>
+    const stream = this.createWebchatTurnStream(result.agentId, chatId, turnId, sink)
+    void this.dispatch(result.agentId, msg, undefined, stream).catch((err) =>
       this.log.error(`webchat dispatch failed for agent "${result.agentId}": ${formatErr(err)}`)
     )
     return { accepted: true, turnId }
@@ -3697,6 +3724,136 @@ export class Daemon {
    *  (channel = conversationId, statusThread = the stable `webchat:<id>` msgId, no thread). */
   private webchatSessionKey(conversationId: string, agentId: string): string {
     return sessionKey('webchat', conversationId, `webchat:${conversationId}`, agentId)
+  }
+
+  /** Wrap the turn's relay-bound transport with daemon-owned bounded replay. The
+   * turn engine keeps calling the stable wrapper while resume swaps only the raw
+   * transport underneath it. */
+  private createWebchatTurnStream(
+    agentId: string,
+    conversationId: string,
+    turnId: string,
+    transport: WebchatSink
+  ): WebchatTurnStream {
+    this.pruneWebchatStreams()
+    const stream: WebchatTurnStream = {
+      agentId,
+      conversationId,
+      turnId,
+      transport,
+      sink: {
+        output: (output) => this.publishWebchatStreamEvent(stream, { kind: 'output', output }),
+        done: (done) => this.publishWebchatStreamEvent(stream, { kind: 'done', done })
+      },
+      replay: [],
+      replayBytes: 0,
+      replayFloor: 0,
+      replayDisabled: false,
+      lastOutputIndex: -1
+    }
+    this.webchatStreams.set(turnId, stream)
+    this.latestWebchatTurn.set(this.webchatSessionKey(conversationId, agentId), turnId)
+    this.pruneWebchatStreams()
+    return stream
+  }
+
+  /** Buffer before sending so a transport gap is recoverable even when the live
+   * write is lost. The terminal frame carries the final output index for browser
+   * gap detection. */
+  private publishWebchatStreamEvent(stream: WebchatTurnStream, event: RdChatEvent): void {
+    const normalized: RdChatEvent =
+      event.kind === 'output' ? event : { kind: 'done', done: { ...event.done, lastIndex: stream.lastOutputIndex } }
+    if (normalized.kind === 'output') {
+      stream.lastOutputIndex = Math.max(stream.lastOutputIndex, normalized.output.index)
+    }
+    if (!stream.replayDisabled) this.bufferWebchatStreamEvent(stream, normalized)
+    this.deliverWebchatStreamEvent(stream.transport, normalized)
+    if (normalized.kind === 'done') {
+      stream.completedAt = this.clock.now()
+      this.pruneWebchatStreams()
+    }
+  }
+
+  private bufferWebchatStreamEvent(stream: WebchatTurnStream, event: RdChatEvent): void {
+    const bytes = Buffer.byteLength(JSON.stringify(event))
+    stream.replay.push({ event, bytes })
+    stream.replayBytes += bytes
+    while (stream.replay.length > WEBCHAT_REPLAY_MAX_EVENTS || stream.replayBytes > WEBCHAT_REPLAY_MAX_BYTES) {
+      const dropped = stream.replay.shift()
+      if (!dropped) break
+      stream.replayBytes -= dropped.bytes
+      if (dropped.event.kind === 'output') {
+        stream.replayFloor = Math.max(stream.replayFloor, dropped.event.output.index + 1)
+      } else {
+        // A terminal frame is tiny and should never be the overflow victim. Fail
+        // closed if a future payload shape violates that assumption.
+        stream.replayDisabled = true
+        stream.replay = []
+        stream.replayBytes = 0
+        break
+      }
+    }
+  }
+
+  private deliverWebchatStreamEvent(sink: WebchatSink, event: RdChatEvent): void {
+    if (event.kind === 'output') sink.output(event.output)
+    else sink.done(event.done)
+  }
+
+  private resumeWebchatStream(
+    agentId: string,
+    conversationId: string,
+    turnId: string | undefined,
+    afterIndex: number,
+    transport: WebchatSink
+  ): { accepted: boolean; turnId?: string; reason?: string } {
+    this.pruneWebchatStreams()
+    const resolvedTurnId = turnId ?? this.latestWebchatTurn.get(this.webchatSessionKey(conversationId, agentId))
+    const stream = resolvedTurnId ? this.webchatStreams.get(resolvedTurnId) : undefined
+    if (!stream || stream.agentId !== agentId || stream.conversationId !== conversationId) {
+      return { accepted: false, reason: 'stream_not_found' }
+    }
+    if (stream.replayDisabled || afterIndex < stream.replayFloor - 1) {
+      return { accepted: false, turnId: stream.turnId, reason: 'stream_gap' }
+    }
+    if (afterIndex > stream.lastOutputIndex) {
+      return { accepted: false, turnId: stream.turnId, reason: 'stream_cursor_invalid' }
+    }
+
+    // Rebind first: outputs produced after this synchronous replay leave through
+    // the same new relay connection. Replay bypasses the stable buffering wrapper
+    // so retained frames are not inserted twice.
+    stream.transport = transport
+    for (const buffered of stream.replay) {
+      if (buffered.event.kind === 'output' && buffered.event.output.index <= afterIndex) continue
+      this.deliverWebchatStreamEvent(transport, buffered.event)
+    }
+    return { accepted: true, turnId: stream.turnId }
+  }
+
+  private removeWebchatStream(turnId: string, stream: WebchatTurnStream): void {
+    this.webchatStreams.delete(turnId)
+    const key = this.webchatSessionKey(stream.conversationId, stream.agentId)
+    if (this.latestWebchatTurn.get(key) === turnId) this.latestWebchatTurn.delete(key)
+    stream.replayDisabled = true
+    stream.replay = []
+    stream.replayBytes = 0
+  }
+
+  private pruneWebchatStreams(): void {
+    const now = this.clock.now()
+    for (const [turnId, stream] of this.webchatStreams) {
+      if (stream.completedAt !== undefined && now - stream.completedAt > WEBCHAT_REPLAY_TTL_MS) {
+        this.removeWebchatStream(turnId, stream)
+      }
+    }
+    while (this.webchatStreams.size > WEBCHAT_REPLAY_MAX_STREAMS) {
+      const completed =
+        [...this.webchatStreams].find(([, stream]) => stream.completedAt !== undefined) ??
+        this.webchatStreams.entries().next().value
+      if (!completed) break
+      this.removeWebchatStream(completed[0], completed[1])
+    }
   }
 
   /** Resolve a session only while its Agent explicitly permits chat-side runtime changes. */
@@ -3890,6 +4047,11 @@ export class Daemon {
     this.log.debug(`webchat cancel: no in-flight turn for conversation ${conversationId}`)
   }
 
+  // Bounded, ephemeral reconnect state. The exact turn map authorizes cursored
+  // resume; the session map covers the pre-ack disconnect case where the browser
+  // does not know its turnId yet.
+  private readonly webchatStreams = new Map<string, WebchatTurnStream>()
+  private readonly latestWebchatTurn = new Map<string, string>()
   // Idempotency cache for the at-least-once rd/* wire: (sessionKey:msgId) → the ack we
   // already returned. Bounded like `seenMsgIds`. A relay retransmit replays this instead
   // of re-dispatching. (design §7.2 RdMsgWebchat: "the daemon drops an already-seen
@@ -5561,6 +5723,15 @@ export class Daemon {
           ...(ack.reason ? { reason: ack.reason } : {})
         }
       }
+      case 'resume': {
+        const resumed = this.resumeWebchatStream(msg.agentId, msg.chatId, op.turnId, op.afterIndex, sink)
+        return {
+          msgId: msg.msgId,
+          accepted: resumed.accepted,
+          ...(resumed.turnId ? { turnId: resumed.turnId } : {}),
+          ...(resumed.reason ? { reason: resumed.reason } : {})
+        }
+      }
       case 'set_model':
         return this.setModelByKey(key(), op.model)
           ? { msgId: msg.msgId, accepted: true }
@@ -6342,7 +6513,7 @@ export class Daemon {
       iconUrl?: string
       platform: string
       isDm: boolean
-      webchat?: { conversationId: string; turnId: string; sink: WebchatSink }
+      webchat?: WebchatTurnContext
       replyConn?: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
       channel: string
       thread?: string
@@ -6799,7 +6970,7 @@ export class Daemon {
     agentId: string,
     msg: NormalizedMessage,
     integrationId?: string,
-    webchat?: { conversationId: string; turnId: string; sink: WebchatSink },
+    webchat?: WebchatTurnContext,
     callMeta?: CallMeta,
     opts?: {
       isQueueCmd?: boolean

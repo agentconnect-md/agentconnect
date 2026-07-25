@@ -12,6 +12,14 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { agentLabel, type Agent, type Session, type SessionStep } from '@/lib/data'
 import { webchatWsUrl, fmtCountCompact, fmtCost, ApiError } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
+import {
+  acceptWebchatDone,
+  acceptWebchatOutput,
+  bindWebchatTurn,
+  createWebchatCursor,
+  type OrderedWebchatCursor,
+  type OrderedWebchatResult
+} from '@/lib/webchat-stream'
 
 interface PlaygroundData {
   /** Composer buffer for one session id (each live conversation has its own). */
@@ -126,6 +134,19 @@ type WebchatStatus = {
   sessionId?: string
 }
 
+type WebchatOutput = {
+  turnId: string
+  index: number
+  event?: WebchatEvent
+  status?: WebchatStatus
+}
+
+type WebchatDone = {
+  turnId: string
+  lastIndex?: number
+  error?: string
+}
+
 export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const [pgSessions, setPgSessions] = useState<Record<string, Session>>({})
   // Live tail for adopted webchat sessions (real CP ids). Kept apart from `pgSessions`
@@ -139,6 +160,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const [pgBusyBy, setPgBusyBy] = useState<Record<string, boolean>>({})
   const conns = useRef<Map<string, Conn>>(new Map())
   const conversationIds = useRef<Map<string, string>>(new Map())
+  const streamCursors = useRef<Map<string, OrderedWebchatCursor<WebchatOutput, WebchatDone>>>(new Map())
   const reconnectAttempts = useRef<Map<string, number>>(new Map())
   const busyRef = useRef<Record<string, boolean>>({})
   const closingAll = useRef(false)
@@ -280,11 +302,63 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  const failStream = useCallback(
+    (id: string, message: string): void => {
+      streamCursors.current.delete(id)
+      reconnectAttempts.current.delete(id)
+      pushStep(id, { kind: 'done', text: `⚠️ ${message}` })
+      setBusy(id, false)
+    },
+    [pushStep, setBusy]
+  )
+
+  const applyStreamResult = useCallback(
+    (id: string, result: OrderedWebchatResult<WebchatOutput, WebchatDone>): void => {
+      if (result.overflow) {
+        failStream(id, 'Connection interrupted — refresh to load the complete response.')
+        return
+      }
+      for (const output of result.outputs) {
+        if (output.status) applyStatus(id, output.status)
+        const event = output.event
+        if (event) {
+          if (event.kind === 'session_info') applyTitle(id, event.title)
+          else applyEvent(id, event)
+        }
+      }
+      if (!result.done) return
+      reconnectAttempts.current.delete(id)
+      streamCursors.current.delete(id)
+      if (result.done.error) pushStep(id, { kind: 'done', text: `⚠️ ${result.done.error}` })
+      setBusy(id, false)
+    },
+    [applyEvent, applyStatus, applyTitle, failStream, pushStep, setBusy]
+  )
+
+  const receiveOutput = useCallback(
+    (id: string, output: WebchatOutput): void => {
+      const cursor = streamCursors.current.get(id)
+      if (!cursor) return
+      reconnectAttempts.current.delete(id)
+      applyStreamResult(id, acceptWebchatOutput(cursor, output))
+    },
+    [applyStreamResult]
+  )
+
+  const receiveDone = useCallback(
+    (id: string, done: WebchatDone): void => {
+      const cursor = streamCursors.current.get(id)
+      if (!cursor) return
+      applyStreamResult(id, acceptWebchatDone(cursor, done))
+    },
+    [applyStreamResult]
+  )
+
   /** Open (or reuse) the webchat socket for a session. `conversationId` RESUMES an
    *  existing conversation (adopted webchat sessions); omit it for a fresh playground
    *  turn (the CP mints the id). */
   const connect = useCallback(
-    (id: string, agentId: string, conversationId?: string): Conn => {
+    (id: string, agentId: string, conversationId?: string, resumeStream = false): Conn => {
       const resumeId = conversationId ?? conversationIds.current.get(id)
       if (resumeId) conversationIds.current.set(id, resumeId)
       const existing = conns.current.get(id)
@@ -317,9 +391,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         }
         const attempt = reconnectAttempts.current.get(id) ?? 0
         if (attempt >= WEBCHAT_RECONNECT_MAX_ATTEMPTS) {
-          reconnectAttempts.current.delete(id)
-          pushStep(id, { kind: 'done', text: '⚠️ Connection interrupted.' })
-          setBusy(id, false)
+          failStream(id, 'Connection interrupted.')
           return
         }
         reconnectAttempts.current.set(id, attempt + 1)
@@ -327,7 +399,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         conn.reconnectTimer = window.setTimeout(() => {
           conn.reconnectTimer = undefined
           if (!busyRef.current[id] || conns.current.has(id)) return
-          void connect(id, agentId, reconnectId).ready.catch(() => {})
+          void connect(id, agentId, reconnectId, true).ready.catch(() => {})
         }, delay)
       }
 
@@ -348,9 +420,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               let m: {
                 type?: string
                 conversationId?: string
-                output?: { event?: WebchatEvent; status?: WebchatStatus }
-                done?: { error?: string }
-                ack?: { accepted?: boolean; reason?: string }
+                output?: WebchatOutput
+                done?: WebchatDone
+                ack?: { accepted?: boolean; reason?: string; turnId?: string }
               }
               try {
                 m = JSON.parse(String(e.data))
@@ -362,22 +434,34 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                   conn.conversationId = m.conversationId
                   conversationIds.current.set(id, m.conversationId)
                 }
-              } else if (m.type === 'output') {
-                reconnectAttempts.current.delete(id)
-                // A frame may carry a status snapshot, a reply event, or (rarely) both.
-                if (m.output?.status) applyStatus(id, m.output.status)
-                const ev = m.output?.event
-                if (ev) {
-                  if (ev.kind === 'session_info') applyTitle(id, ev.title)
-                  else applyEvent(id, ev)
+                if (resumeStream && busyRef.current[id]) {
+                  const cursor = streamCursors.current.get(id)
+                  if (cursor) {
+                    ws.send(
+                      JSON.stringify({
+                        type: 'resume',
+                        ...(cursor.turnId ? { turnId: cursor.turnId } : {}),
+                        afterIndex: cursor.nextIndex - 1
+                      })
+                    )
+                  }
                 }
+              } else if (m.type === 'output') {
+                if (m.output) receiveOutput(id, m.output)
               } else if (m.type === 'done') {
-                reconnectAttempts.current.delete(id)
-                // A turn that failed to start / errored ends with `done.error` instead
-                // of a reply — show it so the transcript doesn't just fall silent.
-                if (m.done?.error) pushStep(id, { kind: 'done', text: `⚠️ ${m.done.error}` })
-                setBusy(id, false)
+                if (m.done) receiveDone(id, m.done)
+              } else if (m.type === 'ack' && m.ack?.accepted !== false) {
+                const cursor = streamCursors.current.get(id)
+                if (cursor && m.ack?.turnId) bindWebchatTurn(cursor, m.ack.turnId)
+              } else if (m.type === 'resumed' && m.ack?.accepted === false) {
+                failStream(
+                  id,
+                  m.ack.reason === 'stream_gap'
+                    ? 'Some response updates could not be recovered — refresh to load the complete response.'
+                    : 'The response could not be resumed — refresh to load its latest state.'
+                )
               } else if (m.type === 'ack' && m.ack?.accepted === false) {
+                streamCursors.current.delete(id)
                 reconnectAttempts.current.delete(id)
                 pushStep(id, {
                   kind: 'done',
@@ -388,9 +472,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 })
                 setBusy(id, false)
               } else if (m.type === 'error') {
-                reconnectAttempts.current.delete(id)
-                pushStep(id, { kind: 'done', text: '⚠️ Connection error.' })
-                setBusy(id, false)
+                failStream(id, 'Connection error.')
               }
             }
             if (conns.current.get(id) === conn) conn.ws = ws
@@ -407,7 +489,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       conns.current.set(id, conn)
       return conn
     },
-    [activeOrg, applyEvent, applyStatus, applyTitle, pushStep, setBusy]
+    [activeOrg, failStream, receiveDone, receiveOutput, pushStep, setBusy]
   )
 
   const openPlayground = useCallback(
@@ -456,6 +538,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pushStep(id, { kind: 'msg', who: '@you', text })
       setPgInput(id, '')
       setBusy(id, true)
+      streamCursors.current.set(id, createWebchatCursor<WebchatOutput, WebchatDone>())
       if (conversationId) conversationIds.current.set(id, conversationId)
       reconnectAttempts.current.delete(id)
       const conn = connect(id, agentForId, conversationId)
@@ -471,6 +554,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               ? '⚠️ Webchat relay not configured — set PUBLIC_RELAY_URL on the control plane.'
               : '⚠️ Could not reach the agent.'
           })
+          streamCursors.current.delete(id)
           setBusy(id, false)
         })
     },

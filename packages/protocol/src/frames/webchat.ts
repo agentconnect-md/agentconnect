@@ -93,6 +93,10 @@ export type WebchatOutput = z.infer<typeof WebchatOutput>
 export const WebchatDone = z.object({
   conversationId: z.string().uuid(),
   turnId: z.string().uuid(),
+  // Last output index emitted before this terminal marker. A reconnecting browser
+  // holds `done` until it has assembled every output through this index, so an
+  // early terminal frame cannot hide a gap. Optional for rolling compatibility.
+  lastIndex: z.number().int().min(-1).optional(),
   stopReason: z.string().optional(),
   usage: z.object({ used: z.number().int().optional(), cost: z.number().optional() }).optional(),
   error: z.string().optional()

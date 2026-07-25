@@ -1045,6 +1045,83 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   }, 15_000)
 
+  it('rebinds an active turn to a new relay sink and replays a missed terminal tail', async () => {
+    const { factory } = streamingHost([])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    const first: RdChatEvent[] = []
+    const second: RdChatEvent[] = []
+    const third: RdChatEvent[] = []
+    const sink = (events: RdChatEvent[]) => ({
+      output: (output: WebchatOutput) => events.push({ kind: 'output', output }),
+      done: (done: WebchatDone) => events.push({ kind: 'done', done })
+    })
+    const stream = (daemon as any).createWebchatTurnStream(AGENT_ID, CONV, turnId, sink(first))
+
+    stream.sink.output({ conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'first' } })
+    const activeResume = (daemon as any).handleRelayMsg(
+      rd({ op: 'resume', turnId, afterIndex: -1 }, { msgId: 'resume-active' }),
+      (event: RdChatEvent) => second.push(event)
+    )
+    expect(activeResume).toMatchObject({ accepted: true, turnId })
+    expect(second.filter((event) => event.kind === 'output')).toHaveLength(1)
+
+    stream.sink.output({ conversationId: CONV, turnId, index: 1, event: { kind: 'message', text: 'second' } })
+    stream.sink.done({ conversationId: CONV, turnId, stopReason: 'end_turn' })
+    expect(first).toHaveLength(1) // future output moved to the resumed relay sink
+    expect(second.at(-1)).toEqual({
+      kind: 'done',
+      done: { conversationId: CONV, turnId, lastIndex: 1, stopReason: 'end_turn' }
+    })
+
+    const terminalResume = (daemon as any).handleRelayMsg(
+      rd({ op: 'resume', turnId, afterIndex: 0 }, { msgId: 'resume-terminal' }),
+      (event: RdChatEvent) => third.push(event)
+    )
+    expect(terminalResume).toMatchObject({ accepted: true, turnId })
+    expect(third).toEqual([
+      {
+        kind: 'output',
+        output: { conversationId: CONV, turnId, index: 1, event: { kind: 'message', text: 'second' } }
+      },
+      {
+        kind: 'done',
+        done: { conversationId: CONV, turnId, lastIndex: 1, stopReason: 'end_turn' }
+      }
+    ])
+    await daemon.stop()
+  })
+
+  it('rejects resume explicitly when the bounded replay window no longer covers the cursor', async () => {
+    const { factory } = streamingHost([])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    const stream = (daemon as any).createWebchatTurnStream(AGENT_ID, CONV, turnId, {
+      output: () => {},
+      done: () => {}
+    })
+    for (let index = 0; index <= 256; index++) {
+      stream.sink.output({
+        conversationId: CONV,
+        turnId,
+        index,
+        event: { kind: 'message', text: String(index) }
+      })
+    }
+
+    expect(
+      (daemon as any).handleRelayMsg(
+        rd({ op: 'resume', turnId, afterIndex: -1 }, { msgId: 'resume-overflow' }),
+        () => {}
+      )
+    ).toMatchObject({ accepted: false, turnId, reason: 'stream_gap' })
+    await daemon.stop()
+  })
+
   it('rejects a turn for an agent not on this daemon (accepted:false, reason no_agent)', async () => {
     const { factory } = streamingHost([])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
