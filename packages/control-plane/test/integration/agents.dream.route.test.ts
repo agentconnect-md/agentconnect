@@ -36,6 +36,15 @@ const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd0d0d0d0-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 
+/** Capabilities of a daemon new enough to serve dreams. The stock fixture has
+ *  `features: []`, which now correctly reads as a pre-dreaming daemon. */
+const DREAMING_CAPS = {
+  platforms: ['slack', 'telegram', 'discord'],
+  runtimes: ['claude'],
+  acp: true,
+  features: ['memory-dreaming-v1']
+}
+
 const LIVE: DaemonLiveness = {
   get: (id) => (id === DAEMON ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
 }
@@ -127,7 +136,7 @@ class SpyControl {
 
 describe('memory dreaming routes — proxy + managed guard', () => {
   it('starts a dream and forwards per-run overrides', async () => {
-    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, DAEMON, { capabilities: DREAMING_CAPS })
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
     const s = new SpyControl()
     running = buildHttpApp(prisma, undefined, LIVE, s as unknown as ControlSender)
@@ -143,7 +152,7 @@ describe('memory dreaming routes — proxy + managed guard', () => {
   })
 
   it('lists, gets, and reviews staged files', async () => {
-    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, DAEMON, { capabilities: DREAMING_CAPS })
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
     const s = new SpyControl()
     running = buildHttpApp(prisma, undefined, LIVE, s as unknown as ControlSender)
@@ -163,7 +172,7 @@ describe('memory dreaming routes — proxy + managed guard', () => {
   })
 
   it('adopts (forwarding force) and discards', async () => {
-    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, DAEMON, { capabilities: DREAMING_CAPS })
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
     const s = new SpyControl()
     running = buildHttpApp(prisma, undefined, LIVE, s as unknown as ControlSender)
@@ -185,7 +194,7 @@ describe('memory dreaming routes — proxy + managed guard', () => {
   })
 
   it('maps a daemon CONFLICT (fence / wrong state) to 409', async () => {
-    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, DAEMON, { capabilities: DREAMING_CAPS })
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
     const s = {
       async dreamAdopt(): Promise<DreamState> {
@@ -202,7 +211,7 @@ describe('memory dreaming routes — proxy + managed guard', () => {
   })
 
   it('400s a non-managed provider and 503s an unplaced agent', async () => {
-    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, DAEMON, { capabilities: DREAMING_CAPS })
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
     await prisma.agent.update({
       where: { id: AGENT },
@@ -225,10 +234,36 @@ describe('memory dreaming routes — proxy + managed guard', () => {
   })
 })
 
+describe('memory dreaming routes — daemon version skew', () => {
+  it('refuses with a machine-readable 409 when the daemon predates dreaming', async () => {
+    // The stock fixture advertises no features. Forwarding `memory/dream/*` to
+    // such a daemon would be silently ignored there and hang until the request
+    // timed out, surfacing as a misleading 503 — so the CP must refuse up front.
+    await seedDaemon(prisma, DAEMON) // features: []
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const s = new SpyControl()
+    running = buildHttpApp(prisma, undefined, LIVE, s as unknown as ControlSender)
+
+    const res = await running.app.inject({ url: `${ORG}/agents/${AGENT}/memory/dreams` })
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ code: 'DAEMON_FEATURE_MISSING' })
+    // Nothing was sent to that daemon.
+    expect(s.listCalls).toHaveLength(0)
+
+    const start = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/memory/dreams`,
+      payload: {}
+    })
+    expect(start.statusCode).toBe(409)
+    expect(s.startCalls).toHaveLength(0)
+  })
+})
+
 describe('memory dreaming routes — edit gate (viewer 403)', () => {
   it('rejects a viewer on every lifecycle mutation without contacting the daemon; reads still pass', async () => {
     const viewer = await makeUser('dream-viewer', 'viewer')
-    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, DAEMON, { capabilities: DREAMING_CAPS })
     await seedAgent(prisma, AGENT, { daemonId: DAEMON, visibility: 'restricted', sharedWith: [viewer] })
     const s = new SpyControl()
     running = buildHttpApp(prisma, { DEFAULT_OWNER_ID: viewer }, LIVE, s as unknown as ControlSender)

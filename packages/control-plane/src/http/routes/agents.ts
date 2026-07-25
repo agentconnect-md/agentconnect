@@ -139,6 +139,17 @@ function sandboxPolicyOf(daemon: DaemonView | null): SandboxPolicy {
   }
 }
 
+/** Version-skew gate for memory dreaming. A daemon that predates the feature
+ *  omits it, and the CP must NOT forward `memory/dream/*` to it: that daemon
+ *  silently ignores unknown frames, so the request would hang until it times
+ *  out and surface as a misleading 503. Gating here fails fast with a clear
+ *  message, and the DTO projection lets the console hide the panel outright. */
+const DREAMING_FEATURE = 'memory-dreaming-v1'
+
+function dreamingSupportedOn(daemon: DaemonView | null): boolean {
+  return !!daemon?.capabilities.features.includes(DREAMING_FEATURE)
+}
+
 function toDto(
   a: AgentRecord,
   ctx: ViewCtx,
@@ -2593,6 +2604,18 @@ export function agentRoutes(deps: HttpDeps) {
         await reply
           .code(503)
           .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        return null
+      }
+      // Version skew: refuse before we send a frame the daemon would drop.
+      if (!dreamingSupportedOn(await deps.registry.get(agent.daemonId))) {
+        await reply.code(409).send({
+          error: 'Conflict',
+          statusCode: 409,
+          message: 'this agent version does not support memory dreaming; upgrade its daemon',
+          // Machine-readable so the console can hide the panel instead of
+          // string-matching the prose.
+          code: 'DAEMON_FEATURE_MISSING'
+        })
         return null
       }
       return agent as AgentRecord & { daemonId: string }
