@@ -11,10 +11,11 @@
  * for the console (which still lists files via the internal `listMemory` helper).
  *
  * SECURITY: topic paths are agent/console-supplied, so absolute paths and `..`
- * escapes are rejected. Writes additionally walk and canonicalise every parent,
- * reject symlinks/non-files, and publish through a random exclusive temp file.
- * Flat by design (one level): a topic is a file directly under `memory/`, no
- * nested dirs.
+ * escapes are rejected. Reads and writes both walk and canonicalise every parent
+ * and reject symlinks/non-files — the daemon is outside the agent's sandbox, so a
+ * link planted in the writable memory dir must not redirect either direction.
+ * Writes additionally publish through a random exclusive temp file. Flat by design
+ * (one level): a topic is a file directly under `memory/`, no nested dirs.
  */
 import { randomUUID } from 'node:crypto'
 import { constants, promises as fsp, lstatSync, mkdirSync, realpathSync, writeFileSync, type Stats } from 'node:fs'
@@ -182,6 +183,68 @@ async function containedWriteTarget(agentDir: string, root: string, destination:
   return join(parent, basename(lexicalTarget))
 }
 
+/**
+ * Canonicalise a destination's parent one component at a time WITHOUT creating
+ * anything — the read-side twin of `containedWriteTarget`. Existing symlink
+ * components are rejected instead of followed; a missing component means there is
+ * nothing to read, reported as `null` so callers keep their "'' when absent"
+ * contract.
+ */
+async function containedReadTarget(agentDir: string, root: string, destination: string): Promise<string | null> {
+  const lexicalAgent = resolve(agentDir)
+  const lexicalRoot = resolve(root)
+  const lexicalTarget = resolve(destination)
+  if (!under(lexicalAgent, lexicalRoot) || !under(lexicalRoot, lexicalTarget)) {
+    throw new MemoryPathError('path escapes the memory dir')
+  }
+
+  let realAgent: string
+  try {
+    realAgent = await fsp.realpath(lexicalAgent)
+  } catch (err) {
+    if (isErrno(err, 'ENOENT')) return null
+    throw err
+  }
+  let parent = realAgent
+  for (const part of relative(lexicalAgent, dirname(lexicalTarget)).split(sep).filter(Boolean)) {
+    const candidate = join(parent, part)
+    let stat: Stats
+    try {
+      stat = await fsp.lstat(candidate)
+    } catch (err) {
+      if (isErrno(err, 'ENOENT')) return null
+      throw err
+    }
+    if (!stat.isDirectory()) throw new MemoryPathError('memory path contains a symlink or non-directory')
+    parent = await fsp.realpath(candidate)
+    if (!under(realAgent, parent)) throw new MemoryPathError('path resolves outside the agent root')
+  }
+
+  let realRoot: string
+  try {
+    realRoot = await fsp.realpath(lexicalRoot)
+  } catch (err) {
+    if (isErrno(err, 'ENOENT')) return null
+    throw err
+  }
+  if (!under(realAgent, realRoot) || !under(realRoot, parent)) {
+    throw new MemoryPathError('path resolves outside the memory dir')
+  }
+  return join(parent, basename(lexicalTarget))
+}
+
+/**
+ * Read one file out of a memory provider's tree without following symlinks; ''
+ * when it does not exist. The daemon is NOT inside the agent's sandbox, so a link
+ * planted in a writable memory dir would otherwise turn a memory read into an
+ * arbitrary-file read — the mirror of the write path's escape.
+ */
+export async function readContainedMemoryFile(agentDir: string, root: string, destination: string): Promise<string> {
+  const target = await containedReadTarget(agentDir, root, destination)
+  if (target === null) return ''
+  return (await readCurrentMemoryFile(target)).before
+}
+
 type CurrentMemoryFile =
   { existed: false; before: ''; stat?: undefined } | { existed: true; before: string; stat: Stats }
 
@@ -290,12 +353,7 @@ export async function readIndex(agentDir: string): Promise<string> {
 /** Read a memory file's text; '' when it does not exist (never throws on ENOENT). */
 export async function readMemoryFile(agentDir: string, relPath: string): Promise<string> {
   const abs = resolveInMemoryDir(agentDir, relPath)
-  try {
-    return await fsp.readFile(abs, 'utf8')
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return ''
-    throw err
-  }
+  return readContainedMemoryFile(agentDir, memoryDir(agentDir), abs)
 }
 
 /** Truncate a snapshot to the history value cap, on a UTF-8 boundary, flagging it. */

@@ -188,6 +188,20 @@ describe('DispatchingMemoryProvider (per-agent routing)', () => {
     expect(existsSync(join(outside, 'MEMORY.md'))).toBe(false)
   })
 
+  it('native read rejects a symlinked parent that leaves the agent root', async () => {
+    const root = newDir()
+    roots['bot-n'] = root
+    const nativeParent = join(root, '.claude', 'projects', 'ws-abc')
+    const outside = newDir()
+    mkdirSync(nativeParent, { recursive: true })
+    writeFileSync(join(outside, 'MEMORY.md'), 'PRIVATE-KEY')
+    symlinkSync(outside, join(nativeParent, 'memory'))
+
+    await expect(provider().read({ agentId: 'bot-n' }, 'ws-abc/memory/MEMORY.md')).rejects.toBeInstanceOf(
+      MemoryPathError
+    )
+  })
+
   it('none: no tools, store, injection, or writes', async () => {
     const p = provider()
     const scope = { agentId: 'bot-0' }
