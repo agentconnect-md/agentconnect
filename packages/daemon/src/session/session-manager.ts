@@ -1,5 +1,4 @@
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
-import type { WebchatRuntimeConfig } from '@agentconnect.md/protocol'
 import { LocalStore, sessionKey } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { prepareWorkspace } from '../workspace/workspace-manager.js'
@@ -238,9 +237,9 @@ export class SessionManager {
      *  THIS turn was woken by another session's `sendMessage`. Surfaced to the agent as the
      *  `Parent session` line of the `# Agent` block — the SessionTarget it replies into. */
     originSessionId?: string,
-    /** Runtime choices staged before a webchat session exists. The daemon has already
-     *  enforced the Agent's allowRuntimeChangesInChat boundary. */
-    initialRuntime?: WebchatRuntimeConfig
+    /** A chat-selected effort needed by session/new metadata before the session row exists.
+     *  The daemon revalidates current Agent authority before persisting or prompting. */
+    initialEffort?: string
   ): Promise<{
     sessionId: string
     blocks: ContentBlock[]
@@ -323,7 +322,7 @@ export class SessionManager {
     // The sticky per-session effort override rides session `_meta` on new/load so the
     // `ultracode` sentinel (rejected by the `thought_level` select) takes effect;
     // select-based effort/model/fast overrides layer on afterward at turn start.
-    const effortOverride = initialRuntime?.effort ?? this.deps.store.getEffortOverride(key)
+    const effortOverride = initialEffort ?? this.deps.store.getEffortOverride(key)
 
     // Agent memory INDEX (agents/memory-provider.ts), read fresh. It's STANDING
     // context (like the system prompt), NOT a user turn — so it rides the system-prompt
@@ -572,15 +571,6 @@ export class SessionManager {
         this.deps.store.upsertSession(rec)
       }
     }
-
-    // The row now exists, so staged first-turn choices can become the same sticky
-    // overrides used by established sessions before Daemon applies them to the prompt.
-    if (initialRuntime?.model !== undefined) this.deps.store.setModelOverride(key, initialRuntime.model)
-    if (initialRuntime?.effort !== undefined) this.deps.store.setEffortOverride(key, initialRuntime.effort)
-    if (initialRuntime?.permissionMode !== undefined) {
-      this.deps.store.setPermissionModeOverride(key, initialRuntime.permissionMode)
-    }
-    if (initialRuntime?.fastMode !== undefined) this.deps.store.setFastModeOverride(key, initialRuntime.fastMode)
 
     // Older anchored cron/hook turns persisted their synthetic UUID as the Slack
     // read cursor. Start one bounded catch-up from scratch instead of passing that
