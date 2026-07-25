@@ -387,7 +387,7 @@ export function integrationRoutes(deps: HttpDeps) {
           // appToken = appId, the identifier — appToken already nullable since Telegram).
           if (req.body.platform === 'feishu') {
             const feishu = req.body.feishu! // superRefine guarantees it when botId is absent
-            const region = feishu.region // zod-defaulted to 'feishu' when omitted
+            const region = feishu.region // zod-defaulted to 'lark' for new installs
             const check = deps.verifyFeishuBot
               ? await deps.verifyFeishuBot(feishu.appId, feishu.appSecret, region)
               : null

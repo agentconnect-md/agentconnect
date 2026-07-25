@@ -609,12 +609,12 @@ export const CreateIntegrationBody = z
       .optional(),
     /** Register a new Feishu / Lark self-built app from its appId + appSecret pair.
      *  `region` picks the open-platform gateway (feishu.cn vs larksuite.com); it
-     *  defaults to 'feishu' so older clients that omit it keep the China gateway. */
+     *  defaults to international Lark for new create requests. */
     feishu: z
       .object({
         appId: z.string().min(1),
         appSecret: z.string().min(1),
-        region: FeishuRegion.default('feishu')
+        region: FeishuRegion.default('lark')
       })
       .optional()
   })
