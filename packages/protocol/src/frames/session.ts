@@ -116,6 +116,9 @@ export type SessionMessage = z.infer<typeof SessionMessage>
 
 /** C→D REQ: fetch one page of a session's history from the owning daemon. */
 export const SessionHistoryReq = z.object({
+  // Optional only for rolling compatibility with an older CP. A current CP always
+  // sends the authorized owner and the daemon re-checks the session binding.
+  agentId: z.string().uuid().optional(),
   sessionId: z.string(), // opaque ACP session id (agent-assigned; NOT a wire UUID)
   cursor: z.string().optional(), // opaque; omit ⇒ newest page
   limit: z.number().int().positive().max(200).default(50)
@@ -136,6 +139,8 @@ export type SessionHistoryPage = z.infer<typeof SessionHistoryPage>
  * bigger the console pages the whole thing back through this frame by offset.
  */
 export const SessionToolBodyReq = z.object({
+  // Optional only for rolling compatibility with an older CP; see SessionHistoryReq.
+  agentId: z.string().uuid().optional(),
   sessionId: z.string(),
   toolCallId: z.string(),
   offset: z.number().int().nonnegative().default(0)

@@ -299,7 +299,7 @@ function ContentBlock({ block }: { block: unknown }) {
 
 // The expandable body panel for one tool row: input, output, content blocks,
 // locations, plus a "view full" affordance when only a truncated preview is inline.
-function ToolBodyDetail({ msg, sessionId, agentId }: { msg: SessionMessageDto; sessionId: string; agentId: string }) {
+function ToolBodyDetail({ msg, sessionId }: { msg: SessionMessageDto; sessionId: string }) {
   const [open, setOpen] = useState(false)
   const [full, setFull] = useState<string | null>(null) // full body JSON, once fetched
   const [loading, setLoading] = useState(false)
@@ -323,10 +323,10 @@ function ToolBodyDetail({ msg, sessionId, agentId }: { msg: SessionMessageDto; s
   const bytes = msg.bodyBytes
 
   const loadFull = () => {
-    if (loading || !agentId) return
+    if (loading) return
     setLoading(true)
     setErr(null)
-    fetchToolBody(sessionId, agentId, msg.toolCallId ?? body?.toolCallId ?? '').then(
+    fetchToolBody(sessionId, msg.toolCallId ?? body?.toolCallId ?? '').then(
       (s) => {
         setFull(s)
         setLoading(false)
@@ -645,7 +645,7 @@ export default function SessionDetailView() {
       let all: SessionMessageDto[] = []
       let cursor: string | undefined
       for (let i = 0; i < MAX_PAGES; i++) {
-        const page = await fetchSessionMessages(sid, aid, cursor)
+        const page = await fetchSessionMessages(sid, cursor)
         if (!active) return
         all = [...page.messages, ...all]
         setMsgs(all)
@@ -1511,7 +1511,7 @@ export default function SessionDetailView() {
                                   ))}
                                 </div>
                               )}
-                              {st.msg && sid && aid && <ToolBodyDetail msg={st.msg} sessionId={sid} agentId={aid} />}
+                              {st.msg && sid && <ToolBodyDetail msg={st.msg} sessionId={sid} />}
                             </div>
                           </div>
                         ))}

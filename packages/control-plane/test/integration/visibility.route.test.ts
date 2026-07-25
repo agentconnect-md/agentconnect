@@ -376,18 +376,34 @@ describe('reference-write cannot target an invisible daemon', () => {
   })
 })
 
-describe('derived visibility — sessions tool-body, usage', () => {
-  it('tool-body 404s for a restricted agent the caller can’t see', async () => {
-    const other = await makeUser('tb-other', 'collaborator')
+describe('derived visibility — session bodies, usage', () => {
+  it('caller-supplied agentId cannot authorize another agent’s session bodies', async () => {
+    const other = await makeUser('session-body-other', 'collaborator')
     const daemon = randomUUID()
     await seedDaemon(prisma, daemon)
+    const visible = randomUUID()
     const R = randomUUID()
+    const session = randomUUID()
+    await seedAgent(prisma, visible, { daemonId: daemon })
     await seedAgent(prisma, R, { daemonId: daemon, visibility: 'restricted', sharedWith: [] })
-    const res = await appAs(other).app.inject({
-      method: 'GET',
-      url: `${ORG}/sessions/${randomUUID()}/tool-body?agentId=${R}&toolCallId=t1`
+    await prisma.sessionMeta.create({
+      data: {
+        id: session,
+        agentId: R,
+        platform: 'slack',
+        channel: 'C-HR',
+        phase: 'start',
+        lastActivityAt: new Date()
+      }
     })
-    expect(res.statusCode).toBe(404)
+
+    const app = appAs(other).app
+    for (const path of [
+      `/sessions/${session}/messages?agentId=${visible}`,
+      `/sessions/${session}/tool-body?agentId=${visible}&toolCallId=t1`
+    ]) {
+      expect((await app.inject({ method: 'GET', url: `${ORG}${path}` })).statusCode).toBe(404)
+    }
   })
 
   it('a restricted agent’s usage is absent from a non-viewer’s aggregate but present for an owner', async () => {

@@ -646,7 +646,9 @@ describe('CpClient dispatch', () => {
 
   it('answers session/history with a session/history/page reply correlated to the req', async () => {
     const { t } = await readyClient()
-    const f = JSON.parse(frame('session/history', { sessionId: DAEMON_ID, limit: 50 }, { epoch: 5 }))
+    const f = JSON.parse(
+      frame('session/history', { agentId: CRON_AGENT_ID, sessionId: DAEMON_ID, limit: 50 }, { epoch: 5 })
+    )
     t.pushInbound(JSON.stringify(f))
     const rep = JSON.parse(t.sent[0]!)
     expect(rep.type).toBe('session/history/page')

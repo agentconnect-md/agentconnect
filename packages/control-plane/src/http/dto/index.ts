@@ -1898,7 +1898,6 @@ export const SessionHistoryDto = z.object({
 
 /** `GET /sessions/:id/tool-body` query — one byte slice of a tool call's full ToolBody JSON. */
 export const SessionToolBodyQueryDto = z.object({
-  agentId: z.string(), // the owning agent (resolves the daemon), mirrors the messages route
   toolCallId: z.string(),
   offset: z.coerce.number().int().nonnegative().optional() // byte offset into the full body JSON
 })

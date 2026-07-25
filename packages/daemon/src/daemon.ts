@@ -10593,7 +10593,7 @@ export class Daemon {
           body: ev.body
         })
       } else {
-        this.store.updateToolCall(channel, thread, ev.toolCallId, { title: ev.text, body: ev.body })
+        this.store.updateToolCall(channel, thread, agentId, ev.toolCallId, { title: ev.text, body: ev.body })
       }
       return
     }
