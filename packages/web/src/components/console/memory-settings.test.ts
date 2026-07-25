@@ -90,30 +90,57 @@ describe('memory settings UX model', () => {
   it('models managed dreaming as an optional binding', () => {
     // Off by default: an untouched managed agent emits no `dreaming` binding.
     const off = memorySettingsDraft({ provider: 'managed', autoDistill: false })
-    expect(off.dreaming).toEqual({ enabled: false, schedule: '', instructions: '' })
+    expect(off.dreaming).toEqual({ enabled: false, instructions: '' })
     expect(memoryConfigForDraft(off)).toEqual({ provider: 'managed', autoDistill: false })
     expect(dreamingConfigForDraft(off.dreaming)).toBeUndefined()
 
-    // Enabling (and edits to schedule/instructions) are tracked as unsaved changes.
-    const enabled = { ...off, dreaming: { enabled: true, schedule: '0 4 * * *', instructions: 'focus on prefs' } }
+    // Enabling and editing instructions is tracked as an unsaved change.
+    const enabled = { ...off, dreaming: { enabled: true, instructions: 'focus on prefs' } }
     expect(memorySettingsChanged(off, enabled)).toBe(true)
     expect(memoryConfigForDraft(enabled)).toEqual({
       provider: 'managed',
       autoDistill: false,
-      dreaming: { enabled: true, schedule: '0 4 * * *', instructions: 'focus on prefs' }
+      dreaming: { enabled: true, instructions: 'focus on prefs' }
     })
+  })
 
-    // Round-trips from the wire config, and trims blank schedule/instructions out.
-    const fromWire = memorySettingsDraft({
+  it('preserves the full dreaming policy across a save, even fields the console does not edit', () => {
+    // A complete API-configured policy round-trips: the wholesale `memory` PATCH
+    // must not drop sessionWindow / schedule / mineSkills / autoAdopt just because
+    // the D-1 console only edits enabled + instructions.
+    const full = memorySettingsDraft({
       provider: 'managed',
       autoDistill: true,
-      dreaming: { enabled: true }
+      dreaming: {
+        enabled: true,
+        sessionWindow: 40,
+        schedule: '0 4 * * *',
+        instructions: 'focus on prefs',
+        mineSkills: true,
+        autoAdopt: false
+      }
     })
-    expect(fromWire.dreaming).toEqual({ enabled: true, schedule: '', instructions: '' })
-    expect(memoryConfigForDraft(fromWire)).toEqual({
+    expect(full.dreaming).toEqual({
+      enabled: true,
+      instructions: 'focus on prefs',
+      sessionWindow: 40,
+      schedule: '0 4 * * *',
+      mineSkills: true,
+      autoAdopt: false
+    })
+    // Editing only the instructions still re-emits every preserved field.
+    const edited = { ...full, dreaming: { ...full.dreaming, instructions: 'new focus' } }
+    expect(memoryConfigForDraft(edited)).toEqual({
       provider: 'managed',
       autoDistill: true,
-      dreaming: { enabled: true }
+      dreaming: {
+        enabled: true,
+        sessionWindow: 40,
+        schedule: '0 4 * * *',
+        instructions: 'new focus',
+        mineSkills: true,
+        autoAdopt: false
+      }
     })
   })
 })

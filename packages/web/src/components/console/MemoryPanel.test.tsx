@@ -218,6 +218,47 @@ describe('MemoryPanel settings draft', () => {
     )
   })
 
+  it('keeps a persisted dreaming policy across mount and equivalent prop refreshes', async () => {
+    // Regression: the prop-sync effect must carry `memoryDreaming` (otherwise an
+    // enabled policy renders as off right after mount and a later save erases
+    // it), and must compare the policy's semantic fields — polling hands us a new
+    // object every refresh, which must not clobber an in-progress draft.
+    const dreaming = () => ({ enabled: true, sessionWindow: 40, instructions: 'focus on prefs' })
+    const props = {
+      agentId: '33333333-3333-4333-8333-333333333333',
+      canEdit: true,
+      memoryProvider: 'managed',
+      autoDistill: false
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root?.render(<MemoryPanel {...props} memoryDreaming={dreaming()} />)
+    })
+
+    await openSettings(container)
+    const dreamingBox = () =>
+      [...container!.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((box) =>
+        box.parentElement?.textContent?.includes('Enable dreaming')
+      )
+    // Survives the mount effect rather than resetting to "Dreaming off".
+    expect(dreamingBox()?.checked).toBe(true)
+
+    // An equivalent (re-created) policy object must not reset the toggle.
+    await act(async () => {
+      root?.render(<MemoryPanel {...props} memoryDreaming={dreaming()} />)
+    })
+    expect(dreamingBox()?.checked).toBe(true)
+
+    // A genuine change in a semantic field does re-sync.
+    await act(async () => {
+      root?.render(<MemoryPanel {...props} memoryDreaming={{ ...dreaming(), enabled: false }} />)
+    })
+    expect(dreamingBox()?.checked).toBe(false)
+  })
+
   it('uses an app confirmation before persisting a backend switch', async () => {
     const nativeConfirm = vi.fn(() => true)
     vi.stubGlobal('confirm', nativeConfirm)

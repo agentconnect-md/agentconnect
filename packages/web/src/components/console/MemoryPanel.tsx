@@ -199,6 +199,7 @@ export function MemoryPanel({
     const next = settingsFromProps({
       memoryProvider,
       autoDistill,
+      memoryDreaming,
       memoryConnectionId,
       memoryRecall,
       memoryCaptureMode
@@ -211,6 +212,12 @@ export function MemoryPanel({
     agentId,
     memoryProvider,
     autoDistill,
+    memoryDreaming?.enabled,
+    memoryDreaming?.sessionWindow,
+    memoryDreaming?.schedule,
+    memoryDreaming?.instructions,
+    memoryDreaming?.mineSkills,
+    memoryDreaming?.autoAdopt,
     memoryConnectionId,
     memoryRecall?.mode,
     memoryRecall?.topK,
@@ -655,26 +662,11 @@ export function MemoryPanel({
                       setProviderError(null)
                     }}
                   />
-                  Enable dreaming — periodically consolidate the store from recent sessions (staged for review before it
-                  replaces the live store).
+                  Enable dreaming — consolidate the store from recent sessions on demand, staged for review before it
+                  replaces the live store. Run a dream from the API (scheduled dreams arrive in a later release).
                 </label>
                 {settings.dreaming.enabled ? (
                   <div className="ml-6 flex flex-col gap-2">
-                    <label className="flex flex-col gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                      Schedule (cron, optional — leave blank for manual only)
-                      <input
-                        type="text"
-                        value={settings.dreaming.schedule}
-                        placeholder="0 4 * * *"
-                        disabled={!canEdit || savingProvider}
-                        onChange={(e) => {
-                          const schedule = e.target.value
-                          setSettings((current) => ({ ...current, dreaming: { ...current.dreaming, schedule } }))
-                          setProviderError(null)
-                        }}
-                        className="rounded-sm border border-(--border-subtle) bg-(--surface-card) px-2 py-1 font-mono text-[12px] leading-normal text-(--text-primary)"
-                      />
-                    </label>
                     <label className="flex flex-col gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
                       Instructions (optional — steer what the dream focuses on)
                       <textarea

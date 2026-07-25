@@ -4,15 +4,24 @@ import {
   type ExternalMemoryBindingDraft
 } from '@/components/console/ExternalMemoryBindingFields'
 
-/** Managed-only dreaming controls, as an explicit form draft. `enabled:false` +
- *  empty fields is the off state (no `dreaming` binding is emitted then). */
+/**
+ * Managed-only dreaming policy as a form draft. It carries the COMPLETE policy —
+ * including fields the D-1 console doesn't yet edit (`sessionWindow`, and the
+ * later-phase `schedule`/`mineSkills`/`autoAdopt`) — because a managed-memory
+ * save PATCHes the `memory` binding wholesale, so anything the draft drops is
+ * lost. The UI edits only `enabled` and `instructions` today; the rest is
+ * preserved verbatim from whatever the API (or a later phase) set.
+ */
 export interface DreamingDraft {
   enabled: boolean
-  schedule: string
   instructions: string
+  sessionWindow?: number
+  schedule?: string
+  mineSkills?: boolean
+  autoAdopt?: boolean
 }
 
-export const DEFAULT_DREAMING_DRAFT: DreamingDraft = { enabled: false, schedule: '', instructions: '' }
+export const DEFAULT_DREAMING_DRAFT: DreamingDraft = { enabled: false, instructions: '' }
 
 export type MemoryProviderChoice = 'managed' | 'native' | 'external' | 'none'
 
@@ -51,7 +60,14 @@ export function cloneMemorySettings(value: MemorySettingsDraft): MemorySettingsD
 }
 
 function sameDreaming(a: DreamingDraft, b: DreamingDraft): boolean {
-  return a.enabled === b.enabled && a.schedule === b.schedule && a.instructions === b.instructions
+  return (
+    a.enabled === b.enabled &&
+    a.instructions === b.instructions &&
+    a.sessionWindow === b.sessionWindow &&
+    a.schedule === b.schedule &&
+    a.mineSkills === b.mineSkills &&
+    a.autoAdopt === b.autoAdopt
+  )
 }
 
 export function memorySettingsDraft(input: {
@@ -68,8 +84,11 @@ export function memorySettingsDraft(input: {
     dreaming: input.dreaming
       ? {
           enabled: input.dreaming.enabled,
-          schedule: input.dreaming.schedule ?? '',
-          instructions: input.dreaming.instructions ?? ''
+          instructions: input.dreaming.instructions ?? '',
+          ...(input.dreaming.sessionWindow !== undefined ? { sessionWindow: input.dreaming.sessionWindow } : {}),
+          ...(input.dreaming.schedule ? { schedule: input.dreaming.schedule } : {}),
+          ...(input.dreaming.mineSkills !== undefined ? { mineSkills: input.dreaming.mineSkills } : {}),
+          ...(input.dreaming.autoAdopt !== undefined ? { autoAdopt: input.dreaming.autoAdopt } : {})
         }
       : { ...DEFAULT_DREAMING_DRAFT },
     external: {
@@ -130,16 +149,26 @@ export function memoryConfigForDraft(draft: MemorySettingsDraft): AgentMemoryCon
   return { provider: draft.provider, autoDistill: false }
 }
 
-/** Map the dreaming form to the wire policy, or undefined when it's fully off
- *  (disabled with no schedule/instructions) — so an untouched agent emits no
- *  `dreaming` binding. A schedule or instructions imply enablement. */
+/** Map the dreaming form back to the wire policy, preserving every preserved
+ *  field, or undefined when the policy is entirely absent (nothing enabled and
+ *  no field set) — so an untouched managed agent emits no `dreaming` binding. */
 export function dreamingConfigForDraft(draft: DreamingDraft): MemoryDreamingConfig | undefined {
-  const schedule = draft.schedule.trim()
   const instructions = draft.instructions.trim()
-  if (!draft.enabled && !schedule && !instructions) return undefined
+  const schedule = draft.schedule?.trim()
+  const hasAny =
+    draft.enabled ||
+    !!instructions ||
+    !!schedule ||
+    draft.sessionWindow !== undefined ||
+    draft.mineSkills !== undefined ||
+    draft.autoAdopt !== undefined
+  if (!hasAny) return undefined
   return {
     enabled: draft.enabled,
+    ...(draft.sessionWindow !== undefined ? { sessionWindow: draft.sessionWindow } : {}),
     ...(schedule ? { schedule } : {}),
-    ...(instructions ? { instructions } : {})
+    ...(instructions ? { instructions } : {}),
+    ...(draft.mineSkills !== undefined ? { mineSkills: draft.mineSkills } : {}),
+    ...(draft.autoAdopt !== undefined ? { autoAdopt: draft.autoAdopt } : {})
   }
 }
