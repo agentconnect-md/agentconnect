@@ -584,8 +584,10 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
   )
 
   it('revokes staged first-turn runtime choices when authority changes during session creation', async () => {
-    let releaseSession!: () => void
-    const sessionGate = new Promise<void>((resolve) => (releaseSession = resolve))
+    let releaseFirstSession!: () => void
+    let releaseSecondSession!: () => void
+    const firstSessionGate = new Promise<void>((resolve) => (releaseFirstSession = resolve))
+    const secondSessionGate = new Promise<void>((resolve) => (releaseSecondSession = resolve))
     const configured = {
       allowRuntimeChangesInChat: true,
       runtimeOverrides: { model: 'a' },
@@ -595,17 +597,29 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     }
     const root = scaffold(undefined, configured)
     let newSessionCalls = 0
+    let discardCalls = 0
     const host = {
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => {
         newSessionCalls += 1
         if (newSessionCalls === 1) {
-          await sessionGate
-          return 'acp-wc-staged'
+          await firstSessionGate
+          return 'acp-wc-staged-1'
+        }
+        if (newSessionCalls === 2) {
+          await secondSessionGate
+          return 'acp-wc-staged-2'
         }
         return 'acp-wc-1'
       }),
-      discardSession: vi.fn(),
+      discardSession: vi.fn(() => {
+        discardCalls += 1
+        if (discardCalls !== 1) return
+        // Re-enable in the narrow gap before recreation so the retry itself carries
+        // ultracode; the second disable below must fence that awaited retry too.
+        const current = (daemon as any).agents.get(AGENT_ID)
+        ;(daemon as any).agents.set(AGENT_ID, { ...current, allowRuntimeChangesInChat: true })
+      }),
       modelOptions: vi.fn(() => ({ current: 'a', models: ['a', 'b'] })),
       hasSession: vi.fn(() => true),
       setSessionModel: vi.fn(async () => true),
@@ -626,7 +640,12 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
 
     writeAgent(root, { ...configured, allowRuntimeChangesInChat: false })
     await (daemon as any).reconcile()
-    releaseSession()
+    releaseFirstSession()
+    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(2), WAIT)
+
+    writeAgent(root, { ...configured, allowRuntimeChangesInChat: false })
+    await (daemon as any).reconcile()
+    releaseSecondSession()
     await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
 
     const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
@@ -634,10 +653,12 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect((daemon as any).store.getEffortOverride(key)).toBeUndefined()
     expect((daemon as any).store.getPermissionModeOverride(key)).toBeUndefined()
     expect((daemon as any).store.getFastModeOverride(key)).toBeUndefined()
-    expect(host.newSession).toHaveBeenCalledTimes(2)
+    expect(host.newSession).toHaveBeenCalledTimes(3)
     expect(host.newSession.mock.calls[0]?.[2]).toBe('ultracode')
-    expect(host.newSession.mock.calls[1]?.[2]).toBeUndefined()
-    expect(host.discardSession).toHaveBeenCalledWith('acp-wc-staged')
+    expect(host.newSession.mock.calls[1]?.[2]).toBe('ultracode')
+    expect(host.newSession.mock.calls[2]?.[2]).toBeUndefined()
+    expect(host.discardSession).toHaveBeenNthCalledWith(1, 'acp-wc-staged-1')
+    expect(host.discardSession).toHaveBeenNthCalledWith(2, 'acp-wc-staged-2')
     expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'a')
     expect(host.setSessionEffort).toHaveBeenCalledWith('acp-wc-1', 'low')
     expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-wc-1', 'default')

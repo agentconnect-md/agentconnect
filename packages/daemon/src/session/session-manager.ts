@@ -330,11 +330,12 @@ export class SessionManager {
       return { value, chatSelected: value !== undefined }
     }
     const newRuntimeSession = async (cwd: string, mcpServers: McpServer[], systemAppend?: string): Promise<string> => {
-      const selected = sessionStartEffort()
-      const sessionId = await abortable(() => host.newSession(cwd, mcpServers, selected.value, systemAppend), signal)
-      if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return sessionId
-      host.discardSession(sessionId)
-      return abortable(() => host.newSession(cwd, mcpServers, sessionStartEffort().value, systemAppend), signal)
+      while (true) {
+        const selected = sessionStartEffort()
+        const sessionId = await abortable(() => host.newSession(cwd, mcpServers, selected.value, systemAppend), signal)
+        if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return sessionId
+        host.discardSession(sessionId)
+      }
     }
     const loadRuntimeSession = async (
       sessionId: string,
@@ -342,14 +343,12 @@ export class SessionManager {
       mcpServers: McpServer[],
       systemAppend?: string
     ): Promise<void> => {
-      const selected = sessionStartEffort()
-      await abortable(() => host.loadSession(sessionId, cwd, mcpServers, selected.value, systemAppend), signal)
-      if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return
-      host.discardSession(sessionId)
-      await abortable(
-        () => host.loadSession(sessionId, cwd, mcpServers, sessionStartEffort().value, systemAppend),
-        signal
-      )
+      while (true) {
+        const selected = sessionStartEffort()
+        await abortable(() => host.loadSession(sessionId, cwd, mcpServers, selected.value, systemAppend), signal)
+        if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return
+        host.discardSession(sessionId)
+      }
     }
 
     // Agent memory INDEX (agents/memory-provider.ts), read fresh. It's STANDING

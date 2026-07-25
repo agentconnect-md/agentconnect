@@ -743,6 +743,60 @@ describe('SessionManager', () => {
     store.close()
   })
 
+  it('fences every resumed chat-effort snapshot across repeated authorization changes', async () => {
+    const store = newStore()
+    const host1 = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
+    await sm1.handle('bot-a', msg({ ts: '100.1', text: 'first turn' }))
+    store.setEffortOverride(sessionKey('slack', 'C1', '100.1', 'bot-a'), 'ultracode')
+
+    let allowRuntimeChangesInChat = true
+    let releaseFirstLoad!: () => void
+    let releaseSecondLoad!: () => void
+    const firstLoadGate = new Promise<void>((resolve) => (releaseFirstLoad = resolve))
+    const secondLoadGate = new Promise<void>((resolve) => (releaseSecondLoad = resolve))
+    let loadCalls = 0
+    let discardCalls = 0
+    const host2 = {
+      newSession: vi.fn(async () => 'acp-2'),
+      hasSession: () => false,
+      loadSupported: () => true,
+      loadSession: vi.fn(async () => {
+        loadCalls += 1
+        if (loadCalls === 1) await firstLoadGate
+        if (loadCalls === 2) await secondLoadGate
+      }),
+      discardSession: vi.fn(() => {
+        discardCalls += 1
+        if (discardCalls === 1) allowRuntimeChangesInChat = true
+      })
+    } as any
+    const sm2 = new SessionManager({
+      store,
+      hostFor: async () => host2,
+      agentById: () => ({ ...agent, allowRuntimeChangesInChat }),
+      memory
+    })
+
+    const resumed = sm2.handle('bot-a', msg({ ts: '100.2', text: 'second turn' }))
+    await vi.waitFor(() => expect(host2.loadSession).toHaveBeenCalledTimes(1))
+    allowRuntimeChangesInChat = false
+    releaseFirstLoad()
+    await vi.waitFor(() => expect(host2.loadSession).toHaveBeenCalledTimes(2))
+    allowRuntimeChangesInChat = false
+    releaseSecondLoad()
+
+    await expect(resumed).resolves.toMatchObject({ sessionId: 'acp-1', created: false })
+    expect(host2.loadSession).toHaveBeenCalledTimes(3)
+    expect(host2.loadSession.mock.calls[0]?.[3]).toBe('ultracode')
+    expect(host2.loadSession.mock.calls[1]?.[3]).toBe('ultracode')
+    expect(host2.loadSession.mock.calls[2]?.[3]).toBeUndefined()
+    expect(host2.discardSession).toHaveBeenNthCalledWith(1, 'acp-1')
+    expect(host2.discardSession).toHaveBeenNthCalledWith(2, 'acp-1')
+    expect(host2.newSession).not.toHaveBeenCalled()
+    store.close()
+  })
+
   it('builds an inline image block for an attachment when the agent supports images', async () => {
     const store = newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), promptSupports: (k: string) => k === 'image' } as any
