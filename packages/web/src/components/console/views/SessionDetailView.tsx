@@ -38,7 +38,7 @@ import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, AgentMark, LoadingState, PlatformMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { NotFound } from '@/components/console/NotFound'
-import { Icon } from '@/components/ui'
+import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { formatTranscriptTime, parseTranscriptTime } from '@/lib/transcript-time'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
@@ -526,7 +526,7 @@ export default function SessionDetailView() {
     pgSetFast,
     pgCancel
   } = usePlayground()
-  const { me } = useProfile()
+  const { user, me } = useProfile()
   const [copied, setCopied] = useState(false)
   const [msgs, setMsgs] = useState<SessionMessageDto[] | null>(null)
   const [msgLoading, setMsgLoading] = useState(false)
@@ -1292,18 +1292,29 @@ export default function SessionDetailView() {
             {visibleTurns.map((turn, ti) =>
               turn.kind === 'user' ? (
                 <div key={ti} className="flex items-start gap-[10px] desktop:gap-[11px]">
-                  <span
-                    className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-full font-sans text-[11px] font-semibold leading-normal"
-                    style={{ background: turn.sp.avBg, color: turn.sp.avText }}
-                  >
-                    {turn.isCron ? (
-                      <Icon name="calendar-clock" size={15} />
-                    ) : usesIntegrationAvatar ? (
-                      <PlatformMark platform={sessionIntegration} />
-                    ) : (
-                      turn.sp.initials
-                    )}
-                  </span>
+                  {turn.sp.handle === '@you' ? (
+                    <Avatar
+                      src={user.picture}
+                      initials={turn.sp.initials}
+                      size={30}
+                      fontSize={11}
+                      bg={turn.sp.avBg}
+                      fg={turn.sp.avText}
+                    />
+                  ) : (
+                    <span
+                      className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-full font-sans text-[11px] font-semibold leading-normal"
+                      style={{ background: turn.sp.avBg, color: turn.sp.avText }}
+                    >
+                      {turn.isCron ? (
+                        <Icon name="calendar-clock" size={15} />
+                      ) : usesIntegrationAvatar ? (
+                        <PlatformMark platform={sessionIntegration} />
+                      ) : (
+                        turn.sp.initials
+                      )}
+                    </span>
+                  )}
                   <div className="min-w-0 flex-1">
                     <div className="mb-[5px] flex items-baseline gap-[7px]">
                       {turn.isCron && turn.cronId ? (
