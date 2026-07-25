@@ -16,12 +16,12 @@ import {
 type RuntimeDaemon = Pick<DaemonRow, 'runtimeModels'> | undefined
 type PermissionChoice = { v: string; l: string; description?: string }
 
-/** Chat-side runtime changes need both Agent authority and a daemon-created session. */
+/** Playground can stage settings for its first turn; other chat surfaces need a live session. */
 export function sessionRuntimeChangesEnabled(
   allowed: boolean,
   session: Pick<Session, 'platform' | 'realSessionId'>
 ): boolean {
-  return allowed && (session.platform === 'webchat' || !!session.realSessionId)
+  return allowed && (session.platform === 'playground' || session.platform === 'webchat' || !!session.realSessionId)
 }
 
 /** A received live list is authoritative, including `[]`; discovery is idle-session fallback only. */

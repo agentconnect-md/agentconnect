@@ -546,6 +546,134 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await daemon.stop()
   }, 15_000)
 
+  it.each([
+    { allowed: true, expected: { model: 'b', effort: 'high', permissionMode: 'plan', fastMode: true } },
+    { allowed: false, expected: {} }
+  ])(
+    'handles first-turn runtime choices at the Agent authority boundary (allowed=$allowed)',
+    async ({ allowed, expected }) => {
+      const runtime = { model: 'b', effort: 'high', permissionMode: 'plan', fastMode: true }
+      const { factory, host } = streamingHost([text('hi')], { model: 'a', models: ['a', 'b'] })
+      const daemon = new Daemon({
+        root: scaffold(undefined, { allowRuntimeChangesInChat: allowed }),
+        hostFactory: factory
+      })
+      await daemon.start()
+      const cp = fakeCpClient()
+
+      ;(daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink, undefined, undefined, runtime)
+      await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
+
+      const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+      expect({
+        model: (daemon as any).store.getModelOverride(key),
+        effort: (daemon as any).store.getEffortOverride(key),
+        permissionMode: (daemon as any).store.getPermissionModeOverride(key),
+        fastMode: (daemon as any).store.getFastModeOverride(key)
+      }).toEqual(expected)
+      expect(host.newSession.mock.calls[0]?.[2]).toBe(allowed ? 'high' : undefined)
+      if (allowed) {
+        expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'b')
+        expect(host.setSessionEffort).toHaveBeenCalledWith('acp-wc-1', 'high')
+        expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-wc-1', 'plan')
+        expect(host.setSessionFastMode).toHaveBeenCalledWith('acp-wc-1', true)
+      }
+      await daemon.stop()
+    },
+    15_000
+  )
+
+  it('revokes staged first-turn runtime choices when authority changes during session creation', async () => {
+    let releaseFirstSession!: () => void
+    let releaseSecondSession!: () => void
+    const firstSessionGate = new Promise<void>((resolve) => (releaseFirstSession = resolve))
+    const secondSessionGate = new Promise<void>((resolve) => (releaseSecondSession = resolve))
+    const configured = {
+      allowRuntimeChangesInChat: true,
+      runtimeOverrides: { model: 'a' },
+      reasoningEffort: 'low',
+      permissionMode: 'default',
+      fastMode: false
+    }
+    const root = scaffold(undefined, configured)
+    let newSessionCalls = 0
+    let discardCalls = 0
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => {
+        newSessionCalls += 1
+        if (newSessionCalls === 1) {
+          await firstSessionGate
+          return 'acp-wc-staged-1'
+        }
+        if (newSessionCalls === 2) {
+          await secondSessionGate
+          return 'acp-wc-staged-2'
+        }
+        return 'acp-wc-1'
+      }),
+      discardSession: vi.fn(() => {
+        discardCalls += 1
+        if (discardCalls !== 1) return
+        // Re-enable in the narrow gap before recreation so the retry itself carries
+        // ultracode; the second disable below must fence that awaited retry too.
+        const current = (daemon as any).agents.get(AGENT_ID)
+        ;(daemon as any).agents.set(AGENT_ID, { ...current, allowRuntimeChangesInChat: true })
+      }),
+      modelOptions: vi.fn(() => ({ current: 'a', models: ['a', 'b'] })),
+      hasSession: vi.fn(() => true),
+      setSessionModel: vi.fn(async () => true),
+      setSessionEffort: vi.fn(async () => true),
+      setSessionPermissionMode: vi.fn(async () => true),
+      setSessionFastMode: vi.fn(async () => true),
+      prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({ root, hostFactory: () => host as any })
+    await daemon.start()
+    const cp = fakeCpClient()
+    const runtime = { model: 'b', effort: 'ultracode', permissionMode: 'plan', fastMode: true }
+
+    ;(daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink, undefined, undefined, runtime)
+    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
+
+    writeAgent(root, { ...configured, allowRuntimeChangesInChat: false })
+    await (daemon as any).reconcile()
+    releaseFirstSession()
+    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(2), WAIT)
+
+    writeAgent(root, { ...configured, allowRuntimeChangesInChat: false })
+    await (daemon as any).reconcile()
+    releaseSecondSession()
+    await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
+
+    const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+    expect((daemon as any).store.getModelOverride(key)).toBeUndefined()
+    expect((daemon as any).store.getEffortOverride(key)).toBeUndefined()
+    expect((daemon as any).store.getPermissionModeOverride(key)).toBeUndefined()
+    expect((daemon as any).store.getFastModeOverride(key)).toBeUndefined()
+    expect(host.newSession).toHaveBeenCalledTimes(3)
+    expect(host.newSession.mock.calls[0]?.[2]).toBe('ultracode')
+    expect(host.newSession.mock.calls[1]?.[2]).toBe('ultracode')
+    expect(host.newSession.mock.calls[2]?.[2]).toBeUndefined()
+    expect(host.discardSession).toHaveBeenNthCalledWith(1, 'acp-wc-staged-1')
+    expect(host.discardSession).toHaveBeenNthCalledWith(2, 'acp-wc-staged-2')
+    expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'a')
+    expect(host.setSessionEffort).toHaveBeenCalledWith('acp-wc-1', 'low')
+    expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-wc-1', 'default')
+    expect(host.setSessionFastMode).toHaveBeenCalledWith('acp-wc-1', false)
+    expect(host.setSessionModel).not.toHaveBeenCalledWith('acp-wc-1', 'b')
+    expect(host.setSessionPermissionMode).not.toHaveBeenCalledWith('acp-wc-1', 'plan')
+    expect(host.setSessionFastMode).not.toHaveBeenCalledWith('acp-wc-1', true)
+    const promptOrder = host.prompt.mock.invocationCallOrder[0]!
+    expect(host.setSessionModel.mock.invocationCallOrder.at(-1)).toBeLessThan(promptOrder)
+    expect(host.setSessionEffort.mock.invocationCallOrder.at(-1)).toBeLessThan(promptOrder)
+    expect(host.setSessionPermissionMode.mock.invocationCallOrder.at(-1)).toBeLessThan(promptOrder)
+    expect(host.setSessionFastMode.mock.invocationCallOrder.at(-1)).toBeLessThan(promptOrder)
+    await daemon.stop()
+  }, 15_000)
+
   it('revokes chat-selected runtime settings from an idle warm session', async () => {
     const configured = {
       allowRuntimeChangesInChat: true,

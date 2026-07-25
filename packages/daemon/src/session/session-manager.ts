@@ -236,7 +236,10 @@ export class SessionManager {
     /** session-concept §2.3/§5.3: the origin (parent) session's stable id, present only when
      *  THIS turn was woken by another session's `sendMessage`. Surfaced to the agent as the
      *  `Parent session` line of the `# Agent` block — the SessionTarget it replies into. */
-    originSessionId?: string
+    originSessionId?: string,
+    /** A chat-selected effort needed by session/new metadata before the session row exists.
+     *  The daemon revalidates current Agent authority before persisting or prompting. */
+    initialEffort?: string
   ): Promise<{
     sessionId: string
     blocks: ContentBlock[]
@@ -317,9 +320,38 @@ export class SessionManager {
     const preparedCwd = hostCold ? await abortable(() => prepareWorkspace(agent), signal) : undefined
     const host = await abortable(() => this.deps.hostFor(agentId), signal)
     // The sticky per-session effort override rides session `_meta` on new/load so the
-    // `ultracode` sentinel (rejected by the `thought_level` select) takes effect;
-    // select-based effort/model/fast overrides layer on afterward at turn start.
-    const effortOverride = this.deps.store.getEffortOverride(key)
+    // `ultracode` sentinel (rejected by the `thought_level` select) takes effect.
+    // Resolve chat authority immediately before each request, then fence the await:
+    // metadata-only settings cannot be reversed by a later live selector.
+    const sessionStartEffort = (): { value?: string; chatSelected: boolean } => {
+      const allowed = this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true
+      if (!allowed) return { chatSelected: false }
+      const value = initialEffort ?? this.deps.store.getEffortOverride(key)
+      return { value, chatSelected: value !== undefined }
+    }
+    const newRuntimeSession = async (cwd: string, mcpServers: McpServer[], systemAppend?: string): Promise<string> => {
+      while (true) {
+        const selected = sessionStartEffort()
+        const sessionId = await abortable(() => host.newSession(cwd, mcpServers, selected.value, systemAppend), signal)
+        if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return sessionId
+        host.discardSession(sessionId)
+      }
+    }
+    const loadRuntimeSession = async (
+      sessionId: string,
+      cwd: string,
+      mcpServers: McpServer[],
+      systemAppend?: string
+    ): Promise<boolean> => {
+      const selected = sessionStartEffort()
+      await abortable(() => host.loadSession(sessionId, cwd, mcpServers, selected.value, systemAppend), signal)
+      if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return true
+      // The pinned Claude adapter treats a repeated load of the same session/cwd/MCP
+      // fingerprint as idempotent, so another load cannot replace metadata-only effort.
+      // Forget this local attachment and let the caller create a fresh safe session.
+      host.discardSession(sessionId)
+      return false
+    }
 
     // Agent memory INDEX (agents/memory-provider.ts), read fresh. It's STANDING
     // context (like the system prompt), NOT a user turn — so it rides the system-prompt
@@ -490,7 +522,7 @@ export class SessionManager {
           ...(integrationId !== undefined ? { integrationId } : {}),
           isDm: msg.isDm
         }) ?? []
-      const acpSessionId = await abortable(() => host.newSession(cwd, mcpServers, effortOverride, metaContext), signal)
+      const acpSessionId = await newRuntimeSession(cwd, mcpServers, metaContext)
       created = true
       rec = {
         key,
@@ -538,28 +570,19 @@ export class SessionManager {
         // isn't seen as `closed` mid-load, then fall through to `prompting` below.
         this.deps.store.setSessionState(key, 'resuming', Date.now())
         try {
-          await abortable(
-            () =>
-              host.loadSession(
-                persistedSessionId,
-                cwd,
-                mcpServers,
-                effortOverride,
-                usesMeta ? resumeSystemContext : undefined
-              ),
-            signal
+          resumed = await loadRuntimeSession(
+            persistedSessionId,
+            cwd,
+            mcpServers,
+            usesMeta ? resumeSystemContext : undefined
           )
-          resumed = true
         } catch {
           if (signal?.aborted) throw interrupted(signal)
           // agent couldn't load it (GC'd / not durably persisted) — recreate below
         }
       }
       if (!resumed) {
-        const acpSessionId = await abortable(
-          () => host.newSession(cwd, mcpServers, effortOverride, metaContext),
-          signal
-        )
+        const acpSessionId = await newRuntimeSession(cwd, mcpServers, metaContext)
         // A fresh ACP id the CP has never seen (the persisted one couldn't be resumed),
         // so this counts as a create for `event/session`. A resumed session (loadSession
         // above) keeps its id — the CP already knows it — so `created` stays false there.

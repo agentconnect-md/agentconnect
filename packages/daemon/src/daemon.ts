@@ -230,6 +230,7 @@ import type {
   WebchatEvent,
   WebchatOutput,
   WebchatDone,
+  WebchatRuntimeConfig,
   RdMsg,
   RdMsgWebchat,
   WebchatImageAttachment,
@@ -1002,6 +1003,7 @@ interface WebchatTurnContext {
   conversationId: string
   turnId: string
   sink: WebchatSink
+  runtime?: WebchatRuntimeConfig
   doneSent?: boolean
 }
 
@@ -3652,7 +3654,8 @@ export class Daemon {
     user: string,
     sink: WebchatSink,
     requestedTurnId?: string,
-    inlineImages?: WebchatImageAttachment[]
+    inlineImages?: WebchatImageAttachment[],
+    requestedRuntime?: WebchatRuntimeConfig
   ): WebchatAck {
     const turnId = requestedTurnId ?? randomUUID()
     // Route directly to the named agent (bypasses arbitration); null when it isn't a
@@ -3730,7 +3733,9 @@ export class Daemon {
     if (this.webchatStreams.has(turnId)) {
       return { accepted: false, turnId, reason: 'busy' }
     }
-    const stream = this.createWebchatTurnStream(result.agentId, chatId, turnId, sink)
+    const initialRuntime =
+      this.agents.get(result.agentId)?.allowRuntimeChangesInChat === true ? requestedRuntime : undefined
+    const stream = this.createWebchatTurnStream(result.agentId, chatId, turnId, sink, initialRuntime)
     void this.dispatch(result.agentId, msg, undefined, stream).catch((err) =>
       this.log.error(`webchat dispatch failed for agent "${result.agentId}": ${formatErr(err)}`)
     )
@@ -3757,7 +3762,8 @@ export class Daemon {
     agentId: string,
     conversationId: string,
     turnId: string,
-    transport: WebchatSink
+    transport: WebchatSink,
+    runtime?: WebchatRuntimeConfig
   ): WebchatTurnStream {
     this.pruneWebchatStreams()
     const stream: WebchatTurnStream = {
@@ -3765,6 +3771,7 @@ export class Daemon {
       conversationId,
       turnId,
       transport,
+      ...(runtime ? { runtime } : {}),
       resumeGeneration: 0,
       sink: {
         output: (output) => this.publishWebchatStreamEvent(stream, { kind: 'output', output }),
@@ -3967,10 +3974,9 @@ export class Daemon {
     return true
   }
 
-  /** Removing chat authority also removes its effect from every live session. This
-   *  closes the window where a previously selected full-access mode could otherwise
-   *  survive until the next message restores the Agent-level policy. */
-  private restoreConfiguredRuntimeSettings(agent: LoadedAgent): void {
+  /** Apply the Agent's configured runtime policy to one live session. Callers that
+   *  fence a pending prompt await this; reconciliation fans it out in the background. */
+  private async applyConfiguredRuntimeSettings(agent: LoadedAgent, host: AcpHost, sessionId: string): Promise<void> {
     const catalog = this.runtimeCatalogs.get(agent.runtime)
     // A fresh ACP session may advertise its baseline as the literal `default`.
     // Catalog metadata intentionally keeps defaultModel concrete, so fall back to
@@ -3986,19 +3992,25 @@ export class Daemon {
     // The console treats an unset fast-mode default as off. Explicitly restore
     // that value so disabling chat authority also revokes a live `fast on`.
     const fastMode = agent.fastMode ?? false
+    if (model) await host.setSessionModel(sessionId, model)
+    if (effort) await host.setSessionEffort(sessionId, effort)
+    if (permissionMode && typeof host.setSessionPermissionMode === 'function') {
+      await host.setSessionPermissionMode(sessionId, permissionMode)
+    }
+    await host.setSessionFastMode(sessionId, fastMode)
+  }
+
+  /** Removing chat authority also removes its effect from every live session. This
+   *  closes the window where a previously selected full-access mode could otherwise
+   *  survive until the next message restores the Agent-level policy. */
+  private restoreConfiguredRuntimeSettings(agent: LoadedAgent): void {
     const host = this.hosts.get(agent.id)
     if (!host) return
     for (const session of this.store.listSessions(agent.id)) {
       if (!session.acpSessionId || host.hasSession?.(session.acpSessionId) !== true) continue
       const sessionId = session.acpSessionId
-      void Promise.resolve()
-        .then(async () => {
-          if (model) await host.setSessionModel(sessionId, model)
-          if (effort) await host.setSessionEffort(sessionId, effort)
-          if (permissionMode && typeof host.setSessionPermissionMode === 'function') {
-            await host.setSessionPermissionMode(sessionId, permissionMode)
-          }
-          await host.setSessionFastMode(sessionId, fastMode)
+      void this.applyConfiguredRuntimeSettings(agent, host, sessionId)
+        .then(() => {
           this.refreshStatusBarForKey(session.key)
         })
         .catch((err) =>
@@ -5747,7 +5759,8 @@ export class Daemon {
           op.user ?? 'webchat',
           sink,
           op.turnId,
-          op.attachments
+          op.attachments,
+          op.runtime
         )
         return {
           msgId: msg.msgId,
@@ -7629,7 +7642,8 @@ export class Daemon {
         msg,
         entry.initAbort.signal,
         integrationId,
-        callMeta?.originSessionId
+        callMeta?.originSessionId,
+        agent.allowRuntimeChangesInChat ? webchat?.runtime?.effort : undefined
       )
     } catch (err) {
       this.finishSessionInitialization(agentId)
@@ -7716,6 +7730,18 @@ export class Daemon {
       this.log.info(`dispatch: skipped initialized turn ${msg.msgId} (${initializedGate})`)
       return null
     }
+    // A cold session can await workspace/host/session initialization while the Agent is
+    // reconciled. Persist staged first-turn choices only against the current authority,
+    // never the Agent snapshot captured before sessions.handle().
+    const initializedAgent = this.agents.get(agentId)
+    const stagedRuntime =
+      initializedAgent?.allowRuntimeChangesInChat === true && webchat?.runtime ? webchat.runtime : undefined
+    if (stagedRuntime?.model !== undefined) this.store.setModelOverride(key, stagedRuntime.model)
+    if (stagedRuntime?.effort !== undefined) this.store.setEffortOverride(key, stagedRuntime.effort)
+    if (stagedRuntime?.permissionMode !== undefined) {
+      this.store.setPermissionModeOverride(key, stagedRuntime.permissionMode)
+    }
+    if (stagedRuntime?.fastMode !== undefined) this.store.setFastModeOverride(key, stagedRuntime.fastMode)
     // sessions.handle() booted the host — surface any spawn-time config warnings
     // (config-file secret conflicts / write failures) into this session.
     this.flushSpawnNotices(agentId, { replyConn, channel: msg.channel, thread: msg.thread, statusThread })
@@ -7801,7 +7827,8 @@ export class Daemon {
     let finalPhase: EventSession['phase'] = 'end'
     try {
       const host = await this.ensureHostAsync(agentId)
-      const allowRuntimeChangesInChat = agent.allowRuntimeChangesInChat
+      const runtimeAgent = this.agents.get(agentId)
+      const allowRuntimeChangesInChat = runtimeAgent?.allowRuntimeChangesInChat === true
       // Re-apply a sticky session model override (set via the console's in-session model
       // switch) before the turn runs — the agent's default model was applied at
       // session/new, so this layers the per-session choice on top each turn. Best-effort.
@@ -7822,7 +7849,9 @@ export class Daemon {
       }
       const permissionModeOverride = allowRuntimeChangesInChat ? this.store.getPermissionModeOverride(key) : undefined
       const effectivePermissionMode =
-        permissionModeOverride ?? agent.permissionMode ?? this.runtimeCatalogs.get(agent.runtime)?.defaultPermissionMode
+        permissionModeOverride ??
+        runtimeAgent?.permissionMode ??
+        this.runtimeCatalogs.get(runtimeAgent?.runtime ?? agent.runtime)?.defaultPermissionMode
       // AcpHost provides this method; older injected/embedded hosts may not.
       // Treat the selector as an advertised capability, matching the other
       // optional runtime controls, while real hosts still restore the Agent policy.
@@ -7838,6 +7867,14 @@ export class Daemon {
         await host
           .setSessionFastMode(sessionId, fastOverride)
           .catch((err) => this.log.debug(`fast-mode override ${fastOverride} not applied: ${(err as Error).message}`))
+      }
+      // Runtime setters above await the adapter and can race another reconciliation.
+      // Fence immediately before prompt; a revoked permission must be restored
+      // synchronously here, not by reconcile's fire-and-forget live-session sweep.
+      const promptAgent = this.agents.get(agentId)
+      if (webchat?.runtime && promptAgent?.allowRuntimeChangesInChat !== true) {
+        this.store.clearRuntimeConfigOverrides(agentId)
+        await this.applyConfiguredRuntimeSettings(promptAgent ?? agent, host, sessionId)
       }
       // Pause/loop protection may land while a slow host is starting or sticky
       // overrides are being restored. At this point Pending exists but no prompt has
