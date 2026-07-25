@@ -41,10 +41,11 @@ const daemon = {
 } satisfies Pick<DaemonRow, 'runtimeModels'>
 
 describe('session runtime controls', () => {
-  it('waits for a daemon-created Playground session before enabling changes', () => {
-    expect(sessionRuntimeChangesEnabled(true, { platform: 'playground' })).toBe(false)
+  it('allows a fresh Playground to stage runtime changes before its first turn', () => {
+    expect(sessionRuntimeChangesEnabled(true, { platform: 'playground' })).toBe(true)
     expect(sessionRuntimeChangesEnabled(true, { platform: 'playground', realSessionId: 'session-1' })).toBe(true)
     expect(sessionRuntimeChangesEnabled(true, { platform: 'webchat' })).toBe(true)
+    expect(sessionRuntimeChangesEnabled(true, { platform: 'slack' })).toBe(false)
     expect(sessionRuntimeChangesEnabled(false, { platform: 'webchat' })).toBe(false)
   })
 

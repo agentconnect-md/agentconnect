@@ -94,7 +94,12 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
 
   it('carries every webchat control op and rejects unknown ops', () => {
     const ops = [
-      { op: 'turn', text: 'hello', turnId: TURN_ID },
+      {
+        op: 'turn',
+        text: 'hello',
+        turnId: TURN_ID,
+        runtime: { model: 'gpt-5.6-sol', effort: 'xhigh', permissionMode: 'full-access', fastMode: true }
+      },
       { op: 'resume', turnId: TURN_ID, generation: 2, afterIndex: 3 },
       { op: 'set_model', model: 'opus-4.8' },
       { op: 'set_effort', effort: 'high' },
@@ -110,6 +115,7 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     }
     expect(RelayWebchatOp.safeParse({ op: 'set_theme', theme: 'dark' }).success).toBe(false)
     expect(RelayWebchatOp.safeParse({ op: 'turn' }).success).toBe(false) // text required
+    expect(RelayWebchatOp.safeParse({ op: 'turn', text: 'hi', runtime: { fastMode: 'yes' } }).success).toBe(false)
     expect(RelayWebchatOp.safeParse({ op: 'resume', turnId: TURN_ID, generation: 1, afterIndex: -2 }).success).toBe(
       false
     )

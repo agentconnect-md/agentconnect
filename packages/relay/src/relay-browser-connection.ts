@@ -3,7 +3,7 @@
  * session (shared-bot-relay.md §7.2 / §10). One socket == one conversation.
  *
  * It speaks the browser-facing, type-tagged webchat envelope. The browser sends
- * `{text, turnId, attachments?}` (a turn with at most one bounded inline image) or
+ * `{text, turnId, attachments?, runtime?}` (a turn with at most one bounded inline image) or
  * `{type:'resume'|'set_model'|'set_effort'|'set_permission_mode'|'set_fast'|'cancel'}`,
  * and the relay sends `{type:'ready'|'output'|'done'|'ack'|'resumed'|'error'}`. Internally each inbound
  * op becomes an `rd/msg(webchat)` bridged onto the target daemon's rd/* socket, and
@@ -43,7 +43,8 @@ export function parseBrowserFrame(msg: unknown, user: string): RelayWebchatOp | 
       text: typeof m.text === 'string' ? m.text : '',
       user,
       ...(m.turnId !== undefined ? { turnId: m.turnId } : {}),
-      ...(m.attachments !== undefined ? { attachments: m.attachments } : {})
+      ...(m.attachments !== undefined ? { attachments: m.attachments } : {}),
+      ...(m.runtime !== undefined ? { runtime: m.runtime } : {})
     })
     return parsed.success && parsed.data.op === 'turn' ? parsed.data : null
   }

@@ -546,6 +546,43 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await daemon.stop()
   }, 15_000)
 
+  it.each([
+    { allowed: true, expected: { model: 'b', effort: 'high', permissionMode: 'plan', fastMode: true } },
+    { allowed: false, expected: {} }
+  ])(
+    'handles first-turn runtime choices at the Agent authority boundary (allowed=$allowed)',
+    async ({ allowed, expected }) => {
+      const runtime = { model: 'b', effort: 'high', permissionMode: 'plan', fastMode: true }
+      const { factory, host } = streamingHost([text('hi')], { model: 'a', models: ['a', 'b'] })
+      const daemon = new Daemon({
+        root: scaffold(undefined, { allowRuntimeChangesInChat: allowed }),
+        hostFactory: factory
+      })
+      await daemon.start()
+      const cp = fakeCpClient()
+
+      ;(daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink, undefined, undefined, runtime)
+      await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
+
+      const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+      expect({
+        model: (daemon as any).store.getModelOverride(key),
+        effort: (daemon as any).store.getEffortOverride(key),
+        permissionMode: (daemon as any).store.getPermissionModeOverride(key),
+        fastMode: (daemon as any).store.getFastModeOverride(key)
+      }).toEqual(expected)
+      expect(host.newSession.mock.calls[0]?.[2]).toBe(allowed ? 'high' : undefined)
+      if (allowed) {
+        expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'b')
+        expect(host.setSessionEffort).toHaveBeenCalledWith('acp-wc-1', 'high')
+        expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-wc-1', 'plan')
+        expect(host.setSessionFastMode).toHaveBeenCalledWith('acp-wc-1', true)
+      }
+      await daemon.stop()
+    },
+    15_000
+  )
+
   it('revokes chat-selected runtime settings from an idle warm session', async () => {
     const configured = {
       allowRuntimeChangesInChat: true,

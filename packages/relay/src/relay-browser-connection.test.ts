@@ -72,6 +72,16 @@ describe('parseBrowserFrame', () => {
       turnId: AGENT
     })
   })
+  it('carries staged runtime choices on the first turn', () => {
+    const runtime = { model: 'gpt-5.6-sol', effort: 'xhigh', permissionMode: 'full-access', fastMode: true }
+    expect(parseBrowserFrame({ text: 'hi', runtime }, USER)).toEqual({
+      op: 'turn',
+      text: 'hi',
+      user: USER,
+      runtime
+    })
+    expect(parseBrowserFrame({ text: 'hi', runtime: { fastMode: 'yes' } }, USER)).toBeNull()
+  })
   it('maps a bounded image attachment while keeping the verified user authoritative', () => {
     const attachment = {
       name: 'screen.webp',

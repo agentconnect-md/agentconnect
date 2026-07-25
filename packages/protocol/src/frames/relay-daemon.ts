@@ -63,6 +63,14 @@ export type RdHelloOk = z.infer<typeof RdHelloOk>
 // the wire stays at the four designed frames. `turn` is the user message; the
 // rest are the session controls the old daemon↔CP webchat EVTs carried.
 //
+export const WebchatRuntimeConfig = z.object({
+  model: z.string().min(1).optional(),
+  effort: z.string().min(1).optional(),
+  permissionMode: z.string().min(1).optional(),
+  fastMode: z.boolean().optional()
+})
+export type WebchatRuntimeConfig = z.infer<typeof WebchatRuntimeConfig>
+
 export const RelayWebchatOp = z.discriminatedUnion('op', [
   z.object({
     op: z.literal('turn'),
@@ -71,7 +79,10 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     // New browsers allocate this before sending so a pre-ack reconnect can name
     // the exact turn. Optional for older clients; the daemon allocates a fallback.
     turnId: z.string().uuid().optional(),
-    attachments: z.array(WebchatImageAttachment).max(1).optional()
+    attachments: z.array(WebchatImageAttachment).max(1).optional(),
+    // A fresh Playground has no daemon session to receive standalone `set_*`
+    // operations yet. Carry only the settings the user changed with its first turn.
+    runtime: WebchatRuntimeConfig.optional()
   }),
   // Rebind an in-flight/recent turn to this relay connection and replay every
   // output after the browser's contiguous cursor. The generation monotonically

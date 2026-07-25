@@ -230,6 +230,7 @@ import type {
   WebchatEvent,
   WebchatOutput,
   WebchatDone,
+  WebchatRuntimeConfig,
   RdMsg,
   RdMsgWebchat,
   WebchatImageAttachment,
@@ -1002,6 +1003,7 @@ interface WebchatTurnContext {
   conversationId: string
   turnId: string
   sink: WebchatSink
+  runtime?: WebchatRuntimeConfig
   doneSent?: boolean
 }
 
@@ -3652,7 +3654,8 @@ export class Daemon {
     user: string,
     sink: WebchatSink,
     requestedTurnId?: string,
-    inlineImages?: WebchatImageAttachment[]
+    inlineImages?: WebchatImageAttachment[],
+    requestedRuntime?: WebchatRuntimeConfig
   ): WebchatAck {
     const turnId = requestedTurnId ?? randomUUID()
     // Route directly to the named agent (bypasses arbitration); null when it isn't a
@@ -3730,7 +3733,9 @@ export class Daemon {
     if (this.webchatStreams.has(turnId)) {
       return { accepted: false, turnId, reason: 'busy' }
     }
-    const stream = this.createWebchatTurnStream(result.agentId, chatId, turnId, sink)
+    const initialRuntime =
+      this.agents.get(result.agentId)?.allowRuntimeChangesInChat === true ? requestedRuntime : undefined
+    const stream = this.createWebchatTurnStream(result.agentId, chatId, turnId, sink, initialRuntime)
     void this.dispatch(result.agentId, msg, undefined, stream).catch((err) =>
       this.log.error(`webchat dispatch failed for agent "${result.agentId}": ${formatErr(err)}`)
     )
@@ -3757,7 +3762,8 @@ export class Daemon {
     agentId: string,
     conversationId: string,
     turnId: string,
-    transport: WebchatSink
+    transport: WebchatSink,
+    runtime?: WebchatRuntimeConfig
   ): WebchatTurnStream {
     this.pruneWebchatStreams()
     const stream: WebchatTurnStream = {
@@ -3765,6 +3771,7 @@ export class Daemon {
       conversationId,
       turnId,
       transport,
+      ...(runtime ? { runtime } : {}),
       resumeGeneration: 0,
       sink: {
         output: (output) => this.publishWebchatStreamEvent(stream, { kind: 'output', output }),
@@ -5747,7 +5754,8 @@ export class Daemon {
           op.user ?? 'webchat',
           sink,
           op.turnId,
-          op.attachments
+          op.attachments,
+          op.runtime
         )
         return {
           msgId: msg.msgId,
@@ -7629,7 +7637,8 @@ export class Daemon {
         msg,
         entry.initAbort.signal,
         integrationId,
-        callMeta?.originSessionId
+        callMeta?.originSessionId,
+        agent.allowRuntimeChangesInChat ? webchat?.runtime : undefined
       )
     } catch (err) {
       this.finishSessionInitialization(agentId)

@@ -151,6 +151,13 @@ type WebchatDone = {
   error?: string
 }
 
+type WebchatRuntimeConfig = {
+  model?: string
+  effort?: string
+  permissionMode?: string
+  fastMode?: boolean
+}
+
 export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const [pgSessions, setPgSessions] = useState<Record<string, Session>>({})
   // Live tail for adopted webchat sessions (real CP ids). Kept apart from `pgSessions`
@@ -167,9 +174,17 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const conversationIds = useRef<Map<string, string>>(new Map())
   const streamCursors = useRef<Map<string, OrderedWebchatCursor<WebchatOutput, WebchatDone>>>(new Map())
   const reconnectAttempts = useRef<Map<string, number>>(new Map())
+  // Standalone set_* operations cannot bind until the first daemon session exists.
+  // Keep only fields the user actually touched and attach them atomically to the turn.
+  const stagedRuntime = useRef<Map<string, WebchatRuntimeConfig>>(new Map())
   const busyRef = useRef<Record<string, boolean>>({})
   const closingAll = useRef(false)
   const { activeOrg } = useOrgs()
+
+  const stageRuntimeChange = useCallback((id: string, patch: WebchatRuntimeConfig): void => {
+    if (!id.startsWith(PG_PREFIX)) return
+    stagedRuntime.current.set(id, { ...stagedRuntime.current.get(id), ...patch })
+  }, [])
 
   const setBusy = useCallback((id: string, v: boolean): void => {
     if (v) busyRef.current[id] = true
@@ -599,7 +614,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             JSON.stringify({
               text,
               turnId: requestedTurnId,
-              ...(image ? { attachments: [image] } : {})
+              ...(image ? { attachments: [image] } : {}),
+              ...(stagedRuntime.current.get(id) ? { runtime: stagedRuntime.current.get(id) } : {})
             })
           )
         )
@@ -626,11 +642,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const pgSetModel = useCallback(
     (id: string, agentForId: string, model: string, conversationId?: string) => {
       setPgSessions((cur) => (cur[id] ? { ...cur, [id]: sessionAfterModelSelection(cur[id]!, model) } : cur))
+      stageRuntimeChange(id, { model })
       connect(id, agentForId, conversationId)
         .ready.then((ws) => ws.send(JSON.stringify({ type: 'set_model', model })))
         .catch(() => {})
     },
-    [connect]
+    [connect, stageRuntimeChange]
   )
 
   /** Switch the session's reasoning effort (fire-and-forget). Optimistically updates the
@@ -639,33 +656,36 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const pgSetEffort = useCallback(
     (id: string, agentForId: string, effort: string, conversationId?: string) => {
       setPgSessions((cur) => (cur[id] ? { ...cur, [id]: { ...cur[id]!, effort } } : cur))
+      stageRuntimeChange(id, { effort })
       connect(id, agentForId, conversationId)
         .ready.then((ws) => ws.send(JSON.stringify({ type: 'set_effort', effort })))
         .catch(() => {})
     },
-    [connect]
+    [connect, stageRuntimeChange]
   )
 
   /** Switch the session's permission/approval mode (fire-and-forget), optimistic like pgSetEffort. */
   const pgSetPermissionMode = useCallback(
     (id: string, agentForId: string, permissionMode: string, conversationId?: string) => {
       setPgSessions((cur) => (cur[id] ? { ...cur, [id]: { ...cur[id]!, permissionMode } } : cur))
+      stageRuntimeChange(id, { permissionMode })
       connect(id, agentForId, conversationId)
         .ready.then((ws) => ws.send(JSON.stringify({ type: 'set_permission_mode', permissionMode })))
         .catch(() => {})
     },
-    [connect]
+    [connect, stageRuntimeChange]
   )
 
   /** Toggle the session's fast mode (fire-and-forget), optimistic like pgSetEffort. */
   const pgSetFast = useCallback(
     (id: string, agentForId: string, fastMode: boolean, conversationId?: string) => {
       setPgSessions((cur) => (cur[id] ? { ...cur, [id]: { ...cur[id]!, fastMode } } : cur))
+      stageRuntimeChange(id, { fastMode })
       connect(id, agentForId, conversationId)
         .ready.then((ws) => ws.send(JSON.stringify({ type: 'set_fast', fastMode })))
         .catch(() => {})
     },
-    [connect]
+    [connect, stageRuntimeChange]
   )
 
   /** Interrupt the running turn (fire-and-forget). The daemon ends the turn with a
