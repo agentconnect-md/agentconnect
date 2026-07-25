@@ -7,7 +7,7 @@
  * react-markdown renders it. Single newlines become line breaks (remark-breaks) to
  * match how Slack renders a `markdown` block.
  *
- * Safety: react-markdown v9 skips raw HTML and sanitizes URLs (drops `javascript:`)
+ * Safety: react-markdown skips raw HTML and sanitizes URLs (drops `javascript:`)
  * by default; we only widen that to force external links into a new, opener-isolated
  * tab. Styling lives under `.mdtxt` (compact, inline — distinct from `.md-body`).
  */
