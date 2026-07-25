@@ -287,6 +287,10 @@ export const DreamInfo = z
      *  drop an entry and so cannot authorize anything. */
     snapshotWrites: z
       .object({
+        /** Opaque daemon-process/store generation. Counts are comparable only
+         *  within one generation — a restart resets them, which numeric
+         *  comparison alone cannot detect. */
+        generation: z.string().min(1).max(64),
         total: z.number().int().nonnegative(),
         nonDistill: z.number().int().nonnegative()
       })

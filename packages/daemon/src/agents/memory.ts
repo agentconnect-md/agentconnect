@@ -15,6 +15,7 @@
  * path is re-checked so a symlink can't smuggle a target out. Flat by design (one
  * level): a topic is a file directly under `memory/`, no nested dirs.
  */
+import { randomUUID } from 'node:crypto'
 import { promises as fsp, mkdirSync, existsSync, writeFileSync } from 'node:fs'
 import { join, resolve, isAbsolute, sep } from 'node:path'
 import { MEMORY_INDEX } from '@agentconnect.md/protocol'
@@ -197,19 +198,41 @@ export async function appendHistory(agentDir: string, record: MemoryHistoryRecor
  * that moved backwards as unprovable and fails closed.
  */
 export interface MemoryWriteMarks {
-  /** Every successful managed write, whatever its source. */
+  /** Opaque id of the daemon process+store instance these counts belong to.
+   *  Counts are only comparable WITHIN one generation: a restart resets the
+   *  counters, and numeric comparison alone cannot see that (a `{0,0}` snapshot
+   *  never moves backwards, and any older snapshot is eventually caught up by
+   *  new writes). Adoption requires an exact generation match before it trusts a
+   *  single count. */
+  generation: string
+  /** Every successful managed mutation, whatever its source. */
   total: number
-  /** The subset NOT written by per-turn distillation — i.e. tool, console, and
-   *  dream writes, the ones a rebase may never silently roll over. */
+  /** The subset NOT written by per-turn distillation — tool, console, and dream
+   *  mutations, the ones a rebase may never silently roll over. */
   nonDistill: number
 }
 
-const writeMarks = new Map<string, MemoryWriteMarks>()
+/** New per process: every store's marks are stamped with it, so marks recorded
+ *  by an earlier daemon can never be compared against this one's counts. */
+const WRITE_MARK_GENERATION = randomUUID()
+
+const writeMarks = new Map<string, { total: number; nonDistill: number }>()
 
 /** A snapshot copy of one store's write marks (zeroed when never written). */
 export function memoryWriteMarks(agentDir: string): MemoryWriteMarks {
-  const marks = writeMarks.get(memoryDir(agentDir))
-  return marks ? { ...marks } : { total: 0, nonDistill: 0 }
+  const marks = writeMarks.get(memoryDir(agentDir)) ?? { total: 0, nonDistill: 0 }
+  return { generation: WRITE_MARK_GENERATION, ...marks }
+}
+
+/**
+ * Count a managed-store mutation that did NOT go through {@link writeMemoryFile}
+ * — today, a dream adoption's directory swap. Such a mutation is invisible to
+ * the ledger otherwise, which would let a second dream staged from the same
+ * snapshot classify the first adoption as distill-only drift and roll over it.
+ * Callers must already hold the memory-dir lock.
+ */
+export function recordExternalMemoryMutation(agentDir: string, source: MemoryWriteSource): void {
+  bumpWriteMarks(agentDir, source)
 }
 
 function bumpWriteMarks(agentDir: string, source: MemoryWriteSource): void {
@@ -239,10 +262,17 @@ export function writeMemoryFile(
 ): Promise<{ size: number; mtime: string }> {
   // Serialize every write behind the shared per-dir lock so it can't interleave
   // with a dream adoption's fence-and-swap (nor another write).
-  return withMemoryDirLock(agentDir, () => writeMemoryFileImpl(agentDir, relPath, content, ifMatchMtime, source))
+  return withMemoryDirLock(agentDir, () => writeMemoryFileHoldingLock(agentDir, relPath, content, ifMatchMtime, source))
 }
 
-async function writeMemoryFileImpl(
+/**
+ * The write itself, WITHOUT taking the memory-dir lock — for a caller that
+ * already holds it and needs several writes to be one critical section (the
+ * distiller's topic+index batch: an adoption slipping between those two writes
+ * would be overwritten by the batch's stale index). The lock is not reentrant,
+ * so calling {@link writeMemoryFile} from inside it would deadlock.
+ */
+export async function writeMemoryFileHoldingLock(
   agentDir: string,
   relPath: string,
   content: string,

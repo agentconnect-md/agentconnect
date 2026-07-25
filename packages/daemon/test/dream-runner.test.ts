@@ -5,11 +5,13 @@ import { describe, expect, it } from 'vitest'
 import type { DreamInfo, MemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { DreamRunner, DreamStateError, type DreamStorePort } from '../src/agents/dream-runner.js'
 import { LocalStore } from '../src/store/local-store.js'
+import { appendDistilledMemories } from '../src/agents/memory-distiller.js'
 import {
   ensureMemory,
   readMemoryFile,
   writeMemoryFile,
   MEMORY_HISTORY_FILENAME,
+  MEMORY_INDEX,
   MAX_MEMORY_FILE_BYTES,
   memoryDir
 } from '../src/agents/memory.js'
@@ -388,6 +390,51 @@ describe('DreamRunner adoption', () => {
     expect(await readMemoryFile(dir, 'notes.md')).toContain('human note mid-dream')
   })
 
+  it('refuses to rebase across a daemon restart (generation, not just counts)', async () => {
+    // Set up a window whose COUNTS alone would authorize a rebase (only a distill
+    // write since the snapshot), then stamp the snapshot with a foreign
+    // generation. Numeric comparison cannot see a restart — the counters reset,
+    // so a {0,0} snapshot never moves backwards and any older one is eventually
+    // caught up — which is how a pre-restart human edit could be replayed as
+    // post-restart distillation. Only the generation stamp catches it.
+    const { dir, store, runner } = await setup({})
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+    await writeMemoryFile(dir, 'prefs.md', '- uses tabs\n- distilled after\n', undefined, 'distill')
+
+    const dream = store.dreams.get(started.dreamId)!
+    // Same counts (so the count checks still pass), different daemon process.
+    store.dreams.set(started.dreamId, {
+      ...dream,
+      snapshotWrites: { ...dream.snapshotWrites!, generation: 'a-previous-daemon' }
+    })
+
+    await expect(runner.adopt('a1', started.dreamId, false)).rejects.toThrow(/changed since/)
+  })
+
+  it('fences a second dream staged from the same snapshot as an already-adopted one', async () => {
+    // Adoption rewrites the store by rename, bypassing writeMemoryFile. Unless
+    // that swap is counted, dream B (same snapshot as A) sees only the later
+    // distill write, calls the drift distill-only, and rolls over A's adoption.
+    const { dir, store, runner } = await setup({})
+    const a = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, a.dreamId)
+    // B snapshots the same live store, before A is adopted.
+    const b = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, b.dreamId)
+
+    await runner.adopt('a1', a.dreamId, false)
+    await writeMemoryFile(
+      dir,
+      'prefs.md',
+      '- Uses tabs, not spaces (2026-07-24).\n- later distilled\n',
+      undefined,
+      'distill'
+    )
+
+    await expect(runner.adopt('a1', b.dreamId, false)).rejects.toThrow(/changed since/)
+  })
+
   it('refuses to rebase over a write whose history append was lost (ledger is authoritative)', async () => {
     // `.history` is best-effort: appendHistory swallows its errors. Simulate a
     // console write whose append was lost, then a distill write that logged
@@ -591,5 +638,36 @@ describe('DreamRunner store + trust binding', () => {
 
     expect(store.dreams.get(started.dreamId)?.status).toBe('completed') // NOT adopted
     expect(await readMemoryFile(dir, 'prefs.md')).toBe('- uses tabs\n')
+  })
+})
+
+describe('capture/adoption serialization', () => {
+  it('a distillation batch and an adoption cannot interleave (stale index never wins)', async () => {
+    // appendDistilledMemories reads the index once, then writes a topic and the
+    // index. If those were separate critical sections, an adoption landing
+    // between them would be clobbered by the batch's stale index. The batch now
+    // holds the memory-dir lock end to end, so the two serialize either way
+    // round — and the adopted index survives.
+    const { dir, store, runner } = await setup({})
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+
+    // Fire capture and adoption concurrently at the same store.
+    const [, adoptResult] = await Promise.allSettled([
+      appendDistilledMemories(dir, [{ topic: 'captured.md', content: 'a captured fact' }]),
+      runner.adopt('a1', started.dreamId, false)
+    ])
+
+    const index = await readMemoryFile(dir, MEMORY_INDEX)
+    if (adoptResult.status === 'fulfilled') {
+      // Adoption won the race: its rebuilt index must NOT have been overwritten
+      // by the distiller's pre-dream copy.
+      expect(index).toContain('[prefs](prefs.md)')
+    } else {
+      // Capture won: adoption fenced rather than adopting over it — also correct.
+      expect(String(adoptResult.reason)).toMatch(/changed since/)
+    }
+    // Whichever order, the store is never left with a torn index.
+    expect(index.trim().length).toBeGreaterThan(0)
   })
 })

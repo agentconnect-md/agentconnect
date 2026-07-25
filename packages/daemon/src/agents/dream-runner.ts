@@ -11,6 +11,7 @@ import {
   listMemory,
   memoryDir,
   memoryWriteMarks,
+  recordExternalMemoryMutation,
   readMemoryFile,
   withMemoryDirLock
 } from './memory.js'
@@ -540,6 +541,12 @@ export class DreamRunner {
             await fsp.rm(replacement, { recursive: true, force: true }).catch(() => {})
             throw err
           }
+          // This swap rewrote the store without going through `writeMemoryFile`,
+          // so the ledger would not otherwise see it. Record it as a NON-distill
+          // mutation (still inside the lock): a second dream staged from the same
+          // snapshot must fence on this adoption rather than classify it as
+          // distill-only drift and roll over it.
+          recordExternalMemoryMutation(dir, 'dream')
 
           // The backup is the undo path for THIS adoption; older ones superseded.
           if (hadLiveStore) {
@@ -627,7 +634,13 @@ export class DreamRunner {
     // A dream recorded before this field existed can't be reasoned about.
     if (!snapshot) return null
     const now = memoryWriteMarks(dir)
-    // Backwards ⇒ the ledger was reset (daemon restart) and proves nothing.
+    // A different generation means these counts were recorded by another daemon
+    // process; they are not comparable at all. Numeric comparison cannot stand in
+    // for this — a {0,0} snapshot never moves backwards, and any older snapshot
+    // is eventually caught up by new writes, which would let a pre-restart tool
+    // edit be reclassified as post-restart distillation.
+    if (now.generation !== snapshot.generation) return null
+    // Backwards within a generation should be impossible; treat it as unprovable.
     if (now.total < snapshot.total || now.nonDistill < snapshot.nonDistill) return null
     // A tool/console/dream write landed in the window — never roll over it.
     if (now.nonDistill !== snapshot.nonDistill) return null

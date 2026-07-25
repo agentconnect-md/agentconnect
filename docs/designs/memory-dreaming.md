@@ -334,25 +334,34 @@ Concrete unification points:
   append to the live store while a long dream runs, which would trip the
   adoption fence and starve busy agents of ever adopting. On fence mismatch the
   rebase gets one chance to explain the drift, splitting the question in two:
-  - **Authorization** comes from `.history`: every record after the dream's
-    snapshot must be `source: 'distill'`. The window is delimited by
-    `snapshotHistoryLines` — the log's line count captured _with_ the store
-    snapshot under the shared memory-dir lock — so it is exact rather than
-    timestamp-approximate, and `source` is never truncated.
-  - **Content** comes from the files, not from `.history`: a record's `after`
-    is clamped to `MAX_HISTORY_VALUE_BYTES`, so a large file's row cannot be
+  - **Authorization** comes from an in-process **write ledger**, not from
+    `.history`. The log is best-effort by design (`appendHistory` swallows its
+    errors so logging can never fail a write), which makes it a fine audit trail
+    but an unsound authorizer: a tool write whose append was lost is invisible
+    there, and a later distill row would make the window look distill-only. The
+    ledger is bumped inside the write under the same lock, counts total vs
+    non-distill mutations, and is stamped with an opaque per-process
+    **generation** — counts are comparable only within one generation, because a
+    restart resets them and numeric comparison alone cannot see that. A dream
+    adoption's directory swap bypasses `writeMemoryFile`, so it records itself as
+    a non-distill mutation; otherwise a second dream staged from the same
+    snapshot could roll over the first adoption.
+  - **Content** comes from the files, not from `.history`: a record's `after` is
+    clamped to `MAX_HISTORY_VALUE_BYTES`, so a large file's row cannot be
     replayed faithfully. Because distillation is additive by construction,
     diffing the live file against the dream's own `input/` snapshot yields
     exactly the added lines; they are appended to the staged store, deduped
-    against everything already there (the dream usually folded the same fact in
-    from the same transcripts).
+    against everything already there, and re-checked against the store's byte
+    caps (the swap bypasses `writeMemoryFile`, so its limits are re-enforced
+    here).
 
   Any write with a tool, console, or other source hard-fences to manual review.
 
-- **Serialization.** Dream jobs join the existing per-agent post-turn memory
-  chain (`memoryPostTurnChains`) for their snapshot and adoption steps only,
-  so a snapshot never reads a half-written distillation append and an adoption
-  never races one. The long-running dream execution itself stays off the
+- **Serialization.** Snapshot and adoption take the shared per-memory-dir lock,
+  and a distillation batch holds that same lock end to end — it reads the index
+  once and then writes a topic and the index, so if those were separate critical
+  sections an adoption landing between them would be overwritten by the batch's
+  stale index. The long-running dream execution itself stays off the
   chain; distillation continues normally while a dream runs (the rebase rule
   absorbs the drift).
 - **One product surface.** The console presents both under a single

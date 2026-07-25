@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { MEMORY_INDEX, listMemory, readMemoryFile, writeMemoryFile } from './memory.js'
+import { MEMORY_INDEX, listMemory, readMemoryFile, withMemoryDirLock, writeMemoryFileHoldingLock } from './memory.js'
 
 export interface DistilledMemory {
   topic: string
@@ -97,28 +97,35 @@ function digest(text: string): string {
 }
 
 export async function appendDistilledMemories(agentDir: string, memories: DistilledMemory[]): Promise<number> {
-  let added = 0
-  let index = await readMemoryFile(agentDir, MEMORY_INDEX)
-  const known = new Set<string>()
-  for (const file of await listMemory(agentDir)) {
-    const text = await readMemoryFile(agentDir, file.name)
-    for (const line of text.split('\n')) {
-      const value = line.replace(/^\s*[-*]\s+/, '').trim()
-      if (value) known.add(digest(value))
+  // ONE critical section for the whole batch. Each write used to take the lock
+  // separately while `index` was read once up front, so a dream adoption could
+  // land between a topic write and the index write — and then this stale index
+  // would overwrite the freshly adopted MEMORY.md. Holding the lock across the
+  // batch makes capture atomic with respect to adoption.
+  return withMemoryDirLock(agentDir, async () => {
+    let added = 0
+    let index = await readMemoryFile(agentDir, MEMORY_INDEX)
+    const known = new Set<string>()
+    for (const file of await listMemory(agentDir)) {
+      const text = await readMemoryFile(agentDir, file.name)
+      for (const line of text.split('\n')) {
+        const value = line.replace(/^\s*[-*]\s+/, '').trim()
+        if (value) known.add(digest(value))
+      }
     }
-  }
-  for (const memory of memories) {
-    const before = await readMemoryFile(agentDir, memory.topic)
-    const normalized = memory.content.trim()
-    if (known.has(digest(normalized))) continue
-    const next = `${before.trimEnd()}${before.trim() ? '\n' : ''}- ${normalized}\n`
-    await writeMemoryFile(agentDir, memory.topic, next, undefined, 'distill')
-    known.add(digest(normalized))
-    added++
-    if (!index.includes(`](${memory.topic})`)) {
-      index = `${index.trimEnd()}\n- [${memory.topic.replace(/\.md$/, '')}](${memory.topic})\n`
-      await writeMemoryFile(agentDir, MEMORY_INDEX, index, undefined, 'distill')
+    for (const memory of memories) {
+      const before = await readMemoryFile(agentDir, memory.topic)
+      const normalized = memory.content.trim()
+      if (known.has(digest(normalized))) continue
+      const next = `${before.trimEnd()}${before.trim() ? '\n' : ''}- ${normalized}\n`
+      await writeMemoryFileHoldingLock(agentDir, memory.topic, next, undefined, 'distill')
+      known.add(digest(normalized))
+      added++
+      if (!index.includes(`](${memory.topic})`)) {
+        index = `${index.trimEnd()}\n- [${memory.topic.replace(/\.md$/, '')}](${memory.topic})\n`
+        await writeMemoryFileHoldingLock(agentDir, MEMORY_INDEX, index, undefined, 'distill')
+      }
     }
-  }
-  return added
+    return added
+  })
 }
