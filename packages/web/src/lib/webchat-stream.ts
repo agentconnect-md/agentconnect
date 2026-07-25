@@ -34,10 +34,11 @@ export function createWebchatCursor<Output extends OrderedWebchatOutput, Done ex
   return { ...(requestedTurnId ? { requestedTurnId } : {}), resumeGeneration: 0, nextIndex: 0, pending: new Map() }
 }
 
-/** Bind a pre-ack cursor to the daemon-issued turn id. A different id is stale
- * traffic from another turn and must not alter the current transcript. */
+/** Bind a pre-ack cursor to its turn id. A browser-requested id is an immediate
+ * fence: late traffic from another turn must never claim the new cursor. */
 export function bindWebchatTurn(cursor: OrderedWebchatCursor, turnId: string): boolean {
   if (!turnId) return false
+  if (cursor.requestedTurnId && cursor.requestedTurnId !== turnId) return false
   if (!cursor.turnId) cursor.turnId = turnId
   return cursor.turnId === turnId
 }

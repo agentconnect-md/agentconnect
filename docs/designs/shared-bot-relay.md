@@ -376,9 +376,10 @@ Conversation bodies remain daemon-local. While a turn is active or recently
 completed, the daemon retains a bounded, short-lived output window keyed by the
 browser-allocated turn id. A reconnecting browser reports its last contiguous
 output index and an increasing connection generation through any healthy relay;
-the daemon rejects stale generations, rebinds the live stream, and replays the
-missing tail. This window is volatile, has explicit size and age limits, and
-does not create a durable transcript or offline inbox.
+the browser rejects frames for any other turn while the daemon rejects stale
+generations, rebinds the live stream, and replays the missing tail. This window
+is volatile, has explicit size and age limits, and does not create a durable
+transcript or offline inbox.
 
 ## 11. Daemon Responsibilities
 

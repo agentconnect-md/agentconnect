@@ -338,7 +338,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const receiveOutput = useCallback(
     (id: string, output: WebchatOutput): void => {
       const cursor = streamCursors.current.get(id)
-      if (!cursor) return
+      if (!cursor || !bindWebchatTurn(cursor, output.turnId)) return
       reconnectAttempts.current.delete(id)
       applyStreamResult(id, acceptWebchatOutput(cursor, output))
     },
