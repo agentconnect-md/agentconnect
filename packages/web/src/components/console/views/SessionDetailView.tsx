@@ -1000,7 +1000,11 @@ export default function SessionDetailView() {
         <ComposerMenu
           title="Permission"
           value={pgPermissionMode}
-          options={pgPermissionModes.map((mode) => ({ value: mode.v, label: mode.l }))}
+          options={pgPermissionModes.map((mode) => ({
+            value: mode.v,
+            label: mode.l,
+            description: mode.description
+          }))}
           open={composerMenuOpen === 'permission'}
           align="left"
           onOpenChange={(open) => {
@@ -1013,7 +1017,9 @@ export default function SessionDetailView() {
           }}
         />
       ) : (
-        pgPermissionMode && <span>{agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionMode)}</span>
+        pgPermissionMode && (
+          <span title="Permission">{agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionMode)}</span>
+        )
       )}
       <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
         <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
@@ -1046,14 +1052,18 @@ export default function SessionDetailView() {
               }}
             />
           ) : (
-            modelLabel(pgModel)
+            <span title="Model">{modelLabel(pgModel)}</span>
           )}
         </span>
         {runtimeChangesEnabled && pgEffortOptions.length > 0 && (
           <ComposerMenu
             title="Effort"
             value={pgEffort}
-            options={pgEffortOptions.map((effort) => ({ value: effort.value, label: effort.label }))}
+            options={pgEffortOptions.map((effort) => ({
+              value: effort.value,
+              label: effort.label,
+              description: effort.description
+            }))}
             open={composerMenuOpen === 'effort'}
             onOpenChange={(open) => {
               setAttachMenuOpen(false)
@@ -1066,7 +1076,7 @@ export default function SessionDetailView() {
           />
         )}
         {!runtimeChangesEnabled && pgEffort && (
-          <span>
+          <span title="Effort">
             effort:{' '}
             {pgEffortChoices.find((choice) => choice.value === pgEffort)?.label ?? effortLabel(agentRuntime, pgEffort)}
           </span>
@@ -1087,7 +1097,9 @@ export default function SessionDetailView() {
             onChange={(fast) => pgSetFast(session.id, session.agentId ?? '', fast === 'on', webchatConversationId)}
           />
         )}
-        {!runtimeChangesEnabled && pgFastModeAvailable && <span>fast: {pgFastMode ? 'on' : 'off'}</span>}
+        {!runtimeChangesEnabled && pgFastModeAvailable && (
+          <span title="Fast mode">fast: {pgFastMode ? 'on' : 'off'}</span>
+        )}
       </div>
     </div>
   )
