@@ -62,6 +62,39 @@ export type RdHelloOk = z.infer<typeof RdHelloOk>
 // The webchat operations a browser can issue, folded into one payload union so
 // the wire stays at the four designed frames. `turn` is the user message; the
 // rest are the session controls the old daemon↔CP webchat EVTs carried.
+//
+// Image bytes stay on the content plane: the browser rasterizes/compresses one
+// selected image below this cap, the relay forwards it inline, and the daemon
+// converts it into an ACP image block. The headroom below MAX_FRAME_BYTES leaves
+// room for base64 expansion plus the rd/msg envelope.
+export const WEBCHAT_IMAGE_MAX_BYTES = 160 * 1024
+export const WEBCHAT_IMAGE_MAX_BASE64_CHARS = Math.ceil(WEBCHAT_IMAGE_MAX_BYTES / 3) * 4
+
+const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
+
+function decodedBase64Bytes(value: string): number {
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0
+  return (value.length / 4) * 3 - padding
+}
+
+export const WebchatImageAttachment = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(255)
+    .regex(/^[^\u0000-\u001f\u007f]+$/, 'webchat image name must not contain control characters'),
+  mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+  data: z
+    .string()
+    .min(4)
+    .max(WEBCHAT_IMAGE_MAX_BASE64_CHARS)
+    .refine((value) => CANONICAL_BASE64.test(value) && decodedBase64Bytes(value) <= WEBCHAT_IMAGE_MAX_BYTES, {
+      message: `webchat image must be canonical base64 encoding at most ${WEBCHAT_IMAGE_MAX_BYTES} bytes`
+    })
+})
+export type WebchatImageAttachment = z.infer<typeof WebchatImageAttachment>
+
 export const RelayWebchatOp = z.discriminatedUnion('op', [
   z.object({
     op: z.literal('turn'),
@@ -69,7 +102,8 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     user: z.string().optional(),
     // New browsers allocate this before sending so a pre-ack reconnect can name
     // the exact turn. Optional for older clients; the daemon allocates a fallback.
-    turnId: z.string().uuid().optional()
+    turnId: z.string().uuid().optional(),
+    attachments: z.array(WebchatImageAttachment).max(1).optional()
   }),
   // Rebind an in-flight/recent turn to this relay connection and replay every
   // output after the browser's contiguous cursor. The generation monotonically

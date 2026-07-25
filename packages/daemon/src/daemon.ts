@@ -232,6 +232,7 @@ import type {
   WebchatDone,
   RdMsg,
   RdMsgWebchat,
+  WebchatImageAttachment,
   RdMsgIm,
   RdMsgSlackAction,
   RdMsgHook,
@@ -1962,8 +1963,10 @@ export class Daemon {
       // §9.2: download inbound attachment bytes via the agent's Slack connection
       // (bot-token auth). Returns null (→ baseline resource_link) if no connection.
       downloadAttachment: (agentId, att) =>
-        this.replyConnFor(agentId)?.downloadFile?.(att.sourceUrl, this.cfg.limits.maxAttachmentBytes) ??
-        Promise.resolve(null),
+        att.sourceUrl
+          ? (this.replyConnFor(agentId)?.downloadFile?.(att.sourceUrl, this.cfg.limits.maxAttachmentBytes) ??
+            Promise.resolve(null))
+          : Promise.resolve(null),
       attachmentMaxBytes: cfg.limits.maxAttachmentBytes,
       // §8.4/§8.5/§9.2: snapshot real Slack thread history for cold backfill and
       // warm-turn unread reconciliation (#649).
@@ -3648,7 +3651,8 @@ export class Daemon {
     text: string,
     user: string,
     sink: WebchatSink,
-    requestedTurnId?: string
+    requestedTurnId?: string,
+    inlineImages?: WebchatImageAttachment[]
   ): WebchatAck {
     const turnId = requestedTurnId ?? randomUUID()
     // Route directly to the named agent (bypasses arbitration); null when it isn't a
@@ -3696,6 +3700,20 @@ export class Daemon {
       sender: { id: user, isBot: false },
       text,
       mentionedBots: [],
+      ...(inlineImages?.length
+        ? {
+            attachments: inlineImages.map((image, index) => {
+              const inlineData = Buffer.from(image.data, 'base64')
+              return {
+                id: `webchat:${turnId}:${index}`,
+                name: image.name,
+                mimeType: image.mimeType,
+                size: inlineData.byteLength,
+                inlineData
+              }
+            })
+          }
+        : {}),
       isDm: true,
       trigger: 'dm'
     }
@@ -5722,7 +5740,15 @@ export class Daemon {
     const key = (): string => this.webchatSessionKey(msg.chatId, msg.agentId)
     switch (op.op) {
       case 'turn': {
-        const ack = this.dispatchWebchatTurn(msg.agentId, msg.chatId, op.text, op.user ?? 'webchat', sink, op.turnId)
+        const ack = this.dispatchWebchatTurn(
+          msg.agentId,
+          msg.chatId,
+          op.text,
+          op.user ?? 'webchat',
+          sink,
+          op.turnId,
+          op.attachments
+        )
         return {
           msgId: msg.msgId,
           accepted: ack.accepted,

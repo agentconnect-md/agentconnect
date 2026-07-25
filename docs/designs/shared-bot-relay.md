@@ -255,8 +255,12 @@ rd/chat { chatId, seq, event }
 
 `rd/msg` already names the destination agent. IM payloads contain normalized
 message data and attachment metadata; attachment bytes are fetched by the
-daemon directly from the platform. `rd/chat` is used only to return webchat
-output to the browser connection held by that relay.
+daemon directly from the platform. A webchat turn may instead carry one inline
+PNG, JPEG, or WebP image: the browser rasterizes and compresses it to at most
+160 KiB before sending, leaving room for base64 expansion under the 256 KiB
+frame ceiling. The relay forwards those bytes without storing them. `rd/chat`
+is used only to return webchat output to the browser connection held by that
+relay.
 
 The same authenticated data plane also carries cross-daemon collaboration
 frames. Their authorization rules are defined in
@@ -380,6 +384,9 @@ the browser rejects frames for any other turn while the daemon rejects stale
 generations, rebinds the live stream, and replays the missing tail. This window
 is volatile, has explicit size and age limits, and does not create a durable
 transcript or offline inbox.
+An optional image upload follows the same browser-to-relay-to-daemon content
+path, is bounded to one compressed image per turn, becomes an ACP image prompt
+block at the daemon, and is never persisted by the relay or Control Plane.
 
 ## 11. Daemon Responsibilities
 
