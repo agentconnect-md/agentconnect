@@ -123,7 +123,18 @@ export function AgentCallVisibility({
     onChange('selected', next)
   }
 
-  const toggle = (
+  // Read-only surfaces (the agent page's Access card, or a viewer without
+  // sharing rights) must not render a segmented toggle and a search box that
+  // look editable but silently do nothing. They get the state as a plain line
+  // plus a non-interactive peer list instead — same card, honest affordances.
+  const toggle = !editable ? (
+    <div className="flex items-center gap-2">
+      <Icon name={mode === 'all' ? 'globe' : 'lock'} size={13} color="var(--text-tertiary)" className="flex-none" />
+      <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+        {mode === 'all' ? 'All agents' : 'Selected agents'}
+      </span>
+    </div>
+  ) : (
     <div
       className={
         variant === 'section'
@@ -204,6 +215,32 @@ export function AgentCallVisibility({
           <span className="col-start-2 w-fit rounded-full bg-(--surface-active) px-[9px] py-[2px] font-sans text-[11.5px] font-semibold leading-normal text-(--text-tertiary) desktop:col-auto desktop:flex-none">
             default
           </span>
+        )}
+      </div>
+    ) : !editable ? (
+      // Read-only `selected`: the chosen peers as plain chips — no search field,
+      // no remove buttons, nothing that invites an edit this surface can't make.
+      <div className="min-h-[60px] px-4 py-[14px]">
+        {selectedPeers.length === 0 ? (
+          <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
+            No agents selected.
+          </span>
+        ) : (
+          <div className="flex flex-wrap gap-[6px]">
+            {selectedPeers.map((peer) => (
+              <span
+                key={peer.id}
+                className="flex h-6 flex-none items-center gap-[5px] rounded-full bg-(--surface-active) pr-[9px] pl-[5px]"
+              >
+                <span className="flex h-4 w-4 flex-none items-center justify-center rounded-xs border border-(--border-subtle) bg-(--surface-card) [&>svg]:h-full [&>svg]:w-full">
+                  <AgentIconView icon={peer.icon} runtime={peer.runtime} size={16} />
+                </span>
+                <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)">
+                  {agentLabel(peer)}
+                </span>
+              </span>
+            ))}
+          </div>
         )}
       </div>
     ) : (
