@@ -13,7 +13,8 @@
  *  2. `nativeMemoryList/Read/Write` — surface the runtime's memory files to the
  *     console from wherever the redirect points. Unlike managed's flat
  *     `<agent-root>/memory/`, the runtime dirs are nested (Claude keys memory by a
- *     sanitized-cwd subpath), so this uses a nested-but-contained walk.
+ *     sanitized-cwd subpath). Writes reject symlinked parents and publish through
+ *     a random exclusive temp file.
  *
  * Levers verified 2026-07-08 (claude docs + binary strings; codex docs; and the
  * daemon's own `runtimes/probe.ts` home-override table):
@@ -26,7 +27,12 @@ import { join, resolve, isAbsolute, sep, relative } from 'node:path'
 import type { RuntimeDef } from '../config/config-schema.js'
 import type { MemoryEntry } from '@agentconnect.md/protocol'
 import type { MemoryReadResult, MemoryWriteResult } from './memory-provider.js'
-import { MemoryConflictError, MemoryPathError, MemoryTooLargeError, MAX_MEMORY_FILE_BYTES } from './memory.js'
+import {
+  atomicWriteContainedMemoryFile,
+  MemoryPathError,
+  MemoryTooLargeError,
+  MAX_MEMORY_FILE_BYTES
+} from './memory.js'
 import { nativeRuntimeMemorySpecFor } from './runtime-memory.js'
 
 /** Whether native memory is supported (env levers registered) for this runtime. */
@@ -41,8 +47,8 @@ export function nativeRuntimeEnv(runtime: RuntimeDef, agentRoot: string, runtime
 }
 
 /** Resolve a console-supplied relative path under `root`, allowing nested dirs but
- *  rejecting absolute paths, `..` escapes, and symlink-smuggled escapes. Unlike the
- *  managed dir (flat), native runtime dirs are nested. */
+ *  rejecting absolute paths and lexical `..` escapes. The write path separately
+ *  canonicalises every parent and rejects symlinks. */
 function resolveContained(root: string, relPath: string): string {
   if (isAbsolute(relPath)) throw new MemoryPathError('absolute paths are not allowed')
   const abs = resolve(root, relPath)
@@ -119,23 +125,8 @@ export async function nativeMemoryWrite(
   if (Buffer.byteLength(content) > MAX_MEMORY_FILE_BYTES) {
     throw new MemoryTooLargeError(`memory file exceeds the ${MAX_MEMORY_FILE_BYTES}-byte limit`)
   }
-  const abs = resolveContained(spec.readRoot(agentDir), path)
-  if (ifMatch) {
-    let current: string | null = null
-    try {
-      current = (await fsp.stat(abs)).mtime.toISOString()
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-    if (current !== ifMatch) {
-      throw new MemoryConflictError('the memory file changed since it was read; reload and retry')
-    }
-  }
-  const dir = abs.slice(0, abs.length - (abs.split(sep).pop()?.length ?? 0))
-  await fsp.mkdir(dir, { recursive: true })
-  const tmp = `${abs}.tmp`
-  await fsp.writeFile(tmp, content, 'utf8')
-  await fsp.rename(tmp, abs)
-  const st = await fsp.stat(abs)
+  const root = spec.readRoot(agentDir)
+  const abs = resolveContained(root, path)
+  const { stat: st } = await atomicWriteContainedMemoryFile(agentDir, root, abs, content, ifMatch)
   return { ok: true, path, size: st.size, mtime: st.mtime.toISOString() }
 }
