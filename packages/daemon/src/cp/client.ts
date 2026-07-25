@@ -34,6 +34,7 @@ import type {
   WorkspaceListReq,
   WorkspaceReadReq,
   WorkspaceWriteReq,
+  WorkspaceDeleteReq,
   WorkspaceGitStatusReq,
   WorkspaceGitPullReq,
   GitCredRequest,
@@ -828,6 +829,14 @@ export class CpClient {
           .write(frame.payload as WorkspaceWriteReq)
           .then((ok) => this.reply(frame, 'workspace/write/ok', ok))
           .catch((err) => this.workspaceError(frame.id, 'workspace/write', err))
+        return
+      }
+      case 'workspace/delete': {
+        // Console manager delete: scratch-only and mtime-fenced like replacement.
+        this.deps.workspaceRead
+          .delete(frame.payload as WorkspaceDeleteReq)
+          .then((ok) => this.reply(frame, 'workspace/delete/ok', ok))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/delete', err))
         return
       }
       case 'workspace/gitstatus': {

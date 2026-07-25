@@ -12295,6 +12295,7 @@ export class Daemon {
         features: [
           ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
           'workspace-file-edit-v1',
+          'workspace-file-delete-v1',
           // Host can confine agent processes (issue #642) — the console uses this to
           // enable/disable the per-agent Run in sandbox toggle.
           ...(this.sandboxMechanism ? ['sandbox'] : []),

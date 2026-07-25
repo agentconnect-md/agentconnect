@@ -947,6 +947,30 @@ describe('workspace file access frames (console live proxy)', () => {
     expect(read.frame.payload.offset).toBe(0) // zod default
     expect(read.frame.payload.limit).toBe(65536) // zod default (64 KiB slice)
   })
+
+  it('workspace/delete REQ and REP round-trip the optimistic file identity', () => {
+    const req = decodeEnvelope(
+      envelope(
+        'workspace/delete',
+        {
+          agentId: 'local-agent-1',
+          path: 'notes/todo.md',
+          ifMatchMtime: '2026-07-25T00:00:00.000Z'
+        },
+        { epoch: 3 }
+      )
+    )
+    expect(req.ok).toBe(true)
+    if (!req.ok || !isFrame('workspace/delete')(req.frame)) throw new Error('expected workspace/delete')
+    expect(req.frame.payload.path).toBe('notes/todo.md')
+
+    const rep = decodeEnvelope(
+      envelope('workspace/delete/ok', { agentId: 'local-agent-1', path: 'notes/todo.md' }, { corr: ID })
+    )
+    expect(rep.ok).toBe(true)
+    if (!rep.ok || !isFrame('workspace/delete/ok')(rep.frame)) throw new Error('expected workspace/delete/ok')
+    expect(rep.frame.corr).toBe(ID)
+  })
 })
 
 describe('channel agent directory frames (agent collaboration)', () => {
