@@ -873,7 +873,13 @@ export class MemoryPluginClient {
       return remaining
     }
     const timeout = remainingMs()
-    const { tools } = await this.client.listTools(undefined, { timeout, maxTotalTimeout: timeout })
+    const listSignal = AbortSignal.timeout(timeout)
+    const { tools } = await this.client
+      .listTools(undefined, { timeout, maxTotalTimeout: timeout, signal: listSignal })
+      .catch((error) => {
+        if (listSignal.aborted) throw new MemoryPluginProtocolError('memory plugin conformance probe timed out')
+        throw error
+      })
     if (tools.length > MAX_LISTED_TOOLS) {
       throw new MemoryPluginProtocolError('memory plugin exposes too many MCP tools')
     }
