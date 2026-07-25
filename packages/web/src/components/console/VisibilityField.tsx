@@ -75,13 +75,16 @@ export function VisibilityField({
   value,
   onChange,
   creatorUserId,
-  disabled
+  disabled,
+  label = 'Visibility'
 }: {
   value: SharingValue
   onChange: (next: SharingValue) => void
   /** The resource creator's userId (self on create) — excluded from the pool. */
   creatorUserId?: string | null
   disabled?: boolean
+  /** Field label (e.g. "Team visibility" in the agent Access section). */
+  label?: string
 }) {
   const isMobile = useIsMobile()
   const restricted = value.visibility === 'restricted'
@@ -97,7 +100,7 @@ export function VisibilityField({
 
   return (
     <div className="fld mt-[14px]">
-      <span className="fldlbl">Visibility</span>
+      <span className="fldlbl">{label}</span>
       {isMobile ? (
         <VisibilityPills restricted={restricted} onPick={pick} />
       ) : (

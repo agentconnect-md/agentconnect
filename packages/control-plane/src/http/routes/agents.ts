@@ -846,6 +846,10 @@ export function agentRoutes(deps: HttpDeps) {
             req.body.callPolicy === 'selected'
               ? await resolvePolicyAgentIds(req, agentId, req.body.allowedCallerAgentIds ?? [], [])
               : undefined
+          const initialAllowedTargets =
+            req.body.outboundPolicy === 'selected'
+              ? await resolvePolicyAgentIds(req, agentId, req.body.allowedTargetAgentIds ?? [], [])
+              : undefined
           // One transaction for the agent row + its initial secret rows (sealing
           // happens before it opens) — a failure can't leave a partial definition.
           const agent = await deps.repos.agentConfig.create(
@@ -882,6 +886,8 @@ export function agentRoutes(deps: HttpDeps) {
               ...(initialSharedWith ? { sharedWith: initialSharedWith } : {}),
               ...(req.body.callPolicy ? { callPolicy: req.body.callPolicy } : {}),
               ...(initialAllowedCallers ? { allowedCallerAgentIds: initialAllowedCallers } : {}),
+              ...(req.body.outboundPolicy ? { outboundPolicy: req.body.outboundPolicy } : {}),
+              ...(initialAllowedTargets ? { allowedTargetAgentIds: initialAllowedTargets } : {}),
               capabilities: req.body.capabilities
             },
             // Initial write-only secrets — same transaction, so the first

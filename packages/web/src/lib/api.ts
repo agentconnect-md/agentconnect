@@ -763,6 +763,9 @@ export interface CreateAgentInput {
    *  intersected with visible same-org peers and only bites when 'selected'. */
   callPolicy?: AgentCallPolicy
   allowedCallerAgentIds?: string[]
+  /** Outbound half (absent ⇒ 'all'); intersected with visible peers server-side. */
+  outboundPolicy?: AgentCallPolicy
+  allowedTargetAgentIds?: string[]
 }
 
 // Response of `POST /daemons/token`: a fresh daemon identity + its one-time API key

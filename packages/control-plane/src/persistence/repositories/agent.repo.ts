@@ -234,7 +234,10 @@ export class PgAgentRepo implements AgentRepo {
           // Initial call policy (absent ⇒ DB default 'all'). allowedCallerAgentIds
           // only bites when 'selected'; the route intersects it with visible peers.
           ...(input.callPolicy ? { callPolicy: input.callPolicy } : {}),
-          ...(input.allowedCallerAgentIds ? { allowedCallerAgentIds: input.allowedCallerAgentIds } : {})
+          ...(input.allowedCallerAgentIds ? { allowedCallerAgentIds: input.allowedCallerAgentIds } : {}),
+          // Same for the outbound half (which peers this agent may call).
+          ...(input.outboundPolicy ? { outboundPolicy: input.outboundPolicy } : {}),
+          ...(input.allowedTargetAgentIds ? { allowedTargetAgentIds: input.allowedTargetAgentIds } : {})
         },
         include: withUsers
       })

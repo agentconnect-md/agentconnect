@@ -295,7 +295,10 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       data: { id: foreignCallerId, orgId: foreignOrgId, name: 'foreign-bot', runtime: 'claude' }
     })
 
-    // A cross-org caller and duplicates are dropped; only the visible same-org peer survives.
+    // A cross-org peer and duplicates are dropped in BOTH directions; only the
+    // visible same-org peer survives. Both halves must reach the row — a create
+    // that accepted the outbound half but never persisted it would silently leave
+    // the agent able to call everyone.
     const selected = await app.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
@@ -303,24 +306,63 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         name: 'deploy-bot',
         runtime: 'claude',
         callPolicy: 'selected',
-        allowedCallerAgentIds: [callerId, foreignCallerId, callerId]
+        allowedCallerAgentIds: [callerId, foreignCallerId, callerId],
+        outboundPolicy: 'selected',
+        allowedTargetAgentIds: [callerId, foreignCallerId, callerId]
       }
     })
     expect(selected.statusCode).toBe(201)
-    expect(selected.json()).toMatchObject({ callPolicy: 'selected', allowedCallerAgentIds: [callerId] })
+    expect(selected.json()).toMatchObject({
+      callPolicy: 'selected',
+      allowedCallerAgentIds: [callerId],
+      outboundPolicy: 'selected',
+      allowedTargetAgentIds: [callerId]
+    })
     const selectedId = (selected.json() as { id: string }).id
     const selectedRow = await prisma.agent.findUnique({ where: { id: selectedId } })
     expect(selectedRow?.callPolicy).toBe('selected')
     expect(selectedRow?.allowedCallerAgentIds).toEqual([callerId])
+    expect(selectedRow?.outboundPolicy).toBe('selected')
+    expect(selectedRow?.allowedTargetAgentIds).toEqual([callerId])
 
-    // Omitting the policy keeps the DB default (any org peer may call it).
+    // The halves are independent: restricting only the outbound side leaves the
+    // inbound side at the DB default.
+    const outboundOnly = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: {
+        name: 'triage-bot',
+        runtime: 'claude',
+        outboundPolicy: 'selected',
+        allowedTargetAgentIds: [callerId]
+      }
+    })
+    expect(outboundOnly.statusCode).toBe(201)
+    expect(outboundOnly.json()).toMatchObject({
+      callPolicy: 'all',
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'selected',
+      allowedTargetAgentIds: [callerId]
+    })
+    const outboundOnlyRow = await prisma.agent.findUnique({
+      where: { id: (outboundOnly.json() as { id: string }).id }
+    })
+    expect(outboundOnlyRow?.outboundPolicy).toBe('selected')
+    expect(outboundOnlyRow?.allowedTargetAgentIds).toEqual([callerId])
+
+    // Omitting the policy keeps the DB default in both directions.
     const dflt = await app.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
       payload: { name: 'docs-bot', runtime: 'claude' }
     })
     expect(dflt.statusCode).toBe(201)
-    expect(dflt.json()).toMatchObject({ callPolicy: 'all', allowedCallerAgentIds: [] })
+    expect(dflt.json()).toMatchObject({
+      callPolicy: 'all',
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'all',
+      allowedTargetAgentIds: []
+    })
   })
 
   it('DELETE /agents/:id cascades agent-owned hooks and secrets but preserves run history', async () => {

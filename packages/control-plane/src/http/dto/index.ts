@@ -429,7 +429,10 @@ export const CreateAgentBody = z.object({
   // intersected with visible same-org peers in the route (same rule as the
   // dedicated call-policy PUT). Lets a create restrict callers in one request.
   callPolicy: AgentCallPolicyEnum.optional(),
-  allowedCallerAgentIds: z.array(z.string().uuid()).optional()
+  allowedCallerAgentIds: z.array(z.string().uuid()).optional(),
+  // Outbound half of the same policy (absent ⇒ 'all'), intersected the same way.
+  outboundPolicy: AgentCallPolicyEnum.optional(),
+  allowedTargetAgentIds: z.array(z.string().uuid()).optional()
 })
 
 /** `PATCH /agents/:id` — edit the spec; pushes `agent/upsert` if the daemon is connected.
