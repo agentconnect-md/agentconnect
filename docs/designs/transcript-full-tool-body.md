@@ -169,8 +169,10 @@ offset. It does not select individual fields. Each chunk independently obeys
 the frame budget; absence of `nextOffset` marks the final chunk.
 
 Before reading the row, the daemon verifies the `(agentId, sessionId)` binding
-and requires the tool row's sender to be the same agent. A tool-call id from a
-peer sharing the channel and thread cannot cross this body-read boundary.
+and requires the tool row's sender to be the same agent. Stored tool-row
+identity and updates also include that agent because ACP tool-call ids are only
+session-local. A peer sharing the channel and thread can neither overwrite nor
+read another agent's body.
 
 The Control Plane exposes the authenticated HTTP proxy for this request, and
 the Console concatenates chunks before parsing and rendering the JSON.

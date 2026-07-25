@@ -415,7 +415,7 @@ export class LocalStore {
         channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT NOT NULL, agentId TEXT NOT NULL,
         PRIMARY KEY (channel, thread, ts, agentId)
       );
-      -- transcript_tool_call (partial unique on tool_call_id) is created in
+      -- transcript_agent_tool_call (partial unique on tool_call_id) is created in
       -- migrateTranscriptToolBody, after the column is guaranteed to exist — a legacy
       -- rebuild in migrateTranscript recreates the table without the new columns.
       CREATE TABLE IF NOT EXISTS cp_routing (
@@ -704,19 +704,19 @@ export class LocalStore {
     else this.db.exec('UPDATE inbox SET loopGuardCounted = 0 WHERE loopGuardCounted IS NULL')
   }
 
-  /** Add the `transcript.tool_call_id` + `transcript.body` columns (and the partial
-   *  unique index) to a pre-existing DB. CREATE TABLE IF NOT EXISTS above adds them for
-   *  fresh DBs but never alters an existing table, so upgrade in place. No-op once the
-   *  columns are present. */
+  /** Add the `transcript.tool_call_id` + `transcript.body` columns and agent-scoped
+   *  partial unique index to a pre-existing DB. ACP tool ids are session-local, so
+   *  same-thread agents may legitimately reuse them. */
   private migrateTranscriptToolBody(): void {
     const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
     if (!cols.some((c) => c.name === 'tool_call_id'))
       this.db.exec('ALTER TABLE transcript ADD COLUMN tool_call_id TEXT')
     if (!cols.some((c) => c.name === 'body')) this.db.exec('ALTER TABLE transcript ADD COLUMN body TEXT')
-    this.db.exec(
-      `CREATE UNIQUE INDEX IF NOT EXISTS transcript_tool_call
-         ON transcript (channel, thread, tool_call_id) WHERE tool_call_id IS NOT NULL`
-    )
+    this.db.exec(`
+      DROP INDEX IF EXISTS transcript_tool_call;
+      CREATE UNIQUE INDEX IF NOT EXISTS transcript_agent_tool_call
+        ON transcript (channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
+    `)
   }
 
   /** Add daemon-local inline webchat image storage to existing transcript tables. */
@@ -1543,8 +1543,8 @@ export class LocalStore {
 
   /** First sight of a tool call: insert its kind='tool' row (title in `text`, the
    *  serialized ToolBody in `body`). INSERT OR IGNORE so a re-fired first update is a
-   *  no-op — the partial unique index on (channel, thread, tool_call_id) dedups. `seq`
-   *  is assigned here and stays stable across later `updateToolCall`s. */
+   *  no-op — the partial unique index on (channel, thread, sender, tool_call_id)
+   *  dedups within one agent. `seq` stays stable across later updates. */
   insertToolCall(e: {
     channel: string
     thread: string
@@ -1572,13 +1572,20 @@ export class LocalStore {
       })
   }
 
-  /** Later update for a tool call: overwrite `text` (title) + `body` on the existing
-   *  row, keyed by (channel, thread, tool_call_id). `seq`/`ts` are untouched so the
-   *  row keeps its first-seen position. No-op if the row is absent. */
-  updateToolCall(channel: string, thread: string, toolCallId: string, patch: { title: string; body: string }): void {
+  /** Later update for one agent's tool call. `seq`/`ts` keep their first-seen
+   *  values; a peer reusing the same session-local tool id cannot overwrite it. */
+  updateToolCall(
+    channel: string,
+    thread: string,
+    agentId: string,
+    toolCallId: string,
+    patch: { title: string; body: string }
+  ): void {
     this.db
-      .prepare('UPDATE transcript SET text = ?, body = ? WHERE channel = ? AND thread = ? AND tool_call_id = ?')
-      .run(patch.title, patch.body, channel, thread, toolCallId)
+      .prepare(
+        'UPDATE transcript SET text = ?, body = ? WHERE channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?'
+      )
+      .run(patch.title, patch.body, channel, thread, agentId, toolCallId)
   }
 
   /** One agent's full stored ToolBody JSON, or undefined if unknown/not owned. */
