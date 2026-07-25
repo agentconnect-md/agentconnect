@@ -65,9 +65,20 @@ const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 describe('parseBrowserFrame', () => {
   it('maps a bare {text} and {type:"message",text} to a turn op carrying the user', () => {
     expect(parseBrowserFrame({ text: 'hi' }, USER)).toEqual({ op: 'turn', text: 'hi', user: USER })
-    expect(parseBrowserFrame({ type: 'message', text: 'hi' }, USER)).toEqual({ op: 'turn', text: 'hi', user: USER })
+    expect(parseBrowserFrame({ type: 'message', text: 'hi', turnId: AGENT }, USER)).toEqual({
+      op: 'turn',
+      text: 'hi',
+      user: USER,
+      turnId: AGENT
+    })
   })
   it('maps the session-control envelopes', () => {
+    expect(parseBrowserFrame({ type: 'resume', turnId: AGENT, generation: 3, afterIndex: 4 }, USER)).toEqual({
+      op: 'resume',
+      turnId: AGENT,
+      generation: 3,
+      afterIndex: 4
+    })
     expect(parseBrowserFrame({ type: 'set_model', model: 'claude' }, USER)).toEqual({
       op: 'set_model',
       model: 'claude'
@@ -86,6 +97,10 @@ describe('parseBrowserFrame', () => {
   it('rejects malformed / unknown envelopes', () => {
     expect(parseBrowserFrame({ type: 'set_model' }, USER)).toBeNull() // no model
     expect(parseBrowserFrame({ type: 'set_fast', fastMode: 'yes' }, USER)).toBeNull() // wrong type
+    expect(parseBrowserFrame({ type: 'resume', turnId: AGENT, generation: 1, afterIndex: -2 }, USER)).toBeNull()
+    expect(parseBrowserFrame({ type: 'resume', turnId: AGENT, generation: 1, afterIndex: 1.5 }, USER)).toBeNull()
+    expect(parseBrowserFrame({ type: 'resume', turnId: AGENT, generation: 0, afterIndex: 0 }, USER)).toBeNull()
+    expect(parseBrowserFrame({ type: 'resume', generation: 1, afterIndex: 0 }, USER)).toBeNull()
     expect(parseBrowserFrame({ type: 'nope' }, USER)).toBeNull()
     expect(parseBrowserFrame(null, USER)).toBeNull()
     expect(parseBrowserFrame(42, USER)).toBeNull()
@@ -119,6 +134,18 @@ describe('RelayBrowserConnection', () => {
     transport.feed({ text: 'hi' })
     await tick()
     expect(transport.last('ack')).toEqual({ type: 'ack', ack: { accepted: false, reason: 'paused' } })
+  })
+
+  it('forwards a resume cursor and surfaces its replay verdict', async () => {
+    const turnId = '22222222-2222-4222-8222-222222222222'
+    const { transport, sent } = build({ ack: { msgId: 'resume-1', accepted: true, turnId } })
+    transport.feed({ type: 'resume', turnId, generation: 4, afterIndex: 7 })
+    await tick()
+    expect(sent[0]).toMatchObject({ payload: { op: 'resume', turnId, generation: 4, afterIndex: 7 } })
+    expect(transport.last('resumed')).toEqual({
+      type: 'resumed',
+      ack: { accepted: true, turnId }
+    })
   })
 
   it('translates an rd/chat output/done back to {type:output}/{type:done}', () => {

@@ -4,8 +4,8 @@
  *
  * It speaks the browser-facing, type-tagged webchat envelope. The browser sends
  * `{text}` (a turn) or
- * `{type:'set_model'|'set_effort'|'set_permission_mode'|'set_fast'|'cancel'}`, and the
- * relay sends `{type:'ready'|'output'|'done'|'ack'|'error'}`. Internally each inbound
+ * `{type:'resume'|'set_model'|'set_effort'|'set_permission_mode'|'set_fast'|'cancel'}`,
+ * and the relay sends `{type:'ready'|'output'|'done'|'ack'|'resumed'|'error'}`. Internally each inbound
  * op becomes an `rd/msg(webchat)` bridged onto the target daemon's rd/* socket, and
  * each `rd/chat` chunk the daemon streams back is translated to `{type:'output'|'done'}`.
  *
@@ -38,9 +38,24 @@ export function parseBrowserFrame(msg: unknown, user: string): RelayWebchatOp | 
   const m = msg as Record<string, unknown>
   // A bare {text} (no type) OR {type:'message', text} is a turn.
   if ((m.type === undefined || m.type === 'message') && typeof m.text === 'string') {
-    return { op: 'turn', text: m.text, user }
+    return m.turnId === undefined || typeof m.turnId === 'string'
+      ? { op: 'turn', text: m.text, user, ...(typeof m.turnId === 'string' ? { turnId: m.turnId } : {}) }
+      : null
   }
   switch (m.type) {
+    case 'resume':
+      return Number.isInteger(m.afterIndex) &&
+        (m.afterIndex as number) >= -1 &&
+        typeof m.turnId === 'string' &&
+        Number.isSafeInteger(m.generation) &&
+        (m.generation as number) >= 1
+        ? {
+            op: 'resume',
+            turnId: m.turnId,
+            generation: m.generation as number,
+            afterIndex: m.afterIndex as number
+          }
+        : null
     case 'set_model':
       return typeof m.model === 'string' ? { op: 'set_model', model: m.model } : null
     case 'set_effort':
@@ -112,9 +127,15 @@ export class RelayBrowserConnection implements ChatSink {
     }
     try {
       const ack = await daemon.sendMsg(rdMsg)
-      // Only a turn's verdict is surfaced (accepted:false ⇒ paused / no daemon).
+      const browserAck = {
+        accepted: ack.accepted,
+        ...(ack.turnId ? { turnId: ack.turnId } : {}),
+        ...(ack.reason ? { reason: ack.reason } : {})
+      }
       if (op.op === 'turn') {
-        this.send({ type: 'ack', ack: { accepted: ack.accepted, ...(ack.reason ? { reason: ack.reason } : {}) } })
+        this.send({ type: 'ack', ack: browserAck })
+      } else if (op.op === 'resume') {
+        this.send({ type: 'resumed', ack: browserAck })
       }
     } catch (err) {
       this.deps.log.warn(`relay: webchat op delivery failed: ${(err as Error).message}`)

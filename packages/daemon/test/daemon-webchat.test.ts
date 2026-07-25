@@ -1023,18 +1023,18 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     ...over
   })
 
-  it('a turn op dispatches and streams rd/chat output→done, acking accepted+turnId', async () => {
+  it('a turn op preserves the browser turnId and streams rd/chat output→done', async () => {
     const { factory } = streamingHost([text('hi from agent')])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
     await daemon.start()
     ;(daemon as any).cpClient = fakeCpClient()
 
+    const turnId = '77777777-7777-4777-8777-777777777777'
     const events: RdChatEvent[] = []
-    const ack = (daemon as any).handleRelayMsg(rd({ op: 'turn', text: 'go', user: 'ada' }), (e: RdChatEvent) =>
+    const ack = (daemon as any).handleRelayMsg(rd({ op: 'turn', text: 'go', user: 'ada', turnId }), (e: RdChatEvent) =>
       events.push(e)
     )
-    expect(ack).toMatchObject({ msgId: 'm-1', accepted: true })
-    expect(ack.turnId).toBeDefined()
+    expect(ack).toMatchObject({ msgId: 'm-1', accepted: true, turnId })
 
     // The reply streams asynchronously through the same engine as the CP path, but now
     // over the `chat` callback (→ rd/chat) instead of the cp client.
@@ -1044,6 +1044,136 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     expect(done?.kind === 'done' && done.done).toMatchObject({ conversationId: CONV, turnId: ack.turnId })
     await daemon.stop()
   }, 15_000)
+
+  it('keeps a newer resume bound when a delayed older generation arrives afterward', async () => {
+    const { factory } = streamingHost([])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    const first: RdChatEvent[] = []
+    const second: RdChatEvent[] = []
+    const third: RdChatEvent[] = []
+    const stale: RdChatEvent[] = []
+    const sink = (events: RdChatEvent[]) => ({
+      output: (output: WebchatOutput) => events.push({ kind: 'output', output }),
+      done: (done: WebchatDone) => events.push({ kind: 'done', done })
+    })
+    const stream = (daemon as any).createWebchatTurnStream(AGENT_ID, CONV, turnId, sink(first))
+
+    stream.sink.output({ conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'first' } })
+    const activeResume = (daemon as any).handleRelayMsg(
+      rd({ op: 'resume', turnId, generation: 2, afterIndex: -1 }, { msgId: 'resume-active' }),
+      (event: RdChatEvent) => second.push(event)
+    )
+    expect(activeResume).toMatchObject({ accepted: true, turnId })
+    expect(second.filter((event) => event.kind === 'output')).toHaveLength(1)
+
+    const delayedResume = (daemon as any).handleRelayMsg(
+      rd({ op: 'resume', turnId, generation: 1, afterIndex: -1 }, { msgId: 'resume-delayed' }),
+      (event: RdChatEvent) => stale.push(event)
+    )
+    expect(delayedResume).toMatchObject({ accepted: false, turnId, reason: 'stream_stale' })
+
+    stream.sink.output({ conversationId: CONV, turnId, index: 1, event: { kind: 'message', text: 'second' } })
+    stream.sink.done({ conversationId: CONV, turnId, stopReason: 'end_turn' })
+    expect(first).toHaveLength(1) // future output moved to the resumed relay sink
+    expect(stale).toEqual([]) // delayed generation never steals the stream transport
+    expect(second.at(-1)).toEqual({
+      kind: 'done',
+      done: { conversationId: CONV, turnId, lastIndex: 1, stopReason: 'end_turn' }
+    })
+
+    const terminalResume = (daemon as any).handleRelayMsg(
+      rd({ op: 'resume', turnId, generation: 3, afterIndex: 0 }, { msgId: 'resume-terminal' }),
+      (event: RdChatEvent) => third.push(event)
+    )
+    expect(terminalResume).toMatchObject({ accepted: true, turnId })
+    expect(third).toEqual([
+      {
+        kind: 'output',
+        output: { conversationId: CONV, turnId, index: 1, event: { kind: 'message', text: 'second' } }
+      },
+      {
+        kind: 'done',
+        done: { conversationId: CONV, turnId, lastIndex: 1, stopReason: 'end_turn' }
+      }
+    ])
+    await daemon.stop()
+  })
+
+  it('accepts a retry after resume arrives before the delayed original turn', async () => {
+    const { factory } = streamingHost([])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    const original: RdChatEvent[] = []
+    const resumed: RdChatEvent[] = []
+    const beforeTurn = (daemon as any).handleRelayMsg(
+      rd({ op: 'resume', turnId, generation: 1, afterIndex: -1 }, { msgId: 'resume-before-turn' }),
+      (event: RdChatEvent) => resumed.push(event)
+    )
+    expect(beforeTurn).toMatchObject({ accepted: false, reason: 'stream_not_found' })
+
+    const stream = (daemon as any).createWebchatTurnStream(AGENT_ID, CONV, turnId, {
+      output: (output: WebchatOutput) => original.push({ kind: 'output', output }),
+      done: (done: WebchatDone) => original.push({ kind: 'done', done })
+    })
+    stream.sink.output({ conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'missed' } })
+    const retry = (daemon as any).handleRelayMsg(
+      rd({ op: 'resume', turnId, generation: 2, afterIndex: -1 }, { msgId: 'resume-retry' }),
+      (event: RdChatEvent) => resumed.push(event)
+    )
+    expect(retry).toMatchObject({ accepted: true, turnId })
+
+    stream.sink.output({ conversationId: CONV, turnId, index: 1, event: { kind: 'message', text: 'continued' } })
+    expect(original).toEqual([
+      {
+        kind: 'output',
+        output: { conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'missed' } }
+      }
+    ])
+    expect(resumed).toEqual([
+      {
+        kind: 'output',
+        output: { conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'missed' } }
+      },
+      {
+        kind: 'output',
+        output: { conversationId: CONV, turnId, index: 1, event: { kind: 'message', text: 'continued' } }
+      }
+    ])
+    await daemon.stop()
+  })
+
+  it('rejects resume explicitly when the bounded replay window no longer covers the cursor', async () => {
+    const { factory } = streamingHost([])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    const stream = (daemon as any).createWebchatTurnStream(AGENT_ID, CONV, turnId, {
+      output: () => {},
+      done: () => {}
+    })
+    for (let index = 0; index <= 256; index++) {
+      stream.sink.output({
+        conversationId: CONV,
+        turnId,
+        index,
+        event: { kind: 'message', text: String(index) }
+      })
+    }
+
+    expect(
+      (daemon as any).handleRelayMsg(
+        rd({ op: 'resume', turnId, generation: 1, afterIndex: -1 }, { msgId: 'resume-overflow' }),
+        () => {}
+      )
+    ).toMatchObject({ accepted: false, turnId, reason: 'stream_gap' })
+    await daemon.stop()
+  })
 
   it('rejects a turn for an agent not on this daemon (accepted:false, reason no_agent)', async () => {
     const { factory } = streamingHost([])

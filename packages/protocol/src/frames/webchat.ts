@@ -7,7 +7,7 @@ import { z } from 'zod'
 // (packages/protocol/src/frames/relay-daemon.ts). Content never touches the CP.
 
 // The webchat turn verdict — `dispatchWebchatTurn` returns this and the relay path folds
-// it into `rd/ack` (accepted + a fresh turnId that correlates the reply stream; `reason`
+// it into `rd/ack` (accepted + the turnId that correlates the reply stream; `reason`
 // explains a rejection). Not a wire frame of its own anymore.
 export const WebchatAck = z.object({
   accepted: z.boolean(),
@@ -93,6 +93,10 @@ export type WebchatOutput = z.infer<typeof WebchatOutput>
 export const WebchatDone = z.object({
   conversationId: z.string().uuid(),
   turnId: z.string().uuid(),
+  // Last output index emitted before this terminal marker. A reconnecting browser
+  // holds `done` until it has assembled every output through this index, so an
+  // early terminal frame cannot hide a gap. Optional for rolling compatibility.
+  lastIndex: z.number().int().min(-1).optional(),
   stopReason: z.string().optional(),
   usage: z.object({ used: z.number().int().optional(), cost: z.number().optional() }).optional(),
   error: z.string().optional()

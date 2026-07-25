@@ -63,7 +63,23 @@ export type RdHelloOk = z.infer<typeof RdHelloOk>
 // the wire stays at the four designed frames. `turn` is the user message; the
 // rest are the session controls the old daemon↔CP webchat EVTs carried.
 export const RelayWebchatOp = z.discriminatedUnion('op', [
-  z.object({ op: z.literal('turn'), text: z.string(), user: z.string().optional() }),
+  z.object({
+    op: z.literal('turn'),
+    text: z.string(),
+    user: z.string().optional(),
+    // New browsers allocate this before sending so a pre-ack reconnect can name
+    // the exact turn. Optional for older clients; the daemon allocates a fallback.
+    turnId: z.string().uuid().optional()
+  }),
+  // Rebind an in-flight/recent turn to this relay connection and replay every
+  // output after the browser's contiguous cursor. The generation monotonically
+  // fences delayed resume requests from older browser connections.
+  z.object({
+    op: z.literal('resume'),
+    turnId: z.string().uuid(),
+    generation: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    afterIndex: z.number().int().min(-1)
+  }),
   z.object({ op: z.literal('set_model'), model: z.string() }),
   z.object({ op: z.literal('set_effort'), effort: z.string() }),
   z.object({ op: z.literal('set_permission_mode'), permissionMode: z.string() }),
