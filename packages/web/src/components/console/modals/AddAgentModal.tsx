@@ -88,11 +88,11 @@ type SectionId = 'basics' | 'runtime' | 'workspace' | 'access' | 'memory' | 'sec
 
 const SECTIONS: ReadonlyArray<{ id: SectionId; label: string; icon: string }> = [
   { id: 'basics', label: 'Basics', icon: 'id-card' },
-  { id: 'runtime', label: 'Runtime behavior', icon: 'sliders-horizontal' },
+  { id: 'runtime', label: 'Runtime', icon: 'sliders-horizontal' },
   { id: 'workspace', label: 'Workspace', icon: 'folder-git-2' },
   { id: 'access', label: 'Access', icon: 'lock' },
   { id: 'memory', label: 'Memory', icon: 'database' },
-  { id: 'secrets', label: 'Secrets and variables', icon: 'code-xml' }
+  { id: 'secrets', label: 'Variables and Secrets', icon: 'code-xml' }
 ]
 
 const RAIL_ITEM_ON =
@@ -867,7 +867,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       <div className="flex min-h-0 flex-1 flex-col desktop:min-h-[420px] desktop:flex-row">
         {/* Section rail: a column beside the form on desktop, a scrollable strip
             above it on phones (a 172px rail would eat a bottom sheet). */}
-        <nav className="flex flex-none items-center gap-1 overflow-x-auto border-b border-(--border-subtle) bg-(--surface-sunken) p-2 desktop:w-[172px] desktop:flex-col desktop:items-stretch desktop:gap-[2px] desktop:overflow-x-visible desktop:overflow-y-auto desktop:border-r desktop:border-b-0 desktop:py-[10px]">
+        <nav className="flex flex-none items-center gap-1 overflow-x-auto border-b border-(--border-subtle) bg-(--surface-sunken) p-2 desktop:w-[200px] desktop:flex-col desktop:items-stretch desktop:gap-[2px] desktop:overflow-x-visible desktop:overflow-y-auto desktop:border-r desktop:border-b-0 desktop:py-[10px]">
           {SECTIONS.map((s) => (
             <button
               key={s.id}
@@ -1008,9 +1008,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           </section>
 
           <section ref={sectionRef('runtime')} className="mt-5 border-t border-(--border-subtle) pt-5">
-            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-              Runtime behavior
-            </div>
+            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Runtime</div>
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
               {(showEffort || fastModeAvailable || showPermission) && (
                 <div className="fld desktop:col-span-2">
@@ -1339,7 +1337,12 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           <section ref={sectionRef('access')} className="mt-5 border-t border-(--border-subtle) pt-5">
             <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Access</div>
             <div className="mt-[13px] flex flex-col gap-[14px]">
-              <VisibilityField value={sharing} onChange={setSharing} creatorUserId={me?.userId} />
+              <VisibilityField
+                value={sharing}
+                onChange={setSharing}
+                creatorUserId={me?.userId}
+                label="Team visibility"
+              />
               <AgentCallVisibility
                 variant="inline"
                 mode={callPolicy}
@@ -1393,7 +1396,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
 
           <section ref={sectionRef('secrets')} className="mt-5 border-t border-(--border-subtle) pt-5">
             <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-              Secrets and variables
+              Variables and Secrets
             </div>
             <div className="mt-[13px]">
               <EnvSecretsFields

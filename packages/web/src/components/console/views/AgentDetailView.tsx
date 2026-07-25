@@ -57,6 +57,7 @@ import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { VisibilityValue } from '@/components/console/VisibilityField'
 import { AgentIconView, AgentMark, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
+import type { Platform } from '@/components/console/modals/AddIntegrationModal'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { NotFound } from '@/components/console/NotFound'
 import { Button, Icon } from '@/components/ui'
@@ -91,6 +92,16 @@ import {
 
 type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'api' | 'knowledge'
 const HOOK_REFRESH_MS = 30_000
+
+// Platforms offered in the empty Integrations tab — each tile opens the
+// Add-integration modal preselected to that platform.
+const POTENTIAL_INTEGRATIONS: { key: Platform; label: string; desc: string }[] = [
+  { key: 'slack', label: 'Slack', desc: 'Reply in channels & DMs' },
+  { key: 'telegram', label: 'Telegram', desc: 'Reply in groups & chats' },
+  { key: 'discord', label: 'Discord', desc: 'Reply in servers' },
+  { key: 'github', label: 'GitHub', desc: 'React to issues & PRs' },
+  { key: 'webhook', label: 'Webhook', desc: 'Trigger by posting a URL' }
+]
 const HOOK_RUN_REFRESH_MS = 10_000
 
 interface GithubReviewSettingsDraft {
@@ -793,7 +804,7 @@ export default function AgentDetailView() {
                 Edit-agent modal at its Runtime behavior anchor. */}
             <div className="card order-2 overflow-hidden max-desktop:rounded-lg">
               <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
-                <span className="font-sans text-[14px] font-semibold leading-normal">Runtime behavior</span>
+                <span className="font-sans text-[14px] font-semibold leading-normal">Runtime</span>
                 {!da.name.startsWith(MOCK_PREFIX) && (
                   <>
                     <button
@@ -1503,45 +1514,52 @@ export default function AgentDetailView() {
             ) : hooksLoading ? (
               <LoadingState padding={42} />
             ) : (
-              <>
-                {/* Dual-rendered empty states — the copy differs per width. */}
-                <div className="flex flex-col items-center gap-2 px-5 py-7 text-center desktop:hidden">
-                  <span className="flex h-11 w-11 items-center justify-center rounded-[10px] border border-(--border-subtle) bg-(--surface-sunken)">
-                    <Icon name="plug-zap" size={20} color="var(--text-tertiary)" />
-                  </span>
+              /* Empty: instead of a dead end, offer what this agent COULD connect
+                 to — each tile opens the Add-integration modal on that platform. */
+              <div className="px-4 py-5 desktop:px-5 desktop:py-6">
+                <div className="text-center">
                   <div className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
                     No integration yet
                   </div>
-                  <div className="font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
-                    Assign a bot so this agent can read and post in a channel.
-                  </div>
-                  <button
-                    onClick={() => openModal('integration', da)}
-                    className="mt-[2px] flex h-10 cursor-pointer items-center justify-center gap-[6px] rounded-md border-0 bg-(--brand) px-4 py-0 font-sans text-[13px] font-semibold leading-normal text-white"
-                  >
-                    <Icon name="plus" size={14} />
-                    Add integration
-                  </button>
-                </div>
-                <div className="hidden flex-col items-center gap-[6px] px-6 py-[34px] text-center desktop:flex">
-                  <span className="flex h-11 w-11 items-center justify-center rounded-[11px] border border-(--border-subtle) bg-(--surface-sunken)">
-                    <Icon name="plug-zap" size={22} color="var(--text-tertiary)" />
-                  </span>
-                  <div className="mt-[6px] font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
-                    No integration yet
-                  </div>
-                  <div className="max-w-[300px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                    Assign a bot so <span className="mono text-[11.5px]">{da.name}</span>&#32;can read and post in a
-                    channel. It can&apos;t receive messages until you do.
-                  </div>
-                  <div className="mt-[10px]">
-                    <Button size="sm" onClick={() => openModal('integration', da)}>
-                      <Icon name="plus" size={15} />
-                      Add integration
-                    </Button>
+                  <div className="mx-auto mt-1 max-w-[380px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+                    Connect <span className="mono text-[11.5px]">{da.name}</span>&#32;to a channel so it can read and
+                    post. It can&apos;t receive messages until you do.
                   </div>
                 </div>
-              </>
+                <div className="mt-4 grid grid-cols-1 gap-[10px] min-[440px]:grid-cols-2 desktop:grid-cols-3">
+                  {POTENTIAL_INTEGRATIONS.map((p) => (
+                    <button
+                      key={p.key}
+                      type="button"
+                      onClick={() => openModal('integration', da, { platform: p.key })}
+                      className="flex cursor-pointer items-center gap-3 rounded-[9px] border border-(--border-subtle) bg-(--surface-card) px-3 py-[11px] text-left transition-[background-color,border-color] hover:border-(--border-strong) hover:bg-(--surface-hover)"
+                    >
+                      {p.key === 'github' ? (
+                        <span className="flex h-[26px] w-[26px] flex-none items-center justify-center [&>svg]:h-full [&>svg]:w-full">
+                          <GithubMark />
+                        </span>
+                      ) : p.key === 'webhook' ? (
+                        <span className="flex h-[26px] w-[26px] flex-none items-center justify-center rounded-md bg-(--surface-inverse)">
+                          <Icon name="webhook" size={15} color="#fff" />
+                        </span>
+                      ) : (
+                        <span className="imark h-[26px] w-[26px] flex-none border-0 bg-transparent">
+                          <PlatformMark platform={p.key} fillPct={100} />
+                        </span>
+                      )}
+                      <span className="flex min-w-0 flex-col">
+                        <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                          {p.label}
+                        </span>
+                        <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                          {p.desc}
+                        </span>
+                      </span>
+                      <Icon name="plus" size={14} color="var(--text-tertiary)" className="ml-auto flex-none" />
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
         </div>

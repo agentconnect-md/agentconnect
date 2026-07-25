@@ -54,9 +54,9 @@ export type EditAgentSection = 'basics' | 'runtime' | 'access' | 'secrets'
 
 const SECTIONS: ReadonlyArray<{ id: EditAgentSection; label: string; icon: string }> = [
   { id: 'basics', label: 'Basics', icon: 'id-card' },
-  { id: 'runtime', label: 'Runtime behavior', icon: 'sliders-horizontal' },
+  { id: 'runtime', label: 'Runtime', icon: 'sliders-horizontal' },
   { id: 'access', label: 'Access', icon: 'lock' },
-  { id: 'secrets', label: 'Secrets and variables', icon: 'code-xml' }
+  { id: 'secrets', label: 'Variables and Secrets', icon: 'code-xml' }
 ]
 
 const RAIL_ITEM_ON =
@@ -488,7 +488,7 @@ export default function EditAgentModal({
         <div className="flex min-h-0 flex-1 flex-col desktop:min-h-[420px] desktop:flex-row">
           {/* Section rail: a column beside the form on desktop, a scrollable strip
               above it on phones (a 172px rail would eat a bottom sheet). */}
-          <nav className="flex flex-none items-center gap-1 overflow-x-auto border-b border-(--border-subtle) bg-(--surface-sunken) p-2 desktop:w-[172px] desktop:flex-col desktop:items-stretch desktop:gap-[2px] desktop:overflow-x-visible desktop:overflow-y-auto desktop:border-r desktop:border-b-0 desktop:py-[10px]">
+          <nav className="flex flex-none items-center gap-1 overflow-x-auto border-b border-(--border-subtle) bg-(--surface-sunken) p-2 desktop:w-[200px] desktop:flex-col desktop:items-stretch desktop:gap-[2px] desktop:overflow-x-visible desktop:overflow-y-auto desktop:border-r desktop:border-b-0 desktop:py-[10px]">
             {SECTIONS.map((s) => (
               <button
                 key={s.id}
@@ -633,9 +633,7 @@ export default function EditAgentModal({
             </section>
 
             <section ref={sectionRef('runtime')} className="mt-5 border-t border-(--border-subtle) pt-5">
-              <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                Runtime behavior
-              </div>
+              <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Runtime</div>
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
                 {(showEffort || fastModeAvailable || showPermission) && (
                   <div className="fld desktop:col-span-2">
@@ -755,47 +753,51 @@ export default function EditAgentModal({
                   onChange={setSharing}
                   creatorUserId={agent.createdBy || null}
                   disabled={!agent.canManageSharing}
+                  label="Team visibility"
                 />
-                <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,260px),1fr))] gap-3">
-                  <AgentCallVisibility
-                    variant="section"
-                    direction="inbound"
-                    mode={inboundMode}
-                    selectedIds={inboundSelected}
-                    effectivePeerIds={inboundEffectivePeerIds}
-                    peers={peers}
-                    daemons={daemons}
-                    target={target}
-                    editable={callVisibilityEditable}
-                    busy={saving}
-                    onChange={(mode, selectedIds) => {
-                      setInboundMode(mode)
-                      setInboundSelected(selectedIds)
-                    }}
-                  />
-                  <AgentCallVisibility
-                    variant="section"
-                    direction="outbound"
-                    mode={outboundMode}
-                    selectedIds={outboundSelected}
-                    effectivePeerIds={outboundEffectivePeerIds}
-                    peers={peers}
-                    daemons={daemons}
-                    target={target}
-                    editable={callVisibilityEditable}
-                    busy={saving}
-                    onChange={(mode, selectedIds) => {
-                      setOutboundMode(mode)
-                      setOutboundSelected(selectedIds)
-                    }}
-                  />
+                <div className="fld">
+                  <span className="fldlbl">Agent visibility</span>
+                  <div className="flex flex-col gap-3">
+                    <AgentCallVisibility
+                      variant="section"
+                      direction="inbound"
+                      mode={inboundMode}
+                      selectedIds={inboundSelected}
+                      effectivePeerIds={inboundEffectivePeerIds}
+                      peers={peers}
+                      daemons={daemons}
+                      target={target}
+                      editable={callVisibilityEditable}
+                      busy={saving}
+                      onChange={(mode, selectedIds) => {
+                        setInboundMode(mode)
+                        setInboundSelected(selectedIds)
+                      }}
+                    />
+                    <AgentCallVisibility
+                      variant="section"
+                      direction="outbound"
+                      mode={outboundMode}
+                      selectedIds={outboundSelected}
+                      effectivePeerIds={outboundEffectivePeerIds}
+                      peers={peers}
+                      daemons={daemons}
+                      target={target}
+                      editable={callVisibilityEditable}
+                      busy={saving}
+                      onChange={(mode, selectedIds) => {
+                        setOutboundMode(mode)
+                        setOutboundSelected(selectedIds)
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
             </section>
 
             <section ref={sectionRef('secrets')} className="mt-5 border-t border-(--border-subtle) pt-5">
               <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                Secrets and variables
+                Variables and Secrets
               </div>
               <div className="mt-[13px]">
                 <EnvSecretsFields
