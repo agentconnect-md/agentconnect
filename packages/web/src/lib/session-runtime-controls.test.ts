@@ -58,7 +58,13 @@ describe('session runtime controls', () => {
 
   it('resolves the selected permission from a narrowed live list', () => {
     expect(sessionPermissionSelection('codex', catalog, ['default'], 'full-access')).toBe('default')
-    expect(sessionPermissionSelection('codex', catalog, [], 'full-access')).toBe('')
+    expect(sessionPermissionSelection('codex', catalog, [], 'full-access')).toBe('full-access')
+    expect(sessionPermissionSelection('codex', catalog, [], '')).toBe('default')
+  })
+
+  it('shows the runtime permission default when no override is stored', () => {
+    expect(sessionPermissionSelection('codex', catalog, undefined, '')).toBe('default')
+    expect(sessionPermissionSelection('codex', undefined, undefined, '')).toBe('agent')
   })
 
   it('moves an unavailable effort to the selected model default', () => {
