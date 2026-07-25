@@ -6,14 +6,15 @@ import { useParams, useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import {
   agentLabel,
+  agentPermissionDisplay,
   displayedEffort,
   effortLabel,
+  fastModeAvailableFor,
   fileColor,
   isSelfSender,
   lane,
   modelCapability,
   modelLabel,
-  permissionModeDefault,
   permissionModeLabel,
   pgPrompts,
   platName,
@@ -51,6 +52,7 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { sessionSenderLabel } from '@/lib/session-trigger'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
+import { ComposerMenu } from '@/components/console/ComposerMenu'
 import {
   sessionEffortAfterModelChange,
   sessionEffortChoicesForSelection,
@@ -58,6 +60,8 @@ import {
   sessionPermissionSelection,
   sessionRuntimeChangesEnabled
 } from '@/lib/session-runtime-controls'
+
+type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'fast'
 
 // One agent-turn step rendered from a real transcript message. Maps the daemon
 // transcript kind (text | tool | reasoning) onto the existing lane styling.
@@ -550,6 +554,7 @@ export default function SessionDetailView() {
   const [imagePreparing, setImagePreparing] = useState(false)
   const [imageError, setImageError] = useState<string | null>(null)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
+  const [composerMenuOpen, setComposerMenuOpen] = useState<ComposerMenuKey | null>(null)
   const [runtimeSelections, setRuntimeSelections] = useState<
     Record<string, { model?: string; effort?: string; permissionMode?: string }>
   >({})
@@ -951,13 +956,17 @@ export default function SessionDetailView() {
   const runtimeCatalog = runtimeProfile?.modelCatalog ?? undefined
   const pgModel =
     runtimeSelection?.model ?? (session.model || owner?.model || preferredModelFor(owningDaemon, agentRuntime))
-  const pgModels = runtimeChangesEnabled ? (session.availableModels ?? runtimeProfile?.models ?? []) : []
+  const pgModels = session.availableModels ?? runtimeProfile?.models ?? []
   const pgModelOptions =
     pgModels.length > 0 && pgModel && !pgModels.includes(pgModel) ? [pgModel, ...pgModels] : pgModels
   const selectedModelCapability = modelCapability(owningDaemon, agentRuntime, pgModel)
-  const pgEffortChoices = runtimeChangesEnabled
-    ? sessionEffortChoicesForSelection(agentRuntime, owningDaemon, pgModel, session.model, session.availableEfforts)
-    : []
+  const pgEffortChoices = sessionEffortChoicesForSelection(
+    agentRuntime,
+    owningDaemon,
+    pgModel,
+    session.model,
+    session.availableEfforts
+  )
   const pgEffort = displayedEffort(
     runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? '',
     pgEffortChoices,
@@ -973,42 +982,38 @@ export default function SessionDetailView() {
     agentRuntime,
     runtimeCatalog,
     livePermissionModes,
-    runtimeSelection?.permissionMode ??
-      session.permissionMode ??
-      owner?.permissionMode ??
-      permissionModeDefault(agentRuntime)
+    runtimeSelection?.permissionMode ?? session.permissionMode ?? owner?.permissionMode ?? ''
   )
-  const pgPermissionModes = runtimeChangesEnabled
-    ? livePermissionModes === undefined &&
-      pgPermissionMode &&
-      !selectablePermissionModes.some((choice) => choice.v === pgPermissionMode)
+  const pgPermissionModes =
+    livePermissionModes === undefined &&
+    pgPermissionMode &&
+    !selectablePermissionModes.some((choice) => choice.v === pgPermissionMode)
       ? [{ v: pgPermissionMode, l: permissionModeLabel(agentRuntime, pgPermissionMode) }, ...selectablePermissionModes]
       : selectablePermissionModes
-    : []
-  // Shared style for the inline composer selectors.
-  const pgSelectClass =
-    'cursor-pointer border-0 bg-transparent p-0 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)'
+  const pgFastMode = session.fastMode ?? owner?.fastMode ?? false
+  const pgFastModeAvailable =
+    (pgModel === session.model ? session.fastModeAvailable : undefined) ??
+    fastModeAvailableFor(agentRuntime, selectedModelCapability)
   const pgStatusBar = (
     <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)">
-      {pgPermissionModes.length > 0 ? (
-        <select
-          aria-label="Session permission mode"
+      {runtimeChangesEnabled && pgPermissionModes.length > 0 ? (
+        <ComposerMenu
+          title="Permission"
           value={pgPermissionMode}
-          onChange={(event) => {
-            const permissionMode = event.target.value
+          options={pgPermissionModes.map((mode) => ({ value: mode.v, label: mode.l }))}
+          open={composerMenuOpen === 'permission'}
+          align="left"
+          onOpenChange={(open) => {
+            setAttachMenuOpen(false)
+            setComposerMenuOpen(open ? 'permission' : null)
+          }}
+          onChange={(permissionMode) => {
             setRuntimeSelection({ permissionMode })
             pgSetPermissionMode(session.id, session.agentId ?? '', permissionMode, webchatConversationId)
           }}
-          className={pgSelectClass}
-        >
-          {pgPermissionModes.map((mode) => (
-            <option key={mode.v} value={mode.v}>
-              {mode.l}
-            </option>
-          ))}
-        </select>
+        />
       ) : (
-        session.permissionMode && <span>{permissionModeLabel(session.runtime ?? '', session.permissionMode)}</span>
+        pgPermissionMode && <span>{agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionMode)}</span>
       )}
       <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
         <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
@@ -1017,15 +1022,20 @@ export default function SessionDetailView() {
         </span>
         <span className="font-mono text-[11.5px] font-medium leading-normal">{session.cost}</span>
         <span className="inline-flex items-center gap-[6px] text-(--text-secondary)">
-          <span className="av h-4 w-4 flex-none rounded-xs">
+          <span className="inline-flex h-4 w-4 flex-none items-center justify-center">
             <AgentMark model={agentRuntime} />
           </span>
-          {pgModelOptions.length > 0 ? (
-            <select
-              aria-label="Session model"
+          {runtimeChangesEnabled && pgModelOptions.length > 0 ? (
+            <ComposerMenu
+              title="Model"
               value={pgModel}
-              onChange={(event) => {
-                const model = event.target.value
+              options={pgModelOptions.map((model) => ({ value: model, label: modelLabel(model) }))}
+              open={composerMenuOpen === 'model'}
+              onOpenChange={(open) => {
+                setAttachMenuOpen(false)
+                setComposerMenuOpen(open ? 'model' : null)
+              }}
+              onChange={(model) => {
                 const currentEffort = runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''
                 const effort = sessionEffortAfterModelChange(agentRuntime, owningDaemon, model, currentEffort)
                 setRuntimeSelection(effort === currentEffort ? { model } : { model, effort })
@@ -1034,55 +1044,50 @@ export default function SessionDetailView() {
                   pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
                 }
               }}
-              className={pgSelectClass}
-            >
-              {pgModelOptions.map((model) => (
-                <option key={model} value={model}>
-                  {modelLabel(model)}
-                </option>
-              ))}
-            </select>
+            />
           ) : (
-            modelLabel(session.model ?? '')
+            modelLabel(pgModel)
           )}
         </span>
-        {pgEffortOptions.length > 0 && (
-          <select
-            aria-label="Session reasoning effort"
+        {runtimeChangesEnabled && pgEffortOptions.length > 0 && (
+          <ComposerMenu
+            title="Effort"
             value={pgEffort}
-            onChange={(event) => {
-              const effort = event.target.value
+            options={pgEffortOptions.map((effort) => ({ value: effort.value, label: effort.label }))}
+            open={composerMenuOpen === 'effort'}
+            onOpenChange={(open) => {
+              setAttachMenuOpen(false)
+              setComposerMenuOpen(open ? 'effort' : null)
+            }}
+            onChange={(effort) => {
               setRuntimeSelection({ effort })
               pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
             }}
-            className={pgSelectClass}
-          >
-            {pgEffortOptions.map((effort) => (
-              <option key={effort.value} value={effort.value}>
-                {effort.label}
-              </option>
-            ))}
-          </select>
+          />
         )}
-        {!runtimeChangesEnabled && (session.effort ?? owner?.reasoning) && (
-          <span>effort: {session.effort ?? owner?.reasoning}</span>
+        {!runtimeChangesEnabled && pgEffort && (
+          <span>
+            effort:{' '}
+            {pgEffortChoices.find((choice) => choice.value === pgEffort)?.label ?? effortLabel(agentRuntime, pgEffort)}
+          </span>
         )}
-        {runtimeChangesEnabled && session.fastModeAvailable && (
-          <select
-            aria-label="Session fast mode"
-            value={session.fastMode ? 'on' : 'off'}
-            onChange={(e) =>
-              pgSetFast(session.id, session.agentId ?? '', e.target.value === 'on', webchatConversationId)
-            }
-            className={pgSelectClass}
-          >
-            <option value="on">fast: on</option>
-            <option value="off">fast: off</option>
-          </select>
+        {runtimeChangesEnabled && pgFastModeAvailable && (
+          <ComposerMenu
+            title="Fast mode"
+            value={pgFastMode ? 'on' : 'off'}
+            options={[
+              { value: 'on', label: 'fast: on' },
+              { value: 'off', label: 'fast: off' }
+            ]}
+            open={composerMenuOpen === 'fast'}
+            onOpenChange={(open) => {
+              setAttachMenuOpen(false)
+              setComposerMenuOpen(open ? 'fast' : null)
+            }}
+            onChange={(fast) => pgSetFast(session.id, session.agentId ?? '', fast === 'on', webchatConversationId)}
+          />
         )}
-        {!runtimeChangesEnabled && session.fastMode !== undefined && (
-          <span>fast: {session.fastMode ? 'on' : 'off'}</span>
-        )}
+        {!runtimeChangesEnabled && pgFastModeAvailable && <span>fast: {pgFastMode ? 'on' : 'off'}</span>}
       </div>
     </div>
   )
@@ -1554,109 +1559,117 @@ export default function SessionDetailView() {
             {imageError && (
               <div className="font-sans text-[11.5px] font-medium leading-normal text-(--red-600)">{imageError}</div>
             )}
-            <div
-              className="pgcomposer relative flex-col items-stretch gap-2 rounded-[11px] border border-(--border-default) desktop:ml-[41px] desktop:mt-4"
-              onKeyDown={(event) => {
-                if (event.key === 'Escape') setAttachMenuOpen(false)
-              }}
-            >
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/*"
-                hidden
-                onChange={(event) => void onImageFile(event.target.files?.[0])}
-              />
-              <div className="flex min-w-0 flex-col">
-                {pgImage && (
-                  <div className="relative mb-2 w-fit">
-                    <img
-                      src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
-                      alt={pgImage.name}
-                      title={pgImage.name}
-                      className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
-                    />
+            <div className="flex items-start gap-[10px] desktop:mt-4 desktop:gap-[11px]">
+              <Avatar src={user.picture} initials={user.initials} size={30} fontSize={11} />
+              <div
+                className="pgcomposer relative min-w-0 flex-1 flex-col items-stretch gap-2 rounded-[11px] border border-(--border-default)"
+                onKeyDown={(event) => {
+                  if (event.key !== 'Escape') return
+                  setAttachMenuOpen(false)
+                  setComposerMenuOpen(null)
+                }}
+              >
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/*"
+                  hidden
+                  onChange={(event) => void onImageFile(event.target.files?.[0])}
+                />
+                <div className="flex min-w-0 flex-col">
+                  {pgImage && (
+                    <div className="relative mb-2 w-fit">
+                      <img
+                        src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
+                        alt={pgImage.name}
+                        title={pgImage.name}
+                        className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
+                      />
+                      <button
+                        type="button"
+                        className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
+                        title="Remove image"
+                        aria-label="Remove image"
+                        onClick={() => setPgImage(session.id)}
+                      >
+                        <Icon name="x" size={14} />
+                      </button>
+                    </div>
+                  )}
+                  <textarea
+                    className="pgin w-full border-0 px-1 py-2 focus:shadow-none"
+                    placeholder={`Message ${session.agentName}…`}
+                    value={pgInput}
+                    onChange={(e) => setPgInput(e.target.value)}
+                    onPaste={(event) => {
+                      const image = clipboardImageFile(event.clipboardData)
+                      if (!image) return
+                      event.preventDefault()
+                      void onImageFile(image)
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        onPgSend()
+                      }
+                    }}
+                  />
+                </div>
+                <div className="flex min-w-0 items-center gap-2">
+                  <div className="relative flex-none">
                     <button
                       type="button"
-                      className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
-                      title="Remove image"
-                      aria-label="Remove image"
-                      onClick={() => setPgImage(session.id)}
+                      className="iconbtn h-7 w-7 rounded-sm"
+                      aria-label="Add"
+                      aria-haspopup="menu"
+                      aria-expanded={attachMenuOpen}
+                      disabled={imagePreparing}
+                      onClick={() => {
+                        setComposerMenuOpen(null)
+                        setAttachMenuOpen((open) => !open)
+                      }}
                     >
-                      <Icon name="x" size={14} />
+                      {imagePreparing ? <Spinner size={14} /> : <Icon name="plus" size={17} />}
                     </button>
-                  </div>
-                )}
-                <textarea
-                  className="pgin w-full border-0 px-1 py-2 focus:shadow-none"
-                  placeholder={`Message ${session.agentName}…`}
-                  value={pgInput}
-                  onChange={(e) => setPgInput(e.target.value)}
-                  onPaste={(event) => {
-                    const image = clipboardImageFile(event.clipboardData)
-                    if (!image) return
-                    event.preventDefault()
-                    void onImageFile(image)
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      onPgSend()
-                    }
-                  }}
-                />
-              </div>
-              <div className="flex min-w-0 items-center gap-2">
-                <div className="relative flex-none">
-                  <button
-                    type="button"
-                    className="iconbtn"
-                    aria-label="Add"
-                    aria-haspopup="menu"
-                    aria-expanded={attachMenuOpen}
-                    disabled={imagePreparing}
-                    onClick={() => setAttachMenuOpen((open) => !open)}
-                  >
-                    {imagePreparing ? <Spinner size={16} /> : <Icon name="plus" size={19} />}
-                  </button>
-                  {attachMenuOpen && (
-                    <>
-                      <div
-                        aria-hidden="true"
-                        className="fixed inset-0 z-40"
-                        onClick={() => setAttachMenuOpen(false)}
-                      ></div>
-                      <div
-                        role="menu"
-                        className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
-                      >
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="fopt"
-                          onClick={() => {
-                            setAttachMenuOpen(false)
-                            imageInputRef.current?.click()
-                          }}
+                    {attachMenuOpen && (
+                      <>
+                        <div
+                          aria-hidden="true"
+                          className="fixed inset-0 z-40"
+                          onClick={() => setAttachMenuOpen(false)}
+                        ></div>
+                        <div
+                          role="menu"
+                          className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
                         >
-                          <Icon name="image" size={16} color="var(--text-secondary)" />
-                          Add photos
-                        </button>
-                      </div>
-                    </>
-                  )}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="fopt"
+                            onClick={() => {
+                              setAttachMenuOpen(false)
+                              imageInputRef.current?.click()
+                            }}
+                          >
+                            <Icon name="image" size={16} color="var(--text-secondary)" />
+                            Add photos
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  {pgStatusBar}
+                  <button
+                    className="sendbtn h-7 w-7 rounded-sm"
+                    aria-label={pgBusy ? 'Stop response' : 'Send message'}
+                    onClick={() =>
+                      pgBusy ? pgCancel(session.id, session.agentId ?? '', webchatConversationId) : onPgSend()
+                    }
+                    disabled={!pgBusy && (imagePreparing || (!pgInput.trim() && !pgImage))}
+                  >
+                    <Icon name={pgBusy ? 'square' : 'arrow-up'} size={pgBusy ? 10 : 14} />
+                  </button>
                 </div>
-                {pgStatusBar}
-                <button
-                  className="sendbtn h-8 w-8 rounded-md"
-                  aria-label={pgBusy ? 'Stop response' : 'Send message'}
-                  onClick={() =>
-                    pgBusy ? pgCancel(session.id, session.agentId ?? '', webchatConversationId) : onPgSend()
-                  }
-                  disabled={!pgBusy && (imagePreparing || (!pgInput.trim() && !pgImage))}
-                >
-                  <Icon name={pgBusy ? 'square' : 'arrow-up'} size={pgBusy ? 12 : 16} />
-                </button>
               </div>
             </div>
           </>

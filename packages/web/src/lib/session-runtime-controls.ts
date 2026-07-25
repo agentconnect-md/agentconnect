@@ -3,6 +3,7 @@ import {
   effortLabel,
   modelCapability,
   permissionModeChoicesFor,
+  permissionModeDefault,
   permissionModeLabel,
   resolvedPermissionMode,
   resolveEffortForModel,
@@ -61,7 +62,7 @@ export function sessionPermissionChoices(
   )
 }
 
-/** Resolve the displayed permission from the same vocabulary rendered by the select. */
+/** Resolve the displayed permission while keeping an empty live list authoritative for menu availability. */
 export function sessionPermissionSelection(
   runtime: string,
   catalog: RuntimeModelCatalog | undefined,
@@ -69,7 +70,11 @@ export function sessionPermissionSelection(
   current: string
 ): string {
   const choices = sessionPermissionChoices(runtime, catalog, liveValues)
-  if (liveValues === undefined) return resolvedPermissionMode(current, choices, catalog)
+  const resolvedCurrent = current || catalog?.defaultPermissionMode || permissionModeDefault(runtime)
+  if (liveValues === undefined) {
+    return resolvedPermissionMode(resolvedCurrent, choices, catalog)
+  }
+  if (choices.length === 0) return resolvedCurrent
   if (choices.some((choice) => choice.v === current)) return current
   const defaultMode = catalog?.defaultPermissionMode
   if (defaultMode && choices.some((choice) => choice.v === defaultMode)) return defaultMode

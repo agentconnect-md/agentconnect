@@ -39,16 +39,16 @@ export function ContextWindowIndicator({ used, size }: { used?: number; size?: n
       <span
         id={tooltipId}
         role="tooltip"
-        className="pointer-events-none invisible absolute right-0 bottom-full z-30 mb-2 min-w-[210px] max-w-[calc(100vw-40px)] translate-y-1 rounded-md border border-(--border-default) bg-(--surface-card) px-3 py-[9px] text-center opacity-0 shadow-(--shadow-lg) transition-[opacity,transform,visibility] group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100 desktop:right-auto desktop:left-1/2 desktop:-translate-x-1/2"
+        className="pointer-events-none invisible absolute right-0 bottom-full z-30 mb-2 min-w-[174px] max-w-[calc(100vw-40px)] translate-y-1 rounded-[7px] border border-(--border-default) bg-(--surface-card) px-[10px] py-2 text-center opacity-0 shadow-(--shadow-lg) transition-[opacity,transform,visibility] group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100 desktop:right-auto desktop:left-1/2 desktop:-translate-x-1/2"
       >
-        <span className="block font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
+        <span className="block font-sans text-[10.5px] font-medium leading-normal text-(--text-tertiary)">
           Context window:
         </span>
-        <span className="mt-[5px] block font-sans text-[13.5px] font-medium leading-normal text-(--text-primary)">
+        <span className="mt-[3px] block font-sans text-[12px] font-medium leading-normal text-(--text-primary)">
           {percentage == null ? 'Usage unavailable' : `${percentage}% used (${100 - percentage}% left)`}
         </span>
         {usedText && (
-          <span className="mt-[5px] block font-sans text-[13.5px] font-medium leading-normal text-(--text-primary)">
+          <span className="mt-[3px] block font-sans text-[12px] font-medium leading-normal text-(--text-primary)">
             {sizeText ? `${usedText} / ${sizeText} tokens used` : `${usedText} tokens used`}
           </span>
         )}
