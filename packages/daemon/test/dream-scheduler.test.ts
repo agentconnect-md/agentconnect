@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { MemoryDreamingPolicy } from '@agentconnect.md/protocol'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { DreamScheduler } from '../src/scheduler/dream-scheduler.js'
+import { Daemon } from '../src/daemon.js'
 
 /** A cron that fires every second, so a real tick is observable in a test. */
 const EVERY_SECOND = '* * * * * *'
@@ -84,5 +88,93 @@ describe('DreamScheduler', () => {
     scheduler.stop()
     await new Promise((r) => setTimeout(r, 1200))
     expect(fired).toHaveLength(0)
+  })
+})
+
+describe('scheduled dream lifecycle gates (daemon)', () => {
+  /** Minimal on-disk daemon root with one managed-memory agent that dreams on a cron. */
+  function scaffold(): string {
+    const root = mkdtempSync(join(tmpdir(), 'ac-dream-gate-'))
+    writeFileSync(
+      join(root, 'config.json'),
+      JSON.stringify({
+        version: 1,
+        controlPlane: { enabled: false },
+        runtimes: { claude: { command: 'node', args: ['unused'] } }
+      })
+    )
+    const adir = join(root, 'agents', 'bot-a')
+    mkdirSync(adir, { recursive: true })
+    writeFileSync(
+      join(adir, 'agent.json'),
+      JSON.stringify({
+        id: 'bot-a',
+        name: 'bot-a',
+        runtime: 'claude',
+        memory: { provider: 'managed', dreaming: { enabled: true, schedule: '0 4 * * *' } }
+      })
+    )
+    return root
+  }
+
+  /** Fire the private schedule handler the way croner would, with the runner
+   *  stubbed — so the assertion is purely "did the gate let this through?"
+   *  (the real runner needs a started daemon, which the gates run before). */
+  async function fire(daemon: Daemon, agentId: string): Promise<boolean> {
+    let started = false
+    const inner = daemon as unknown as {
+      onDreamScheduleFire(id: string): void
+      dreamRunner(): { start(id: string, opts: unknown): Promise<unknown> }
+    }
+    inner.dreamRunner = () => ({
+      start: async () => {
+        started = true
+        return { dreamId: 'drm-test' }
+      }
+    })
+    inner.onDreamScheduleFire(agentId)
+    await new Promise((r) => setTimeout(r, 20))
+    return started
+  }
+
+  it('skips a tick while the agent is paused or the daemon is draining, without deregistering', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    const inner = daemon as unknown as {
+      agents: Map<string, { pause?: boolean }>
+      draining: boolean
+      drainingAgents: Set<string>
+      safetyDrainingAgents: Set<string>
+    }
+    inner.agents.set('bot-a', { pause: false })
+
+    // Paused: an agent-wide operator stop must also stop background dreaming.
+    inner.agents.set('bot-a', { pause: true })
+    expect(await fire(daemon, 'bot-a')).toBe(false)
+
+    // Interrupted turns still stopping.
+    inner.agents.set('bot-a', { pause: false })
+    inner.safetyDrainingAgents.add('bot-a')
+    expect(await fire(daemon, 'bot-a')).toBe(false)
+    inner.safetyDrainingAgents.delete('bot-a')
+
+    // Per-agent drain, then daemon-wide drain.
+    inner.drainingAgents.add('bot-a')
+    expect(await fire(daemon, 'bot-a')).toBe(false)
+    inner.drainingAgents.delete('bot-a')
+    inner.draining = true
+    expect(await fire(daemon, 'bot-a')).toBe(false)
+    inner.draining = false
+
+    // Gates are skips, not deregistrations: once they clear, the very next tick
+    // runs. (That the cron object itself survives is covered by the
+    // DreamScheduler sync/unregister tests above — the gate never touches it.)
+    expect(await fire(daemon, 'bot-a')).toBe(true)
+  })
+
+  it('reaches the runner once the gates clear', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    const inner = daemon as unknown as { agents: Map<string, { pause?: boolean }> }
+    inner.agents.set('bot-a', { pause: false })
+    expect(await fire(daemon, 'bot-a')).toBe(true)
   })
 })

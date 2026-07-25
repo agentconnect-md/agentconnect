@@ -11920,6 +11920,22 @@ export class Daemon {
    * between the reconcile and the tick simply does nothing.
    */
   private onDreamScheduleFire(agentId: string): void {
+    // Lifecycle gates first — a scheduled dream is background work that spawns a
+    // runtime host and burns model tokens, so it obeys the same operator stops as
+    // any other scheduled trigger. The cron stays REGISTERED throughout: these are
+    // skips, not deregistrations, so the schedule resumes by itself on unpause.
+    if (this.paused(agentId)) {
+      this.log.info(`scheduled dream skipped for agent "${agentId}": agent is paused`)
+      return
+    }
+    if (this.safetyDrainingAgents.has(agentId)) {
+      this.log.info(`scheduled dream skipped for agent "${agentId}": interrupted turns are still stopping`)
+      return
+    }
+    if (this.draining || this.drainingAgents.has(agentId)) {
+      this.log.info(`scheduled dream skipped for agent "${agentId}": draining`)
+      return
+    }
     void this.dreamRunner()
       .start(agentId, { trigger: 'schedule' })
       .then((dream) => this.log.info(`dream ${dream.dreamId} started on schedule for agent "${agentId}"`))
