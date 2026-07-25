@@ -343,7 +343,18 @@ export function ensureMemory(agentDir: string, agentName: string): void {
 /** Read the memory index (`MEMORY.md`) for prompt injection, trimmed to the inject
  *  cap so a large index can't blow up the prompt; '' when absent. */
 export async function readIndex(agentDir: string): Promise<string> {
-  const text = await readMemoryFile(agentDir, MEMORY_INDEX)
+  let text: string
+  try {
+    text = await readMemoryFile(agentDir, MEMORY_INDEX)
+  } catch (err) {
+    // This runs at session start for EVERY new session, and its contract is already
+    // "'' when absent". A rejected index — a symlink planted where MEMORY.md belongs —
+    // must not be read through, but it must not brick the agent either: inject
+    // nothing and let the session proceed. The explicit readMemory/writeMemory and
+    // console paths still raise, so the cause stays visible where it is actionable.
+    if (err instanceof MemoryPathError) return ''
+    throw err
+  }
   if (Buffer.byteLength(text) <= MAX_INDEX_INJECT_BYTES) return text
   // Cut on a UTF-8 boundary near the cap and flag the truncation.
   const buf = Buffer.from(text, 'utf8').subarray(0, MAX_INDEX_INJECT_BYTES)

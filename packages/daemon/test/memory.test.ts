@@ -127,8 +127,9 @@ describe('agents/memory (directory model)', () => {
     symlinkSync(secret, join(memoryDir(dir), MEMORY_INDEX))
 
     await expect(readMemoryFile(dir, 'leak.md')).rejects.toBeInstanceOf(MemoryPathError)
-    // the same link under the index name must not reach prompt injection either
-    await expect(readIndex(dir)).rejects.toBeInstanceOf(MemoryPathError)
+    // the index rides the session-start path, so it degrades to no injection rather
+    // than throwing — but it still must not read through the link
+    await expect(readIndex(dir)).resolves.toBe('')
     // a symlinked entry is not even listed as a topic
     expect((await listMemory(dir)).map((f) => f.name)).not.toContain('leak.md')
   })
