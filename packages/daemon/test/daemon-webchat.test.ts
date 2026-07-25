@@ -1102,6 +1102,51 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   })
 
+  it('accepts a retry after resume arrives before the delayed original turn', async () => {
+    const { factory } = streamingHost([])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    const original: RdChatEvent[] = []
+    const resumed: RdChatEvent[] = []
+    const beforeTurn = (daemon as any).handleRelayMsg(
+      rd({ op: 'resume', turnId, generation: 1, afterIndex: -1 }, { msgId: 'resume-before-turn' }),
+      (event: RdChatEvent) => resumed.push(event)
+    )
+    expect(beforeTurn).toMatchObject({ accepted: false, reason: 'stream_not_found' })
+
+    const stream = (daemon as any).createWebchatTurnStream(AGENT_ID, CONV, turnId, {
+      output: (output: WebchatOutput) => original.push({ kind: 'output', output }),
+      done: (done: WebchatDone) => original.push({ kind: 'done', done })
+    })
+    stream.sink.output({ conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'missed' } })
+    const retry = (daemon as any).handleRelayMsg(
+      rd({ op: 'resume', turnId, generation: 2, afterIndex: -1 }, { msgId: 'resume-retry' }),
+      (event: RdChatEvent) => resumed.push(event)
+    )
+    expect(retry).toMatchObject({ accepted: true, turnId })
+
+    stream.sink.output({ conversationId: CONV, turnId, index: 1, event: { kind: 'message', text: 'continued' } })
+    expect(original).toEqual([
+      {
+        kind: 'output',
+        output: { conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'missed' } }
+      }
+    ])
+    expect(resumed).toEqual([
+      {
+        kind: 'output',
+        output: { conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'missed' } }
+      },
+      {
+        kind: 'output',
+        output: { conversationId: CONV, turnId, index: 1, event: { kind: 'message', text: 'continued' } }
+      }
+    ])
+    await daemon.stop()
+  })
+
   it('rejects resume explicitly when the bounded replay window no longer covers the cursor', async () => {
     const { factory } = streamingHost([])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })

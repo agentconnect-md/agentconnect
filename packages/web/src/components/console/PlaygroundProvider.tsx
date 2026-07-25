@@ -383,6 +383,39 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         if (conns.current.get(id) === conn) conns.current.delete(id)
       }
 
+      const sendResume = (ws: WebSocket): void => {
+        const cursor = streamCursors.current.get(id)
+        const turnId = cursor?.turnId ?? cursor?.requestedTurnId
+        if (!cursor || !turnId || ws.readyState !== WebSocket.OPEN) return
+        cursor.resumeGeneration += 1
+        ws.send(
+          JSON.stringify({
+            type: 'resume',
+            turnId,
+            generation: cursor.resumeGeneration,
+            afterIndex: cursor.nextIndex - 1
+          })
+        )
+      }
+
+      /** A reconnect can beat the original turn across different relay links.
+       * Retry only inside the same bounded admission window; once the delayed
+       * turn exists, daemon replay recovers everything emitted in the meantime. */
+      const scheduleResumeRetry = (ws: WebSocket): void => {
+        const attempt = reconnectAttempts.current.get(id) ?? 0
+        if (attempt >= WEBCHAT_RECONNECT_MAX_ATTEMPTS) {
+          failStream(id, 'The response could not be resumed — refresh to load its latest state.')
+          return
+        }
+        reconnectAttempts.current.set(id, attempt + 1)
+        const delay = Math.min(WEBCHAT_RECONNECT_MAX_MS, WEBCHAT_RECONNECT_BASE_MS * 2 ** attempt)
+        conn.reconnectTimer = window.setTimeout(() => {
+          conn.reconnectTimer = undefined
+          if (!busyRef.current[id] || conns.current.get(id) !== conn) return
+          sendResume(ws)
+        }, delay)
+      }
+
       const scheduleReconnect = (): void => {
         const reconnectId = conn.conversationId ?? resumeId ?? conversationIds.current.get(id)
         if (closingAll.current || conn.closing || !busyRef.current[id] || !reconnectId) {
@@ -412,6 +445,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             ws.onopen = () => resolve(ws)
             ws.onerror = () => reject(new Error('webchat connection failed'))
             ws.onclose = () => {
+              if (conn.reconnectTimer) window.clearTimeout(conn.reconnectTimer)
+              conn.reconnectTimer = undefined
               dropSelf()
               if (busyRef.current[id]) scheduleReconnect()
               else setBusy(id, false)
@@ -435,19 +470,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                   conversationIds.current.set(id, m.conversationId)
                 }
                 if (resumeStream && busyRef.current[id]) {
-                  const cursor = streamCursors.current.get(id)
-                  const turnId = cursor?.turnId ?? cursor?.requestedTurnId
-                  if (cursor && turnId) {
-                    cursor.resumeGeneration += 1
-                    ws.send(
-                      JSON.stringify({
-                        type: 'resume',
-                        turnId,
-                        generation: cursor.resumeGeneration,
-                        afterIndex: cursor.nextIndex - 1
-                      })
-                    )
-                  }
+                  sendResume(ws)
                 }
               } else if (m.type === 'output') {
                 if (m.output) receiveOutput(id, m.output)
@@ -456,13 +479,20 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               } else if (m.type === 'ack' && m.ack?.accepted !== false) {
                 const cursor = streamCursors.current.get(id)
                 if (cursor && m.ack?.turnId) bindWebchatTurn(cursor, m.ack.turnId)
+              } else if (m.type === 'resumed' && m.ack?.accepted !== false) {
+                const cursor = streamCursors.current.get(id)
+                if (cursor && m.ack?.turnId) bindWebchatTurn(cursor, m.ack.turnId)
+                reconnectAttempts.current.delete(id)
               } else if (m.type === 'resumed' && m.ack?.accepted === false) {
-                failStream(
-                  id,
-                  m.ack.reason === 'stream_gap'
-                    ? 'Some response updates could not be recovered — refresh to load the complete response.'
-                    : 'The response could not be resumed — refresh to load its latest state.'
-                )
+                const awaitingAdmission = m.ack.reason === 'stream_not_found' && !streamCursors.current.get(id)?.turnId
+                if (awaitingAdmission) scheduleResumeRetry(ws)
+                else
+                  failStream(
+                    id,
+                    m.ack.reason === 'stream_gap'
+                      ? 'Some response updates could not be recovered — refresh to load the complete response.'
+                      : 'The response could not be resumed — refresh to load its latest state.'
+                  )
               } else if (m.type === 'ack' && m.ack?.accepted === false) {
                 streamCursors.current.delete(id)
                 reconnectAttempts.current.delete(id)

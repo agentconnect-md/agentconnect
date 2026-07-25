@@ -437,8 +437,10 @@ and continues the same turn or returns an explicit resume failure when the turn
 is unknown, the reconnect is stale, the cursor is invalid, or the bounded replay
 window has overflowed. Completion includes the final output index so the browser
 does not render a response as complete while an earlier frame is still missing.
-Browser reconnect behavior is separate from IM delivery, and replay is not
-guaranteed after the bounded window expires.
+A not-found result is retried only through the original turn-admission window,
+covering a resume that reaches the daemon before its delayed turn. Browser
+reconnect behavior is separate from IM delivery, and replay is not guaranteed
+after the bounded window expires.
 
 All writers and retry caches must comply with
 [high-availability.md](high-availability.md#backpressure-and-delivery):
@@ -515,8 +517,9 @@ The smallest useful evidence for this design includes:
 - relay-daemon tests for identity verification, relay identity mismatch,
   revocation, typed acknowledgement, offline-target drops, and daemon-side
   deduplication;
-- webchat tests for ordered output assembly, reconnect replay, terminal-frame
-  gaps, and explicit replay-window overflow;
+- webchat tests for ordered output assembly, reconnect replay in both
+  turn/resume arrival orders, stale-generation fencing, terminal-frame gaps, and
+  explicit replay-window overflow;
 - end-to-end tests that confirm Slack ingress reaches the selected daemon while
   normal agent replies bypass the relay;
 - security assertions that logs contain no credentials, signatures, message

@@ -7,7 +7,7 @@ import { z } from 'zod'
 // (packages/protocol/src/frames/relay-daemon.ts). Content never touches the CP.
 
 // The webchat turn verdict — `dispatchWebchatTurn` returns this and the relay path folds
-// it into `rd/ack` (accepted + a fresh turnId that correlates the reply stream; `reason`
+// it into `rd/ack` (accepted + the turnId that correlates the reply stream; `reason`
 // explains a rejection). Not a wire frame of its own anymore.
 export const WebchatAck = z.object({
   accepted: z.boolean(),
