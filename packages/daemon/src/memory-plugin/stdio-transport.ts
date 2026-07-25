@@ -1,8 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { deserializeMessage, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
-import type { Transport, TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport.js'
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
+import {
+  deserializeMessage,
+  serializeMessage,
+  type JSONRPCMessage,
+  type Transport,
+  type TransportSendOptions
+} from '@modelcontextprotocol/client'
+import { getDefaultEnvironment } from '@modelcontextprotocol/client/stdio'
 
 export class MemoryPluginStdioProtocolError extends Error {
   constructor(message: string) {

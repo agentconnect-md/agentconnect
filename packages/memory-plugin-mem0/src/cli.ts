@@ -23,7 +23,7 @@ try {
     // Retain the credential only in the server closure; it is not needed in the
     // wrapper's ambient process environment after operator-controlled startup.
     delete process.env.MEM0_API_KEY
-    const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js')
+    const { StdioServerTransport } = await import('@modelcontextprotocol/server/stdio')
     const mcp =
       dialect === 'oss'
         ? await (async () => {

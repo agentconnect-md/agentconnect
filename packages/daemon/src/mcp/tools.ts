@@ -1,5 +1,6 @@
 import type { Integration } from '../agents/agent-schema.js'
 import type { MemoryPluginOperation } from '@agentconnect.md/protocol'
+import type { JSONValue } from '@modelcontextprotocol/server'
 import { SESSION_TITLE_TOOL_NAME } from './session-title-tool.js'
 
 /**
@@ -10,10 +11,19 @@ import { SESSION_TITLE_TOOL_NAME } from './session-title-tool.js'
 export interface ToolDescriptor {
   name: string
   description: string
-  inputSchema: Record<string, unknown>
+  inputSchema: ObjectToolSchema
 }
 
-const obj = (properties: Record<string, unknown>, required: string[] = []): Record<string, unknown> => ({
+type ToolProperties = Record<string, JSONValue>
+
+interface ObjectToolSchema extends Record<string, JSONValue> {
+  type: 'object'
+  properties: ToolProperties
+  required: string[]
+  additionalProperties: false
+}
+
+const obj = (properties: ToolProperties, required: string[] = []): ObjectToolSchema => ({
   type: 'object',
   properties,
   required,

@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import {
+  Client,
   StreamableHTTPClientTransport,
-  type StreamableHTTPClientTransportOptions
-} from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+  type StreamableHTTPClientTransportOptions,
+  type Transport
+} from '@modelcontextprotocol/client'
 import {
   MEMORY_PLUGIN_PROFILE_MAJOR,
   MEMORY_PLUGIN_TOOL,
@@ -825,7 +825,10 @@ export class MemoryPluginClient {
         }
       })
     }
-    const client = new Client({ name: 'agentconnect-memory-core', version: '1.0.0' }, { capabilities: {} })
+    const client = new Client(
+      { name: 'agentconnect-memory-core', version: '1.0.0' },
+      { capabilities: {}, listMaxPages: MAX_LIST_PAGES }
+    )
     const out = new MemoryPluginClient(client, transport, options)
     client.onclose = () => out.notifyUnexpectedClose()
     try {
@@ -869,22 +872,10 @@ export class MemoryPluginClient {
       if (remaining < 1) throw new MemoryPluginProtocolError('memory plugin conformance probe timed out')
       return remaining
     }
-    const tools: Tool[] = []
-    let cursor: string | undefined
-    for (let page = 0; page < MAX_LIST_PAGES; page++) {
-      const timeout = remainingMs()
-      const result = await this.client.listTools(cursor ? { cursor } : undefined, {
-        timeout,
-        maxTotalTimeout: timeout
-      })
-      tools.push(...result.tools)
-      if (tools.length > MAX_LISTED_TOOLS) {
-        throw new MemoryPluginProtocolError('memory plugin exposes too many MCP tools')
-      }
-      cursor = result.nextCursor
-      if (!cursor) break
-      if (page === MAX_LIST_PAGES - 1)
-        throw new MemoryPluginProtocolError('memory plugin tools/list pagination did not converge')
+    const timeout = remainingMs()
+    const { tools } = await this.client.listTools(undefined, { timeout, maxTotalTimeout: timeout })
+    if (tools.length > MAX_LISTED_TOOLS) {
+      throw new MemoryPluginProtocolError('memory plugin exposes too many MCP tools')
     }
     const byName = new Map<string, Tool>()
     for (const tool of tools) {
@@ -900,10 +891,13 @@ export class MemoryPluginClient {
     let manifestResult: unknown
     try {
       const timeout = remainingMs()
-      manifestResult = await this.client.callTool({ name: MEMORY_PLUGIN_TOOL.manifest, arguments: {} }, undefined, {
-        timeout,
-        maxTotalTimeout: timeout
-      })
+      manifestResult = await this.client.callTool(
+        { name: MEMORY_PLUGIN_TOOL.manifest, arguments: {} },
+        {
+          timeout,
+          maxTotalTimeout: timeout
+        }
+      )
     } catch {
       // Do not surface a plugin-provided free-text error (it can contain an
       // upstream body/credential). The conformance failure itself is sufficient.
@@ -1160,11 +1154,14 @@ export class MemoryPluginClient {
       const remainingMs = Math.max(1, deadline - Date.now())
       let result: unknown
       try {
-        result = await this.client.callTool({ name: tool, arguments: input as Record<string, unknown> }, undefined, {
-          timeout: remainingMs,
-          maxTotalTimeout: remainingMs,
-          ...(signal ? { signal } : {})
-        })
+        result = await this.client.callTool(
+          { name: tool, arguments: input as Record<string, unknown> },
+          {
+            timeout: remainingMs,
+            maxTotalTimeout: remainingMs,
+            ...(signal ? { signal } : {})
+          }
+        )
       } catch (error) {
         if (error instanceof MemoryPluginProtocolError) throw error
         if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
