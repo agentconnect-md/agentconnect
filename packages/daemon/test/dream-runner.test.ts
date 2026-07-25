@@ -258,6 +258,10 @@ describe('DreamRunner pipeline', () => {
     // never resolves and the one-in-flight reservation is pinned forever.
     let sawAbort = false
     let calls = 0
+    let markFirstExtractionReady!: () => void
+    const firstExtractionReady = new Promise<void>((resolve) => {
+      markFirstExtractionReady = resolve
+    })
     const { store, runner } = await setup({
       extract: (_a, _s, _p, signal) => {
         // First extraction hangs until aborted; the replacement completes normally.
@@ -267,11 +271,12 @@ describe('DreamRunner pipeline', () => {
             sawAbort = true
             reject(new Error('aborted'))
           })
+          markFirstExtractionReady()
         })
       }
     })
     const first = await runner.start('a1', { trigger: 'manual' })
-    await new Promise((r) => setTimeout(r, 10))
+    await firstExtractionReady
     runner.cancel('a1', first.dreamId)
     const done = await settle(store, first.dreamId)
     expect(sawAbort).toBe(true)
