@@ -3,7 +3,7 @@
 import { useId, useRef, type KeyboardEvent } from 'react'
 import { Icon } from '@/components/ui'
 
-type ComposerMenuChoice = { value: string; label: string }
+type ComposerMenuChoice = { value: string; label: string; description?: string }
 
 export function ComposerMenu({
   title,
@@ -26,6 +26,8 @@ export function ComposerMenu({
   const menuId = useId()
   const headingId = useId()
   const selected = options.find((choice) => choice.value === value) ?? options[0]
+  const tooltipFor = (choice: ComposerMenuChoice | undefined) =>
+    choice?.description ?? (choice ? `${title}: ${choice.label}` : title)
 
   const closeAndFocus = () => {
     onOpenChange(false)
@@ -68,6 +70,7 @@ export function ComposerMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
+        title={tooltipFor(selected)}
         onClick={() => onOpenChange(!open)}
         onKeyDown={(event) => {
           if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
@@ -105,6 +108,7 @@ export function ComposerMenu({
                   role="menuitemradio"
                   aria-checked={selectedChoice}
                   autoFocus={selectedChoice}
+                  title={tooltipFor(choice)}
                   className={`fopt min-h-8 gap-2 rounded-md px-2 py-[5px] text-[12px] ${
                     selectedChoice ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)' : ''
                   }`}

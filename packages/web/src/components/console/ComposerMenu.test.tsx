@@ -18,7 +18,7 @@ function Harness() {
       title="Effort"
       value={value}
       options={[
-        { value: 'low', label: 'Low' },
+        { value: 'low', label: 'Low', description: 'Faster, lighter reasoning' },
         { value: 'high', label: 'High' }
       ]}
       open={open}
@@ -43,17 +43,21 @@ describe('ComposerMenu', () => {
     await act(async () => root?.render(<Harness />))
 
     const trigger = container.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!
+    expect(trigger.title).toBe('Faster, lighter reasoning')
     await act(async () => trigger.click())
 
     const menu = container.querySelector<HTMLElement>('[role="menu"]')
     expect(menu?.textContent).toContain('Effort')
+    expect(menu?.querySelector<HTMLButtonElement>('[role="menuitemradio"]')?.title).toBe('Faster, lighter reasoning')
     const high = Array.from(menu?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? []).find(
       (option) => option.textContent === 'High'
     )!
+    expect(high.title).toBe('Effort: High')
 
     await act(async () => high.click())
 
     expect(trigger.textContent).toContain('High')
+    expect(trigger.title).toBe('Effort: High')
     expect(container.querySelector('[role="menu"]')).toBeNull()
   })
 })
