@@ -30,6 +30,16 @@ import { Button, Icon, Toggle } from '@/components/ui'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
+import {
+  EnvSecretsFields,
+  envRecordFromRows,
+  envRowsFromEnv,
+  envSecretsError,
+  secretRowsFromKeys,
+  secretsPatchFromRows,
+  type EnvVarDraft,
+  type SecretDraft
+} from '@/components/console/EnvSecretsFields'
 import { OutputModeField } from '@/components/console/OutputModeField'
 import { RuntimeChatField } from '@/components/console/RuntimeChatField'
 import { SandboxField } from '@/components/console/SandboxField'
@@ -40,12 +50,13 @@ import { isOutputMode, type OutputMode } from '@/lib/output-mode'
 // modal at the matching anchor (basics / runtime behavior / access), so the two
 // edit surfaces stay identical. Workspace and Memory keep their own dedicated
 // editors (the Workspace card / the Memory tab), so they are NOT sections here.
-export type EditAgentSection = 'basics' | 'runtime' | 'access'
+export type EditAgentSection = 'basics' | 'runtime' | 'access' | 'secrets'
 
 const SECTIONS: ReadonlyArray<{ id: EditAgentSection; label: string; icon: string }> = [
   { id: 'basics', label: 'Basics', icon: 'id-card' },
   { id: 'runtime', label: 'Runtime behavior', icon: 'sliders-horizontal' },
-  { id: 'access', label: 'Access', icon: 'lock' }
+  { id: 'access', label: 'Access', icon: 'lock' },
+  { id: 'secrets', label: 'Secrets and variables', icon: 'code-xml' }
 ]
 
 const RAIL_ITEM_ON =
@@ -113,6 +124,12 @@ export default function EditAgentModal({
   const initialOutboundMode = useRef(agent.outboundPolicy)
   const [outboundSelected, setOutboundSelected] = useState<string[]>(agent.allowedTargetAgentIds)
   const initialOutboundSelected = useRef(agent.allowedTargetAgentIds)
+  // "Secrets and variables" section — env vars (replaced wholesale) + write-only
+  // secrets (key-by-key patch), prefilled from the agent and diffed at save.
+  const [envRows, setEnvRows] = useState<EnvVarDraft[]>(() => envRowsFromEnv(agent.env))
+  const initialEnvRecord = useRef(envRecordFromRows(envRowsFromEnv(agent.env)))
+  const [secretRows, setSecretRows] = useState<SecretDraft[]>(() => secretRowsFromKeys(agent.secretKeys))
+  const initialSecretKeys = useRef(agent.secretKeys)
   // #642: the placed daemon reports whether sandboxing is available or mandatory.
   const [sandboxSupported, setSandboxSupported] = useState(agent.sandboxSupported)
   const [sandboxRequired, setSandboxRequired] = useState(agent.sandboxRequired)
@@ -346,6 +363,14 @@ export default function EditAgentModal({
   }
 
   const normalizedDisplayName = displayName.trim() ? displayName.trim() : null
+  // env is replaced wholesale; secrets is a key-by-key merge (set/replace/delete).
+  const envRecord = envRecordFromRows(envRows)
+  const secretsPatch = secretsPatchFromRows(secretRows, initialSecretKeys.current)
+  const envChanged =
+    Object.keys(envRecord).length !== Object.keys(initialEnvRecord.current).length ||
+    Object.keys(envRecord).some((k) => envRecord[k] !== initialEnvRecord.current[k])
+  const secretsChanged = Object.keys(secretsPatch).length > 0
+  const envSecretError = envSecretsError(envRows, secretRows)
   const patch: UpdateAgentInput = {
     ...(normalizedDisplayName !== (initialDisplayName.current.trim() || null)
       ? { displayName: normalizedDisplayName }
@@ -359,7 +384,9 @@ export default function EditAgentModal({
     ...(permissionMode !== initialPermissionMode.current ? { permissionMode } : {}),
     ...(allowRuntimeChangesInChat !== initialAllowRuntimeChangesInChat.current ? { allowRuntimeChangesInChat } : {}),
     ...(introduceOnJoin !== initialIntroduceOnJoin.current ? { introduceOnJoin } : {}),
-    ...(restrictFileAccess !== initialRestrictFileAccess.current ? { restrictFileAccess } : {})
+    ...(restrictFileAccess !== initialRestrictFileAccess.current ? { restrictFileAccess } : {}),
+    ...(envChanged ? { env: envRecord } : {}),
+    ...(secretsChanged ? { secrets: secretsPatch } : {})
   }
   const hasSpecChanges = Object.keys(patch).length > 0
   const hasSharingChanges = !sameSharing(sharing, initialSharing.current)
@@ -371,6 +398,10 @@ export default function EditAgentModal({
 
   const save = async () => {
     if (saving) return
+    if (envSecretError) {
+      setErr(envSecretError)
+      return
+    }
     if (daemonChanged) {
       // A restricted current daemon may be intentionally absent from this
       // viewer's daemon list. Let the server perform the authoritative source
@@ -759,6 +790,20 @@ export default function EditAgentModal({
                     }}
                   />
                 </div>
+              </div>
+            </section>
+
+            <section ref={sectionRef('secrets')} className="mt-5 border-t border-(--border-subtle) pt-5">
+              <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                Secrets and variables
+              </div>
+              <div className="mt-[13px]">
+                <EnvSecretsFields
+                  envRows={envRows}
+                  setEnvRows={setEnvRows}
+                  secretRows={secretRows}
+                  setSecretRows={setSecretRows}
+                />
               </div>
             </section>
 

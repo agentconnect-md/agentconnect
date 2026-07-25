@@ -342,14 +342,12 @@ export default function AgentDetailView() {
   }
 
   const rawTab = params.get('tab')
+  // Integrations is the default landing tab (first, no `?tab=`); everything else
+  // is `?tab=<id>`.
   const tab: DetailTab =
-    rawTab === 'integrations' ||
-    rawTab === 'workspace' ||
-    rawTab === 'memory' ||
-    rawTab === 'api' ||
-    rawTab === 'knowledge'
+    rawTab === 'config' || rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'api' || rawTab === 'knowledge'
       ? rawTab
-      : 'config'
+      : 'integrations'
 
   // Effective agent-call reachability over the whole roster: an A→B edge exists
   // only when A's outbound AND B's inbound both permit it. The read-only Access
@@ -461,7 +459,7 @@ export default function AgentDetailView() {
   }
 
   const tabCls = (t: DetailTab) => (tab === t ? 'tab on' : 'tab')
-  const tabHref = (t: DetailTab) => (t === 'config' ? `/agents/${da.id}` : `/agents/${da.id}?tab=${t}`)
+  const tabHref = (t: DetailTab) => (t === 'integrations' ? `/agents/${da.id}` : `/agents/${da.id}?tab=${t}`)
 
   // ── Single responsive tree. Base classes are the mobile (≤768px) push-detail
   // body (the Shell provides the top push bar there); `desktop:` variants restore
@@ -1108,7 +1106,7 @@ export default function AgentDetailView() {
 
       {/* Integrations tab — moved out of Configuration into its own tab. */}
       {tab === 'integrations' && (
-        <div className="flex flex-col gap-4 p-4 desktop:max-w-[760px] desktop:gap-[18px] desktop:p-0">
+        <div className="flex flex-col gap-4 p-4 desktop:gap-[18px] desktop:p-0">
           <div className="card overflow-hidden max-desktop:rounded-lg">
             <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
               <span className="font-sans text-[14px] font-semibold leading-normal">Integrations</span>
