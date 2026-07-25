@@ -542,6 +542,10 @@ export interface CreateAgentInput {
   callPolicy?: AgentCallPolicy
   /** Initial caller allow-list (agent.id set); only meaningful with callPolicy='selected'. */
   allowedCallerAgentIds?: string[]
+  /** Initial outbound policy (absent ⇒ DB default 'all', it may call any org peer). */
+  outboundPolicy?: AgentCallPolicy
+  /** Initial target allow-list (agent.id set); only meaningful with outboundPolicy='selected'. */
+  allowedTargetAgentIds?: string[]
 }
 
 export interface UpdateAgentInput {
