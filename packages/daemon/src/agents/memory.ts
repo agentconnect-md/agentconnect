@@ -182,29 +182,42 @@ export async function appendHistory(agentDir: string, record: MemoryHistoryRecor
 }
 
 /**
- * Read the change log's lines (newest last), skipping blanks. Callers hold the
- * memory-dir lock when they need the count to line up with a store read — see
- * the dream adoption fence, which uses a snapshot-time line count to delimit the
- * post-snapshot write window exactly.
+ * Per-memory-dir write ledger — the AUTHORITATIVE record of what has mutated a
+ * store in this process, and the counterpart to `.history`.
+ *
+ * `.history` is deliberately best-effort: {@link appendHistory} swallows its
+ * errors so a logging failure can never fail the write it describes. That makes
+ * it a fine audit trail but an unsound *authorization* ledger — a tool write
+ * whose append transiently failed would be invisible, and a later distill append
+ * would make the window look distill-only. The dream adoption fence therefore
+ * authorizes its rebase from these counters, which are bumped inside the write
+ * itself under the same lock and cannot silently drop an entry.
+ *
+ * In-process only, so a daemon restart resets them; adoption treats a counter
+ * that moved backwards as unprovable and fails closed.
  */
-export async function readHistoryLines(agentDir: string): Promise<string[]> {
-  try {
-    const text = await fsp.readFile(join(memoryDir(agentDir), MEMORY_HISTORY_FILENAME), 'utf8')
-    return text.split('\n').filter((line) => line.trim().length > 0)
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
-    throw err
-  }
+export interface MemoryWriteMarks {
+  /** Every successful managed write, whatever its source. */
+  total: number
+  /** The subset NOT written by per-turn distillation — i.e. tool, console, and
+   *  dream writes, the ones a rebase may never silently roll over. */
+  nonDistill: number
 }
 
-/** Parse one `.history` line, or null when it isn't a usable record. */
-export function parseHistoryLine(line: string): MemoryHistoryRecord | null {
-  try {
-    const value = JSON.parse(line) as MemoryHistoryRecord
-    return typeof value?.path === 'string' && typeof value?.source === 'string' ? value : null
-  } catch {
-    return null
-  }
+const writeMarks = new Map<string, MemoryWriteMarks>()
+
+/** A snapshot copy of one store's write marks (zeroed when never written). */
+export function memoryWriteMarks(agentDir: string): MemoryWriteMarks {
+  const marks = writeMarks.get(memoryDir(agentDir))
+  return marks ? { ...marks } : { total: 0, nonDistill: 0 }
+}
+
+function bumpWriteMarks(agentDir: string, source: MemoryWriteSource): void {
+  const key = memoryDir(agentDir)
+  const marks = writeMarks.get(key) ?? { total: 0, nonDistill: 0 }
+  marks.total++
+  if (source !== 'distill') marks.nonDistill++
+  writeMarks.set(key, marks)
 }
 
 /** Overwrite a memory file with `content` (creating the dir if needed). Atomic
@@ -266,6 +279,10 @@ async function writeMemoryFileImpl(
   await fsp.writeFile(tmp, content, 'utf8')
   await fsp.rename(tmp, abs)
   const st = await fsp.stat(abs)
+  // Bump the authoritative ledger the moment the write is durable — BEFORE the
+  // best-effort history append, which is allowed to fail silently. The dream
+  // adoption fence authorizes from these counters, never from `.history`.
+  bumpWriteMarks(agentDir, source)
 
   const beforeClamped = existed ? clampHistoryValue(before) : undefined
   const afterClamped = clampHistoryValue(content)

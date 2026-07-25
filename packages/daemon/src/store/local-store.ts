@@ -586,6 +586,7 @@ export class LocalStore {
         triggerKind TEXT NOT NULL,
         sessionIds TEXT NOT NULL,         -- JSON string[]
         snapshotDigest TEXT NOT NULL,
+        snapshotWrites TEXT,              -- JSON {total, nonDistill} write-ledger marks
         instructions TEXT,
         skills TEXT,                      -- JSON DreamSkillInfo[]
         usage TEXT,                       -- JSON {inputBytes, outputBytes}
@@ -595,6 +596,7 @@ export class LocalStore {
       );
       CREATE INDEX IF NOT EXISTS dreams_agent_created ON dreams (agentId, createdAt DESC);
     `)
+    this.migrateDreamSnapshotWrites()
     this.migrateSessionUsage()
     this.migrateSessionMutes()
     this.migrateInboxLoopGuardCounted()
@@ -671,6 +673,15 @@ export class LocalStore {
   /** Backfill the durable mute tombstones from the legacy sessions.muted column.
    *  Both writes in setSessionMuted stay transactional, so this idempotent sync cannot
    *  resurrect a mute that was explicitly cleared. */
+  /** Dreams created before the distillation rebase existed carry no write-ledger
+   *  marks. NULL is the fail-closed value: such a dream simply can't be rebased
+   *  and falls back to the plain fence. */
+  private migrateDreamSnapshotWrites(): void {
+    const cols = this.db.prepare('PRAGMA table_info(dreams)').all() as { name: string }[]
+    if (!cols.some((c) => c.name === 'snapshotWrites'))
+      this.db.exec('ALTER TABLE dreams ADD COLUMN snapshotWrites TEXT')
+  }
+
   private migrateSessionMutes(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS session_mutes (key TEXT PRIMARY KEY);
@@ -1384,6 +1395,7 @@ export class LocalStore {
       triggerKind: dream.trigger,
       sessionIds: JSON.stringify(dream.sessionIds),
       snapshotDigest: dream.snapshotDigest,
+      snapshotWrites: dream.snapshotWrites ? JSON.stringify(dream.snapshotWrites) : null,
       instructions: dream.instructions ?? null,
       skills: dream.skills ? JSON.stringify(dream.skills) : null,
       usage: dream.usage ? JSON.stringify(dream.usage) : null,
@@ -1401,6 +1413,9 @@ export class LocalStore {
       trigger: row.triggerKind as DreamInfo['trigger'],
       sessionIds: JSON.parse(row.sessionIds as string) as string[],
       snapshotDigest: row.snapshotDigest as string,
+      ...(row.snapshotWrites
+        ? { snapshotWrites: JSON.parse(row.snapshotWrites as string) as DreamInfo['snapshotWrites'] }
+        : {}),
       ...(row.instructions ? { instructions: row.instructions as string } : {}),
       ...(row.skills ? { skills: JSON.parse(row.skills as string) as DreamInfo['skills'] } : {}),
       ...(row.usage ? { usage: JSON.parse(row.usage as string) as DreamInfo['usage'] } : {}),
@@ -1414,9 +1429,9 @@ export class LocalStore {
     this.db
       .prepare(
         `INSERT INTO dreams (dreamId, agentId, status, triggerKind, sessionIds, snapshotDigest,
-           instructions, skills, usage, error, createdAt, endedAt)
+           snapshotWrites, instructions, skills, usage, error, createdAt, endedAt)
          VALUES (@dreamId, @agentId, @status, @triggerKind, @sessionIds, @snapshotDigest,
-           @instructions, @skills, @usage, @error, @createdAt, @endedAt)`
+           @snapshotWrites, @instructions, @skills, @usage, @error, @createdAt, @endedAt)`
       )
       .run(this.dreamToRow(dream))
   }
@@ -1424,8 +1439,13 @@ export class LocalStore {
   updateDream(dream: DreamInfo): void {
     this.db
       .prepare(
-        `UPDATE dreams SET status = @status, sessionIds = @sessionIds, snapshotDigest = @snapshotDigest,
-           instructions = @instructions, skills = @skills, usage = @usage, error = @error, endedAt = @endedAt
+        // Every column dreamToRow produces must appear here: better-sqlite3
+        // rejects a bound parameter the statement never references ("Unknown
+        // named parameter"). triggerKind/createdAt are immutable in practice but
+        // are still assigned, so the row shape and the SQL can't drift apart.
+        `UPDATE dreams SET status = @status, triggerKind = @triggerKind, sessionIds = @sessionIds,
+           snapshotDigest = @snapshotDigest, snapshotWrites = @snapshotWrites, instructions = @instructions,
+           skills = @skills, usage = @usage, error = @error, createdAt = @createdAt, endedAt = @endedAt
          WHERE dreamId = @dreamId AND agentId = @agentId`
       )
       .run(this.dreamToRow(dream))

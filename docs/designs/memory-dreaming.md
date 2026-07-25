@@ -117,9 +117,10 @@ export const MemoryDreamingPolicy = z
     instructions: z.string().max(4096).optional(),
     /** Also mine reusable procedures into candidate skills (§7). Default false. */
     mineSkills: z.boolean().optional(),
-    /** Adopt the memory store automatically on completion. Requires a
-     *  trusted-extraction runtime; otherwise rejected at config admission
-     *  (fail closed, like provider=none). Never applies to skills (§7). */
+    /** Adopt the memory store automatically on completion. Honored only when the
+     *  extraction ran on a trusted-channel runtime — the config still saves, but
+     *  an untrusted run leaves the dream reviewable instead of adopting it.
+     *  Never applies to skills (§7). */
     autoAdopt: z.boolean().optional()
   })
   .strict()

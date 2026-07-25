@@ -1,14 +1,16 @@
-import { mkdtemp, readFile, readdir } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { DreamInfo, MemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { DreamRunner, DreamStateError, type DreamStorePort } from '../src/agents/dream-runner.js'
+import { LocalStore } from '../src/store/local-store.js'
 import {
   ensureMemory,
   readMemoryFile,
   writeMemoryFile,
   MEMORY_HISTORY_FILENAME,
+  MAX_MEMORY_FILE_BYTES,
   memoryDir
 } from '../src/agents/memory.js'
 
@@ -66,10 +68,12 @@ async function setup(opts: {
     store,
     extract: async (agentId, systemPrompt, prompt, signal) => {
       prompts.push({ systemPrompt, prompt })
-      return opts.extract ? opts.extract(agentId, systemPrompt, prompt, signal) : PROPOSAL
+      const output = opts.extract ? await opts.extract(agentId, systemPrompt, prompt, signal) : PROPOSAL
+      // The producing host's verdict rides WITH the output (a later host swap
+      // must not be able to retro-authorize an untrusted proposal).
+      return { output, trustedChannel: opts.trustedExtraction ?? false }
     },
     ...(opts.cancelGraceMs !== undefined ? { cancelGraceMs: opts.cancelGraceMs } : {}),
-    ...(opts.trustedExtraction !== undefined ? { trustedExtractionFor: () => opts.trustedExtraction! } : {}),
     log: silent
   })
   return { dir, store, runner, prompts }
@@ -151,7 +155,7 @@ describe('DreamRunner pipeline', () => {
       agentDirByAgent: () => dir,
       dreamingPolicyFor: () => ({ enabled: true }),
       store,
-      extract: async () => PROPOSAL,
+      extract: async () => ({ output: PROPOSAL, trustedChannel: false }),
       log: silent
     })
     const started = await runner.start('a1', { trigger: 'manual' })
@@ -180,7 +184,7 @@ describe('DreamRunner pipeline', () => {
       agentDirByAgent: () => dir,
       dreamingPolicyFor: () => ({ enabled: true }),
       store,
-      extract: async () => PROPOSAL,
+      extract: async () => ({ output: PROPOSAL, trustedChannel: false }),
       onStaged: (agentId, dreamId) => {
         runner.cancel(agentId, dreamId) // cancel after staging, before completion
       },
@@ -384,6 +388,44 @@ describe('DreamRunner adoption', () => {
     expect(await readMemoryFile(dir, 'notes.md')).toContain('human note mid-dream')
   })
 
+  it('refuses to rebase over a write whose history append was lost (ledger is authoritative)', async () => {
+    // `.history` is best-effort: appendHistory swallows its errors. Simulate a
+    // console write whose append was lost, then a distill write that logged
+    // fine. A history-based window would look distill-only and roll over the
+    // human edit; the write ledger counts it and must refuse.
+    const { dir, store, runner } = await setup({})
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+
+    await writeMemoryFile(dir, 'notes.md', '- human note\n', undefined, 'console')
+    // Erase the console row from the log, leaving only the distill one.
+    const historyPath = join(memoryDir(dir), MEMORY_HISTORY_FILENAME)
+    const kept = (await readFile(historyPath, 'utf8'))
+      .split('\n')
+      .filter((line) => !line.includes('"source":"console"'))
+      .join('\n')
+    await writeFile(historyPath, kept, 'utf8')
+    await writeMemoryFile(dir, 'prefs.md', '- uses tabs\n- distilled later\n', undefined, 'distill')
+
+    await expect(runner.adopt('a1', started.dreamId, false)).rejects.toThrow(/changed since/)
+    expect(await readMemoryFile(dir, 'notes.md')).toContain('human note')
+  })
+
+  it('refuses a rebase that would push a staged file past its byte cap', async () => {
+    // A proposal that is already at capacity plus one distilled line must not
+    // adopt an over-limit store the ordinary write path could never produce.
+    const atCap = '- ' + 'x'.repeat(MAX_MEMORY_FILE_BYTES - 4)
+    const { dir, store, runner } = await setup({
+      extract: async () =>
+        JSON.stringify({ index: '# Memory\n- [prefs](prefs.md)', files: [{ path: 'prefs.md', content: atCap }] })
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+
+    await writeMemoryFile(dir, 'prefs.md', '- uses tabs\n- one more distilled line\n', undefined, 'distill')
+    await expect(runner.adopt('a1', started.dreamId, false)).rejects.toThrow(/changed since/)
+  })
+
   it('rebases distill-only drift onto the staged store instead of refusing (§8)', async () => {
     const { dir, store, runner } = await setup({})
     const started = await runner.start('a1', { trigger: 'manual' })
@@ -473,5 +515,81 @@ describe('DreamRunner crash recovery', () => {
       status: 'failed',
       error: { type: 'daemon_restart' }
     })
+  })
+})
+
+describe('DreamRunner store + trust binding', () => {
+  it('round-trips snapshotWrites through the real LocalStore (not just the fake)', async () => {
+    // Regression: the runner wrote `snapshotWrites`, but if LocalStore's schema
+    // and mappers omit it the value is dropped on insert and EVERY production
+    // rebase silently fails closed — invisible to FakeStore-based tests.
+    const store = new LocalStore(join(await mkdtemp(join(tmpdir(), 'ac-dream-store-')), 'local.sqlite'))
+    const dream: DreamInfo = {
+      dreamId: 'drm-store-1',
+      agentId: 'a1',
+      status: 'pending',
+      trigger: 'manual',
+      sessionIds: ['s1'],
+      snapshotDigest: 'sha256:abc',
+      snapshotWrites: { total: 7, nonDistill: 3 },
+      createdAt: '2026-07-24T00:00:00.000Z'
+    }
+    store.insertDream(dream)
+    expect(store.getDream('a1', 'drm-store-1')?.snapshotWrites).toEqual({ total: 7, nonDistill: 3 })
+
+    // …and survives the status updates the pipeline makes on the way to adoption.
+    store.updateDream({ ...dream, status: 'completed', endedAt: '2026-07-24T00:05:00.000Z' })
+    expect(store.getDream('a1', 'drm-store-1')?.snapshotWrites).toEqual({ total: 7, nonDistill: 3 })
+    expect(store.listDreams('a1', 10)[0]?.snapshotWrites).toEqual({ total: 7, nonDistill: 3 })
+    store.close()
+  })
+
+  it('the real runner persists snapshotWrites end to end', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    ensureMemory(dir, 'bot')
+    await writeMemoryFile(dir, 'prefs.md', '- uses tabs\n', undefined, 'tool')
+    const store = new LocalStore(join(await mkdtemp(join(tmpdir(), 'ac-dream-store-')), 'local.sqlite'))
+    const runner = new DreamRunner({
+      agentDirByAgent: () => dir,
+      dreamingPolicyFor: () => ({ enabled: true }),
+      store,
+      extract: async () => ({ output: PROPOSAL, trustedChannel: false }),
+      log: silent
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    expect(store.getDream('a1', started.dreamId)?.snapshotWrites).toBeDefined()
+    for (let i = 0; i < 200; i++) {
+      const status = store.getDream('a1', started.dreamId)?.status
+      if (status && status !== 'pending' && status !== 'running') break
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    expect(store.getDream('a1', started.dreamId)?.snapshotWrites).toBeDefined()
+    store.close()
+  })
+
+  it('binds auto-adopt to the extracting host, so a later trust flip cannot authorize it', async () => {
+    // The untrusted host produced the proposal; the agent's host is replaced by a
+    // trusted one while staging runs. Auto-adopt must honor the ORIGINAL verdict.
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    ensureMemory(dir, 'bot')
+    await writeMemoryFile(dir, 'prefs.md', '- uses tabs\n', undefined, 'tool')
+    const store = new FakeStore()
+    let hostIsTrusted = false
+    const runner = new DreamRunner({
+      agentDirByAgent: () => dir,
+      dreamingPolicyFor: () => ({ enabled: true, autoAdopt: true }),
+      store,
+      extract: async () => ({ output: PROPOSAL, trustedChannel: hostIsTrusted }),
+      onStaged: () => {
+        hostIsTrusted = true // host replaced mid-flight by a trusted one
+      },
+      log: silent
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+    await new Promise((r) => setTimeout(r, 40))
+
+    expect(store.dreams.get(started.dreamId)?.status).toBe('completed') // NOT adopted
+    expect(await readMemoryFile(dir, 'prefs.md')).toBe('- uses tabs\n')
   })
 })

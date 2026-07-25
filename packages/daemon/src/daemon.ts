@@ -3278,10 +3278,13 @@ export class Daemon {
     systemPrompt: string,
     prompt: string,
     signal: AbortSignal
-  ): Promise<string> {
+  ): Promise<{ output: string; trustedChannel: boolean }> {
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     const host = await this.ensureHostAsync(agentId)
+    // Captured from THIS host, and returned with the output — the runner binds
+    // auto-adopt's gate to the extraction that actually produced the proposal,
+    // so a later host replacement can't retro-authorize an untrusted one.
     const trusted = host.usesMetaSystemPrompt()
     let cwd = this.memoryExtractionDirs.get(agentId)
     if (!cwd) {
@@ -3323,7 +3326,7 @@ export class Daemon {
         // `finally` discards the ACP session instead of leaking it. The runner's
         // own grace window already releases the reservation independently.
         await this.promptWithCancelBackstop(host, sessionId, text, signal)
-        return chunks.join('')
+        return { output: chunks.join(''), trustedChannel: trusted }
       } finally {
         this.memoryExtractionCollectors.delete(key)
       }
@@ -3373,10 +3376,6 @@ export class Daemon {
       store: this.store,
       extract: (agentId, systemPrompt, prompt, signal) =>
         this.runDreamExtraction(agentId, systemPrompt, prompt, signal),
-      // Auto-adopt's gate — the same trusted-system-prompt-channel test
-      // distillation uses. A cold host (none started yet) reads as untrusted, so
-      // an unattended adoption never rides an unverified channel.
-      trustedExtractionFor: (agentId) => this.hosts.get(agentId)?.usesMetaSystemPrompt() ?? false,
       log: this.log
     })
     return this.dreamRunnerInstance
