@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import useSWR from 'swr'
@@ -17,6 +17,7 @@ import {
   sessionPlatform,
   speaker,
   status,
+  type SessionImage,
   type SessionStep
 } from '@/lib/data'
 import {
@@ -43,6 +44,8 @@ import { formatTranscriptTime, parseTranscriptTime } from '@/lib/transcript-time
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
 import { sessionSenderLabel } from '@/lib/session-trigger'
+import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
+import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 
 // One agent-turn step rendered from a real transcript message. Maps the daemon
 // transcript kind (text | tool | reasoning) onto the existing lane styling.
@@ -425,6 +428,7 @@ type Turn =
       sourceLabel: string
       time: string
       text: string
+      image?: SessionImage
       isCron: boolean
       cronId: string | null
     }
@@ -511,8 +515,10 @@ export default function SessionDetailView() {
     getLiveSteps,
     clearLiveSteps,
     getPgInput,
+    getPgImage,
     isPgBusy,
     setPgInput: setPgInputById,
+    setPgImage,
     pgSend,
     pgSetModel,
     pgSetEffort,
@@ -529,6 +535,10 @@ export default function SessionDetailView() {
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [showThinking, setShowThinking] = useState(true)
   const [showTools, setShowTools] = useState(true)
+  const [imagePreparing, setImagePreparing] = useState(false)
+  const [imageError, setImageError] = useState<string | null>(null)
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false)
+  const imageInputRef = useRef<HTMLInputElement>(null)
 
   const localSession = getPgSession(id) ?? allSessions.find((s) => s.id === id) ?? null
   // Relationship links can point outside the cursor pages loaded by SessionsView.
@@ -683,14 +693,32 @@ export default function SessionDetailView() {
   // different live conversation streaming in the background can't disable or clear it.
   const pgBusy = sessionBusy
   const pgInput = getPgInput(session.id)
+  const pgImage = getPgImage(session.id)
   const setPgInput = (v: string) => setPgInputById(session.id, v)
   const agentHref = session.agentId ? `/agents/${session.agentId}` : null
   const liveSteps = isWebchat ? getLiveSteps(session.id) : []
 
   // Resume the webchat conversation by its id (session.channelId == the conversationId);
   // a synthetic playground turn omits it (the CP mints a fresh id).
-  const onPgSend = (text?: string) =>
+  const onPgSend = (text?: string) => {
+    if (imagePreparing) return
+    setImageError(null)
     pgSend(session.id, session.agentId ?? '', text, isWebchat ? session.channelId : undefined)
+  }
+  const onImageFile = async (file: File | undefined): Promise<void> => {
+    if (!file || imagePreparing) return
+    setAttachMenuOpen(false)
+    setImagePreparing(true)
+    setImageError(null)
+    try {
+      setPgImage(session.id, await prepareWebchatImage(file))
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : 'Couldn’t prepare that image.')
+    } finally {
+      setImagePreparing(false)
+      if (imageInputRef.current) imageInputRef.current.value = ''
+    }
+  }
   const webchatConversationId = isWebchat ? session.channelId : undefined
   const onCopyLink = () => {
     try {
@@ -764,6 +792,7 @@ export default function SessionDetailView() {
           sourceLabel: platName(sessionIntegration),
           time: stp.time ?? (firstMsg ? session.time : ''),
           text: stp.text,
+          image: stp.image,
           isCron: !!cron,
           cronId: cron?.id ?? null
         })
@@ -795,6 +824,7 @@ export default function SessionDetailView() {
           sourceLabel: platName(sessionIntegration),
           time: stp.time ?? '',
           text: stp.text,
+          image: stp.image,
           isCron: false,
           cronId: null
         })
@@ -888,69 +918,17 @@ export default function SessionDetailView() {
       })
   }
 
-  // The live playground status bar (model · context · tokens · cost), rendered directly
-  // above the composer. Fed by the webchat `status` frames the PlaygroundProvider folds
-  // into the session — model appears at turn start, context/cost stream live, tokens
-  // land at turn end. Unknown fields fall back to a muted em dash.
-  const ctxText =
-    u?.contextUsed != null
-      ? u.contextSize != null
-        ? `${fmtN(u.contextUsed)} / ${fmtN(u.contextSize)} (${Math.round((u.contextUsed / u.contextSize) * 100)}%)`
-        : fmtN(u.contextUsed)
-      : null
+  // Live controls and status folded into the composer toolbar. Webchat `status`
+  // frames update model/context/cost during the turn and tokens at turn end.
   const allowRuntimeChangesInChat = owner?.allowRuntimeChangesInChat === true
   const pgModels = allowRuntimeChangesInChat ? (session.availableModels ?? []) : []
   const pgEfforts = allowRuntimeChangesInChat ? (session.availableEfforts ?? []) : []
   const pgPermissionModes = allowRuntimeChangesInChat ? (session.availablePermissionModes ?? []) : []
-  // Shared style for the inline status-bar selectors.
+  // Shared style for the inline composer selectors.
   const pgSelectClass =
     'cursor-pointer border-0 bg-transparent p-0 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)'
   const pgStatusBar = (
-    <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-[11px] py-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)">
-      <span className="inline-flex items-center gap-[6px] text-(--text-secondary)">
-        <span className="av h-4 w-4 flex-none rounded-xs">
-          <AgentMark model={agentRuntime} />
-        </span>
-        {/* Model selector — switch the model for THIS session. Only a real dropdown when
-            the runtime advertised selectable models; otherwise the static label. */}
-        {pgModels.length > 0 ? (
-          <select
-            aria-label="Session model"
-            value={session.model ?? ''}
-            onChange={(e) => pgSetModel(session.id, session.agentId ?? '', e.target.value, webchatConversationId)}
-            className="cursor-pointer border-0 bg-transparent p-0 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)"
-          >
-            {(session.model && !pgModels.includes(session.model) ? [session.model, ...pgModels] : pgModels).map((m) => (
-              <option key={m} value={m}>
-                {modelLabel(m)}
-              </option>
-            ))}
-          </select>
-        ) : (
-          modelLabel(session.model ?? '')
-        )}
-      </span>
-      {/* Effort selector — switch reasoning effort for THIS session. Only shown when the
-          runtime advertised effort levels (incl. synthetic ultracode/max on Claude). */}
-      {pgEfforts.length > 0 && (
-        <select
-          aria-label="Session reasoning effort"
-          value={session.effort ?? ''}
-          onChange={(e) => pgSetEffort(session.id, session.agentId ?? '', e.target.value, webchatConversationId)}
-          className={pgSelectClass}
-        >
-          {(session.effort && !pgEfforts.includes(session.effort) ? [session.effort, ...pgEfforts] : pgEfforts).map(
-            (e) => (
-              <option key={e} value={e}>
-                {e}
-              </option>
-            )
-          )}
-        </select>
-      )}
-      {!allowRuntimeChangesInChat && session.effort && <span>effort: {session.effort}</span>}
-      {/* Permission-mode selector — switch approval mode for THIS session. Only shown
-          when both the Agent setting and runtime capabilities permit it. */}
+    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)">
       {pgPermissionModes.length > 0 ? (
         <select
           aria-label="Session permission mode"
@@ -970,44 +948,71 @@ export default function SessionDetailView() {
           ))}
         </select>
       ) : (
-        session.permissionMode && (
-          <span>permission: {permissionModeLabel(session.runtime ?? '', session.permissionMode)}</span>
-        )
+        session.permissionMode && <span>{permissionModeLabel(session.runtime ?? '', session.permissionMode)}</span>
       )}
-      {/* Fast-mode toggle — only when the selected model advertises a fast toggle. */}
-      {allowRuntimeChangesInChat && session.fastModeAvailable && (
-        <select
-          aria-label="Session fast mode"
-          value={session.fastMode ? 'on' : 'off'}
-          onChange={(e) => pgSetFast(session.id, session.agentId ?? '', e.target.value === 'on', webchatConversationId)}
-          className={pgSelectClass}
-        >
-          <option value="on">fast: on</option>
-          <option value="off">fast: off</option>
-        </select>
-      )}
-      {!allowRuntimeChangesInChat && session.fastMode !== undefined && (
-        <span>fast: {session.fastMode ? 'on' : 'off'}</span>
-      )}
-      <span>
-        ctx&nbsp;<span className="font-mono text-[11.5px] font-medium leading-normal">{ctxText ?? '—'}</span>
-      </span>
-      <span>
-        <span className="font-mono text-[11.5px] font-medium leading-normal">{session.tokens}</span>&nbsp;tok
-      </span>
-      <span className="font-mono text-[11.5px] font-medium leading-normal">{session.cost}</span>
-      {/* Right-aligned action: cancel the running turn. (No "View session" link — in the
-          playground you're already on the session; the deep link was redundant.) */}
-      {pgBusy && (
-        <span className="ml-auto inline-flex items-center">
-          <button
-            onClick={() => pgCancel(session.id, session.agentId ?? '', webchatConversationId)}
-            className="cursor-pointer border-0 bg-transparent p-0 font-sans text-[11.5px] font-semibold leading-normal text-(--red-600)"
-          >
-            Cancel
-          </button>
+      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
+        <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
+        <span>
+          <span className="font-mono text-[11.5px] font-medium leading-normal">{session.tokens}</span>&nbsp;tok
         </span>
-      )}
+        <span className="font-mono text-[11.5px] font-medium leading-normal">{session.cost}</span>
+        <span className="inline-flex items-center gap-[6px] text-(--text-secondary)">
+          <span className="av h-4 w-4 flex-none rounded-xs">
+            <AgentMark model={agentRuntime} />
+          </span>
+          {pgModels.length > 0 ? (
+            <select
+              aria-label="Session model"
+              value={session.model ?? ''}
+              onChange={(e) => pgSetModel(session.id, session.agentId ?? '', e.target.value, webchatConversationId)}
+              className={pgSelectClass}
+            >
+              {(session.model && !pgModels.includes(session.model) ? [session.model, ...pgModels] : pgModels).map(
+                (model) => (
+                  <option key={model} value={model}>
+                    {modelLabel(model)}
+                  </option>
+                )
+              )}
+            </select>
+          ) : (
+            modelLabel(session.model ?? '')
+          )}
+        </span>
+        {pgEfforts.length > 0 && (
+          <select
+            aria-label="Session reasoning effort"
+            value={session.effort ?? ''}
+            onChange={(e) => pgSetEffort(session.id, session.agentId ?? '', e.target.value, webchatConversationId)}
+            className={pgSelectClass}
+          >
+            {(session.effort && !pgEfforts.includes(session.effort) ? [session.effort, ...pgEfforts] : pgEfforts).map(
+              (effort) => (
+                <option key={effort} value={effort}>
+                  {effort}
+                </option>
+              )
+            )}
+          </select>
+        )}
+        {!allowRuntimeChangesInChat && session.effort && <span>effort: {session.effort}</span>}
+        {allowRuntimeChangesInChat && session.fastModeAvailable && (
+          <select
+            aria-label="Session fast mode"
+            value={session.fastMode ? 'on' : 'off'}
+            onChange={(e) =>
+              pgSetFast(session.id, session.agentId ?? '', e.target.value === 'on', webchatConversationId)
+            }
+            className={pgSelectClass}
+          >
+            <option value="on">fast: on</option>
+            <option value="off">fast: off</option>
+          </select>
+        )}
+        {!allowRuntimeChangesInChat && session.fastMode !== undefined && (
+          <span>fast: {session.fastMode ? 'on' : 'off'}</span>
+        )}
+      </div>
     </div>
   )
 
@@ -1325,7 +1330,16 @@ export default function SessionDetailView() {
                       )}
                     </div>
                     <div className="rounded-[9px] border border-(--border-subtle) bg-(--surface-card) px-[13px] py-[10px] font-sans text-[13.5px] font-normal leading-[1.5] text-(--text-primary) desktop:px-[14px] desktop:py-[11px] desktop:leading-[1.55]">
-                      <MessageText text={turn.text} />
+                      {turn.image && (
+                        <img
+                          src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
+                          alt={turn.image.name}
+                          className={`max-h-[360px] max-w-full rounded-md object-contain ${
+                            turn.text ? 'mb-[10px]' : ''
+                          }`}
+                        />
+                      )}
+                      {turn.text && <MessageText text={turn.text} />}
                     </div>
                   </div>
                 </div>
@@ -1455,23 +1469,113 @@ export default function SessionDetailView() {
                 ))}
               </div>
             )}
-            <div className="desktop:mt-4">{pgStatusBar}</div>
-            <div className="pgcomposer rounded-[11px] border border-(--border-default)">
-              <textarea
-                className="pgin border-0"
-                placeholder={`Message ${session.agentName}…`}
-                value={pgInput}
-                onChange={(e) => setPgInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    onPgSend()
-                  }
-                }}
+            {imageError && (
+              <div className="font-sans text-[11.5px] font-medium leading-normal text-(--red-600)">{imageError}</div>
+            )}
+            <div
+              className="pgcomposer relative flex-col items-stretch gap-2 rounded-[11px] border border-(--border-default) desktop:mt-4"
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') setAttachMenuOpen(false)
+              }}
+            >
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                hidden
+                onChange={(event) => void onImageFile(event.target.files?.[0])}
               />
-              <button className="sendbtn" onClick={() => onPgSend()} disabled={pgBusy || !pgInput.trim()}>
-                <Icon name="arrow-up" size={18} />
-              </button>
+              <div className="flex min-w-0 flex-col">
+                {pgImage && (
+                  <div className="relative mb-2 w-fit">
+                    <img
+                      src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
+                      alt={pgImage.name}
+                      title={pgImage.name}
+                      className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
+                    />
+                    <button
+                      type="button"
+                      className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
+                      title="Remove image"
+                      aria-label="Remove image"
+                      onClick={() => setPgImage(session.id)}
+                    >
+                      <Icon name="x" size={14} />
+                    </button>
+                  </div>
+                )}
+                <textarea
+                  className="pgin w-full border-0 px-1 py-2 focus:shadow-none"
+                  placeholder={`Message ${session.agentName}…`}
+                  value={pgInput}
+                  onChange={(e) => setPgInput(e.target.value)}
+                  onPaste={(event) => {
+                    const image = clipboardImageFile(event.clipboardData)
+                    if (!image) return
+                    event.preventDefault()
+                    void onImageFile(image)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      onPgSend()
+                    }
+                  }}
+                />
+              </div>
+              <div className="flex min-w-0 items-center gap-2">
+                <div className="relative flex-none">
+                  <button
+                    type="button"
+                    className="iconbtn h-10 w-10 rounded-[9px]"
+                    aria-label="Add"
+                    aria-haspopup="menu"
+                    aria-expanded={attachMenuOpen}
+                    disabled={imagePreparing}
+                    onClick={() => setAttachMenuOpen((open) => !open)}
+                  >
+                    {imagePreparing ? <Spinner size={16} /> : <Icon name="plus" size={19} />}
+                  </button>
+                  {attachMenuOpen && (
+                    <>
+                      <div
+                        aria-hidden="true"
+                        className="fixed inset-0 z-40"
+                        onClick={() => setAttachMenuOpen(false)}
+                      ></div>
+                      <div
+                        role="menu"
+                        className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
+                      >
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="fopt"
+                          onClick={() => {
+                            setAttachMenuOpen(false)
+                            imageInputRef.current?.click()
+                          }}
+                        >
+                          <Icon name="image" size={16} color="var(--text-secondary)" />
+                          Add photos
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+                {pgStatusBar}
+                <button
+                  className="sendbtn"
+                  aria-label={pgBusy ? 'Stop response' : 'Send message'}
+                  onClick={() =>
+                    pgBusy ? pgCancel(session.id, session.agentId ?? '', webchatConversationId) : onPgSend()
+                  }
+                  disabled={!pgBusy && (imagePreparing || (!pgInput.trim() && !pgImage))}
+                >
+                  <Icon name={pgBusy ? 'square' : 'arrow-up'} size={pgBusy ? 14 : 18} />
+                </button>
+              </div>
             </div>
           </>
         )}

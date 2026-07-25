@@ -3,7 +3,7 @@
  * session (shared-bot-relay.md §7.2 / §10). One socket == one conversation.
  *
  * It speaks the browser-facing, type-tagged webchat envelope. The browser sends
- * `{text}` (a turn) or
+ * `{text, turnId, attachments?}` (a turn with at most one bounded inline image) or
  * `{type:'resume'|'set_model'|'set_effort'|'set_permission_mode'|'set_fast'|'cancel'}`,
  * and the relay sends `{type:'ready'|'output'|'done'|'ack'|'resumed'|'error'}`. Internally each inbound
  * op becomes an `rd/msg(webchat)` bridged onto the target daemon's rd/* socket, and
@@ -13,7 +13,7 @@
  * daemon has no live rd/* socket on THIS relay the op fails with an error frame.
  */
 import { randomUUID } from 'node:crypto'
-import type { RdChat, RdMsgWebchat, RelayWebchatOp } from '@agentconnect.md/protocol'
+import { RelayWebchatOp, type RdChat, type RdMsgWebchat } from '@agentconnect.md/protocol'
 import type { ServerTransport } from '@agentconnect.md/connection'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { ChatSink } from './webchat-router.js'
@@ -36,11 +36,16 @@ export interface RelayBrowserConnDeps {
 export function parseBrowserFrame(msg: unknown, user: string): RelayWebchatOp | null {
   if (typeof msg !== 'object' || msg === null) return null
   const m = msg as Record<string, unknown>
-  // A bare {text} (no type) OR {type:'message', text} is a turn.
-  if ((m.type === undefined || m.type === 'message') && typeof m.text === 'string') {
-    return m.turnId === undefined || typeof m.turnId === 'string'
-      ? { op: 'turn', text: m.text, user, ...(typeof m.turnId === 'string' ? { turnId: m.turnId } : {}) }
-      : null
+  // A bare message envelope (no type) or {type:'message', ...} is a turn.
+  if ((m.type === undefined || m.type === 'message') && (typeof m.text === 'string' || Array.isArray(m.attachments))) {
+    const parsed = RelayWebchatOp.safeParse({
+      op: 'turn',
+      text: typeof m.text === 'string' ? m.text : '',
+      user,
+      ...(m.turnId !== undefined ? { turnId: m.turnId } : {}),
+      ...(m.attachments !== undefined ? { attachments: m.attachments } : {})
+    })
+    return parsed.success && parsed.data.op === 'turn' ? parsed.data : null
   }
   switch (m.type) {
     case 'resume':

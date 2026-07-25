@@ -6,6 +6,7 @@ import {
   RdAgentMsgFwd,
   RdSlackAction,
   RelayWebchatOp,
+  WEBCHAT_IMAGE_MAX_BYTES,
   RELAY_DAEMON_FRAME_TYPES,
   buildRelayDaemonFrame,
   decodeRelayDaemonFrame,
@@ -118,6 +119,42 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     expect(RelayWebchatOp.safeParse({ op: 'resume', turnId: TURN_ID, generation: 0, afterIndex: 0 }).success).toBe(
       false
     )
+  })
+
+  it('carries one bounded inline image on a webchat turn', () => {
+    const image = {
+      name: 'screenshot.webp',
+      mimeType: 'image/webp' as const,
+      data: Buffer.from('small image').toString('base64')
+    }
+    expect(RelayWebchatOp.safeParse({ op: 'turn', text: '', attachments: [image] }).success).toBe(true)
+    expect(
+      decodeRelayDaemonFrame(
+        envelope('rd/msg', { ...turnMsg, payload: { op: 'turn', text: '', attachments: [image] } })
+      ).ok
+    ).toBe(true)
+    expect(
+      RelayWebchatOp.safeParse({
+        op: 'turn',
+        text: 'look',
+        attachments: [{ ...image, mimeType: 'image/svg+xml' }]
+      }).success
+    ).toBe(false)
+    expect(RelayWebchatOp.safeParse({ op: 'turn', text: 'look', attachments: [image, image] }).success).toBe(false)
+    expect(
+      RelayWebchatOp.safeParse({
+        op: 'turn',
+        text: 'look',
+        attachments: [{ ...image, data: 'not base64' }]
+      }).success
+    ).toBe(false)
+    expect(
+      RelayWebchatOp.safeParse({
+        op: 'turn',
+        text: 'look',
+        attachments: [{ ...image, data: Buffer.alloc(WEBCHAT_IMAGE_MAX_BYTES + 1).toString('base64') }]
+      }).success
+    ).toBe(false)
   })
 
   it('decodes an rd/msg im (shared bot) inbound, pre-addressed to an agent', () => {

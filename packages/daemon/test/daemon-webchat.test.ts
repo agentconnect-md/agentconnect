@@ -1175,6 +1175,41 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   })
 
+  it('delivers an inline webchat image as an ACP image block and records only its summary', async () => {
+    const { factory, host } = streamingHost([text('I can see it')])
+    ;(host as any).promptSupports = (kind: string) => kind === 'image'
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+
+    const bytes = Buffer.from('image bytes')
+    const events: RdChatEvent[] = []
+    const ack = (daemon as any).handleRelayMsg(
+      rd({
+        op: 'turn',
+        text: 'What is shown?',
+        user: 'ada',
+        attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: bytes.toString('base64') }]
+      }),
+      (event: RdChatEvent) => events.push(event)
+    )
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((event) => event.kind === 'done')).toBe(true), WAIT)
+
+    expect(host.prompt.mock.calls[0]?.[1]).toEqual(
+      expect.arrayContaining([
+        { type: 'text', text: 'What is shown?' },
+        { type: 'image', data: bytes.toString('base64'), mimeType: 'image/webp' }
+      ])
+    )
+    const rows = (daemon as any).store.threadTranscript(CONV, `webchat:${CONV}`) as Array<{
+      sender: string
+      text: string
+    }>
+    expect(rows.find((row) => row.sender === 'ada')?.text).toBe('What is shown?\n[attached: screen.webp (image/webp)]')
+    await daemon.stop()
+  }, 15_000)
+
   it('rejects a turn for an agent not on this daemon (accepted:false, reason no_agent)', async () => {
     const { factory } = streamingHost([])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })

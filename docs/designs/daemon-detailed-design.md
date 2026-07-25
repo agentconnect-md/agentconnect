@@ -835,10 +835,11 @@ Goal: **channel contains only start / plan / problem / finish + link**, while de
 
 Thread semantics: main progress goes at the thread anchor or, for a subscribed thread, uses `thread_ts`; tool-output messages reply in the same thread. `SlackSendQueue` rate-limits API calls, including the `chat.postMessage` Tier3 limit of 50rpm. The effective output mode is the per-session override when present, otherwise `agent.output.mode`.
 
-### 9.2 Inbound: Slack Event -> ACP `session/prompt` Content
+### 9.2 Inbound Attachments -> ACP `session/prompt` Content
 
 - Extract text from `app_mention` / `message`. For a mid-thread @mention, `SlackConnection.getThreadReplies()` in `packages/daemon/src/slack/connection.ts` fetches the full thread through `conversations.replies`, and `SessionManager` uses that snapshot as prompt context.
 - Download attachment bytes from `files.url_private` with bot token and create ACP `image` / `resource` blocks.
+- Decode a relay-delivered, size-bounded webchat image locally and feed it through the same ACP attachment-block builder; only its name and MIME summary enter the transcript.
 - Normalize to `NormalizedMessage`, then `session/prompt`.
 
 ### 9.3 Telegram / Discord / Feishu Mapping (Implemented)

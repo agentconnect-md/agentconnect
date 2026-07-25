@@ -9,7 +9,7 @@
 // view.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { agentLabel, type Agent, type Session, type SessionStep } from '@/lib/data'
+import { agentLabel, type Agent, type Session, type SessionImage, type SessionStep } from '@/lib/data'
 import { webchatWsUrl, fmtCountCompact, fmtCost, ApiError } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import {
@@ -25,6 +25,9 @@ interface PlaygroundData {
   /** Composer buffer for one session id (each live conversation has its own). */
   getPgInput: (id: string) => string
   setPgInput: (id: string, v: string) => void
+  /** One prepared image waiting in this session's composer. */
+  getPgImage: (id: string) => SessionImage | undefined
+  setPgImage: (id: string, image?: SessionImage) => void
   /** Is a turn in flight for this session id? Drives its typing indicator + send-disable. */
   isPgBusy: (id: string) => boolean
   /** Create a new sandbox session for an agent and return its id. Does not navigate. */
@@ -157,6 +160,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // conversations live at once (each streams in the background across route changes),
   // so a single global would let one session disable/clear another's composer.
   const [pgInputBy, setPgInputBy] = useState<Record<string, string>>({})
+  const [pgImageBy, setPgImageBy] = useState<Record<string, SessionImage>>({})
   const [pgBusyBy, setPgBusyBy] = useState<Record<string, boolean>>({})
   const conns = useRef<Map<string, Conn>>(new Map())
   const conversationIds = useRef<Map<string, string>>(new Map())
@@ -173,6 +177,15 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   }, [])
   const setPgInput = useCallback((id: string, v: string): void => {
     setPgInputBy((cur) => ({ ...cur, [id]: v }))
+  }, [])
+  const setPgImage = useCallback((id: string, image?: SessionImage): void => {
+    setPgImageBy((cur) => {
+      if (image) return { ...cur, [id]: image }
+      if (!(id in cur)) return cur
+      const next = { ...cur }
+      delete next[id]
+      return next
+    })
   }, [])
 
   // Close every socket when the provider unmounts (console teardown).
@@ -554,6 +567,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         }
       })
       setPgInput(id, '')
+      setPgImage(id)
       setBusy(id, false)
       // Warm the socket so the first turn is snappy. Swallow its ready rejection here —
       // a token-mint failure (e.g. no relay pool configured → 503) is surfaced on the
@@ -561,15 +575,17 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       connect(id, da.id).ready.catch(() => {})
       return id
     },
-    [connect, setPgInput, setBusy]
+    [connect, setPgImage, setPgInput, setBusy]
   )
 
   const pgSend = useCallback(
     (id: string, agentForId: string, textArg?: string, conversationId?: string) => {
       const text = String(textArg ?? pgInputBy[id] ?? '').trim()
-      if (!text || pgBusyBy[id]) return
-      pushStep(id, { kind: 'msg', who: '@you', text })
+      const image = pgImageBy[id]
+      if ((!text && !image) || pgBusyBy[id]) return
+      pushStep(id, { kind: 'msg', who: '@you', text, ...(image ? { image } : {}) })
       setPgInput(id, '')
+      setPgImage(id)
       setBusy(id, true)
       const requestedTurnId = crypto.randomUUID()
       streamCursors.current.set(id, createWebchatCursor<WebchatOutput, WebchatDone>(requestedTurnId))
@@ -577,7 +593,15 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       reconnectAttempts.current.delete(id)
       const conn = connect(id, agentForId, conversationId)
       conn.ready
-        .then((ws) => ws.send(JSON.stringify({ text, turnId: requestedTurnId })))
+        .then((ws) =>
+          ws.send(
+            JSON.stringify({
+              text,
+              turnId: requestedTurnId,
+              ...(image ? { attachments: [image] } : {})
+            })
+          )
+        )
         .catch((err) => {
           // A 503 from the token mint means the CP has no relay pool configured — the
           // agent may be perfectly healthy, so name the real cause instead of "unreachable".
@@ -592,7 +616,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           setBusy(id, false)
         })
     },
-    [pgBusyBy, pgInputBy, connect, pushStep, setPgInput, setBusy]
+    [pgBusyBy, pgImageBy, pgInputBy, connect, pushStep, setPgImage, setPgInput, setBusy]
   )
 
   /** Switch the session's model (fire-and-forget over the conversation socket). Updates
@@ -662,6 +686,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [pgSessions]
   )
   const getPgInput = useCallback((id: string) => pgInputBy[id] ?? '', [pgInputBy])
+  const getPgImage = useCallback((id: string) => pgImageBy[id], [pgImageBy])
   const isPgBusy = useCallback((id: string) => !!pgBusyBy[id], [pgBusyBy])
   const getLiveSteps = useCallback((id: string) => wcSteps[id] ?? NO_STEPS, [wcSteps])
   const clearLiveSteps = useCallback((id: string): void => {
@@ -678,6 +703,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     () => ({
       getPgInput,
       setPgInput,
+      getPgImage,
+      setPgImage,
       isPgBusy,
       openPlayground,
       pgSend,
@@ -694,6 +721,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [
       getPgInput,
       setPgInput,
+      getPgImage,
+      setPgImage,
       isPgBusy,
       openPlayground,
       pgSend,

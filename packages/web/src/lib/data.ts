@@ -685,6 +685,15 @@ export interface SessionFile {
   path: string
 }
 
+/** Ephemeral image on a live Playground/WebChat user turn. The daemon persists
+ * only its name/MIME summary, so bytes disappear when authoritative history is
+ * reloaded. */
+export interface SessionImage {
+  name: string
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp'
+  data: string
+}
+
 export interface SessionStep {
   kind: LaneKind
   who?: string
@@ -693,6 +702,7 @@ export interface SessionStep {
   text: string
   code?: string
   files?: SessionFile[]
+  image?: SessionImage
   /** Client-side timestamp for live playground/webchat steps. Persisted transcripts
    *  carry their own message `ts`; this only keeps in-memory live stats moving. */
   observedAtMs?: number

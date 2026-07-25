@@ -34,15 +34,22 @@ export function attachmentToBlock(
     return { type: 'image', data: bytes.toString('base64'), mimeType: att.mimeType }
   }
   if (bytes && supports('embeddedContext')) {
+    const uri = att.sourceUrl ?? `attachment://webchat/${encodeURIComponent(att.id)}`
     if (att.mimeType.startsWith('text/')) {
       return {
         type: 'resource',
-        resource: { text: bytes.toString('utf8'), uri: att.sourceUrl, mimeType: att.mimeType }
+        resource: { text: bytes.toString('utf8'), uri, mimeType: att.mimeType }
       }
     }
     return {
       type: 'resource',
-      resource: { blob: bytes.toString('base64'), uri: att.sourceUrl, mimeType: att.mimeType }
+      resource: { blob: bytes.toString('base64'), uri, mimeType: att.mimeType }
+    }
+  }
+  if (!att.sourceUrl) {
+    return {
+      type: 'text',
+      text: `[attached image: ${att.name} (${att.mimeType}); image input is unavailable for this agent]`
     }
   }
   // Baseline: a pointer the agent can't fetch directly (the URL is auth-gated) —
@@ -65,7 +72,7 @@ export async function buildAttachmentBlocks(attachments: Attachment[], deps: Att
   return Promise.all(
     attachments.map(async (att) => {
       const overCap = typeof att.size === 'number' && att.size > cap
-      const bytes = overCap ? null : await deps.download(att).catch(() => null)
+      const bytes = overCap ? null : (att.inlineData ?? (await deps.download(att).catch(() => null)))
       return attachmentToBlock(att, bytes, deps.supports)
     })
   )

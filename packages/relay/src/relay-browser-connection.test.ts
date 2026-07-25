@@ -72,6 +72,20 @@ describe('parseBrowserFrame', () => {
       turnId: AGENT
     })
   })
+  it('maps a bounded image attachment while keeping the verified user authoritative', () => {
+    const attachment = {
+      name: 'screen.webp',
+      mimeType: 'image/webp',
+      data: Buffer.from('image').toString('base64')
+    }
+    expect(parseBrowserFrame({ text: '', user: 'spoofed', attachments: [attachment] }, USER)).toEqual({
+      op: 'turn',
+      text: '',
+      user: USER,
+      attachments: [attachment]
+    })
+    expect(parseBrowserFrame({ text: '', attachments: [{ ...attachment, data: 'invalid' }] }, USER)).toBeNull()
+  })
   it('maps the session-control envelopes', () => {
     expect(parseBrowserFrame({ type: 'resume', turnId: AGENT, generation: 3, afterIndex: 4 }, USER)).toEqual({
       op: 'resume',
@@ -127,6 +141,21 @@ describe('RelayBrowserConnection', () => {
       payload: { op: 'turn', text: 'hello there', user: USER }
     })
     expect(transport.last('ack')).toEqual({ type: 'ack', ack: { accepted: true } })
+  })
+
+  it('bridges an image-only turn without putting the bytes on any control-plane path', async () => {
+    const { transport, sent } = build()
+    const attachment = {
+      name: 'screen.webp',
+      mimeType: 'image/webp',
+      data: Buffer.from('image').toString('base64')
+    }
+    transport.feed({ attachments: [attachment] })
+    await tick()
+    expect(sent[0]).toMatchObject({
+      source: 'webchat',
+      payload: { op: 'turn', text: '', user: USER, attachments: [attachment] }
+    })
   })
 
   it('surfaces a rejected turn ack with its reason', async () => {
