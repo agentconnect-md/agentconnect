@@ -327,7 +327,7 @@ export function createSessionReader(
         totalBytes: 0
       }
       if (!rec) return empty
-      const body = store.getToolBody(rec.channel, rec.thread, req.toolCallId)
+      const body = store.getToolBodyForAgent(rec.channel, rec.thread, rec.agentId, req.toolCallId)
       if (body === undefined) return empty
       const buf = Buffer.from(body, 'utf8')
       const totalBytes = buf.length

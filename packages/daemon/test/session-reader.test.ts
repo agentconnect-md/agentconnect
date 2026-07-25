@@ -276,24 +276,44 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('returns no history or tool body when the requested agent does not own the session', () => {
+  it('binds session and tool-body reads to the authorized agent in a shared thread', () => {
     const s = store()
     seedHistorySession(s)
-    const body = JSON.stringify({ toolCallId: 'tc-1', rawOutput: 'restricted output' })
+    s.upsertSession({
+      key: sessionKey('slack', 'C1', 'T1', OTHER_AGENT),
+      agentId: OTHER_AGENT,
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: 'acp-peer',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    const body = JSON.stringify({ toolCallId: 'peer-tc', rawOutput: 'restricted output' })
     s.insertToolCall({
       channel: 'C1',
       thread: 'T1',
       ts: '1',
-      sender: AGENT,
-      toolCallId: 'tc-1',
+      sender: OTHER_AGENT,
+      toolCallId: 'peer-tc',
       title: 'restricted tool call',
       body
     })
 
     const reader = createSessionReader(s)
+    // A peer's private tool row is absent from both the visible agent's history
+    // and its direct full-body lookup, even though the sessions share a thread.
+    expect(reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([])
+    expect(reader.toolBody({ agentId: AGENT, sessionId: 'acp-1', toolCallId: 'peer-tc', offset: 0 }).data).toBe('')
+    // The session itself is also bound to its agent, while the peer owner can read its body.
     expect(reader.history({ agentId: OTHER_AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([])
-    expect(reader.toolBody({ agentId: OTHER_AGENT, sessionId: 'acp-1', toolCallId: 'tc-1', offset: 0 }).data).toBe('')
-    expect(reader.toolBody({ agentId: AGENT, sessionId: 'acp-1', toolCallId: 'tc-1', offset: 0 }).data).toBe(body)
+    expect(reader.toolBody({ agentId: OTHER_AGENT, sessionId: 'acp-1', toolCallId: 'peer-tc', offset: 0 }).data).toBe(
+      ''
+    )
+    expect(
+      reader.toolBody({ agentId: OTHER_AGENT, sessionId: 'acp-peer', toolCallId: 'peer-tc', offset: 0 }).data
+    ).toBe(body)
     s.close()
   })
 

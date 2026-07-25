@@ -1581,11 +1581,11 @@ export class LocalStore {
       .run(patch.title, patch.body, channel, thread, toolCallId)
   }
 
-  /** The full stored ToolBody JSON for one tool call, or undefined if unknown. */
-  getToolBody(channel: string, thread: string, toolCallId: string): string | undefined {
+  /** One agent's full stored ToolBody JSON, or undefined if unknown/not owned. */
+  getToolBodyForAgent(channel: string, thread: string, agentId: string, toolCallId: string): string | undefined {
     const row = this.db
-      .prepare('SELECT body FROM transcript WHERE channel = ? AND thread = ? AND tool_call_id = ?')
-      .get(channel, thread, toolCallId) as { body: string | null } | undefined
+      .prepare('SELECT body FROM transcript WHERE channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?')
+      .get(channel, thread, agentId, toolCallId) as { body: string | null } | undefined
     return row?.body ?? undefined
   }
 
