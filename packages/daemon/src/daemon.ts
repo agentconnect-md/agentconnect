@@ -60,6 +60,7 @@ import {
   consolidate,
   consolidateShared,
   SlackConnection,
+  type InteractionActor,
   type SlackPostOptions,
   type SlackStatusOptions
 } from './slack/connection.js'
@@ -3891,6 +3892,17 @@ export class Daemon {
     }
   }
 
+  /**
+   * Record who drove one chat-side session action. The platform interaction is the only
+   * place the acting user exists — the session key alone says what changed, never by whom —
+   * so it is logged at every funnel point. `unknown` when an ingress could not report an
+   * actor (today: relay-forwarded Slack actions, whose frame carries no user).
+   */
+  private logSessionAction(verb: string, sessionKey: string, actor?: InteractionActor): void {
+    const who = actor ? `${actor.userId}${actor.isBot ? ' (bot)' : ''}` : 'unknown'
+    this.log.info(`session ${sessionKey}: "${verb}" by ${who}`)
+  }
+
   /** Resolve a session only while its Agent explicitly permits chat-side runtime changes. */
   private chatRuntimeSession(key: string) {
     const rec = this.store.getSession(key)
@@ -5809,12 +5821,17 @@ export class Daemon {
   private handleStatusAction(a: {
     kind: 'set-model' | 'set-effort' | 'set-permission-mode' | 'set-fast' | 'set-output' | 'cancel'
     sessionKey: string
+    actor?: InteractionActor
     model?: string
     effort?: string
     permissionMode?: string
     fastMode?: boolean
     outputMode?: 'none' | 'minimal' | 'low' | 'medium' | 'high'
   }): void {
+    // A status-bar tap carries no author in the transcript, so the operator behind a
+    // cancelled turn or a switched model is otherwise unrecoverable. Record it here,
+    // at the one point every ingress funnels through.
+    this.logSessionAction(a.kind, a.sessionKey, a.actor)
     if (a.kind === 'cancel') this.cancelSessionByKey(a.sessionKey)
     else if (a.kind === 'set-model') {
       if (a.model) this.setModelByKey(a.sessionKey, a.model)
@@ -5840,7 +5857,9 @@ export class Daemon {
     kind: SelectKind
     index: number
     sessionKey: string
+    actor?: InteractionActor
   }): { text: string; components: DiscordComponents } | undefined {
+    this.logSessionAction(`select:${a.kind}`, a.sessionKey, a.actor)
     const rec = this.store.getSession(a.sessionKey)
     if (!rec) return undefined
     const info = this.statusInfoFrom(rec.agentId, a.sessionKey, rec.acpSessionId ?? undefined)
@@ -9859,9 +9878,12 @@ export class Daemon {
     return { ok: true }
   }
 
-  private handlePermissionChoice(input: { requestId: string; optionId: string }): void {
+  private handlePermissionChoice(input: { requestId: string; optionId: string; actor?: InteractionActor }): void {
     const pending = this.pendingChatPermissions.get(input.requestId)
     if (!pending) return
+    // Who approved (or denied) the agent's tool call is the record most worth having
+    // later; the card itself only shows the outcome.
+    this.logSessionAction(`permission:${input.optionId}`, pending.sessionId, input.actor)
     if (this.agents.get(pending.agentId)?.allowRuntimeChangesInChat !== true) {
       if (pending.ts) {
         void pending.conn

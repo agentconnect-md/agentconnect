@@ -98,6 +98,16 @@ export function consolidateShared(agents: Agent[]): Map<string, ConsolidatedGrou
   return groups
 }
 
+/** The human behind one interactive click (button / select / modal submit). Carried
+ *  alongside the action so the daemon records WHO changed a session, which a bare
+ *  `sessionKey` cannot say. */
+export interface InteractionActor {
+  userId: string
+  /** Only set where the platform reports it on the interaction (Discord does; a Slack
+   *  `block_actions` payload carries no bot flag on its `user`). */
+  isBot?: boolean
+}
+
 export interface SlackDeps {
   group: ConsolidatedGroup
   onMessage: (msg: NormalizedMessage) => void
@@ -110,6 +120,9 @@ export interface SlackDeps {
   onStatusAction?: (a: {
     kind: 'set-model' | 'set-effort' | 'set-permission-mode' | 'set-fast' | 'set-output' | 'cancel'
     sessionKey: string
+    /** Who tapped it (Block Kit `body.user`), so the daemon can record the operator
+     *  behind a session change. Absent only if Slack omits the actor on the payload. */
+    actor?: InteractionActor
     model?: string
     effort?: string
     permissionMode?: string
@@ -125,7 +138,7 @@ export interface SlackDeps {
   /** Fired when a user taps a button on an interactive permission card
    *  (render.buildPermissionCard). The decoded `requestId` ties the click back to the
    *  pending ACP `session/request_permission`; `optionId` is the chosen option. */
-  onPermissionChoice?: (a: { requestId: string; optionId: string }) => void
+  onPermissionChoice?: (a: { requestId: string; optionId: string; actor?: InteractionActor }) => void
   /** Fired when a user taps a button on an interactive elicitation card
    *  (render.buildElicitationCard). `value` is the chosen option's wire value, or null
    *  for the Dismiss button (decline). */
@@ -166,7 +179,13 @@ type BlockActionArgs = {
     trigger_id?: string
     view?: { id?: string; private_metadata?: string }
     actions?: { block_id?: string }[]
+    user?: { id?: string }
   }
+}
+
+/** The clicking user off a `block_actions` payload, for the action's audit record. */
+function actorOf(body: BlockActionArgs['body']): InteractionActor | undefined {
+  return body?.user?.id ? { userId: body.user.id } : undefined
 }
 
 type AppLike = {
@@ -478,7 +497,7 @@ export class SlackConnection {
         const triggerId = body?.trigger_id
         if (triggerId) await this.openStatusModal(triggerId, sessionKey)
       } else if (choice.action === 'cancel') {
-        this.deps.onStatusAction?.({ kind: 'cancel', sessionKey })
+        this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, actor: actorOf(body) })
       }
     })
     this.app.action(STATUS_ACTION.manage, async ({ ack, action, body }) => {
@@ -492,26 +511,29 @@ export class SlackConnection {
       await ack()
       const sessionKey = body?.view?.private_metadata ?? action.block_id
       const model = action.selected_option?.value
-      if (sessionKey && model) this.deps.onStatusAction?.({ kind: 'set-model', sessionKey, model })
+      if (sessionKey && model)
+        this.deps.onStatusAction?.({ kind: 'set-model', sessionKey, model, actor: actorOf(body) })
     })
     this.app.action(STATUS_ACTION.setEffort, async ({ ack, action, body }) => {
       await ack()
       const sessionKey = body?.view?.private_metadata ?? action.block_id
       const effort = action.selected_option?.value
-      if (sessionKey && effort) this.deps.onStatusAction?.({ kind: 'set-effort', sessionKey, effort })
+      if (sessionKey && effort)
+        this.deps.onStatusAction?.({ kind: 'set-effort', sessionKey, effort, actor: actorOf(body) })
     })
     this.app.action(STATUS_ACTION.setPermissionMode, async ({ ack, action, body }) => {
       await ack()
       const sessionKey = body?.view?.private_metadata ?? action.block_id
       const permissionMode = action.selected_option?.value
       if (sessionKey && permissionMode)
-        this.deps.onStatusAction?.({ kind: 'set-permission-mode', sessionKey, permissionMode })
+        this.deps.onStatusAction?.({ kind: 'set-permission-mode', sessionKey, permissionMode, actor: actorOf(body) })
     })
     this.app.action(STATUS_ACTION.setFast, async ({ ack, action, body }) => {
       await ack()
       const sessionKey = body?.view?.private_metadata ?? action.block_id
       const value = action.selected_option?.value
-      if (sessionKey && value) this.deps.onStatusAction?.({ kind: 'set-fast', sessionKey, fastMode: value === 'on' })
+      if (sessionKey && value)
+        this.deps.onStatusAction?.({ kind: 'set-fast', sessionKey, fastMode: value === 'on', actor: actorOf(body) })
     })
     this.app.action(STATUS_ACTION.setOutput, async ({ ack, action, body }) => {
       await ack()
@@ -521,12 +543,12 @@ export class SlackConnection {
         sessionKey &&
         (mode === 'none' || mode === 'minimal' || mode === 'low' || mode === 'medium' || mode === 'high')
       )
-        this.deps.onStatusAction?.({ kind: 'set-output', sessionKey, outputMode: mode })
+        this.deps.onStatusAction?.({ kind: 'set-output', sessionKey, outputMode: mode, actor: actorOf(body) })
     })
     this.app.action(STATUS_ACTION.cancel, async ({ ack, action, body }) => {
       await ack()
       const sessionKey = body?.view?.private_metadata ?? action.value
-      if (sessionKey) this.deps.onStatusAction?.({ kind: 'cancel', sessionKey })
+      if (sessionKey) this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, actor: actorOf(body) })
     })
     this.app.action(STATUS_ACTION.view, async ({ ack }) => {
       await ack() // URL button — the browser follows the link; nothing to do here.
@@ -534,10 +556,10 @@ export class SlackConnection {
     // Interactive permission card (buildPermissionCard): every option button shares the
     // `ac_perm:<index>` prefix, matched here by RegExp. The chosen requestId+optionId ride
     // the button `value`; the daemon resolves the pending ACP request from them.
-    this.app.action(new RegExp(`^${PERMISSION_ACTION_PREFIX}:`), async ({ ack, action }) => {
+    this.app.action(new RegExp(`^${PERMISSION_ACTION_PREFIX}:`), async ({ ack, action, body }) => {
       await ack()
       const decoded = action.value ? decodePermValue(action.value) : null
-      if (decoded) this.deps.onPermissionChoice?.(decoded)
+      if (decoded) this.deps.onPermissionChoice?.({ ...decoded, actor: actorOf(body) })
     })
     // Interactive elicitation card (buildElicitationCard): option buttons share the
     // `ac_elicit:<index>` prefix (value = `<requestId>|<optionValue>`); the Dismiss button
