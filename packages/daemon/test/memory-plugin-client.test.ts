@@ -118,6 +118,7 @@ interface FakeOptions {
   manifest?: MemoryPluginManifest
   omit?: string[]
   add?: string[]
+  listPagination?: { pageCount: number; delayMs: number }
   wrongOutputSchemaFor?: string
   nonNullableGetOutput?: boolean
   wrongInputTypeFor?: { tool: string; field: string }
@@ -194,9 +195,11 @@ describe('memory plugin connection config validation', () => {
   })
 })
 
-async function startFake(
-  options: FakeOptions = {}
-): Promise<{ url: string; calls: Array<{ name: string; args: unknown }> }> {
+async function startFake(options: FakeOptions = {}): Promise<{
+  url: string
+  calls: Array<{ name: string; args: unknown }>
+  listRequests: Array<string | undefined>
+}> {
   const manifest = options.manifest ?? baseManifest
   const names = new Set<string>([
     MEMORY_PLUGIN_TOOL.manifest,
@@ -206,6 +209,7 @@ async function startFake(
   ])
   for (const name of options.omit ?? []) names.delete(name)
   const calls: Array<{ name: string; args: unknown }> = []
+  const listRequests: Array<string | undefined> = []
   const tools = [...names].map((name) => {
     const shape = schemas[name] ?? { input: [], output: [] }
     return {
@@ -256,6 +260,23 @@ async function startFake(
         })
       }
       if (body.method === 'tools/list') {
+        const params = body.params as JsonObject | undefined
+        const cursor = typeof params?.cursor === 'string' ? params.cursor : undefined
+        listRequests.push(cursor)
+        const pagination = options.listPagination
+        if (pagination) {
+          await new Promise((resolve) => setTimeout(resolve, pagination.delayMs))
+          const page = cursor === undefined ? 0 : Number(cursor)
+          const nextPage = page + 1
+          return send(res, 200, {
+            jsonrpc: '2.0',
+            id,
+            result: {
+              tools: nextPage === pagination.pageCount ? tools : [],
+              ...(nextPage < pagination.pageCount ? { nextCursor: String(nextPage) } : {})
+            }
+          })
+        }
         return send(res, 200, { jsonrpc: '2.0', id, result: { tools } })
       }
       if (body.method !== 'tools/call') {
@@ -302,7 +323,7 @@ async function startFake(
     close: () => new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve())))
   }
   liveServers.push(running)
-  return { url: `http://127.0.0.1:${address.port}/mcp`, calls }
+  return { url: `http://127.0.0.1:${address.port}/mcp`, calls, listRequests }
 }
 
 afterEach(async () => {
@@ -376,6 +397,17 @@ describe('MemoryPluginClient conformance over remote Streamable HTTP', () => {
       MEMORY_PLUGIN_TOOL.capture
     ])
     await client.close()
+  })
+
+  it('keeps one absolute conformance timeout across paginated tool discovery', async () => {
+    const pageCount = 6
+    const slow = await startFake({ listPagination: { pageCount, delayMs: 80 } })
+
+    await expect(MemoryPluginClient.connect({ url: slow.url, callTimeoutMs: 120 })).rejects.toThrow(
+      'memory plugin conformance probe timed out'
+    )
+    expect(slow.listRequests.length).toBeGreaterThan(0)
+    expect(slow.listRequests.length).toBeLessThan(pageCount)
   })
 
   it('rejects a missing required tool and a free-text-only result', async () => {

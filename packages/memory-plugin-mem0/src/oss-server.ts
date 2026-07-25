@@ -1,4 +1,4 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import {
   MEMORY_PLUGIN_ERROR_TOKEN,
@@ -83,9 +83,9 @@ export function createMem0OssMcpServer(
       inputSchema: MemoryPluginRecallInput,
       outputSchema: MemoryPluginRecallOutput
     },
-    async (input, extra) =>
+    async (input, ctx) =>
       result(
-        (await client.recall(input, credential(extra), extra.signal)) as unknown as Record<string, unknown>,
+        (await client.recall(input, credential(ctx), ctx.mcpReq.signal)) as unknown as Record<string, unknown>,
         'recall completed'
       )
   )
@@ -97,9 +97,9 @@ export function createMem0OssMcpServer(
       inputSchema: MemoryPluginCaptureInput,
       outputSchema: MemoryPluginCaptureOutput
     },
-    async (input, extra) =>
+    async (input, ctx) =>
       result(
-        (await client.capture(input, credential(extra), extra.signal)) as unknown as Record<string, unknown>,
+        (await client.capture(input, credential(ctx), ctx.mcpReq.signal)) as unknown as Record<string, unknown>,
         'capture completed'
       )
   )
@@ -111,9 +111,9 @@ export function createMem0OssMcpServer(
       inputSchema: MemoryPluginListInput,
       outputSchema: MemoryPluginListOutput
     },
-    async (input, extra) =>
+    async (input, ctx) =>
       result(
-        (await client.list(input, credential(extra), extra.signal)) as unknown as Record<string, unknown>,
+        (await client.list(input, credential(ctx), ctx.mcpReq.signal)) as unknown as Record<string, unknown>,
         'memory page listed'
       )
   )
@@ -125,9 +125,9 @@ export function createMem0OssMcpServer(
       inputSchema: MemoryPluginGetInput,
       outputSchema: MemoryPluginGetOutput
     },
-    async (input, extra) =>
+    async (input, ctx) =>
       result(
-        (await client.get(input, credential(extra), extra.signal)) as unknown as Record<string, unknown>,
+        (await client.get(input, credential(ctx), ctx.mcpReq.signal)) as unknown as Record<string, unknown>,
         'memory retrieved'
       )
   )
@@ -139,9 +139,9 @@ export function createMem0OssMcpServer(
       inputSchema: MemoryPluginCreateInput,
       outputSchema: MemoryPluginCreateOutput
     },
-    async (input, extra) =>
+    async (input, ctx) =>
       result(
-        (await client.create(input, credential(extra), extra.signal)) as unknown as Record<string, unknown>,
+        (await client.create(input, credential(ctx), ctx.mcpReq.signal)) as unknown as Record<string, unknown>,
         'memory created'
       )
   )
@@ -153,10 +153,10 @@ export function createMem0OssMcpServer(
       inputSchema: MemoryPluginDeleteInput,
       outputSchema: MemoryPluginDeleteOutput
     },
-    async (input, extra) => {
+    async (input, ctx) => {
       try {
         return result(
-          (await client.delete(input, credential(extra), extra.signal)) as unknown as Record<string, unknown>,
+          (await client.delete(input, credential(ctx), ctx.mcpReq.signal)) as unknown as Record<string, unknown>,
           'memory delete completed'
         )
       } catch (error) {
@@ -173,9 +173,9 @@ export function createMem0OssMcpServer(
       inputSchema: MemoryPluginHistoryInput,
       outputSchema: MemoryPluginHistoryOutput
     },
-    async (input, extra) =>
+    async (input, ctx) =>
       result(
-        (await client.history(input, credential(extra), extra.signal)) as unknown as Record<string, unknown>,
+        (await client.history(input, credential(ctx), ctx.mcpReq.signal)) as unknown as Record<string, unknown>,
         'memory history listed'
       )
   )

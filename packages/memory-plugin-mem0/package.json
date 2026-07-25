@@ -35,7 +35,8 @@
   "types": "dist/index.d.ts",
   "dependencies": {
     "@agentconnect.md/protocol": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/node": "2.0.0-beta.5",
+    "@modelcontextprotocol/server": "2.0.0-beta.5",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/instrumentation-http": "^0.221.0",
     "@opentelemetry/instrumentation-undici": "^0.31.0",
