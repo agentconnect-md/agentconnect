@@ -418,7 +418,7 @@ Installation-token reviews are authored by one deployment-level App bot, not age
 - Multiple AgentConnect agents cannot produce distinct reviewer identities; conflicting reviews share bot actor.
 - App bot cannot approve its own PR. If last push is also by bot, it cannot satisfy "last push must be approved by someone else." No CODEOWNERS promise.
 - Relay rejects all `sender.type === 'Bot'`, so App/Dependabot-authored PR does not trigger hook; bot events from formal review cannot loop.
-- On hook creation, PR review menu is collapsed by default and defaults to `Details` (`full` + informational Check); `Brief` keeps ordinary comment reply only. Expanded Details shows four side-by-side capability checkboxes projected from config: Inline comments → Request changes → Approve hierarchy, plus independent Status check.
+- On hook creation, PR review menu is collapsed by default and defaults to `Details` (`full` + informational Check). `None` maps to review/reporting `off` without changing trigger or output routing, while `Brief` permits only a formal `COMMENT` review and no Check. Expanded Details shows four side-by-side capability checkboxes projected from config: Inline comments → Request changes → Approve hierarchy, plus independent Status check.
 - Put public-repo/untrusted-input, self-review, and CODEOWNERS limits in capability hover text rather than permanent warning stack. After repository selection, show repository-access blocker immediately in red with authorization entry; App-installation permission blocker shows settings link. Scratch may authorize any covered repository; manual GitHub workspace may explicitly authorize only its own workspace repository. Show nothing before repository selection.
 
 ## Per-Installation Permissions and Rollout

@@ -211,8 +211,10 @@ but an authorized mention no longer requests or permits a formal review, opens a
 mention-driven review generation, or requires a review verdict. Independently
 configured reporting for PR revision events remains separate. Review policy does
 not select or change the hook's reply/output path; existing delivery behavior
-continues to own that decision. An ordinary unmentioned follow-up also remains
-conversation-only and does not replace the current review verdict.
+continues to own that decision. The console presents review and reporting both
+being off as `None`; selecting it changes neither trigger matching nor output
+delivery. An ordinary unmentioned follow-up also remains conversation-only and
+does not replace the current review verdict.
 
 ## Workspace navigation and repository access
 
