@@ -117,6 +117,22 @@ describe('agents/memory (directory model)', () => {
     expect(readFileSync(outsideHistory, 'utf8')).toBe('keep-history')
     expect(readFileSync(join(memoryDir(dir), 'notes.md'), 'utf8')).toBe('updated')
   })
+
+  it('does not read through a planted symlink (topic or index)', async () => {
+    const dir = newDir()
+    const secret = join(newDir(), 'secret.txt')
+    writeFileSync(secret, 'PRIVATE-KEY')
+    mkdirSync(memoryDir(dir), { recursive: true })
+    symlinkSync(secret, join(memoryDir(dir), 'leak.md'))
+    symlinkSync(secret, join(memoryDir(dir), MEMORY_INDEX))
+
+    await expect(readMemoryFile(dir, 'leak.md')).rejects.toBeInstanceOf(MemoryPathError)
+    // the index rides the session-start path, so it degrades to no injection rather
+    // than throwing — but it still must not read through the link
+    await expect(readIndex(dir)).resolves.toBe('')
+    // a symlinked entry is not even listed as a topic
+    expect((await listMemory(dir)).map((f) => f.name)).not.toContain('leak.md')
+  })
 })
 
 describe('agents/memory (.history change log)', () => {

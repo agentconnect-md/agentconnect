@@ -29,6 +29,7 @@ import type { MemoryEntry } from '@agentconnect.md/protocol'
 import type { MemoryReadResult, MemoryWriteResult } from './memory-provider.js'
 import {
   atomicWriteContainedMemoryFile,
+  readContainedMemoryFile,
   MemoryPathError,
   MemoryTooLargeError,
   MAX_MEMORY_FILE_BYTES
@@ -103,13 +104,9 @@ export async function nativeMemoryRead(
 ): Promise<MemoryReadResult> {
   const spec = nativeRuntimeMemorySpecFor(runtime)
   if (!spec) return { path, content: '' }
-  const abs = resolveContained(spec.readRoot(agentDir), path)
-  try {
-    return { path, content: await fsp.readFile(abs, 'utf8') }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { path, content: '' }
-    throw err
-  }
+  const root = spec.readRoot(agentDir)
+  const abs = resolveContained(root, path)
+  return { path, content: await readContainedMemoryFile(agentDir, root, abs) }
 }
 
 /** Overwrite one native memory file (console edit). Atomic tmp+rename; size-capped. */
