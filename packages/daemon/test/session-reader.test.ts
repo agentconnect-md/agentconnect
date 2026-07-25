@@ -7,6 +7,7 @@ import { LocalStore, sessionKey } from '../src/store/local-store.js'
 import { createSessionReader } from '../src/cp/session-reader.js'
 
 const AGENT = '11111111-1111-4111-8111-111111111111'
+const OTHER_AGENT = '22222222-2222-4222-8222-222222222222'
 
 function store(): LocalStore {
   return new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-reader-')), 'local.sqlite'))
@@ -244,7 +245,7 @@ describe('SessionReader', () => {
     s.setDisplayName('U1', 'Dana Reyes', 1)
 
     const reader = createSessionReader(s)
-    const { messages } = reader.history({ sessionId: 'acp-1', limit: 50 })
+    const { messages } = reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
     expect(messages.map((m) => [m.sender, m.senderName])).toEqual([
       ['U1', 'Dana Reyes'],
       [AGENT, undefined] // agent-id senders have no display_names entry → omitted
@@ -266,12 +267,33 @@ describe('SessionReader', () => {
       attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: 'aW1hZ2U=' }]
     })
 
-    expect(createSessionReader(s).history({ sessionId: 'acp-1', limit: 50 }).messages).toEqual([
+    expect(createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([
       expect.objectContaining({
         text: 'Identify this',
         attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: 'aW1hZ2U=' }]
       })
     ])
+    s.close()
+  })
+
+  it('returns no history or tool body when the requested agent does not own the session', () => {
+    const s = store()
+    seedHistorySession(s)
+    const body = JSON.stringify({ toolCallId: 'tc-1', rawOutput: 'restricted output' })
+    s.insertToolCall({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: AGENT,
+      toolCallId: 'tc-1',
+      title: 'restricted tool call',
+      body
+    })
+
+    const reader = createSessionReader(s)
+    expect(reader.history({ agentId: OTHER_AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([])
+    expect(reader.toolBody({ agentId: OTHER_AGENT, sessionId: 'acp-1', toolCallId: 'tc-1', offset: 0 }).data).toBe('')
+    expect(reader.toolBody({ agentId: AGENT, sessionId: 'acp-1', toolCallId: 'tc-1', offset: 0 }).data).toBe(body)
     s.close()
   })
 
@@ -328,7 +350,7 @@ describe('SessionReader', () => {
     })
 
     const reader = createSessionReader(s)
-    const { messages } = reader.history({ sessionId: 'acp-1', limit: 50 })
+    const { messages } = reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
     expect(messages.map((m) => m.text)).toEqual(['to-me', 'my-reply'])
     s.close()
   })
@@ -355,7 +377,7 @@ describe('SessionReader', () => {
       })
     }
 
-    const { messages } = createSessionReader(s).history({ sessionId: 'acp-1', limit: 50 })
+    const { messages } = createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
     expect(messages.map((m) => m.text)).toEqual([
       'first request',
       'first backfilled reply',
@@ -388,7 +410,7 @@ describe('SessionReader', () => {
     const all: string[] = []
     let cursor: string | undefined
     for (let pageNo = 0; pageNo < 10; pageNo++) {
-      const page = reader.history({ sessionId: 'acp-1', limit: 2, ...(cursor ? { cursor } : {}) })
+      const page = reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 2, ...(cursor ? { cursor } : {}) })
       all.unshift(...page.messages.map((m) => m.text))
       if (!page.nextCursor) break
       cursor = page.nextCursor
@@ -416,7 +438,7 @@ describe('SessionReader', () => {
     const all: string[] = []
     let cursor: string | undefined
     do {
-      const page = reader.history({ sessionId: 'acp-1', limit: 1, ...(cursor ? { cursor } : {}) })
+      const page = reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 1, ...(cursor ? { cursor } : {}) })
       all.unshift(...page.messages.map((m) => m.text))
       cursor = page.nextCursor
     } while (cursor)
@@ -442,7 +464,7 @@ describe('SessionReader', () => {
 
     // Cursor "3" means the old client already saw seq >= 3. Do not reinterpret it
     // as an event-time cursor partway through that request's pagination loop.
-    const page = createSessionReader(s).history({ sessionId: 'acp-1', cursor: '3', limit: 50 })
+    const page = createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', cursor: '3', limit: 50 })
     expect(page.messages.map((m) => m.text)).toEqual(['seq-1', 'seq-4'])
     expect(page.nextCursor).toBeUndefined()
     s.close()
@@ -466,7 +488,7 @@ describe('SessionReader', () => {
 
     expect(
       createSessionReader(s)
-        .history({ sessionId: 'acp-1', limit: 50 })
+        .history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
         .messages.map((m) => m.text)
     ).toEqual(['telegram message 100', 'reasoning after 100', 'telegram message 101'])
     s.close()
@@ -496,7 +518,7 @@ describe('SessionReader', () => {
 
     expect(
       createSessionReader(s)
-        .history({ sessionId: 'acp-1', limit: 50 })
+        .history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
         .messages.map((m) => m.text)
     ).toEqual(['first', 'second-backfilled', 'third-trigger'])
     s.close()

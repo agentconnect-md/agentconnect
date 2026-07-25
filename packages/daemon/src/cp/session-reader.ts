@@ -223,7 +223,7 @@ export function createSessionReader(
       return { sessions }
     },
     history(req) {
-      const rec = store.getSessionByAcpId(req.sessionId)
+      const rec = store.getSessionByAcpIdForAgent(req.agentId, req.sessionId)
       if (!rec) return { sessionId: req.sessionId, messages: [] }
       // Slack can append an older platform row during warm-thread backfill, so its
       // authoritative history pages by normalized event time + seq tie-breaker. A
@@ -319,7 +319,7 @@ export function createSessionReader(
       }
     },
     toolBody(req) {
-      const rec = store.getSessionByAcpId(req.sessionId)
+      const rec = store.getSessionByAcpIdForAgent(req.agentId, req.sessionId)
       const empty: SessionToolBodyChunk = {
         sessionId: req.sessionId,
         toolCallId: req.toolCallId,

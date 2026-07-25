@@ -258,7 +258,6 @@ function sessionDto(s: SessionPageRow, hookMetadata: Map<string, HookSessionMeta
 }
 
 const SessionHistoryQueryDto = z.object({
-  agentId: z.string(), // the owning agent (the UI has it from the list row) — resolves the daemon
   cursor: z.string().optional(),
   limit: z.coerce.number().int().positive().max(200).optional()
 })
@@ -274,6 +273,13 @@ export function sessionRoutes(deps: HttpDeps) {
       const agent = await deps.repos.agent.get(AgentId(agentId))
       if (!agent || agent.orgId !== req.orgCtx!.orgId) return null
       return canView(agent, ctxOf(req)) ? agent : null
+    }
+
+    const getOrgViewableSession = async (req: FastifyRequest, sessionId: string) => {
+      const session = await deps.repos.session.get(SessionId(sessionId))
+      if (!session) return null
+      const agent = await getOrgViewableAgent(req, session.agentId)
+      return agent ? { session, agent } : null
     }
 
     r.get(
@@ -392,10 +398,11 @@ export function sessionRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const s = await deps.repos.session.get(SessionId(req.params.id))
-        if (!s || !(await getOrgViewableAgent(req, s.agentId))) {
+        const owned = await getOrgViewableSession(req, req.params.id)
+        if (!owned) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
         }
+        const { session: s } = owned
         // Relationships may cross agents (and daemons), so apply the same
         // owning-agent visibility rule to every linked session. A hidden parent
         // is indistinguishable from no parent; hidden children are omitted.
@@ -456,10 +463,11 @@ export function sessionRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgViewableAgent(req, req.query.agentId)
-        if (!agent) {
-          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        const owned = await getOrgViewableSession(req, req.params.id)
+        if (!owned) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
         }
+        const { session, agent } = owned
         if (!agent.daemonId) {
           return reply
             .code(503)
@@ -468,7 +476,8 @@ export function sessionRoutes(deps: HttpDeps) {
 
         try {
           const page = await deps.control.sessionHistory(agent.daemonId, {
-            sessionId: req.params.id,
+            agentId: session.agentId,
+            sessionId: session.id,
             ...(req.query.cursor !== undefined ? { cursor: req.query.cursor } : {}),
             limit: req.query.limit ?? 50
           })
@@ -485,7 +494,7 @@ export function sessionRoutes(deps: HttpDeps) {
     )
 
     // Full-body view: proxy one byte slice of a tool call's untruncated ToolBody
-    // JSON live from the owning daemon (resolved via agentId, same as /messages).
+    // JSON live from the owning daemon (resolved from SessionMeta, same as /messages).
     // The console pages by offset until nextOffset is null. 503 if the agent is
     // unplaced or its daemon is offline.
     r.get(
@@ -503,11 +512,11 @@ export function sessionRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        // Route through the org+visibility gate — this previously did a bare
-        // repo.get with NO org check at all (a cross-tenant tool-body leak), and now
-        // also blocks a non-viewer of a restricted agent.
-        const agent = await getOrgViewableAgent(req, req.query.agentId)
-        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        const owned = await getOrgViewableSession(req, req.params.id)
+        if (!owned) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+        }
+        const { session, agent } = owned
         if (!agent.daemonId) {
           return reply
             .code(503)
@@ -516,7 +525,8 @@ export function sessionRoutes(deps: HttpDeps) {
 
         try {
           const chunk = await deps.control.sessionToolBody(agent.daemonId, {
-            sessionId: req.params.id,
+            agentId: session.agentId,
+            sessionId: session.id,
             toolCallId: req.query.toolCallId,
             offset: req.query.offset ?? 0
           })

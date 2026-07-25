@@ -706,11 +706,15 @@ describe('session read-back frames (console history pull)', () => {
   })
 
   it('session/history REQ defaults limit to 50; session/history/page round-trips messages + cursor', () => {
-    const req = decodeEnvelope(envelope('session/history', { sessionId: SESSION_ID, cursor: 'c-100' }))
+    const req = decodeEnvelope(
+      envelope('session/history', { agentId: AGENT_ID, sessionId: SESSION_ID, cursor: 'c-100' })
+    )
     expect(req.ok).toBe(true)
     if (!req.ok || !isFrame('session/history')(req.frame)) throw new Error('expected session/history')
+    expect(req.frame.payload.agentId).toBe(AGENT_ID)
     expect(req.frame.payload.limit).toBe(50) // zod default
     expect(req.frame.payload.cursor).toBe('c-100')
+    expect(decodeEnvelope(envelope('session/history', { sessionId: SESSION_ID })).ok).toBe(false)
 
     const page = decodeEnvelope(
       envelope('session/history/page', {
@@ -778,10 +782,14 @@ describe('session read-back frames (console history pull)', () => {
   })
 
   it('session/tool-body REQ defaults offset to 0; session/tool-body/chunk round-trips with nextOffset', () => {
-    const req = decodeEnvelope(envelope('session/tool-body', { sessionId: SESSION_ID, toolCallId: 'tc-1' }))
+    const req = decodeEnvelope(
+      envelope('session/tool-body', { agentId: AGENT_ID, sessionId: SESSION_ID, toolCallId: 'tc-1' })
+    )
     expect(req.ok).toBe(true)
     if (!req.ok || !isFrame('session/tool-body')(req.frame)) throw new Error('expected session/tool-body')
+    expect(req.frame.payload.agentId).toBe(AGENT_ID)
     expect(req.frame.payload.offset).toBe(0) // zod default
+    expect(decodeEnvelope(envelope('session/tool-body', { sessionId: SESSION_ID, toolCallId: 'tc-1' })).ok).toBe(false)
 
     const chunk = decodeEnvelope(
       envelope(

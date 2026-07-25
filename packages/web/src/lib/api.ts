@@ -1594,15 +1594,10 @@ export function fetchSessionDetail(sessionId: string, orgId?: string): Promise<S
 }
 
 // One page of a session's transcript, proxied live from the owning daemon. The
-// `agentId` (carried by the list row) resolves that daemon on the CP; 503 if it
-// is offline / the agent is unplaced.
-export async function fetchSessionMessages(
-  sessionId: string,
-  agentId: string,
-  cursor?: string,
-  limit = 50
-): Promise<SessionHistoryDto> {
-  const q = new URLSearchParams({ agentId, limit: String(limit) })
+// CP resolves the owner and daemon from its SessionMeta row; 503 if that daemon
+// is offline or the owning agent is unplaced.
+export async function fetchSessionMessages(sessionId: string, cursor?: string, limit = 50): Promise<SessionHistoryDto> {
+  const q = new URLSearchParams({ limit: String(limit) })
   if (cursor) q.set('cursor', cursor)
   return apiGet<SessionHistoryDto>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/messages?${q.toString()}`)
 }
@@ -1623,12 +1618,12 @@ export interface SessionToolBodyChunkDto {
 // `GET /sessions/:id/tool-body` by offset, concatenating the byte slices into the
 // complete JSON string (the caller JSON.parse's the result). 503 if the owning
 // daemon is offline / the agent is unplaced (same resolution as the messages route).
-export async function fetchToolBody(sessionId: string, agentId: string, toolCallId: string): Promise<string> {
+export async function fetchToolBody(sessionId: string, toolCallId: string): Promise<string> {
   let out = ''
   let offset = 0
   // Guard against a daemon that never advances `nextOffset` (defensive bound).
   for (;;) {
-    const q = new URLSearchParams({ agentId, toolCallId, offset: String(offset) })
+    const q = new URLSearchParams({ toolCallId, offset: String(offset) })
     const chunk = await apiGet<SessionToolBodyChunkDto>(
       `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/tool-body?${q.toString()}`
     )

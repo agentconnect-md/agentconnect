@@ -545,6 +545,7 @@ const SessionListPage = z.object({ sessions: z.array(SessionListItem) }) // D→
 // ── history: one cursor page of a session's transcript ──
 const SessionHistoryReq = z.object({
   // C→D REQ
+  agentId: z.string().uuid(), // CP-authorized owner; daemon verifies the binding
   sessionId: z.string(), // ACP session id — opaque string, NOT a UUID
   cursor: z.string().optional(), // opaque; omit ⇒ newest page
   limit: z.number().int().positive().max(200).default(50)
@@ -574,7 +575,14 @@ separately.
 scoped to the caller's visible agents; `agentId`/`platform`/`channel` filters
 narrow the set. No daemon is contacted.
 
-**History** (`GET /sessions/:id/messages?agentId=&cursor=&limit=`): the owning daemon is resolved via the row's `agentId`, then `session/history` pulls the page. Cursor-based, newest-first. If the agent is unplaced or its daemon is offline → 503 (the list still works; only that transcript is unavailable). This is an explicit, bounded content-read path: the Control Plane proxies the reply without persisting it. The memory and workspace read families follow the same locality rule.
+**History** (`GET /sessions/:id/messages?cursor=&limit=`): the CP loads the
+`session_meta` row, authorizes its owning agent, and resolves that agent's
+daemon; `session/history` carries the owner `agentId` so the daemon can verify
+the `(agentId, sessionId)` binding before returning content. Cursor-based,
+newest-first. If the agent is unplaced or its daemon is offline → 503 (the list
+still works; only that transcript is unavailable). This is an explicit, bounded
+content-read path: the Control Plane proxies the reply without persisting it.
+The memory and workspace read families follow the same locality rule.
 
 ### 7.7 `channel/agents` (D→C, REQ → REP) — agent collaboration directory
 

@@ -145,6 +145,7 @@ Request:
 
 ```ts
 {
+  agentId: string // CP-authorized owner; daemon verifies the session binding
   sessionId: string
   toolCallId: string
   offset: number // defaults to 0
