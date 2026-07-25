@@ -13,7 +13,14 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
-import { fetchAgentMemoryFull, updateAgentMemory, listAgentMemory, ApiError, type MemoryFileEntry } from '@/lib/api'
+import {
+  fetchAgentMemoryFull,
+  updateAgentMemory,
+  listAgentMemory,
+  ApiError,
+  type MemoryFileEntry,
+  type MemoryDreamingConfig
+} from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { Spinner } from '@/components/marks'
 import { Icon, Button } from '@/components/ui'
@@ -105,6 +112,7 @@ function MemoryScopeField() {
 function settingsFromProps(input: {
   memoryProvider: string
   autoDistill: boolean
+  memoryDreaming?: MemoryDreamingConfig
   memoryConnectionId?: string
   memoryRecall?: ExternalMemoryBindingDraft['recall']
   memoryCaptureMode?: ExternalMemoryBindingDraft['captureMode']
@@ -112,6 +120,7 @@ function settingsFromProps(input: {
   return memorySettingsDraft({
     provider: input.memoryProvider,
     autoDistill: input.autoDistill,
+    dreaming: input.memoryDreaming,
     connectionId: input.memoryConnectionId,
     recall: input.memoryRecall,
     captureMode: input.memoryCaptureMode
@@ -123,6 +132,7 @@ export function MemoryPanel({
   canEdit,
   memoryProvider,
   autoDistill,
+  memoryDreaming,
   memoryConnectionId,
   memoryRecall,
   memoryCaptureMode
@@ -131,6 +141,7 @@ export function MemoryPanel({
   canEdit: boolean
   memoryProvider: string
   autoDistill: boolean
+  memoryDreaming?: MemoryDreamingConfig
   memoryConnectionId?: string
   memoryRecall?: ExternalMemoryBindingDraft['recall']
   memoryCaptureMode?: ExternalMemoryBindingDraft['captureMode']
@@ -159,6 +170,7 @@ export function MemoryPanel({
   const initialSettings = settingsFromProps({
     memoryProvider,
     autoDistill,
+    memoryDreaming,
     memoryConnectionId,
     memoryRecall,
     memoryCaptureMode
@@ -187,6 +199,7 @@ export function MemoryPanel({
     const next = settingsFromProps({
       memoryProvider,
       autoDistill,
+      memoryDreaming,
       memoryConnectionId,
       memoryRecall,
       memoryCaptureMode
@@ -199,6 +212,12 @@ export function MemoryPanel({
     agentId,
     memoryProvider,
     autoDistill,
+    memoryDreaming?.enabled,
+    memoryDreaming?.sessionWindow,
+    memoryDreaming?.schedule,
+    memoryDreaming?.instructions,
+    memoryDreaming?.mineSkills,
+    memoryDreaming?.autoAdopt,
     memoryConnectionId,
     memoryRecall?.mode,
     memoryRecall?.topK,
@@ -273,7 +292,7 @@ export function MemoryPanel({
   const settingsSummary = (() => {
     switch (persistedProvider) {
       case 'managed':
-        return `Managed directory · Auto-distill ${persistedSettings.autoDistill ? 'on' : 'off'} · Agent scope`
+        return `Managed directory · Auto-distill ${persistedSettings.autoDistill ? 'on' : 'off'} · Dreaming ${persistedSettings.dreaming.enabled ? 'on' : 'off'} · Agent scope`
       case 'native':
         return 'Runtime-native memory · Agent scope'
       case 'external': {
@@ -626,6 +645,47 @@ export function MemoryPanel({
                 Automatically distill durable facts after each turn (uses an additional model call; currently Claude
                 runtimes only).
               </label>
+            ) : null}
+
+            {provider === 'managed' ? (
+              <div className="flex flex-col gap-2">
+                <label className="flex items-center gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+                  <input
+                    type="checkbox"
+                    checked={settings.dreaming.enabled}
+                    disabled={!canEdit || savingProvider}
+                    onChange={() => {
+                      setSettings((current) => ({
+                        ...current,
+                        dreaming: { ...current.dreaming, enabled: !current.dreaming.enabled }
+                      }))
+                      setProviderError(null)
+                    }}
+                  />
+                  Enable dreaming — consolidate the store from recent sessions on demand, staged for review before it
+                  replaces the live store. Run a dream from the API (scheduled dreams arrive in a later release).
+                </label>
+                {settings.dreaming.enabled ? (
+                  <div className="ml-6 flex flex-col gap-2">
+                    <label className="flex flex-col gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                      Instructions (optional — steer what the dream focuses on)
+                      <textarea
+                        value={settings.dreaming.instructions}
+                        rows={2}
+                        maxLength={4096}
+                        placeholder="Focus on coding-style preferences; ignore one-off debugging notes."
+                        disabled={!canEdit || savingProvider}
+                        onChange={(e) => {
+                          const instructions = e.target.value
+                          setSettings((current) => ({ ...current, dreaming: { ...current.dreaming, instructions } }))
+                          setProviderError(null)
+                        }}
+                        className="resize-y rounded-sm border border-(--border-subtle) bg-(--surface-card) px-2 py-1 font-sans text-[12px] leading-[1.5] text-(--text-primary)"
+                      />
+                    </label>
+                  </div>
+                ) : null}
+              </div>
             ) : null}
 
             {provider === 'external' ? (

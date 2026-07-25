@@ -1,8 +1,27 @@
-import type { AgentMemoryConfig } from '@/lib/api'
+import type { AgentMemoryConfig, MemoryDreamingConfig } from '@/lib/api'
 import {
   DEFAULT_EXTERNAL_MEMORY_BINDING,
   type ExternalMemoryBindingDraft
 } from '@/components/console/ExternalMemoryBindingFields'
+
+/**
+ * Managed-only dreaming policy as a form draft. It carries the COMPLETE policy —
+ * including fields the D-1 console doesn't yet edit (`sessionWindow`, and the
+ * later-phase `schedule`/`mineSkills`/`autoAdopt`) — because a managed-memory
+ * save PATCHes the `memory` binding wholesale, so anything the draft drops is
+ * lost. The UI edits only `enabled` and `instructions` today; the rest is
+ * preserved verbatim from whatever the API (or a later phase) set.
+ */
+export interface DreamingDraft {
+  enabled: boolean
+  instructions: string
+  sessionWindow?: number
+  schedule?: string
+  mineSkills?: boolean
+  autoAdopt?: boolean
+}
+
+export const DEFAULT_DREAMING_DRAFT: DreamingDraft = { enabled: false, instructions: '' }
 
 export type MemoryProviderChoice = 'managed' | 'native' | 'external' | 'none'
 
@@ -20,6 +39,7 @@ export const MEMORY_PROVIDER_OPTIONS: ReadonlyArray<{
 export interface MemorySettingsDraft {
   provider: MemoryProviderChoice
   autoDistill: boolean
+  dreaming: DreamingDraft
   external: ExternalMemoryBindingDraft
 }
 
@@ -34,13 +54,26 @@ export function memoryProviderLabel(value: MemoryProviderChoice): string {
 export function cloneMemorySettings(value: MemorySettingsDraft): MemorySettingsDraft {
   return {
     ...value,
+    dreaming: { ...value.dreaming },
     external: { ...value.external, recall: { ...value.external.recall } }
   }
+}
+
+function sameDreaming(a: DreamingDraft, b: DreamingDraft): boolean {
+  return (
+    a.enabled === b.enabled &&
+    a.instructions === b.instructions &&
+    a.sessionWindow === b.sessionWindow &&
+    a.schedule === b.schedule &&
+    a.mineSkills === b.mineSkills &&
+    a.autoAdopt === b.autoAdopt
+  )
 }
 
 export function memorySettingsDraft(input: {
   provider: string
   autoDistill: boolean
+  dreaming?: MemoryDreamingConfig | null
   connectionId?: string
   recall?: ExternalMemoryBindingDraft['recall']
   captureMode?: ExternalMemoryBindingDraft['captureMode']
@@ -48,6 +81,16 @@ export function memorySettingsDraft(input: {
   return {
     provider: memoryProviderChoice(input.provider),
     autoDistill: input.autoDistill,
+    dreaming: input.dreaming
+      ? {
+          enabled: input.dreaming.enabled,
+          instructions: input.dreaming.instructions ?? '',
+          ...(input.dreaming.sessionWindow !== undefined ? { sessionWindow: input.dreaming.sessionWindow } : {}),
+          ...(input.dreaming.schedule ? { schedule: input.dreaming.schedule } : {}),
+          ...(input.dreaming.mineSkills !== undefined ? { mineSkills: input.dreaming.mineSkills } : {}),
+          ...(input.dreaming.autoAdopt !== undefined ? { autoAdopt: input.dreaming.autoAdopt } : {})
+        }
+      : { ...DEFAULT_DREAMING_DRAFT },
     external: {
       ...DEFAULT_EXTERNAL_MEMORY_BINDING,
       recall: { ...DEFAULT_EXTERNAL_MEMORY_BINDING.recall },
@@ -71,7 +114,9 @@ function sameExternalSettings(a: ExternalMemoryBindingDraft, b: ExternalMemoryBi
 
 export function memorySettingsChanged(persisted: MemorySettingsDraft, draft: MemorySettingsDraft): boolean {
   if (persisted.provider !== draft.provider) return true
-  if (draft.provider === 'managed') return persisted.autoDistill !== draft.autoDistill
+  if (draft.provider === 'managed') {
+    return persisted.autoDistill !== draft.autoDistill || !sameDreaming(persisted.dreaming, draft.dreaming)
+  }
   if (draft.provider === 'external') return !sameExternalSettings(persisted.external, draft.external)
   return false
 }
@@ -97,6 +142,33 @@ export function memoryConfigForDraft(draft: MemorySettingsDraft): AgentMemoryCon
       capture: { mode: draft.external.captureMode }
     }
   }
-  if (draft.provider === 'managed') return { provider: 'managed', autoDistill: draft.autoDistill }
+  if (draft.provider === 'managed') {
+    const dreaming = dreamingConfigForDraft(draft.dreaming)
+    return { provider: 'managed', autoDistill: draft.autoDistill, ...(dreaming ? { dreaming } : {}) }
+  }
   return { provider: draft.provider, autoDistill: false }
+}
+
+/** Map the dreaming form back to the wire policy, preserving every preserved
+ *  field, or undefined when the policy is entirely absent (nothing enabled and
+ *  no field set) — so an untouched managed agent emits no `dreaming` binding. */
+export function dreamingConfigForDraft(draft: DreamingDraft): MemoryDreamingConfig | undefined {
+  const instructions = draft.instructions.trim()
+  const schedule = draft.schedule?.trim()
+  const hasAny =
+    draft.enabled ||
+    !!instructions ||
+    !!schedule ||
+    draft.sessionWindow !== undefined ||
+    draft.mineSkills !== undefined ||
+    draft.autoAdopt !== undefined
+  if (!hasAny) return undefined
+  return {
+    enabled: draft.enabled,
+    ...(draft.sessionWindow !== undefined ? { sessionWindow: draft.sessionWindow } : {}),
+    ...(schedule ? { schedule } : {}),
+    ...(instructions ? { instructions } : {}),
+    ...(draft.mineSkills !== undefined ? { mineSkills: draft.mineSkills } : {}),
+    ...(draft.autoAdopt !== undefined ? { autoAdopt: draft.autoAdopt } : {})
+  }
 }

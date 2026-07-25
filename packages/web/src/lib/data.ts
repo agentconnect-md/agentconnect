@@ -2,6 +2,7 @@
 // Ported from the AgentConnect design (static demo content for the console UI).
 
 import type { AgentIcon } from '@/lib/agent-icon'
+import type { MemoryDreamingConfig } from '@/lib/api'
 
 export type StatusKey = 'online' | 'paused' | 'offline'
 
@@ -210,6 +211,8 @@ export interface Agent {
   memoryProvider: string
   /** Opt-in managed-memory extraction after each completed turn. */
   memoryAutoDistill: boolean
+  /** Managed-memory dreaming policy; present only when configured (managed provider). */
+  memoryDreaming?: MemoryDreamingConfig
   /** External-memory binding metadata; present only when memoryProvider='external'. */
   memoryConnectionId?: string
   memoryRecall?: {
