@@ -6,17 +6,18 @@ import {
 
 /**
  * Managed-only dreaming policy as a form draft. It carries the COMPLETE policy —
- * including fields the D-1 console doesn't yet edit (`sessionWindow`, and the
- * later-phase `schedule`/`mineSkills`/`autoAdopt`) — because a managed-memory
- * save PATCHes the `memory` binding wholesale, so anything the draft drops is
- * lost. The UI edits only `enabled` and `instructions` today; the rest is
- * preserved verbatim from whatever the API (or a later phase) set.
+ * including fields the console doesn't yet edit (`sessionWindow`, `timezone`, and
+ * the later-phase `mineSkills`/`autoAdopt`) — because a managed-memory save
+ * PATCHes the `memory` binding wholesale, so anything the draft drops is lost.
+ * The UI edits `enabled`, `schedule`, and `instructions`; the rest is preserved
+ * verbatim from whatever the API (or a later phase) set.
  */
 export interface DreamingDraft {
   enabled: boolean
   instructions: string
   sessionWindow?: number
   schedule?: string
+  timezone?: string
   mineSkills?: boolean
   autoAdopt?: boolean
 }
@@ -65,6 +66,7 @@ function sameDreaming(a: DreamingDraft, b: DreamingDraft): boolean {
     a.instructions === b.instructions &&
     a.sessionWindow === b.sessionWindow &&
     a.schedule === b.schedule &&
+    a.timezone === b.timezone &&
     a.mineSkills === b.mineSkills &&
     a.autoAdopt === b.autoAdopt
   )
@@ -87,6 +89,7 @@ export function memorySettingsDraft(input: {
           instructions: input.dreaming.instructions ?? '',
           ...(input.dreaming.sessionWindow !== undefined ? { sessionWindow: input.dreaming.sessionWindow } : {}),
           ...(input.dreaming.schedule ? { schedule: input.dreaming.schedule } : {}),
+          ...(input.dreaming.timezone ? { timezone: input.dreaming.timezone } : {}),
           ...(input.dreaming.mineSkills !== undefined ? { mineSkills: input.dreaming.mineSkills } : {}),
           ...(input.dreaming.autoAdopt !== undefined ? { autoAdopt: input.dreaming.autoAdopt } : {})
         }
@@ -159,6 +162,7 @@ export function dreamingConfigForDraft(draft: DreamingDraft): MemoryDreamingConf
     draft.enabled ||
     !!instructions ||
     !!schedule ||
+    !!draft.timezone ||
     draft.sessionWindow !== undefined ||
     draft.mineSkills !== undefined ||
     draft.autoAdopt !== undefined
@@ -167,6 +171,7 @@ export function dreamingConfigForDraft(draft: DreamingDraft): MemoryDreamingConf
     enabled: draft.enabled,
     ...(draft.sessionWindow !== undefined ? { sessionWindow: draft.sessionWindow } : {}),
     ...(schedule ? { schedule } : {}),
+    ...(draft.timezone ? { timezone: draft.timezone } : {}),
     ...(instructions ? { instructions } : {}),
     ...(draft.mineSkills !== undefined ? { mineSkills: draft.mineSkills } : {}),
     ...(draft.autoAdopt !== undefined ? { autoAdopt: draft.autoAdopt } : {})

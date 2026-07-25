@@ -106,8 +106,8 @@ describe('memory settings UX model', () => {
 
   it('preserves the full dreaming policy across a save, even fields the console does not edit', () => {
     // A complete API-configured policy round-trips: the wholesale `memory` PATCH
-    // must not drop sessionWindow / schedule / mineSkills / autoAdopt just because
-    // the D-1 console only edits enabled + instructions.
+    // must not drop sessionWindow / timezone / mineSkills / autoAdopt just because
+    // the console only edits enabled + schedule + instructions.
     const full = memorySettingsDraft({
       provider: 'managed',
       autoDistill: true,
@@ -115,6 +115,7 @@ describe('memory settings UX model', () => {
         enabled: true,
         sessionWindow: 40,
         schedule: '0 4 * * *',
+        timezone: 'America/New_York',
         instructions: 'focus on prefs',
         mineSkills: true,
         autoAdopt: false
@@ -125,6 +126,7 @@ describe('memory settings UX model', () => {
       instructions: 'focus on prefs',
       sessionWindow: 40,
       schedule: '0 4 * * *',
+      timezone: 'America/New_York',
       mineSkills: true,
       autoAdopt: false
     })
@@ -137,10 +139,18 @@ describe('memory settings UX model', () => {
         enabled: true,
         sessionWindow: 40,
         schedule: '0 4 * * *',
+        timezone: 'America/New_York',
         instructions: 'new focus',
         mineSkills: true,
         autoAdopt: false
       }
+    })
+
+    // The schedule IS editable now that D-2b fires it; the edit round-trips.
+    const rescheduled = { ...full, dreaming: { ...full.dreaming, schedule: '30 2 * * 0' } }
+    expect(memorySettingsChanged(full, rescheduled)).toBe(true)
+    expect(memoryConfigForDraft(rescheduled)).toMatchObject({
+      dreaming: { schedule: '30 2 * * 0', timezone: 'America/New_York' }
     })
   })
 })

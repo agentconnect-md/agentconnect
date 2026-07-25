@@ -1,8 +1,8 @@
 # Design: Memory Dreaming Mode — Offline Consolidation for Managed Memory
 
-> Status: D-1 shipped (protocol, daemon runner, CP REST, console config);
-> D-2a shipped (auto-adopt gate, distillation rebase). D-2b (scheduled dreams)
-> and D-3 (skill mining) remain proposals — see §12.
+> Status: D-1 shipped (protocol, daemon runner, CP REST, console config); D-2
+> shipped (auto-adopt gate, distillation rebase, scheduled dreams). D-3 (skill
+> mining) remains a proposal — see §12.
 > Prerequisites: [memory-evolution.md](memory-evolution.md),
 > [memory-system-plan.md](memory-system-plan.md),
 > [daemon-centric-architecture.md](daemon-centric-architecture.md),
@@ -113,6 +113,8 @@ export const MemoryDreamingPolicy = z
     sessionWindow: z.number().int().min(1).max(100).optional(),
     /** Optional cron for scheduled dreams (same syntax as agent crons). */
     schedule: z.string().min(1).max(128).optional(),
+    /** IANA zone the `schedule` is evaluated in; absent ⇒ daemon-host local. */
+    timezone: z.string().min(1).max(64).optional(),
     /** Operator steering text applied through the whole pipeline (≤ 4096 chars). */
     instructions: z.string().max(4096).optional(),
     /** Also mine reusable procedures into candidate skills (§7). Default false. */
@@ -376,11 +378,11 @@ to run once dreaming has usage data.
 ## 9. Triggers
 
 - **Manual** — console "Dream now" button; the primary v1 path.
-- **Scheduled** — `dreaming.schedule` cron, registered through the existing
-  `Scheduler` reconciliation (like `agent.json.crons[]`), firing a headless
-  internal trigger (not a synthetic platform message — dreams are not turns).
-- **Idle-triggered (later)** — "N hours since the last consolidation and the
-  agent has been active since" fits the daemon (it already tracks per-agent
+- **Scheduled** — the `dreaming.schedule` cron (+ optional `timezone`), driven
+  by a `DreamScheduler` synced on the same agent reconcile as `agent.json.crons[]`.
+  It is a SIBLING of `Scheduler`, not a reuse: that one synthesizes a message and
+  runs it as a turn, while a dream is a background job with no conversation. A
+  tick landing while a dream is in flight is skipped, never queued.
   activity), as a follow-up once scheduled dreams are proven.
 
 ## 10. Control plane and console
@@ -434,6 +436,6 @@ skill bodies in events or logs (same rule as the capture path).
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | D-1   | Protocol schema (`MemoryDreamingPolicy`), shared extraction-session helper, daemon `DreamRunner` + staged store pipeline, manual trigger via frames, console review + adopt/discard. |
 | D-2a  | `autoAdopt` behind `trustedExtractionMode`, the distillation rebase rule, backup pruning. **Done.**                                                                                  |
-| D-2b  | Scheduled dreams (cron trigger + reconciliation), and the console schedule control it unlocks; evaluation-event dashboards.                                                          |
+| D-2b  | Scheduled dreams (`DreamScheduler` cron trigger + reconciliation) and the console schedule control. **Done.** Evaluation-event dashboards remain.                                    |
 | D-3   | Skill mining (`mineSkills`): extract-procedures phase, staged skill candidates, console recommendations with accept/dismiss, integration with the shared-skills install flow.        |
 | D-4   | Idle-trigger heuristic; revisit external-provider dreaming.                                                                                                                          |
