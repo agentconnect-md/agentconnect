@@ -57,7 +57,7 @@ import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { VisibilityValue } from '@/components/console/VisibilityField'
 import { AgentIconView, AgentMark, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
-import type { Platform } from '@/components/console/modals/AddIntegrationModal'
+import { BOT_PLATFORMS, type Platform } from '@/components/console/modals/AddIntegrationModal'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { NotFound } from '@/components/console/NotFound'
 import { Button, Icon } from '@/components/ui'
@@ -93,15 +93,18 @@ import {
 type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'api' | 'knowledge'
 const HOOK_REFRESH_MS = 30_000
 
-// Platforms offered in the empty Integrations tab — each tile opens the
-// Add-integration modal preselected to that platform.
-const POTENTIAL_INTEGRATIONS: { key: Platform; label: string; desc: string }[] = [
-  { key: 'slack', label: 'Slack', desc: 'Reply in channels & DMs' },
-  { key: 'telegram', label: 'Telegram', desc: 'Reply in groups & chats' },
-  { key: 'discord', label: 'Discord', desc: 'Reply in servers' },
-  { key: 'github', label: 'GitHub', desc: 'React to issues & PRs' },
-  { key: 'webhook', label: 'Webhook', desc: 'Trigger by posting a URL' }
-]
+// One-liners for the empty-integrations tiles. The tile SET is derived from the
+// owning daemon's advertised adapters (below) — never hard-coded — so a tile
+// can't promise a platform the Add-integration modal would swap out from under
+// the click. webhook/github are relay/CP-backed triggers: always offered.
+const INTEGRATION_BLURB: Record<Platform, string> = {
+  slack: 'Reply in channels & DMs',
+  telegram: 'Reply in groups & chats',
+  discord: 'Reply in servers',
+  feishu: 'Reply in groups & chats',
+  github: 'React to issues & PRs',
+  webhook: 'Trigger by posting a URL'
+}
 const HOOK_RUN_REFRESH_MS = 10_000
 
 interface GithubReviewSettingsDraft {
@@ -117,7 +120,8 @@ export default function AgentDetailView() {
   const { id } = useParams<{ id: string }>()
   const params = useSearchParams()
   const router = useRouter()
-  const { agents, getAgent, getSessions, daemons, integrations, agentsLoading, updateAgent, refresh } = useConsoleData()
+  const { agents, getAgent, getSessions, daemons, daemonsLoading, integrations, agentsLoading, updateAgent, refresh } =
+    useConsoleData()
   const { openPlayground } = usePlayground()
   const { openModal } = useModal()
   const approvalAgent = getAgent(id)
@@ -414,6 +418,16 @@ export default function AgentDetailView() {
   const agentInts = integrations.filter((i) => i.agentId === da.id)
   // Peer agents for the read-only Access card's agent-call summary (self excluded).
   const agentPeers = agents.filter((peer) => peer.id !== da.id)
+  // Tiles for the empty Integrations tab. Bot platforms are gated on the owning
+  // daemon's advertised adapters — exactly what AddIntegrationModal enforces — so
+  // a tile can never advertise a platform the modal would silently swap out. While
+  // the daemon list is still loading, offer them all rather than flash a short list.
+  // webhook/github are relay/CP-backed triggers: always offered.
+  const offerableIntegrations: { key: Platform; label: string }[] = [
+    ...(daemonsLoading ? BOT_PLATFORMS : BOT_PLATFORMS.filter((p) => owningDaemon?.caps.platforms.includes(p.key))),
+    { key: 'webhook', label: 'Webhook' },
+    { key: 'github', label: 'GitHub' }
+  ]
   // Effective (intersection) peer sets for the read-only Access summary.
   const inboundEffectiveIds = agentReach.incomingByAgentId.get(da.id) ?? []
   const outboundEffectiveIds = agentReach.outgoingByAgentId.get(da.id) ?? []
@@ -1526,37 +1540,30 @@ export default function AgentDetailView() {
                     post. It can&apos;t receive messages until you do.
                   </div>
                 </div>
-                <div className="mt-4 grid grid-cols-1 gap-[10px] min-[440px]:grid-cols-2 desktop:grid-cols-3">
-                  {POTENTIAL_INTEGRATIONS.map((p) => (
-                    <button
+                {/* Same tile anatomy as the Add-integration modal's platform grid
+                    (ptile + 26px mark, stacked on desktop) so the two read as one
+                    surface — one row across desktop. */}
+                {/* Grid while narrow; one flex row on desktop — the tile count is
+                    daemon-dependent, so equal flex beats a fixed column count. */}
+                <div className="mt-4 grid grid-cols-2 gap-[10px] min-[440px]:grid-cols-3 desktop:flex desktop:flex-row">
+                  {offerableIntegrations.map((p) => (
+                    <div
                       key={p.key}
-                      type="button"
+                      className="ptile cursor-pointer desktop:min-w-0 desktop:flex-1 desktop:flex-col desktop:justify-center desktop:gap-[6px] desktop:px-2 desktop:text-center"
+                      title={INTEGRATION_BLURB[p.key]}
                       onClick={() => openModal('integration', da, { platform: p.key })}
-                      className="flex cursor-pointer items-center gap-3 rounded-[9px] border border-(--border-subtle) bg-(--surface-card) px-3 py-[11px] text-left transition-[background-color,border-color] hover:border-(--border-strong) hover:bg-(--surface-hover)"
                     >
                       {p.key === 'github' ? (
                         <span className="flex h-[26px] w-[26px] flex-none items-center justify-center [&>svg]:h-full [&>svg]:w-full">
                           <GithubMark />
                         </span>
-                      ) : p.key === 'webhook' ? (
-                        <span className="flex h-[26px] w-[26px] flex-none items-center justify-center rounded-md bg-(--surface-inverse)">
-                          <Icon name="webhook" size={15} color="#fff" />
-                        </span>
                       ) : (
-                        <span className="imark h-[26px] w-[26px] flex-none border-0 bg-transparent">
+                        <span className="imark h-[26px] w-[26px] border-0 bg-transparent">
                           <PlatformMark platform={p.key} fillPct={100} />
                         </span>
                       )}
-                      <span className="flex min-w-0 flex-col">
-                        <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                          {p.label}
-                        </span>
-                        <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                          {p.desc}
-                        </span>
-                      </span>
-                      <Icon name="plus" size={14} color="var(--text-tertiary)" className="ml-auto flex-none" />
-                    </button>
+                      <span className="font-sans text-[13px] font-semibold leading-normal">{p.label}</span>
+                    </div>
                   ))}
                 </div>
               </div>

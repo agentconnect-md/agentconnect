@@ -71,12 +71,15 @@ import { discordApplicationIdFromToken, discordBotInviteUrl } from '@/lib/discor
 // agent-fired-by-URL, github subscribes a repo's issue/PR/commit events. Both
 // live on the relay pool, so neither is gated by the daemon's adapter
 // capabilities.
-type BotPlatform = 'slack' | 'telegram' | 'discord' | 'feishu'
+export type BotPlatform = 'slack' | 'telegram' | 'discord' | 'feishu'
 export type Platform = BotPlatform | 'webhook' | 'github'
 
 type GithubRepoChoice = GithubRepoDto & { installationId: string }
 
-const BOT_PLATFORMS: { key: BotPlatform; label: string }[] = [
+// Bot platforms are gated on the owning daemon's advertised adapters; the agent
+// page's empty-integrations tiles filter this same list so a tile can never
+// promise a platform this modal would refuse.
+export const BOT_PLATFORMS: { key: BotPlatform; label: string }[] = [
   { key: 'slack', label: 'Slack' },
   { key: 'telegram', label: 'Telegram' },
   { key: 'discord', label: 'Discord' },

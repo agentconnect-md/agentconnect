@@ -1343,26 +1343,38 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                 creatorUserId={me?.userId}
                 label="Team visibility"
               />
-              <AgentCallVisibility
-                variant="inline"
-                mode={callPolicy}
-                selectedIds={allowedCallers}
-                peers={agents}
-                daemons={daemons}
-                target={
-                  agentSlugFinalize(name) || agentSlugFinalize(displayName) ? (
-                    <span className="font-mono text-[12.5px]">
-                      {agentSlugFinalize(name) || agentSlugFinalize(displayName)}
-                    </span>
-                  ) : (
-                    'this agent'
-                  )
-                }
-                onChange={(nextMode, nextSelected) => {
-                  setCallPolicy(nextMode)
-                  setAllowedCallers(nextSelected)
-                }}
-              />
+              {/* Direction-labelled, same card as the Edit modal. Only the INBOUND
+                  half is settable here — the create endpoint takes callPolicy /
+                  allowedCallerAgentIds only — so the outbound half is called out as
+                  a post-create edit rather than shown as a control that wouldn't save. */}
+              <div className="fld">
+                <span className="fldlbl">Agent visibility</span>
+                <AgentCallVisibility
+                  variant="section"
+                  direction="inbound"
+                  mode={callPolicy}
+                  selectedIds={allowedCallers}
+                  peers={agents}
+                  daemons={daemons}
+                  target={
+                    agentSlugFinalize(name) || agentSlugFinalize(displayName) ? (
+                      <span className="font-mono text-[12.5px]">
+                        {agentSlugFinalize(name) || agentSlugFinalize(displayName)}
+                      </span>
+                    ) : (
+                      'this agent'
+                    )
+                  }
+                  onChange={(nextMode, nextSelected) => {
+                    setCallPolicy(nextMode)
+                    setAllowedCallers(nextSelected)
+                  }}
+                />
+                <span className="mt-[6px] text-[11px] text-(--text-secondary)">
+                  Outbound — which agents this one may call — starts at all agents; change it from the agent&apos;s
+                  Access card after it&apos;s created.
+                </span>
+              </div>
             </div>
             <div className="mt-[14px] flex items-center gap-2 rounded-md bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
               <Icon name="info" size={14} />
