@@ -135,17 +135,23 @@ describe('AgentCallVisibility', () => {
     expect(el.textContent).not.toContain('No agents selected.')
     expect(el.textContent).not.toContain('No peers selected')
     expect(el.textContent).toContain('1 not visible')
-    // The count reflects the whole grant, not just the resolvable half.
-    expect(el.textContent).toContain('0 of 1')
+    // Nothing was evaluated, so report the unknown rather than a "0 of 1" that
+    // would assert those hidden peers are unreachable.
+    expect(el.textContent).toContain('1 unknown')
+    expect(el.textContent).not.toContain('of 1')
   })
 
-  it('counts hidden peers alongside visible ones', async () => {
+  it('keeps hidden peers out of the reachability fraction', async () => {
     const peers = AGENTS.slice(0, 2)
     const el = await renderReadOnly({ selectedIds: [peers[0]!.id, 'restricted-peer-id'], peers })
 
     expect(el.textContent).toContain(agentLabel(peers[0]!))
     expect(el.textContent).toContain('1 not visible')
-    expect(el.textContent).toContain('0 of 2')
+    // The fraction covers only the peer we could actually evaluate…
+    expect(el.textContent).toContain('0 of 1')
+    // …and the hidden one is reported separately, never folded into it.
+    expect(el.textContent).toContain('1 unknown')
+    expect(el.textContent).not.toContain('0 of 2')
   })
 
   it('still reports a genuinely empty allow-list as empty', async () => {
@@ -154,6 +160,20 @@ describe('AgentCallVisibility', () => {
     expect(el.textContent).toContain('No agents selected.')
     expect(el.textContent).toContain('No peers selected')
     expect(el.textContent).not.toContain('not visible')
+  })
+
+  it('constrains a long peer name instead of overflowing the card', async () => {
+    const peers = AGENTS.slice(0, 1).map((peer) => ({
+      ...peer,
+      displayName: 'an-extremely-long-agent-display-name-that-would-otherwise-run-past-the-card-edge'
+    }))
+    const el = await renderReadOnly({ selectedIds: [peers[0]!.id], peers })
+
+    const label = el.querySelector<HTMLElement>(`span[title="${agentLabel(peers[0]!)}"]`)
+    expect(label).not.toBeNull() // the full name stays reachable on hover
+    expect(label?.classList.contains('truncate')).toBe(true)
+    expect(label?.parentElement?.classList.contains('min-w-0')).toBe(true)
+    expect(label?.parentElement?.classList.contains('max-w-full')).toBe(true)
   })
 
   it('renders no editing affordances when read-only', async () => {

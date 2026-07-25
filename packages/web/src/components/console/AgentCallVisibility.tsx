@@ -262,14 +262,20 @@ export function AgentCallVisibility({
         ) : (
           <div className="flex flex-wrap items-center gap-[6px]">
             {selectedPeers.map((peer) => (
+              // `displayName` is unbounded, so the chip must be able to shrink and
+              // clip inside this wrapping row — otherwise one long name paints over
+              // the neighbouring direction card (desktop) or past the card edge.
               <span
                 key={peer.id}
-                className="flex h-6 flex-none items-center gap-[5px] rounded-full bg-(--surface-active) pr-[9px] pl-[5px]"
+                className="flex h-6 max-w-full min-w-0 items-center gap-[5px] rounded-full bg-(--surface-active) pr-[9px] pl-[5px]"
               >
                 <span className="flex h-4 w-4 flex-none items-center justify-center rounded-xs border border-(--border-subtle) bg-(--surface-card) [&>svg]:h-full [&>svg]:w-full">
                   <AgentIconView icon={peer.icon} runtime={peer.runtime} size={16} />
                 </span>
-                <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)">
+                <span
+                  title={agentLabel(peer)}
+                  className="truncate font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)"
+                >
                   {agentLabel(peer)}
                 </span>
               </span>
@@ -373,9 +379,15 @@ export function AgentCallVisibility({
     </div>
   ) : null
 
-  // Count the whole grant, including peers hidden from this viewer — otherwise a
-  // restricted-but-invisible selection reads as "No peers selected".
-  const policyPeerCount = mode === 'all' ? policyPeers.length : selectedTotal
+  // Whether ANYTHING is granted counts hidden peers (else a restricted-but-
+  // invisible selection reads as "No peers selected"), but the reachability
+  // FRACTION must not: `effectivePeerIds` is computed over the viewer-filtered
+  // roster, so no reciprocal policy was ever evaluated for a hidden peer. Mixing
+  // a visible-only numerator into a visible+hidden denominator would state an
+  // exact negative about something unknown, so the unknown part is reported
+  // separately rather than folded into the fraction.
+  const hasSelection = mode === 'all' ? policyPeers.length > 0 : selectedTotal > 0
+  const evaluatedCount = policyPeers.length
   const relationshipLabel = direction === 'inbound' ? 'Can call this agent' : 'This agent can call'
   const effectiveSummary =
     effectivePeerIds !== undefined && mode === 'selected' ? (
@@ -386,22 +398,25 @@ export function AgentCallVisibility({
       >
         <span className="flex min-w-0 items-center gap-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)">
           <Icon
-            name={policyPeerCount === 0 ? 'users' : 'arrow-left-right'}
+            name={hasSelection ? 'arrow-left-right' : 'users'}
             size={13}
             color="var(--text-tertiary)"
             className="flex-none"
           />
-          {policyPeerCount === 0 ? 'No peers selected' : relationshipLabel}
+          {hasSelection ? relationshipLabel : 'No peers selected'}
         </span>
-        {policyPeerCount > 0 && (
-          <span
-            // Reachability can only be computed for peers this viewer can see, so
-            // say so rather than letting a hidden grant read as unreachable.
-            title={hiddenSelectedNote}
-            className="flex-none font-mono text-[11px] font-semibold leading-normal text-(--text-primary)"
-          >
-            {effectivePeers.length} of {policyPeerCount}
-            {hiddenSelectedCount > 0 ? '*' : ''}
+        {hasSelection && (
+          <span className="flex flex-none items-center gap-[6px] font-mono text-[11px] font-semibold leading-normal text-(--text-primary)">
+            {evaluatedCount > 0 && (
+              <span>
+                {effectivePeers.length} of {evaluatedCount}
+              </span>
+            )}
+            {hiddenSelectedCount > 0 && (
+              <span title={hiddenSelectedNote} className="font-medium text-(--text-tertiary)">
+                {hiddenSelectedCount} unknown
+              </span>
+            )}
           </span>
         )}
       </div>
