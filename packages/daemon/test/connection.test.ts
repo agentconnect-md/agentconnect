@@ -64,6 +64,36 @@ describe('SlackConnection initialization', () => {
   it('constructs the Bolt v5 Socket Mode receiver', () => {
     expect(() => new SlackConnection(deps() as any)).not.toThrow()
   })
+
+  it('applies the bounded Web API policy to the app and Socket Mode receiver', () => {
+    const app = (new SlackConnection(deps() as any) as any).app
+    const receiverWebClient = app.receiver.client.webClient
+
+    expect(app.client.retryConfig).toMatchObject({ retries: 2 })
+    expect(app.client.timeout).toBe(30_000)
+    expect(receiverWebClient.retryConfig).toMatchObject({ retries: 2 })
+    expect(receiverWebClient.timeout).toBe(30_000)
+  })
+
+  it('caches Bolt authorization across repeated events', async () => {
+    const conn = new SlackConnection(deps() as any)
+    const app = (conn as any).app
+    const authTest = vi.fn(async () => ({
+      ok: true,
+      user_id: 'UBOT',
+      bot_id: 'BBOT',
+      url: 'https://example.slack.com/'
+    }))
+    app.client.auth.test = authTest
+    app.start = vi.fn(async () => undefined)
+
+    await conn.start()
+    expect(authTest).toHaveBeenCalledTimes(2)
+
+    await app.authorize({ isEnterpriseInstall: false })
+    await app.authorize({ isEnterpriseInstall: false })
+    expect(authTest).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('SlackConnection.downloadFile', () => {

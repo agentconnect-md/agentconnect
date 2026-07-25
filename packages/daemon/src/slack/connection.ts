@@ -225,6 +225,7 @@ type AppLike = {
       }
     }
   }
+  init?: () => Promise<void>
   start: () => Promise<void>
   stop: () => Promise<void>
 }
@@ -371,15 +372,16 @@ export class SlackConnection {
       const receiver = new SocketModeReceiver({
         appToken: o.appToken,
         ...(dispatcher ? { dispatcher } : {}),
+        installerOptions: { clientOptions },
         ...(logLevel ? { logLevel } : {})
       })
       return new App({
         token: o.token,
         receiver,
         clientOptions,
-        // start() verifies the token explicitly; avoid Bolt launching a detached
-        // constructor-time auth.test promise before that lifecycle is awaited.
-        tokenVerificationEnabled: false,
+        // Bolt v5 otherwise starts token verification from its constructor without
+        // an awaitable lifecycle. start() calls init() before opening the socket.
+        deferInitialization: true,
         ...(logLevel ? { logLevel } : {})
       }) as unknown as AppLike
     }
@@ -397,6 +399,8 @@ export class SlackConnection {
 
   async start(): Promise<void> {
     const log = this.deps.log
+    log?.debug('slack: initializing Bolt authorization…')
+    await this.app.init?.()
     log?.debug('slack: auth.test → resolving bot identity (HTTPS)…')
     const auth = await this.app.client.auth.test()
     this.botUserId = auth.user_id ?? ''
