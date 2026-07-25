@@ -57,7 +57,12 @@ export function envSecretsError(envRows: EnvVarDraft[], secretRows: SecretDraft[
   const envKept = envRows.map((r) => ({ k: r.k.trim(), v: r.v })).filter((r) => r.k || r.v)
   for (const r of envKept) if (!ENV_KEY.test(r.k)) return `“${r.k || '(empty)'}” is not a valid variable name`
   if (new Set(envKept.map((r) => r.k)).size !== envKept.length) return 'Duplicate variable names'
-  const secKept = secretRows.map((r) => ({ ...r, k: r.k.trim() })).filter((r) => r.k || r.v)
+  // Same row-keeping rule as `secretsPatchFromRows`: only a fully blank NEW row is
+  // an abandoned "Add secret" click. An EXISTING row must survive to the key check
+  // below even when blank — its value is always blank (write-only), so dropping it
+  // here would let a cleared name pass validation while the patch builder read the
+  // missing original key as a deletion, silently destroying an unrecoverable secret.
+  const secKept = secretRows.map((r) => ({ ...r, k: r.k.trim() })).filter((r) => !(r.origK === null && !r.k && !r.v))
   for (const r of secKept) {
     if (!ENV_KEY.test(r.k)) return `“${r.k || '(empty)'}” is not a valid secret name`
     // A new row, or one renamed to a new key, must carry a value.
