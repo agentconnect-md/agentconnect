@@ -252,6 +252,29 @@ describe('SessionReader', () => {
     s.close()
   })
 
+  it('history restores a daemon-local webchat image without the synthetic attachment suffix', () => {
+    const s = store()
+    seedHistorySession(s, { platform: 'webchat', channel: 'conv-1', thread: 'webchat:conv-1' })
+    s.appendTranscript({
+      channel: 'conv-1',
+      thread: 'webchat:conv-1',
+      ts: '1',
+      sender: 'alice',
+      recipient: AGENT,
+      kind: 'text',
+      text: 'Identify this\n[attached: screen.webp (image/webp)]',
+      attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: 'aW1hZ2U=' }]
+    })
+
+    expect(createSessionReader(s).history({ sessionId: 'acp-1', limit: 50 }).messages).toEqual([
+      expect.objectContaining({
+        text: 'Identify this',
+        attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: 'aW1hZ2U=' }]
+      })
+    ])
+    s.close()
+  })
+
   it('history scopes to what THIS agent received or produced (no peer cross-talk)', () => {
     const s = store()
     s.upsertSession({

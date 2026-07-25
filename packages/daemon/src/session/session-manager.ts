@@ -10,7 +10,7 @@ import type { AcpHost } from '../acp/acp-host.js'
 import type { Agent } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
-import { buildAttachmentBlocks, attachmentMention } from './attachment-block.js'
+import { buildAttachmentBlocks, attachmentMention, transcriptImageAttachments } from './attachment-block.js'
 import { EXPLICIT_MENTION_REMINDER, NO_RESPONSE_RULE, NO_RESPONSE_REMINDER } from './no-response.js'
 
 /** Metadata-only semantic lifecycle for one provider-neutral recall attempt. Query
@@ -266,8 +266,9 @@ export class SessionManager {
     const key = sessionKey(msg.platform, msg.channel, thread, agentId)
 
     // record the triggering message in the transcript (with an attachment mention
-    // so later catch-up replay notes shared files even though bytes aren't stored)
+    // for prompt replay; bounded inline webchat images remain daemon-local for UI replay)
     const mention = attachmentMention(msg.attachments)
+    const transcriptAttachments = transcriptImageAttachments(msg.attachments)
     this.deps.store.appendTranscript({
       channel: msg.channel,
       thread,
@@ -277,7 +278,8 @@ export class SessionManager {
       // recipient — the console session view scopes to what THIS agent received + produced.
       recipient: agentId,
       kind: 'text',
-      text: mention ? `${msg.text}\n${mention}`.trim() : msg.text
+      text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
+      ...(transcriptAttachments.length ? { attachments: transcriptAttachments } : {})
     })
 
     let rec = this.deps.store.getSession(key)

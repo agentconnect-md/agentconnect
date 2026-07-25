@@ -1,7 +1,7 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { DreamInfo } from '@agentconnect.md/protocol'
+import type { DreamInfo, SessionImageAttachment } from '@agentconnect.md/protocol'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 
 // node:sqlite binds named params as a generic Record and returns rows as
@@ -159,6 +159,8 @@ export interface TranscriptEntry {
   sender: string
   kind: TranscriptKind
   text: string
+  /** Bounded inline webchat images. Persisted daemon-side; never provider-backed files. */
+  attachments?: SessionImageAttachment[]
   /** The agent this row was delivered TO (an inbound trigger / replayed context), when
    *  known. Absent for an agent's own output rows (those attribute via `sender`) and for
    *  unrouted messages. Lets the console session view show what one agent actually
@@ -174,6 +176,7 @@ export interface TranscriptRow extends TranscriptEntry {
   eventTimeUs: number
   toolCallId?: string | null
   body?: string | null // JSON.stringify(ToolBody); NULL for text/reasoning rows
+  attachmentsJson?: string | null // JSON.stringify(SessionImageAttachment[]); inline webchat only
 }
 
 export interface TranscriptEventCursor {
@@ -395,7 +398,8 @@ export class LocalStore {
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
         channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
         sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
-        tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER
+        tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
+        attachmentsJson TEXT
       );
       CREATE INDEX IF NOT EXISTS transcript_thread_seq ON transcript (channel, thread, seq);
       -- Dedup conversational rows by platform ts (double-fired inbound / redelivery);
@@ -601,6 +605,7 @@ export class LocalStore {
     this.migrateSessionMutes()
     this.migrateInboxLoopGuardCounted()
     this.migrateTranscriptToolBody()
+    this.migrateTranscriptAttachments()
     this.migrateTranscriptRecipient()
     this.migrateTranscriptEventTime()
     this.migrateInboxHookContext()
@@ -712,6 +717,13 @@ export class LocalStore {
       `CREATE UNIQUE INDEX IF NOT EXISTS transcript_tool_call
          ON transcript (channel, thread, tool_call_id) WHERE tool_call_id IS NOT NULL`
     )
+  }
+
+  /** Add daemon-local inline webchat image storage to existing transcript tables. */
+  private migrateTranscriptAttachments(): void {
+    const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
+    if (!cols.some((c) => c.name === 'attachmentsJson'))
+      this.db.exec('ALTER TABLE transcript ADD COLUMN attachmentsJson TEXT')
   }
 
   /** Add the defaultPermissionMode column to runtime_catalog_meta for DBs that
@@ -1506,14 +1518,19 @@ export class LocalStore {
   }
 
   appendTranscript(e: TranscriptEntry): void {
+    const { attachments, ...entry } = e
     this.db
       .prepare(
-        'INSERT OR IGNORE INTO transcript (channel, thread, ts, sender, kind, text, recipient, eventTimeUs) VALUES (@channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs)'
+        `INSERT OR IGNORE INTO transcript
+           (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson)
+         VALUES
+           (@channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson)`
       )
       .run({
-        ...e,
+        ...entry,
         recipient: e.recipient ?? null,
-        eventTimeUs: transcriptEventTimeUs(e.ts)
+        eventTimeUs: transcriptEventTimeUs(e.ts),
+        attachmentsJson: attachments?.length ? JSON.stringify(attachments) : null
       } as unknown as SqlParams)
     // Record the delivery separately so it survives the text-row dedup above: if this same
     // (channel, thread, ts) was already recorded by another agent, the INSERT OR IGNORE

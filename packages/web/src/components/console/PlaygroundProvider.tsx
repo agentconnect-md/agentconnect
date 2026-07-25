@@ -12,6 +12,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { agentLabel, type Agent, type Session, type SessionImage, type SessionStep } from '@/lib/data'
 import { webchatWsUrl, fmtCountCompact, fmtCost, ApiError } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
+import { sessionAfterModelSelection } from '@/lib/session-runtime-controls'
 import {
   acceptWebchatDone,
   acceptWebchatOutput,
@@ -624,7 +625,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
    *  daemon confirms via the next status frame. */
   const pgSetModel = useCallback(
     (id: string, agentForId: string, model: string, conversationId?: string) => {
-      setPgSessions((cur) => (cur[id] ? { ...cur, [id]: { ...cur[id]!, model } } : cur))
+      setPgSessions((cur) => (cur[id] ? { ...cur, [id]: sessionAfterModelSelection(cur[id]!, model) } : cur))
       connect(id, agentForId, conversationId)
         .ready.then((ws) => ws.send(JSON.stringify({ type: 'set_model', model })))
         .catch(() => {})

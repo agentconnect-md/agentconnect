@@ -685,9 +685,7 @@ export interface SessionFile {
   path: string
 }
 
-/** Ephemeral image on a live Playground/WebChat user turn. The daemon persists
- * only its name/MIME summary, so bytes disappear when authoritative history is
- * reloaded. */
+/** Bounded image on a live or daemon-backed Playground/WebChat user turn. */
 export interface SessionImage {
   name: string
   mimeType: 'image/png' | 'image/jpeg' | 'image/webp'

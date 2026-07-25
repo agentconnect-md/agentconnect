@@ -16,6 +16,7 @@ import {
   RESERVED_MCP_SERVER_NAME,
   GitCloneUrlError,
   RepoSubdirError,
+  SessionImageAttachment,
   MAX_WORKSPACE_EDIT_BYTES,
   normalizeGitCloneUrl,
   redactGitUrlSecrets,
@@ -1880,6 +1881,7 @@ export const SessionMessageDto = z.object({
   ts: z.string(),
   kind: z.string(),
   text: z.string(),
+  attachments: z.array(SessionImageAttachment).max(1).optional(),
   // ── tool-body enrichment (mirrors protocol SessionMessage; tool rows only) ──
   toolCallId: z.string().optional(),
   toolStatus: z.string().optional(),

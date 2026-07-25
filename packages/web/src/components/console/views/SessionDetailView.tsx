@@ -6,13 +6,18 @@ import { useParams, useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import {
   agentLabel,
+  displayedEffort,
+  effortLabel,
   fileColor,
   isSelfSender,
   lane,
+  modelCapability,
   modelLabel,
+  permissionModeDefault,
   permissionModeLabel,
   pgPrompts,
   platName,
+  preferredModelFor,
   runtimeLabel,
   sessionPlatform,
   speaker,
@@ -46,6 +51,13 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { sessionSenderLabel } from '@/lib/session-trigger'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
+import {
+  sessionEffortAfterModelChange,
+  sessionEffortChoicesForSelection,
+  sessionPermissionChoices,
+  sessionPermissionSelection,
+  sessionRuntimeChangesEnabled
+} from '@/lib/session-runtime-controls'
 
 // One agent-turn step rendered from a real transcript message. Maps the daemon
 // transcript kind (text | tool | reasoning) onto the existing lane styling.
@@ -538,6 +550,9 @@ export default function SessionDetailView() {
   const [imagePreparing, setImagePreparing] = useState(false)
   const [imageError, setImageError] = useState<string | null>(null)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
+  const [runtimeSelections, setRuntimeSelections] = useState<
+    Record<string, { model?: string; effort?: string; permissionMode?: string }>
+  >({})
   const imageInputRef = useRef<HTMLInputElement>(null)
 
   const localSession = getPgSession(id) ?? allSessions.find((s) => s.id === id) ?? null
@@ -773,6 +788,7 @@ export default function SessionDetailView() {
           sourceLabel: platName(sessionIntegration),
           time: formatTranscriptTime(m.ts),
           text: m.text,
+          image: m.attachments?.[0],
           isCron: !!cron,
           cronId: cron?.id ?? null
         })
@@ -864,10 +880,12 @@ export default function SessionDetailView() {
   // The session's `daemon` is the owning agent's daemonId (or '—' when unplaced);
   // resolve it to the daemon's display name — never surface the raw id/host
   // (short-id fallback when it isn't in the fleet), matching the Agents list.
+  const owningDaemonId = session.daemon && session.daemon !== '—' ? session.daemon : owner?.daemon
+  const owningDaemon =
+    owningDaemonId && owningDaemonId !== '—' ? daemons.find((d) => d.daemonId === owningDaemonId) : undefined
   const daemonName =
-    session.daemon && session.daemon !== '—'
-      ? (daemons.find((d) => d.daemonId === session.daemon)?.name ??
-        (session.daemon.length > 12 ? session.daemon.slice(0, 8) : session.daemon))
+    owningDaemonId && owningDaemonId !== '—'
+      ? (owningDaemon?.name ?? (owningDaemonId.length > 12 ? owningDaemonId.slice(0, 8) : owningDaemonId))
       : ''
   // A cron-triggered session carries `user === "cron:<scheduleId>"`. When that's the
   // shown participant, render the chip as a link back to the owning schedule
@@ -919,11 +937,54 @@ export default function SessionDetailView() {
   }
 
   // Live controls and status folded into the composer toolbar. Webchat `status`
-  // frames update model/context/cost during the turn and tokens at turn end.
+  // frames are authoritative when they include choices. An idle or restored session
+  // may not have a live frame, so fall back to the owning daemon's discovered catalog.
   const allowRuntimeChangesInChat = owner?.allowRuntimeChangesInChat === true
-  const pgModels = allowRuntimeChangesInChat ? (session.availableModels ?? []) : []
-  const pgEfforts = allowRuntimeChangesInChat ? (session.availableEfforts ?? []) : []
-  const pgPermissionModes = allowRuntimeChangesInChat ? (session.availablePermissionModes ?? []) : []
+  const runtimeChangesEnabled = sessionRuntimeChangesEnabled(allowRuntimeChangesInChat, session)
+  const runtimeSelection = runtimeSelections[session.id]
+  const setRuntimeSelection = (patch: { model?: string; effort?: string; permissionMode?: string }) =>
+    setRuntimeSelections((current) => ({
+      ...current,
+      [session.id]: { ...current[session.id], ...patch }
+    }))
+  const runtimeProfile = owningDaemon?.runtimeModels.find((profile) => profile.runtime === agentRuntime)
+  const runtimeCatalog = runtimeProfile?.modelCatalog ?? undefined
+  const pgModel =
+    runtimeSelection?.model ?? (session.model || owner?.model || preferredModelFor(owningDaemon, agentRuntime))
+  const pgModels = runtimeChangesEnabled ? (session.availableModels ?? runtimeProfile?.models ?? []) : []
+  const pgModelOptions =
+    pgModels.length > 0 && pgModel && !pgModels.includes(pgModel) ? [pgModel, ...pgModels] : pgModels
+  const selectedModelCapability = modelCapability(owningDaemon, agentRuntime, pgModel)
+  const pgEffortChoices = runtimeChangesEnabled
+    ? sessionEffortChoicesForSelection(agentRuntime, owningDaemon, pgModel, session.model, session.availableEfforts)
+    : []
+  const pgEffort = displayedEffort(
+    runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? '',
+    pgEffortChoices,
+    selectedModelCapability?.defaultEffort
+  )
+  const pgEffortOptions =
+    runtimeChangesEnabled && pgEffort && !pgEffortChoices.some((choice) => choice.value === pgEffort)
+      ? [{ value: pgEffort, label: effortLabel(agentRuntime, pgEffort) }, ...pgEffortChoices]
+      : pgEffortChoices
+  const livePermissionModes = session.availablePermissionModes
+  const selectablePermissionModes = sessionPermissionChoices(agentRuntime, runtimeCatalog, livePermissionModes)
+  const pgPermissionMode = sessionPermissionSelection(
+    agentRuntime,
+    runtimeCatalog,
+    livePermissionModes,
+    runtimeSelection?.permissionMode ??
+      session.permissionMode ??
+      owner?.permissionMode ??
+      permissionModeDefault(agentRuntime)
+  )
+  const pgPermissionModes = runtimeChangesEnabled
+    ? livePermissionModes === undefined &&
+      pgPermissionMode &&
+      !selectablePermissionModes.some((choice) => choice.v === pgPermissionMode)
+      ? [{ v: pgPermissionMode, l: permissionModeLabel(agentRuntime, pgPermissionMode) }, ...selectablePermissionModes]
+      : selectablePermissionModes
+    : []
   // Shared style for the inline composer selectors.
   const pgSelectClass =
     'cursor-pointer border-0 bg-transparent p-0 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)'
@@ -932,18 +993,17 @@ export default function SessionDetailView() {
       {pgPermissionModes.length > 0 ? (
         <select
           aria-label="Session permission mode"
-          value={session.permissionMode ?? ''}
-          onChange={(event) =>
-            pgSetPermissionMode(session.id, session.agentId ?? '', event.target.value, webchatConversationId)
-          }
+          value={pgPermissionMode}
+          onChange={(event) => {
+            const permissionMode = event.target.value
+            setRuntimeSelection({ permissionMode })
+            pgSetPermissionMode(session.id, session.agentId ?? '', permissionMode, webchatConversationId)
+          }}
           className={pgSelectClass}
         >
-          {(session.permissionMode && !pgPermissionModes.includes(session.permissionMode)
-            ? [session.permissionMode, ...pgPermissionModes]
-            : pgPermissionModes
-          ).map((mode) => (
-            <option key={mode} value={mode}>
-              {permissionModeLabel(session.runtime ?? '', mode)}
+          {pgPermissionModes.map((mode) => (
+            <option key={mode.v} value={mode.v}>
+              {mode.l}
             </option>
           ))}
         </select>
@@ -960,43 +1020,54 @@ export default function SessionDetailView() {
           <span className="av h-4 w-4 flex-none rounded-xs">
             <AgentMark model={agentRuntime} />
           </span>
-          {pgModels.length > 0 ? (
+          {pgModelOptions.length > 0 ? (
             <select
               aria-label="Session model"
-              value={session.model ?? ''}
-              onChange={(e) => pgSetModel(session.id, session.agentId ?? '', e.target.value, webchatConversationId)}
+              value={pgModel}
+              onChange={(event) => {
+                const model = event.target.value
+                const currentEffort = runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''
+                const effort = sessionEffortAfterModelChange(agentRuntime, owningDaemon, model, currentEffort)
+                setRuntimeSelection(effort === currentEffort ? { model } : { model, effort })
+                pgSetModel(session.id, session.agentId ?? '', model, webchatConversationId)
+                if (effort !== currentEffort) {
+                  pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
+                }
+              }}
               className={pgSelectClass}
             >
-              {(session.model && !pgModels.includes(session.model) ? [session.model, ...pgModels] : pgModels).map(
-                (model) => (
-                  <option key={model} value={model}>
-                    {modelLabel(model)}
-                  </option>
-                )
-              )}
+              {pgModelOptions.map((model) => (
+                <option key={model} value={model}>
+                  {modelLabel(model)}
+                </option>
+              ))}
             </select>
           ) : (
             modelLabel(session.model ?? '')
           )}
         </span>
-        {pgEfforts.length > 0 && (
+        {pgEffortOptions.length > 0 && (
           <select
             aria-label="Session reasoning effort"
-            value={session.effort ?? ''}
-            onChange={(e) => pgSetEffort(session.id, session.agentId ?? '', e.target.value, webchatConversationId)}
+            value={pgEffort}
+            onChange={(event) => {
+              const effort = event.target.value
+              setRuntimeSelection({ effort })
+              pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
+            }}
             className={pgSelectClass}
           >
-            {(session.effort && !pgEfforts.includes(session.effort) ? [session.effort, ...pgEfforts] : pgEfforts).map(
-              (effort) => (
-                <option key={effort} value={effort}>
-                  {effort}
-                </option>
-              )
-            )}
+            {pgEffortOptions.map((effort) => (
+              <option key={effort.value} value={effort.value}>
+                {effort.label}
+              </option>
+            ))}
           </select>
         )}
-        {!allowRuntimeChangesInChat && session.effort && <span>effort: {session.effort}</span>}
-        {allowRuntimeChangesInChat && session.fastModeAvailable && (
+        {!runtimeChangesEnabled && (session.effort ?? owner?.reasoning) && (
+          <span>effort: {session.effort ?? owner?.reasoning}</span>
+        )}
+        {runtimeChangesEnabled && session.fastModeAvailable && (
           <select
             aria-label="Session fast mode"
             value={session.fastMode ? 'on' : 'off'}
@@ -1009,7 +1080,7 @@ export default function SessionDetailView() {
             <option value="off">fast: off</option>
           </select>
         )}
-        {!allowRuntimeChangesInChat && session.fastMode !== undefined && (
+        {!runtimeChangesEnabled && session.fastMode !== undefined && (
           <span>fast: {session.fastMode ? 'on' : 'off'}</span>
         )}
       </div>
@@ -1484,7 +1555,7 @@ export default function SessionDetailView() {
               <div className="font-sans text-[11.5px] font-medium leading-normal text-(--red-600)">{imageError}</div>
             )}
             <div
-              className="pgcomposer relative flex-col items-stretch gap-2 rounded-[11px] border border-(--border-default) desktop:mt-4"
+              className="pgcomposer relative flex-col items-stretch gap-2 rounded-[11px] border border-(--border-default) desktop:ml-[41px] desktop:mt-4"
               onKeyDown={(event) => {
                 if (event.key === 'Escape') setAttachMenuOpen(false)
               }}
@@ -1539,7 +1610,7 @@ export default function SessionDetailView() {
                 <div className="relative flex-none">
                   <button
                     type="button"
-                    className="iconbtn h-10 w-10 rounded-[9px]"
+                    className="iconbtn"
                     aria-label="Add"
                     aria-haspopup="menu"
                     aria-expanded={attachMenuOpen}
@@ -1577,14 +1648,14 @@ export default function SessionDetailView() {
                 </div>
                 {pgStatusBar}
                 <button
-                  className="sendbtn"
+                  className="sendbtn h-8 w-8 rounded-md"
                   aria-label={pgBusy ? 'Stop response' : 'Send message'}
                   onClick={() =>
                     pgBusy ? pgCancel(session.id, session.agentId ?? '', webchatConversationId) : onPgSend()
                   }
                   disabled={!pgBusy && (imagePreparing || (!pgInput.trim() && !pgImage))}
                 >
-                  <Icon name={pgBusy ? 'square' : 'arrow-up'} size={pgBusy ? 14 : 18} />
+                  <Icon name={pgBusy ? 'square' : 'arrow-up'} size={pgBusy ? 12 : 16} />
                 </button>
               </div>
             </div>

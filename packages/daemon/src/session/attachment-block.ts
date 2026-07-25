@@ -1,4 +1,8 @@
 import type { ContentBlock } from '@agentclientprotocol/sdk'
+import {
+  SessionImageAttachment as SessionImageAttachmentSchema,
+  type SessionImageAttachment
+} from '@agentconnect.md/protocol'
 import type { Attachment } from '../messages/normalized.js'
 
 /** Capability + byte-fetch surface the block builder needs (satisfied by the
@@ -78,8 +82,22 @@ export async function buildAttachmentBlocks(attachments: Attachment[], deps: Att
   )
 }
 
-/** One-line human summary of attachments for the transcript text (so §8.5
- *  catch-up replay at least notes a file was shared, since bytes aren't stored). */
+/** Keep a validated bounded inline image beside its daemon-local transcript row. */
+export function transcriptImageAttachments(attachments: Attachment[] | undefined): SessionImageAttachment[] {
+  return (attachments ?? [])
+    .flatMap((attachment) => {
+      if (!attachment.inlineData) return []
+      const parsed = SessionImageAttachmentSchema.safeParse({
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        data: attachment.inlineData.toString('base64')
+      })
+      return parsed.success ? [parsed.data] : []
+    })
+    .slice(0, 1)
+}
+
+/** One-line human summary of attachments for transcript prompt replay. */
 export function attachmentMention(attachments: Attachment[] | undefined): string {
   if (!attachments?.length) return ''
   const list = attachments.map((a) => `${a.name} (${a.mimeType})`).join(', ')
