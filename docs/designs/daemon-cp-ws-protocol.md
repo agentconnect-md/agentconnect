@@ -545,7 +545,7 @@ const SessionListPage = z.object({ sessions: z.array(SessionListItem) }) // D→
 // ── history: one cursor page of a session's transcript ──
 const SessionHistoryReq = z.object({
   // C→D REQ
-  agentId: z.string().uuid(), // CP-authorized owner; daemon verifies the binding
+  agentId: z.string().uuid().optional(), // current CP sends the authorized owner; optional only for rolling upgrades
   sessionId: z.string(), // ACP session id — opaque string, NOT a UUID
   cursor: z.string().optional(), // opaque; omit ⇒ newest page
   limit: z.number().int().positive().max(200).default(50)
@@ -583,6 +583,11 @@ newest-first. If the agent is unplaced or its daemon is offline → 503 (the lis
 still works; only that transcript is unavailable). This is an explicit, bounded
 content-read path: the Control Plane proxies the reply without persisting it.
 The memory and workspace read families follow the same locality rule.
+
+`agentId` remains optional on these two wire requests only so a new daemon can
+still serve an older CP during a rolling upgrade. The daemon logs that legacy
+path and uses the pre-binding lookup. Current CPs always send the owner; once
+present, the daemon fails closed on an `(agentId, sessionId)` mismatch.
 
 ### 7.7 `channel/agents` (D→C, REQ → REP) — agent collaboration directory
 

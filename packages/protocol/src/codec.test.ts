@@ -714,7 +714,11 @@ describe('session read-back frames (console history pull)', () => {
     expect(req.frame.payload.agentId).toBe(AGENT_ID)
     expect(req.frame.payload.limit).toBe(50) // zod default
     expect(req.frame.payload.cursor).toBe('c-100')
-    expect(decodeEnvelope(envelope('session/history', { sessionId: SESSION_ID })).ok).toBe(false)
+    const legacyReq = decodeEnvelope(envelope('session/history', { sessionId: SESSION_ID }))
+    expect(legacyReq.ok).toBe(true)
+    if (!legacyReq.ok || !isFrame('session/history')(legacyReq.frame))
+      throw new Error('expected legacy session/history')
+    expect(legacyReq.frame.payload.agentId).toBeUndefined()
 
     const page = decodeEnvelope(
       envelope('session/history/page', {
@@ -789,7 +793,11 @@ describe('session read-back frames (console history pull)', () => {
     if (!req.ok || !isFrame('session/tool-body')(req.frame)) throw new Error('expected session/tool-body')
     expect(req.frame.payload.agentId).toBe(AGENT_ID)
     expect(req.frame.payload.offset).toBe(0) // zod default
-    expect(decodeEnvelope(envelope('session/tool-body', { sessionId: SESSION_ID, toolCallId: 'tc-1' })).ok).toBe(false)
+    const legacyReq = decodeEnvelope(envelope('session/tool-body', { sessionId: SESSION_ID, toolCallId: 'tc-1' }))
+    expect(legacyReq.ok).toBe(true)
+    if (!legacyReq.ok || !isFrame('session/tool-body')(legacyReq.frame))
+      throw new Error('expected legacy session/tool-body')
+    expect(legacyReq.frame.payload.agentId).toBeUndefined()
 
     const chunk = decodeEnvelope(
       envelope(

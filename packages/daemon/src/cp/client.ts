@@ -790,7 +790,10 @@ export class CpClient {
       }
       case 'session/history': {
         try {
-          this.reply(frame, 'session/history/page', this.deps.sessionRead.history(frame.payload as SessionHistoryReq))
+          const req = frame.payload as SessionHistoryReq
+          if (!req.agentId)
+            this.deps.log.warn('cp: legacy session/history request omitted agentId; owner binding is unavailable')
+          this.reply(frame, 'session/history/page', this.deps.sessionRead.history(req))
         } catch (err) {
           this.sendError(frame.id, 'INTERNAL', `session/history failed: ${(err as Error).message}`, false)
         }
@@ -798,11 +801,10 @@ export class CpClient {
       }
       case 'session/tool-body': {
         try {
-          this.reply(
-            frame,
-            'session/tool-body/chunk',
-            this.deps.sessionRead.toolBody(frame.payload as SessionToolBodyReq)
-          )
+          const req = frame.payload as SessionToolBodyReq
+          if (!req.agentId)
+            this.deps.log.warn('cp: legacy session/tool-body request omitted agentId; owner binding is unavailable')
+          this.reply(frame, 'session/tool-body/chunk', this.deps.sessionRead.toolBody(req))
         } catch (err) {
           this.sendError(frame.id, 'INTERNAL', `session/tool-body failed: ${(err as Error).message}`, false)
         }

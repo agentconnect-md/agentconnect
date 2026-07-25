@@ -174,6 +174,11 @@ identity and updates also include that agent because ACP tool-call ids are only
 session-local. A peer sharing the channel and thread can neither overwrite nor
 read another agent's body.
 
+The request's `agentId` is wire-optional only for a rolling upgrade where a new
+daemon still talks to an older CP. That legacy path is logged and uses the
+pre-binding session lookup; current CPs always send their persisted,
+already-authorized session owner.
+
 The Control Plane exposes the authenticated HTTP proxy for this request, and
 the Console concatenates chunks before parsing and rendering the JSON.
 

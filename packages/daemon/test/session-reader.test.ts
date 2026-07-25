@@ -317,6 +317,26 @@ describe('SessionReader', () => {
     s.close()
   })
 
+  it('keeps session reads available for a rolling upgrade from a legacy CP', () => {
+    const s = store()
+    seedHistorySession(s)
+    const body = JSON.stringify({ toolCallId: 'tc-1', rawOutput: 'ok' })
+    s.insertToolCall({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: AGENT,
+      toolCallId: 'tc-1',
+      title: 'legacy-compatible tool call',
+      body
+    })
+
+    const reader = createSessionReader(s)
+    expect(reader.history({ sessionId: 'acp-1', limit: 50 }).messages).toHaveLength(1)
+    expect(reader.toolBody({ sessionId: 'acp-1', toolCallId: 'tc-1', offset: 0 }).data).toBe(body)
+    s.close()
+  })
+
   it('history scopes to what THIS agent received or produced (no peer cross-talk)', () => {
     const s = store()
     s.upsertSession({
