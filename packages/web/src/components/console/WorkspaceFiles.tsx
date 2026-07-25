@@ -1,16 +1,19 @@
 'use client'
 
 // Live workspace file browser for one agent — modelled on GitHub's file explorer:
-// a single repo/status card up top, an expandable directory tree on the left, and
+// a single workspace card up top, an expandable directory tree on the left, and
 // a file preview on the right. Listings and file bytes are proxied through the CP
 // straight from the owning daemon (never stored on the CP — body-locality), so a
 // 503 here just means that daemon is offline / the agent is unplaced — an expected
 // state, rendered as a friendly notice.
 //
-// This component owns the whole workspace surface for a live agent (repo card +
-// Files card); the parent just mounts it. Demo agents use <WorkspaceFilesMock>.
+// This component owns the live git read model (status / pull) but not the card
+// that displays it: it projects that state into a <WorkspaceHeaderInfo> and hands
+// it to `renderHeader`, so the workspace card can also carry the source and
+// repository-authorization controls, which need agent-level data this component
+// has no business fetching. Demo agents use <WorkspaceFilesMock>.
 
-import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import dynamic from 'next/dynamic'
 import {
   ApiError,
@@ -24,11 +27,13 @@ import {
   type WorkspaceFileDto,
   type WorkspaceGitStatusDto
 } from '@/lib/api'
-import { GithubMark, Spinner } from '@/components/marks'
+import { Spinner } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { escapeHtml, highlight, linkifyHtml, loadHljs } from '@/lib/highlight'
 import { resolveWorkspaceMarkdownLink } from '@/components/console/workspace-links'
+import type { WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
+import type { Agent } from '@/lib/data'
 import type { MarkdownLinkResolution } from '@/components/console/MarkdownView'
 import {
   FileBrowserLayout,
@@ -51,6 +56,24 @@ const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), 
 })
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+/**
+ * Identity of the daemon-local checkout one <WorkspaceFiles> instance reads.
+ *
+ * The tree, the open preview and the git status are fetched per agent and then
+ * cached in component state keyed only on `agentId`, so a workspace REPLACEMENT
+ * (mode / repo / branch / working subdirectory) has to remount the instance
+ * rather than reuse it. Since the workspace editor now lives in the card above
+ * the browser — same tab, same mounted tree — reuse would leave the refreshed
+ * source card sitting on top of files that belong to the workspace it replaced,
+ * and a GitHub → scratch conversion would additionally flip `canEdit` to true
+ * over that stale GitHub preview. Pass this as the instance's React `key`.
+ */
+export function workspaceReadModelKey(agent: Pick<Agent, 'id' | 'workspace' | 'workdir'>): string {
+  const ws = agent.workspace
+  const at = `${agent.id}:${agent.workdir}`
+  return ws.mode === 'github' ? `${at}:github:${ws.repo}@${ws.branch}:${ws.agentDir}` : `${at}:scratch`
+}
 
 function entryIcon(e: WorkspaceEntryDto): string {
   if (e.type === 'dir') return 'folder'
@@ -141,17 +164,30 @@ type Viewer = {
   loadingMore: boolean
 }
 
-export function WorkspaceFiles({ agentId, workdir, canEdit }: { agentId: string; workdir?: string; canEdit: boolean }) {
+export function WorkspaceFiles({
+  agentId,
+  workdir,
+  canEdit,
+  renderHeader
+}: {
+  agentId: string
+  workdir?: string
+  canEdit: boolean
+  /** Renders the workspace card above the tree from the live git read model.
+   *  Called on every render — including before the status lands (empty info) and
+   *  for non-repo workspaces — so the card's own controls are never gated on a
+   *  daemon round-trip. */
+  renderHeader: (header: WorkspaceHeaderInfo) => ReactNode
+}) {
   const isMobile = useIsMobile()
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [viewer, setViewer] = useState<Viewer | null>(null)
   const [editPath, setEditPath] = useState<string | null>(null) // '' creates; a path replaces
-  // git-repo workspaces: current-checkout status + on-demand pull. `scratch` is set
-  // only on a successful non-repo response — an offline daemon leaves both unset so
-  // we don't mislabel a repo as scratch.
+  // git-repo workspaces: current-checkout status + on-demand pull. Null while
+  // loading, for a non-repo workspace, and when the owning daemon is offline —
+  // the workspace card falls back to the agent's configured source in all three.
   const [git, setGit] = useState<WorkspaceGitStatusDto | null>(null)
-  const [scratch, setScratch] = useState(false)
   const [gitPulling, setGitPulling] = useState(false)
   const [gitMsg, setGitMsg] = useState<string | null>(null)
   // Bumped after a pull to re-fetch both the git status and the tree.
@@ -295,25 +331,17 @@ export function WorkspaceFiles({ agentId, workdir, canEdit }: { agentId: string;
     }
   }, [agentId])
 
-  // git status of the workspace checkout. A thrown request (offline daemon) leaves
-  // both git and scratch unset → no top card; a clean non-repo answer → scratch card.
+  // git status of the workspace checkout. A non-repo answer and a thrown request
+  // (offline daemon) both leave `git` unset — the workspace card then renders the
+  // agent's configured source with no live status half.
   useEffect(() => {
     let active = true
     fetchWorkspaceGitStatus(agentId).then(
       (s) => {
-        if (!active) return
-        if (s.isRepo) {
-          setGit(s)
-          setScratch(false)
-        } else {
-          setGit(null)
-          setScratch(true)
-        }
+        if (active) setGit(s.isRepo ? s : null)
       },
       () => {
-        if (!active) return
-        setGit(null)
-        setScratch(false)
+        if (active) setGit(null)
       }
     )
     return () => {
@@ -488,13 +516,39 @@ export function WorkspaceFiles({ agentId, workdir, canEdit }: { agentId: string;
     )
   }
 
+  // Project the live git read model onto the workspace card. Nothing here is
+  // required: an offline daemon (or a scratch workspace) simply leaves the
+  // status/commit/pull half of the card empty.
+  const remote = git ? parseRemote(git.repo) : null
+  const header: WorkspaceHeaderInfo = {
+    branch: git?.branch ?? null,
+    status: git
+      ? git.clean
+        ? { dot: 'var(--status-online)', bg: 'var(--status-online-soft)', text: '#0f7a48', label: 'clean' }
+        : {
+            dot: 'var(--amber-500)',
+            bg: 'var(--status-paused-soft)',
+            text: '#9a6500',
+            label: `${git.files.length}${git.truncated ? '+' : ''} uncommitted`
+          }
+      : null,
+    commit: git?.lastCommit
+      ? {
+          sha: git.lastCommit.shortSha,
+          time: fmtMtime(git.lastCommit.committedAt),
+          title: git.lastCommit.subject
+        }
+      : null,
+    repoUrl: remote?.url ?? null,
+    remoteLabel: remote ? (/github/i.test(remote.host) ? 'GitHub' : remote.host) : null,
+    ...(git ? { onPull: onGitPull } : {}),
+    pulling: gitPulling,
+    pullMsg: gitMsg
+  }
+
   return (
     <div className="flex flex-col gap-4">
-      {git ? (
-        <RepoCard git={git} pulling={gitPulling} msg={gitMsg} onPull={onGitPull} />
-      ) : scratch ? (
-        <ScratchCard workdir={workdir} />
-      ) : null}
+      {renderHeader(header)}
 
       <FileBrowserShell
         title="Files"
@@ -876,130 +930,6 @@ function WorkspaceFileEditor({
             {saving ? 'Saving…' : 'Save'}
           </Button>
         </div>
-      </div>
-    </div>
-  )
-}
-
-// The git-repo header card: remote / branch / working dir on top, the HEAD commit
-// + last-pull time below, and Pull-latest / View-on-remote actions in a footer.
-function RepoCard({
-  git,
-  pulling,
-  msg,
-  onPull
-}: {
-  git: WorkspaceGitStatusDto
-  pulling: boolean
-  msg: string | null
-  onPull: () => void
-}) {
-  const remote = parseRemote(git.repo)
-  const dirty = !git.clean
-  const uncommitted = git.files.length + (git.truncated ? '+' : '')
-  const onGitHub = remote ? /github/i.test(remote.host) : false
-
-  return (
-    <div className="card">
-      <div className="flex items-start gap-3 px-4 py-[14px]">
-        <div className="imark h-[38px] w-[38px] text-(--text-secondary)" aria-hidden>
-          {onGitHub ? (
-            <span className="inline-flex h-[19px] w-[19px]">
-              <GithubMark color="var(--text-secondary)" />
-            </span>
-          ) : (
-            <Icon name="git-branch" size={19} />
-          )}
-        </div>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
-              {remote?.label ?? 'workspace'}
-            </span>
-            {git.branch && (
-              <span className="scope inline-flex items-center gap-1">
-                <Icon name="git-branch" size={11} />
-                {git.branch}
-              </span>
-            )}
-            {git.agentDir && <span className="mono text-[12px] text-(--text-tertiary)">{git.agentDir}</span>}
-            <span
-              className={`badge ml-auto ${
-                dirty ? 'bg-(--status-paused-soft) text-(--amber-500)' : 'bg-(--status-online-soft) text-(--green-500)'
-              }`}
-              title={dirty ? 'Working tree has uncommitted changes' : 'Working tree clean'}
-            >
-              <span className="dot h-[6px] w-[6px] bg-current" />
-              {dirty ? `${uncommitted} uncommitted` : 'clean'}
-            </span>
-          </div>
-
-          <div className="mt-1 flex flex-wrap items-center gap-[7px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-            {git.lastFetchAt && <span>pulled {fmtMtime(git.lastFetchAt)}</span>}
-            {git.lastFetchAt && git.lastCommit && <span aria-hidden>·</span>}
-            {git.lastCommit && (
-              <span className="inline-flex min-w-0 items-center gap-[7px]">
-                <span className="mono font-semibold text-(--brand-soft-text)">{git.lastCommit.shortSha}</span>
-                <span className="max-w-[380px] truncate text-(--text-secondary)" title={git.lastCommit.subject}>
-                  {git.lastCommit.subject}
-                </span>
-                <span aria-hidden>·</span>
-                <span>{fmtMtime(git.lastCommit.committedAt)}</span>
-              </span>
-            )}
-            {!git.lastFetchAt && !git.lastCommit && <span>No commits yet.</span>}
-          </div>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-[14px] border-t border-(--border-subtle) px-4 py-[10px]">
-        <button
-          className="iconbtn h-[30px] w-auto gap-[7px] px-3 py-0 text-[13px] font-medium"
-          onClick={onPull}
-          disabled={pulling}
-          title="Fast-forward pull from the remote"
-        >
-          <Icon name="refresh-cw" size={14} />
-          {pulling ? 'Pulling…' : 'Pull latest'}
-        </button>
-        {remote && (
-          <a
-            className="lnk text-[13px] text-(--text-secondary)"
-            href={remote.url}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Icon name="external-link" size={14} />
-            {onGitHub ? 'View on GitHub' : `View on ${remote.host}`}
-          </a>
-        )}
-        {msg && (
-          <span className="ml-auto font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">{msg}</span>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// Non-git ("scratch") live workspace: files exist only on the daemon's disk.
-function ScratchCard({ workdir }: { workdir?: string }) {
-  return (
-    <div className="card">
-      <div className="flex items-center gap-[11px] px-4 py-[13px]">
-        <span className="imark flex h-[30px] w-[30px] items-center justify-center" aria-hidden>
-          <Icon name="folder" size={16} color="var(--text-tertiary)" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
-            Scratch workspace
-          </div>
-          {workdir && <div className="mono mt-[2px] text-[11.5px] text-(--text-tertiary)">{workdir}</div>}
-        </div>
-      </div>
-      <div className="flex items-center gap-[7px] border-t border-(--border-subtle) px-4 py-[11px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
-        <Icon name="info" size={14} />
-        Files here are created by the agent and live only on this machine — not version-controlled.
       </div>
     </div>
   )

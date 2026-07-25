@@ -388,19 +388,24 @@ mismatch.
 
 ## Web
 
-1. **Workspace card on agent detail, for GitHub and scratch:**
-   - Make the summary row open the Workspace tab directly; remove a separate
-     "View workspace." Show `read|write` next to a GitHub repository and "From
-     scratch" for scratch.
-   - Provide one Edit action that can switch between scratch and GitHub and
-     choose a covered repository, branch, `agentDir`, and access. Mode,
+1. **Workspace card in the agent's Workspace tab, for GitHub and scratch:**
+   - The card heads the Workspace tab itself, above the file browser; there is no
+     workspace summary row in Configuration to navigate from. Show `read|write`
+     next to a GitHub repository and "Scratch workspace" for scratch.
+   - A `Source` segment switches between scratch and GitHub, and one Edit action
+     chooses a covered repository, branch, `agentDir`, and access. Mode,
      repository, or branch changes show an irreversible warning and "Replace
      workspace." Access-only or directory-only changes retain the checkout.
+   - Because the editor now sits above the live browser, a replacement must
+     remount that browser: its cached tree, preview, and git status may never
+     outlive the workspace they were read from.
    - Every change uses the cold lifecycle to clear daemon credential cache.
      Return 409 when it would remove workspace write authority required by an
      enabled formal review or Check.
-   - Below it, list each additional repository with `repoFullName`, an access
-     badge, and delete.
+   - Beside it, list each additional repository with `repoFullName`, its access
+     tier, and delete. The workspace repository itself appears here only when the
+     workspace is App-backed, where the installation makes it implicit; a manual
+     checkout is represented solely by its explicit grant, if one exists.
    - "Add repository" reuses the installation/repository picker and list
      filtering, offers three access options defaulting to read, describes each
      level, warns on write blast radius, and reuses `/access` preflight.
