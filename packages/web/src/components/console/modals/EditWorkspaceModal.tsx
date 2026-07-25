@@ -38,19 +38,23 @@ import {
 export default function EditWorkspaceModal({
   agent,
   authorized,
+  initialMode,
   onClose,
   onChanged
 }: {
   agent: Agent
   /** Existing grants — pre-picked and badged, but any covered repo converts. */
   authorized: AgentRepoAuthDto[]
+  /** Preselected mode — the workspace card's Source segment opens the editor
+   *  already switched to the mode the user picked. Defaults to the current one. */
+  initialMode?: 'scratch' | 'github'
   onClose: () => void
   onChanged: () => void
 }) {
   const githubWorkspace = agent.workspace.mode === 'github' ? agent.workspace : null
   const currentWrite = githubWorkspace ? !!githubWorkspace.installationId && githubWorkspace.gitAccess !== 'read' : null
   const currentAgentDir = agentDirInputValue(githubWorkspace?.agentDir)
-  const [mode, setMode] = useState<'scratch' | 'github'>(agent.workspace.mode)
+  const [mode, setMode] = useState<'scratch' | 'github'>(initialMode ?? agent.workspace.mode)
   const [gh, setGh] = useState<{ enabled: boolean; installations: GithubInstallationDto[] } | null>(null)
   const [ghSyncing, setGhSyncing] = useState(false)
   const [repos, setRepos] = useState<Array<GithubRepoDto & { installationId: string }> | null>(null)

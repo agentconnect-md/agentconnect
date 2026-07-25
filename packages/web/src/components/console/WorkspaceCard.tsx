@@ -1,26 +1,34 @@
 'use client'
 
-// Agent detail "Workspace" card (issue #457): the config tab's compact
-// workspace summary. The workspace row itself opens the workspace tab; one Edit
-// action in the card header owns workspace conversion and GitHub repository
-// identity, working-directory, and access changes. Below it, the agent's explicit
-// repository authorizations (agent-multi-repo-authorization.md §web 1). App-backed workspaces already
-// cover their workspace repo implicitly; scratch workspaces have no implicit
-// repo and may authorize any covered repo; manual GitHub workspaces may list
-// only an explicit grant for their own repo so CP-owned effects can run.
+// Agent detail "Workspace" card. Design sync: the workspace options no longer
+// live in the Configuration tab — they sit at the top of the Workspace tab, so
+// the source, its live git state and the files below it read as one surface.
 //
-// Grant rows are visible to anyone who can view the agent; authorize/revoke
-// only for canEdit (canManageSharing — the DTO mirror; viewers see a read-only
-// list). "Authorize repository" opens AddAgentRepoModal (the design's inline
-// add-expander is skipped — established precedent: the modal owns the
-// picker/tier/preflight flow).
+// One compact card, two rows:
+//   1. Source — a segment that owns workspace conversion (scratch ⇄ GitHub),
+//      then the workspace identity (mark, repo/title, branch, status) and, on
+//      the right, the HEAD commit plus the pull / view-on-remote / edit actions.
+//      Everything after the segment is supplied by the caller as
+//      `WorkspaceHeaderInfo` — live git state from <WorkspaceFiles> for real
+//      agents, the static mock fields for demo agents.
+//   2. Authorized repos — the agent's explicit repository authorizations
+//      (agent-multi-repo-authorization.md §web 1). App-backed workspaces already
+//      cover their workspace repo implicitly (rendered as a non-removable chip);
+//      scratch workspaces have no implicit repo and may authorize any covered
+//      repo; manual GitHub workspaces may list only an explicit grant for their
+//      own repo so CP-owned effects can run.
+//
+// Grant rows are visible to anyone who can view the agent; conversion,
+// authorize and revoke only for canEdit (canManageSharing — the DTO mirror;
+// viewers see a read-only card). "Authorize repository" opens AddAgentRepoModal
+// (the design's inline add-expander is skipped — established precedent: the
+// modal owns the picker/tier/preflight flow).
 
 import { useState } from 'react'
 import useSWR from 'swr'
-import Link from 'next/link'
 import { GithubMark, LoadingState } from '@/components/marks'
-import { Button, Icon } from '@/components/ui'
-import type { Agent } from '@/lib/data'
+import { Icon } from '@/components/ui'
+import type { Agent, WorkspaceStatusInfo } from '@/lib/data'
 import { creatorLabel, deleteAgentRepo, fetchAgentRepos, type AgentRepoAuthDto, type RepoAccess } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
@@ -37,25 +45,58 @@ export const REPO_ACCESS_BADGE: Record<RepoAccess, string> = {
   write: 'badge flex-none bg-(--status-paused-soft) text-(--amber-500)'
 }
 
+/**
+ * The live half of the Source row. The card itself only knows the agent's
+ * configured workspace; branch/status/commit and the pull action come from
+ * whoever holds the daemon read model (<WorkspaceFiles>) or, for demo agents,
+ * straight from the mock workspace.
+ */
+export interface WorkspaceHeaderInfo {
+  /** Branch chip. Omit to fall back to the agent's configured branch. */
+  branch?: string | null
+  status?: WorkspaceStatusInfo | null
+  /** HEAD summary, rendered `sha · time` with `title` as its tooltip. */
+  commit?: { sha: string; time: string; title?: string } | null
+  /** Browsable remote URL behind the view-on-remote action. */
+  repoUrl?: string | null
+  /** Remote label for the view action's tooltip ("GitHub", "gitlab.com", …). */
+  remoteLabel?: string | null
+  onPull?: () => void
+  pulling?: boolean
+  /** Transient pull outcome ("Already up to date."), shown after the actions. */
+  pullMsg?: string | null
+}
+
+// Segment buttons — complete literal strings, one per state.
+const SEG_ON =
+  'flex h-5 flex-none cursor-pointer items-center gap-[5px] rounded-[5px] border-0 bg-(--surface-card) px-2 font-sans text-[11.5px] font-semibold leading-normal text-(--text-primary) shadow-(--shadow-xs)'
+const SEG_OFF =
+  'flex h-5 flex-none cursor-pointer items-center gap-[5px] rounded-[5px] border-0 bg-transparent px-2 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) hover:text-(--text-primary)'
+const SEG_ON_LOCKED =
+  'flex h-5 flex-none cursor-default items-center gap-[5px] rounded-[5px] border-0 bg-(--surface-card) px-2 font-sans text-[11.5px] font-semibold leading-normal text-(--text-primary) shadow-(--shadow-xs)'
+const SEG_OFF_LOCKED =
+  'flex h-5 flex-none cursor-default items-center gap-[5px] rounded-[5px] border-0 bg-transparent px-2 font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)'
+
 export function WorkspaceCard({
   agent,
-  workspaceHref,
+  header,
   className
 }: {
   agent: Agent
-  /** The agent's workspace-tab href (the detail view's tabHref('workspace')). */
-  workspaceHref: string
+  header?: WorkspaceHeaderInfo
   className?: string
 }) {
   const { activeOrg } = useOrgs()
   const { me } = useProfile()
   const { refresh } = useConsoleData()
   const [addOpen, setAddOpen] = useState(false)
-  const [editOpen, setEditOpen] = useState(false)
+  // Non-null ⇒ the workspace editor is open, preselected on that mode.
+  const [editMode, setEditMode] = useState<'scratch' | 'github' | null>(null)
   const [removing, setRemoving] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   const ws = agent.workspace
+  const isGithub = ws.mode === 'github'
   const isGithubApp = ws.mode === 'github' && !!ws.installationId
   const reposKey = consoleKeys.agentRepos(activeOrg?.id, agent.id)
   const {
@@ -67,8 +108,8 @@ export function WorkspaceCard({
   const repos = reposData ?? []
   const loadError = reposData === undefined && reposError
   const canEdit = agent.canManageSharing
-  const workspaceAccess =
-    ws.mode === 'github' ? (ws.installationId ? (ws.gitAccess ?? 'write') : ('read' as const)) : null
+  const branch = header?.branch ?? (ws.mode === 'github' ? ws.branch : null)
+  const remoteLabel = header?.remoteLabel ?? 'GitHub'
 
   const remove = async (row: AgentRepoAuthDto) => {
     if (removing) return
@@ -84,112 +125,174 @@ export function WorkspaceCard({
     }
   }
 
+  // The segment is the conversion entry point; picking the mode the agent is
+  // already on is a no-op (the pencil edits the current source's settings).
+  const pickMode = (next: 'scratch' | 'github') => {
+    if (!canEdit || next === ws.mode) return
+    setEditMode(next)
+  }
+  const segClass = (mode: 'scratch' | 'github') =>
+    mode === ws.mode ? (canEdit ? SEG_ON : SEG_ON_LOCKED) : canEdit ? SEG_OFF : SEG_OFF_LOCKED
+
   return (
     <div className={`card overflow-hidden max-desktop:rounded-lg ${className ?? ''}`}>
-      <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
-        <span className="font-sans text-[14px] font-semibold leading-normal">Workspace</span>
+      {/* Source row — conversion segment, then the workspace identity and its
+          live git actions. Wraps on narrow viewports; nothing is truncated away. */}
+      <div className="flex flex-wrap items-center gap-[10px] px-4 py-[9px]">
+        <span className="eyebrow flex-none text-[10.5px]">Source</span>
+        <span className="inline-flex flex-none gap-px rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken) p-px">
+          <button
+            className={segClass('github')}
+            onClick={() => pickMode('github')}
+            title={isGithub ? 'The workspace is a GitHub clone' : 'Convert this workspace to a GitHub repository'}
+          >
+            <Icon name="git-branch" size={12} />
+            GitHub repo
+          </button>
+          <button
+            className={segClass('scratch')}
+            onClick={() => pickMode('scratch')}
+            title={
+              isGithub ? 'Convert this workspace to an empty scratch directory' : 'The workspace is a scratch directory'
+            }
+          >
+            <Icon name="folder" size={12} />
+            Scratch
+          </button>
+        </span>
+
+        <span className="mx-[2px] h-[18px] w-px flex-none bg-(--border-subtle)" />
+
+        {isGithub ? (
+          <span className="flex h-5 w-5 flex-none items-center justify-center">
+            <GithubMark color="var(--text-secondary)" />
+          </span>
+        ) : (
+          <Icon name="folder" size={16} color="var(--text-tertiary)" />
+        )}
+        <span className="mono min-w-0 truncate text-[13px] font-semibold text-(--text-primary)">
+          {ws.mode === 'github' ? ws.repo : 'Scratch workspace'}
+        </span>
+        {isGithub && branch && (
+          <span className="scope inline-flex flex-none items-center gap-1">
+            <Icon name="git-branch" size={12} />
+            {branch}
+          </span>
+        )}
+        {header?.status && (
+          <span className="badge flex-none" style={{ background: header.status.bg, color: header.status.text }}>
+            <span className="dot h-[6px] w-[6px]" style={{ background: header.status.dot }} />
+            {header.status.label}
+          </span>
+        )}
+
+        <div className="min-w-[8px] flex-1" />
+
+        {header?.commit && (
+          <span
+            className="mono flex-none whitespace-nowrap text-[11.5px] text-(--text-tertiary)"
+            title={header.commit.title}
+          >
+            <span className="text-(--brand-soft-text)">{header.commit.sha}</span> · {header.commit.time}
+          </span>
+        )}
+        {isGithub && header?.onPull && (
+          <button
+            className={`iconbtn h-6 w-6 flex-none ${header.pulling ? 'pointer-events-none opacity-50' : ''}`}
+            title="Fast-forward pull from the remote"
+            onClick={header.onPull}
+          >
+            <Icon name="refresh-cw" size={13} />
+          </button>
+        )}
+        {isGithub && header?.repoUrl && (
+          <a
+            className="iconbtn flex h-6 w-6 flex-none items-center justify-center no-underline"
+            title={`View on ${remoteLabel}`}
+            href={header.repoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <Icon name="external-link" size={13} />
+          </a>
+        )}
         {canEdit && (
-          <>
-            <button
-              onClick={() => setEditOpen(true)}
-              className="flex h-7 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-0 py-0 font-sans text-[14px] font-semibold leading-normal text-(--brand-soft-text) desktop:hidden"
-            >
-              <Icon name="pencil" size={14} />
-              Edit
-            </button>
-            <Button
-              variant="secondary"
-              size="xs"
-              className="hidden desktop:inline-flex"
-              onClick={() => setEditOpen(true)}
-            >
-              <Icon name="pencil" size={14} />
-              Edit
-            </Button>
-          </>
+          <button className="iconbtn h-6 w-6 flex-none" title="Edit workspace" onClick={() => setEditMode(ws.mode)}>
+            <Icon name="pencil" size={13} />
+          </button>
+        )}
+        {header?.pullMsg && (
+          <span className="flex-none font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+            {header.pullMsg}
+          </span>
         )}
       </div>
 
-      {/* The whole summary row drills into the workspace; editing is kept in the
-          single header action so the row has no competing click targets. */}
-      <Link
-        className="flex w-full min-w-0 items-center gap-2 px-4 py-[11px] no-underline hover:bg-(--surface-hover)"
-        href={workspaceHref}
-      >
-        {ws.mode === 'github' ? (
-          <>
-            <span className="imark h-4 w-4 border-0 bg-transparent">
-              <GithubMark color="var(--text-tertiary)" />
-            </span>
-            <span className="mono min-w-0 truncate text-[12.5px] text-(--text-secondary)">{ws.repo}</span>
-            {workspaceAccess && <span className={REPO_ACCESS_BADGE[workspaceAccess]}>{workspaceAccess}</span>}
-          </>
-        ) : (
-          <>
-            <Icon name="sparkles" size={14} color="var(--text-tertiary)" />
-            <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-              From scratch
-            </span>
-          </>
-        )}
-      </Link>
+      {/* Authorized repos — chips, since a workspace rarely has more than a
+          handful; the tier lives in each chip's tooltip. */}
+      <div className="flex flex-wrap items-center gap-2 border-t border-(--border-subtle) px-4 py-[9px]">
+        <span className="eyebrow flex-none text-[10.5px]">Authorized repos</span>
 
-      {/* Viewers get no Authorize button, so the section supplies its own
-          bottom breathing room (complete literal strings — never fragments). */}
-      <div className={canEdit ? 'border-t border-(--border-subtle)' : 'border-t border-(--border-subtle) pb-2'}>
-        <div className="eyebrow px-4 pt-[10px] text-[10.5px]">Authorized repositories</div>
+        {ws.mode === 'github' && (
+          <span
+            className="inline-flex h-6 flex-none items-center gap-[6px] rounded-[5px] border border-(--border-default) bg-(--surface-card) px-2"
+            title="The workspace repository — authorized implicitly"
+          >
+            <span className="imark h-[14px] w-[14px] border-0 bg-transparent">
+              <GithubMark />
+            </span>
+            <span className="mono text-[11.5px] text-(--text-primary)">{ws.repo}</span>
+          </span>
+        )}
 
         {loadError ? (
-          <div className="px-4 py-2 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
+          <span className="font-sans text-[12px] font-normal leading-normal text-(--status-error)">
             Couldn&rsquo;t load repository grants.
-          </div>
+          </span>
         ) : isLoading && reposData === undefined ? (
-          <LoadingState padding={16} />
+          <LoadingState padding={0} />
         ) : (
           <>
             {repos.map((r) => (
-              <div key={r.id} className="flex items-center gap-2 px-4 py-2">
-                <span className="imark h-4 w-4 border-0 bg-transparent">
+              <span
+                key={r.id}
+                className="inline-flex h-6 flex-none items-center gap-[6px] rounded-[5px] border border-(--border-subtle) bg-(--surface-card) py-0 pr-1 pl-2"
+                title={`${r.repoFullName} — ${r.access} access, added by ${creatorLabel(r.createdBy, me)}`}
+              >
+                <span className="imark h-[14px] w-[14px] border-0 bg-transparent">
                   <GithubMark />
                 </span>
-                <span
-                  className="mono min-w-0 flex-1 truncate text-[12px] text-(--text-primary)"
-                  title={`${r.repoFullName} — added by ${creatorLabel(r.createdBy, me)}`}
-                >
-                  {r.repoFullName}
-                </span>
-                <span className={REPO_ACCESS_BADGE[r.access]}>{r.access}</span>
+                <span className="mono text-[11.5px] text-(--text-primary)">{r.repoFullName}</span>
                 {canEdit && (
                   <button
-                    className={`iconbtn h-6 w-6 flex-none ${removing === r.id ? 'pointer-events-none opacity-50' : ''}`}
+                    className={`iconbtn h-[18px] w-[18px] flex-none ${removing === r.id ? 'pointer-events-none opacity-50' : ''}`}
                     title="Revoke access"
                     onClick={() => void remove(r)}
                   >
-                    <Icon name="x" size={12} />
+                    <Icon name="x" size={11} />
                   </button>
                 )}
-              </div>
+              </span>
             ))}
-            {repos.length === 0 && (
-              <div className="px-4 py-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+            {repos.length === 0 && ws.mode !== 'github' && (
+              <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                 None explicitly authorized.
-              </div>
+              </span>
             )}
           </>
         )}
 
-        {err && (
-          <div className="px-4 py-2 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>
+        {canEdit && (
+          <button
+            className="inline-flex h-6 flex-none cursor-pointer items-center gap-[5px] rounded-[5px] border border-dashed border-(--border-default) bg-transparent px-[9px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) hover:border-(--brand) hover:text-(--brand)"
+            onClick={() => setAddOpen(true)}
+          >
+            <Icon name="plus" size={12} />
+            Authorize repository
+          </button>
         )}
 
-        {canEdit && (
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 pt-[2px] pb-[10px]">
-            <button className="lnk text-[12px]" onClick={() => setAddOpen(true)}>
-              <Icon name="plus" size={13} />
-              Authorize repository
-            </button>
-          </div>
-        )}
+        {err && <span className="font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</span>}
       </div>
 
       {addOpen && (
@@ -206,14 +309,15 @@ export function WorkspaceCard({
         />
       )}
 
-      {editOpen && (
+      {editMode && (
         <EditWorkspaceModal
           agent={agent}
           authorized={repos}
-          onClose={() => setEditOpen(false)}
+          initialMode={editMode}
+          onClose={() => setEditMode(null)}
           onChanged={() => {
             void mutate()
-            setEditOpen(false)
+            setEditMode(null)
             refresh()
           }}
         />

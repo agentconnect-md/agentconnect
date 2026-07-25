@@ -16,6 +16,8 @@ vi.mock('@/lib/use-is-mobile', () => ({ useIsMobile: () => false }))
 import { WorkspaceFiles } from './WorkspaceFiles'
 
 it('uses configured edit access even before runtime Git status loads', () => {
-  const html = renderToStaticMarkup(<WorkspaceFiles agentId="agent-a" workdir="/workspace" canEdit />)
+  const html = renderToStaticMarkup(
+    <WorkspaceFiles agentId="agent-a" workdir="/workspace" canEdit renderHeader={() => null} />
+  )
   expect(html).toContain('New file')
 })

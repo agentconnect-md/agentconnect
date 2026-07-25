@@ -47,7 +47,7 @@ import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { IntegrationChannelList } from '@/components/console/IntegrationChannelList'
 import { discordBotInviteUrl } from '@/lib/discord-invite'
-import { WorkspaceCard } from '@/components/console/WorkspaceCard'
+import { WorkspaceCard, type WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
 import { WorkspaceFiles } from '@/components/console/WorkspaceFiles'
 import { WorkspaceFilesMock } from '@/components/console/WorkspaceFilesMock'
 import { FileBrowserShell } from '@/components/console/FileBrowser'
@@ -405,7 +405,17 @@ export default function AgentDetailView() {
   const modelText = agentModelDisplay(owningDaemon, da.runtime, da.model)
   const ds = status(effectiveAgentStatus(da.status, owningDaemon?.status))
   const ws = da.workspace
-  const wss = workspaceStatus(ws)
+  // Demo agents have no daemon to read git state from, so the workspace card's
+  // live half comes straight from their static mock workspace instead.
+  const mockWorkspaceHeader: WorkspaceHeaderInfo =
+    ws.mode === 'github'
+      ? {
+          branch: ws.branch,
+          status: workspaceStatus(ws),
+          ...(ws.commitMsg ? { commit: { sha: ws.commit, time: ws.commitTime, title: ws.commitMsg } } : {}),
+          repoUrl: ws.repoUrl ?? `https://github.com/${ws.repo}`
+        }
+      : { status: workspaceStatus(ws) }
   // Counts walk the whole mock tree (files are nested under folder children).
   const allFiles = flattenFiles(ws.files)
   const changedFiles = allFiles.filter((f) => f.tag).length
@@ -680,11 +690,12 @@ export default function AgentDetailView() {
         })}
       </div>
 
-      {/* Config tab — one grid: mobile stacks General → Workspace → Description →
-          Visibility → Integrations → Env → Secrets → Approval requests (flex order).
-          Desktop puts General + Workspace + Env + Secrets in the 340px left column
-          and Approval requests at the bottom of the right column (the wrapper is
-          display:contents on mobile so all the cards sit in the same flex column). */}
+      {/* Config tab — one grid: mobile stacks Basics → Runtime → Description →
+          Access → Variables → Secrets → Approval requests (flex order). Desktop
+          puts Basics + Runtime in the 340px left column and the rest in the right
+          column (the wrapper is display:contents on mobile so all the cards sit in
+          the same flex column). Workspace is NOT here — it moved into the
+          Workspace tab, next to the files it configures. */}
       {tab === 'config' && (
         <div className="flex flex-col gap-4 p-4 desktop:grid desktop:grid-cols-[340px_1fr] desktop:items-start desktop:gap-[18px] desktop:p-0">
           <div className="contents desktop:flex desktop:min-w-0 desktop:flex-col desktop:gap-[18px]">
@@ -936,19 +947,15 @@ export default function AgentDetailView() {
                 </div>
               </div>
             </div>
-            {/* Workspace card — the workspace-tab link row (both modes) plus the
-                additional authorized repos for github-app workspaces; last card in the
-                desktop left column, right after Runtime behavior on mobile. */}
-            <WorkspaceCard agent={da} workspaceHref={tabHref('workspace')} className="order-3" />
           </div>
 
           <div className="contents desktop:flex desktop:min-w-0 desktop:flex-col desktop:gap-[18px]">
             {/* Description card (design): its own card at the top of the right column,
                 and the ONE group edited on its own (EditDescriptionModal) rather than
                 through the sectioned Edit-agent modal. Mobile order: Basics 1 → Runtime
-                behavior 2 → Workspace 3 → Description 4 → Access 5 → Variables 6 →
-                Secrets 7 → Approval requests 8. */}
-            <div className="card order-4 overflow-hidden max-desktop:rounded-lg">
+                behavior 2 → Description 3 → Access 4 → Variables 5 → Secrets 6 →
+                Approval requests 7. */}
+            <div className="card order-3 overflow-hidden max-desktop:rounded-lg">
               <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
                 <span className="font-sans text-[14px] font-semibold leading-normal">Description</span>
                 {!da.name.startsWith(MOCK_PREFIX) && (
@@ -979,7 +986,7 @@ export default function AgentDetailView() {
 
             {/* Access card (design) — team visibility + agent-call visibility, read
                 only. Edit opens the sectioned Edit-agent modal at its Access anchor. */}
-            <div className="card order-5 overflow-hidden max-desktop:rounded-lg">
+            <div className="card order-4 overflow-hidden max-desktop:rounded-lg">
               <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
                 <span className="font-sans text-[14px] font-semibold leading-normal">Access</span>
                 {!da.name.startsWith(MOCK_PREFIX) && da.canManageSharing && (
@@ -1050,15 +1057,15 @@ export default function AgentDetailView() {
 
             {/* Variables + Secrets (shared editable cards) — the design keeps these in
                 the right column; each has its own inline add/edit affordances. */}
-            <div className="order-6 min-w-0">
+            <div className="order-5 min-w-0">
               <AgentEnvCard agent={da} />
             </div>
-            <div className="order-7 min-w-0">
+            <div className="order-6 min-w-0">
               <AgentSecretsCard agent={da} />
             </div>
 
             {da.canManageSharing && !da.name.startsWith(MOCK_PREFIX) && (
-              <div className="card order-8 overflow-hidden max-desktop:rounded-lg">
+              <div className="card order-7 overflow-hidden max-desktop:rounded-lg">
                 <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
                   <span className="font-sans text-[14px] font-semibold leading-normal">Approval requests</span>
                   {!!approvalRequests?.filter((request) => request.status === 'pending').length && (
@@ -1588,10 +1595,11 @@ export default function AgentDetailView() {
         </div>
       )}
 
-      {/* Workspace tab. Live agents get the self-contained GitHub-style browser (its
-          own repo card + tree + preview); demo (mocked-) agents keep the static
-          two-card mock. Desktop-only pieces of the mock repo card (branch chip,
-          commit line, actions footer) are CSS-gated. */}
+      {/* Workspace tab — the workspace card (source + authorized repos + live git
+          state) sits above the file browser, so the options and the files they
+          configure read as one surface. Live agents get the self-contained
+          GitHub-style browser, which supplies the card's live half; demo (mocked-)
+          agents fill it from their static workspace fields. */}
       {tab === 'workspace' &&
         (!da.name.startsWith(MOCK_PREFIX) ? (
           <div className="p-4 desktop:p-0">
@@ -1599,81 +1607,12 @@ export default function AgentDetailView() {
               agentId={id}
               workdir={da.workdir}
               canEdit={da.workspace.mode === 'scratch' && da.canManageSharing}
+              renderHeader={(header) => <WorkspaceCard agent={da} header={header} />}
             />
           </div>
         ) : (
           <div className="flex flex-col gap-4 p-4 desktop:p-0">
-            <div className="card overflow-hidden max-desktop:rounded-lg">
-              <div className="flex flex-wrap items-center gap-[11px] px-4 py-[13px]">
-                <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
-                  {ws.mode === 'github' ? (
-                    <span className="imark h-4 w-4 border-0 bg-transparent">
-                      <GithubMark color="var(--text-secondary)" />
-                    </span>
-                  ) : (
-                    <Icon name="folder" size={16} color="var(--text-tertiary)" />
-                  )}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="mono text-[13.5px] font-semibold text-(--text-primary)">
-                      {ws.mode === 'github' ? ws.repo : 'Scratch workspace'}
-                    </span>
-                    {ws.mode === 'github' && (
-                      <span className="mono hidden items-center gap-1 rounded-[5px] border border-(--border-subtle) bg-(--surface-sunken) px-[7px] py-px text-[11.5px] text-(--text-secondary) desktop:inline-flex">
-                        <Icon name="git-branch" size={12} />
-                        {ws.branch}
-                      </span>
-                    )}
-                    <span className="mono text-[11.5px] text-(--text-tertiary)">{da.workdir}</span>
-                  </div>
-                  <div className="mono mt-1 hidden truncate text-[11.5px] text-(--text-tertiary) desktop:block">
-                    {ws.mode === 'github' ? (
-                      ws.commitMsg ? (
-                        <>
-                          pulled {ws.lastPull} · <span className="text-(--brand-soft-text)">{ws.commit}</span>{' '}
-                          {ws.commitMsg} · {ws.commitTime}
-                        </>
-                      ) : (
-                        <>pulled {ws.lastPull}</>
-                      )
-                    ) : (
-                      <>
-                        created {ws.created} · {ws.size} on disk
-                      </>
-                    )}
-                  </div>
-                </div>
-                <span className="badge flex-none self-start" style={{ background: wss.bg, color: wss.text }}>
-                  <span className="dot h-[6px] w-[6px]" style={{ background: wss.dot }} />
-                  {wss.label}
-                </span>
-              </div>
-              <div className="hidden items-center gap-2 border-t border-(--border-subtle) px-4 py-3 desktop:flex">
-                {ws.mode === 'github' ? (
-                  <>
-                    <Button variant="secondary" size="sm">
-                      <Icon name="refresh-cw" size={14} />
-                      Pull latest
-                    </Button>
-                    <a
-                      className="lnk text-[12px] text-(--text-tertiary)"
-                      href={ws.repoUrl ?? `https://github.com/${ws.repo}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      <Icon name="external-link" size={13} />
-                      View on GitHub
-                    </a>
-                  </>
-                ) : (
-                  <span className="inline-flex items-center gap-[7px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
-                    <Icon name="info" size={14} />
-                    Files here are created by the agent and live only on this machine — not version-controlled.
-                  </span>
-                )}
-              </div>
-            </div>
+            <WorkspaceCard agent={da} header={mockWorkspaceHeader} />
 
             <FileBrowserShell
               title="Files"
