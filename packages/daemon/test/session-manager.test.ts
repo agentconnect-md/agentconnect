@@ -764,6 +764,7 @@ describe('SessionManager', () => {
     )
     const img = blocks.find((b: any) => b.type === 'image') as any
     expect(img).toMatchObject({ type: 'image', mimeType: 'image/png', data: png.toString('base64') })
+    expect(img).not.toHaveProperty('uri')
     store.close()
   })
 
