@@ -1742,6 +1742,13 @@ export function writeWorkspaceFile(
   )
 }
 
+export function deleteWorkspaceFile(agentId: string, path: string, ifMatchMtime: string): Promise<{ path: string }> {
+  const q = new URLSearchParams({ path, ifMatchMtime })
+  return apiDelete<{ path: string }>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file?${q.toString()}`
+  )
+}
+
 // One slice of an agent's memory file (GET /agents/:id/memory) — a single markdown
 // file at the agent root, proxied live from the owning daemon (never stored on the
 // CP). A not-yet-created file is data (exists:false). 503 when unplaced / offline.

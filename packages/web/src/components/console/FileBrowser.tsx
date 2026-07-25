@@ -203,7 +203,7 @@ export function FileBrowserPreviewHeader({
   onBack?: () => void
 }) {
   return (
-    <div className="flex h-[54px] min-w-0 flex-none items-center gap-2 border-b border-(--border-subtle) px-4 py-2">
+    <div className="flex h-[37px] min-w-0 flex-none items-center gap-2 border-b border-(--border-subtle) px-4">
       {onBack && (
         <button
           type="button"

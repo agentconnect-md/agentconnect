@@ -227,19 +227,23 @@ with it: the tree, the open preview, and the git status below the card always
 belong to the workspace the card currently describes, never to the one it
 replaced.
 
-In the Workspace tab, callers who can edit the agent may create or edit one UTF-8
-file at a time when the workspace is scratch. New files use exclusive creation and
-never overwrite an existing path. Existing-file edits load the complete file and
-save against the mtime they opened. Saving while the agent is working surfaces a
-conflict; otherwise the daemon quiesces its runtime before atomically publishing the
-file, so an agent write is never silently overwritten. GitHub workspace files remain
-read-only, and workspace bodies continue to transit the control plane without being
-persisted. File creation and editing stay inline in the Workspace file browser,
-replacing the preview pane instead of opening a modal. Desktop keeps the file tree
-visible; mobile uses the browser's existing list-to-preview drill-in and back action.
-The file-browser header shows the current workspace-relative breadcrumb on the left
-and contextual actions on the right. New-file naming happens in that breadcrumb;
-the preview pane does not repeat path or workspace labels above the editor.
+In the Workspace tab, callers who can edit the agent may create, edit, or delete
+one file at a time when the workspace is scratch. New UTF-8 files use exclusive
+creation and never overwrite an existing path; slash-separated names locate an
+existing subdirectory or create the missing parent directories. Existing-file
+edits load the complete file and save against the mtime they opened. Deletion also
+requires the last-read mtime and an inline confirmation. Saving or deleting while
+the agent is working surfaces a conflict; otherwise the daemon quiesces its
+runtime before atomically applying the mutation, so an agent change is never
+silently overwritten or removed. GitHub workspace files remain read-only, and
+workspace bodies continue to transit the control plane without being persisted.
+File creation and editing stay inline in the Workspace file browser, replacing the
+preview pane instead of opening a modal. Desktop keeps the file tree visible;
+mobile uses the browser's existing list-to-preview drill-in and back action. The
+file-browser header shows the current workspace-relative breadcrumb on the left
+and `Add file`, `Edit`, and `Delete` actions on the right. New-file naming happens
+in that breadcrumb; completed slash-separated directory names become breadcrumb
+segments. The preview pane does not repeat the file name, path, or workspace label.
 
 For a GitHub workspace, show the effective `read` or `write` access beside the
 repository. The editor may switch freely between scratch and GitHub, choose another

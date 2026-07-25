@@ -42,6 +42,8 @@ import type {
   WorkspaceReadContent,
   WorkspaceWriteReq,
   WorkspaceWriteOk,
+  WorkspaceDeleteReq,
+  WorkspaceDeleteOk,
   WorkspaceGitStatusReq,
   WorkspaceGitStatus,
   WorkspaceGitPullReq,
@@ -426,6 +428,12 @@ export class ControlSender {
   async workspaceWrite(daemonId: string, req: WorkspaceWriteReq): Promise<WorkspaceWriteOk> {
     const c = this.must(daemonId)
     return c.conn.request<WorkspaceWriteOk>('workspace/write', req, { epoch: c.sessionEpoch })
+  }
+
+  /** Delete one unchanged scratch-workspace file on the owning daemon. */
+  async workspaceDelete(daemonId: string, req: WorkspaceDeleteReq): Promise<WorkspaceDeleteOk> {
+    const c = this.must(daemonId)
+    return c.conn.request<WorkspaceDeleteOk>('workspace/delete', req, { epoch: c.sessionEpoch })
   }
 
   /**

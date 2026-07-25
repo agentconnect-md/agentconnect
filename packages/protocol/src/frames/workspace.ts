@@ -19,6 +19,8 @@ import { z } from 'zod'
  * - `workspace/write`: create a text file when `ifMatchMtime` is absent, or
  *   replace one when it matches the last read. Content is base64 so arbitrary
  *   UTF-8 text has a predictable wire size.
+ * - `workspace/delete`: delete one regular file when its mtime still matches the
+ *   last read, so a console action never removes a newer agent revision.
  */
 
 /** Raw UTF-8 ceiling for one console workspace-file edit. Base64 expansion still
@@ -101,6 +103,21 @@ export const WorkspaceWriteOk = z.object({
   mtime: z.string()
 })
 export type WorkspaceWriteOk = z.infer<typeof WorkspaceWriteOk>
+
+/** C→D REQ: delete one scratch-workspace file if it still matches the last read. */
+export const WorkspaceDeleteReq = z.object({
+  agentId: z.string().min(1),
+  path: z.string().min(1).max(4096),
+  ifMatchMtime: z.string().datetime()
+})
+export type WorkspaceDeleteReq = z.infer<typeof WorkspaceDeleteReq>
+
+/** D→C REP (corr = the req id): the deleted file identity. */
+export const WorkspaceDeleteOk = z.object({
+  agentId: z.string(),
+  path: z.string()
+})
+export type WorkspaceDeleteOk = z.infer<typeof WorkspaceDeleteOk>
 
 /**
  * Agent workspace git ops (C→D REQ → REP) — the console's on-demand controls for

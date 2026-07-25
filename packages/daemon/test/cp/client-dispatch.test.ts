@@ -72,6 +72,7 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
     list: vi.fn(async () => ({ agentId: 'a', path: '', exists: true, entries: [] })),
     read: vi.fn(async () => ({ agentId: 'a', path: 'f', exists: false })),
     write: vi.fn(async () => ({ agentId: 'a', path: 'f', size: 0, mtime: '2026-06-26T00:00:00.000Z' })),
+    delete: vi.fn(async () => ({ agentId: 'a', path: 'f' })),
     ...((over.workspaceRead as any) ?? {})
   }
   const workspaceGit = {
@@ -535,6 +536,23 @@ describe('CpClient dispatch', () => {
     expect(rep.type).toBe('workspace/write/ok')
     expect(rep.corr).toBe(f.id)
     expect(rep.payload.size).toBe(7)
+  })
+
+  it('replies workspace/delete/ok from the scratch workspace file seam', async () => {
+    const del = vi.fn(async () => ({ agentId: 'a1', path: 'notes.md' }))
+    const { t, workspaceRead } = await readyClient({ workspaceRead: { delete: del } as any })
+    const payload = {
+      agentId: 'a1',
+      path: 'notes.md',
+      ifMatchMtime: '2026-06-26T00:00:00.000Z'
+    }
+    const f = JSON.parse(frame('workspace/delete', payload, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    expect(workspaceRead.delete).toHaveBeenCalledWith(payload)
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('workspace/delete/ok')
+    expect(rep.corr).toBe(f.id)
   })
 
   it('replies workspace/gitstatus/result from the workspaceGit seam', async () => {

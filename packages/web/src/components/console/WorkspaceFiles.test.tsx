@@ -38,6 +38,7 @@ const workspace = vi.hoisted(() => ({
 vi.mock('next/dynamic', () => ({ default: () => () => null }))
 vi.mock('@/lib/api', () => ({
   ApiError: class ApiError extends Error {},
+  deleteWorkspaceFile: vi.fn(),
   fetchWorkspaceFile: vi.fn(() => Promise.resolve(workspace.file)),
   fetchWorkspaceFileFull: vi.fn(() => Promise.resolve(workspace.file)),
   fetchWorkspaceFiles: vi.fn((_agentId: string, opts: { path: string }) =>
@@ -54,7 +55,7 @@ vi.mock('@/lib/api', () => ({
 vi.mock('@/lib/use-is-mobile', () => ({ useIsMobile: () => mobile.value }))
 
 import { WorkspaceFiles, workspaceReadModelKey } from './WorkspaceFiles'
-import { writeWorkspaceFile } from '@/lib/api'
+import { deleteWorkspaceFile, writeWorkspaceFile } from '@/lib/api'
 import type { Agent } from '@/lib/data'
 
 let container: HTMLDivElement | undefined
@@ -102,13 +103,15 @@ afterEach(async () => {
   mobile.value = false
   workspace.entries = []
   workspace.listings = {}
+  vi.mocked(deleteWorkspaceFile).mockClear()
+  vi.mocked(writeWorkspaceFile).mockClear()
 })
 
 it('uses configured edit access even before runtime Git status loads', () => {
   const html = renderToStaticMarkup(
     <WorkspaceFiles agentId="agent-a" workdir="/workspace" canEdit renderHeader={() => null} />
   )
-  expect(html).toContain('New file')
+  expect(html).toContain('Add file')
 })
 
 // The workspace editor lives in the card this browser renders, so a replacement
@@ -153,7 +156,7 @@ describe('workspaceReadModelKey', () => {
 
 it('keeps an inline new-file draft across the desktop-to-mobile breakpoint', async () => {
   await renderWorkspace()
-  await clickButton('New file')
+  await clickButton('Add file')
 
   const path = container?.querySelector<HTMLInputElement>('input[aria-label="New file path"]')
   const content = container?.querySelector<HTMLTextAreaElement>('textarea[aria-label="New file content"]')
@@ -197,7 +200,7 @@ it('creates from the current breadcrumb without repeating path labels in the edi
   await clickButton('docs')
   await act(async () => Promise.resolve())
   await clickButton('README.md')
-  await clickButton('New file')
+  await clickButton('Add file')
 
   const breadcrumb = container?.querySelector<HTMLElement>('nav[aria-label="Workspace path"]')
   const path = container?.querySelector<HTMLInputElement>('input[aria-label="New file path"]')
@@ -206,14 +209,82 @@ it('creates from the current breadcrumb without repeating path labels in the edi
   expect(breadcrumb?.textContent).toContain('docs')
   expect(path?.closest('nav')).toBe(breadcrumb)
   expect(breadcrumb?.closest('.cardhead')?.textContent).toContain('Cancel')
-  expect(breadcrumb?.closest('.cardhead')?.textContent).toContain('Create file')
+  expect(breadcrumb?.closest('.cardhead')?.textContent).toContain('Save changes')
+  expect(breadcrumb?.closest('.cardhead')?.textContent).not.toContain('Create file')
   expect(container?.textContent).not.toContain('Scratch workspace')
   expect(container?.textContent).not.toContain('Workspace-relative path')
 
   await changeValue(path!, 'notes.md')
   await changeValue(content!, 'draft')
-  await clickButton('Create file')
+  await clickButton('Save changes')
   expect(writeWorkspaceFile).toHaveBeenCalledWith('agent-a', 'docs/notes.md', { content: 'draft' })
+})
+
+it('turns slash-separated new-file directories into breadcrumb segments', async () => {
+  await renderWorkspace()
+  await clickButton('Add file')
+
+  let path = container?.querySelector<HTMLInputElement>('input[aria-label="New file path"]')
+  const content = container?.querySelector<HTMLTextAreaElement>('textarea[aria-label="New file content"]')
+  await changeValue(path!, 'guides/setup/')
+
+  const breadcrumb = container?.querySelector<HTMLElement>('nav[aria-label="Workspace path"]')
+  path = container?.querySelector<HTMLInputElement>('input[aria-label="New file path"]')
+  expect(breadcrumb?.textContent).toContain('guides')
+  expect(breadcrumb?.textContent).toContain('setup')
+  expect(path?.value).toBe('')
+
+  await changeValue(path!, 'README.md')
+  await changeValue(content!, '# Setup')
+  await clickButton('Save changes')
+  expect(writeWorkspaceFile).toHaveBeenCalledWith('agent-a', 'guides/setup/README.md', { content: '# Setup' })
+})
+
+it('keeps file identity in the breadcrumb and confirms deletion inline', async () => {
+  workspace.entries = [
+    {
+      name: 'README.md',
+      type: 'file',
+      size: workspace.file.size,
+      mtime: workspace.file.mtime
+    }
+  ]
+  await renderWorkspace()
+  await clickButton('README.md')
+
+  const previewPane = container?.querySelector('[data-file-browser-pane="preview"]')
+  expect(previewPane?.textContent).not.toContain('README.md')
+  await clickButton('Delete')
+  expect(container?.querySelector('[role="alert"]')?.textContent).toContain('Delete this file?')
+  expect(container?.querySelector('[role="dialog"]')).toBeNull()
+
+  await clickButton('Delete file')
+  expect(deleteWorkspaceFile).toHaveBeenCalledWith('agent-a', 'README.md', workspace.file.mtime)
+})
+
+it('reopens the mobile preview before confirming deletion from the file list', async () => {
+  mobile.value = true
+  workspace.entries = [
+    {
+      name: 'README.md',
+      type: 'file',
+      size: workspace.file.size,
+      mtime: workspace.file.mtime
+    }
+  ]
+  await renderWorkspace()
+  await clickButton('README.md')
+
+  const previewPane = container?.querySelector('[data-file-browser-pane="preview"]')
+  const back = container?.querySelector<HTMLButtonElement>('button[aria-label="Back to files"]')
+  expect(back).not.toBeNull()
+  await act(async () => back?.click())
+  expect(previewPane?.classList.contains('hidden')).toBe(true)
+
+  await clickButton('Delete')
+  expect(previewPane?.classList.contains('flex')).toBe(true)
+  expect(previewPane?.classList.contains('hidden')).toBe(false)
+  expect(previewPane?.querySelector('[role="alert"]')?.textContent).toContain('Delete this file?')
 })
 
 it('returns mobile Cancel and Escape to the existing file preview', async () => {

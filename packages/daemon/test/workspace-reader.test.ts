@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync, symlinkSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync, symlinkSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
@@ -48,6 +48,11 @@ const createReq = (path: string, content: string): Parameters<WorkspaceReader['w
   agentId: AGENT,
   path,
   contentBase64: Buffer.from(content, 'utf8').toString('base64')
+})
+const deleteReq = (path: string, ifMatchMtime: string): Parameters<WorkspaceReader['delete']>[0] => ({
+  agentId: AGENT,
+  path,
+  ifMatchMtime
 })
 
 beforeEach(() => {
@@ -148,6 +153,9 @@ describe('path containment', () => {
         writeReq('../outside/secret.env', 'changed', statSync(join(outside, 'secret.env')).mtime.toISOString())
       )
     ).rejects.toBeInstanceOf(WorkspaceViolationError)
+    await expect(
+      reader.delete(deleteReq('../outside/secret.env', statSync(join(outside, 'secret.env')).mtime.toISOString()))
+    ).rejects.toBeInstanceOf(WorkspaceViolationError)
     // deeper mixed escape too
     await expect(reader.read(readReq('src/../../outside/secret.env'))).rejects.toBeInstanceOf(WorkspaceViolationError)
   })
@@ -165,6 +173,10 @@ describe('path containment', () => {
     await expect(reader.list(listReq({ path: 'sneaky-dir' }))).rejects.toBeInstanceOf(WorkspaceViolationError)
     await expect(reader.read(readReq('sneaky-dir/secret.env'))).rejects.toBeInstanceOf(WorkspaceViolationError)
     await expect(reader.read(readReq('sneaky-file'))).rejects.toBeInstanceOf(WorkspaceViolationError)
+    await expect(reader.write(createReq('sneaky-dir/new.txt', 'nope'))).rejects.toBeInstanceOf(WorkspaceViolationError)
+    await expect(
+      reader.delete(deleteReq('sneaky-file', statSync(join(outside, 'secret.env')).mtime.toISOString()))
+    ).rejects.toBeInstanceOf(WorkspaceViolationError)
   })
 
   it('unknown agent → violation (BAD_PAYLOAD, not INTERNAL)', async () => {
@@ -255,18 +267,16 @@ describe('workspace read', () => {
 })
 
 describe('workspace write', () => {
-  it('creates a new text file without overwriting a concurrent creator', async () => {
-    mkdirSync(join(ws, 'notes'))
-
+  it('creates missing directories without overwriting a concurrent creator', async () => {
     const outcomes = await Promise.allSettled([
-      reader.write(createReq('notes/todo.md', 'first')),
-      reader.write(createReq('notes/todo.md', 'second'))
+      reader.write(createReq('notes/plans/todo.md', 'first')),
+      reader.write(createReq('notes/plans/todo.md', 'second'))
     ])
 
     expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1)
     const rejected = outcomes.find((outcome) => outcome.status === 'rejected')
     expect(rejected).toMatchObject({ reason: expect.any(WorkspaceConflictError) })
-    expect(['first', 'second']).toContain(readFileSync(join(ws, 'notes', 'todo.md'), 'utf8'))
+    expect(['first', 'second']).toContain(readFileSync(join(ws, 'notes', 'plans', 'todo.md'), 'utf8'))
   })
 
   it('atomically replaces one existing scratch text file and returns its new state', async () => {
@@ -296,6 +306,35 @@ describe('workspace write', () => {
     await expect(
       repoReader.write(writeReq('notes.md', 'changed', statSync(target).mtime.toISOString()))
     ).rejects.toBeInstanceOf(WorkspaceViolationError)
+    expect(readFileSync(target, 'utf8')).toBe('current')
+  })
+})
+
+describe('workspace delete', () => {
+  it('deletes an unchanged scratch file and rejects a stale retry', async () => {
+    const target = join(ws, 'notes.md')
+    writeFileSync(target, 'current')
+    const before = statSync(target).mtime.toISOString()
+
+    await expect(reader.delete(deleteReq('notes.md', before))).resolves.toEqual({
+      agentId: AGENT,
+      path: 'notes.md'
+    })
+    expect(existsSync(target)).toBe(false)
+    await expect(reader.delete(deleteReq('notes.md', before))).rejects.toBeInstanceOf(WorkspaceConflictError)
+  })
+
+  it('keeps GitHub workspaces read-only', async () => {
+    const target = join(ws, 'notes.md')
+    writeFileSync(target, 'current')
+    const repoReader = createWorkspaceReader(
+      (id) => (id === AGENT ? { root: ws, scratch: false } : undefined),
+      directWrite
+    )
+
+    await expect(repoReader.delete(deleteReq('notes.md', statSync(target).mtime.toISOString()))).rejects.toBeInstanceOf(
+      WorkspaceViolationError
+    )
     expect(readFileSync(target, 'utf8')).toBe('current')
   })
 })

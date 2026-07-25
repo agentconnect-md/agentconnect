@@ -5,7 +5,12 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import type { WorkspaceWriteOk, WorkspaceWriteReq } from '@agentconnect.md/protocol'
+import type {
+  WorkspaceDeleteOk,
+  WorkspaceDeleteReq,
+  WorkspaceWriteOk,
+  WorkspaceWriteReq
+} from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -23,7 +28,7 @@ const CAPABILITIES = {
   platforms: ['slack'],
   runtimes: ['claude'],
   acp: true,
-  features: ['workspace-file-edit-v1']
+  features: ['workspace-file-edit-v1', 'workspace-file-delete-v1']
 }
 const LIVE: DaemonLiveness = {
   get: (id) => (id === DAEMON ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
@@ -36,10 +41,16 @@ afterEach(async () => {
 
 class WorkspaceWriteSpy {
   calls: Array<{ daemonId: string; req: WorkspaceWriteReq }> = []
+  deleteCalls: Array<{ daemonId: string; req: WorkspaceDeleteReq }> = []
 
   async workspaceWrite(daemonId: string, req: WorkspaceWriteReq): Promise<WorkspaceWriteOk> {
     this.calls.push({ daemonId, req })
     return { agentId: req.agentId, path: req.path, size: 8, mtime: '2026-07-25T00:01:00.000Z' }
+  }
+
+  async workspaceDelete(daemonId: string, req: WorkspaceDeleteReq): Promise<WorkspaceDeleteOk> {
+    this.deleteCalls.push({ daemonId, req })
+    return { agentId: req.agentId, path: req.path }
   }
 }
 
@@ -124,5 +135,56 @@ describe('PUT /agents/:id/workspace/file', () => {
       payload: { content: 'stale', ifMatchMtime: MTIME }
     })
     expect(res.statusCode).toBe(409)
+  })
+})
+
+describe('DELETE /agents/:id/workspace/file', () => {
+  it('proxies an optimistic delete without storing file state', async () => {
+    await seedScratch()
+    const control = new WorkspaceWriteSpy()
+    const running = app(control)
+
+    const response = await running.app.inject({
+      method: 'DELETE',
+      url: `${ORG}/agents/${AGENT}/workspace/file?path=notes%2Ftodo.md&ifMatchMtime=${encodeURIComponent(MTIME)}`
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual({ path: 'notes/todo.md' })
+    expect(control.deleteCalls).toEqual([
+      {
+        daemonId: DAEMON,
+        req: { agentId: AGENT, path: 'notes/todo.md', ifMatchMtime: MTIME }
+      }
+    ])
+  })
+
+  it('keeps deletion behind scratch edit access', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: CAPABILITIES })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON, gitRepo: 'https://github.com/acme/repo' })
+    const control = new WorkspaceWriteSpy()
+
+    const github = await app(control).app.inject({
+      method: 'DELETE',
+      url: `${ORG}/agents/${AGENT}/workspace/file?path=README.md&ifMatchMtime=${encodeURIComponent(MTIME)}`
+    })
+    expect(github.statusCode).toBe(400)
+
+    const users = new PgUserRepo(prisma)
+    const email = `workspace-delete-viewer-${randomUUID()}@acme.dev`
+    const { userId } = await users.provisionOidcUser({
+      oidcSubject: `workspace-delete-viewer-${randomUUID()}`,
+      email,
+      emailVerified: true
+    })
+    await users.addMemberByEmail(DEFAULT_ORG_ID, email, 'viewer')
+    await prisma.agent.update({ where: { id: AGENT }, data: { workspaceMode: 'scratch', gitRepo: null } })
+
+    const viewer = await app(control, userId).app.inject({
+      method: 'DELETE',
+      url: `${ORG}/agents/${AGENT}/workspace/file?path=README.md&ifMatchMtime=${encodeURIComponent(MTIME)}`
+    })
+    expect(viewer.statusCode).toBe(403)
+    expect(control.deleteCalls).toHaveLength(0)
   })
 })

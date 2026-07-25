@@ -1971,6 +1971,15 @@ export const WorkspaceFileWriteDto = z.object({
   mtime: z.string()
 })
 
+/** `DELETE /agents/:id/workspace/file` query — one unchanged scratch file. */
+export const DeleteWorkspaceFileQueryDto = z.object({
+  path: z.string().min(1).max(4096),
+  ifMatchMtime: z.string().datetime()
+})
+export const WorkspaceFileDeleteDto = z.object({
+  path: z.string()
+})
+
 // ── agent memory (a directory at the agent root: MEMORY.md index + topic files; proxied daemon-local) ──
 /** One file in the memory dir. */
 export const MemoryFileEntryDto = z.object({
