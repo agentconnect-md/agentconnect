@@ -48,6 +48,7 @@ import {
   FileBrowserShell
 } from '@/components/console/FileBrowser'
 import { RecordMemoryPanel } from '@/components/console/RecordMemoryPanel'
+import { DreamPanel } from '@/components/console/DreamPanel'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 
 const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), {
@@ -784,28 +785,38 @@ export function MemoryPanel({
           Persistent memory is disabled for this agent. Existing memory remains stored but is not loaded.
         </div>
       ) : (
-        <FileBrowserShell
-          title="Memory"
-          headerEnd={
-            canEdit ? (
-              <button
-                type="button"
-                onClick={newTopic}
-                className="flex cursor-pointer items-center gap-[4px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-semibold leading-normal text-(--brand-soft-text)"
-              >
-                <Icon name="plus" size={13} />
-                New
-              </button>
-            ) : undefined
-          }
-        >
-          <FileBrowserLayout
-            resetKey={agentId}
-            openPreviewSignal={previewRequest}
-            tree={renderFileTree}
-            preview={renderPreview}
+        <>
+          {/* Dreaming is managed-only; the panel carries its own gates for the
+              in-flight / no-edit / dreaming-off cases. */}
+          <DreamPanel
+            key={agentId}
+            agentId={agentId}
+            canEdit={canEdit}
+            dreamingEnabled={persistedSettings.dreaming.enabled}
           />
-        </FileBrowserShell>
+          <FileBrowserShell
+            title="Memory"
+            headerEnd={
+              canEdit ? (
+                <button
+                  type="button"
+                  onClick={newTopic}
+                  className="flex cursor-pointer items-center gap-[4px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-semibold leading-normal text-(--brand-soft-text)"
+                >
+                  <Icon name="plus" size={13} />
+                  New
+                </button>
+              ) : undefined
+            }
+          >
+            <FileBrowserLayout
+              resetKey={agentId}
+              openPreviewSignal={previewRequest}
+              tree={renderFileTree}
+              preview={renderPreview}
+            />
+          </FileBrowserShell>
+        </>
       )}
       {confirmingBackendChange ? (
         <ConfirmationDialog
