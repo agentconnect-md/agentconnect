@@ -17,9 +17,7 @@ import {
   runtimeLabel,
   status,
   supportsModes,
-  workspaceStatus,
-  type Agent,
-  type AgentCallPolicy
+  workspaceStatus
 } from '@/lib/data'
 import {
   creatorLabel,
@@ -46,6 +44,7 @@ import { AgentApiPanel } from '@/components/console/AgentApiPanel'
 import { AgentSecretsCard } from '@/components/console/AgentSecretsCard'
 import { AgentToolsCard } from '@/components/console/AgentToolsCard'
 import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
+import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { IntegrationChannelList } from '@/components/console/IntegrationChannelList'
 import { discordBotInviteUrl } from '@/lib/discord-invite'
 import { WorkspaceCard } from '@/components/console/WorkspaceCard'
@@ -55,9 +54,9 @@ import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { VisibilityValue } from '@/components/console/VisibilityField'
-import { AgentIconView, AgentMark, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
+import { AgentMark, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
-import { BOT_PLATFORMS, type Platform } from '@/components/console/modals/AddIntegrationModal'
+import { PLATFORMS, type Platform } from '@/components/console/modals/AddIntegrationModal'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { NotFound } from '@/components/console/NotFound'
 import { Button, Icon } from '@/components/ui'
@@ -418,16 +417,14 @@ export default function AgentDetailView() {
   const agentInts = integrations.filter((i) => i.agentId === da.id)
   // Peer agents for the read-only Access card's agent-call summary (self excluded).
   const agentPeers = agents.filter((peer) => peer.id !== da.id)
-  // Tiles for the empty Integrations tab. Bot platforms are gated on the owning
-  // daemon's advertised adapters — exactly what AddIntegrationModal enforces — so
-  // a tile can never advertise a platform the modal would silently swap out. While
-  // the daemon list is still loading, offer them all rather than flash a short list.
-  // webhook/github are relay/CP-backed triggers: always offered.
-  const offerableIntegrations: { key: Platform; label: string }[] = [
-    ...(daemonsLoading ? BOT_PLATFORMS : BOT_PLATFORMS.filter((p) => owningDaemon?.caps.platforms.includes(p.key))),
-    { key: 'webhook', label: 'Webhook' },
-    { key: 'github', label: 'GitHub' }
-  ]
+  // The empty Integrations tab renders the SAME platform grid as the
+  // Add-integration modal — same list, order, tile size and disabled treatment.
+  // A bot platform the owning daemon doesn't advertise is greyed out rather than
+  // clickable (the modal applies this identical gate), so a tile can never open a
+  // pane other than the one it names. webhook/github are relay/CP-backed
+  // triggers: always available.
+  const integrationPlatformAvailable = (key: Platform) =>
+    key === 'webhook' || key === 'github' || daemonsLoading || !!owningDaemon?.caps.platforms.includes(key)
   // Effective (intersection) peer sets for the read-only Access summary.
   const inboundEffectiveIds = agentReach.incomingByAgentId.get(da.id) ?? []
   const outboundEffectiveIds = agentReach.outgoingByAgentId.get(da.id) ?? []
@@ -1018,18 +1015,32 @@ export default function AgentDetailView() {
                 <div className="font-mono text-[10.5px] font-semibold uppercase tracking-[.08em] text-(--text-tertiary)">
                   Agent visibility
                 </div>
-                <div className="mt-3 grid grid-cols-1 gap-[18px] min-[440px]:grid-cols-2">
-                  <AgentVisibilitySummary
+                {/* The SAME cards the Add/Edit modals render, in read-only mode —
+                    one component, so the two surfaces can't drift apart. */}
+                <div className="mt-3 flex flex-col gap-3">
+                  <AgentCallVisibility
+                    variant="section"
                     direction="inbound"
                     mode={da.callPolicy}
-                    effectiveIds={inboundEffectiveIds}
+                    selectedIds={da.allowedCallerAgentIds}
+                    effectivePeerIds={inboundEffectiveIds}
                     peers={agentPeers}
+                    daemons={daemons}
+                    target={<span className="font-mono text-[12.5px]">{agentLabel(da)}</span>}
+                    editable={false}
+                    onChange={() => {}}
                   />
-                  <AgentVisibilitySummary
+                  <AgentCallVisibility
+                    variant="section"
                     direction="outbound"
                     mode={da.outboundPolicy}
-                    effectiveIds={outboundEffectiveIds}
+                    selectedIds={da.allowedTargetAgentIds}
+                    effectivePeerIds={outboundEffectiveIds}
                     peers={agentPeers}
+                    daemons={daemons}
+                    target={<span className="font-mono text-[12.5px]">{agentLabel(da)}</span>}
+                    editable={false}
+                    onChange={() => {}}
                   />
                 </div>
               </div>
@@ -1540,31 +1551,34 @@ export default function AgentDetailView() {
                     post. It can&apos;t receive messages until you do.
                   </div>
                 </div>
-                {/* Same tile anatomy as the Add-integration modal's platform grid
-                    (ptile + 26px mark, stacked on desktop) so the two read as one
-                    surface — one row across desktop. */}
-                {/* Grid while narrow; one flex row on desktop — the tile count is
-                    daemon-dependent, so equal flex beats a fixed column count. */}
-                <div className="mt-4 grid grid-cols-2 gap-[10px] min-[440px]:grid-cols-3 desktop:flex desktop:flex-row">
-                  {offerableIntegrations.map((p) => (
-                    <div
-                      key={p.key}
-                      className="ptile cursor-pointer desktop:min-w-0 desktop:flex-1 desktop:flex-col desktop:justify-center desktop:gap-[6px] desktop:px-2 desktop:text-center"
-                      title={INTEGRATION_BLURB[p.key]}
-                      onClick={() => openModal('integration', da, { platform: p.key })}
-                    >
-                      {p.key === 'github' ? (
-                        <span className="flex h-[26px] w-[26px] flex-none items-center justify-center [&>svg]:h-full [&>svg]:w-full">
-                          <GithubMark />
-                        </span>
-                      ) : (
-                        <span className="imark h-[26px] w-[26px] border-0 bg-transparent">
-                          <PlatformMark platform={p.key} fillPct={100} />
-                        </span>
-                      )}
-                      <span className="font-sans text-[13px] font-semibold leading-normal">{p.label}</span>
-                    </div>
-                  ))}
+                {/* Identical grid to the Add-integration modal's platform picker —
+                    same list, order, tile size and disabled treatment. */}
+                <div className="mt-4 grid grid-cols-2 gap-[10px] desktop:grid-cols-6">
+                  {PLATFORMS.map((p) => {
+                    const available = integrationPlatformAvailable(p.key)
+                    return (
+                      <div
+                        key={p.key}
+                        className={`ptile desktop:flex-col desktop:justify-center desktop:gap-[6px] desktop:px-2 desktop:text-center ${
+                          available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
+                        }`}
+                        aria-disabled={!available}
+                        title={available ? INTEGRATION_BLURB[p.key] : 'Not supported by this daemon'}
+                        onClick={available ? () => openModal('integration', da, { platform: p.key }) : undefined}
+                      >
+                        {p.key === 'github' ? (
+                          <span className="flex h-[26px] w-[26px] flex-none items-center justify-center [&>svg]:h-full [&>svg]:w-full">
+                            <GithubMark />
+                          </span>
+                        ) : (
+                          <span className="imark h-[26px] w-[26px] border-0 bg-transparent">
+                            <PlatformMark platform={p.key} fillPct={100} />
+                          </span>
+                        )}
+                        <span className="font-sans text-[13px] font-semibold leading-normal">{p.label}</span>
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             )}
@@ -1863,78 +1877,6 @@ export default function AgentDetailView() {
             </button>
           </div>
         </div>
-      )}
-    </div>
-  )
-}
-
-// Read-only per-direction agent-call summary for the Access card (design): the
-// direction eyebrow + this agent's configured "All agents" / "Selected agents"
-// state + an overlapping avatar stack of the peers that EFFECTIVELY have the
-// edge. The stack is the reachability intersection (both directions' policies
-// agree), NOT this agent's one-sided policy — so it never lists a peer as
-// callable when the peer's own policy blocks the edge. Editing happens in the
-// Edit-agent modal's Access section, so this never mutates.
-function AgentVisibilitySummary({
-  direction,
-  mode,
-  effectiveIds,
-  peers
-}: {
-  direction: 'inbound' | 'outbound'
-  mode: AgentCallPolicy
-  effectiveIds: string[]
-  peers: Agent[]
-}) {
-  const stack = effectiveIds.flatMap((id) => peers.find((p) => p.id === id) ?? [])
-  const shown = stack.slice(0, 4)
-  const extra = stack.length - shown.length
-  return (
-    <div className="min-w-0">
-      <div className="mb-[6px] flex items-center gap-[6px]">
-        <Icon
-          name={direction === 'inbound' ? 'arrow-down-left' : 'arrow-up-right'}
-          size={11}
-          color="var(--text-tertiary)"
-          className="flex-none"
-        />
-        <span className="font-sans text-[10.5px] font-semibold uppercase tracking-[.04em] text-(--text-tertiary)">
-          {direction === 'inbound' ? 'Can call this agent' : 'This agent can call'}
-        </span>
-      </div>
-      <div className="mb-2 flex items-center gap-2">
-        <Icon name={mode === 'all' ? 'globe' : 'lock'} size={13} color="var(--text-tertiary)" className="flex-none" />
-        <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-          {mode === 'all' ? 'All agents' : 'Selected agents'}
-        </span>
-      </div>
-      {shown.length > 0 ? (
-        <div className="inline-flex">
-          {shown.map((p, i) => (
-            <span
-              key={p.id}
-              title={agentLabel(p)}
-              className={`flex h-6 w-6 items-center justify-center rounded-[6px] border-[1.5px] border-(--surface-card) bg-(--surface-sunken) shadow-(--shadow-xs) [&>svg]:h-full [&>svg]:w-full ${
-                i > 0 ? '-ml-[6px]' : ''
-              }`}
-            >
-              <AgentIconView icon={p.icon} runtime={p.runtime} size={24} />
-            </span>
-          ))}
-          {extra > 0 && (
-            <span className="-ml-[6px] flex h-6 w-6 items-center justify-center rounded-[6px] border-[1.5px] border-(--surface-card) bg-(--surface-active) font-sans text-[9px] font-semibold leading-normal text-(--text-secondary)">
-              +{extra}
-            </span>
-          )}
-        </div>
-      ) : (
-        <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-          {peers.length === 0
-            ? 'No other agents'
-            : direction === 'inbound'
-              ? 'No agents can call it'
-              : 'Can’t call any agent'}
-        </span>
       )}
     </div>
   )

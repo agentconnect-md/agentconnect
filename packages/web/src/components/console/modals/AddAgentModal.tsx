@@ -251,6 +251,10 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // Default 'all' (the CP's default); selected callers are picked from peers.
   const [callPolicy, setCallPolicy] = useState<AgentCallPolicy>('all')
   const [allowedCallers, setAllowedCallers] = useState<string[]>([])
+  // Outbound half — which peers this agent may call. Same default ('all') and the
+  // same server-side intersection as inbound.
+  const [outboundPolicy, setOutboundPolicy] = useState<AgentCallPolicy>('all')
+  const [allowedTargets, setAllowedTargets] = useState<string[]>([])
   // Optional env vars + write-only secrets to seed at create (createAgent accepts
   // both). Shared "Secrets and variables" editor with the Edit-agent modal.
   const [envRows, setEnvRows] = useState<EnvVarDraft[]>([])
@@ -803,7 +807,12 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           : {}),
         // Selected-callers-create: send only when restricting (default 'all' is
         // implicit). The CP intersects the allow-list with visible org peers.
-        ...(callPolicy === 'selected' ? { callPolicy: 'selected' as const, allowedCallerAgentIds: allowedCallers } : {})
+        ...(callPolicy === 'selected'
+          ? { callPolicy: 'selected' as const, allowedCallerAgentIds: allowedCallers }
+          : {}),
+        ...(outboundPolicy === 'selected'
+          ? { outboundPolicy: 'selected' as const, allowedTargetAgentIds: allowedTargets }
+          : {})
       })
       onClose()
     } catch (e) {
@@ -842,6 +851,13 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // guards, so the dots clear exactly when the button starts working. Access
   // never appears: visibility always carries a value (org by default).
   const envSecretError = envSecretsError(envRows, secretRows)
+  // What the agent-visibility copy calls this not-yet-created agent.
+  const callVisibilityTarget =
+    agentSlugFinalize(name) || agentSlugFinalize(displayName) ? (
+      <span className="font-mono text-[12.5px]">{agentSlugFinalize(name) || agentSlugFinalize(displayName)}</span>
+    ) : (
+      'this agent'
+    )
 
   const blockers: Partial<Record<SectionId, string>> = {}
   if (!(agentSlugFinalize(name) || agentSlugFinalize(displayName))) blockers.basics = 'name is required'
@@ -1343,37 +1359,37 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                 creatorUserId={me?.userId}
                 label="Team visibility"
               />
-              {/* Direction-labelled, same card as the Edit modal. Only the INBOUND
-                  half is settable here — the create endpoint takes callPolicy /
-                  allowedCallerAgentIds only — so the outbound half is called out as
-                  a post-create edit rather than shown as a control that wouldn't save. */}
+              {/* Both directions, same cards as the Edit modal's Access section. */}
               <div className="fld">
                 <span className="fldlbl">Agent visibility</span>
-                <AgentCallVisibility
-                  variant="section"
-                  direction="inbound"
-                  mode={callPolicy}
-                  selectedIds={allowedCallers}
-                  peers={agents}
-                  daemons={daemons}
-                  target={
-                    agentSlugFinalize(name) || agentSlugFinalize(displayName) ? (
-                      <span className="font-mono text-[12.5px]">
-                        {agentSlugFinalize(name) || agentSlugFinalize(displayName)}
-                      </span>
-                    ) : (
-                      'this agent'
-                    )
-                  }
-                  onChange={(nextMode, nextSelected) => {
-                    setCallPolicy(nextMode)
-                    setAllowedCallers(nextSelected)
-                  }}
-                />
-                <span className="mt-[6px] text-[11px] text-(--text-secondary)">
-                  Outbound — which agents this one may call — starts at all agents; change it from the agent&apos;s
-                  Access card after it&apos;s created.
-                </span>
+                <div className="flex flex-col gap-3">
+                  <AgentCallVisibility
+                    variant="section"
+                    direction="inbound"
+                    mode={callPolicy}
+                    selectedIds={allowedCallers}
+                    peers={agents}
+                    daemons={daemons}
+                    target={callVisibilityTarget}
+                    onChange={(nextMode, nextSelected) => {
+                      setCallPolicy(nextMode)
+                      setAllowedCallers(nextSelected)
+                    }}
+                  />
+                  <AgentCallVisibility
+                    variant="section"
+                    direction="outbound"
+                    mode={outboundPolicy}
+                    selectedIds={allowedTargets}
+                    peers={agents}
+                    daemons={daemons}
+                    target={callVisibilityTarget}
+                    onChange={(nextMode, nextSelected) => {
+                      setOutboundPolicy(nextMode)
+                      setAllowedTargets(nextSelected)
+                    }}
+                  />
+                </div>
               </div>
             </div>
             <div className="mt-[14px] flex items-center gap-2 rounded-md bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">

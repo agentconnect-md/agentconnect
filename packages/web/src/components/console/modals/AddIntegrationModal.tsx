@@ -86,7 +86,7 @@ export const BOT_PLATFORMS: { key: BotPlatform; label: string }[] = [
   { key: 'feishu', label: 'Feishu' }
 ]
 
-const PLATFORMS: { key: Platform; label: string }[] = [
+export const PLATFORMS: { key: Platform; label: string }[] = [
   ...BOT_PLATFORMS,
   { key: 'webhook', label: 'Webhook' },
   { key: 'github', label: 'GitHub' }
