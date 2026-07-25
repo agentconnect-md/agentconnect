@@ -747,7 +747,7 @@ export default function EditAgentModal({
 
             <section ref={sectionRef('access')} className="mt-5 border-t border-(--border-subtle) pt-5">
               <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Access</div>
-              <div className="mt-[13px] flex flex-col gap-[14px]">
+              <div className="flex flex-col gap-[14px]">
                 <VisibilityField
                   value={sharing}
                   onChange={setSharing}
@@ -796,17 +796,12 @@ export default function EditAgentModal({
             </section>
 
             <section ref={sectionRef('secrets')} className="mt-5 border-t border-(--border-subtle) pt-5">
-              <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                Variables and Secrets
-              </div>
-              <div className="mt-[13px]">
-                <EnvSecretsFields
-                  envRows={envRows}
-                  setEnvRows={setEnvRows}
-                  secretRows={secretRows}
-                  setSecretRows={setSecretRows}
-                />
-              </div>
+              <EnvSecretsFields
+                envRows={envRows}
+                setEnvRows={setEnvRows}
+                secretRows={secretRows}
+                setSecretRows={setSecretRows}
+              />
             </section>
 
             {placementRequested && (
