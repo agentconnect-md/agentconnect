@@ -15,8 +15,8 @@
  *
  * Secret material (`botToken`/`signingSecret`) MUST NEVER be logged.
  */
-import { WebClient } from '@slack/web-api'
-import { HttpsProxyAgent } from 'https-proxy-agent'
+import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
+import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'
 import {
   ELICIT_ACTION_PREFIX,
   ELICIT_DISMISS_ACTION,
@@ -247,12 +247,15 @@ export function parseSharedSlackSessionAction(body: SlackInteractiveBody): Share
   }
 }
 
-/** Proxy agent from HTTPS_PROXY/HTTP_PROXY (as the daemon's SlackConnection does),
- *  or undefined for a direct connection. Threaded into the Web-API client used for
- *  `auth.test` (bot user id) and `views.open` (the config modal). */
-function proxyAgent(): HttpsProxyAgent<string> | undefined {
+/** Proxy dispatcher from HTTPS_PROXY/HTTP_PROXY (as the daemon's SlackConnection
+ *  does), or undefined for a direct connection. */
+function proxyDispatcher(): ProxyAgent | undefined {
   const url = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY
-  return url ? new HttpsProxyAgent(url) : undefined
+  return url ? new ProxyAgent(url) : undefined
+}
+
+function fetchWithDispatcher(dispatcher: Dispatcher): FetchFunction {
+  return (url, init) => undiciFetch(url, { ...(init as Parameters<typeof undiciFetch>[1]), dispatcher })
 }
 
 /** The subset of a Slack file element carried through as attachment metadata. */
@@ -370,7 +373,7 @@ export interface SlackSharedIngestDeps {
   /** Forward the current agent/session controls to its owning daemon. */
   onSessionAction: (action: SharedSlackSessionAction) => void
   /** Test seam for the bot-token Web API client. */
-  webClientFactory?: (botToken: string, agent?: HttpsProxyAgent<string>) => WebClient
+  webClientFactory?: (botToken: string, options?: WebClientOptions) => WebClient
   log: Logger
 }
 
@@ -396,10 +399,11 @@ export class SlackSharedIngest {
   /** Best-effort setup: resolve the bot user id for arbitration. No socket to open —
    *  inbound arrives on the shared HTTP routes and is dispatched via `handle*`. */
   async start(): Promise<void> {
-    const agent = proxyAgent()
+    const dispatcher = proxyDispatcher()
+    const options: WebClientOptions = dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}
     this.web = this.deps.webClientFactory
-      ? this.deps.webClientFactory(this.secrets.botToken, agent)
-      : new WebClient(this.secrets.botToken, agent ? { agent } : {})
+      ? this.deps.webClientFactory(this.secrets.botToken, options)
+      : new WebClient(this.secrets.botToken, options)
     // Resolve the bot user id (best-effort — arbitration degrades to keyword/default
     // if it fails; a later re-assign retries).
     try {
