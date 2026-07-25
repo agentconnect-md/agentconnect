@@ -342,13 +342,15 @@ export class SessionManager {
       cwd: string,
       mcpServers: McpServer[],
       systemAppend?: string
-    ): Promise<void> => {
-      while (true) {
-        const selected = sessionStartEffort()
-        await abortable(() => host.loadSession(sessionId, cwd, mcpServers, selected.value, systemAppend), signal)
-        if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return
-        host.discardSession(sessionId)
-      }
+    ): Promise<boolean> => {
+      const selected = sessionStartEffort()
+      await abortable(() => host.loadSession(sessionId, cwd, mcpServers, selected.value, systemAppend), signal)
+      if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return true
+      // The pinned Claude adapter treats a repeated load of the same session/cwd/MCP
+      // fingerprint as idempotent, so another load cannot replace metadata-only effort.
+      // Forget this local attachment and let the caller create a fresh safe session.
+      host.discardSession(sessionId)
+      return false
     }
 
     // Agent memory INDEX (agents/memory-provider.ts), read fresh. It's STANDING
@@ -568,8 +570,12 @@ export class SessionManager {
         // isn't seen as `closed` mid-load, then fall through to `prompting` below.
         this.deps.store.setSessionState(key, 'resuming', Date.now())
         try {
-          await loadRuntimeSession(persistedSessionId, cwd, mcpServers, usesMeta ? resumeSystemContext : undefined)
-          resumed = true
+          resumed = await loadRuntimeSession(
+            persistedSessionId,
+            cwd,
+            mcpServers,
+            usesMeta ? resumeSystemContext : undefined
+          )
         } catch {
           if (signal?.aborted) throw interrupted(signal)
           // agent couldn't load it (GC'd / not durably persisted) — recreate below

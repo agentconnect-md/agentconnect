@@ -743,7 +743,7 @@ describe('SessionManager', () => {
     store.close()
   })
 
-  it('fences every resumed chat-effort snapshot across repeated authorization changes', async () => {
+  it('recreates a resumed session when revoked metadata cannot be replaced by an idempotent reload', async () => {
     const store = newStore()
     const host1 = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
     const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
@@ -751,25 +751,20 @@ describe('SessionManager', () => {
     store.setEffortOverride(sessionKey('slack', 'C1', '100.1', 'bot-a'), 'ultracode')
 
     let allowRuntimeChangesInChat = true
-    let releaseFirstLoad!: () => void
-    let releaseSecondLoad!: () => void
-    const firstLoadGate = new Promise<void>((resolve) => (releaseFirstLoad = resolve))
-    const secondLoadGate = new Promise<void>((resolve) => (releaseSecondLoad = resolve))
-    let loadCalls = 0
-    let discardCalls = 0
+    let releaseLoad!: () => void
+    const loadGate = new Promise<void>((resolve) => (releaseLoad = resolve))
+    let remoteEffort: string | undefined
     const host2 = {
       newSession: vi.fn(async () => 'acp-2'),
       hasSession: () => false,
       loadSupported: () => true,
-      loadSession: vi.fn(async () => {
-        loadCalls += 1
-        if (loadCalls === 1) await firstLoadGate
-        if (loadCalls === 2) await secondLoadGate
+      loadSession: vi.fn(async (_sessionId, _cwd, _mcpServers, effort) => {
+        // Match the pinned adapter: the first load owns the remote query; a repeated
+        // same-fingerprint load would return it without applying replacement metadata.
+        remoteEffort ??= effort
+        await loadGate
       }),
-      discardSession: vi.fn(() => {
-        discardCalls += 1
-        if (discardCalls === 1) allowRuntimeChangesInChat = true
-      })
+      discardSession: vi.fn()
     } as any
     const sm2 = new SessionManager({
       store,
@@ -781,19 +776,14 @@ describe('SessionManager', () => {
     const resumed = sm2.handle('bot-a', msg({ ts: '100.2', text: 'second turn' }))
     await vi.waitFor(() => expect(host2.loadSession).toHaveBeenCalledTimes(1))
     allowRuntimeChangesInChat = false
-    releaseFirstLoad()
-    await vi.waitFor(() => expect(host2.loadSession).toHaveBeenCalledTimes(2))
-    allowRuntimeChangesInChat = false
-    releaseSecondLoad()
+    releaseLoad()
 
-    await expect(resumed).resolves.toMatchObject({ sessionId: 'acp-1', created: false })
-    expect(host2.loadSession).toHaveBeenCalledTimes(3)
+    await expect(resumed).resolves.toMatchObject({ sessionId: 'acp-2', created: true })
+    expect(remoteEffort).toBe('ultracode')
+    expect(host2.loadSession).toHaveBeenCalledTimes(1)
     expect(host2.loadSession.mock.calls[0]?.[3]).toBe('ultracode')
-    expect(host2.loadSession.mock.calls[1]?.[3]).toBe('ultracode')
-    expect(host2.loadSession.mock.calls[2]?.[3]).toBeUndefined()
-    expect(host2.discardSession).toHaveBeenNthCalledWith(1, 'acp-1')
-    expect(host2.discardSession).toHaveBeenNthCalledWith(2, 'acp-1')
-    expect(host2.newSession).not.toHaveBeenCalled()
+    expect(host2.discardSession).toHaveBeenCalledWith('acp-1')
+    expect(host2.newSession).toHaveBeenCalledWith(expect.any(String), [], undefined, undefined)
     store.close()
   })
 
