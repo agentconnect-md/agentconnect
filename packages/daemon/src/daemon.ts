@@ -3373,6 +3373,10 @@ export class Daemon {
       store: this.store,
       extract: (agentId, systemPrompt, prompt, signal) =>
         this.runDreamExtraction(agentId, systemPrompt, prompt, signal),
+      // Auto-adopt's gate — the same trusted-system-prompt-channel test
+      // distillation uses. A cold host (none started yet) reads as untrusted, so
+      // an unattended adoption never rides an unverified channel.
+      trustedExtractionFor: (agentId) => this.hosts.get(agentId)?.usesMetaSystemPrompt() ?? false,
       log: this.log
     })
     return this.dreamRunnerInstance

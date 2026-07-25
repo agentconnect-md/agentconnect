@@ -279,6 +279,11 @@ export const DreamInfo = z
     trigger: DreamTrigger,
     sessionIds: z.array(z.string().min(1)).max(100),
     snapshotDigest: z.string().min(1).max(128),
+    /** `.history` line count when the store was snapshotted, captured under the
+     *  memory-dir lock. Delimits the post-snapshot write window exactly (no
+     *  timestamp races), so adoption can tell a distill-only drift — which it may
+     *  rebase over — from a tool/console write, which must hard-fence to review. */
+    snapshotHistoryLines: z.number().int().nonnegative().optional(),
     instructions: z.string().max(4096).optional(),
     skills: z.array(DreamSkillInfo).max(16).optional(),
     usage: z

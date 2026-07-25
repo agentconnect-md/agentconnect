@@ -53,6 +53,7 @@ async function setup(opts: {
   extract?: (agentId: string, systemPrompt: string, prompt: string, signal: AbortSignal) => Promise<string>
   policy?: MemoryDreamingPolicy
   cancelGraceMs?: number
+  trustedExtraction?: boolean
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
   ensureMemory(dir, 'bot')
@@ -68,6 +69,7 @@ async function setup(opts: {
       return opts.extract ? opts.extract(agentId, systemPrompt, prompt, signal) : PROPOSAL
     },
     ...(opts.cancelGraceMs !== undefined ? { cancelGraceMs: opts.cancelGraceMs } : {}),
+    ...(opts.trustedExtraction !== undefined ? { trustedExtractionFor: () => opts.trustedExtraction! } : {}),
     log: silent
   })
   return { dir, store, runner, prompts }
@@ -334,6 +336,98 @@ describe('DreamRunner adoption', () => {
 
     const adopted = await runner.adopt('a1', started.dreamId, true)
     expect(adopted.status).toBe('adopted')
+  })
+
+  it('auto-adopts on a trusted runtime, but leaves an untrusted one for review', async () => {
+    const settleAdoption = async (store: FakeStore, dreamId: string) => {
+      // Auto-adopt runs after the run promise settles (the reservation must be
+      // free first), so poll past `completed` for the terminal state.
+      for (let i = 0; i < 100; i++) {
+        if (store.dreams.get(dreamId)?.status === 'adopted') break
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      return store.dreams.get(dreamId)!
+    }
+
+    const trusted = await setup({ policy: { enabled: true, autoAdopt: true }, trustedExtraction: true })
+    const a = await trusted.runner.start('a1', { trigger: 'schedule' })
+    await settle(trusted.store, a.dreamId)
+    expect((await settleAdoption(trusted.store, a.dreamId)).status).toBe('adopted')
+    // The live store really was replaced, unattended.
+    expect(await readMemoryFile(trusted.dir, 'prefs.md')).toContain('Uses tabs, not spaces (2026-07-24).')
+
+    // Same policy, untrusted channel ⇒ gate holds; the dream stays reviewable.
+    const untrusted = await setup({ policy: { enabled: true, autoAdopt: true }, trustedExtraction: false })
+    const b = await untrusted.runner.start('a1', { trigger: 'schedule' })
+    await settle(untrusted.store, b.dreamId)
+    await new Promise((r) => setTimeout(r, 40))
+    expect(untrusted.store.dreams.get(b.dreamId)?.status).toBe('completed')
+    expect(await readMemoryFile(untrusted.dir, 'prefs.md')).toBe('- uses tabs\n- uses tabs again\n')
+  })
+
+  it('leaves the dream reviewable when auto-adopt hits an unrebasable fence', async () => {
+    const { dir, store, runner } = await setup({
+      policy: { enabled: true, autoAdopt: true },
+      trustedExtraction: true,
+      // Hold the extraction open so a console write lands inside the dream window.
+      extract: async () => {
+        await writeMemoryFile(dir, 'notes.md', '- human note mid-dream\n', undefined, 'console')
+        return PROPOSAL
+      }
+    })
+    const started = await runner.start('a1', { trigger: 'schedule' })
+    await settle(store, started.dreamId)
+    await new Promise((r) => setTimeout(r, 40))
+
+    // Auto-adopt must not force past a console write — it stays completed.
+    expect(store.dreams.get(started.dreamId)?.status).toBe('completed')
+    expect(await readMemoryFile(dir, 'notes.md')).toContain('human note mid-dream')
+  })
+
+  it('rebases distill-only drift onto the staged store instead of refusing (§8)', async () => {
+    const { dir, store, runner } = await setup({})
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+
+    // Per-turn capture landed a NEW fact while the dream ran. The digest now
+    // differs, but every post-snapshot .history row is distill-sourced, so the
+    // fence must rebase rather than refuse.
+    await writeMemoryFile(dir, 'prefs.md', '- uses tabs\n- prefers pnpm over npm\n', undefined, 'distill')
+
+    const adopted = await runner.adopt('a1', started.dreamId, false)
+    expect(adopted.status).toBe('adopted')
+
+    // The dream's consolidation AND the distilled addition are both present.
+    const prefs = await readMemoryFile(dir, 'prefs.md')
+    expect(prefs).toContain('Uses tabs, not spaces (2026-07-24).') // the dream's rewrite
+    expect(prefs).toContain('prefers pnpm over npm') // the rebased distill line
+  })
+
+  it('still hard-fences when any post-snapshot write is not distill-sourced', async () => {
+    const { dir, store, runner } = await setup({})
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+
+    // A distill write is rebasable, but the console write in the same window is
+    // not — a mixed window must refuse rather than silently drop the edit.
+    await writeMemoryFile(dir, 'prefs.md', '- uses tabs\n- distilled\n', undefined, 'distill')
+    await writeMemoryFile(dir, 'notes.md', '- a human wrote this\n', undefined, 'console')
+
+    await expect(runner.adopt('a1', started.dreamId, false)).rejects.toThrow(/changed since/)
+    expect(await readMemoryFile(dir, 'notes.md')).toContain('a human wrote this')
+  })
+
+  it('does not re-add a distilled line the dream already folded in', async () => {
+    const { dir, store, runner } = await setup({})
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+
+    // The distiller re-states, in its own words, the very fact the dream wrote.
+    await writeMemoryFile(dir, 'prefs.md', '- uses tabs\n- Uses tabs, not spaces (2026-07-24).\n', undefined, 'distill')
+    await runner.adopt('a1', started.dreamId, false)
+
+    const prefs = await readMemoryFile(dir, 'prefs.md')
+    expect(prefs.match(/Uses tabs, not spaces/g)).toHaveLength(1) // deduped, not doubled
   })
 
   it('refuses to adopt or discard in the wrong lifecycle state', async () => {

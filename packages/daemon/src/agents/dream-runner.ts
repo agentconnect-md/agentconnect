@@ -8,6 +8,8 @@ import {
   MAX_HISTORY_VALUE_BYTES,
   listMemory,
   memoryDir,
+  parseHistoryLine,
+  readHistoryLines,
   readMemoryFile,
   withMemoryDirLock
 } from './memory.js'
@@ -87,6 +89,11 @@ export interface DreamRunnerDeps {
    *  releases the reservation regardless of whether `extract` ever settles — the
    *  hard backstop for a runtime that ignores `session/cancel`. Default 30 s. */
   cancelGraceMs?: number
+  /** Whether this agent's runtime carries a TRUSTED system-prompt channel (the
+   *  same `trustedExtractionMode` gate distillation uses). `autoAdopt` — the one
+   *  unattended path, with distillation-equivalent blast radius — is admitted
+   *  only when this holds; absent ⇒ untrusted, so auto-adopt stays off. */
+  trustedExtractionFor?(agentId: string): boolean
   /** Test seam: invoked immediately after staging finishes, before the
    *  cancel-wins recheck. Production leaves it unset. */
   onStaged?(agentId: string, dreamId: string): void | Promise<void>
@@ -102,6 +109,16 @@ const STAGED_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}\.md$/
 
 function stagedPathOk(name: string): boolean {
   return name === MEMORY_INDEX || STAGED_NAME_RE.test(name)
+}
+
+/** Identity of one memory line for rebase dedup — matches the distiller's own
+ *  normalization (bullet marker stripped, trimmed, case-folded) so a line the
+ *  dream already folded in is not appended twice. '' for a non-content line. */
+function normalizeMemoryLine(line: string): string {
+  return line
+    .replace(/^\s*[-*]\s+/, '')
+    .trim()
+    .toLowerCase()
 }
 
 export class DreamRunner {
@@ -194,8 +211,14 @@ export class DreamRunner {
       const instructions = opts.instructions ?? policy.instructions
       const sources = this.deps.store.dreamSessionSources(agentId, sessionWindow)
 
-      // Snapshot the live store now — the digest is the adoption fence.
-      const files = await this.readLiveStore(dir)
+      // Snapshot the live store — the digest is the adoption fence. Taken under
+      // the shared memory-dir lock so it cannot tear against a concurrent
+      // writeMemoryFile, and so the `.history` line count captured with it
+      // delimits the post-snapshot write window exactly (see `adopt`).
+      const { files, historyLines } = await withMemoryDirLock(dir, async () => ({
+        files: await this.readLiveStore(dir),
+        historyLines: (await readHistoryLines(dir)).length
+      }))
       const dream: DreamInfo = {
         dreamId: `drm-${randomUUID()}`,
         agentId,
@@ -203,6 +226,7 @@ export class DreamRunner {
         trigger: opts.trigger,
         sessionIds: sources.map((s) => s.sessionId),
         snapshotDigest: storeDigest(files),
+        snapshotHistoryLines: historyLines,
         ...(instructions ? { instructions } : {}),
         createdAt: this.nowIso()
       }
@@ -211,10 +235,15 @@ export class DreamRunner {
       const aborter = new AbortController()
       this.aborters.set(dream.dreamId, aborter)
 
-      void this.run(dream, files, sources, aborter.signal).finally(() => {
-        this.aborters.delete(dream.dreamId)
-        if (this.active.get(agentId) === dream.dreamId) this.active.delete(agentId)
-      })
+      void this.run(dream, files, sources, aborter.signal)
+        .finally(() => {
+          this.aborters.delete(dream.dreamId)
+          if (this.active.get(agentId) === dream.dreamId) this.active.delete(agentId)
+        })
+        // Auto-adopt runs only AFTER the reservation is released — `adopt` refuses
+        // while a dream is in flight, and this dream holds that slot until here.
+        .then(() => this.maybeAutoAdopt(agentId, dream.dreamId))
+        .catch(() => {})
       return dream
     })
   }
@@ -408,9 +437,10 @@ export class DreamRunner {
    * re-validated and the swap committed while `withMemoryDirLock` excludes every
    * `writeMemoryFile` caller (console, tool, distillation). So a live write can
    * never land between the fence and the swap — a non-forced adoption cannot
-   * silently lose a post-snapshot write. (§8's distillation-rebase — adopting
-   * *over* additive distill writes instead of refusing — is still D-2; here such
-   * a write simply makes the fence refuse.)
+   * silently lose a post-snapshot write. When the fence trips, §8's distillation
+   * rebase gets one chance to explain the drift: if every post-snapshot
+   * `.history` record is distill-sourced, those additions are replayed onto the
+   * replacement and adoption proceeds; anything else still refuses.
    */
   async adopt(agentId: string, dreamId: string, force: boolean): Promise<DreamInfo> {
     const dir = this.dirFor(agentId)
@@ -462,9 +492,19 @@ export class DreamRunner {
           if (!force) {
             const liveDigest = storeDigest(await this.readLiveStore(dir))
             if (liveDigest !== dream.snapshotDigest) {
-              throw new DreamStateError(
-                'the live store changed since this dream was snapshotted; rerun the dream or force'
-              )
+              // §8 distillation rebase: additive per-turn capture may have landed
+              // while the dream ran. When EVERY post-snapshot write was
+              // distill-sourced, replay those additions onto the replacement and
+              // adopt; any tool/console write still hard-fences to review.
+              const rebased = await this.rebaseDistillWrites(dir, dream, replacement, at)
+              // `0` is a SUCCESSFUL rebase (every addition was already folded in
+              // by the dream) — only `null` means the drift wasn't distill-only.
+              if (rebased === null) {
+                throw new DreamStateError(
+                  'the live store changed since this dream was snapshotted; rerun the dream or force'
+                )
+              }
+              this.deps.log.info(`dream ${dreamId}: rebased ${rebased} distilled line(s) onto the staged store`)
             }
           }
 
@@ -508,6 +548,139 @@ export class DreamRunner {
         await fsp.rm(replacement, { recursive: true, force: true }).catch(() => {})
       }
     })
+  }
+
+  /**
+   * Adopt a just-completed dream without review when the agent opted in
+   * (`dreaming.autoAdopt`) AND its runtime carries a trusted system-prompt
+   * channel. Unattended adoption has distillation-equivalent blast radius, so it
+   * inherits distillation's gate: an untrusted-channel runtime keeps the dream
+   * reviewable instead (design §2/§6). Never throws — a fence conflict or a
+   * failed swap just leaves the dream `completed` and awaiting review.
+   */
+  private async maybeAutoAdopt(agentId: string, dreamId: string): Promise<void> {
+    const dream = this.deps.store.getDream(agentId, dreamId)
+    if (dream?.status !== 'completed') return
+    const policy = this.deps.dreamingPolicyFor(agentId)
+    if (!policy?.autoAdopt) return
+    if (!this.deps.trustedExtractionFor?.(agentId)) {
+      this.deps.log.warn(
+        `dream ${dreamId}: auto-adopt skipped for agent ${agentId} — runtime lacks a trusted system-prompt channel; review it manually`
+      )
+      return
+    }
+    try {
+      // Never force: a fence conflict the rebase can't explain must fall back to
+      // human review rather than clobber a live tool/console write.
+      await this.adopt(agentId, dreamId, false)
+      this.deps.log.info(`dream ${dreamId} auto-adopted for agent ${agentId}`)
+    } catch (err) {
+      this.deps.log.warn(
+        `dream ${dreamId}: auto-adopt did not apply for agent ${agentId} (${err instanceof Error ? err.message : 'unknown'}); left for review`
+      )
+    }
+  }
+
+  /**
+   * §8 distillation rebase. Called under the memory-dir lock when the adoption
+   * fence trips. Returns the number of replayed lines when the drift was
+   * distill-only (the replacement has been patched in place and adoption may
+   * proceed), or `null` when it must hard-fence.
+   *
+   * Two independent halves, both required:
+   *
+   *  - **Authorization** comes from `.history` — every record after the dream's
+   *    snapshot line count must be `source: 'distill'`. The line count was
+   *    captured with the snapshot under this same lock, so the window is exact
+   *    (no timestamp races), and `source` is never truncated.
+   *  - **Content** comes from the files, NOT from `.history`: a history row's
+   *    `after` is clamped to {@link MAX_HISTORY_VALUE_BYTES}, so a large file's
+   *    record can't be replayed faithfully. Distillation is additive by
+   *    construction, so diffing the live file against this dream's `input/`
+   *    snapshot yields exactly the added lines.
+   */
+  private async rebaseDistillWrites(
+    dir: string,
+    dream: DreamInfo,
+    replacement: string,
+    at: string
+  ): Promise<number | null> {
+    // Without a snapshot line count (a dream created before this field existed)
+    // we cannot delimit the window — fail closed.
+    if (dream.snapshotHistoryLines === undefined) return null
+    const lines = await readHistoryLines(dir)
+    const added = lines.slice(dream.snapshotHistoryLines)
+    // An unparseable or non-distill record means we can't prove the drift was
+    // additive capture — refuse. A shrunken log (rotated/truncated) also refuses.
+    if (lines.length < dream.snapshotHistoryLines) return null
+    if (added.length === 0) return null // digest differs but nothing logged ⇒ unexplained
+    for (const line of added) {
+      const record = parseHistoryLine(line)
+      if (!record || record.source !== 'distill') return null
+    }
+
+    const input = join(this.dreamDir(dream.agentId, dream.dreamId), 'input')
+    const readOr = async (base: string, name: string): Promise<string> => {
+      try {
+        return await fsp.readFile(join(base, name), 'utf8')
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return ''
+        throw err
+      }
+    }
+
+    // Dedup against everything already in the replacement — the dream has very
+    // likely folded the same fact in already (it mined the same transcripts).
+    const known = new Set<string>()
+    for (const entry of await fsp.readdir(replacement, { withFileTypes: true })) {
+      if (!entry.isFile() || !stagedPathOk(entry.name)) continue
+      for (const line of (await readOr(replacement, entry.name)).split('\n')) {
+        const value = normalizeMemoryLine(line)
+        if (value) known.add(value)
+      }
+    }
+
+    let replayed = 0
+    // Only files a distill record actually touched — never re-add a topic the
+    // dream deliberately merged away.
+    const touched = [...new Set(added.map((line) => parseHistoryLine(line)?.path).filter((p): p is string => !!p))]
+    for (const name of touched) {
+      if (!stagedPathOk(name)) return null // a distill row naming a weird path ⇒ refuse
+      const snapshot = new Set(
+        (await readOr(input, name))
+          .split('\n')
+          .map(normalizeMemoryLine)
+          .filter((v): v is string => !!v)
+      )
+      const liveLines = (await readOr(memoryDir(dir), name)).split('\n')
+      const additions: string[] = []
+      for (const line of liveLines) {
+        const value = normalizeMemoryLine(line)
+        if (!value || snapshot.has(value) || known.has(value)) continue
+        additions.push(line.trimEnd())
+        known.add(value)
+      }
+      if (additions.length === 0) continue
+      const current = await readOr(replacement, name)
+      const next = `${current.trimEnd()}${current.trim() ? '\n' : ''}${additions.join('\n')}\n`
+      await fsp.writeFile(join(replacement, name), next, 'utf8')
+      replayed += additions.length
+      await fsp.appendFile(
+        join(replacement, MEMORY_HISTORY_FILENAME),
+        JSON.stringify({
+          path: name,
+          event: 'update',
+          after: clampToBytesOnBoundary(next, MAX_HISTORY_VALUE_BYTES),
+          at,
+          scope: 'agent',
+          source: 'distill'
+        }) + '\n',
+        'utf8'
+      )
+    }
+    // Nothing to replay (every addition already present) still counts as a
+    // successful rebase — the drift was distill-only and is now represented.
+    return replayed
   }
 
   /** Discard a terminal dream's staging. Keeps the job record for history.

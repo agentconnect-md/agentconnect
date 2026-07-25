@@ -181,6 +181,32 @@ export async function appendHistory(agentDir: string, record: MemoryHistoryRecor
   }
 }
 
+/**
+ * Read the change log's lines (newest last), skipping blanks. Callers hold the
+ * memory-dir lock when they need the count to line up with a store read — see
+ * the dream adoption fence, which uses a snapshot-time line count to delimit the
+ * post-snapshot write window exactly.
+ */
+export async function readHistoryLines(agentDir: string): Promise<string[]> {
+  try {
+    const text = await fsp.readFile(join(memoryDir(agentDir), MEMORY_HISTORY_FILENAME), 'utf8')
+    return text.split('\n').filter((line) => line.trim().length > 0)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw err
+  }
+}
+
+/** Parse one `.history` line, or null when it isn't a usable record. */
+export function parseHistoryLine(line: string): MemoryHistoryRecord | null {
+  try {
+    const value = JSON.parse(line) as MemoryHistoryRecord
+    return typeof value?.path === 'string' && typeof value?.source === 'string' ? value : null
+  } catch {
+    return null
+  }
+}
+
 /** Overwrite a memory file with `content` (creating the dir if needed). Atomic
  *  (tmp + rename) so a concurrent read never sees a partial file. Appends a line to
  *  the change log (`.history`) recording the add/update, its `before`/`after`

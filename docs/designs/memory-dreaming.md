@@ -1,6 +1,8 @@
 # Design: Memory Dreaming Mode — Offline Consolidation for Managed Memory
 
-> Status: Proposal (not implemented).
+> Status: D-1 shipped (protocol, daemon runner, CP REST, console config);
+> D-2a shipped (auto-adopt gate, distillation rebase). D-2b (scheduled dreams)
+> and D-3 (skill mining) remain proposals — see §12.
 > Prerequisites: [memory-evolution.md](memory-evolution.md),
 > [memory-system-plan.md](memory-system-plan.md),
 > [daemon-centric-architecture.md](daemon-centric-architecture.md),
@@ -327,14 +329,25 @@ Concrete unification points:
   collection, and the parse-JSON-then-validate posture. Distillation and
   dreaming become two policies (system prompt + output schema + write path)
   over the same machinery.
-- **Distillation rebase at adoption.** Distillation may append to the live
-  store while a long dream runs, which would trip the adoption fence and
-  starve busy agents of ever adopting. Rule: on fence mismatch, inspect
-  `.history` for the post-snapshot window. If **every** post-snapshot write
-  has `source: 'distill'`, replay those appends onto the staged store using
-  the existing dedup digest from `appendDistilledMemories` (additive by
-  construction, so the rebase is mechanical) and proceed. If any write has a
-  tool, console, or other source, hard-fence to manual review.
+- **Distillation rebase at adoption** (implemented, D-2). Distillation may
+  append to the live store while a long dream runs, which would trip the
+  adoption fence and starve busy agents of ever adopting. On fence mismatch the
+  rebase gets one chance to explain the drift, splitting the question in two:
+  - **Authorization** comes from `.history`: every record after the dream's
+    snapshot must be `source: 'distill'`. The window is delimited by
+    `snapshotHistoryLines` — the log's line count captured _with_ the store
+    snapshot under the shared memory-dir lock — so it is exact rather than
+    timestamp-approximate, and `source` is never truncated.
+  - **Content** comes from the files, not from `.history`: a record's `after`
+    is clamped to `MAX_HISTORY_VALUE_BYTES`, so a large file's row cannot be
+    replayed faithfully. Because distillation is additive by construction,
+    diffing the live file against the dream's own `input/` snapshot yields
+    exactly the added lines; they are appended to the staged store, deduped
+    against everything already there (the dream usually folded the same fact in
+    from the same transcripts).
+
+  Any write with a tool, console, or other source hard-fences to manual review.
+
 - **Serialization.** Dream jobs join the existing per-agent post-turn memory
   chain (`memoryPostTurnChains`) for their snapshot and adoption steps only,
   so a snapshot never reads a half-written distillation append and an adoption
@@ -410,6 +423,7 @@ skill bodies in events or logs (same rule as the capture path).
 | Phase | Scope                                                                                                                                                                                |
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | D-1   | Protocol schema (`MemoryDreamingPolicy`), shared extraction-session helper, daemon `DreamRunner` + staged store pipeline, manual trigger via frames, console review + adopt/discard. |
-| D-2   | Scheduled dreams (cron), `autoAdopt` behind `trustedExtractionMode` with the distillation rebase rule, backup pruning, evaluation-event dashboards.                                  |
+| D-2a  | `autoAdopt` behind `trustedExtractionMode`, the distillation rebase rule, backup pruning. **Done.**                                                                                  |
+| D-2b  | Scheduled dreams (cron trigger + reconciliation), and the console schedule control it unlocks; evaluation-event dashboards.                                                          |
 | D-3   | Skill mining (`mineSkills`): extract-procedures phase, staged skill candidates, console recommendations with accept/dismiss, integration with the shared-skills install flow.        |
 | D-4   | Idle-trigger heuristic; revisit external-provider dreaming.                                                                                                                          |
