@@ -48,7 +48,7 @@ import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { IntegrationChannelList } from '@/components/console/IntegrationChannelList'
 import { discordBotInviteUrl } from '@/lib/discord-invite'
 import { WorkspaceCard, type WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
-import { WorkspaceFiles } from '@/components/console/WorkspaceFiles'
+import { WorkspaceFiles, workspaceReadModelKey } from '@/components/console/WorkspaceFiles'
 import { WorkspaceFilesMock } from '@/components/console/WorkspaceFilesMock'
 import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
@@ -1603,7 +1603,12 @@ export default function AgentDetailView() {
       {tab === 'workspace' &&
         (!da.name.startsWith(MOCK_PREFIX) ? (
           <div className="p-4 desktop:p-0">
+            {/* Keyed by workspace identity: the editor now lives in the card
+                this instance renders, so a replacement must remount the browser
+                instead of leaving the previous tree/preview/git state beneath a
+                refreshed source card. */}
             <WorkspaceFiles
+              key={workspaceReadModelKey(da)}
               agentId={id}
               workdir={da.workdir}
               canEdit={da.workspace.mode === 'scratch' && da.canManageSharing}

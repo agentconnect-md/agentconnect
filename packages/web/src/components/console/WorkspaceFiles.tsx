@@ -33,6 +33,7 @@ import { useIsMobile } from '@/lib/use-is-mobile'
 import { escapeHtml, highlight, linkifyHtml, loadHljs } from '@/lib/highlight'
 import { resolveWorkspaceMarkdownLink } from '@/components/console/workspace-links'
 import type { WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
+import type { Agent } from '@/lib/data'
 import type { MarkdownLinkResolution } from '@/components/console/MarkdownView'
 import {
   FileBrowserLayout,
@@ -55,6 +56,24 @@ const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), 
 })
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+/**
+ * Identity of the daemon-local checkout one <WorkspaceFiles> instance reads.
+ *
+ * The tree, the open preview and the git status are fetched per agent and then
+ * cached in component state keyed only on `agentId`, so a workspace REPLACEMENT
+ * (mode / repo / branch / working subdirectory) has to remount the instance
+ * rather than reuse it. Since the workspace editor now lives in the card above
+ * the browser — same tab, same mounted tree — reuse would leave the refreshed
+ * source card sitting on top of files that belong to the workspace it replaced,
+ * and a GitHub → scratch conversion would additionally flip `canEdit` to true
+ * over that stale GitHub preview. Pass this as the instance's React `key`.
+ */
+export function workspaceReadModelKey(agent: Pick<Agent, 'id' | 'workspace' | 'workdir'>): string {
+  const ws = agent.workspace
+  const at = `${agent.id}:${agent.workdir}`
+  return ws.mode === 'github' ? `${at}:github:${ws.repo}@${ws.branch}:${ws.agentDir}` : `${at}:scratch`
+}
 
 function entryIcon(e: WorkspaceEntryDto): string {
   if (e.type === 'dir') return 'folder'

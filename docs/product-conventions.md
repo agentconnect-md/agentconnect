@@ -218,10 +218,14 @@ does not replace the current review verdict.
 
 ## Workspace navigation and repository access
 
-The workspace summary row is navigation: selecting either its GitHub repository or
-its scratch label opens the agent's Workspace tab. Do not add a second "View
-workspace" action to the row. A single right-aligned `Edit` action owns workspace
-type, repository, branch, working-subdirectory, and repository-access settings.
+The workspace options live in the agent's Workspace tab, above the files they
+configure — not in Configuration, and not behind a summary row that navigates
+there. A `Source` control owns conversion between scratch and GitHub; a single
+`Edit` action owns repository, branch, working-subdirectory, and
+repository-access settings. Replacing a workspace must replace the file browser
+with it: the tree, the open preview, and the git status below the card always
+belong to the workspace the card currently describes, never to the one it
+replaced.
 
 In the Workspace tab, callers who can edit the agent may create or edit one UTF-8
 file at a time when the workspace is scratch. New files use exclusive creation and

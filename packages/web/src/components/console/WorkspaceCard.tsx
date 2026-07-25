@@ -109,6 +109,10 @@ export function WorkspaceCard({
   const loadError = reposData === undefined && reposError
   const canEdit = agent.canManageSharing
   const branch = header?.branch ?? (ws.mode === 'github' ? ws.branch : null)
+  // A manual checkout has no App installation to mint a write token from, so its
+  // effective workspace access is read regardless of the stored preference.
+  const workspaceAccess =
+    ws.mode === 'github' ? (ws.installationId ? (ws.gitAccess ?? 'write') : ('read' as const)) : null
   const remoteLabel = header?.remoteLabel ?? 'GitHub'
 
   const remove = async (row: AgentRepoAuthDto) => {
@@ -179,6 +183,10 @@ export function WorkspaceCard({
             {branch}
           </span>
         )}
+        {/* Effective workspace access stays visible next to the repository
+            (product-conventions.md §Workspace navigation and repository access) —
+            it is the blast radius of everything the agent pushes. */}
+        {workspaceAccess && <span className={REPO_ACCESS_BADGE[workspaceAccess]}>{workspaceAccess}</span>}
         {header?.status && (
           <span className="badge flex-none" style={{ background: header.status.bg, color: header.status.text }}>
             <span className="dot h-[6px] w-[6px]" style={{ background: header.status.dot }} />
@@ -233,10 +241,14 @@ export function WorkspaceCard({
       <div className="flex flex-wrap items-center gap-2 border-t border-(--border-subtle) px-4 py-[9px]">
         <span className="eyebrow flex-none text-[10.5px]">Authorized repos</span>
 
-        {ws.mode === 'github' && (
+        {/* Only an App-backed workspace carries implicit authority over its own
+            repository. A manual checkout has none: its effective access comes
+            from an explicit grant below (or is `none`), so rendering a chip here
+            would both claim authorization it lacks and duplicate the real row. */}
+        {isGithubApp && (
           <span
             className="inline-flex h-6 flex-none items-center gap-[6px] rounded-[5px] border border-(--border-default) bg-(--surface-card) px-2"
-            title="The workspace repository — authorized implicitly"
+            title="The workspace repository — authorized implicitly by the GitHub App installation"
           >
             <span className="imark h-[14px] w-[14px] border-0 bg-transparent">
               <GithubMark />
@@ -274,7 +286,7 @@ export function WorkspaceCard({
                 )}
               </span>
             ))}
-            {repos.length === 0 && ws.mode !== 'github' && (
+            {repos.length === 0 && !isGithubApp && (
               <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                 None explicitly authorized.
               </span>
