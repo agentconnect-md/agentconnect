@@ -261,6 +261,31 @@ it('keeps file identity in the breadcrumb and confirms deletion inline', async (
   expect(deleteWorkspaceFile).toHaveBeenCalledWith('agent-a', 'README.md', workspace.file.mtime)
 })
 
+it('reopens the mobile preview before confirming deletion from the file list', async () => {
+  mobile.value = true
+  workspace.entries = [
+    {
+      name: 'README.md',
+      type: 'file',
+      size: workspace.file.size,
+      mtime: workspace.file.mtime
+    }
+  ]
+  await renderWorkspace()
+  await clickButton('README.md')
+
+  const previewPane = container?.querySelector('[data-file-browser-pane="preview"]')
+  const back = container?.querySelector<HTMLButtonElement>('button[aria-label="Back to files"]')
+  expect(back).not.toBeNull()
+  await act(async () => back?.click())
+  expect(previewPane?.classList.contains('hidden')).toBe(true)
+
+  await clickButton('Delete')
+  expect(previewPane?.classList.contains('flex')).toBe(true)
+  expect(previewPane?.classList.contains('hidden')).toBe(false)
+  expect(previewPane?.querySelector('[role="alert"]')?.textContent).toContain('Delete this file?')
+})
+
 it('returns mobile Cancel and Escape to the existing file preview', async () => {
   mobile.value = true
   workspace.entries = [

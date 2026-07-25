@@ -829,7 +829,7 @@ export function WorkspaceFiles({
         {(editor || (root?.entries && root.exists && root.entries.length > 0)) && (
           <FileBrowserLayout
             resetKey={`${agentId}:${mobileListSignal}`}
-            previewOpen={editor !== null}
+            previewOpen={editor !== null || deleteDraft !== null}
             tree={(openPreview) =>
               root?.entries && root.exists && root.entries.length > 0 ? (
                 renderLevel('', 0, openPreview)
