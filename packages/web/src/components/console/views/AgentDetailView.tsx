@@ -1553,13 +1553,13 @@ export default function AgentDetailView() {
                 </div>
                 {/* Identical grid to the Add-integration modal's platform picker —
                     same list, order, tile size and disabled treatment. */}
-                <div className="mt-4 grid grid-cols-2 gap-[10px] desktop:grid-cols-6">
+                <div className="mt-4 grid grid-cols-2 gap-[10px] desktop:flex desktop:flex-wrap desktop:justify-center">
                   {PLATFORMS.map((p) => {
                     const available = integrationPlatformAvailable(p.key)
                     return (
                       <div
                         key={p.key}
-                        className={`ptile desktop:flex-col desktop:justify-center desktop:gap-[6px] desktop:px-2 desktop:text-center ${
+                        className={`ptile desktop:w-[132px] desktop:flex-none desktop:flex-col desktop:justify-center desktop:gap-[6px] desktop:px-2 desktop:text-center ${
                           available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
                         }`}
                         aria-disabled={!available}
