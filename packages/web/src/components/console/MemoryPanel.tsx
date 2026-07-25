@@ -215,6 +215,7 @@ export function MemoryPanel({
     memoryDreaming?.enabled,
     memoryDreaming?.sessionWindow,
     memoryDreaming?.schedule,
+    memoryDreaming?.timezone,
     memoryDreaming?.instructions,
     memoryDreaming?.mineSkills,
     memoryDreaming?.autoAdopt,
@@ -672,6 +673,7 @@ export function MemoryPanel({
                       <input
                         type="text"
                         value={settings.dreaming.schedule ?? ''}
+                        maxLength={128}
                         placeholder="0 4 * * *"
                         disabled={!canEdit || savingProvider}
                         onChange={(e) => {

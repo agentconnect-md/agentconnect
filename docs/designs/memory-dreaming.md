@@ -382,7 +382,11 @@ to run once dreaming has usage data.
   by a `DreamScheduler` synced on the same agent reconcile as `agent.json.crons[]`.
   It is a SIBLING of `Scheduler`, not a reuse: that one synthesizes a message and
   runs it as a turn, while a dream is a background job with no conversation. A
-  tick landing while a dream is in flight is skipped, never queued.
+  tick landing while a dream is in flight is skipped, never queued. Each fire
+  also obeys the agent lifecycle gates (pause, safety-drain, per-agent drain,
+  daemon drain) — as skips, so the schedule resumes by itself on unpause.
+- **Idle-triggered (later)** — "N hours since the last consolidation and the
+  agent has been active since" fits the daemon (it already tracks per-agent
   activity), as a follow-up once scheduled dreams are proven.
 
 ## 10. Control plane and console

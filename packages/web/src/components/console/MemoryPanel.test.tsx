@@ -259,6 +259,51 @@ describe('MemoryPanel settings draft', () => {
     expect(dreamingBox()?.checked).toBe(false)
   })
 
+  it('resyncs on a timezone-only refresh, so a later save cannot restore the stale zone', async () => {
+    // `timezone` is preserved through the wholesale memory PATCH but not edited
+    // in the UI. If it were missing from the prop-sync dependency list, a
+    // timezone-only poll would leave the draft on the old zone and the next
+    // unrelated edit would silently write it back.
+    const props = {
+      agentId: '44444444-4444-4444-8444-444444444444',
+      canEdit: true,
+      memoryProvider: 'managed',
+      autoDistill: false
+    }
+    const policy = (timezone: string) => ({ enabled: true, schedule: '0 4 * * *', timezone })
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root?.render(<MemoryPanel {...props} memoryDreaming={policy('UTC')} />)
+    })
+    await openSettings(container)
+
+    // Only the timezone changes upstream.
+    await act(async () => {
+      root?.render(<MemoryPanel {...props} memoryDreaming={policy('America/New_York')} />)
+    })
+
+    // An unrelated edit (auto-distill) then saves the WHOLE binding.
+    const distillBox = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((box) =>
+      box.parentElement?.textContent?.includes('Automatically distill')
+    )
+    await act(async () => {
+      distillBox?.click()
+    })
+    const save = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.textContent === 'Save memory settings'
+    )
+    await act(async () => {
+      save?.click()
+    })
+
+    const saved = mocks.updateAgent.mock.calls.at(-1)?.[1] as
+      { memory?: { dreaming?: { timezone?: string } } } | undefined
+    expect(saved?.memory?.dreaming?.timezone).toBe('America/New_York')
+  })
+
   it('uses an app confirmation before persisting a backend switch', async () => {
     const nativeConfirm = vi.fn(() => true)
     vi.stubGlobal('confirm', nativeConfirm)
