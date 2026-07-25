@@ -1469,7 +1469,11 @@ export default function AgentDetailView() {
       {tab === 'workspace' &&
         (!da.name.startsWith(MOCK_PREFIX) ? (
           <div className="p-4 desktop:p-0">
-            <WorkspaceFiles agentId={id} workdir={da.workdir} />
+            <WorkspaceFiles
+              agentId={id}
+              workdir={da.workdir}
+              canEdit={da.workspace.mode === 'scratch' && da.canManageSharing}
+            />
           </div>
         ) : (
           <div className="flex flex-col gap-4 p-4 desktop:p-0">

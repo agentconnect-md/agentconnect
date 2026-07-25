@@ -215,6 +215,15 @@ its scratch label opens the agent's Workspace tab. Do not add a second "View
 workspace" action to the row. A single right-aligned `Edit` action owns workspace
 type, repository, branch, working-subdirectory, and repository-access settings.
 
+In the Workspace tab, callers who can edit the agent may create or edit one UTF-8
+file at a time when the workspace is scratch. New files use exclusive creation and
+never overwrite an existing path. Existing-file edits load the complete file and
+save against the mtime they opened. Saving while the agent is working surfaces a
+conflict; otherwise the daemon quiesces its runtime before atomically publishing the
+file, so an agent write is never silently overwritten. GitHub workspace files remain
+read-only, and workspace bodies continue to transit the control plane without being
+persisted.
+
 For a GitHub workspace, show the effective `read` or `write` access beside the
 repository. The editor may switch freely between scratch and GitHub, choose another
 repository or branch, change the working subdirectory, edit read/write access, or bind

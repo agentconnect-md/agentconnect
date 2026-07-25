@@ -16,6 +16,7 @@ import {
   RESERVED_MCP_SERVER_NAME,
   GitCloneUrlError,
   RepoSubdirError,
+  MAX_WORKSPACE_EDIT_BYTES,
   normalizeGitCloneUrl,
   redactGitUrlSecrets,
   normalizeRepoSubdir
@@ -1945,6 +1946,24 @@ export const WorkspaceFileDto = z.object({
   offset: z.number().nullable(), // byte offset this slice starts at
   nextOffset: z.number().nullable(), // byte offset to request next; clients must NOT recompute from content
   truncated: z.boolean().nullable() // true ⇒ nextOffset < size (more bytes remain)
+})
+
+/** `PUT /agents/:id/workspace/file` query — one scratch-workspace file. */
+export const PutWorkspaceFileQueryDto = z.object({
+  path: z.string().min(1).max(4096)
+})
+/** Omit `ifMatchMtime` for exclusive create; provide it for optimistic replace.
+ * Byte length is rechecked because zod counts characters, not encoded bytes. */
+export const PutWorkspaceFileBody = z
+  .object({
+    content: z.string().max(MAX_WORKSPACE_EDIT_BYTES),
+    ifMatchMtime: z.string().datetime().optional()
+  })
+  .strict()
+export const WorkspaceFileWriteDto = z.object({
+  path: z.string(),
+  size: z.number().int().nonnegative(),
+  mtime: z.string()
 })
 
 // ── agent memory (a directory at the agent root: MEMORY.md index + topic files; proxied daemon-local) ──

@@ -71,6 +71,7 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
   const workspaceRead = {
     list: vi.fn(async () => ({ agentId: 'a', path: '', exists: true, entries: [] })),
     read: vi.fn(async () => ({ agentId: 'a', path: 'f', exists: false })),
+    write: vi.fn(async () => ({ agentId: 'a', path: 'f', size: 0, mtime: '2026-06-26T00:00:00.000Z' })),
     ...((over.workspaceRead as any) ?? {})
   }
   const workspaceGit = {
@@ -510,6 +511,30 @@ describe('CpClient dispatch', () => {
     expect(ack.type).toBe('ack')
     expect(ack.payload.ok).toBe(true)
     expect(ack.corr).toBe(f.id)
+  })
+
+  it('replies workspace/write/ok from the scratch workspace file seam', async () => {
+    const write = vi.fn(async () => ({
+      agentId: 'a1',
+      path: 'notes.md',
+      size: 7,
+      mtime: '2026-06-26T00:01:00.000Z'
+    }))
+    const { t, workspaceRead } = await readyClient({ workspaceRead: { write } as any })
+    const payload = {
+      agentId: 'a1',
+      path: 'notes.md',
+      contentBase64: Buffer.from('updated').toString('base64'),
+      ifMatchMtime: '2026-06-26T00:00:00.000Z'
+    }
+    const f = JSON.parse(frame('workspace/write', payload, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    expect(workspaceRead.write).toHaveBeenCalledWith(payload)
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('workspace/write/ok')
+    expect(rep.corr).toBe(f.id)
+    expect(rep.payload.size).toBe(7)
   })
 
   it('replies workspace/gitstatus/result from the workspaceGit seam', async () => {

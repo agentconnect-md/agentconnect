@@ -47,6 +47,8 @@ import {
   WorkspaceListPage,
   WorkspaceReadReq,
   WorkspaceReadContent,
+  WorkspaceWriteReq,
+  WorkspaceWriteOk,
   WorkspaceGitStatusReq,
   WorkspaceGitStatus,
   WorkspaceGitPullReq,
@@ -198,11 +200,13 @@ export const FRAME_SCHEMAS = {
   // ── channel agent directory (agent collaboration; D→C REQ → REP) ──
   'channel/agents': ChannelAgentsReq,
   'channel/agents/ok': ChannelAgentsOk,
-  // ── workspace file browsing (console live pull; bytes transit, never stored) ──
+  // ── workspace files (console live access; bytes transit, never stored) ──
   'workspace/list': WorkspaceListReq,
   'workspace/list/page': WorkspaceListPage,
   'workspace/read': WorkspaceReadReq,
   'workspace/read/content': WorkspaceReadContent,
+  'workspace/write': WorkspaceWriteReq,
+  'workspace/write/ok': WorkspaceWriteOk,
   'workspace/gitstatus': WorkspaceGitStatusReq,
   'workspace/gitstatus/result': WorkspaceGitStatus,
   'workspace/gitpull': WorkspaceGitPullReq,
@@ -365,6 +369,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('workspace/list/page', FRAME_SCHEMAS['workspace/list/page']),
   frame('workspace/read', FRAME_SCHEMAS['workspace/read']),
   frame('workspace/read/content', FRAME_SCHEMAS['workspace/read/content']),
+  frame('workspace/write', FRAME_SCHEMAS['workspace/write']),
+  frame('workspace/write/ok', FRAME_SCHEMAS['workspace/write/ok']),
   frame('workspace/gitstatus', FRAME_SCHEMAS['workspace/gitstatus']),
   frame('workspace/gitstatus/result', FRAME_SCHEMAS['workspace/gitstatus/result']),
   frame('workspace/gitpull', FRAME_SCHEMAS['workspace/gitpull']),

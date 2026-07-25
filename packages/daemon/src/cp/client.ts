@@ -33,6 +33,7 @@ import type {
   SessionToolBodyReq,
   WorkspaceListReq,
   WorkspaceReadReq,
+  WorkspaceWriteReq,
   WorkspaceGitStatusReq,
   WorkspaceGitPullReq,
   GitCredRequest,
@@ -63,7 +64,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import { buildEnvelope, decodeEnvelope, encode, MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import type { SessionReader } from './session-reader.js'
-import { WorkspaceViolationError, type WorkspaceReader } from './workspace-reader.js'
+import { WorkspaceConflictError, WorkspaceViolationError, type WorkspaceReader } from './workspace-reader.js'
 import {
   MemoryViolationError,
   MemoryPathError,
@@ -115,7 +116,7 @@ export interface CpClientDeps {
   configApply: ConfigApply
   /** Read-only session list/history seam over the local store (§1/§12). */
   sessionRead: SessionReader
-  /** Read-only workspace list/read seam over the agents' workspace dirs (§1/§12). */
+  /** Live workspace file seam over the agents' workspace dirs (§1/§12). */
   workspaceRead: WorkspaceReader
   /** Git status/pull seam over the agents' git-repo workspace dirs (§1/§12). */
   workspaceGit: WorkspaceGit
@@ -821,6 +822,14 @@ export class CpClient {
           .catch((err) => this.workspaceError(frame.id, 'workspace/read', err))
         return
       }
+      case 'workspace/write': {
+        // Console manager edit: bounded scratch text create/replace; never log content.
+        this.deps.workspaceRead
+          .write(frame.payload as WorkspaceWriteReq)
+          .then((ok) => this.reply(frame, 'workspace/write/ok', ok))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/write', err))
+        return
+      }
       case 'workspace/gitstatus': {
         // git status of a git-repo workspace — a dirty tree / non-repo is DATA, not an error.
         this.deps.workspaceGit
@@ -995,11 +1004,16 @@ export class CpClient {
     }
   }
 
-  /** Map a workspace read failure onto the wire: containment/bad-request
+  /** Map a workspace file failure onto the wire: stale writes → CONFLICT;
+   *  containment/bad-request
    *  violations → BAD_PAYLOAD (their messages are hand-written and path-free);
    *  anything else → INTERNAL with a GENERIC message — raw fs errors (ELOOP,
    *  EACCES, …) embed absolute host paths that must not leak to the CP/UI. */
   private workspaceError(corr: string, op: string, err: unknown): void {
+    if (err instanceof WorkspaceConflictError) {
+      this.sendError(corr, 'CONFLICT', `${op} failed: ${err.message}`, false)
+      return
+    }
     if (err instanceof WorkspaceViolationError) {
       this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false)
       return

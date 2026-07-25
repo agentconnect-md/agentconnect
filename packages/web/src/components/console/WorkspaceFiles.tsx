@@ -10,19 +10,22 @@
 // This component owns the whole workspace surface for a live agent (repo card +
 // Files card); the parent just mounts it. Demo agents use <WorkspaceFilesMock>.
 
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import {
+  ApiError,
   fetchWorkspaceFile,
+  fetchWorkspaceFileFull,
   fetchWorkspaceFiles,
   fetchWorkspaceGitStatus,
+  writeWorkspaceFile,
   workspaceGitPull,
   type WorkspaceEntryDto,
   type WorkspaceFileDto,
   type WorkspaceGitStatusDto
 } from '@/lib/api'
 import { GithubMark, Spinner } from '@/components/marks'
-import { Icon } from '@/components/ui'
+import { Button, Icon } from '@/components/ui'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { escapeHtml, highlight, linkifyHtml, loadHljs } from '@/lib/highlight'
 import { resolveWorkspaceMarkdownLink } from '@/components/console/workspace-links'
@@ -138,11 +141,12 @@ type Viewer = {
   loadingMore: boolean
 }
 
-export function WorkspaceFiles({ agentId, workdir }: { agentId: string; workdir?: string }) {
+export function WorkspaceFiles({ agentId, workdir, canEdit }: { agentId: string; workdir?: string; canEdit: boolean }) {
   const isMobile = useIsMobile()
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [viewer, setViewer] = useState<Viewer | null>(null)
+  const [editPath, setEditPath] = useState<string | null>(null) // '' creates; a path replaces
   // git-repo workspaces: current-checkout status + on-demand pull. `scratch` is set
   // only on a successful non-repo response — an offline daemon leaves both unset so
   // we don't mislabel a repo as scratch.
@@ -284,6 +288,7 @@ export function WorkspaceFiles({ agentId, workdir }: { agentId: string; workdir?
     viewerRequestRef.current += 1
     setGitMsg(null)
     setViewer(null)
+    setEditPath(null)
     autoOpenedRef.current = false
     return () => {
       viewerRequestRef.current += 1
@@ -370,6 +375,12 @@ export function WorkspaceFiles({ agentId, workdir }: { agentId: string; workdir?
             : cur
         )
     )
+  }
+
+  const onFileSaved = (path: string) => {
+    setEditPath(null)
+    setRefreshTick((tick) => tick + 1)
+    selectFile(path, path.split('/').at(-1) ?? path)
   }
 
   // Map browse-relative path → git status letter for the tree badges. git file paths
@@ -488,11 +499,25 @@ export function WorkspaceFiles({ agentId, workdir }: { agentId: string; workdir?
       <FileBrowserShell
         title="Files"
         headerEnd={
-          summary ? (
-            <span className="mono text-[11px] text-(--text-tertiary)" title={workdir}>
-              {summary}
-            </span>
-          ) : undefined
+          <div className="flex min-w-0 items-center gap-2">
+            {summary ? (
+              <span className="mono truncate text-[11px] text-(--text-tertiary)" title={workdir}>
+                {summary}
+              </span>
+            ) : null}
+            {canEdit ? (
+              <Button
+                variant="secondary"
+                size="xs"
+                className="flex-none"
+                onClick={() => setEditPath('')}
+                disabled={editPath !== null}
+              >
+                <Icon name="file-plus" size={13} />
+                New file
+              </Button>
+            ) : null}
+          </div>
         }
       >
         {root?.loading && !root.entries && (
@@ -530,6 +555,8 @@ export function WorkspaceFiles({ agentId, workdir }: { agentId: string; workdir?
                       onMore={onViewerMore}
                       resolveLink={resolveWorkspaceLink}
                       onBack={onBack}
+                      canEdit={canEdit}
+                      onEdit={() => setEditPath(viewer.path)}
                     />
                   )
                 : null
@@ -537,6 +564,14 @@ export function WorkspaceFiles({ agentId, workdir }: { agentId: string; workdir?
           />
         )}
       </FileBrowserShell>
+      {editPath !== null && (
+        <WorkspaceFileEditor
+          agentId={agentId}
+          editPath={editPath}
+          onClose={() => setEditPath(null)}
+          onSaved={onFileSaved}
+        />
+      )}
     </div>
   )
 }
@@ -572,12 +607,16 @@ function FilePreview({
   viewer,
   onMore,
   resolveLink,
-  onBack
+  onBack,
+  canEdit,
+  onEdit
 }: {
   viewer: Viewer
   onMore: () => void
   resolveLink: (href: string) => MarkdownLinkResolution | undefined
   onBack?: () => void
+  canEdit: boolean
+  onEdit: () => void
 }) {
   const isMd = MARKDOWN_FILE_RE.test(viewer.name)
   const [mode, setMode] = useState<'preview' | 'code'>(isMd ? 'preview' : 'code')
@@ -624,15 +663,25 @@ function FilePreview({
         meta={meta}
         onBack={onBack}
         actions={
-          isMd && isText ? (
-            <span className="pillbar flex-none">
-              <button className={mode === 'preview' ? 'pill on' : 'pill'} onClick={() => setMode('preview')}>
-                Preview
-              </button>
-              <button className={mode === 'code' ? 'pill on' : 'pill'} onClick={() => setMode('code')}>
-                Code
-              </button>
-            </span>
+          (canEdit && isText && !!viewer.file?.mtime) || (isMd && isText) ? (
+            <div className="flex flex-none items-center gap-2">
+              {canEdit && isText && viewer.file?.mtime ? (
+                <Button variant="secondary" size="xs" onClick={onEdit}>
+                  <Icon name="pencil" size={14} />
+                  Edit
+                </Button>
+              ) : null}
+              {isMd && isText ? (
+                <span className="pillbar flex-none">
+                  <button className={mode === 'preview' ? 'pill on' : 'pill'} onClick={() => setMode('preview')}>
+                    Preview
+                  </button>
+                  <button className={mode === 'code' ? 'pill on' : 'pill'} onClick={() => setMode('code')}>
+                    Code
+                  </button>
+                </span>
+              ) : null}
+            </div>
           ) : undefined
         }
       />
@@ -690,6 +739,145 @@ function FilePreview({
         </>
       )}
     </>
+  )
+}
+
+function WorkspaceFileEditor({
+  agentId,
+  editPath,
+  onClose,
+  onSaved
+}: {
+  agentId: string
+  editPath: string
+  onClose: () => void
+  onSaved: (path: string) => void
+}) {
+  const creating = editPath === ''
+  const titleId = useId()
+  const [path, setPath] = useState(editPath)
+  const [content, setContent] = useState('')
+  const [mtime, setMtime] = useState<string | null>(null)
+  const [loading, setLoading] = useState(!creating)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (creating) return
+    let active = true
+    fetchWorkspaceFileFull(agentId, editPath).then(
+      (file) => {
+        if (!active) return
+        if (!file.exists || file.encoding !== 'utf8' || !file.mtime) {
+          setError('Only existing text files can be edited.')
+        } else {
+          setContent(file.content ?? '')
+          setMtime(file.mtime)
+        }
+        setLoading(false)
+      },
+      (e) => {
+        if (active) {
+          setError(msg(e))
+          setLoading(false)
+        }
+      }
+    )
+    return () => {
+      active = false
+    }
+  }, [agentId, creating, editPath])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !saving) onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose, saving])
+
+  const save = async () => {
+    const filePath = path.trim()
+    if (!filePath) {
+      setError('Enter a workspace-relative file path.')
+      return
+    }
+    if (saving || loading || (!creating && !mtime)) return
+    setSaving(true)
+    setError(null)
+    try {
+      await writeWorkspaceFile(agentId, filePath, creating ? { content } : { content, ifMatchMtime: mtime! })
+      onSaved(filePath)
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.status === 409
+          ? 'The agent is working or the file changed. Retry when it is idle.'
+          : msg(e)
+      )
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="scrim">
+      <div className="modal desktop:max-w-[760px]" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <div className="modalhead">
+          <Icon name={creating ? 'file-plus' : 'pencil'} size={16} />
+          <span id={titleId} className="flex-1 font-sans text-[16px] font-semibold leading-normal">
+            {creating ? 'New workspace file' : `Edit ${editPath}`}
+          </span>
+          <button className="iconbtn" aria-label="Close" disabled={saving} onClick={onClose}>
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+        <div className="modalbody">
+          {loading ? (
+            <div className="flex justify-center py-8">
+              <Spinner size={28} />
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {creating && (
+                <label className="fld">
+                  <span className="fldlbl">Workspace-relative path</span>
+                  <input
+                    className="inp mono"
+                    value={path}
+                    onChange={(event) => setPath(event.target.value)}
+                    placeholder="notes.md"
+                    aria-label="New file path"
+                    autoFocus
+                  />
+                </label>
+              )}
+              <textarea
+                className="inp mono min-h-[320px] resize-y px-3 py-[10px] leading-[1.6] focus:border-(--brand) focus:outline-none"
+                value={content}
+                onChange={(event) => setContent(event.target.value)}
+                aria-label={creating ? 'New file content' : `Edit ${editPath}`}
+                spellCheck={false}
+                disabled={saving || (!creating && !mtime)}
+                autoFocus={!creating}
+              />
+            </div>
+          )}
+          {error && (
+            <div className="mt-3 text-[12.5px] text-(--status-error)" role="alert">
+              {error}
+            </div>
+          )}
+        </div>
+        <div className="modalfoot">
+          <div className="flex-1" />
+          <Button variant="ghost" disabled={saving} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button disabled={saving || loading || (!creating && !mtime)} onClick={() => void save()}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+        </div>
+      </div>
+    </div>
   )
 }
 

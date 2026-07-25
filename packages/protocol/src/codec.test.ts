@@ -801,7 +801,7 @@ describe('milestone A4 gate — the CP is off the webchat hot path', () => {
   })
 })
 
-describe('workspace file browsing frames (console live pull)', () => {
+describe('workspace file access frames (console live proxy)', () => {
   it('workspace/list REQ round-trips with the CP epoch ext (no seq/launchId)', () => {
     const r = decodeEnvelope(
       envelope(

@@ -149,7 +149,7 @@ import {
   gitRepoLabel
 } from '@agentconnect.md/protocol'
 import { createSessionReader } from './cp/session-reader.js'
-import { createWorkspaceReader } from './cp/workspace-reader.js'
+import { createWorkspaceReader, WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createMemoryReader } from './cp/memory-reader.js'
 import {
   createMemoryProvider,
@@ -1320,6 +1320,7 @@ export class Daemon {
   // Agent detach waits these leases before archiving/closing the last connection.
   private activeDispatchesByAgent = new Map<string, Set<Promise<void>>>()
   private activeDispatchDoneByKey = new Map<string, Promise<void>>()
+  private workspaceFileWrites = new Map<string, Promise<void>>()
   // Connection-specific half of the same lease. Unlike `pending[].conn`, this is
   // acquired immediately when dispatchOne captures replyConn, before its first
   // await, so ordinary config reconciliation cannot close that pre-pending use.
@@ -7096,6 +7097,34 @@ export class Daemon {
     }
   }
 
+  private async admitActiveDispatch(agentId: string, key: string): Promise<() => void> {
+    while (this.workspaceFileWrites.has(agentId)) await this.workspaceFileWrites.get(agentId)
+    return this.beginActiveDispatch(agentId, key)
+  }
+
+  private async withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T> {
+    while (this.workspaceFileWrites.has(agentId)) await this.workspaceFileWrites.get(agentId)
+    let release!: () => void
+    const done = new Promise<void>((resolve) => (release = resolve))
+    this.workspaceFileWrites.set(agentId, done)
+    try {
+      if (
+        this.draining ||
+        this.drainingAgents.has(agentId) ||
+        this.safetyDrainingAgents.has(agentId) ||
+        (this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0 ||
+        this.agentHasLiveSdkWork(agentId)
+      ) {
+        throw new WorkspaceConflictError('the agent is working in this workspace; retry when it is idle')
+      }
+      await this.stopHost(agentId)
+      return await write()
+    } finally {
+      if (this.workspaceFileWrites.get(agentId) === done) this.workspaceFileWrites.delete(agentId)
+      release()
+    }
+  }
+
   private holdReplyConnection(
     conn: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | undefined
   ): () => void {
@@ -7169,7 +7198,7 @@ export class Daemon {
           return
         }
         try {
-          const releaseDispatch = this.beginActiveDispatch(entry.agentId, key)
+          const releaseDispatch = await this.admitActiveDispatch(entry.agentId, key)
           let sessionId: string | null
           try {
             sessionId = await this.dispatchOne(entry, key)
@@ -10328,6 +10357,9 @@ export class Daemon {
   private async ensureHostAsync(agentId: string, opts: { allowAgentDrain?: boolean } = {}): Promise<AcpHost> {
     const assertStartAllowed = (): void => {
       if (this.draining) throw new Error(`host start blocked while daemon is draining (${agentId})`)
+      if (this.workspaceFileWrites.has(agentId)) {
+        throw new Error(`host start blocked while a workspace file is being written (${agentId})`)
+      }
       // Already-admitted work in another logical session may keep using the warm
       // host while a conversation-scoped interrupt drains. It may not allocate a
       // replacement after that host/start generation has been evicted.
@@ -11999,6 +12031,7 @@ export class Daemon {
         acp: true,
         features: [
           ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
+          'workspace-file-edit-v1',
           // Host can confine agent processes (issue #642) — the console uses this to
           // enable/disable the per-agent Run in sandbox toggle.
           ...(this.sandboxMechanism ? ['sandbox'] : []),
@@ -12049,7 +12082,13 @@ export class Daemon {
       degradedScopes: () => this.cpDegradedScopes(),
       configApply: this.cpConfigApply(),
       sessionRead: createSessionReader(this.store, (agentId) => this.replyConnFor(agentId)?.workspaceUrl),
-      workspaceRead: createWorkspaceReader((id) => this.agents.get(id)?.workspace.path),
+      workspaceRead: createWorkspaceReader(
+        (id) => {
+          const workspace = this.agents.get(id)?.workspace
+          return workspace ? { root: workspace.path, scratch: workspace.mode === 'from-scratch' } : undefined
+        },
+        (id, write) => this.withWorkspaceFileWrite(id, write)
+      ),
       workspaceGit: createWorkspaceGit(
         (id) => this.agents.get(id)?.workspace.path,
         (id) => {
