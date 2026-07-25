@@ -440,8 +440,8 @@ export default function AddIntegrationModal({
   const [appName, setAppName] = useState(agent.name)
   const [botToken, setBotToken] = useState('')
   const [appToken, setAppToken] = useState('')
-  // Feishu/Lark gateway: 'feishu' (open.feishu.cn, China) vs 'lark' (open.larksuite.com, intl).
-  const [feishuRegion, setFeishuRegion] = useState<'feishu' | 'lark'>('feishu')
+  // Feishu/Lark gateway: new installs default to international Lark.
+  const [feishuRegion, setFeishuRegion] = useState<'feishu' | 'lark'>('lark')
   const [saving, setSaving] = useState(false)
   const [showErrors, setShowErrors] = useState(false)
   const [err, setErr] = useState<string | null>(null)

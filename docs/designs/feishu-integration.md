@@ -469,12 +469,14 @@ single field threaded end to end:
   `FeishuConnection` passes it to the SDK factory, which sets `domain`
   (`Lark.Domain.Feishu` / `Lark.Domain.Lark`) on both the `Lark.Client` and the
   `WSClient` long connection.
-- **Control Plane** — persisted on the `integration` row (`feishuRegion`, NULL ⇒
-  `'feishu'`); `integrationToSpec` reads it into the wire spec, and
+- **Control Plane** — new create requests default an omitted region to `'lark'`;
+  the selection is persisted on the `integration` row, while historical NULL
+  rows still resolve to `'feishu'`. `integrationToSpec` reads it into the wire spec, and
   `verifyFeishuBot` exchanges credentials against the matching gateway (verifying
   a Lark app against the Feishu host would spuriously reject it).
-- **Web** — a region selector in the Add-integration modal; the "Open the
-  console" link and copy switch between the Feishu and Lark developer consoles.
+- **Web** — the Add-integration region selector opens with Lark selected; the
+  operator can switch to Feishu, and the "Open the console" link and copy follow
+  that selection.
 
 ## 11. Current constraints and follow-ups
 
