@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -99,6 +99,23 @@ describe('agents/memory (directory model)', () => {
     expect(await readMemoryFile(dir, 'notes.md')).toBe('v2')
     // a precondition on a brand-new (absent) file with a non-empty mtime is a conflict
     await expect(writeMemoryFile(dir, 'fresh.md', 'x', 'some-mtime')).rejects.toBeInstanceOf(MemoryConflictError)
+  })
+
+  it('does not follow a pre-planted predictable temp symlink', async () => {
+    const dir = newDir()
+    const outside = join(newDir(), 'outside.txt')
+    const outsideHistory = join(newDir(), 'history.txt')
+    writeFileSync(outside, 'keep')
+    writeFileSync(outsideHistory, 'keep-history')
+    mkdirSync(memoryDir(dir), { recursive: true })
+    symlinkSync(outside, join(memoryDir(dir), 'notes.md.tmp'))
+    symlinkSync(outsideHistory, join(memoryDir(dir), MEMORY_HISTORY_FILENAME))
+
+    await writeMemoryFile(dir, 'notes.md', 'updated')
+
+    expect(readFileSync(outside, 'utf8')).toBe('keep')
+    expect(readFileSync(outsideHistory, 'utf8')).toBe('keep-history')
+    expect(readFileSync(join(memoryDir(dir), 'notes.md'), 'utf8')).toBe('updated')
   })
 })
 
