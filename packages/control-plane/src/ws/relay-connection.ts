@@ -94,7 +94,11 @@ export class RelayConnection implements RelayChannel {
 
   /** Begin: wire transport callbacks (the gate opens at AUTHENTICATING). */
   start(): void {
-    this.transport.onMessage((t) => void this.onText(t))
+    this.transport.onMessage((t) => {
+      void this.onText(t).catch(() => {
+        if (this.state !== 'CLOSED') this.close(1011, 'SERVER_INTERNAL')
+      })
+    })
     this.transport.onClose(() => this.onClose())
   }
 

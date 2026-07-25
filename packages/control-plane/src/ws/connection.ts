@@ -47,7 +47,9 @@ export class DaemonConnection implements ConnChannel {
   start(): void {
     this.state = 'AUTHENTICATING'
     this.transport.onMessage((t) => {
-      void this.onText(t)
+      void this.onText(t).catch(() => {
+        if (this.state !== 'CLOSED') this.close(1011, 'SERVER_INTERNAL')
+      })
     })
     this.transport.onClose((c, r) => this.onClose(c, r))
   }

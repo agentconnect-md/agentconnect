@@ -58,14 +58,7 @@ export default {
         // `npm i @agentconnect.md/daemon` never grabs an rc. The script restores
         // the manifest changed by prepareCmd before any later release step runs.
         publishCmd:
-          'sh scripts/publish-daemon-if-changed.sh "${lastRelease.gitTag}" "${nextRelease.version.includes("-") ? "rc" : "latest"}"',
-        // Expose the published tag to release.yaml so image publication can run
-        // next in the same workflow. Also write the version + notes to the job
-        // summary. Both happen only when a release is actually published. Notes
-        // come straight from semantic-release's release context; the quoted
-        // heredoc keeps markdown/backticks/$ literal under /bin/sh.
-        successCmd:
-          '[ -n "$GITHUB_OUTPUT" ] && echo \'version=${nextRelease.gitTag}\' >> "$GITHUB_OUTPUT"; [ -n "$GITHUB_STEP_SUMMARY" ] && cat >> "$GITHUB_STEP_SUMMARY" <<\'__ACP_NOTES__\'\n### 🚀 Released ${nextRelease.gitTag}\n\n${nextRelease.notes}\n__ACP_NOTES__\n'
+          'sh scripts/publish-daemon-if-changed.sh "${lastRelease.gitTag}" "${nextRelease.version.includes("-") ? "rc" : "latest"}"'
       }
     ],
     [
@@ -83,6 +76,11 @@ export default {
           'sh scripts/publish-cli-if-changed.sh "${lastRelease.gitTag}" "${nextRelease.version.includes("-") ? "rc" : "latest"}"'
       }
     ],
+    // Expose the published tag to release.yaml so image publication can run
+    // next in the same workflow, and add the version + notes to the job summary.
+    // Write through Node's file API so commit-derived notes are never evaluated
+    // by the shell.
+    './scripts/semantic-release-summary.js',
     [
       // semantic-release creates and pushes the git tag before publish plugins
       // run. Keep that behavior for rc builds, but let this adapter skip the
