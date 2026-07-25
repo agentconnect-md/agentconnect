@@ -17,7 +17,8 @@ const api = vi.hoisted(() => ({
   cancelDream: vi.fn(),
   listDreamFiles: vi.fn(),
   fetchDreamFileFull: vi.fn(),
-  fetchAgentMemoryFull: vi.fn()
+  fetchAgentMemoryFull: vi.fn(),
+  listAgentMemory: vi.fn()
 }))
 
 vi.mock('@/lib/api', () => ({
@@ -59,6 +60,7 @@ beforeEach(() => {
   api.listDreamFiles.mockResolvedValue({ exists: true, files: [{ name: 'MEMORY.md', size: 10, mtime: 'x' }] })
   api.fetchDreamFileFull.mockResolvedValue({ exists: true, content: '# Memory (rebuilt)' })
   api.fetchAgentMemoryFull.mockResolvedValue({ exists: true, content: '# Memory (old)', mtime: null })
+  api.listAgentMemory.mockResolvedValue({ exists: true, files: [{ name: 'MEMORY.md', size: 10, mtime: 'x' }] })
   api.adoptDream.mockResolvedValue(dream({ status: 'adopted' }))
   api.discardDream.mockResolvedValue(dream({ status: 'discarded' }))
 })
@@ -166,5 +168,78 @@ describe('DreamPanel', () => {
     const host = await render()
     await act(async () => button(host, 'Dream now')?.click())
     expect(host.textContent).toContain('already running')
+  })
+
+  it('surfaces files the dream DELETES, which exist live but not in the staged tree', async () => {
+    // A dream removes a topic simply by leaving it out. Listing only the staged
+    // tree would hide the single most destructive change from the reviewer.
+    api.listDreams.mockResolvedValue([dream()])
+    api.listAgentMemory.mockResolvedValue({
+      exists: true,
+      files: [
+        { name: 'MEMORY.md', size: 10, mtime: 'x' },
+        { name: 'stale.md', size: 10, mtime: 'x' }
+      ]
+    })
+    api.fetchDreamFileFull.mockImplementation(async (_a: string, _d: string, path: string) =>
+      path === 'stale.md' ? { exists: false, content: '' } : { exists: true, content: '# Memory (rebuilt)' }
+    )
+    api.fetchAgentMemoryFull.mockImplementation(async (_a: string, path: string) =>
+      path === 'stale.md'
+        ? { exists: true, content: '- an obsolete note', mtime: null }
+        : { exists: true, content: '# Memory (old)', mtime: null }
+    )
+
+    const host = await render()
+    await act(async () => button(host, 'Review')?.click())
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // Named up front, and the live-only file is selectable and marked.
+    expect(host.textContent).toContain('Adopting removes 1 file')
+    expect(host.textContent).toContain('stale.md')
+    expect(host.textContent).toContain('Deleted by this dream')
+    expect(host.textContent).toContain('- an obsolete note')
+  })
+
+  it('keeps revalidating once settled, so an externally started dream appears', async () => {
+    // Scheduled dreams (and other consoles) start work we did not initiate; a
+    // settled list that stopped polling would go stale until a page reload.
+    vi.useFakeTimers()
+    try {
+      api.listDreams.mockResolvedValue([])
+      const host = await render()
+      expect(host.textContent).toContain('No dreams yet')
+
+      api.listDreams.mockResolvedValue([dream({ status: 'running', trigger: 'schedule' })])
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(31_000)
+      })
+      expect(host.textContent).toContain('scheduled')
+      expect(button(host, 'Dreaming…')?.disabled).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the server message for an adoption fence conflict', async () => {
+    // adopt's 409 is the snapshot fence, NOT the one-in-flight rule — telling
+    // the user to "wait for the running dream" would be actively wrong.
+    api.listDreams.mockResolvedValue([dream()])
+    const fence = new FakeApiError(409)
+    fence.message = 'the live store changed since this dream was snapshotted; rerun the dream or force'
+    api.adoptDream.mockRejectedValue(fence)
+
+    const host = await render()
+    await act(async () => button(host, 'Review')?.click())
+    await act(async () => button(host, 'Adopt')?.click())
+    const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')].filter(
+      (b) => b.textContent?.trim() === 'Adopt'
+    )
+    await act(async () => confirm.at(-1)?.click())
+
+    expect(host.textContent).toContain('rerun the dream')
+    expect(host.textContent).not.toContain('already running')
   })
 })

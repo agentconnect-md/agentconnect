@@ -25,6 +25,7 @@ import {
   listDreamFiles,
   fetchDreamFileFull,
   fetchAgentMemoryFull,
+  listAgentMemory,
   isDreamTerminal,
   ApiError,
   type DreamDto,
@@ -34,7 +35,11 @@ import { Icon, Button } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 
+/** While a dream is in flight the list changes fast. */
 const POLL_MS = 4000
+/** …and even when settled it is NOT static: a scheduled dream (or another
+ *  console) can start one, so revalidate slowly rather than going silent. */
+const IDLE_POLL_MS = 30_000
 
 /** Human label for a job's lifecycle state. */
 const STATUS_LABEL: Record<DreamDto['status'], string> = {
@@ -49,8 +54,8 @@ const STATUS_LABEL: Record<DreamDto['status'], string> = {
 
 function statusTone(status: DreamDto['status']): string {
   if (status === 'completed') return 'text-(--brand-soft-text)'
-  if (status === 'failed') return 'text-(--danger)'
-  if (status === 'adopted') return 'text-(--success)'
+  if (status === 'failed') return 'text-(--status-error)'
+  if (status === 'adopted') return 'text-(--status-online)'
   return 'text-(--text-tertiary)'
 }
 
@@ -102,23 +107,27 @@ export function DreamPanel({
     void refresh()
   }, [refresh])
 
-  // Poll only while something is in flight — a settled list is static.
+  // Poll fast while something is in flight, slowly otherwise — a settled list is
+  // NOT static now that dreams can start on a schedule or from another client.
   const inFlight = (dreams ?? []).some((d) => !isDreamTerminal(d.status))
   useEffect(() => {
-    if (!inFlight) return
-    const timer = setInterval(() => void refresh(), POLL_MS)
+    const timer = setInterval(() => void refresh(), inFlight ? POLL_MS : IDLE_POLL_MS)
     return () => clearInterval(timer)
   }, [inFlight, refresh])
 
-  const run = async (fn: () => Promise<unknown>) => {
+  const run = async (fn: () => Promise<unknown>, action: 'start' | 'other' = 'other') => {
     setBusy(true)
     setActionError(null)
     try {
       await fn()
       await refresh()
     } catch (e) {
+      // 409 means different things per action: a racing START hit the
+      // one-in-flight rule, while a refused ADOPT means the snapshot fence saw
+      // live memory change. Only the start case gets our wording — everything
+      // else keeps the server's specific message, which says what to do.
       setActionError(
-        e instanceof ApiError && e.status === 409
+        e instanceof ApiError && e.status === 409 && action === 'start'
           ? 'A dream is already running for this agent — wait for it to finish, or cancel it.'
           : e instanceof ApiError && e.status === 503
             ? 'This agent’s daemon is offline.'
@@ -126,6 +135,9 @@ export function DreamPanel({
               ? e.message
               : 'That did not work.'
       )
+      // A conflict usually means our view is stale (someone else started or
+      // adopted something) — resync so the row and its actions are correct.
+      if (e instanceof ApiError && e.status === 409) await refresh()
     } finally {
       setBusy(false)
     }
@@ -156,7 +168,7 @@ export function DreamPanel({
           <Button
             variant="secondary"
             disabled={busy || !!startBlocker}
-            onClick={() => void run(() => startDream(agentId))}
+            onClick={() => void run(() => startDream(agentId), 'start')}
           >
             {inFlight ? 'Dreaming…' : 'Dream now'}
           </Button>
@@ -167,7 +179,7 @@ export function DreamPanel({
         <div className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">{startBlocker}</div>
       ) : null}
       {actionError ? (
-        <div className="font-sans text-[12px] font-normal leading-normal text-(--danger)">{actionError}</div>
+        <div className="font-sans text-[12px] font-normal leading-normal text-(--status-error)">{actionError}</div>
       ) : null}
       {listError ? (
         <div className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">{listError}</div>
@@ -275,7 +287,11 @@ function DreamReview({
   onAdopt: () => void
   onDiscard: () => void
 }) {
-  const [files, setFiles] = useState<MemoryFileEntry[] | null>(null)
+  // The UNION of live and staged paths, not just the staged tree. Adoption swaps
+  // the whole directory, and a dream deletes a topic simply by omitting it — so
+  // a live-only path is a DELETION the reviewer must see. Listing only staged
+  // files would hide exactly the most destructive change.
+  const [paths, setPaths] = useState<{ name: string; live: boolean; staged: boolean }[] | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [staged, setStaged] = useState<string>('')
   const [live, setLive] = useState<string>('')
@@ -285,15 +301,21 @@ function DreamReview({
 
   useEffect(() => {
     let alive = true
-    setFiles(null)
+    setPaths(null)
     setSelected(null)
     setError(null)
     void (async () => {
       try {
-        const page = await listDreamFiles(agentId, dreamId)
+        const [stagedPage, livePage] = await Promise.all([listDreamFiles(agentId, dreamId), listAgentMemory(agentId)])
         if (!alive) return
-        setFiles(page.files)
-        setSelected(page.files[0]?.name ?? null)
+        const stagedNames = new Set(stagedPage.files.map((f: MemoryFileEntry) => f.name))
+        const liveNames = new Set(livePage.exists ? livePage.files.map((f: MemoryFileEntry) => f.name) : [])
+        const merged = [...new Set([...stagedNames, ...liveNames])]
+          .map((name) => ({ name, live: liveNames.has(name), staged: stagedNames.has(name) }))
+          // Deletions first — they are the change most likely to be missed.
+          .sort((a, b) => Number(a.staged) - Number(b.staged) || a.name.localeCompare(b.name))
+        setPaths(merged)
+        setSelected(merged[0]?.name ?? null)
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : 'Could not load the staged store.')
       }
@@ -310,13 +332,13 @@ function DreamReview({
     void (async () => {
       try {
         // The staged copy and the live file for the same path, so the reviewer
-        // can see exactly what adopting would change.
+        // can see exactly what adopting would change — including a removal.
         const [stagedFile, liveFile] = await Promise.all([
           fetchDreamFileFull(agentId, dreamId, selected),
           fetchAgentMemoryFull(agentId, selected)
         ])
         if (id !== request.current) return
-        setStaged(stagedFile.content)
+        setStaged(stagedFile.exists ? stagedFile.content : '')
         setLive(liveFile.exists ? liveFile.content : '')
       } catch (e) {
         if (id === request.current) setError(e instanceof Error ? e.message : 'Could not load that file.')
@@ -326,13 +348,16 @@ function DreamReview({
     })()
   }, [agentId, dreamId, selected])
 
+  const current = paths?.find((p) => p.name === selected)
+  const deleting = (paths ?? []).filter((p) => p.live && !p.staged)
+
   return (
     <div className="flex flex-col gap-3 rounded-(--radius-md) border border-(--border-subtle) bg-(--surface-sunken) p-3">
-      {error ? <div className="font-sans text-[12px] leading-normal text-(--danger)">{error}</div> : null}
+      {error ? <div className="font-sans text-[12px] leading-normal text-(--status-error)">{error}</div> : null}
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="flex flex-wrap items-center gap-1">
-          {(files ?? []).map((file) => (
+          {(paths ?? []).map((file) => (
             <button
               key={file.name}
               type="button"
@@ -344,9 +369,10 @@ function DreamReview({
               }
             >
               {file.name}
+              {file.live && !file.staged ? ' · deleted' : ''}
             </button>
           ))}
-          {files?.length === 0 ? (
+          {paths?.length === 0 ? (
             <span className="font-sans text-[12px] text-(--text-tertiary)">Nothing staged.</span>
           ) : null}
         </span>
@@ -355,12 +381,19 @@ function DreamReview({
             <Button variant="secondary" disabled={busy} onClick={onDiscard}>
               Discard
             </Button>
-            <Button disabled={busy || !files?.length} onClick={onAdopt}>
+            <Button disabled={busy || !paths?.some((p) => p.staged)} onClick={onAdopt}>
               <Icon name="check" size={13} /> Adopt
             </Button>
           </span>
         ) : null}
       </div>
+
+      {deleting.length ? (
+        <div className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
+          Adopting removes {deleting.length} file{deleting.length === 1 ? '' : 's'} the dream left out:{' '}
+          {deleting.map((p) => p.name).join(', ')}.
+        </div>
+      ) : null}
 
       {loading ? (
         <div className="flex items-center gap-2 font-sans text-[12px] text-(--text-tertiary)">
@@ -375,11 +408,17 @@ function DreamReview({
             </pre>
           </div>
           <div className="flex flex-col gap-1">
-            <span className="font-sans text-[11px] font-semibold leading-normal text-(--brand-soft-text)">
-              Staged by this dream
+            <span
+              className={
+                current && current.live && !current.staged
+                  ? 'font-sans text-[11px] font-semibold leading-normal text-(--status-error)'
+                  : 'font-sans text-[11px] font-semibold leading-normal text-(--brand-soft-text)'
+              }
+            >
+              {current && current.live && !current.staged ? 'Deleted by this dream' : 'Staged by this dream'}
             </span>
             <pre className="m-0 max-h-[320px] overflow-auto rounded-sm border border-(--border-subtle) bg-(--surface-card) p-2 font-mono text-[11.5px] leading-[1.5] whitespace-pre-wrap text-(--text-primary)">
-              {staged}
+              {current && current.live && !current.staged ? '(removed — this file will be deleted)' : staged}
             </pre>
           </div>
         </div>
