@@ -4,7 +4,16 @@
 // mappers translate the lean wire DTOs into the richer UI shapes from `./data`,
 // filling fields the API does not (yet) expose with placeholders.
 
-import type { Agent, AgentCallPolicy, DaemonRow, ResourceVisibility, Session, StatusKey, Workspace } from '@/lib/data'
+import type {
+  Agent,
+  AgentCallPolicy,
+  DaemonRow,
+  ResourceVisibility,
+  Session,
+  SessionImage,
+  StatusKey,
+  Workspace
+} from '@/lib/data'
 import { isSelfSender, MOCK_MODE } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
@@ -361,6 +370,7 @@ export interface SessionMessageDto {
   ts: string
   kind: string
   text: string
+  attachments?: SessionImage[]
   toolCallId?: string // ties the row to its full body (session/tool-body key)
   toolStatus?: string // ACP ToolCallStatus — drives the console status badge
   toolKind?: string // ACP ToolKind — drives the console icon

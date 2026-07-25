@@ -10,7 +10,7 @@
  * preview and assembles a page under the per-frame budget (newest rows that fit);
  * the FULL body is pulled on demand via `toolBody`, chunked by offset.
  */
-import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
+import { MAX_FRAME_BYTES, SessionImageAttachment as SessionImageAttachmentSchema } from '@agentconnect.md/protocol'
 import type {
   SessionListReq,
   SessionListPage,
@@ -58,6 +58,26 @@ function decodeEventCursor(raw: string | undefined): TranscriptEventCursor | nul
  *  codec's `encode`), measured in bytes. */
 function encodedBytes(payload: unknown): number {
   return Buffer.byteLength(JSON.stringify(payload))
+}
+
+function transcriptAttachments(raw: string | null | undefined): NonNullable<SessionMessage['attachments']> {
+  if (!raw) return []
+  try {
+    const parsed = SessionImageAttachmentSchema.array().max(1).safeParse(JSON.parse(raw))
+    return parsed.success ? parsed.data : []
+  } catch {
+    return []
+  }
+}
+
+/** The persisted text keeps this synthetic suffix for prompt replay; the console
+ * receives the real image instead, matching the live turn. */
+function withoutAttachmentMention(text: string, attachments: NonNullable<SessionMessage['attachments']>): string {
+  if (attachments.length === 0) return text
+  const mention = `[attached: ${attachments.map((attachment) => `${attachment.name} (${attachment.mimeType})`).join(', ')}]`
+  if (text === mention) return ''
+  const suffix = `\n${mention}`
+  return text.endsWith(suffix) ? text.slice(0, -suffix.length) : text
 }
 
 /** Largest index ≤ `len` that lands on a UTF-8 character boundary — never cuts a
@@ -228,13 +248,15 @@ export function createSessionReader(
       const names = store.getDisplayNames(ordered.flatMap((r) => [r.sender, ...mentionedUserIds(r.text)]))
       const built = ordered.map<SessionMessage>((r) => {
         const senderName = names.get(r.sender)
+        const attachments = transcriptAttachments(r.attachmentsJson)
         const base: SessionMessage = {
           seq: r.seq,
           sender: r.sender,
           ...(senderName ? { senderName } : {}),
           ts: r.ts,
           kind: r.kind,
-          text: substituteUserMentions(r.text, names)
+          text: substituteUserMentions(withoutAttachmentMention(r.text, attachments), names),
+          ...(attachments.length ? { attachments } : {})
         }
         if (r.kind !== 'tool' || !r.body) return base
         // Enrich a tool row: surface toolCallId/status/kind + an inline body (verbatim

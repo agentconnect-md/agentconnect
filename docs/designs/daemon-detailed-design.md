@@ -839,7 +839,7 @@ Thread semantics: main progress goes at the thread anchor or, for a subscribed t
 
 - Extract text from `app_mention` / `message`. For a mid-thread @mention, `SlackConnection.getThreadReplies()` in `packages/daemon/src/slack/connection.ts` fetches the full thread through `conversations.replies`, and `SessionManager` uses that snapshot as prompt context.
 - Download attachment bytes from `files.url_private` with bot token and create ACP `image` / `resource` blocks.
-- Decode a relay-delivered, size-bounded webchat image locally and feed it through the same ACP attachment-block builder; only its name and MIME summary enter the transcript.
+- Decode a relay-delivered, size-bounded webchat image locally and feed it through the same ACP attachment-block builder. Keep the bounded image only in the daemon-local transcript so an authorized console history read can display it again; the Control Plane proxies that read without persisting the bytes.
 - Normalize to `NormalizedMessage`, then `session/prompt`.
 
 ### 9.3 Telegram / Discord / Feishu Mapping (Implemented)

@@ -3,7 +3,7 @@
  * fetch URL and download the bytes daemon-locally with the provider token.
  * Webchat may instead arrive with bounded inline bytes from the relay content
  * plane. Both forms become ACP image/resource blocks at prompt assembly; the
- * bytes never traverse the daemon↔CP control WS.
+ * daemon also retains bounded webchat images for authorized transcript replay.
  */
 export interface Attachment {
   /** Stable source id (Slack file.id). */

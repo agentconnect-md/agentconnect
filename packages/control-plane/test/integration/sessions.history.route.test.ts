@@ -538,7 +538,16 @@ describe('GET /sessions/:id/messages (history pull via the owning agent)', () =>
       { sessions: [] },
       {
         sessionId: SESSION,
-        messages: [{ seq: 1, sender: '@dana', ts: '1718000000.000100', kind: 'text', text: 'ship it' }],
+        messages: [
+          {
+            seq: 1,
+            sender: '@dana',
+            ts: '1718000000.000100',
+            kind: 'text',
+            text: 'ship it',
+            attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: 'aW1hZ2U=' }]
+          }
+        ],
         nextCursor: 'c-50'
       }
     )
@@ -549,8 +558,12 @@ describe('GET /sessions/:id/messages (history pull via the owning agent)', () =>
       url: `${ORG}/sessions/${SESSION}/messages?agentId=${AGENT}&cursor=c-100&limit=25`
     })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { messages: Array<{ text: string }>; nextCursor: string | null }
+    const body = res.json() as {
+      messages: Array<{ text: string; attachments?: Array<{ name: string }> }>
+      nextCursor: string | null
+    }
     expect(body.messages[0]!.text).toBe('ship it')
+    expect(body.messages[0]!.attachments?.[0]?.name).toBe('screen.webp')
     expect(body.nextCursor).toBe('c-50')
     expect(spy.histCalls[0]!.daemonId).toBe(DAEMON)
     expect(spy.histCalls[0]!.req).toEqual({ sessionId: SESSION, cursor: 'c-100', limit: 25 })

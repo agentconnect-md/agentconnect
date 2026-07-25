@@ -1175,7 +1175,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   })
 
-  it('delivers an inline webchat image as an ACP image block and records only its summary', async () => {
+  it('delivers an inline webchat image and retains it for transcript replay', async () => {
     const { factory, host } = streamingHost([text('I can see it')])
     ;(host as any).promptSupports = (kind: string) => kind === 'image'
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
@@ -1205,8 +1205,13 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const rows = (daemon as any).store.threadTranscript(CONV, `webchat:${CONV}`) as Array<{
       sender: string
       text: string
+      attachmentsJson?: string
     }>
-    expect(rows.find((row) => row.sender === 'ada')?.text).toBe('What is shown?\n[attached: screen.webp (image/webp)]')
+    const userRow = rows.find((row) => row.sender === 'ada')
+    expect(userRow?.text).toBe('What is shown?\n[attached: screen.webp (image/webp)]')
+    expect(JSON.parse(userRow?.attachmentsJson ?? '[]')).toEqual([
+      { name: 'screen.webp', mimeType: 'image/webp', data: bytes.toString('base64') }
+    ])
     await daemon.stop()
   }, 15_000)
 

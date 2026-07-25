@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { SessionKey } from './route.js'
+import { WebchatImageAttachment } from './webchat.js'
 
 /**
  * Session read-back (C→D REQ → REP) — the console's on-demand pulls.
@@ -90,6 +91,10 @@ export const ToolBody = z.object({
 })
 export type ToolBody = z.infer<typeof ToolBody>
 
+/** One bounded webchat image persisted only in the daemon-local transcript. */
+export const SessionImageAttachment = WebchatImageAttachment
+export type SessionImageAttachment = z.infer<typeof SessionImageAttachment>
+
 /** One message in a session transcript page (a body — returned only for display). */
 export const SessionMessage = z.object({
   seq: z.number().int(), // daemon-local insertion order within the session
@@ -98,6 +103,7 @@ export const SessionMessage = z.object({
   ts: z.string(), // platform timestamp (daemon-local string form)
   kind: z.string(), // "text" / tool / … (daemon transcript kind)
   text: z.string(),
+  attachments: z.array(SessionImageAttachment).max(1).optional(),
   // ── tool-body enrichment (optional ⇒ text/reasoning rows and old daemons omit these) ──
   toolCallId: z.string().optional(), // parsed from the ToolBody (tool rows only)
   toolStatus: z.string().optional(), // ACP ToolCallStatus, surfaced for the console badge
