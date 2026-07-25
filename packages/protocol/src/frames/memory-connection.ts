@@ -51,8 +51,12 @@ export const MemoryDreamingPolicy = z
     enabled: z.boolean(),
     /** How many recent sessions to mine (default 20). */
     sessionWindow: z.number().int().min(1).max(100).optional(),
-    /** Cron expression for scheduled dreams (same syntax as agent crons). */
+    /** Cron expression for scheduled dreams (same syntax as agent crons). A tick
+     *  that lands while a dream is already in flight is skipped, not queued. */
     schedule: z.string().min(1).max(128).optional(),
+    /** IANA zone the `schedule` is evaluated in (as on agent crons). Absent ⇒ the
+     *  daemon host's local time. */
+    timezone: z.string().min(1).max(64).optional(),
     /** Operator steering text applied through the whole dream pipeline. */
     instructions: z.string().max(4096).optional(),
     /** Also mine reusable procedures into candidate skills (never auto-installed). */

@@ -215,6 +215,7 @@ export function MemoryPanel({
     memoryDreaming?.enabled,
     memoryDreaming?.sessionWindow,
     memoryDreaming?.schedule,
+    memoryDreaming?.timezone,
     memoryDreaming?.instructions,
     memoryDreaming?.mineSkills,
     memoryDreaming?.autoAdopt,
@@ -662,11 +663,27 @@ export function MemoryPanel({
                       setProviderError(null)
                     }}
                   />
-                  Enable dreaming — consolidate the store from recent sessions on demand, staged for review before it
-                  replaces the live store. Run a dream from the API (scheduled dreams arrive in a later release).
+                  Enable dreaming — consolidate the store from recent sessions, staged for review before it replaces the
+                  live store. Runs on demand, plus the schedule below if you set one.
                 </label>
                 {settings.dreaming.enabled ? (
                   <div className="ml-6 flex flex-col gap-2">
+                    <label className="flex flex-col gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                      Schedule (cron, optional — leave blank to dream only on demand)
+                      <input
+                        type="text"
+                        value={settings.dreaming.schedule ?? ''}
+                        maxLength={128}
+                        placeholder="0 4 * * *"
+                        disabled={!canEdit || savingProvider}
+                        onChange={(e) => {
+                          const schedule = e.target.value
+                          setSettings((current) => ({ ...current, dreaming: { ...current.dreaming, schedule } }))
+                          setProviderError(null)
+                        }}
+                        className="rounded-sm border border-(--border-subtle) bg-(--surface-card) px-2 py-1 font-mono text-[12px] leading-normal text-(--text-primary)"
+                      />
+                    </label>
                     <label className="flex flex-col gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
                       Instructions (optional — steer what the dream focuses on)
                       <textarea

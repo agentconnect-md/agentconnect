@@ -50,7 +50,7 @@ import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-
 import { toolsForIntegrations, MEMORY_TOOL_NAMES, ALL_TOOL_NAMES, GITHUB_REVIEW_TOOLS } from './mcp/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, trustedExtractionMode } from './agents/memory-distiller.js'
-import { DreamRunner } from './agents/dream-runner.js'
+import { DreamRunner, DreamStateError } from './agents/dream-runner.js'
 import { createDreamReader } from './cp/dream-reader.js'
 import { routeRules, type RouteVia } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
@@ -108,6 +108,7 @@ import {
 } from './discord/render.js'
 import { FeishuConverger, renderStatusReply as renderFeishuStatusReply, type FeishuAction } from './feishu/render.js'
 import { Scheduler, buildSyntheticMessage } from './scheduler/scheduler.js'
+import { DreamScheduler } from './scheduler/dream-scheduler.js'
 import { planChannelIntros, buildIntroMessage } from './agents/channel-intro.js'
 import { buildHookMessage, hookAnchorText } from './messages/hook-message.js'
 import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './github/poster.js'
@@ -243,7 +244,8 @@ import type {
   GitCommitIdentity,
   GithubReviewAuthorized,
   HookReviewResult,
-  FeishuRegion
+  FeishuRegion,
+  MemoryDreamingPolicy
 } from '@agentconnect.md/protocol'
 
 /** Format an error for logs, surfacing a JSON-RPC/ACP RequestError's `code` and
@@ -420,6 +422,14 @@ function reviewResultForWire(effect: GithubReviewEffect): HookReviewResult {
 
 // Cap per-session `!queue` depth so a hung turn or a user spamming `!queue` can't
 // grow `queued` without bound. Past the cap we reject with a clear message.
+/** An agent's dreaming policy, or undefined when it has none. An absent memory
+ *  binding means the managed default, but dreaming itself is always opt-in — and
+ *  it is only valid on the managed provider (the protocol enforces that too). */
+function dreamingPolicyOf(agent: { memory?: Agent['memory'] } | undefined): MemoryDreamingPolicy | undefined {
+  const memory = agent?.memory
+  return memory?.provider === 'managed' ? memory.dreaming : undefined
+}
+
 const MAX_QUEUED_PER_SESSION = 10
 
 /** Bounded hard-stop for a dream extraction whose runtime ignores `session/cancel`:
@@ -1167,6 +1177,7 @@ export class Daemon {
   // from its membership snapshot instead — see refreshChannels). Created in start().
   private channelNameResolver?: ChannelNameResolver
   private scheduler!: Scheduler
+  private dreamScheduler!: DreamScheduler
   private sessions!: SessionManager
   // integrationId -> the SlackConnection that owns it (for replies). Holds BOTH
   // socket-mode (direct) and send-only (shared-bot) connections — a shared bot's
@@ -1940,6 +1951,11 @@ export class Daemon {
       newTraceId: () => randomUUID(),
       warn: (m) => this.log.warn(m)
     })
+    // Scheduled dreams ride their own trigger, never a synthetic turn (§9).
+    this.dreamScheduler = new DreamScheduler({
+      onFire: (agentId) => this.onDreamScheduleFire(agentId),
+      warn: (m) => this.log.warn(m)
+    })
 
     // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
     const groups = consolidate(agents)
@@ -2011,6 +2027,7 @@ export class Daemon {
 
     // register crons (sync per agent — the same converge reconcile re-runs on change)
     for (const a of agents) this.scheduler.sync(a.id, a.crons)
+    for (const a of agents) this.dreamScheduler.sync(a.id, dreamingPolicyOf(a))
     const cronCount = agents.reduce((n, a) => n + this.scheduler.count(a.id), 0)
     if (cronCount) this.log.info(`registered ${cronCount} cron(s)`)
 
@@ -2123,6 +2140,7 @@ export class Daemon {
       this.interruptAgentTurns(id, 'stop')
       this.agents.delete(id)
       this.scheduler.unregister(id)
+      this.dreamScheduler.unregister(id)
       this.gitCreds.remove(id)
       this.gitCredServer?.revoke(id)
       // Use the one generation-safe teardown path: it evicts the host synchronously,
@@ -2173,6 +2191,7 @@ export class Daemon {
       // crons live in the whole-agent signature, so any change re-syncs the agent's
       // job set (design §5.2: crons change → Scheduler upsert/remove). Idempotent.
       this.scheduler.sync(a.id, a.crons)
+      this.dreamScheduler.sync(a.id, dreamingPolicyOf(a))
       // host-spawn or workspace change → evict the cached host (once) so the next
       // session lazily re-spawns it with fresh env and/or re-materializes cwd via
       // prepareWorkspace. Soft-only and integration-only changes never touch the host.
@@ -2225,6 +2244,7 @@ export class Daemon {
       // start every agent is a toStart), so the repo is cloned ahead of the first message.
       this.prefetchClone(a as LoadedAgent)
       this.scheduler.sync(a.id, a.crons)
+      this.dreamScheduler.sync(a.id, dreamingPolicyOf(a))
     }
     // Reconcile exactly once from the final live roster. The close phase is strict:
     // detach ACKs only after last-reference connections have actually stopped.
@@ -3368,11 +3388,7 @@ export class Daemon {
   private dreamRunner(): DreamRunner {
     this.dreamRunnerInstance ??= new DreamRunner({
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
-      dreamingPolicyFor: (id) => {
-        const memory = this.agents.get(id)?.memory
-        // Absent binding ⇒ managed default, but dreaming stays opt-in (no policy).
-        return memory?.provider === 'managed' ? memory.dreaming : undefined
-      },
+      dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
       store: this.store,
       extract: (agentId, systemPrompt, prompt, signal) =>
         this.runDreamExtraction(agentId, systemPrompt, prompt, signal),
@@ -11894,6 +11910,46 @@ export class Daemon {
   }
 
   /**
+   * A dream schedule fired for `agentId` (docs/designs/memory-dreaming.md §9).
+   * Deliberately NOT a turn: no synthetic message, no transcript row, no inbox
+   * entry — just the background job, exactly as a manual `dream/start` would.
+   *
+   * Refusals here are ordinary operating states, not errors: a tick that lands
+   * while the previous dream is still running is SKIPPED (dreams are not queued
+   * — a backlog of stale consolidations helps nobody), and a policy switched off
+   * between the reconcile and the tick simply does nothing.
+   */
+  private onDreamScheduleFire(agentId: string): void {
+    // Lifecycle gates first — a scheduled dream is background work that spawns a
+    // runtime host and burns model tokens, so it obeys the same operator stops as
+    // any other scheduled trigger. The cron stays REGISTERED throughout: these are
+    // skips, not deregistrations, so the schedule resumes by itself on unpause.
+    if (this.paused(agentId)) {
+      this.log.info(`scheduled dream skipped for agent "${agentId}": agent is paused`)
+      return
+    }
+    if (this.safetyDrainingAgents.has(agentId)) {
+      this.log.info(`scheduled dream skipped for agent "${agentId}": interrupted turns are still stopping`)
+      return
+    }
+    if (this.draining || this.drainingAgents.has(agentId)) {
+      this.log.info(`scheduled dream skipped for agent "${agentId}": draining`)
+      return
+    }
+    void this.dreamRunner()
+      .start(agentId, { trigger: 'schedule' })
+      .then((dream) => this.log.info(`dream ${dream.dreamId} started on schedule for agent "${agentId}"`))
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err)
+        if (err instanceof DreamStateError) {
+          this.log.info(`scheduled dream skipped for agent "${agentId}": ${message}`)
+          return
+        }
+        this.log.error(`scheduled dream failed to start for agent "${agentId}": ${message}`)
+      })
+  }
+
+  /**
    * A cron fired for `agentId` (§8.6 bypass). The fire is stamped into D11
    * first (the daemon owns last-run, protocol §5.4); the anchor+dispatch ride
    * the shared {@link fireTrigger} path.
@@ -12536,6 +12592,7 @@ export class Daemon {
     await this.drainForShutdown()
     const errors: unknown[] = []
     this.scheduler?.stop()
+    this.dreamScheduler?.stop()
     await Promise.resolve(this.cpClient?.stop()).catch((e) => errors.push(e))
     // Stop the body-bearing capture pump before closing its verified clients or
     // SQLite store. Unfinished operations remain durable for restart recovery.
