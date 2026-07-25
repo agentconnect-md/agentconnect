@@ -151,7 +151,7 @@ export const ConfigSchema = z.object({
     .default({ level: 'info' }),
   limits: z
     .object({
-      maxAgents: z.number().int().default(8),
+      maxAgents: z.number().int().default(32),
       maxConcurrentSessions: z.number().int().default(32),
       // Idle window before the sweep TTL-closes a session (§7.3) AND reaps its
       // agent's ACP host back to `provisioned` (§7.2). Background work is protected
@@ -202,7 +202,7 @@ export const ConfigSchema = z.object({
         .default(8 * 1024 * 1024)
     })
     .default({
-      maxAgents: 8,
+      maxAgents: 32,
       maxConcurrentSessions: 32,
       agentIdleTimeoutMs: 900_000,
       agentMaxLifetimeMs: 21_600_000,

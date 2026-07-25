@@ -290,7 +290,7 @@ The layout keeps machine configuration, per-agent desired state, durable runtime
 
   // ---------- Local capacity/limits ----------
   "limits": {
-    "maxAgents": 8,
+    "maxAgents": 32,
     "maxConcurrentSessions": 32,
     "agentIdleTimeoutMs": 900000 // Reclaim ACP adapter after 15m idle; background-aware reclaim: background-task-aware-reclaim.md.
   }
@@ -956,7 +956,7 @@ control channel.
     "acp": true,
     "features": [] // Capability flags
   },
-  "maxAgents": 8,
+  "maxAgents": 32,
   "localState": {
     // What the daemon currently believes it holds, used for reconciliation
     "assignments": ["slack:C0TEAM:-"], // Session keys currently being served
