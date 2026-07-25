@@ -43,6 +43,23 @@ function daemonLabel(agent: Agent): string {
   return !agent.daemon || agent.daemon === '—' ? 'unplaced' : agent.daemon
 }
 
+/** Stands in for granted peers this viewer can't resolve (restricted agents are
+ *  filtered out of `/agents`, yet their grants remain active and are preserved
+ *  by the CP on save). Without it the allow-list would under-report itself. */
+function HiddenSelectionChip({ count, note }: { count: number; note?: string }) {
+  return (
+    <span
+      title={note}
+      className="flex h-6 flex-none items-center gap-[5px] rounded-full border border-dashed border-(--border-default) pr-[9px] pl-[7px]"
+    >
+      <Icon name="eye-off" size={12} color="var(--text-tertiary)" className="flex-none" />
+      <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
+        {count} not visible
+      </span>
+    </span>
+  )
+}
+
 function plural(count: number, word: string): string {
   return count === 1 ? word : `${word}s`
 }
@@ -77,6 +94,23 @@ export function AgentCallVisibility({
     () => visibleSelected.flatMap((id) => peers.find((p) => p.id === id) ?? []),
     [peers, visibleSelected]
   )
+  // Grants can point at peers this viewer cannot see: `/agents` hides restricted
+  // agents from non-owners, and the CP's resolvePolicyAgentIds deliberately
+  // RETAINS those existing grants when a collaborator edits the policy. So an
+  // unresolvable id is an active grant we must still account for — never treat
+  // `selectedPeers.length === 0` as "nothing is selected".
+  const uniqueSelectedIds = useMemo(() => [...new Set(selectedIds)], [selectedIds])
+  const hiddenSelectedCount = useMemo(
+    () => uniqueSelectedIds.filter((id) => !peerIds.has(id)).length,
+    [uniqueSelectedIds, peerIds]
+  )
+  const selectedTotal = selectedPeers.length + hiddenSelectedCount
+  const hiddenSelectedNote =
+    hiddenSelectedCount > 0
+      ? `${hiddenSelectedCount} selected ${plural(hiddenSelectedCount, 'agent')} ${
+          hiddenSelectedCount === 1 ? 'is' : 'are'
+        } restricted and not visible to you.`
+      : undefined
   const policyPeers = mode === 'all' ? peers : selectedPeers
   const effectivePeerIdSet = useMemo(() => new Set(effectivePeerIds ?? []), [effectivePeerIds])
   const effectivePeers = useMemo(
@@ -123,7 +157,18 @@ export function AgentCallVisibility({
     onChange('selected', next)
   }
 
-  const toggle = (
+  // Read-only surfaces (the agent page's Access card, or a viewer without
+  // sharing rights) must not render a segmented toggle and a search box that
+  // look editable but silently do nothing. They get the state as a plain line
+  // plus a non-interactive peer list instead — same card, honest affordances.
+  const toggle = !editable ? (
+    <div className="flex items-center gap-2">
+      <Icon name={mode === 'all' ? 'globe' : 'lock'} size={13} color="var(--text-tertiary)" className="flex-none" />
+      <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+        {mode === 'all' ? 'All agents' : 'Selected agents'}
+      </span>
+    </div>
+  ) : (
     <div
       className={
         variant === 'section'
@@ -206,6 +251,39 @@ export function AgentCallVisibility({
           </span>
         )}
       </div>
+    ) : !editable ? (
+      // Read-only `selected`: the chosen peers as plain chips — no search field,
+      // no remove buttons, nothing that invites an edit this surface can't make.
+      <div className="min-h-[60px] px-4 py-[14px]">
+        {selectedTotal === 0 ? (
+          <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
+            No agents selected.
+          </span>
+        ) : (
+          <div className="flex flex-wrap items-center gap-[6px]">
+            {selectedPeers.map((peer) => (
+              // `displayName` is unbounded, so the chip must be able to shrink and
+              // clip inside this wrapping row — otherwise one long name paints over
+              // the neighbouring direction card (desktop) or past the card edge.
+              <span
+                key={peer.id}
+                className="flex h-6 max-w-full min-w-0 items-center gap-[5px] rounded-full bg-(--surface-active) pr-[9px] pl-[5px]"
+              >
+                <span className="flex h-4 w-4 flex-none items-center justify-center rounded-xs border border-(--border-subtle) bg-(--surface-card) [&>svg]:h-full [&>svg]:w-full">
+                  <AgentIconView icon={peer.icon} runtime={peer.runtime} size={16} />
+                </span>
+                <span
+                  title={agentLabel(peer)}
+                  className="truncate font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)"
+                >
+                  {agentLabel(peer)}
+                </span>
+              </span>
+            ))}
+            {hiddenSelectedCount > 0 && <HiddenSelectionChip count={hiddenSelectedCount} note={hiddenSelectedNote} />}
+          </div>
+        )}
+      </div>
     ) : (
       <div className="relative min-h-[60px] px-4 py-[14px]">
         <div className="flex h-8 items-center gap-2 overflow-x-auto rounded-md border border-(--border-subtle) bg-(--surface-card) px-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -235,6 +313,10 @@ export function AgentCallVisibility({
               </button>
             </span>
           ))}
+          {/* Grants to peers this editor can't see are preserved by the CP on
+              save — surface them so the row never reads as a smaller allow-list
+              than the one actually stored. */}
+          {hiddenSelectedCount > 0 && <HiddenSelectionChip count={hiddenSelectedCount} note={hiddenSelectedNote} />}
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -297,7 +379,15 @@ export function AgentCallVisibility({
     </div>
   ) : null
 
-  const policyPeerCount = policyPeers.length
+  // Whether ANYTHING is granted counts hidden peers (else a restricted-but-
+  // invisible selection reads as "No peers selected"), but the reachability
+  // FRACTION must not: `effectivePeerIds` is computed over the viewer-filtered
+  // roster, so no reciprocal policy was ever evaluated for a hidden peer. Mixing
+  // a visible-only numerator into a visible+hidden denominator would state an
+  // exact negative about something unknown, so the unknown part is reported
+  // separately rather than folded into the fraction.
+  const hasSelection = mode === 'all' ? policyPeers.length > 0 : selectedTotal > 0
+  const evaluatedCount = policyPeers.length
   const relationshipLabel = direction === 'inbound' ? 'Can call this agent' : 'This agent can call'
   const effectiveSummary =
     effectivePeerIds !== undefined && mode === 'selected' ? (
@@ -308,16 +398,25 @@ export function AgentCallVisibility({
       >
         <span className="flex min-w-0 items-center gap-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)">
           <Icon
-            name={policyPeerCount === 0 ? 'users' : 'arrow-left-right'}
+            name={hasSelection ? 'arrow-left-right' : 'users'}
             size={13}
             color="var(--text-tertiary)"
             className="flex-none"
           />
-          {policyPeerCount === 0 ? 'No peers selected' : relationshipLabel}
+          {hasSelection ? relationshipLabel : 'No peers selected'}
         </span>
-        {policyPeerCount > 0 && (
-          <span className="flex-none font-mono text-[11px] font-semibold leading-normal text-(--text-primary)">
-            {effectivePeers.length} of {policyPeerCount}
+        {hasSelection && (
+          <span className="flex flex-none items-center gap-[6px] font-mono text-[11px] font-semibold leading-normal text-(--text-primary)">
+            {evaluatedCount > 0 && (
+              <span>
+                {effectivePeers.length} of {evaluatedCount}
+              </span>
+            )}
+            {hiddenSelectedCount > 0 && (
+              <span title={hiddenSelectedNote} className="font-medium text-(--text-tertiary)">
+                {hiddenSelectedCount} unknown
+              </span>
+            )}
           </span>
         )}
       </div>
