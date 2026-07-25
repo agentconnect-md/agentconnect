@@ -60,6 +60,12 @@ const deps = () => ({
   newTraceId: () => 't'
 })
 
+describe('SlackConnection initialization', () => {
+  it('constructs the Bolt v5 Socket Mode receiver', () => {
+    expect(() => new SlackConnection(deps() as any)).not.toThrow()
+  })
+})
+
 describe('SlackConnection.downloadFile', () => {
   afterEach(() => vi.unstubAllGlobals())
 

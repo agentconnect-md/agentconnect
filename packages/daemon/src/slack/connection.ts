@@ -1,7 +1,6 @@
-import { HttpsProxyAgent } from 'https-proxy-agent'
-import pkg from '@slack/bolt'
-const { App, LogLevel } = pkg
-import { WebClient } from '@slack/web-api'
+import { App, LogLevel, SocketModeReceiver } from '@slack/bolt'
+import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
+import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'
 import {
   decodeSlackStatusOverflowValue,
   extractSlackMessageText,
@@ -299,14 +298,22 @@ function isMissingCustomizeScope(err: unknown): boolean {
 // call per message for installations that have not been upgraded yet.
 const CUSTOM_USERNAME_REPROBE_MS = 5 * 60_000
 
+function proxyDispatcher(): ProxyAgent | undefined {
+  const url = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY
+  return url ? new ProxyAgent(url) : undefined
+}
+
+function fetchWithDispatcher(dispatcher: Dispatcher): FetchFunction {
+  return (url, init) => undiciFetch(url, { ...(init as Parameters<typeof undiciFetch>[1]), dispatcher })
+}
+
 /** Build the send-only {@link AppLike}: a real Slack `WebClient` (xoxb) for the send
  *  surface + inert event/start/stop members (shared-bot-relay.md §11). Same proxy +
  *  timeout/retry tuning as the socket-mode factory. */
 function sendOnlyApp(botToken: string): AppLike {
-  const proxyUrl = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY
-  const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined
+  const dispatcher = proxyDispatcher()
   const client = new WebClient(botToken, {
-    ...(agent ? { agent } : {}),
+    ...(dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}),
     timeout: 30_000,
     retryConfig: { retries: 2 }
   })
@@ -349,24 +356,31 @@ export class SlackConnection {
     factory: (opts: { token: string; appToken: string }) => AppLike = (o) => {
       // If HTTPS_PROXY or HTTP_PROXY is set, route all Slack API calls and
       // WebSocket connections through that proxy.
-      const proxyUrl = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY
-      const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined
-      return new App({
-        token: o.token,
-        appToken: o.appToken,
-        socketMode: true,
-        ...(agent ? { agent } : {}),
+      const dispatcher = proxyDispatcher()
+      const clientOptions: WebClientOptions = {
+        ...(dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}),
         // Bound the Web API per-request time + retries. The @slack/web-api default
         // "10 retries over ~30 minutes" would, combined with our serial send-queue,
         // let one transient failure block all delivery for a whole turn. 30s is a
-        // compromise: long enough for the initial connect handshake (auth.test /
-        // apps.connections.open) to survive a slow/VPN link, yet still bounded so a
-        // stuck send can't wedge the queue indefinitely. Tradeoff: this timeout is
-        // shared by connect AND send calls, so the ceiling also caps the worst-case
-        // stall on the hot send path — acceptable given retries:2 and the daemon's
-        // background reconnect loop retries a failed connect anyway.
-        clientOptions: { timeout: 30_000, retryConfig: { retries: 2 } },
-        ...(deps.boltDebug ? { logLevel: LogLevel.DEBUG } : {})
+        // compromise: long enough for auth.test and sends to survive a slow/VPN link,
+        // yet still bounded so a stuck call cannot wedge the queue indefinitely.
+        timeout: 30_000,
+        retryConfig: { retries: 2 }
+      }
+      const logLevel = deps.boltDebug ? LogLevel.DEBUG : undefined
+      const receiver = new SocketModeReceiver({
+        appToken: o.appToken,
+        ...(dispatcher ? { dispatcher } : {}),
+        ...(logLevel ? { logLevel } : {})
+      })
+      return new App({
+        token: o.token,
+        receiver,
+        clientOptions,
+        // start() verifies the token explicitly; avoid Bolt launching a detached
+        // constructor-time auth.test promise before that lifecycle is awaited.
+        tokenVerificationEnabled: false,
+        ...(logLevel ? { logLevel } : {})
       }) as unknown as AppLike
     }
   ) {
