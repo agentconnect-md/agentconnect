@@ -203,10 +203,18 @@ installation attribution, collaborator authorization, or bot-sender veto. A
 targeted agent mention narrows an otherwise broader `updated` fan-out, while an
 event with no AgentConnect mention continues to follow its configured cadence.
 In a pull request conversation, an authorized explicit AgentConnect mention
-starts a new review generation for the current revision, so its informational
-Check reopens and enters in progress when analysis starts. An ordinary
-unmentioned follow-up remains conversation-only and does not replace the current
-review verdict.
+starts a new review generation for the current revision when the integration
+allows formal reviews, so its informational Check reopens and enters in progress
+when analysis starts. Turning formal reviews off must not change trigger
+matching: selected PR events and authorized mentions still activate the agent,
+but an authorized mention no longer requests or permits a formal review, opens a
+mention-driven review generation, or requires a review verdict. Independently
+configured reporting for PR revision events remains separate. Review policy does
+not select or change the hook's reply/output path; existing delivery behavior
+continues to own that decision. The console presents review and reporting both
+being off as `None`; selecting it changes neither trigger matching nor output
+delivery. An ordinary unmentioned follow-up also remains conversation-only and
+does not replace the current review verdict.
 
 ## Workspace navigation and repository access
 

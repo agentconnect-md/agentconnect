@@ -387,6 +387,8 @@ export function buildTrustedGithubMetadata(
     event === 'pull_request_review_comment' ||
     (event === 'issue_comment' && payload.issue?.pull_request !== undefined)
   const explicitReviewRequest =
+    rule.reviewPolicy !== undefined &&
+    rule.reviewPolicy !== 'off' &&
     isPullRequest &&
     event === 'issue_comment' &&
     payload.action === 'created' &&

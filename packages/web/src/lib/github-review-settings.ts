@@ -56,7 +56,7 @@ export const REVIEW_POLICY_OPTIONS: ReadonlyArray<{
   label: string
   description: string
 }> = [
-  { value: 'off', label: 'Off', description: 'Keep the normal PR reply only.' },
+  { value: 'off', label: 'Off', description: 'Do not submit a formal review.' },
   { value: 'comment', label: 'Comment', description: 'Submit a formal COMMENT review.' },
   {
     value: 'request_changes',

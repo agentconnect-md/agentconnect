@@ -21,7 +21,7 @@ import type { Handler } from './index.js'
 export const handleHookReport: Handler = async (frame, conn, deps) => {
   if (!isFrame('hook/report')(frame)) return
   const p = frame.payload
-  const projectionIntent = githubProjectionIntent(p.event, p.github)
+  const projectionIntent = githubProjectionIntent(p.event, p.github, p.reviewPolicy)
   const projectionDesiredState =
     p.reviewResult?.state === 'submitted'
       ? p.reviewResult.event === 'REQUEST_CHANGES' || p.reviewResult.verdict === 'fail'

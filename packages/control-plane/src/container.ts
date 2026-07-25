@@ -894,7 +894,7 @@ export function buildContainer(
     onRunReport: async (report) => {
       const firedAt = new Date(report.firedAt)
       if (Number.isNaN(firedAt.getTime())) return
-      const projectionIntent = githubProjectionIntent(report.event, report.github)
+      const projectionIntent = githubProjectionIntent(report.event, report.github, report.reviewPolicy)
       const delivery = await repos.hook.recordDeliveryResult(HookId(report.hookId), {
         deliveryKey: report.deliveryKey,
         firedAt,

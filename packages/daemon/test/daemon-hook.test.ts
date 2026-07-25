@@ -1657,6 +1657,7 @@ describe('buildHookMessage', () => {
         ghFire(
           { event: 'issue_comment', action: 'created' },
           {
+            reviewPolicy: 'full',
             github: {
               repoId: '123',
               repoFullName: 'acme/infra',
@@ -1672,6 +1673,7 @@ describe('buildHookMessage', () => {
         ghFire(
           { event: 'pull_request', action: 'synchronize' },
           {
+            reviewPolicy: 'full',
             github: {
               repoId: '123',
               repoFullName: 'acme/infra',
@@ -1751,6 +1753,7 @@ describe('buildHookMessage', () => {
         ghFire(
           { event: 'issue_comment', action: 'created' },
           {
+            reviewPolicy: 'full',
             github: {
               repoId: '123',
               repoFullName: 'acme/infra',
@@ -1764,6 +1767,53 @@ describe('buildHookMessage', () => {
       )
       expect(text).toContain('opens a review generation for the current PR revision')
       expect(text).toContain('use APPROVE + pass when it passes')
+      expect(text).not.toContain('do not submit COMMENT + neutral merely to answer the conversation')
+    })
+
+    it.each([
+      ['comment', 'COMMENT + pass', 'COMMENT + fail'],
+      ['request_changes', 'COMMENT + pass', 'REQUEST_CHANGES + fail']
+    ] as const)('uses verdict events allowed by the %s review policy', (reviewPolicy, passing, failing) => {
+      const text = buildHookText(
+        ghFire(
+          { event: 'issue_comment', action: 'created' },
+          {
+            reviewPolicy,
+            github: {
+              repoId: '123',
+              repoFullName: 'acme/infra',
+              sourceInstallationId: '456',
+              subjectKind: 'pull_request',
+              pullNumber: 42,
+              explicitReviewRequest: true
+            }
+          }
+        )
+      )
+      expect(text).toContain(`use ${passing} when it passes`)
+      expect(text).toContain(`${failing} when it has blocking findings`)
+      expect(text).not.toContain('APPROVE + pass when it passes')
+    })
+
+    it('does not require a formal verdict when formal reviews are off', () => {
+      const text = buildHookText(
+        ghFire(
+          { event: 'issue_comment', action: 'created' },
+          {
+            reviewPolicy: 'off',
+            github: {
+              repoId: '123',
+              repoFullName: 'acme/infra',
+              sourceInstallationId: '456',
+              subjectKind: 'pull_request',
+              pullNumber: 42,
+              explicitReviewRequest: true
+            }
+          }
+        )
+      )
+      expect(text).not.toContain('opens a review generation for the current PR revision')
+      expect(text).not.toContain('use APPROVE + pass when it passes')
       expect(text).not.toContain('do not submit COMMENT + neutral merely to answer the conversation')
     })
 

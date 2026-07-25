@@ -23,6 +23,16 @@ interface InstallationPermissionView {
   settingsUrl: string
 }
 
+const REVIEW_MODES = [
+  { id: 'none', label: 'None', value: { reviewPolicy: 'off', reportingMode: 'off' } },
+  { id: 'brief', label: 'Brief', value: { reviewPolicy: 'comment', reportingMode: 'off' } },
+  { id: 'details', label: 'Details', value: { reviewPolicy: 'full', reportingMode: 'check' } }
+] as const satisfies ReadonlyArray<{
+  id: string
+  label: string
+  value: GithubReviewSettingsValue
+}>
+
 export function GithubReviewSettings({
   value,
   onReviewPolicyChange,
@@ -62,20 +72,18 @@ export function GithubReviewSettings({
     (!hasExactChecksWritePermission || !hasExactPullRequestsReadPermission)
   const hasPendingPermissionUpgrade = installation?.permissionsStatus === 'outdated'
   const blocked = accessBlocked || reviewPermissionBlocked || checkPermissionBlocked
-  const brief = value.reviewPolicy === 'off' && value.reportingMode === 'off'
+  const mode =
+    value.reviewPolicy === 'off' && value.reportingMode === 'off'
+      ? 'none'
+      : value.reviewPolicy === 'comment' && value.reportingMode === 'off'
+        ? 'brief'
+        : 'details'
   const capabilities = githubReviewCapabilities(value)
 
   const applyValue = (next: GithubReviewSettingsValue) => {
     if (next.reviewPolicy !== value.reviewPolicy) onReviewPolicyChange(next.reviewPolicy)
     if (next.reportingMode !== value.reportingMode) onReportingModeChange(next.reportingMode)
   }
-
-  const selectMode = (mode: 'brief' | 'details') =>
-    applyValue(
-      mode === 'brief'
-        ? { reviewPolicy: 'off', reportingMode: 'off' }
-        : { reviewPolicy: 'full', reportingMode: 'check' }
-    )
 
   const setCapability = (key: keyof typeof capabilities, enabled: boolean) => {
     const next = { ...capabilities, [key]: enabled }
@@ -110,34 +118,28 @@ export function GithubReviewSettings({
 
       {expanded && (
         <div className="flex flex-col gap-3">
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              aria-pressed={brief}
-              onClick={() => selectMode('brief')}
-              className={
-                brief
-                  ? 'h-10 rounded-md border border-(--brand) bg-(--brand-soft) font-sans text-[12.5px] font-semibold leading-normal text-(--brand-soft-text)'
-                  : 'h-10 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary)'
-              }
-            >
-              Brief
-            </button>
-            <button
-              type="button"
-              aria-pressed={!brief}
-              onClick={() => selectMode('details')}
-              className={
-                !brief
-                  ? 'h-10 rounded-md border border-(--brand) bg-(--brand-soft) font-sans text-[12.5px] font-semibold leading-normal text-(--brand-soft-text)'
-                  : 'h-10 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary)'
-              }
-            >
-              Details
-            </button>
+          <div className="grid grid-cols-3 gap-2">
+            {REVIEW_MODES.map((option) => {
+              const active = mode === option.id
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => applyValue(option.value)}
+                  className={
+                    active
+                      ? 'h-10 rounded-md border border-(--brand) bg-(--brand-soft) font-sans text-[12.5px] font-semibold leading-normal text-(--brand-soft-text)'
+                      : 'h-10 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary)'
+                  }
+                >
+                  {option.label}
+                </button>
+              )
+            })}
           </div>
 
-          {!brief && (
+          {mode === 'details' && (
             <div className="grid grid-cols-2 gap-x-3 gap-y-2 desktop:grid-cols-4">
               <Capability
                 label="Inline comments"
