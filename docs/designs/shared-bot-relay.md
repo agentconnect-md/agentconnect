@@ -374,8 +374,9 @@ output without routing arbitration. Webchat verification carries a
 old/new CP and relay instances fail closed instead of silently downgrading.
 Conversation bodies remain daemon-local. While a turn is active or recently
 completed, the daemon retains a bounded, short-lived output window keyed by the
-turn id. A reconnecting browser reports its last contiguous output index
-through any healthy relay; the daemon rebinds the live stream and replays the
+browser-allocated turn id. A reconnecting browser reports its last contiguous
+output index and an increasing connection generation through any healthy relay;
+the daemon rejects stale generations, rebinds the live stream, and replays the
 missing tail. This window is volatile, has explicit size and age limits, and
 does not create a durable transcript or offline inbox.
 
@@ -431,12 +432,13 @@ provider retry behavior is not treated as a durable queue.
 Webchat uses connection semantics: `rd/ack` reports whether the daemon accepted
 a turn, and `rd/chat` streams indexed output until completion. After a browser
 reconnect, the browser sends the last contiguous index it assembled. The daemon
-either replays the missing tail and continues the same turn or returns an
-explicit resume failure when the turn is unknown, the cursor is invalid, or
-the bounded replay window has overflowed. Completion includes the final output
-index so the browser does not render a response as complete while an earlier
-frame is still missing. Browser reconnect behavior is separate from IM
-delivery, and replay is not guaranteed after the bounded window expires.
+accepts only a newer reconnect generation, then either replays the missing tail
+and continues the same turn or returns an explicit resume failure when the turn
+is unknown, the reconnect is stale, the cursor is invalid, or the bounded replay
+window has overflowed. Completion includes the final output index so the browser
+does not render a response as complete while an earlier frame is still missing.
+Browser reconnect behavior is separate from IM delivery, and replay is not
+guaranteed after the bounded window expires.
 
 All writers and retry caches must comply with
 [high-availability.md](high-availability.md#backpressure-and-delivery):

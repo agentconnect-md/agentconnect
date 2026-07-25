@@ -1023,18 +1023,18 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     ...over
   })
 
-  it('a turn op dispatches and streams rd/chat output→done, acking accepted+turnId', async () => {
+  it('a turn op preserves the browser turnId and streams rd/chat output→done', async () => {
     const { factory } = streamingHost([text('hi from agent')])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
     await daemon.start()
     ;(daemon as any).cpClient = fakeCpClient()
 
+    const turnId = '77777777-7777-4777-8777-777777777777'
     const events: RdChatEvent[] = []
-    const ack = (daemon as any).handleRelayMsg(rd({ op: 'turn', text: 'go', user: 'ada' }), (e: RdChatEvent) =>
+    const ack = (daemon as any).handleRelayMsg(rd({ op: 'turn', text: 'go', user: 'ada', turnId }), (e: RdChatEvent) =>
       events.push(e)
     )
-    expect(ack).toMatchObject({ msgId: 'm-1', accepted: true })
-    expect(ack.turnId).toBeDefined()
+    expect(ack).toMatchObject({ msgId: 'm-1', accepted: true, turnId })
 
     // The reply streams asynchronously through the same engine as the CP path, but now
     // over the `chat` callback (→ rd/chat) instead of the cp client.
@@ -1045,7 +1045,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   }, 15_000)
 
-  it('rebinds an active turn to a new relay sink and replays a missed terminal tail', async () => {
+  it('keeps a newer resume bound when a delayed older generation arrives afterward', async () => {
     const { factory } = streamingHost([])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
     await daemon.start()
@@ -1054,6 +1054,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const first: RdChatEvent[] = []
     const second: RdChatEvent[] = []
     const third: RdChatEvent[] = []
+    const stale: RdChatEvent[] = []
     const sink = (events: RdChatEvent[]) => ({
       output: (output: WebchatOutput) => events.push({ kind: 'output', output }),
       done: (done: WebchatDone) => events.push({ kind: 'done', done })
@@ -1062,22 +1063,29 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
 
     stream.sink.output({ conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'first' } })
     const activeResume = (daemon as any).handleRelayMsg(
-      rd({ op: 'resume', turnId, afterIndex: -1 }, { msgId: 'resume-active' }),
+      rd({ op: 'resume', turnId, generation: 2, afterIndex: -1 }, { msgId: 'resume-active' }),
       (event: RdChatEvent) => second.push(event)
     )
     expect(activeResume).toMatchObject({ accepted: true, turnId })
     expect(second.filter((event) => event.kind === 'output')).toHaveLength(1)
 
+    const delayedResume = (daemon as any).handleRelayMsg(
+      rd({ op: 'resume', turnId, generation: 1, afterIndex: -1 }, { msgId: 'resume-delayed' }),
+      (event: RdChatEvent) => stale.push(event)
+    )
+    expect(delayedResume).toMatchObject({ accepted: false, turnId, reason: 'stream_stale' })
+
     stream.sink.output({ conversationId: CONV, turnId, index: 1, event: { kind: 'message', text: 'second' } })
     stream.sink.done({ conversationId: CONV, turnId, stopReason: 'end_turn' })
     expect(first).toHaveLength(1) // future output moved to the resumed relay sink
+    expect(stale).toEqual([]) // delayed generation never steals the stream transport
     expect(second.at(-1)).toEqual({
       kind: 'done',
       done: { conversationId: CONV, turnId, lastIndex: 1, stopReason: 'end_turn' }
     })
 
     const terminalResume = (daemon as any).handleRelayMsg(
-      rd({ op: 'resume', turnId, afterIndex: 0 }, { msgId: 'resume-terminal' }),
+      rd({ op: 'resume', turnId, generation: 3, afterIndex: 0 }, { msgId: 'resume-terminal' }),
       (event: RdChatEvent) => third.push(event)
     )
     expect(terminalResume).toMatchObject({ accepted: true, turnId })
@@ -1115,7 +1123,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
 
     expect(
       (daemon as any).handleRelayMsg(
-        rd({ op: 'resume', turnId, afterIndex: -1 }, { msgId: 'resume-overflow' }),
+        rd({ op: 'resume', turnId, generation: 1, afterIndex: -1 }, { msgId: 'resume-overflow' }),
         () => {}
       )
     ).toMatchObject({ accepted: false, turnId, reason: 'stream_gap' })

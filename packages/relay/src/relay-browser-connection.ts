@@ -38,17 +38,22 @@ export function parseBrowserFrame(msg: unknown, user: string): RelayWebchatOp | 
   const m = msg as Record<string, unknown>
   // A bare {text} (no type) OR {type:'message', text} is a turn.
   if ((m.type === undefined || m.type === 'message') && typeof m.text === 'string') {
-    return { op: 'turn', text: m.text, user }
+    return m.turnId === undefined || typeof m.turnId === 'string'
+      ? { op: 'turn', text: m.text, user, ...(typeof m.turnId === 'string' ? { turnId: m.turnId } : {}) }
+      : null
   }
   switch (m.type) {
     case 'resume':
       return Number.isInteger(m.afterIndex) &&
         (m.afterIndex as number) >= -1 &&
-        (m.turnId === undefined || typeof m.turnId === 'string')
+        typeof m.turnId === 'string' &&
+        Number.isSafeInteger(m.generation) &&
+        (m.generation as number) >= 1
         ? {
             op: 'resume',
-            afterIndex: m.afterIndex as number,
-            ...(typeof m.turnId === 'string' ? { turnId: m.turnId } : {})
+            turnId: m.turnId,
+            generation: m.generation as number,
+            afterIndex: m.afterIndex as number
           }
         : null
     case 'set_model':

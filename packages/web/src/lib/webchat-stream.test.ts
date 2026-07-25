@@ -17,7 +17,8 @@ interface Done extends OrderedWebchatDone {
 
 describe('ordered webchat stream', () => {
   it('holds out-of-order frames, drains them contiguously, and ignores duplicates', () => {
-    const cursor = createWebchatCursor<Output, Done>()
+    const cursor = createWebchatCursor<Output, Done>('requested-turn')
+    expect(cursor).toMatchObject({ requestedTurnId: 'requested-turn', resumeGeneration: 0 })
     expect(acceptWebchatOutput(cursor, { turnId: 't1', index: 2, text: 'c' }).outputs).toEqual([])
     expect(acceptWebchatOutput(cursor, { turnId: 't1', index: 0, text: 'a' }).outputs.map((o) => o.text)).toEqual(['a'])
     expect(acceptWebchatOutput(cursor, { turnId: 't1', index: 1, text: 'b' }).outputs.map((o) => o.text)).toEqual([

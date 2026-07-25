@@ -12,7 +12,9 @@ export interface OrderedWebchatCursor<
   Output extends OrderedWebchatOutput = OrderedWebchatOutput,
   Done extends OrderedWebchatDone = OrderedWebchatDone
 > {
+  requestedTurnId?: string
   turnId?: string
+  resumeGeneration: number
   nextIndex: number
   pending: Map<number, Output>
   done?: Done
@@ -26,11 +28,10 @@ export interface OrderedWebchatResult<Output, Done> {
 
 const MAX_PENDING_OUTPUTS = 512
 
-export function createWebchatCursor<
-  Output extends OrderedWebchatOutput,
-  Done extends OrderedWebchatDone
->(): OrderedWebchatCursor<Output, Done> {
-  return { nextIndex: 0, pending: new Map() }
+export function createWebchatCursor<Output extends OrderedWebchatOutput, Done extends OrderedWebchatDone>(
+  requestedTurnId?: string
+): OrderedWebchatCursor<Output, Done> {
+  return { ...(requestedTurnId ? { requestedTurnId } : {}), resumeGeneration: 0, nextIndex: 0, pending: new Map() }
 }
 
 /** Bind a pre-ack cursor to the daemon-issued turn id. A different id is stale

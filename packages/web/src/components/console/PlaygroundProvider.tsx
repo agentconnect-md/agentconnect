@@ -436,11 +436,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 }
                 if (resumeStream && busyRef.current[id]) {
                   const cursor = streamCursors.current.get(id)
-                  if (cursor) {
+                  const turnId = cursor?.turnId ?? cursor?.requestedTurnId
+                  if (cursor && turnId) {
+                    cursor.resumeGeneration += 1
                     ws.send(
                       JSON.stringify({
                         type: 'resume',
-                        ...(cursor.turnId ? { turnId: cursor.turnId } : {}),
+                        turnId,
+                        generation: cursor.resumeGeneration,
                         afterIndex: cursor.nextIndex - 1
                       })
                     )
@@ -538,12 +541,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pushStep(id, { kind: 'msg', who: '@you', text })
       setPgInput(id, '')
       setBusy(id, true)
-      streamCursors.current.set(id, createWebchatCursor<WebchatOutput, WebchatDone>())
+      const requestedTurnId = crypto.randomUUID()
+      streamCursors.current.set(id, createWebchatCursor<WebchatOutput, WebchatDone>(requestedTurnId))
       if (conversationId) conversationIds.current.set(id, conversationId)
       reconnectAttempts.current.delete(id)
       const conn = connect(id, agentForId, conversationId)
       conn.ready
-        .then((ws) => ws.send(JSON.stringify({ text })))
+        .then((ws) => ws.send(JSON.stringify({ text, turnId: requestedTurnId })))
         .catch((err) => {
           // A 503 from the token mint means the CP has no relay pool configured — the
           // agent may be perfectly healthy, so name the real cause instead of "unreachable".

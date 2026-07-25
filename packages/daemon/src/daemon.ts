@@ -1010,6 +1010,7 @@ interface WebchatTurnContext {
 interface WebchatTurnStream extends WebchatTurnContext {
   agentId: string
   transport: WebchatSink
+  resumeGeneration: number
   replay: BufferedWebchatEvent[]
   replayBytes: number
   replayFloor: number
@@ -3646,9 +3647,10 @@ export class Daemon {
     chatId: string,
     text: string,
     user: string,
-    sink: WebchatSink
+    sink: WebchatSink,
+    requestedTurnId?: string
   ): WebchatAck {
-    const turnId = randomUUID()
+    const turnId = requestedTurnId ?? randomUUID()
     // Route directly to the named agent (bypasses arbitration); null when it isn't a
     // servable agent on this daemon.
     const result = routeRules(
@@ -3706,6 +3708,10 @@ export class Daemon {
       this.log.warn(`webchat: queue full for session ${key} — rejecting turn`)
       return { accepted: false, turnId, reason: 'busy' }
     }
+    this.pruneWebchatStreams()
+    if (this.webchatStreams.has(turnId)) {
+      return { accepted: false, turnId, reason: 'busy' }
+    }
     const stream = this.createWebchatTurnStream(result.agentId, chatId, turnId, sink)
     void this.dispatch(result.agentId, msg, undefined, stream).catch((err) =>
       this.log.error(`webchat dispatch failed for agent "${result.agentId}": ${formatErr(err)}`)
@@ -3741,6 +3747,7 @@ export class Daemon {
       conversationId,
       turnId,
       transport,
+      resumeGeneration: 0,
       sink: {
         output: (output) => this.publishWebchatStreamEvent(stream, { kind: 'output', output }),
         done: (done) => this.publishWebchatStreamEvent(stream, { kind: 'done', done })
@@ -3752,7 +3759,6 @@ export class Daemon {
       lastOutputIndex: -1
     }
     this.webchatStreams.set(turnId, stream)
-    this.latestWebchatTurn.set(this.webchatSessionKey(conversationId, agentId), turnId)
     this.pruneWebchatStreams()
     return stream
   }
@@ -3803,16 +3809,22 @@ export class Daemon {
   private resumeWebchatStream(
     agentId: string,
     conversationId: string,
-    turnId: string | undefined,
+    turnId: string,
+    generation: number,
     afterIndex: number,
     transport: WebchatSink
   ): { accepted: boolean; turnId?: string; reason?: string } {
     this.pruneWebchatStreams()
-    const resolvedTurnId = turnId ?? this.latestWebchatTurn.get(this.webchatSessionKey(conversationId, agentId))
-    const stream = resolvedTurnId ? this.webchatStreams.get(resolvedTurnId) : undefined
+    const stream = this.webchatStreams.get(turnId)
     if (!stream || stream.agentId !== agentId || stream.conversationId !== conversationId) {
       return { accepted: false, reason: 'stream_not_found' }
     }
+    if (generation <= stream.resumeGeneration) {
+      return { accepted: false, turnId: stream.turnId, reason: 'stream_stale' }
+    }
+    // Claim the newer connection generation before validating its cursor. Even a
+    // failed newer resume must fence an older request that is still in flight.
+    stream.resumeGeneration = generation
     if (stream.replayDisabled || afterIndex < stream.replayFloor - 1) {
       return { accepted: false, turnId: stream.turnId, reason: 'stream_gap' }
     }
@@ -3833,8 +3845,6 @@ export class Daemon {
 
   private removeWebchatStream(turnId: string, stream: WebchatTurnStream): void {
     this.webchatStreams.delete(turnId)
-    const key = this.webchatSessionKey(stream.conversationId, stream.agentId)
-    if (this.latestWebchatTurn.get(key) === turnId) this.latestWebchatTurn.delete(key)
     stream.replayDisabled = true
     stream.replay = []
     stream.replayBytes = 0
@@ -4047,11 +4057,8 @@ export class Daemon {
     this.log.debug(`webchat cancel: no in-flight turn for conversation ${conversationId}`)
   }
 
-  // Bounded, ephemeral reconnect state. The exact turn map authorizes cursored
-  // resume; the session map covers the pre-ack disconnect case where the browser
-  // does not know its turnId yet.
+  // Bounded, ephemeral reconnect state keyed by the browser-known turn id.
   private readonly webchatStreams = new Map<string, WebchatTurnStream>()
-  private readonly latestWebchatTurn = new Map<string, string>()
   // Idempotency cache for the at-least-once rd/* wire: (sessionKey:msgId) → the ack we
   // already returned. Bounded like `seenMsgIds`. A relay retransmit replays this instead
   // of re-dispatching. (design §7.2 RdMsgWebchat: "the daemon drops an already-seen
@@ -5715,7 +5722,7 @@ export class Daemon {
     const key = (): string => this.webchatSessionKey(msg.chatId, msg.agentId)
     switch (op.op) {
       case 'turn': {
-        const ack = this.dispatchWebchatTurn(msg.agentId, msg.chatId, op.text, op.user ?? 'webchat', sink)
+        const ack = this.dispatchWebchatTurn(msg.agentId, msg.chatId, op.text, op.user ?? 'webchat', sink, op.turnId)
         return {
           msgId: msg.msgId,
           accepted: ack.accepted,
@@ -5724,7 +5731,7 @@ export class Daemon {
         }
       }
       case 'resume': {
-        const resumed = this.resumeWebchatStream(msg.agentId, msg.chatId, op.turnId, op.afterIndex, sink)
+        const resumed = this.resumeWebchatStream(msg.agentId, msg.chatId, op.turnId, op.generation, op.afterIndex, sink)
         return {
           msgId: msg.msgId,
           accepted: resumed.accepted,
