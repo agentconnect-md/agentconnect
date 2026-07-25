@@ -13,9 +13,9 @@
 import { useRef, useState } from 'react'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
-import { fmtDate, type SkillSourceDto } from '@/lib/api'
+import { fmtDate, repoLabel, repoWebUrl, type SkillSourceDto } from '@/lib/api'
 import { VisibilityField, VisibilityValue, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
-import { LoadingState } from '@/components/marks'
+import { GithubMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 
 /** Split a comma/whitespace-separated skill filter into a clean string[]. */
@@ -54,7 +54,7 @@ export function SkillSourcesCard({ canWrite }: { canWrite: boolean }) {
           No skill sources yet. Import a repo of skills to make them available to your agents.
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-3 px-4 py-[14px] desktop:grid-cols-[repeat(2,1fr)]">
+        <div className="grid grid-cols-1 gap-3 px-4 py-[14px] desktop:grid-cols-[repeat(3,minmax(0,1fr))]">
           {skillSources.map((s) => (
             <SourceTile
               key={s.id}
@@ -103,36 +103,72 @@ function SourceTile({
   onEdit: () => void
   onDelete: () => void
 }) {
-  return (
-    <div className="flex gap-[11px] rounded-[9px] border border-(--border-subtle) px-[14px] py-[13px]">
-      <span className="flex h-8 w-8 flex-none items-center justify-center rounded-md bg-(--brand-soft)">
-        <Icon name="book-open" size={17} color="var(--brand)" />
+  const sourceUrl = repoWebUrl(s.source)
+  const fullSourceLabel = repoLabel(s.source)
+  const isGithub = sourceUrl?.startsWith('https://github.com/') ?? false
+  const sourceLabel = isGithub ? fullSourceLabel.split('/').slice(0, 2).join('/') : fullSourceLabel
+  const sourceContent = (
+    <>
+      <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
+        {isGithub ? (
+          <GithubMark color="var(--text-secondary)" />
+        ) : (
+          <Icon name="git-branch" size={13} color="var(--text-tertiary)" />
+        )}
       </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="mono text-[12.5px] font-semibold text-(--text-primary)">{s.name}</span>
-          {s.ref && <span className="badge bg-(--status-info-soft) text-[9.5px] text-(--status-info)">{s.ref}</span>}
+      <span className="min-w-0 truncate">
+        {sourceLabel}
+        {s.subDir ? <span className="text-(--text-tertiary)"> · {s.subDir}</span> : null}
+      </span>
+    </>
+  )
+
+  return (
+    <div className="flex min-w-0 flex-col gap-[10px] overflow-hidden rounded-[9px] border border-(--border-subtle) px-[14px] py-[13px] transition-[border-color,box-shadow] hover:border-(--border-strong) hover:shadow-(--shadow-xs)">
+      <div className="flex min-w-0 items-center gap-[10px]">
+        <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
+          <Icon name="book-open" size={16} color="var(--brand)" />
+        </span>
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <span className="mono truncate text-[12.5px] font-semibold text-(--text-primary)">{s.name}</span>
+          {s.ref && (
+            <span className="badge max-w-[92px] flex-none truncate bg-(--status-info-soft) text-[9.5px] text-(--status-info)">
+              {s.ref}
+            </span>
+          )}
         </div>
-        <div className="mt-[3px] truncate font-mono text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
-          {s.source}
-          {s.subDir ? ` · ${s.subDir}` : ''}
-        </div>
-        <div className="mt-[6px] flex items-center gap-2 font-mono text-[11px] font-normal leading-normal text-(--text-disabled)">
-          <VisibilityValue visibility={s.visibility} sharedWith={s.sharedWith} createdBy={s.createdBy} />
-          <span>· {s.skills.length > 0 ? `${s.skills.length} skills` : 'all skills'}</span>
-          <span>· added {fmtDate(s.createdAt)}</span>
-        </div>
+        {canWrite && (
+          <span className="flex flex-none gap-px">
+            <button className="iconbtn h-6 w-6" onClick={onEdit} title="Edit">
+              <Icon name="pencil" size={12} />
+            </button>
+            <button className="iconbtn h-6 w-6" onClick={onDelete} title="Delete">
+              <Icon name="trash-2" size={12} />
+            </button>
+          </span>
+        )}
       </div>
-      {canWrite && (
-        <div className="flex flex-none items-start gap-1">
-          <button className="iconbtn" onClick={onEdit} title="Edit">
-            <Icon name="pencil" size={14} />
-          </button>
-          <button className="iconbtn" onClick={onDelete} title="Delete">
-            <Icon name="trash" size={14} />
-          </button>
+      {sourceUrl ? (
+        <a
+          href={sourceUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={`Open ${sourceLabel}`}
+          className="flex min-w-0 items-center gap-[6px] font-mono text-[11.5px] font-normal leading-normal text-(--text-secondary) no-underline hover:text-(--text-primary) hover:underline"
+        >
+          {sourceContent}
+        </a>
+      ) : (
+        <div className="flex min-w-0 items-center gap-[6px] font-mono text-[11.5px] font-normal leading-normal text-(--text-secondary)">
+          {sourceContent}
         </div>
       )}
+      <div className="flex min-w-0 items-center gap-2">
+        <VisibilityValue visibility={s.visibility} sharedWith={s.sharedWith} createdBy={s.createdBy} />
+        <span className="mono ml-auto min-w-0 truncate text-right text-[10.5px] text-(--text-disabled)">
+          added {fmtDate(s.createdAt)}
+        </span>
+      </div>
     </div>
   )
 }
