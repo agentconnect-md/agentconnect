@@ -101,4 +101,67 @@ describe('AgentCallVisibility', () => {
 
     expect(input?.parentElement?.nextElementSibling?.classList.contains('absolute')).toBe(true)
   })
+
+  // `/agents` hides restricted peers from non-owners while the CP keeps their
+  // grants (resolvePolicyAgentIds retains hidden ids). Resolving the allow-list
+  // through the viewer's peer list therefore under-reports it, and the read-only
+  // Access card must not claim an active grant is empty.
+  const renderReadOnly = async (props: { selectedIds: string[]; peers: typeof AGENTS }) => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root?.render(
+        <AgentCallVisibility
+          variant="section"
+          direction="inbound"
+          mode="selected"
+          selectedIds={props.selectedIds}
+          effectivePeerIds={[]}
+          peers={props.peers}
+          daemons={[]}
+          target="review-bot"
+          editable={false}
+          onChange={() => undefined}
+        />
+      )
+    })
+    return container
+  }
+
+  it('reports a selection of only hidden peers as hidden, not empty', async () => {
+    const el = await renderReadOnly({ selectedIds: ['restricted-peer-id'], peers: AGENTS.slice(0, 2) })
+
+    expect(el.textContent).not.toContain('No agents selected.')
+    expect(el.textContent).not.toContain('No peers selected')
+    expect(el.textContent).toContain('1 not visible')
+    // The count reflects the whole grant, not just the resolvable half.
+    expect(el.textContent).toContain('0 of 1')
+  })
+
+  it('counts hidden peers alongside visible ones', async () => {
+    const peers = AGENTS.slice(0, 2)
+    const el = await renderReadOnly({ selectedIds: [peers[0]!.id, 'restricted-peer-id'], peers })
+
+    expect(el.textContent).toContain(agentLabel(peers[0]!))
+    expect(el.textContent).toContain('1 not visible')
+    expect(el.textContent).toContain('0 of 2')
+  })
+
+  it('still reports a genuinely empty allow-list as empty', async () => {
+    const el = await renderReadOnly({ selectedIds: [], peers: AGENTS.slice(0, 2) })
+
+    expect(el.textContent).toContain('No agents selected.')
+    expect(el.textContent).toContain('No peers selected')
+    expect(el.textContent).not.toContain('not visible')
+  })
+
+  it('renders no editing affordances when read-only', async () => {
+    const el = await renderReadOnly({ selectedIds: [AGENTS[0]!.id], peers: AGENTS.slice(0, 2) })
+
+    expect(el.querySelector('input')).toBeNull() // no "Search agents…" field
+    expect(el.querySelector('[role="group"]')).toBeNull() // no All agents/Selected toggle
+    expect(el.querySelectorAll('button')).toHaveLength(0) // no mode or remove buttons
+    expect(el.textContent).toContain('Selected agents') // the read-only state line instead
+  })
 })

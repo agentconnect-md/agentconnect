@@ -43,6 +43,23 @@ function daemonLabel(agent: Agent): string {
   return !agent.daemon || agent.daemon === '—' ? 'unplaced' : agent.daemon
 }
 
+/** Stands in for granted peers this viewer can't resolve (restricted agents are
+ *  filtered out of `/agents`, yet their grants remain active and are preserved
+ *  by the CP on save). Without it the allow-list would under-report itself. */
+function HiddenSelectionChip({ count, note }: { count: number; note?: string }) {
+  return (
+    <span
+      title={note}
+      className="flex h-6 flex-none items-center gap-[5px] rounded-full border border-dashed border-(--border-default) pr-[9px] pl-[7px]"
+    >
+      <Icon name="eye-off" size={12} color="var(--text-tertiary)" className="flex-none" />
+      <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
+        {count} not visible
+      </span>
+    </span>
+  )
+}
+
 function plural(count: number, word: string): string {
   return count === 1 ? word : `${word}s`
 }
@@ -77,6 +94,23 @@ export function AgentCallVisibility({
     () => visibleSelected.flatMap((id) => peers.find((p) => p.id === id) ?? []),
     [peers, visibleSelected]
   )
+  // Grants can point at peers this viewer cannot see: `/agents` hides restricted
+  // agents from non-owners, and the CP's resolvePolicyAgentIds deliberately
+  // RETAINS those existing grants when a collaborator edits the policy. So an
+  // unresolvable id is an active grant we must still account for — never treat
+  // `selectedPeers.length === 0` as "nothing is selected".
+  const uniqueSelectedIds = useMemo(() => [...new Set(selectedIds)], [selectedIds])
+  const hiddenSelectedCount = useMemo(
+    () => uniqueSelectedIds.filter((id) => !peerIds.has(id)).length,
+    [uniqueSelectedIds, peerIds]
+  )
+  const selectedTotal = selectedPeers.length + hiddenSelectedCount
+  const hiddenSelectedNote =
+    hiddenSelectedCount > 0
+      ? `${hiddenSelectedCount} selected ${plural(hiddenSelectedCount, 'agent')} ${
+          hiddenSelectedCount === 1 ? 'is' : 'are'
+        } restricted and not visible to you.`
+      : undefined
   const policyPeers = mode === 'all' ? peers : selectedPeers
   const effectivePeerIdSet = useMemo(() => new Set(effectivePeerIds ?? []), [effectivePeerIds])
   const effectivePeers = useMemo(
@@ -221,12 +255,12 @@ export function AgentCallVisibility({
       // Read-only `selected`: the chosen peers as plain chips — no search field,
       // no remove buttons, nothing that invites an edit this surface can't make.
       <div className="min-h-[60px] px-4 py-[14px]">
-        {selectedPeers.length === 0 ? (
+        {selectedTotal === 0 ? (
           <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
             No agents selected.
           </span>
         ) : (
-          <div className="flex flex-wrap gap-[6px]">
+          <div className="flex flex-wrap items-center gap-[6px]">
             {selectedPeers.map((peer) => (
               <span
                 key={peer.id}
@@ -240,6 +274,7 @@ export function AgentCallVisibility({
                 </span>
               </span>
             ))}
+            {hiddenSelectedCount > 0 && <HiddenSelectionChip count={hiddenSelectedCount} note={hiddenSelectedNote} />}
           </div>
         )}
       </div>
@@ -272,6 +307,10 @@ export function AgentCallVisibility({
               </button>
             </span>
           ))}
+          {/* Grants to peers this editor can't see are preserved by the CP on
+              save — surface them so the row never reads as a smaller allow-list
+              than the one actually stored. */}
+          {hiddenSelectedCount > 0 && <HiddenSelectionChip count={hiddenSelectedCount} note={hiddenSelectedNote} />}
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -334,7 +373,9 @@ export function AgentCallVisibility({
     </div>
   ) : null
 
-  const policyPeerCount = policyPeers.length
+  // Count the whole grant, including peers hidden from this viewer — otherwise a
+  // restricted-but-invisible selection reads as "No peers selected".
+  const policyPeerCount = mode === 'all' ? policyPeers.length : selectedTotal
   const relationshipLabel = direction === 'inbound' ? 'Can call this agent' : 'This agent can call'
   const effectiveSummary =
     effectivePeerIds !== undefined && mode === 'selected' ? (
@@ -353,8 +394,14 @@ export function AgentCallVisibility({
           {policyPeerCount === 0 ? 'No peers selected' : relationshipLabel}
         </span>
         {policyPeerCount > 0 && (
-          <span className="flex-none font-mono text-[11px] font-semibold leading-normal text-(--text-primary)">
+          <span
+            // Reachability can only be computed for peers this viewer can see, so
+            // say so rather than letting a hidden grant read as unreachable.
+            title={hiddenSelectedNote}
+            className="flex-none font-mono text-[11px] font-semibold leading-normal text-(--text-primary)"
+          >
             {effectivePeers.length} of {policyPeerCount}
+            {hiddenSelectedCount > 0 ? '*' : ''}
           </span>
         )}
       </div>
