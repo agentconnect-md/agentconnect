@@ -29,7 +29,9 @@ export function attachmentToBlock(
 ): ContentBlock {
   const isImage = att.mimeType.startsWith('image/')
   if (bytes && isImage && supports('image')) {
-    return { type: 'image', data: bytes.toString('base64'), mimeType: att.mimeType, uri: att.sourceUrl }
+    // Keep downloaded images self-contained. Some ACP adapters prefer `uri`
+    // over `data`, breaking auth-gated URLs despite having bytes. Remove via #52.
+    return { type: 'image', data: bytes.toString('base64'), mimeType: att.mimeType }
   }
   if (bytes && supports('embeddedContext')) {
     if (att.mimeType.startsWith('text/')) {

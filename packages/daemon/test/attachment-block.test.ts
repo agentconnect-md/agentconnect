@@ -14,13 +14,12 @@ const supportsAll = () => true
 const supportsNone = () => false
 
 describe('attachmentToBlock', () => {
-  it('builds an inline image block for image/* when the agent supports images', () => {
+  it('builds a self-contained inline image block when the agent supports images', () => {
     const bytes = Buffer.from('IMG')
     expect(attachmentToBlock(att(), bytes, supportsAll)).toEqual({
       type: 'image',
       data: bytes.toString('base64'),
-      mimeType: 'image/png',
-      uri: 'https://files/F1'
+      mimeType: 'image/png'
     })
   })
 
