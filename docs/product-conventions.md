@@ -234,7 +234,12 @@ save against the mtime they opened. Saving while the agent is working surfaces a
 conflict; otherwise the daemon quiesces its runtime before atomically publishing the
 file, so an agent write is never silently overwritten. GitHub workspace files remain
 read-only, and workspace bodies continue to transit the control plane without being
-persisted.
+persisted. File creation and editing stay inline in the Workspace file browser,
+replacing the preview pane instead of opening a modal. Desktop keeps the file tree
+visible; mobile uses the browser's existing list-to-preview drill-in and back action.
+The file-browser header shows the current workspace-relative breadcrumb on the left
+and contextual actions on the right. New-file naming happens in that breadcrumb;
+the preview pane does not repeat path or workspace labels above the editor.
 
 For a GitHub workspace, show the effective `read` or `write` access beside the
 repository. The editor may switch freely between scratch and GitHub, choose another

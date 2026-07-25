@@ -13,7 +13,7 @@
 // repository-authorization controls, which need agent-level data this component
 // has no business fetching. Demo agents use <WorkspaceFilesMock>.
 
-import { Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import dynamic from 'next/dynamic'
 import {
   ApiError,
@@ -164,6 +164,17 @@ type Viewer = {
   loadingMore: boolean
 }
 
+type EditorDraft = {
+  target: string // '' creates; an existing path edits in place
+  directory: string
+  name: string
+  content: string
+  mtime: string | null
+  loading: boolean
+  saving: boolean
+  error: string | null
+}
+
 export function WorkspaceFiles({
   agentId,
   workdir,
@@ -183,7 +194,8 @@ export function WorkspaceFiles({
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [viewer, setViewer] = useState<Viewer | null>(null)
-  const [editPath, setEditPath] = useState<string | null>(null) // '' creates; a path replaces
+  const [editor, setEditor] = useState<EditorDraft | null>(null)
+  const [mobileListSignal, setMobileListSignal] = useState(0)
   // git-repo workspaces: current-checkout status + on-demand pull. Null while
   // loading, for a non-repo workspace, and when the owning daemon is offline —
   // the workspace card falls back to the agent's configured source in all three.
@@ -259,6 +271,9 @@ export function WorkspaceFiles({
 
   // Select a file into the right-hand preview pane (fetch its first slice).
   const selectFile = (filePath: string, name: string) => {
+    // Any explicit selection supersedes the desktop-only default preview,
+    // including a mobile selection carried across a breakpoint change.
+    autoOpenedRef.current = true
     const requestId = ++viewerRequestRef.current
     setViewer({
       path: filePath,
@@ -324,12 +339,55 @@ export function WorkspaceFiles({
     viewerRequestRef.current += 1
     setGitMsg(null)
     setViewer(null)
-    setEditPath(null)
+    setEditor(null)
+    setMobileListSignal(0)
     autoOpenedRef.current = false
     return () => {
       viewerRequestRef.current += 1
     }
   }, [agentId])
+
+  const editorTarget = editor?.target ?? null
+
+  // Existing files load in full before editing. Creation starts with an empty
+  // draft in the directory represented by the breadcrumb.
+  useEffect(() => {
+    if (!editorTarget) return
+    let active = true
+    fetchWorkspaceFileFull(agentId, editorTarget).then(
+      (file) => {
+        if (!active) return
+        setEditor((current) => {
+          if (!current || current.target !== editorTarget) return current
+          return !file.exists || file.encoding !== 'utf8' || !file.mtime
+            ? { ...current, loading: false, error: 'Only existing text files can be edited.' }
+            : { ...current, content: file.content ?? '', mtime: file.mtime, loading: false }
+        })
+      },
+      (e) => {
+        if (active) {
+          setEditor((current) =>
+            current?.target === editorTarget ? { ...current, loading: false, error: msg(e) } : current
+          )
+        }
+      }
+    )
+    return () => {
+      active = false
+    }
+  }, [agentId, editorTarget])
+
+  const editorOpen = editor !== null
+  const editorSaving = editor?.saving ?? false
+
+  useEffect(() => {
+    if (!editorOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !editorSaving) setEditor(null)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [editorOpen, editorSaving])
 
   // git status of the workspace checkout. A non-repo answer and a thrown request
   // (offline daemon) both leave `git` unset — the workspace card then renders the
@@ -406,7 +464,7 @@ export function WorkspaceFiles({
   }
 
   const onFileSaved = (path: string) => {
-    setEditPath(null)
+    setEditor(null)
     setRefreshTick((tick) => tick + 1)
     selectFile(path, path.split('/').at(-1) ?? path)
   }
@@ -432,17 +490,77 @@ export function WorkspaceFiles({
   }, [git])
 
   const root = dirs['']
-  // Header count + path follow the tree selection: the open file's workspace-
-  // relative path (root shows as '/'), counted against its containing directory.
-  // Hovering reveals the daemon-absolute workdir (dropped from the line itself).
-  const selDir = viewer ? viewer.path.split('/').slice(0, -1).join('/') : ''
-  const selCtx = dirs[selDir]
-  const selCount = selCtx?.entries?.length
-  const summary = root?.entries
-    ? `${
-        selCount != null ? `${selCount}${selCtx?.nextCursor ? '+' : ''} item${selCount === 1 ? '' : 's'} · ` : ''
-      }/${viewer?.path ?? ''}`
-    : (workdir ?? '')
+  const selectedDirectory = viewer ? viewer.path.split('/').slice(0, -1).join('/') : ''
+  const workspaceRoot = workdir?.replace(/\/+$/, '').split('/').at(-1) || 'Workspace'
+
+  const startCreate = () =>
+    setEditor({
+      target: '',
+      directory: selectedDirectory,
+      name: '',
+      content: '',
+      mtime: null,
+      loading: false,
+      saving: false,
+      error: null
+    })
+
+  const startEdit = (path: string) =>
+    setEditor({
+      target: path,
+      directory: path.split('/').slice(0, -1).join('/'),
+      name: path.split('/').at(-1) ?? path,
+      content: '',
+      mtime: null,
+      loading: true,
+      saving: false,
+      error: null
+    })
+
+  const closeEditor = () => {
+    if (!editor?.saving) setEditor(null)
+  }
+
+  const backFromEditor = () => {
+    if (editor?.saving) return
+    setEditor(null)
+    setMobileListSignal((signal) => signal + 1)
+  }
+
+  const saveEditor = async () => {
+    if (!editor || editor.saving || editor.loading || (editor.target && !editor.mtime)) return
+    const creating = editor.target === ''
+    const name = editor.name.trim().replace(/^\/+/, '')
+    const filePath = creating ? [editor.directory, name].filter(Boolean).join('/') : editor.target
+    if (!filePath) {
+      setEditor({ ...editor, error: 'Enter a file name or relative path.' })
+      return
+    }
+    setEditor({ ...editor, saving: true, error: null })
+    try {
+      await writeWorkspaceFile(
+        agentId,
+        filePath,
+        creating ? { content: editor.content } : { content: editor.content, ifMatchMtime: editor.mtime! }
+      )
+      onFileSaved(filePath)
+    } catch (e) {
+      setEditor((current) =>
+        current?.target === editor.target
+          ? {
+              ...current,
+              saving: false,
+              error:
+                e instanceof ApiError && e.status === 409
+                  ? 'The agent is working or the file changed. Retry when it is idle.'
+                  : msg(e)
+            }
+          : current
+      )
+    }
+  }
+
+  const breadcrumbPath = editor ? editor.target || editor.directory : (viewer?.path ?? '')
 
   // Recursively render one directory level. Files open in the preview; folders toggle.
   const renderLevel = (dirPath: string, depth: number, openPreview?: () => void): React.ReactNode => {
@@ -551,22 +669,41 @@ export function WorkspaceFiles({
       {renderHeader(header)}
 
       <FileBrowserShell
-        title="Files"
+        title={
+          <WorkspaceBreadcrumb
+            root={workspaceRoot}
+            path={breadcrumbPath}
+            creating={editor?.target === ''}
+            draftName={editor?.name ?? ''}
+            onDraftNameChange={(name) =>
+              setEditor((current) => (current?.target === '' ? { ...current, name, error: null } : current))
+            }
+            onBack={isMobile && editor ? backFromEditor : undefined}
+            disabled={editor?.saving}
+          />
+        }
         headerEnd={
-          <div className="flex min-w-0 items-center gap-2">
-            {summary ? (
-              <span className="mono truncate text-[11px] text-(--text-tertiary)" title={workdir}>
-                {summary}
-              </span>
-            ) : null}
-            {canEdit ? (
-              <Button
-                variant="secondary"
-                size="xs"
-                className="flex-none"
-                onClick={() => setEditPath('')}
-                disabled={editPath !== null}
-              >
+          <div className="flex flex-none items-center gap-2">
+            {editor ? (
+              <>
+                <Button variant="secondary" size="xs" onClick={closeEditor} disabled={editor.saving}>
+                  Cancel
+                </Button>
+                <Button
+                  size="xs"
+                  onClick={() => void saveEditor()}
+                  disabled={
+                    editor.saving ||
+                    editor.loading ||
+                    (!!editor.target && !editor.mtime) ||
+                    (!editor.target && !editor.name.trim())
+                  }
+                >
+                  {editor.saving ? 'Saving…' : editor.target ? 'Save changes' : 'Create file'}
+                </Button>
+              </>
+            ) : canEdit ? (
+              <Button variant="secondary" size="xs" className="flex-none" onClick={startCreate}>
                 <Icon name="file-plus" size={13} />
                 New file
               </Button>
@@ -574,13 +711,13 @@ export function WorkspaceFiles({
           </div>
         }
       >
-        {root?.loading && !root.entries && (
+        {!editor && root?.loading && !root.entries && (
           <div className="flex justify-center py-8">
             <Spinner size={30} />
           </div>
         )}
 
-        {root?.err && !root.entries && (
+        {!editor && root?.err && !root.entries && (
           <div className="flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
             <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
             <span>
@@ -590,42 +727,55 @@ export function WorkspaceFiles({
           </div>
         )}
 
-        {root && !root.loading && !root.err && !root.exists && (
+        {!editor && root && !root.loading && !root.err && !root.exists && (
           <EmptyNote text="The workspace has no files yet — the agent creates them as it works." />
         )}
 
-        {root?.entries && root.exists && root.entries.length === 0 && <EmptyNote text="This workspace is empty." />}
+        {root?.entries && root.exists && root.entries.length === 0 && !editor && (
+          <EmptyNote text="This workspace is empty." />
+        )}
 
-        {root?.entries && root.exists && root.entries.length > 0 && (
+        {(editor || (root?.entries && root.exists && root.entries.length > 0)) && (
           <FileBrowserLayout
-            resetKey={agentId}
-            tree={(openPreview) => renderLevel('', 0, openPreview)}
+            resetKey={`${agentId}:${mobileListSignal}`}
+            previewOpen={editor !== null}
+            tree={(openPreview) =>
+              root?.entries && root.exists && root.entries.length > 0 ? (
+                renderLevel('', 0, openPreview)
+              ) : (
+                <div className="px-3 py-4 text-center font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                  No files yet.
+                </div>
+              )
+            }
             preview={
-              viewer
-                ? (onBack) => (
-                    <FilePreview
-                      key={viewer.path}
-                      viewer={viewer}
-                      onMore={onViewerMore}
-                      resolveLink={resolveWorkspaceLink}
-                      onBack={onBack}
-                      canEdit={canEdit}
-                      onEdit={() => setEditPath(viewer.path)}
+              editor
+                ? () => (
+                    <WorkspaceFileEditor
+                      draft={editor}
+                      onContentChange={(content) =>
+                        setEditor((current) => (current ? { ...current, content, error: null } : current))
+                      }
+                      onSubmit={() => void saveEditor()}
                     />
                   )
-                : null
+                : viewer
+                  ? (onBack) => (
+                      <FilePreview
+                        key={viewer.path}
+                        viewer={viewer}
+                        onMore={onViewerMore}
+                        resolveLink={resolveWorkspaceLink}
+                        onBack={onBack}
+                        canEdit={canEdit}
+                        onEdit={() => startEdit(viewer.path)}
+                      />
+                    )
+                  : null
             }
           />
         )}
       </FileBrowserShell>
-      {editPath !== null && (
-        <WorkspaceFileEditor
-          agentId={agentId}
-          editPath={editPath}
-          onClose={() => setEditPath(null)}
-          onSaved={onFileSaved}
-        />
-      )}
     </div>
   )
 }
@@ -636,6 +786,88 @@ function EmptyNote({ text }: { text: string }) {
       <Icon name="folder" size={20} color="var(--text-tertiary)" />
       <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">{text}</div>
     </div>
+  )
+}
+
+function WorkspaceBreadcrumb({
+  root,
+  path,
+  creating,
+  draftName,
+  onDraftNameChange,
+  onBack,
+  disabled
+}: {
+  root: string
+  path: string
+  creating: boolean
+  draftName: string
+  onDraftNameChange: (name: string) => void
+  onBack?: () => void
+  disabled?: boolean
+}) {
+  const segments = path.split('/').filter(Boolean)
+
+  return (
+    <nav className="flex min-w-0 items-center gap-[6px] overflow-hidden" aria-label="Workspace path">
+      {onBack ? (
+        <button
+          type="button"
+          className="iconbtn h-7 w-7 flex-none"
+          onClick={onBack}
+          title="Back to files"
+          aria-label="Back to files"
+        >
+          <Icon name="arrow-left" size={15} />
+        </button>
+      ) : null}
+      <span
+        className={`mono max-w-[120px] flex-none truncate text-[12px] font-semibold text-(--text-primary) ${
+          segments.length > 0 || creating ? 'max-desktop:hidden' : ''
+        }`}
+      >
+        {root}
+      </span>
+      {segments.map((segment, index) => {
+        const current = !creating && index === segments.length - 1
+        return (
+          <Fragment key={`${index}:${segment}`}>
+            <span className="flex-none text-[12px] font-normal text-(--text-tertiary) max-desktop:hidden" aria-hidden>
+              /
+            </span>
+            <span
+              className={`mono min-w-[24px] max-w-[140px] shrink truncate text-[12px] ${
+                current ? 'font-semibold text-(--text-primary)' : 'font-medium text-(--text-secondary)'
+              } ${current ? '' : 'max-desktop:hidden'}`}
+            >
+              {segment}
+            </span>
+          </Fragment>
+        )
+      })}
+      {segments.length === 0 && !creating ? (
+        <span className="flex-none text-[12px] font-normal text-(--text-tertiary)" aria-hidden>
+          /
+        </span>
+      ) : null}
+      {creating ? (
+        <>
+          <span className="flex-none text-[12px] font-normal text-(--text-tertiary) max-desktop:hidden" aria-hidden>
+            /
+          </span>
+          <input
+            className="inp mono h-7 w-[96px] min-w-16 max-w-full shrink px-2 py-1 text-[12px] desktop:w-[170px] desktop:min-w-[80px] desktop:max-w-[30vw]"
+            value={draftName}
+            onChange={(event) => onDraftNameChange(event.target.value)}
+            placeholder="Name your file…"
+            aria-label="New file path"
+            spellCheck={false}
+            disabled={disabled}
+            autoFocus
+          />
+        </>
+      ) : null}
+    </nav>
   )
 }
 
@@ -797,140 +1029,47 @@ function FilePreview({
 }
 
 function WorkspaceFileEditor({
-  agentId,
-  editPath,
-  onClose,
-  onSaved
+  draft,
+  onContentChange,
+  onSubmit
 }: {
-  agentId: string
-  editPath: string
-  onClose: () => void
-  onSaved: (path: string) => void
+  draft: EditorDraft
+  onContentChange: (content: string) => void
+  onSubmit: () => void
 }) {
-  const creating = editPath === ''
-  const titleId = useId()
-  const [path, setPath] = useState(editPath)
-  const [content, setContent] = useState('')
-  const [mtime, setMtime] = useState<string | null>(null)
-  const [loading, setLoading] = useState(!creating)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (creating) return
-    let active = true
-    fetchWorkspaceFileFull(agentId, editPath).then(
-      (file) => {
-        if (!active) return
-        if (!file.exists || file.encoding !== 'utf8' || !file.mtime) {
-          setError('Only existing text files can be edited.')
-        } else {
-          setContent(file.content ?? '')
-          setMtime(file.mtime)
-        }
-        setLoading(false)
-      },
-      (e) => {
-        if (active) {
-          setError(msg(e))
-          setLoading(false)
-        }
-      }
-    )
-    return () => {
-      active = false
-    }
-  }, [agentId, creating, editPath])
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !saving) onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose, saving])
-
-  const save = async () => {
-    const filePath = path.trim()
-    if (!filePath) {
-      setError('Enter a workspace-relative file path.')
-      return
-    }
-    if (saving || loading || (!creating && !mtime)) return
-    setSaving(true)
-    setError(null)
-    try {
-      await writeWorkspaceFile(agentId, filePath, creating ? { content } : { content, ifMatchMtime: mtime! })
-      onSaved(filePath)
-    } catch (e) {
-      setError(
-        e instanceof ApiError && e.status === 409
-          ? 'The agent is working or the file changed. Retry when it is idle.'
-          : msg(e)
-      )
-      setSaving(false)
-    }
-  }
+  const creating = draft.target === ''
 
   return (
-    <div className="scrim">
-      <div className="modal desktop:max-w-[760px]" role="dialog" aria-modal="true" aria-labelledby={titleId}>
-        <div className="modalhead">
-          <Icon name={creating ? 'file-plus' : 'pencil'} size={16} />
-          <span id={titleId} className="flex-1 font-sans text-[16px] font-semibold leading-normal">
-            {creating ? 'New workspace file' : `Edit ${editPath}`}
-          </span>
-          <button className="iconbtn" aria-label="Close" disabled={saving} onClick={onClose}>
-            <Icon name="x" size={16} />
-          </button>
+    <form
+      className="flex min-h-[300px] flex-1 flex-col"
+      aria-label={creating ? 'New workspace file' : `Edit ${draft.target}`}
+      onSubmit={(event) => {
+        event.preventDefault()
+        onSubmit()
+      }}
+    >
+      {draft.loading ? (
+        <div className="flex flex-1 justify-center py-10">
+          <Spinner size={28} />
         </div>
-        <div className="modalbody">
-          {loading ? (
-            <div className="flex justify-center py-8">
-              <Spinner size={28} />
+      ) : (
+        <div className="flex flex-1 flex-col gap-3 p-4">
+          {draft.error ? (
+            <div className="text-[12.5px] text-(--status-error)" role="alert">
+              {draft.error}
             </div>
-          ) : (
-            <div className="flex flex-col gap-3">
-              {creating && (
-                <label className="fld">
-                  <span className="fldlbl">Workspace-relative path</span>
-                  <input
-                    className="inp mono"
-                    value={path}
-                    onChange={(event) => setPath(event.target.value)}
-                    placeholder="notes.md"
-                    aria-label="New file path"
-                    autoFocus
-                  />
-                </label>
-              )}
-              <textarea
-                className="inp mono min-h-[320px] resize-y px-3 py-[10px] leading-[1.6] focus:border-(--brand) focus:outline-none"
-                value={content}
-                onChange={(event) => setContent(event.target.value)}
-                aria-label={creating ? 'New file content' : `Edit ${editPath}`}
-                spellCheck={false}
-                disabled={saving || (!creating && !mtime)}
-                autoFocus={!creating}
-              />
-            </div>
-          )}
-          {error && (
-            <div className="mt-3 text-[12.5px] text-(--status-error)" role="alert">
-              {error}
-            </div>
-          )}
+          ) : null}
+          <textarea
+            className="inp mono min-h-[390px] flex-1 resize-y items-start justify-start px-3 py-[10px] leading-[1.6] focus:border-(--brand) focus:outline-none"
+            value={draft.content}
+            onChange={(event) => onContentChange(event.target.value)}
+            aria-label={creating ? 'New file content' : `Edit ${draft.target}`}
+            spellCheck={false}
+            disabled={draft.saving || (!creating && !draft.mtime)}
+            autoFocus={!creating}
+          />
         </div>
-        <div className="modalfoot">
-          <div className="flex-1" />
-          <Button variant="ghost" disabled={saving} onClick={onClose}>
-            Cancel
-          </Button>
-          <Button disabled={saving || loading || (!creating && !mtime)} onClick={() => void save()}>
-            {saving ? 'Saving…' : 'Save'}
-          </Button>
-        </div>
-      </div>
-    </div>
+      )}
+    </form>
   )
 }
