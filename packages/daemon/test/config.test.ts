@@ -24,7 +24,7 @@ describe('loadConfig', () => {
     expect(cfg.runtimes.claude.command).toBe('npx')
     expect(cfg.security.isolateAccountApps).toBe(true)
     expect(cfg.security.workspaceGitAllowedOrigins).toEqual(['https://github.com', 'ssh://github.com'])
-    expect(cfg.limits.maxAgents).toBeGreaterThan(0) // default applied
+    expect(cfg.limits.maxAgents).toBe(32)
     expect(cfg.agentsDir).toContain('agents')
   })
 
@@ -53,7 +53,7 @@ describe('loadConfig', () => {
     const cfg = loadConfig({ root, optional: true })
     expect(cfg.version).toBe(1)
     expect(cfg.runtimes).toBeUndefined() // none from file → resolveRuntimes fills from registry
-    expect(cfg.limits.maxAgents).toBeGreaterThan(0) // defaults still applied
+    expect(cfg.limits.maxAgents).toBe(32)
     expect(cfg.agentsDir).toContain('agents')
   })
 
@@ -66,7 +66,7 @@ describe('loadConfig', () => {
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ version: 1 })
     if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600)
     expect(cfg.controlPlane?.enabled).toBe(false) // fully local, no CP
-    expect(cfg.limits.maxAgents).toBeGreaterThan(0) // defaults applied
+    expect(cfg.limits.maxAgents).toBe(32)
   })
 
   it('applies CLI/env overrides over file values', () => {
