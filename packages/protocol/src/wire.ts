@@ -72,7 +72,7 @@ export function decodeEnvelopeWith<TFrame>(
         : NIL_UUID
     return { ok: false, id, msg: env.error.message }
   }
-  const schema = schemas[env.data.type]
+  const schema = Object.hasOwn(schemas, env.data.type) ? schemas[env.data.type] : undefined
   if (!schema) {
     return {
       ok: false,

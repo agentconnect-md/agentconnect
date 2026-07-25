@@ -80,6 +80,12 @@ describe('decodeEnvelope — first failing test (design §6 Phase 0)', () => {
     expect(r).toEqual({ ok: false, id: ID, msg: 'UNKNOWN_FRAME' })
   })
 
+  it('rejects inherited schema-map keys with UNKNOWN_FRAME', () => {
+    for (const type of ['__proto__', 'constructor', 'toString']) {
+      expect(decodeEnvelope(envelope(type, {}))).toEqual({ ok: false, id: ID, msg: 'UNKNOWN_FRAME' })
+    }
+  })
+
   it('rejects a frame larger than 256 KiB with FRAME_TOO_LARGE', () => {
     const big = 'x'.repeat(MAX_FRAME_BYTES + 1)
     const r = decodeEnvelope(envelope('auth', { ...validAuthPayload, agentVersion: big }))
