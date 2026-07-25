@@ -1016,8 +1016,10 @@ export default function AgentDetailView() {
                   Agent visibility
                 </div>
                 {/* The SAME cards the Add/Edit modals render, in read-only mode —
-                    one component, so the two surfaces can't drift apart. */}
-                <div className="mt-3 flex flex-col gap-3">
+                    one component, so the two surfaces can't drift apart. Only the
+                    container differs: side by side here (the card is wide), stacked
+                    in the modals (their form pane is narrow). */}
+                <div className="mt-3 grid grid-cols-1 gap-3 desktop:grid-cols-2">
                   <AgentCallVisibility
                     variant="section"
                     direction="inbound"
