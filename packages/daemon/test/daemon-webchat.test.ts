@@ -594,12 +594,18 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       fastMode: false
     }
     const root = scaffold(undefined, configured)
+    let newSessionCalls = 0
     const host = {
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => {
-        await sessionGate
+        newSessionCalls += 1
+        if (newSessionCalls === 1) {
+          await sessionGate
+          return 'acp-wc-staged'
+        }
         return 'acp-wc-1'
       }),
+      discardSession: vi.fn(),
       modelOptions: vi.fn(() => ({ current: 'a', models: ['a', 'b'] })),
       hasSession: vi.fn(() => true),
       setSessionModel: vi.fn(async () => true),
@@ -613,7 +619,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const daemon = new Daemon({ root, hostFactory: () => host as any })
     await daemon.start()
     const cp = fakeCpClient()
-    const runtime = { model: 'b', effort: 'high', permissionMode: 'plan', fastMode: true }
+    const runtime = { model: 'b', effort: 'ultracode', permissionMode: 'plan', fastMode: true }
 
     ;(daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink, undefined, undefined, runtime)
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
@@ -628,7 +634,10 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect((daemon as any).store.getEffortOverride(key)).toBeUndefined()
     expect((daemon as any).store.getPermissionModeOverride(key)).toBeUndefined()
     expect((daemon as any).store.getFastModeOverride(key)).toBeUndefined()
-    expect(host.newSession.mock.calls[0]?.[2]).toBe('high')
+    expect(host.newSession).toHaveBeenCalledTimes(2)
+    expect(host.newSession.mock.calls[0]?.[2]).toBe('ultracode')
+    expect(host.newSession.mock.calls[1]?.[2]).toBeUndefined()
+    expect(host.discardSession).toHaveBeenCalledWith('acp-wc-staged')
     expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'a')
     expect(host.setSessionEffort).toHaveBeenCalledWith('acp-wc-1', 'low')
     expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-wc-1', 'default')

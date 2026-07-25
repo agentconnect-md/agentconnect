@@ -320,9 +320,37 @@ export class SessionManager {
     const preparedCwd = hostCold ? await abortable(() => prepareWorkspace(agent), signal) : undefined
     const host = await abortable(() => this.deps.hostFor(agentId), signal)
     // The sticky per-session effort override rides session `_meta` on new/load so the
-    // `ultracode` sentinel (rejected by the `thought_level` select) takes effect;
-    // select-based effort/model/fast overrides layer on afterward at turn start.
-    const effortOverride = initialEffort ?? this.deps.store.getEffortOverride(key)
+    // `ultracode` sentinel (rejected by the `thought_level` select) takes effect.
+    // Resolve chat authority immediately before each request, then fence the await:
+    // metadata-only settings cannot be reversed by a later live selector.
+    const sessionStartEffort = (): { value?: string; chatSelected: boolean } => {
+      const allowed = this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true
+      if (!allowed) return { chatSelected: false }
+      const value = initialEffort ?? this.deps.store.getEffortOverride(key)
+      return { value, chatSelected: value !== undefined }
+    }
+    const newRuntimeSession = async (cwd: string, mcpServers: McpServer[], systemAppend?: string): Promise<string> => {
+      const selected = sessionStartEffort()
+      const sessionId = await abortable(() => host.newSession(cwd, mcpServers, selected.value, systemAppend), signal)
+      if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return sessionId
+      host.discardSession(sessionId)
+      return abortable(() => host.newSession(cwd, mcpServers, sessionStartEffort().value, systemAppend), signal)
+    }
+    const loadRuntimeSession = async (
+      sessionId: string,
+      cwd: string,
+      mcpServers: McpServer[],
+      systemAppend?: string
+    ): Promise<void> => {
+      const selected = sessionStartEffort()
+      await abortable(() => host.loadSession(sessionId, cwd, mcpServers, selected.value, systemAppend), signal)
+      if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return
+      host.discardSession(sessionId)
+      await abortable(
+        () => host.loadSession(sessionId, cwd, mcpServers, sessionStartEffort().value, systemAppend),
+        signal
+      )
+    }
 
     // Agent memory INDEX (agents/memory-provider.ts), read fresh. It's STANDING
     // context (like the system prompt), NOT a user turn — so it rides the system-prompt
@@ -493,7 +521,7 @@ export class SessionManager {
           ...(integrationId !== undefined ? { integrationId } : {}),
           isDm: msg.isDm
         }) ?? []
-      const acpSessionId = await abortable(() => host.newSession(cwd, mcpServers, effortOverride, metaContext), signal)
+      const acpSessionId = await newRuntimeSession(cwd, mcpServers, metaContext)
       created = true
       rec = {
         key,
@@ -541,17 +569,7 @@ export class SessionManager {
         // isn't seen as `closed` mid-load, then fall through to `prompting` below.
         this.deps.store.setSessionState(key, 'resuming', Date.now())
         try {
-          await abortable(
-            () =>
-              host.loadSession(
-                persistedSessionId,
-                cwd,
-                mcpServers,
-                effortOverride,
-                usesMeta ? resumeSystemContext : undefined
-              ),
-            signal
-          )
+          await loadRuntimeSession(persistedSessionId, cwd, mcpServers, usesMeta ? resumeSystemContext : undefined)
           resumed = true
         } catch {
           if (signal?.aborted) throw interrupted(signal)
@@ -559,10 +577,7 @@ export class SessionManager {
         }
       }
       if (!resumed) {
-        const acpSessionId = await abortable(
-          () => host.newSession(cwd, mcpServers, effortOverride, metaContext),
-          signal
-        )
+        const acpSessionId = await newRuntimeSession(cwd, mcpServers, metaContext)
         // A fresh ACP id the CP has never seen (the persisted one couldn't be resumed),
         // so this counts as a create for `event/session`. A resumed session (loadSession
         // above) keeps its id — the CP already knows it — so `created` stays false there.
