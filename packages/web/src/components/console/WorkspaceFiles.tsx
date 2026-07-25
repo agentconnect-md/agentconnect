@@ -761,7 +761,7 @@ export function WorkspaceFiles({
                     (!editor.target && !editor.name.trim().split('/').at(-1))
                   }
                 >
-                  {editor.saving ? 'Saving…' : editor.target ? 'Save changes' : 'Create file'}
+                  {editor.saving ? 'Saving…' : 'Save changes'}
                 </Button>
               </>
             ) : deleteDraft ? (

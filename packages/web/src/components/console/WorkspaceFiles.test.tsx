@@ -209,13 +209,14 @@ it('creates from the current breadcrumb without repeating path labels in the edi
   expect(breadcrumb?.textContent).toContain('docs')
   expect(path?.closest('nav')).toBe(breadcrumb)
   expect(breadcrumb?.closest('.cardhead')?.textContent).toContain('Cancel')
-  expect(breadcrumb?.closest('.cardhead')?.textContent).toContain('Create file')
+  expect(breadcrumb?.closest('.cardhead')?.textContent).toContain('Save changes')
+  expect(breadcrumb?.closest('.cardhead')?.textContent).not.toContain('Create file')
   expect(container?.textContent).not.toContain('Scratch workspace')
   expect(container?.textContent).not.toContain('Workspace-relative path')
 
   await changeValue(path!, 'notes.md')
   await changeValue(content!, 'draft')
-  await clickButton('Create file')
+  await clickButton('Save changes')
   expect(writeWorkspaceFile).toHaveBeenCalledWith('agent-a', 'docs/notes.md', { content: 'draft' })
 })
 
@@ -235,7 +236,7 @@ it('turns slash-separated new-file directories into breadcrumb segments', async 
 
   await changeValue(path!, 'README.md')
   await changeValue(content!, '# Setup')
-  await clickButton('Create file')
+  await clickButton('Save changes')
   expect(writeWorkspaceFile).toHaveBeenCalledWith('agent-a', 'guides/setup/README.md', { content: '# Setup' })
 })
 
