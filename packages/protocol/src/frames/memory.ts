@@ -279,6 +279,23 @@ export const DreamInfo = z
     trigger: DreamTrigger,
     sessionIds: z.array(z.string().min(1)).max(100),
     snapshotDigest: z.string().min(1).max(128),
+    /** The store's write counters when it was snapshotted, captured under the
+     *  memory-dir lock. Adoption compares them with the live counters to tell a
+     *  distill-only drift — which it may rebase over — from a tool/console write,
+     *  which must hard-fence to review. These come from the daemon's in-process
+     *  write ledger, NOT from the best-effort `.history` log, which can silently
+     *  drop an entry and so cannot authorize anything. */
+    snapshotWrites: z
+      .object({
+        /** Opaque daemon-process/store generation. Counts are comparable only
+         *  within one generation — a restart resets them, which numeric
+         *  comparison alone cannot detect. */
+        generation: z.string().min(1).max(64),
+        total: z.number().int().nonnegative(),
+        nonDistill: z.number().int().nonnegative()
+      })
+      .strict()
+      .optional(),
     instructions: z.string().max(4096).optional(),
     skills: z.array(DreamSkillInfo).max(16).optional(),
     usage: z

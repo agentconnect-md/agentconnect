@@ -15,6 +15,7 @@
  * path is re-checked so a symlink can't smuggle a target out. Flat by design (one
  * level): a topic is a file directly under `memory/`, no nested dirs.
  */
+import { randomUUID } from 'node:crypto'
 import { promises as fsp, mkdirSync, existsSync, writeFileSync } from 'node:fs'
 import { join, resolve, isAbsolute, sep } from 'node:path'
 import { MEMORY_INDEX } from '@agentconnect.md/protocol'
@@ -181,6 +182,67 @@ export async function appendHistory(agentDir: string, record: MemoryHistoryRecor
   }
 }
 
+/**
+ * Per-memory-dir write ledger — the AUTHORITATIVE record of what has mutated a
+ * store in this process, and the counterpart to `.history`.
+ *
+ * `.history` is deliberately best-effort: {@link appendHistory} swallows its
+ * errors so a logging failure can never fail the write it describes. That makes
+ * it a fine audit trail but an unsound *authorization* ledger — a tool write
+ * whose append transiently failed would be invisible, and a later distill append
+ * would make the window look distill-only. The dream adoption fence therefore
+ * authorizes its rebase from these counters, which are bumped inside the write
+ * itself under the same lock and cannot silently drop an entry.
+ *
+ * In-process only, so a daemon restart resets them; adoption treats a counter
+ * that moved backwards as unprovable and fails closed.
+ */
+export interface MemoryWriteMarks {
+  /** Opaque id of the daemon process+store instance these counts belong to.
+   *  Counts are only comparable WITHIN one generation: a restart resets the
+   *  counters, and numeric comparison alone cannot see that (a `{0,0}` snapshot
+   *  never moves backwards, and any older snapshot is eventually caught up by
+   *  new writes). Adoption requires an exact generation match before it trusts a
+   *  single count. */
+  generation: string
+  /** Every successful managed mutation, whatever its source. */
+  total: number
+  /** The subset NOT written by per-turn distillation — tool, console, and dream
+   *  mutations, the ones a rebase may never silently roll over. */
+  nonDistill: number
+}
+
+/** New per process: every store's marks are stamped with it, so marks recorded
+ *  by an earlier daemon can never be compared against this one's counts. */
+const WRITE_MARK_GENERATION = randomUUID()
+
+const writeMarks = new Map<string, { total: number; nonDistill: number }>()
+
+/** A snapshot copy of one store's write marks (zeroed when never written). */
+export function memoryWriteMarks(agentDir: string): MemoryWriteMarks {
+  const marks = writeMarks.get(memoryDir(agentDir)) ?? { total: 0, nonDistill: 0 }
+  return { generation: WRITE_MARK_GENERATION, ...marks }
+}
+
+/**
+ * Count a managed-store mutation that did NOT go through {@link writeMemoryFile}
+ * — today, a dream adoption's directory swap. Such a mutation is invisible to
+ * the ledger otherwise, which would let a second dream staged from the same
+ * snapshot classify the first adoption as distill-only drift and roll over it.
+ * Callers must already hold the memory-dir lock.
+ */
+export function recordExternalMemoryMutation(agentDir: string, source: MemoryWriteSource): void {
+  bumpWriteMarks(agentDir, source)
+}
+
+function bumpWriteMarks(agentDir: string, source: MemoryWriteSource): void {
+  const key = memoryDir(agentDir)
+  const marks = writeMarks.get(key) ?? { total: 0, nonDistill: 0 }
+  marks.total++
+  if (source !== 'distill') marks.nonDistill++
+  writeMarks.set(key, marks)
+}
+
 /** Overwrite a memory file with `content` (creating the dir if needed). Atomic
  *  (tmp + rename) so a concurrent read never sees a partial file. Appends a line to
  *  the change log (`.history`) recording the add/update, its `before`/`after`
@@ -200,10 +262,17 @@ export function writeMemoryFile(
 ): Promise<{ size: number; mtime: string }> {
   // Serialize every write behind the shared per-dir lock so it can't interleave
   // with a dream adoption's fence-and-swap (nor another write).
-  return withMemoryDirLock(agentDir, () => writeMemoryFileImpl(agentDir, relPath, content, ifMatchMtime, source))
+  return withMemoryDirLock(agentDir, () => writeMemoryFileHoldingLock(agentDir, relPath, content, ifMatchMtime, source))
 }
 
-async function writeMemoryFileImpl(
+/**
+ * The write itself, WITHOUT taking the memory-dir lock — for a caller that
+ * already holds it and needs several writes to be one critical section (the
+ * distiller's topic+index batch: an adoption slipping between those two writes
+ * would be overwritten by the batch's stale index). The lock is not reentrant,
+ * so calling {@link writeMemoryFile} from inside it would deadlock.
+ */
+export async function writeMemoryFileHoldingLock(
   agentDir: string,
   relPath: string,
   content: string,
@@ -240,6 +309,10 @@ async function writeMemoryFileImpl(
   await fsp.writeFile(tmp, content, 'utf8')
   await fsp.rename(tmp, abs)
   const st = await fsp.stat(abs)
+  // Bump the authoritative ledger the moment the write is durable — BEFORE the
+  // best-effort history append, which is allowed to fail silently. The dream
+  // adoption fence authorizes from these counters, never from `.history`.
+  bumpWriteMarks(agentDir, source)
 
   const beforeClamped = existed ? clampHistoryValue(before) : undefined
   const afterClamped = clampHistoryValue(content)
