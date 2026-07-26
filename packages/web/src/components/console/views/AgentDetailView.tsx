@@ -1580,7 +1580,7 @@ export default function AgentDetailView() {
             <div className="flex items-center gap-2 border-t border-(--border-subtle) px-4 py-[13px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
               <Icon name="info" size={14} />
               Plus everything in{' '}
-              <Link className="lnk text-[12px]" href={orgPath('/knowledge')}>
+              <Link className="lnk text-[12px]" href={orgPath('/tools')}>
                 workspace knowledge &amp; skills
               </Link>
               , shared across all agents.

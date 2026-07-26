@@ -53,7 +53,7 @@ for simplicity.
 ## 1. Current state and gap
 
 - **Web:** the "Skills library" on the Tools & Skills page at
-  `packages/web/src/app/(app)/[slug]/knowledge/page.tsx` is entirely mocked.
+  `packages/web/src/app/(app)/[slug]/tools/page.tsx` is entirely mocked.
   `KnowledgeHubView.tsx:17` uses
   `const skills = MOCK_MODE ? SKILLS : []`, and `AddSkillModal` is a placeholder.
 - **Control Plane:** there is no skill-related Prisma model, REST route, or

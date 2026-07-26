@@ -1,8 +1,6 @@
-import type { Metadata } from 'next'
-import KnowledgeHubView from '@/components/console/views/KnowledgeHubView'
+import { permanentRedirect } from 'next/navigation'
 
-export const metadata: Metadata = { title: 'Tools & Skills · AgentConnect' }
-
-export default function Page() {
-  return <KnowledgeHubView />
+export default async function Page({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params
+  permanentRedirect(`/${slug}/tools`)
 }
