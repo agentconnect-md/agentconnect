@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { classifyInvocation, firstPositional } from '../src/route.js'
+import { classifyInvocation, firstPositional, parseRootFlag } from '../src/route.js'
 
 describe('firstPositional', () => {
   it('finds a bare command', () => {
@@ -66,5 +66,33 @@ describe('classifyInvocation', () => {
     expect(classifyInvocation(['--help'])).toBe('cli')
     expect(classifyInvocation(['--version'])).toBe('cli')
     expect(classifyInvocation(['help'])).toBe('cli')
+  })
+})
+
+describe('parseRootFlag', () => {
+  it('reads the global root in both forms, before or after the command', () => {
+    expect(parseRootFlag(['--root', '/tmp/ac', 'run'])).toBe('/tmp/ac')
+    expect(parseRootFlag(['--root=/tmp/ac', 'run'])).toBe('/tmp/ac')
+    expect(parseRootFlag(['upgrade', '--root', '/tmp/ac'])).toBe('/tmp/ac')
+  })
+
+  it('never reads another option’s VALUE as the root', () => {
+    // The daemon spawns `upgrade --to <CP-supplied version> --root <root>`. A scan
+    // that inspected `--to`'s value would take the attacker's path and point every
+    // filesystem write below it there.
+    expect(parseRootFlag(['upgrade', '--to', '--root=/elsewhere', '--root', '/tmp/ac'])).toBe('/tmp/ac')
+    expect(parseRootFlag(['upgrade', '--to', '--root', '--root', '/tmp/ac'])).toBe('/tmp/ac')
+    expect(parseRootFlag(['--config', '--root=/elsewhere', '--root', '/tmp/ac'])).toBe('/tmp/ac')
+    // …and with no real --root present it resolves to nothing, not the injected one.
+    expect(parseRootFlag(['upgrade', '--to', '--root=/elsewhere'])).toBeUndefined()
+  })
+
+  it('stops at -- and ignores a positional that looks like the flag', () => {
+    expect(parseRootFlag(['run', '--', '--root', '/elsewhere'])).toBeUndefined()
+  })
+
+  it('returns undefined when no root is given', () => {
+    expect(parseRootFlag(['status'])).toBeUndefined()
+    expect(parseRootFlag([])).toBeUndefined()
   })
 })

@@ -40,6 +40,16 @@ const VALUE_OPTS = new Set([
   '--agent'
 ])
 
+/**
+ * Value-taking options of CLI-OWNED subcommands. They never precede the command,
+ * so `firstPositional` has no use for them — but a scan that reaches past the
+ * command (see {@link parseRootFlag}) must still know their values are values.
+ * `--to` is the load-bearing one: the daemon passes a Control-Plane-supplied
+ * version there, so a scan that reads it as an option would let that value steer
+ * the CLI.
+ */
+const SUBCOMMAND_VALUE_OPTS = new Set(['--to', '--channel', '--keep'])
+
 /** The first positional token (the subcommand), honoring option values and `--`. */
 export function firstPositional(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
@@ -51,6 +61,29 @@ export function firstPositional(argv: string[]): string | undefined {
       continue // `--opt=value` and boolean flags consume no extra token
     }
     return a
+  }
+  return undefined
+}
+
+/**
+ * The global `--root`, read before commander parses — the delegation/run paths
+ * never build a program, and the cli-entry self-heal runs on every invocation.
+ *
+ * SECURITY: this walks the WHOLE argv (unlike {@link firstPositional}, `--root`
+ * legitimately appears after the command), so it must skip option values or a
+ * value would be read as a flag. The daemon spawns
+ * `upgrade --to <CP-supplied version> --root <root>`; a naive scan would accept
+ * `--to=--root=/elsewhere` and point every filesystem write below at that path.
+ */
+export function parseRootFlag(argv: string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === undefined) break
+    if (a === '--') break // everything after `--` is positional, never our flag
+    if (a === '--root') return argv[i + 1]
+    if (a.startsWith('--root=')) return a.slice('--root='.length)
+    // Any other value-taking option: its value is data, not a flag to inspect.
+    if (VALUE_OPTS.has(a) || SUBCOMMAND_VALUE_OPTS.has(a)) i++
   }
   return undefined
 }

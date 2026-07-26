@@ -11,8 +11,21 @@ import { versionDir, versionsDir } from './paths.js'
 import { downloadTarball, resolveDaemonTarget, verifyTarball, type ResolvedTarget } from './registry.js'
 import { isInstalled, type Channel } from './version-store.js'
 
-/** Resolve the version to install/upgrade to, without downloading. */
-export function resolveTarget(opts: { to?: string; channel: Channel }): Promise<ResolvedTarget> {
+/**
+ * A pinned `--to` version. Rejects anything that is not a plain version token —
+ * notably a leading `-`, which would make the value look like a second option to
+ * any argv scan that sees it. The value can originate from the Control Plane (the
+ * daemon spawns `upgrade --to <version>`), so it is not the operator's own typing.
+ */
+const VERSION_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/
+
+/** Resolve the version to install/upgrade to, without downloading. `async` so a
+ *  rejected version surfaces as a rejected promise, matching the declared type
+ *  rather than throwing before the caller has one to catch. */
+export async function resolveTarget(opts: { to?: string; channel: Channel }): Promise<ResolvedTarget> {
+  if (opts.to !== undefined && !VERSION_TOKEN.test(opts.to)) {
+    throw new Error(`invalid version ${JSON.stringify(opts.to)}`)
+  }
   return resolveDaemonTarget(opts)
 }
 
