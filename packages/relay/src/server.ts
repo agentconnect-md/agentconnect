@@ -9,7 +9,7 @@
  * the relay↔CP link: 503 until registration completes, so a rolling deploy keeps
  * a not-yet-registered pod out of the Service until it can actually route.
  */
-import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify'
+import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyServerOptions } from 'fastify'
 
 export interface RelayServerDeps {
   /** True once the relay↔CP link has registered and is heartbeating. */
@@ -18,8 +18,57 @@ export interface RelayServerDeps {
   relayId: () => string | undefined
 }
 
+/**
+ * The generic-webhook ingress carries its capability token IN the path
+ * (`POST /webhooks/in/<token>`), and that token is the ONLY authenticator when a
+ * hook is configured without an HMAC — the default. Fastify logs `req.url` on
+ * every request, so an ordinary access log hands anyone who can read it (an
+ * operator, a log-shipping vendor, a crash bundle) the ability to fire that hook
+ * into the owning org's agent. Redact the token segment before it is ever
+ * serialized.
+ */
+export function redactUrl(url: string): string {
+  return url.replace(/^(\/webhooks\/in\/)[^/?#]+/, '$1<redacted>')
+}
+
+/** Fastify's default `req` serializer, with the url redacted. Applied at the
+ *  serializer rather than per-route so unmatched paths (404s from probes and
+ *  typo'd tokens) are covered by the same rule. */
+function redactingReqSerializer(req: FastifyRequest) {
+  return {
+    method: req.method,
+    url: redactUrl(req.url ?? ''),
+    host: req.headers.host,
+    remoteAddress: req.ip,
+    remotePort: req.socket?.remotePort
+  }
+}
+
+/** Attach the redacting serializer to whatever logger config the caller passed.
+ *  `logger: true` has to be widened to an object to carry serializers at all;
+ *  logging switched off stays off (nothing is serialized, nothing to redact). */
+function withRedactedRequestLog(opts?: FastifyServerOptions): FastifyServerOptions {
+  const base = opts ?? { logger: true }
+  if (!base.logger) return base
+  const logger = base.logger === true ? {} : base.logger
+  return {
+    ...base,
+    logger: {
+      ...logger,
+      serializers: { ...(typeof logger === 'object' ? logger.serializers : {}), req: redactingReqSerializer }
+    }
+  }
+}
+
 export function buildRelayServer(deps: RelayServerDeps, opts?: FastifyServerOptions): FastifyInstance {
-  const app = Fastify(opts ?? { logger: true })
+  const app = Fastify(withRedactedRequestLog(opts))
+
+  // Fastify's built-in 404 logs `Route POST:/webhooks/in/<token> not found`, which
+  // would re-leak the very token the serializer redacts — and an unknown or typo'd
+  // token is exactly the request that 404s. Answer without echoing the path.
+  app.setNotFoundHandler((_req, reply) => {
+    void reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'route not found' })
+  })
 
   app.get('/healthz', async () => ({ status: 'ok' }))
 
