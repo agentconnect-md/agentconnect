@@ -390,7 +390,7 @@ export async function readMemoryFile(agentDir: string, relPath: string): Promise
 }
 
 /** Truncate a snapshot to the history value cap, on a UTF-8 boundary, flagging it. */
-function clampHistoryValue(text: string): { value: string; truncated: boolean } {
+export function clampMemoryHistoryValue(text: string): { value: string; truncated: boolean } {
   if (Buffer.byteLength(text) <= MAX_HISTORY_VALUE_BYTES) return { value: text, truncated: false }
   const buf = Buffer.from(text, 'utf8').subarray(0, MAX_HISTORY_VALUE_BYTES)
   return { value: buf.toString('utf8') + '…', truncated: true }
@@ -457,16 +457,21 @@ export function canonicalizeMemoryHistory(raw: string): string {
   return retainMemoryHistoryRecords(withIds).map(historyLine).join('')
 }
 
+/** Take a contained/no-follow canonical history snapshot while the caller
+ * already holds the memory-dir lock. Dream adoption uses this in the same
+ * critical section as its final live-store snapshot and directory swap. */
+export async function snapshotMemoryHistoryHoldingLock(agentDir: string): Promise<string> {
+  const dir = memoryDir(agentDir)
+  const path = await containedReadTarget(agentDir, dir, join(dir, MEMORY_HISTORY_FILENAME))
+  if (path === null) return ''
+  const current = await readCurrentMemoryFile(path)
+  return current.existed ? canonicalizeMemoryHistory(current.before) : ''
+}
+
 /** Take a contained/no-follow canonical snapshot for a replacement store. The
  * brief shared lock makes the copied sidecar line up with ordinary appends. */
 export function snapshotMemoryHistory(agentDir: string): Promise<string> {
-  return withMemoryDirLock(agentDir, async () => {
-    const dir = memoryDir(agentDir)
-    const path = await containedReadTarget(agentDir, dir, join(dir, MEMORY_HISTORY_FILENAME))
-    if (path === null) return ''
-    const current = await readCurrentMemoryFile(path)
-    return current.existed ? canonicalizeMemoryHistory(current.before) : ''
-  })
+  return withMemoryDirLock(agentDir, () => snapshotMemoryHistoryHoldingLock(agentDir))
 }
 
 /** Compact one sidecar atomically. Invalid legacy/torn rows are discarded and
@@ -702,8 +707,8 @@ export async function writeMemoryFileHoldingLock(
   // adoption fence authorizes from these counters, never from `.history`.
   bumpWriteMarks(agentDir, source)
 
-  const beforeClamped = existed ? clampHistoryValue(before) : undefined
-  const afterClamped = clampHistoryValue(content)
+  const beforeClamped = existed ? clampMemoryHistoryValue(before) : undefined
+  const afterClamped = clampMemoryHistoryValue(content)
   try {
     await appendHistoryHoldingLock(agentDir, {
       path: relPath,

@@ -6,22 +6,22 @@ import type { DreamInfo, DreamTrigger, MemoryDreamingPolicy } from '@agentconnec
 import {
   MEMORY_INDEX,
   MEMORY_HISTORY_FILENAME,
-  MAX_HISTORY_VALUE_BYTES,
   MAX_INDEX_INJECT_BYTES,
   MAX_MEMORY_FILE_BYTES,
+  clampMemoryHistoryValue,
   enforceMemoryHistoryRetentionHoldingLock,
   listMemory,
   memoryDir,
   memoryWriteMarks,
   recordExternalMemoryMutation,
   readMemoryFile,
-  snapshotMemoryHistory,
+  snapshotMemoryHistoryHoldingLock,
+  type MemoryHistoryRecord,
   withMemoryDirLock
 } from './memory.js'
 import {
   buildDreamPrompt,
   dreamSystemPrompt,
-  clampToBytesOnBoundary,
   parseDreamProposal,
   storeDigest,
   type DreamProposal,
@@ -520,7 +520,7 @@ export class DreamRunner {
    * Adopt a completed dream (design §6). Serialized per agent (the lock) against
    * concurrent starts, adopts, and discards. The replacement store — including
    * the carried-over `.history` plus one `source:"dream"` provenance row per
-   * file — is built entirely in a sibling temp directory FIRST, so `memory/` is
+   * changed file — is built entirely in a sibling temp directory FIRST, so `memory/` is
    * never a half-written tree: the visible window is a single rename, and a
    * failure rolls the previous store back. Fenced against post-snapshot writes
    * unless `force`.
@@ -551,43 +551,30 @@ export class DreamRunner {
       const live = memoryDir(dir)
       const at = this.nowIso()
 
-      // 1) Build the complete replacement in a temp sibling dir. `memory/` is
-      //    untouched; only its contained history snapshot briefly takes the
-      //    shared lock. Any failure here leaves the live store intact.
+      // 1) Build the proposed files in a temp sibling dir. `memory/` is
+      //    untouched. History is added later under the shared lock so every
+      //    `before` snapshot describes the exact store the swap replaces.
       const replacement = join(dir, `.memory.adopting-${dreamId}`)
       await fsp.rm(replacement, { recursive: true, force: true })
       await fsp.mkdir(replacement, { recursive: true })
-      // Canonicalize BEFORE concatenating dream rows. Otherwise a legacy row
-      // without its final newline (or a torn tail) absorbs the first dream row
-      // into one invalid line that post-swap compaction must discard.
-      let history = await snapshotMemoryHistory(dir)
       for (const name of staged) {
         const content = await fsp.readFile(join(out, name), 'utf8')
         await fsp.writeFile(join(replacement, name), content, 'utf8')
-        history +=
-          JSON.stringify({
-            path: name,
-            event: 'update',
-            after: clampToBytesOnBoundary(content, MAX_HISTORY_VALUE_BYTES),
-            at,
-            scope: 'agent',
-            source: 'dream'
-          }) + '\n'
       }
-      await fsp.writeFile(join(replacement, MEMORY_HISTORY_FILENAME), history, 'utf8')
 
       // 2) Fence + swap under the shared memory-dir lock, so no writeMemoryFile
       //    caller can interleave between the digest re-check and the rename.
       try {
         return await withMemoryDirLock(dir, async () => {
+          const liveFiles = await this.readLiveStore(dir)
           if (!force) {
-            const liveDigest = storeDigest(await this.readLiveStore(dir))
+            const liveDigest = storeDigest(liveFiles)
             if (liveDigest !== dream.snapshotDigest) {
               // §8 distillation rebase: additive per-turn capture may have landed
               // while the dream ran. When EVERY post-snapshot write was
               // distill-sourced, replay those additions onto the replacement and
               // adopt; any tool/console write still hard-fences to review.
-              const rebased = await this.rebaseDistillWrites(dir, dream, replacement, at)
+              const rebased = await this.rebaseDistillWrites(dir, dream, replacement)
               // `0` is a SUCCESSFUL rebase (every addition was already folded in
               // by the dream) — only `null` means the drift wasn't distill-only.
               if (rebased === null) {
@@ -598,6 +585,42 @@ export class DreamRunner {
               this.deps.log.info(`dream ${dreamId}: rebased ${rebased} distilled line(s) onto the staged store`)
             }
           }
+
+          // Canonicalize the exact live history before adding adoption rows. A
+          // legacy final row without a newline (or a torn tail) must not absorb
+          // the first dream row. Build a full add/update/delete change set from
+          // the store that is about to be replaced, skipping unchanged files.
+          let history = await snapshotMemoryHistoryHoldingLock(dir)
+          const beforeByPath = new Map(liveFiles.map((file) => [file.name, file.content]))
+          const afterFiles = (await fsp.readdir(replacement, { withFileTypes: true }))
+            .filter((entry) => entry.isFile() && stagedPathOk(entry.name))
+            .map((entry) => entry.name)
+          const afterByPath = new Map<string, string>()
+          for (const name of afterFiles) {
+            afterByPath.set(name, await fsp.readFile(join(replacement, name), 'utf8'))
+          }
+          const changedPaths = new Set([...beforeByPath.keys(), ...afterByPath.keys()])
+          for (const path of [...changedPaths].sort((a, b) => a.localeCompare(b))) {
+            const before = beforeByPath.get(path)
+            const after = afterByPath.get(path)
+            if (before === after) continue
+
+            const beforeClamped = before === undefined ? undefined : clampMemoryHistoryValue(before)
+            const afterClamped = clampMemoryHistoryValue(after ?? '')
+            const record: MemoryHistoryRecord = {
+              id: randomUUID(),
+              path,
+              event: before === undefined ? 'add' : after === undefined ? 'delete' : 'update',
+              ...(beforeClamped ? { before: beforeClamped.value } : {}),
+              after: afterClamped.value,
+              at,
+              scope: 'agent',
+              source: 'dream',
+              ...(beforeClamped?.truncated || afterClamped.truncated ? { truncated: true } : {})
+            }
+            history += JSON.stringify(record) + '\n'
+          }
+          await fsp.writeFile(join(replacement, MEMORY_HISTORY_FILENAME), history, { encoding: 'utf8', mode: 0o600 })
 
           const backupsRoot = join(dir, BACKUPS_DIRNAME)
           await fsp.mkdir(backupsRoot, { recursive: true })
@@ -704,12 +727,7 @@ export class DreamRunner {
    * The result is re-checked against the store's byte caps: a rebase must never
    * produce a file the ordinary write path would reject.
    */
-  private async rebaseDistillWrites(
-    dir: string,
-    dream: DreamInfo,
-    replacement: string,
-    at: string
-  ): Promise<number | null> {
+  private async rebaseDistillWrites(dir: string, dream: DreamInfo, replacement: string): Promise<number | null> {
     const snapshot = dream.snapshotWrites
     // A dream recorded before this field existed can't be reasoned about.
     if (!snapshot) return null
@@ -777,18 +795,6 @@ export class DreamRunner {
       if (Buffer.byteLength(next) > cap) return null
       await fsp.writeFile(join(replacement, name), next, 'utf8')
       replayed += additions.length
-      await fsp.appendFile(
-        join(replacement, MEMORY_HISTORY_FILENAME),
-        JSON.stringify({
-          path: name,
-          event: 'update',
-          after: clampToBytesOnBoundary(next, MAX_HISTORY_VALUE_BYTES),
-          at,
-          scope: 'agent',
-          source: 'distill'
-        }) + '\n',
-        'utf8'
-      )
     }
     // Zero replayed lines is still a successful rebase — the drift was
     // distill-only and every addition was already represented.

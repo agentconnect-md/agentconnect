@@ -51,11 +51,11 @@ describe('ManagedMemoryHistory', () => {
           {
             path: 'notes.md',
             event: 'update',
-            before: 'version one',
-            after: 'version two',
+            before: 'shared line\nold value\n',
+            after: 'shared line\nnew value\n',
             at: '2026-07-26T10:00:00.000Z',
             scope: 'agent',
-            source: 'console'
+            source: 'dream'
           },
           {
             path: 'notes.md',
@@ -100,11 +100,16 @@ describe('ManagedMemoryHistory', () => {
     expect(disclosure?.getAttribute('aria-expanded')).toBe('true')
     expect(mocks.listMemoryFileHistory).toHaveBeenNthCalledWith(1, 'agent-1', 'notes.md', { limit: 5 })
     expect(container.querySelectorAll('details')).toHaveLength(2)
-    expect(container.textContent).toContain('Before')
-    expect(container.textContent).toContain('version one')
-    expect(container.textContent).toContain('After')
-    expect(container.textContent).toContain('version two')
-    expect(container.textContent).toContain('Console')
+    expect(container.textContent).toContain('Line changes')
+    expect(container.textContent).toContain('Dream adoption')
+    const firstEvent = container.querySelector('details')
+    expect(
+      Array.from(firstEvent?.querySelectorAll('[data-diff-kind]') ?? []).map((row) =>
+        row.getAttribute('data-diff-kind')
+      )
+    ).toEqual(['context', 'delete', 'add'])
+    expect(firstEvent?.textContent).toContain('old value')
+    expect(firstEvent?.textContent).toContain('new value')
 
     await act(async () => button('Load older changes')?.click())
 
@@ -132,5 +137,32 @@ describe('ManagedMemoryHistory', () => {
     await act(async () => disclosure?.click())
     await act(async () => disclosure?.click())
     expect(mocks.listMemoryFileHistory).toHaveBeenCalledTimes(1)
+  })
+
+  it('explains legacy update rows that have no before snapshot', async () => {
+    mocks.listMemoryFileHistory.mockResolvedValue({
+      events: [
+        {
+          path: 'MEMORY.md',
+          event: 'update',
+          after: '# Adopted memory\n',
+          at: '2026-07-26T09:00:00.000Z',
+          scope: 'agent',
+          source: 'dream'
+        }
+      ],
+      nextCursor: null
+    })
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root?.render(<ManagedMemoryHistory agentId="agent-1" path="MEMORY.md" />)
+    })
+
+    await act(async () => button('Change history')?.click())
+
+    expect(container.textContent).toContain('The before snapshot was not recorded for this older change.')
+    expect(container.textContent).toContain('# Adopted memory')
   })
 })

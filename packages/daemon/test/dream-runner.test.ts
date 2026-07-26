@@ -15,7 +15,8 @@ import {
   MEMORY_HISTORY_FILENAME,
   MEMORY_INDEX,
   MAX_MEMORY_FILE_BYTES,
-  memoryDir
+  memoryDir,
+  type MemoryHistoryRecord
 } from '../src/agents/memory.js'
 
 const silent = { info() {}, warn() {} }
@@ -330,6 +331,53 @@ describe('DreamRunner adoption', () => {
     expect(history).toContain('"source":"tool"') // pre-adoption rows preserved
   })
 
+  it('records the exact add, update, and delete set with live before snapshots', async () => {
+    const proposal = JSON.stringify({
+      index: '# Memory\n- [prefs](prefs.md)\n- [fresh](fresh.md)',
+      files: [
+        { path: 'prefs.md', content: '- consolidated preference' },
+        { path: 'fresh.md', content: '- newly learned fact' }
+      ]
+    })
+    const { dir, store, runner } = await setup({ extract: async () => proposal })
+    await writeMemoryFile(dir, 'obsolete.md', '- no longer relevant\n', undefined, 'tool')
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+
+    await runner.adopt('a1', started.dreamId, false)
+
+    const history = (await readFile(join(memoryDir(dir), MEMORY_HISTORY_FILENAME), 'utf8'))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as MemoryHistoryRecord)
+    const adoption = history.filter((event) => event.source === 'dream')
+
+    expect(adoption).toContainEqual(
+      expect.objectContaining({
+        path: 'prefs.md',
+        event: 'update',
+        before: '- uses tabs\n- uses tabs again\n',
+        after: '- consolidated preference\n'
+      })
+    )
+    expect(adoption).toContainEqual(
+      expect.objectContaining({
+        path: 'fresh.md',
+        event: 'add',
+        after: '- newly learned fact\n'
+      })
+    )
+    expect(adoption.find((event) => event.path === 'fresh.md')).not.toHaveProperty('before')
+    expect(adoption).toContainEqual(
+      expect.objectContaining({
+        path: 'obsolete.md',
+        event: 'delete',
+        before: '- no longer relevant\n',
+        after: ''
+      })
+    )
+  })
+
   it.each([
     ['a valid final row without a newline', false],
     ['a torn partial tail', true]
@@ -389,6 +437,17 @@ describe('DreamRunner adoption', () => {
 
     const adopted = await runner.adopt('a1', started.dreamId, true)
     expect(adopted.status).toBe('adopted')
+    const history = (await readFile(join(memoryDir(dir), MEMORY_HISTORY_FILENAME), 'utf8'))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as MemoryHistoryRecord)
+    expect(history.filter((event) => event.source === 'dream' && event.path === 'prefs.md')).toContainEqual(
+      expect.objectContaining({
+        event: 'update',
+        before: '- console edit after snapshot\n',
+        after: '- Uses tabs, not spaces (2026-07-24).\n'
+      })
+    )
   })
 
   it('auto-adopts on a trusted runtime, but leaves an untrusted one for review', async () => {

@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { ApiError, listMemoryFileHistory, type MemoryFileHistoryEventDto } from '@/lib/api'
 import { Spinner } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
+import { LineDiff } from '@/components/console/LineDiff'
 
 const PAGE_SIZE = 5
 
@@ -48,6 +49,7 @@ function Snapshot({ label, value, tone }: { label: string; value: string; tone: 
 
 function HistoryEvent({ event }: { event: MemoryFileHistoryEventDto }) {
   const hasBefore = event.before !== undefined
+  const canDiff = hasBefore || event.event === 'add'
 
   return (
     <details className="group rounded-md border border-(--border-subtle) bg-(--surface-card)">
@@ -71,10 +73,17 @@ function HistoryEvent({ event }: { event: MemoryFileHistoryEventDto }) {
         </time>
       </summary>
       <div className="border-t border-(--border-subtle) p-3">
-        <div className={hasBefore ? 'grid grid-cols-1 gap-3 desktop:grid-cols-2' : 'grid grid-cols-1 gap-3'}>
-          {hasBefore ? <Snapshot label="Before" value={event.before ?? ''} tone="before" /> : null}
-          <Snapshot label={event.event === 'delete' ? 'After deletion' : 'After'} value={event.after} tone="after" />
-        </div>
+        {canDiff ? (
+          <LineDiff before={event.before ?? ''} after={event.after} />
+        ) : (
+          <>
+            <Snapshot label="After" value={event.after} tone="after" />
+            <div className="mt-2 flex items-start gap-1.5 text-[10.5px] leading-[1.45] text-(--text-tertiary)">
+              <Icon name="info" size={12} className="mt-px flex-none" />
+              The before snapshot was not recorded for this older change.
+            </div>
+          </>
+        )}
         {event.truncated ? (
           <div className="mt-2 flex items-start gap-1.5 text-[10.5px] leading-[1.45] text-(--text-tertiary)">
             <Icon name="info" size={12} className="mt-px flex-none" />
