@@ -89,11 +89,18 @@ const button = (host: HTMLElement, label: string) =>
 describe('DreamPanel', () => {
   it('triggers a dream and tells the user it costs a model run', async () => {
     const host = await render()
-    // The cost/latency is stated up front — this is not a free click.
-    expect(host.textContent).toContain('costs tokens')
+    // The cost is stated up front — this is not a free click.
+    expect(host.textContent).toContain('Uses model tokens')
 
     await act(async () => button(host, 'Dream now')?.click())
     expect(api.startDream).toHaveBeenCalledWith(AGENT)
+  })
+
+  it('keeps the detailed explanation collapsed by default', async () => {
+    const host = await render()
+    const explanation = host.querySelector('details')
+    expect(explanation?.open).toBe(false)
+    expect(explanation?.querySelector('summary')?.textContent).toContain('How dreaming works')
   })
 
   it('blocks the trigger for a viewer, with the reason', async () => {

@@ -791,11 +791,6 @@ export function MemoryPanel({
         </div>
       ) : (
         <>
-          {/* Dreaming is managed-only; the panel carries its own gates for the
-              in-flight / no-edit / dreaming-off cases. */}
-          {/* Only when dreaming is actually on: with it off the panel could only
-              offer a trigger that does nothing, so the whole section is noise. */}
-          {persistedSettings.dreaming.enabled ? <DreamPanel key={agentId} agentId={agentId} canEdit={canEdit} /> : null}
           <FileBrowserShell
             title="Memory"
             headerEnd={
@@ -818,6 +813,10 @@ export function MemoryPanel({
               preview={renderPreview}
             />
           </FileBrowserShell>
+          {/* Dreaming is managed-only and is secondary to the live memory
+              content, so it sits below the browser. Only render it when the
+              persisted policy is on; otherwise its trigger would be noise. */}
+          {persistedSettings.dreaming.enabled ? <DreamPanel key={agentId} agentId={agentId} canEdit={canEdit} /> : null}
         </>
       )}
       {confirmingBackendChange ? (
