@@ -676,3 +676,127 @@ describe('capture/adoption serialization', () => {
     expect(index.trim().length).toBeGreaterThan(0)
   })
 })
+
+describe('DreamRunner skill mining (D-3)', () => {
+  const SKILL_PROPOSAL = JSON.stringify({
+    index: '# Memory\n- [prefs](prefs.md)',
+    files: [{ path: 'prefs.md', content: '- Uses tabs.' }],
+    skills: [
+      {
+        name: 'deploy-staging',
+        description: 'Deploy to staging',
+        skill: '# Deploy\n1. build\n2. push',
+        scripts: [{ path: 'deploy.sh', content: 'echo deploy' }],
+        // FakeStore mines exactly one session, so a second citation is invented.
+        sessionIds: ['sess-1', 'sess-1']
+      }
+    ]
+  })
+
+  /** A store that mines two sessions, so a candidate can actually be grounded. */
+  class TwoSessionStore extends FakeStore {
+    override sources = [
+      { sessionId: 'sess-1', channel: 'C1', thread: 'T1' },
+      { sessionId: 'sess-2', channel: 'C2', thread: 'T2' }
+    ]
+  }
+
+  const grounded = JSON.stringify({
+    index: '# Memory',
+    files: [],
+    skills: [
+      {
+        name: 'deploy-staging',
+        description: 'Deploy to staging',
+        skill: '# Deploy\n1. build\n2. push',
+        scripts: [{ path: 'deploy.sh', content: 'echo deploy' }],
+        sessionIds: ['sess-1', 'sess-2']
+      }
+    ]
+  })
+
+  async function mining(proposal: string, store = new TwoSessionStore()) {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    ensureMemory(dir, 'bot')
+    const runner = new DreamRunner({
+      agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
+      dreamingPolicyFor: () => ({ enabled: true, mineSkills: true }),
+      store,
+      extract: async () => ({ output: proposal, trustedChannel: false }),
+      log: silent
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    const done = await settle(store, started.dreamId)
+    return { dir, runner, store, dreamId: started.dreamId, done }
+  }
+
+  it('stages a grounded candidate as a real skill directory and lists it as proposed', async () => {
+    const { dir, runner, dreamId, done } = await mining(grounded)
+    expect(done.status).toBe('completed')
+    expect(done.skills).toEqual([{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }])
+
+    // Staged as a standard skill dir, so accepting needs no conversion.
+    const staged = await runner.stagedSkill('a1', dreamId, 'deploy-staging')
+    expect(staged?.skill).toContain('name: deploy-staging')
+    expect(staged?.skill).toContain('# Deploy')
+    expect(staged?.scripts).toEqual([{ path: 'deploy.sh', content: 'echo deploy' }])
+    // NOT installed — staging is not acceptance.
+    await expect(readdir(join(dir, 'skills'))).rejects.toThrow()
+  })
+
+  it('does not mine when the agent did not ask for it', async () => {
+    const store = new TwoSessionStore()
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    ensureMemory(dir, 'bot')
+    const prompts: string[] = []
+    const runner = new DreamRunner({
+      agentDirByAgent: () => dir,
+      dreamingPolicyFor: () => ({ enabled: true }), // mineSkills off
+      store,
+      extract: async (_a, systemPrompt) => {
+        prompts.push(systemPrompt)
+        return { output: grounded, trustedChannel: false }
+      },
+      log: silent
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    const done = await settle(store, started.dreamId)
+    expect(prompts[0]).not.toContain('extract procedures')
+    // Even though the model volunteered skills, none are grounded or recorded.
+    expect(done.skills).toBeUndefined()
+  })
+
+  it('drops an ungrounded candidate: one real session is not a recurring procedure', async () => {
+    const { done } = await mining(SKILL_PROPOSAL, new FakeStore()) // mines only sess-1
+    expect(done.status).toBe('completed')
+    expect(done.skills).toBeUndefined()
+  })
+
+  it('accept installs the skill under the agent root and survives a later discard', async () => {
+    const { dir, runner, dreamId } = await mining(grounded)
+    const after = await runner.skillAccept('a1', dreamId, 'deploy-staging')
+    expect(after.skills?.[0]).toMatchObject({ name: 'deploy-staging', state: 'accepted' })
+    expect(await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')).toContain('# Deploy')
+    expect(await readFile(join(dir, 'skills', 'deploy-staging', 'scripts', 'deploy.sh'), 'utf8')).toBe('echo deploy')
+
+    // Discarding the dream must not uninstall what the user already accepted.
+    await runner.discard('a1', dreamId)
+    expect(await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')).toContain('# Deploy')
+  })
+
+  it('dismiss drops the staging and blocks a later accept; both are idempotent', async () => {
+    const { dir, runner, dreamId } = await mining(grounded)
+    const after = await runner.skillDismiss('a1', dreamId, 'deploy-staging')
+    expect(after.skills?.[0]).toMatchObject({ state: 'dismissed' })
+    expect(await runner.stagedSkill('a1', dreamId, 'deploy-staging')).toBeNull()
+    // Idempotent, and a dismissed candidate can't be resurrected into an install.
+    await expect(runner.skillDismiss('a1', dreamId, 'deploy-staging')).resolves.toMatchObject({})
+    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).rejects.toThrow(DreamStateError)
+    await expect(readdir(join(dir, 'skills'))).rejects.toThrow() // nothing installed
+  })
+
+  it('rejects an unknown candidate name', async () => {
+    const { runner, dreamId } = await mining(grounded)
+    await expect(runner.skillAccept('a1', dreamId, 'no-such-skill')).rejects.toThrow(/unknown skill candidate/)
+  })
+})

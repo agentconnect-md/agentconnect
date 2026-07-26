@@ -16,8 +16,8 @@ import {
   withMemoryDirLock
 } from './memory.js'
 import {
-  MEMORY_DREAM_SYSTEM_PROMPT,
   buildDreamPrompt,
+  dreamSystemPrompt,
   clampToBytesOnBoundary,
   parseDreamProposal,
   storeDigest,
@@ -105,6 +105,8 @@ const DEFAULT_SESSION_WINDOW = 20
 const TRANSCRIPT_ROWS_PER_SESSION = 200
 const DREAMS_DIRNAME = 'memory-dreams'
 const BACKUPS_DIRNAME = 'memory-backups'
+/** Where an ACCEPTED mined skill is installed, under the agent root. */
+const AGENT_SKILLS_DIRNAME = 'skills'
 
 /** Staged file names are the validator's own outputs; anything else is a violation. */
 const STAGED_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}\.md$/
@@ -112,6 +114,12 @@ const STAGED_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}\.md$/
 function stagedPathOk(name: string): boolean {
   return name === MEMORY_INDEX || STAGED_NAME_RE.test(name)
 }
+
+/** Mined skill dir/script names become filesystem paths — re-validated at the
+ *  write site as well as in the parser, since traversal here would escape the
+ *  agent's dream staging entirely. */
+const SKILL_DIR_RE = /^[a-z0-9][a-z0-9-]{0,62}$/
+const SKILL_SCRIPT_FILE_RE = /^[a-z0-9][a-z0-9._-]{0,62}$/
 
 /** Identity of one memory line for rebase dedup — matches the distiller's own
  *  normalization (bullet marker stripped, trimmed, case-folded) so a line the
@@ -283,9 +291,11 @@ export class DreamRunner {
         await fsp.writeFile(join(base, 'input', file.name), file.content, 'utf8')
       }
 
+      const mineSkills = this.deps.dreamingPolicyFor(agentId)?.mineSkills === true
       const prompt = buildDreamPrompt({
         files,
         transcripts,
+        mineSkills,
         ...(dream.instructions ? { instructions: dream.instructions } : {})
       })
       this.transition(agentId, dreamId, 'pending', { status: 'running' })
@@ -293,7 +303,7 @@ export class DreamRunner {
       // A cancel that landed before extraction wins: skip the expensive call.
       if (this.deps.store.getDream(agentId, dreamId)?.status !== 'running') return
 
-      const extracted = await this.extractWithBackstop(agentId, prompt, signal)
+      const extracted = await this.extractWithBackstop(agentId, prompt, signal, mineSkills)
 
       // A cancel that landed mid-extraction wins: drop the output unstaged. This
       // also covers the backstop firing (extraction ignored the cancel and never
@@ -305,7 +315,9 @@ export class DreamRunner {
       // between extraction and adoption authorize an untrusted proposal.
       this.extractionTrust.set(dreamId, extracted.trustedChannel)
 
-      const proposal = parseDreamProposal(output)
+      // The mined session ids are what grounds a skill candidate — a citation the
+      // model invented can't be used to justify a recommendation (design §7).
+      const proposal = parseDreamProposal(output, mineSkills ? sources.map((s) => s.sessionId) : [])
       if (!proposal) {
         this.finish(agentId, dreamId, {
           status: 'failed',
@@ -326,6 +338,17 @@ export class DreamRunner {
       }
       this.finish(agentId, dreamId, {
         status: 'completed',
+        // Candidates start `proposed`; nothing installs them until a human
+        // accepts each one individually (design §7).
+        ...(proposal.skills.length
+          ? {
+              skills: proposal.skills.map((skill) => ({
+                name: skill.name,
+                description: skill.description,
+                state: 'proposed' as const
+              }))
+            }
+          : {}),
         usage: { inputBytes: Buffer.byteLength(prompt), outputBytes: Buffer.byteLength(output) }
       })
       this.deps.log.info(`dream ${dreamId} completed for agent ${agentId} (${proposal.files.length + 1} staged files)`)
@@ -357,13 +380,14 @@ export class DreamRunner {
   private async extractWithBackstop(
     agentId: string,
     prompt: string,
-    signal: AbortSignal
+    signal: AbortSignal,
+    mineSkills = false
   ): Promise<
     | { abandoned: false; output: string; trustedChannel: boolean }
     | { abandoned: true; output: ''; trustedChannel: false }
   > {
     const graceMs = this.deps.cancelGraceMs ?? 30_000
-    const extraction = this.deps.extract(agentId, MEMORY_DREAM_SYSTEM_PROMPT, prompt, signal).then(
+    const extraction = this.deps.extract(agentId, dreamSystemPrompt(mineSkills), prompt, signal).then(
       (result) => ({ abandoned: false as const, output: result.output, trustedChannel: result.trustedChannel }),
       (err) => {
         throw err
@@ -394,6 +418,39 @@ export class DreamRunner {
       // because these names become filesystem paths.
       if (!stagedPathOk(file.path)) continue
       await fsp.writeFile(join(out, file.path), file.content, 'utf8')
+    }
+    await this.stageSkills(base, proposal)
+  }
+
+  /**
+   * Stage mined skill candidates as standard skill directories
+   * (`skills/<name>/SKILL.md` + `scripts/`), so an accepted one is consumable by
+   * the skill machinery without conversion. Separate from `output/` because they
+   * have a separate review lifecycle: adopting the store neither accepts nor
+   * discards these, and they are NEVER auto-installed (design §7).
+   */
+  private async stageSkills(base: string, proposal: DreamProposal): Promise<void> {
+    const root = join(base, 'skills')
+    await fsp.rm(root, { recursive: true, force: true })
+    if (proposal.skills.length === 0) return
+    await fsp.mkdir(root, { recursive: true })
+    for (const skill of proposal.skills) {
+      // The parser enforced the name shape; re-check because it becomes a path.
+      if (!SKILL_DIR_RE.test(skill.name)) continue
+      const dir = join(root, skill.name)
+      await fsp.mkdir(dir, { recursive: true })
+      // Frontmatter is generated HERE, not taken from the model: name and
+      // description are the fields the skill loader keys on, and they must match
+      // the validated values the console shows in the recommendation.
+      const frontmatter = `---\nname: ${skill.name}\ndescription: ${skill.description.replace(/\r?\n/g, ' ')}\n---\n\n`
+      await fsp.writeFile(join(dir, 'SKILL.md'), frontmatter + skill.skill.trimEnd() + '\n', 'utf8')
+      if (skill.scripts.length === 0) continue
+      const scriptsDir = join(dir, 'scripts')
+      await fsp.mkdir(scriptsDir, { recursive: true })
+      for (const script of skill.scripts) {
+        if (!SKILL_SCRIPT_FILE_RE.test(script.path)) continue
+        await fsp.writeFile(join(scriptsDir, script.path), script.content, 'utf8')
+      }
     }
   }
 
@@ -730,6 +787,100 @@ export class DreamRunner {
       this.deps.store.updateDream(discarded)
       return discarded
     })
+  }
+
+  /**
+   * Accept ONE mined skill candidate: copy its staged directory into the agent's
+   * own skills tree and mark it accepted. This is the only path that installs a
+   * mined skill — there is deliberately no auto-adopt, because a skill is
+   * executable instruction content that steers every later session (design §7).
+   *
+   * Copying (rather than referencing the staging) means a later `discard` of the
+   * dream cannot remove a skill the user already accepted.
+   */
+  async skillAccept(agentId: string, dreamId: string, name: string): Promise<DreamInfo> {
+    const dir = this.dirFor(agentId)
+    return this.withLock(agentId, async () => {
+      const { dream, skill } = this.skillCandidate(agentId, dreamId, name)
+      if (skill.state === 'accepted') return dream // idempotent
+      if (skill.state === 'dismissed') throw new DreamStateError('this skill candidate was dismissed')
+
+      const staged = join(this.dreamDir(agentId, dreamId), 'skills', name)
+      try {
+        await fsp.stat(staged)
+      } catch {
+        throw new DreamStateError('this skill candidate is no longer staged; rerun the dream')
+      }
+      const destination = join(dir, AGENT_SKILLS_DIRNAME, name)
+      await fsp.mkdir(join(dir, AGENT_SKILLS_DIRNAME), { recursive: true })
+      // Replace any same-named skill wholesale rather than merging trees, so an
+      // accepted skill is exactly what the reviewer read.
+      await fsp.rm(destination, { recursive: true, force: true })
+      await fsp.cp(staged, destination, { recursive: true })
+      this.deps.log.info(`dream ${dreamId}: accepted skill "${name}" for agent ${agentId}`)
+      return this.setSkillState(agentId, dreamId, name, 'accepted')
+    })
+  }
+
+  /** Dismiss one candidate: drop its staging and record the decision, so later
+   *  dreams can be told not to propose it again. */
+  async skillDismiss(agentId: string, dreamId: string, name: string): Promise<DreamInfo> {
+    this.dirFor(agentId)
+    return this.withLock(agentId, async () => {
+      const { dream, skill } = this.skillCandidate(agentId, dreamId, name)
+      if (skill.state === 'dismissed') return dream // idempotent
+      if (skill.state === 'accepted') throw new DreamStateError('this skill candidate was already accepted')
+      await fsp.rm(join(this.dreamDir(agentId, dreamId), 'skills', name), { recursive: true, force: true })
+      return this.setSkillState(agentId, dreamId, name, 'dismissed')
+    })
+  }
+
+  private skillCandidate(
+    agentId: string,
+    dreamId: string,
+    name: string
+  ): { dream: DreamInfo; skill: NonNullable<DreamInfo['skills']>[number] } {
+    const dream = this.getDream(agentId, dreamId)
+    const skill = dream.skills?.find((candidate) => candidate.name === name)
+    if (!skill) throw new DreamViolationError(`unknown skill candidate ${name}`)
+    return { dream, skill }
+  }
+
+  private setSkillState(agentId: string, dreamId: string, name: string, state: 'accepted' | 'dismissed'): DreamInfo {
+    const dream = this.getDream(agentId, dreamId)
+    const next: DreamInfo = {
+      ...dream,
+      skills: (dream.skills ?? []).map((skill) => (skill.name === name ? { ...skill, state } : skill))
+    }
+    this.deps.store.updateDream(next)
+    return next
+  }
+
+  /** Staged skill candidates for the review screen (name → its staged files). */
+  async stagedSkill(
+    agentId: string,
+    dreamId: string,
+    name: string
+  ): Promise<{ skill: string; scripts: { path: string; content: string }[] } | null> {
+    this.skillCandidate(agentId, dreamId, name)
+    const dir = join(this.dreamDir(agentId, dreamId), 'skills', name)
+    let skill: string
+    try {
+      skill = await fsp.readFile(join(dir, 'SKILL.md'), 'utf8')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw err
+    }
+    const scripts: { path: string; content: string }[] = []
+    try {
+      for (const entry of await fsp.readdir(join(dir, 'scripts'), { withFileTypes: true })) {
+        if (!entry.isFile() || !SKILL_SCRIPT_FILE_RE.test(entry.name)) continue
+        scripts.push({ path: entry.name, content: await fsp.readFile(join(dir, 'scripts', entry.name), 'utf8') })
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    }
+    return { skill, scripts }
   }
 
   /** Staged output listing for the review screen. Missing staging is DATA. */

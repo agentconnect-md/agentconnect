@@ -22,7 +22,6 @@ import type {
 } from '@agentconnect.md/protocol'
 import { fitToBudget, utf8Boundary } from './wire-slice.js'
 import type { DreamRunner } from '../agents/dream-runner.js'
-import { DreamViolationError } from '../agents/dream-runner.js'
 
 export interface DreamReader {
   start(req: DreamStartReq): Promise<DreamState>
@@ -102,14 +101,12 @@ export function createDreamReader(runner: DreamRunner): DreamReader {
       }
     },
 
-    // Skill mining lands in D-3 (design §7/§12); the frames exist so the wire
-    // is stable, but the daemon has nothing to accept yet.
-    async skillAccept() {
-      throw new DreamViolationError('skill mining is not available yet')
+    async skillAccept(req) {
+      return { dream: await runner.skillAccept(req.agentId, req.dreamId, req.name) }
     },
 
-    async skillDismiss() {
-      throw new DreamViolationError('skill mining is not available yet')
+    async skillDismiss(req) {
+      return { dream: await runner.skillDismiss(req.agentId, req.dreamId, req.name) }
     }
   }
 }
