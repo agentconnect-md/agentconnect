@@ -12375,7 +12375,13 @@ export class Daemon {
           // enable/disable the per-agent Run in sandbox toggle.
           ...(this.sandboxMechanism ? ['sandbox'] : []),
           // Daemon policy forces every agent into the sandbox and locks the toggle.
-          ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : [])
+          ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
+          // Memory dreaming (docs/designs/memory-dreaming.md). Version-skew gate:
+          // an older daemon simply omits this, so the CP refuses the dream routes
+          // with a clear "not supported by this agent's version" instead of
+          // sending a frame that daemon would silently drop (and hanging until
+          // the request times out), and the console hides the panel.
+          'memory-dreaming-v1'
         ]
       }),
       // Observed runtime profiles, sent as one `facts/daemon-runtimes` snapshot on

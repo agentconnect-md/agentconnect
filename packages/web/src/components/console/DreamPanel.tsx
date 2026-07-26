@@ -52,6 +52,19 @@ const STATUS_LABEL: Record<DreamDto['status'], string> = {
   discarded: 'Discarded'
 }
 
+/** Status dot colour per lifecycle state — the same visual language the
+ *  Schedules run history uses (RUN_STYLE there), so a dream list reads like a
+ *  run list rather than inventing a second vocabulary. */
+const STATUS_DOT: Record<DreamDto['status'], string> = {
+  pending: 'var(--status-paused)',
+  running: 'var(--status-paused)',
+  completed: 'var(--brand)',
+  failed: 'var(--status-error)',
+  canceled: 'var(--text-disabled)',
+  adopted: 'var(--status-online)',
+  discarded: 'var(--text-disabled)'
+}
+
 function statusTone(status: DreamDto['status']): string {
   if (status === 'completed') return 'text-(--brand-soft-text)'
   if (status === 'failed') return 'text-(--status-error)'
@@ -63,18 +76,12 @@ function when(iso: string): string {
   return new Date(iso).toLocaleString()
 }
 
-export function DreamPanel({
-  agentId,
-  canEdit,
-  dreamingEnabled
-}: {
-  agentId: string
-  canEdit: boolean
-  /** The agent's persisted `dreaming.enabled`. A dream can only start when on. */
-  dreamingEnabled: boolean
-}) {
+export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boolean }) {
   const [dreams, setDreams] = useState<DreamDto[] | null>(null)
   const [listError, setListError] = useState<string | null>(null)
+  // 409 DAEMON_FEATURE_MISSING — this agent's daemon predates dreaming. Not an
+  // error the user can act on except by upgrading, so it gets its own state.
+  const [unsupported, setUnsupported] = useState(false)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [reviewing, setReviewing] = useState<string | null>(null)
@@ -88,9 +95,15 @@ export function DreamPanel({
       if (request !== listRequest.current) return
       setDreams(rows)
       setListError(null)
+      setUnsupported(false)
     } catch (e) {
       if (request !== listRequest.current) return
       setDreams([])
+      if (e instanceof ApiError && e.code === 'DAEMON_FEATURE_MISSING') {
+        setUnsupported(true)
+        setListError(null)
+        return
+      }
       setListError(
         e instanceof ApiError && e.status === 503
           ? 'This agent’s daemon is offline — dreams are served live from it.'
@@ -111,9 +124,10 @@ export function DreamPanel({
   // NOT static now that dreams can start on a schedule or from another client.
   const inFlight = (dreams ?? []).some((d) => !isDreamTerminal(d.status))
   useEffect(() => {
+    if (unsupported) return // nothing changes until that daemon is upgraded
     const timer = setInterval(() => void refresh(), inFlight ? POLL_MS : IDLE_POLL_MS)
     return () => clearInterval(timer)
-  }, [inFlight, refresh])
+  }, [inFlight, refresh, unsupported])
 
   const run = async (fn: () => Promise<unknown>, action: 'start' | 'other' = 'other') => {
     setBusy(true)
@@ -143,13 +157,32 @@ export function DreamPanel({
     }
   }
 
+  // The panel only mounts when dreaming is on, so the remaining blockers are
+  // permission and the one-in-flight rule.
   const startBlocker = !canEdit
     ? 'You need edit access on this agent to run a dream.'
-    : !dreamingEnabled
-      ? 'Turn on dreaming in the memory settings above first.'
-      : inFlight
-        ? 'A dream is already running for this agent.'
-        : null
+    : inFlight
+      ? 'A dream is already running for this agent.'
+      : null
+
+  // The agent's daemon predates dreaming. Show one calm line rather than a
+  // trigger that can only 409 — but don't hide it silently either, or an
+  // operator who just enabled dreaming has no idea why nothing appeared.
+  if (unsupported) {
+    return (
+      <div className="rounded-(--radius-lg) border border-(--border-subtle) p-4 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+        Dreams need a newer version of this agent’s daemon. Upgrade it to consolidate memory here.
+      </div>
+    )
+  }
+
+  // Mirrors the Schedules "N runs · N success · …" summary so the history is
+  // scannable without reading every row.
+  const adopted = (dreams ?? []).filter((d) => d.status === 'adopted').length
+  const failed = (dreams ?? []).filter((d) => d.status === 'failed').length
+  const summary = dreams?.length
+    ? `${dreams.length} dream${dreams.length === 1 ? '' : 's'} · ${adopted} adopted · ${failed} failed`
+    : null
 
   return (
     <div className="flex flex-col gap-3 rounded-(--radius-lg) border border-(--border-subtle) p-4">
@@ -192,45 +225,57 @@ export function DreamPanel({
       ) : dreams.length === 0 && !listError ? (
         <div className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">No dreams yet.</div>
       ) : (
-        <ul className="flex list-none flex-col gap-0 p-0">
-          {dreams.map((dream) => (
-            <li
-              key={dream.dreamId}
-              className="flex flex-wrap items-center justify-between gap-2 border-t border-(--border-subtle) py-2 first:border-t-0"
-            >
-              <span className="flex min-w-0 flex-col gap-[2px]">
-                <span className={`font-sans text-[12.5px] font-semibold leading-normal ${statusTone(dream.status)}`}>
-                  {STATUS_LABEL[dream.status]}
-                  {dream.trigger === 'schedule' ? ' · scheduled' : ''}
+        <>
+          <div className="flex items-baseline justify-between gap-2 border-t border-(--border-subtle) pt-2">
+            <span className="font-sans text-[12px] font-semibold leading-normal text-(--text-secondary)">History</span>
+            {summary ? (
+              <span className="font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">{summary}</span>
+            ) : null}
+          </div>
+          <ul className="flex list-none flex-col gap-0 p-0">
+            {dreams.map((dream) => (
+              <li
+                key={dream.dreamId}
+                className="flex flex-wrap items-center justify-between gap-2 border-t border-(--border-subtle) py-2 first:border-t-0"
+              >
+                <span
+                  className="mt-[6px] h-2 w-2 flex-none self-start rounded-full"
+                  style={{ background: STATUS_DOT[dream.status] }}
+                />
+                <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                  <span className={`font-sans text-[12.5px] font-semibold leading-normal ${statusTone(dream.status)}`}>
+                    {STATUS_LABEL[dream.status]}
+                    {dream.trigger === 'schedule' ? ' · scheduled' : ''}
+                  </span>
+                  <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                    {when(dream.createdAt)} · {dream.sessionIds.length} session
+                    {dream.sessionIds.length === 1 ? '' : 's'} mined
+                    {dream.error ? ` · ${dream.error.message}` : ''}
+                  </span>
                 </span>
-                <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                  {when(dream.createdAt)} · {dream.sessionIds.length} session
-                  {dream.sessionIds.length === 1 ? '' : 's'} mined
-                  {dream.error ? ` · ${dream.error.message}` : ''}
+                <span className="flex flex-none items-center gap-2">
+                  {dream.status === 'completed' ? (
+                    <Button
+                      variant="secondary"
+                      onClick={() => setReviewing(reviewing === dream.dreamId ? null : dream.dreamId)}
+                    >
+                      {reviewing === dream.dreamId ? 'Hide' : 'Review'}
+                    </Button>
+                  ) : null}
+                  {!isDreamTerminal(dream.status) && canEdit ? (
+                    <Button
+                      variant="secondary"
+                      disabled={busy}
+                      onClick={() => void run(() => cancelDream(agentId, dream.dreamId))}
+                    >
+                      Cancel
+                    </Button>
+                  ) : null}
                 </span>
-              </span>
-              <span className="flex flex-none items-center gap-2">
-                {dream.status === 'completed' ? (
-                  <Button
-                    variant="secondary"
-                    onClick={() => setReviewing(reviewing === dream.dreamId ? null : dream.dreamId)}
-                  >
-                    {reviewing === dream.dreamId ? 'Hide' : 'Review'}
-                  </Button>
-                ) : null}
-                {!isDreamTerminal(dream.status) && canEdit ? (
-                  <Button
-                    variant="secondary"
-                    disabled={busy}
-                    onClick={() => void run(() => cancelDream(agentId, dream.dreamId))}
-                  >
-                    Cancel
-                  </Button>
-                ) : null}
-              </span>
-            </li>
-          ))}
-        </ul>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
 
       {reviewing ? (

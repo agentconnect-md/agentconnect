@@ -73,14 +73,12 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
-async function render(props: { canEdit?: boolean; dreamingEnabled?: boolean } = {}) {
+async function render(props: { canEdit?: boolean } = {}) {
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
   await act(async () => {
-    root?.render(
-      <DreamPanel agentId={AGENT} canEdit={props.canEdit ?? true} dreamingEnabled={props.dreamingEnabled ?? true} />
-    )
+    root?.render(<DreamPanel agentId={AGENT} canEdit={props.canEdit ?? true} />)
   })
   return container
 }
@@ -98,17 +96,21 @@ describe('DreamPanel', () => {
     expect(api.startDream).toHaveBeenCalledWith(AGENT)
   })
 
-  it('blocks the trigger for a viewer and when dreaming is off, with the reason', async () => {
+  it('blocks the trigger for a viewer, with the reason', async () => {
+    // (Dreaming-off is no longer this component's concern — MemoryPanel does not
+    // mount the panel at all in that case.)
     const viewer = await render({ canEdit: false })
     expect(button(viewer, 'Dream now')?.disabled).toBe(true)
     expect(viewer.textContent).toContain('edit access')
-    await act(async () => root?.unmount())
-    container?.remove()
-
-    const off = await render({ dreamingEnabled: false })
-    expect(button(off, 'Dream now')?.disabled).toBe(true)
-    expect(off.textContent).toContain('Turn on dreaming')
     expect(api.startDream).not.toHaveBeenCalled()
+  })
+
+  it('shows an upgrade note instead of a dead trigger when the daemon predates dreaming', async () => {
+    api.listDreams.mockRejectedValue(Object.assign(new FakeApiError(409), { code: 'DAEMON_FEATURE_MISSING' }))
+    const host = await render()
+    expect(host.textContent).toContain('newer version')
+    // No trigger at all — it could only ever 409.
+    expect(button(host, 'Dream now')).toBeUndefined()
   })
 
   it('reflects an in-flight dream instead of letting the user hit a 409', async () => {

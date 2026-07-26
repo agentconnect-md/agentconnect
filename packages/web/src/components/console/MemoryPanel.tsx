@@ -49,6 +49,7 @@ import {
 } from '@/components/console/FileBrowser'
 import { RecordMemoryPanel } from '@/components/console/RecordMemoryPanel'
 import { DreamPanel } from '@/components/console/DreamPanel'
+import { DreamScheduleFields } from '@/components/console/DreamScheduleFields'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 
 const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), {
@@ -669,22 +670,18 @@ export function MemoryPanel({
                 </label>
                 {settings.dreaming.enabled ? (
                   <div className="ml-6 flex flex-col gap-2">
-                    <label className="flex flex-col gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                      Schedule (cron, optional — leave blank to dream only on demand)
-                      <input
-                        type="text"
-                        value={settings.dreaming.schedule ?? ''}
-                        maxLength={128}
-                        placeholder="0 4 * * *"
-                        disabled={!canEdit || savingProvider}
-                        onChange={(e) => {
-                          const schedule = e.target.value
-                          setSettings((current) => ({ ...current, dreaming: { ...current.dreaming, schedule } }))
-                          setProviderError(null)
-                        }}
-                        className="rounded-sm border border-(--border-subtle) bg-(--surface-card) px-2 py-1 font-mono text-[12px] leading-normal text-(--text-primary)"
-                      />
-                    </label>
+                    <DreamScheduleFields
+                      value={settings.dreaming.schedule ?? ''}
+                      timezone={settings.dreaming.timezone ?? ''}
+                      disabled={!canEdit || savingProvider}
+                      onChange={(schedule, timezone) => {
+                        setSettings((current) => ({
+                          ...current,
+                          dreaming: { ...current.dreaming, schedule, timezone }
+                        }))
+                        setProviderError(null)
+                      }}
+                    />
                     <label className="flex flex-col gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
                       Instructions (optional — steer what the dream focuses on)
                       <textarea
@@ -788,12 +785,9 @@ export function MemoryPanel({
         <>
           {/* Dreaming is managed-only; the panel carries its own gates for the
               in-flight / no-edit / dreaming-off cases. */}
-          <DreamPanel
-            key={agentId}
-            agentId={agentId}
-            canEdit={canEdit}
-            dreamingEnabled={persistedSettings.dreaming.enabled}
-          />
+          {/* Only when dreaming is actually on: with it off the panel could only
+              offer a trigger that does nothing, so the whole section is noise. */}
+          {persistedSettings.dreaming.enabled ? <DreamPanel key={agentId} agentId={agentId} canEdit={canEdit} /> : null}
           <FileBrowserShell
             title="Memory"
             headerEnd={

@@ -932,7 +932,10 @@ async function authHeaders(extra?: Record<string, string>): Promise<Record<strin
 
 async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${cpBase()}${path}`, { headers: await authHeaders(), cache: 'no-store' })
-  if (!res.ok) throw new ApiError(`GET ${path} → ${res.status} ${res.statusText}`, res.status)
+  // Parse the denial body like the write helpers do: reads carry machine-readable
+  // `code`s too (e.g. DAEMON_FEATURE_MISSING on a capability-gated route), and a
+  // status-only ApiError silently drops them.
+  if (!res.ok) throw await apiErrorFromResponse('GET', path, res)
   return (await res.json()) as T
 }
 

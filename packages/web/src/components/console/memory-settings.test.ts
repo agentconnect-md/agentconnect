@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { cronHuman, isValidCron } from '@/lib/cron'
 import {
   MEMORY_PROVIDER_OPTIONS,
+  dreamingScheduleBlocker,
   dreamingConfigForDraft,
   memoryBackendChanged,
   memoryConfigForDraft,
@@ -152,5 +154,56 @@ describe('memory settings UX model', () => {
     expect(memoryConfigForDraft(rescheduled)).toMatchObject({
       dreaming: { schedule: '30 2 * * 0', timezone: 'America/New_York' }
     })
+  })
+})
+
+describe('dreaming schedule validation gates the save', () => {
+  const managed = (dreaming: Partial<Record<string, unknown>>) =>
+    memorySettingsDraft({
+      provider: 'managed',
+      autoDistill: false,
+      dreaming: { enabled: true, ...dreaming } as never
+    })
+
+  it('refuses an invalid cron, which the daemon would accept and then never fire', () => {
+    // The wire schema bounds `schedule` as a string and DreamScheduler swallows
+    // the Croner error — so if the console saves this, the agent is silently
+    // left unscheduled with no feedback anywhere.
+    const draft = managed({ schedule: 'not a cron' })
+    expect(dreamingScheduleBlocker(draft.dreaming)).toMatch(/not a valid cron/)
+    expect(memorySettingsBlocker(draft)).toMatch(/not a valid cron/)
+  })
+
+  it('refuses an expression the two cron parsers disagree about', () => {
+    // The daemon installs with Croner; cronstrue is more permissive. A zero step
+    // reads as "Every 0 minutes" to cronstrue but Croner throws
+    // `illegal stepping: 0`, so validating with the display parser would let
+    // through exactly the never-fires config this blocker exists to stop.
+    const zeroStep = '*/0 * * * *'
+    expect(cronHuman(zeroStep)).not.toBeNull() // cronstrue happily reads it
+    expect(isValidCron(zeroStep)).toBe(false) // Croner — the one that matters
+    expect(memorySettingsBlocker(managed({ schedule: zeroStep }))).toMatch(/not a valid cron/)
+  })
+
+  it('refuses a timezone that is not a real IANA zone', () => {
+    const draft = managed({ schedule: '0 4 * * *', timezone: 'Pacific/Nowhere' })
+    expect(memorySettingsBlocker(draft)).toMatch(/IANA timezone/)
+  })
+
+  it('allows a valid schedule, and an empty timezone (the daemon host’s zone)', () => {
+    expect(memorySettingsBlocker(managed({ schedule: '0 4 * * *', timezone: 'America/New_York' }))).toBeNull()
+    expect(memorySettingsBlocker(managed({ schedule: '0 4 * * *' }))).toBeNull()
+  })
+
+  it('does not validate a schedule that is not in play', () => {
+    // Manual-only, and dreaming-off with a leftover expression: nothing fires,
+    // so nothing to block.
+    expect(memorySettingsBlocker(managed({}))).toBeNull()
+    const off = memorySettingsDraft({
+      provider: 'managed',
+      autoDistill: false,
+      dreaming: { enabled: false, schedule: 'not a cron' } as never
+    })
+    expect(memorySettingsBlocker(off)).toBeNull()
   })
 })
