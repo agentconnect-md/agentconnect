@@ -203,7 +203,18 @@ export const DaemonListDto = z.array(DaemonViewDto)
 export const RenameDaemonBody = z.object({ name: z.string().trim().min(1).max(64) })
 
 /** `POST /daemons/:id/upgrade` — the version the daemon should install + relaunch on. */
-export const DaemonUpgradeBody = z.object({ version: z.string().trim().min(1).max(64) })
+// The version is forwarded to the daemon, which spawns the CLI with it as the
+// `--to` VALUE. Constrain it to a plain version token here, at the boundary where
+// the untrusted value enters: a leading `-` would make it a second option rather
+// than a value, and no real version needs anything outside this charset.
+export const DaemonUpgradeBody = z.object({
+  version: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._+-]*$/, 'must be a plain version (no leading "-")')
+})
 
 // ── daemon onboarding (API key + copy-paste start command) ─────────────────
 // The full `apiKey` plaintext is returned exactly once; `displayTail` is the

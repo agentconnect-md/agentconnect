@@ -6,23 +6,11 @@ import { Command } from 'commander'
 import { cliEntryPath, resolveRoot } from './paths.js'
 import { delegate } from './delegate.js'
 import { runShell } from './run-shell.js'
-import { classifyInvocation } from './route.js'
+import { classifyInvocation, parseRootFlag } from './route.js'
 import { runLogin } from './login.js'
 import { resolveController } from './service/index.js'
 import { runUpgrade, versionInstall, versionList, versionPrune, versionUse } from './version-commands.js'
 import { CLI_VERSION } from './version.js'
-
-/** Light scan for the global `--root` flag before commander parses — needed by
- *  the delegation/run paths (which never build a commander program) and by the
- *  cli-entry self-heal that runs on every invocation. */
-function parseRootFlag(argv: string[]): string | undefined {
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]
-    if (a === '--root') return argv[i + 1]
-    if (a?.startsWith('--root=')) return a.slice('--root='.length)
-  }
-  return undefined
-}
 
 /** Write <root>/cli-entry so a service/foreground daemon can locate this CLI to
  *  run an upgrade even when its PATH omits npm's global bin (§3). Best-effort. */
