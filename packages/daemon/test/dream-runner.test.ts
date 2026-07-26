@@ -933,15 +933,26 @@ describe('DreamRunner skill mining (D-3)', () => {
     expect(done.skills).toBeUndefined()
   })
 
-  it('refuses to accept — a terminal success without its effect would be a lie', async () => {
-    // Accepting must mean the skill can steer later sessions, which needs a
-    // containment-safe write under the agent-writable cwd. Until that exists,
-    // refuse loudly rather than record `accepted` with no effect.
-    const { runner, dreamId, done } = await mining(grounded)
-    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).rejects.toThrow(/not available yet/)
-    // The candidate stays reviewable rather than being consumed.
-    expect(done.skills?.[0]).toMatchObject({ state: 'proposed' })
-    expect(await runner.stagedSkill('a1', dreamId, 'deploy-staging')).not.toBeNull()
+  it('accept copies the skill into the agent-owned tree and marks it accepted', async () => {
+    const { dir, runner, dreamId } = await mining(grounded)
+    const after = await runner.skillAccept('a1', dreamId, 'deploy-staging')
+    expect(after.skills?.[0]).toMatchObject({ state: 'accepted' })
+
+    // The canonical copy lands under the agent root — daemon-owned, outside the
+    // workspace. Session prep materializes it into the runtime's skill root
+    // under symlink containment (see dream-skill-install.test.ts).
+    expect(await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')).toContain('name: deploy-staging')
+    // Idempotent.
+    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).resolves.toMatchObject({})
+  })
+
+  it('an accepted skill survives discarding the dream it came from', async () => {
+    // Acceptance COPIES rather than referencing the staging, so tidying up the
+    // dream cannot silently uninstall a skill the user already took.
+    const { dir, runner, dreamId } = await mining(grounded)
+    await runner.skillAccept('a1', dreamId, 'deploy-staging')
+    await runner.discard('a1', dreamId)
+    expect(await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')).toContain('name: deploy-staging')
   })
 
   it('dismiss drops the staging and blocks a later accept; both are idempotent', async () => {
@@ -1029,13 +1040,13 @@ describe('DreamRunner skill mining — review findings', () => {
     expect(prompts[0]).not.toContain('Bash(')
   })
 
-  it('keeps the candidate reviewable rather than half-accepting it', async () => {
-    // Acceptance is deferred (see skillAccept), so the daemon must not leave a
-    // half-applied state behind: the candidate stays `proposed` and staged.
-    const { runner, dreamId } = await mine()
-    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).rejects.toThrow(/not available yet/)
-    const staged = await runner.stagedSkill('a1', dreamId, 'deploy-staging')
-    expect(staged?.skill).toContain('name: deploy-staging')
+  it('accepts the generated skill with its validated frontmatter intact', async () => {
+    const { dir, runner, dreamId } = await mine()
+    await runner.skillAccept('a1', dreamId, 'deploy-staging')
+    const body = await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')
+    // Frontmatter is daemon-generated from the VALIDATED name/description, so
+    // what ships is exactly what the reviewer saw.
+    expect(parseYaml(body.split('---')[1] ?? '')).toMatchObject({ name: 'deploy-staging' })
   })
 
   it('keeps a still-proposed candidate reviewable after the store proposal is discarded', async () => {

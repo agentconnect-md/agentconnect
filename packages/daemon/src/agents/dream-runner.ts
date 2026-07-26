@@ -885,11 +885,27 @@ export class DreamRunner {
    * review metadata, and dismissal all work; only acceptance waits.
    */
   async skillAccept(agentId: string, dreamId: string, name: string): Promise<DreamInfo> {
-    this.dirFor(agentId)
-    this.skillCandidate(agentId, dreamId, name) // 404 an unknown candidate first
-    throw new DreamStateError(
-      'accepting a mined skill is not available yet — it needs containment-safe runtime registration'
-    )
+    const dir = this.dirFor(agentId)
+    return this.withLock(agentId, async () => {
+      const { dream, skill } = this.skillCandidate(agentId, dreamId, name)
+      if (skill.state === 'accepted') return dream // idempotent
+      if (skill.state === 'dismissed') throw new DreamStateError('this skill candidate was already dismissed')
+
+      // COPY into the agent's own skills tree rather than referencing the dream
+      // staging, so discarding the dream later cannot uninstall a skill the user
+      // already accepted. Session prep materializes it into the runtime's skill
+      // root (skills/dream-skill-install.ts) under symlink-safe containment.
+      const staged = join(this.dreamDir(agentId, dreamId), 'skills', name)
+      const target = join(dir, AGENT_SKILLS_DIRNAME, name)
+      await fsp.mkdir(join(dir, AGENT_SKILLS_DIRNAME), { recursive: true })
+      await fsp.rm(target, { recursive: true, force: true })
+      await fsp.cp(staged, target, { recursive: true, dereference: false, errorOnExist: false })
+
+      const next = this.setSkillState(agentId, dreamId, name, 'accepted')
+      await this.sweepReviewedStaging(agentId, next)
+      this.deps.log.info(`dream ${dreamId}: accepted skill "${name}" for agent ${agentId}`)
+      return next
+    })
   }
 
   /** Dismiss one candidate: drop its staging and record the decision, so later
