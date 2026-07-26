@@ -70,6 +70,7 @@ describe('memory dreaming frames', () => {
 
   it('rejects unbounded or malformed dream metadata', () => {
     expect(DreamInfo.parse(dream)).toMatchObject({ status: 'completed' })
+    expect(DreamInfo.parse({ ...dream, status: 'superseded' })).toMatchObject({ status: 'superseded' })
     expect(() => DreamInfo.parse({ ...dream, status: 'dreaming' })).toThrow()
     expect(() =>
       DreamInfo.parse({ ...dream, skills: [{ name: 'Bad Name', description: '', state: 'proposed' }] })

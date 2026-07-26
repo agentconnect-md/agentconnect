@@ -298,7 +298,16 @@ export type MemoryRecordHistoryPage = z.infer<typeof MemoryRecordHistoryPage>
  *   candidates (skills are never auto-adopted; see the design §7).
  */
 
-export const DreamStatus = z.enum(['pending', 'running', 'completed', 'failed', 'canceled', 'adopted', 'discarded'])
+export const DreamStatus = z.enum([
+  'pending',
+  'running',
+  'completed',
+  'failed',
+  'canceled',
+  'adopted',
+  'discarded',
+  'superseded'
+])
 export type DreamStatus = z.infer<typeof DreamStatus>
 
 export const DreamTrigger = z.enum(['manual', 'schedule', 'auto'])

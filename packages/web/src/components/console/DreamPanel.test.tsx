@@ -98,12 +98,13 @@ describe('DreamPanel', () => {
   })
 
   it('keeps terminal history collapsed by default', async () => {
-    api.listDreams.mockResolvedValue([dream({ status: 'adopted' })])
+    api.listDreams.mockResolvedValue([dream({ status: 'adopted' }), dream({ dreamId: 'drm-2', status: 'superseded' })])
     const host = await render()
     const history = host.querySelector('details')
     expect(history?.open).toBe(false)
     expect(history?.querySelector('summary')?.textContent).toContain('History')
-    expect(history?.querySelector('summary')?.textContent).toContain('1')
+    expect(history?.querySelector('summary')?.textContent).toContain('2')
+    expect(history?.textContent).toContain('Superseded')
   })
 
   it('uses the shared card shell with the action in its header', async () => {
@@ -167,15 +168,17 @@ describe('DreamPanel', () => {
     )
     await act(async () => confirm.at(-1)?.click())
     expect(api.adoptDream).toHaveBeenCalledWith(AGENT, 'drm-1')
+    expect(host.textContent).toContain('Outdated proposals were moved to History')
   })
 
-  it('discards a staged dream without touching live memory', async () => {
+  it('discards a ready dream from its row without making the user open review', async () => {
     api.listDreams.mockResolvedValue([dream()])
     const host = await render()
-    await act(async () => button(host, 'Review')?.click())
     await act(async () => button(host, 'Discard')?.click())
     expect(api.discardDream).toHaveBeenCalledWith(AGENT, 'drm-1')
     expect(api.adoptDream).not.toHaveBeenCalled()
+    expect(api.listDreamFiles).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Dream discarded')
   })
 
   it('reads an offline daemon as an expected state, not an error', async () => {

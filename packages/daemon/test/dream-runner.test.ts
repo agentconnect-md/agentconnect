@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -42,6 +42,12 @@ class FakeStore implements DreamStorePort {
   }
   openDreams(): DreamInfo[] {
     return [...this.dreams.values()].filter((d) => d.status === 'pending' || d.status === 'running')
+  }
+  completedDreams(agentId: string): DreamInfo[] {
+    return [...this.dreams.values()].filter((d) => d.agentId === agentId && d.status === 'completed')
+  }
+  supersededDreams(): DreamInfo[] {
+    return [...this.dreams.values()].filter((d) => d.status === 'superseded')
   }
   dreamSessionSources(): { sessionId: string; channel: string; thread: string }[] {
     return this.sources
@@ -518,10 +524,9 @@ describe('DreamRunner adoption', () => {
     await expect(runner.adopt('a1', started.dreamId, false)).rejects.toThrow(/changed since/)
   })
 
-  it('fences a second dream staged from the same snapshot as an already-adopted one', async () => {
-    // Adoption rewrites the store by rename, bypassing writeMemoryFile. Unless
-    // that swap is counted, dream B (same snapshot as A) sees only the later
-    // distill write, calls the drift distill-only, and rolls over A's adoption.
+  it('keeps a superseded proposal unadoptable after later distillation', async () => {
+    // Adoption makes B explicitly superseded. A later distill write must not
+    // make that stale proposal look rebaseable or restore it to review.
     const { dir, store, runner } = await setup({})
     const a = await runner.start('a1', { trigger: 'manual' })
     await settle(store, a.dreamId)
@@ -538,7 +543,8 @@ describe('DreamRunner adoption', () => {
       'distill'
     )
 
-    await expect(runner.adopt('a1', b.dreamId, false)).rejects.toThrow(/changed since/)
+    expect(store.dreams.get(b.dreamId)?.status).toBe('superseded')
+    await expect(runner.adopt('a1', b.dreamId, false)).rejects.toThrow(/superseded/)
   })
 
   it('refuses to rebase over a write whose history append was lost (ledger is authoritative)', async () => {
@@ -643,6 +649,23 @@ describe('DreamRunner adoption', () => {
     expect(await runner.stagedFiles('a1', started.dreamId)).toBeNull()
     expect(store.dreams.get(started.dreamId)?.status).toBe('discarded')
   })
+
+  it('supersedes every competing completed proposal after an adoption', async () => {
+    const { store, runner } = await setup({})
+    const older = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, older.dreamId)
+    const chosen = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, chosen.dreamId)
+
+    await runner.adopt('a1', chosen.dreamId, false)
+
+    expect(store.dreams.get(chosen.dreamId)?.status).toBe('adopted')
+    expect(store.dreams.get(older.dreamId)).toMatchObject({
+      status: 'superseded',
+      endedAt: store.dreams.get(chosen.dreamId)?.endedAt
+    })
+    expect(await runner.stagedFiles('a1', older.dreamId)).toBeNull()
+  })
 })
 
 describe('DreamRunner crash recovery', () => {
@@ -668,6 +691,43 @@ describe('DreamRunner crash recovery', () => {
       status: 'failed',
       error: { type: 'daemon_restart' }
     })
+  })
+
+  it('sweeps reconciled superseded staging while preserving proposed skills', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-reconcile-'))
+    const base = join(dir, 'memory-dreams', 'drm-superseded')
+    await mkdir(join(base, 'input'), { recursive: true })
+    await mkdir(join(base, 'output'), { recursive: true })
+    await mkdir(join(base, 'skills', 'keep-me'), { recursive: true })
+    await writeFile(join(base, 'output', 'MEMORY.md'), '# stale')
+    await writeFile(join(base, 'skills', 'keep-me', 'SKILL.md'), '# keep')
+    const store = new FakeStore()
+    store.insertDream({
+      dreamId: 'drm-superseded',
+      agentId: 'a1',
+      status: 'superseded',
+      trigger: 'manual',
+      sessionIds: [],
+      snapshotDigest: 'sha256:x',
+      skills: [{ name: 'keep-me', description: 'Keep me', state: 'proposed' }],
+      createdAt: '2026-07-24T00:00:00.000Z',
+      endedAt: '2026-07-24T01:00:00.000Z'
+    })
+
+    new DreamRunner({
+      agentDirByAgent: (agentId) => (agentId === 'a1' ? dir : undefined),
+      dreamingPolicyFor: () => undefined,
+      store,
+      extract: async () => ({ output: '', trustedChannel: false }),
+      log: silent
+    })
+    for (let i = 0; i < 20; i++) {
+      if (!(await readdir(base)).includes('output')) break
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+
+    expect(await readdir(base)).toEqual(['skills'])
+    expect(await readFile(join(base, 'skills', 'keep-me', 'SKILL.md'), 'utf8')).toBe('# keep')
   })
 })
 
@@ -990,6 +1050,20 @@ describe('DreamRunner skill mining — review findings', () => {
     expect(after.skills?.[0]).toMatchObject({ state: 'dismissed' })
     // Once nothing is left to review, the staging is finally swept.
     expect(await runner.stagedSkill('a1', dreamId, 'deploy-staging')).toBeNull()
+  })
+
+  it('keeps a still-proposed candidate reviewable when its store proposal is superseded', async () => {
+    const first = await mine()
+    const chosen = await first.runner.start('a1', { trigger: 'manual' })
+    await settle(first.store, chosen.dreamId)
+
+    await first.runner.adopt('a1', chosen.dreamId, false)
+
+    expect(first.store.dreams.get(first.dreamId)?.status).toBe('superseded')
+    expect(await first.runner.stagedFiles('a1', first.dreamId)).toBeNull()
+    expect(await first.runner.stagedSkill('a1', first.dreamId, 'deploy-staging')).not.toBeNull()
+    await first.runner.skillDismiss('a1', first.dreamId, 'deploy-staging')
+    expect(await first.runner.stagedSkill('a1', first.dreamId, 'deploy-staging')).toBeNull()
   })
 
   it('encodes a punctuation-heavy description as a YAML scalar, not raw text', async () => {

@@ -155,7 +155,7 @@ recoverable and history is listable):
 interface DreamRecord {
   dreamId: string
   agentId: string
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'canceled' | 'adopted' | 'discarded'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'canceled' | 'adopted' | 'discarded' | 'superseded'
   trigger: 'manual' | 'schedule' | 'auto'
   sessionIds: string[] // transcripts mined
   snapshotDigest: string // digest of the live store at snapshot time (adoption fence)
@@ -253,7 +253,11 @@ unattended path never runs on an untrusted channel.
 3. Atomically: rename `memory/` → `memory-backups/<ts>-pre-<dreamId>/`; move
    staged `output/` into place as `memory/`; carry `.history` over and append
    one `dream-adopt` line (`source: 'dream'`, dreamId, backup path).
-4. Mark the record `adopted`.
+4. Mark the record `adopted`. Every other `completed` store proposal for the
+   agent is no longer based on the live store, so remove its store staging and
+   mark it `superseded`; independently staged skill candidates remain
+   reviewable. Existing completed proposals that predate the latest adoption
+   are reconciled the same way when an older daemon store is upgraded.
 
 `discardDream` deletes the staging directory and marks `discarded`. Backups
 are pruned to the most recent one on each successful adoption.

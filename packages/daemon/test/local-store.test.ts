@@ -85,6 +85,48 @@ describe('LocalStore', () => {
     s.close()
   })
 
+  it('adds the superseded dream state and reconciles proposals stranded by an adoption', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-dream-status-mig-')), 'local.sqlite')
+    const legacy = new DatabaseSync(path)
+    legacy.exec(`
+      CREATE TABLE dreams (
+        dreamId TEXT PRIMARY KEY,
+        agentId TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN
+          ('pending', 'running', 'completed', 'failed', 'canceled', 'adopted', 'discarded')),
+        triggerKind TEXT NOT NULL,
+        sessionIds TEXT NOT NULL,
+        snapshotDigest TEXT NOT NULL,
+        snapshotWrites TEXT,
+        instructions TEXT,
+        skills TEXT,
+        usage TEXT,
+        error TEXT,
+        createdAt TEXT NOT NULL,
+        endedAt TEXT
+      )
+    `)
+    const insert = legacy.prepare(`
+      INSERT INTO dreams (
+        dreamId, agentId, status, triggerKind, sessionIds, snapshotDigest,
+        snapshotWrites, instructions, skills, usage, error, createdAt, endedAt
+      ) VALUES (?, 'a1', ?, 'manual', '[]', 'sha256:x', NULL, NULL, NULL, NULL, NULL, ?, ?)
+    `)
+    insert.run('older-ready', 'completed', '2026-07-24T00:00:00.000Z', '2026-07-24T00:05:00.000Z')
+    insert.run('chosen', 'adopted', '2026-07-24T00:01:00.000Z', '2026-07-24T00:06:00.000Z')
+    insert.run('new-ready', 'completed', '2026-07-24T00:07:00.000Z', '2026-07-24T00:08:00.000Z')
+    legacy.close()
+
+    const migrated = new LocalStore(path)
+    expect(migrated.getDream('a1', 'older-ready')).toMatchObject({
+      status: 'superseded',
+      endedAt: '2026-07-24T00:06:00.000Z'
+    })
+    expect(migrated.getDream('a1', 'new-ready')?.status).toBe('completed')
+    expect(migrated.supersededDreams().map((dream) => dream.dreamId)).toEqual(['older-ready'])
+    migrated.close()
+  })
+
   it('round-trips per-cron last-run stamps (latest-wins)', () => {
     const s = store()
     expect(s.getCronLastRun('bot-a:daily')).toBeUndefined()

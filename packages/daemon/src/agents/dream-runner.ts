@@ -65,6 +65,10 @@ export interface DreamStorePort {
   listDreams(agentId: string, limit: number): DreamInfo[]
   /** Non-terminal dreams (pending|running) for crash recovery at boot. */
   openDreams(): DreamInfo[]
+  /** Every completed store proposal for one agent, without the public list cap. */
+  completedDreams(agentId: string): DreamInfo[]
+  /** Proposals reconciled as superseded during a store upgrade. */
+  supersededDreams(): DreamInfo[]
   /** Newest-first addressable sessions for the agent (transcript sources). */
   dreamSessionSources(agentId: string, limit: number): { sessionId: string; channel: string; thread: string }[]
   /** Chronological text rows of one session thread, scoped to the agent. */
@@ -181,6 +185,18 @@ export class DreamRunner {
         status: 'failed',
         error: { type: 'daemon_restart', message: 'the daemon restarted while this dream was in flight' },
         endedAt: this.nowIso()
+      })
+    }
+    // The LocalStore migration marks proposals stranded by adoptions made on an
+    // older daemon. Their metadata is already safe; sweep the corresponding
+    // store staging now that the runner can resolve agent directories. Proposed
+    // skills keep their independent review lifecycle.
+    for (const dream of this.deps.store.supersededDreams()) {
+      if (!this.deps.agentDirByAgent(dream.agentId)) continue
+      void this.removeStoreStaging(dream.agentId, dream).catch((err) => {
+        this.deps.log.warn(
+          `dream ${dream.dreamId}: could not remove superseded store staging (${err instanceof Error ? err.message : 'unknown'})`
+        )
       })
     }
   }
@@ -660,9 +676,13 @@ export class DreamRunner {
             }
           }
 
-          const adopted: DreamInfo = { ...this.getDream(agentId, dreamId), status: 'adopted', endedAt: this.nowIso() }
+          const adoptedAt = this.nowIso()
+          const adopted: DreamInfo = { ...this.getDream(agentId, dreamId), status: 'adopted', endedAt: adoptedAt }
           this.deps.store.updateDream(adopted)
-          this.deps.log.info(`dream ${dreamId} adopted for agent ${agentId} (${staged.length} files)`)
+          const superseded = await this.supersedeCompletedDreams(agentId, dreamId, adoptedAt)
+          this.deps.log.info(
+            `dream ${dreamId} adopted for agent ${agentId} (${staged.length} files, ${superseded} competing proposal(s) superseded)`
+          )
           return adopted
         })
       } finally {
@@ -811,24 +831,43 @@ export class DreamRunner {
       if (dream.status !== 'completed' && dream.status !== 'failed' && dream.status !== 'canceled') {
         throw new DreamStateError(`cannot discard a ${dream.status} dream`)
       }
-      // Skills have an INDEPENDENT review lifecycle (design §7): discarding the
-      // consolidated store must not destroy a candidate the user hasn't ruled on,
-      // or its metadata would say `proposed` while accepting it fails. Drop the
-      // store staging and the input snapshot; keep `skills/` when any candidate
-      // is still proposed.
-      const base = this.dreamDir(agentId, dreamId)
-      const pending = (dream.skills ?? []).some((skill) => skill.state === 'proposed')
-      if (pending) {
-        for (const part of ['input', 'output']) {
-          await fsp.rm(join(base, part), { recursive: true, force: true })
-        }
-      } else {
-        await fsp.rm(base, { recursive: true, force: true })
-      }
+      await this.removeStoreStaging(agentId, dream)
       const discarded: DreamInfo = { ...dream, status: 'discarded', endedAt: this.nowIso() }
       this.deps.store.updateDream(discarded)
       return discarded
     })
+  }
+
+  /** Adoption changes the live store, so every other completed proposal is now
+   *  fenced by definition. Make that invalidation explicit and remove only its
+   *  memory-store staging; proposed skills remain independently reviewable. */
+  private async supersedeCompletedDreams(agentId: string, adoptedDreamId: string, adoptedAt: string): Promise<number> {
+    const candidates = this.deps.store.completedDreams(agentId).filter((dream) => dream.dreamId !== adoptedDreamId)
+    for (const dream of candidates) {
+      this.deps.store.updateDream({ ...dream, status: 'superseded', endedAt: adoptedAt })
+    }
+    for (const dream of candidates) {
+      await this.removeStoreStaging(agentId, dream).catch((err) => {
+        this.deps.log.warn(
+          `dream ${dream.dreamId}: could not remove superseded store staging (${err instanceof Error ? err.message : 'unknown'})`
+        )
+      })
+    }
+    return candidates.length
+  }
+
+  /** Skills have an INDEPENDENT review lifecycle (design §7): removing a store
+   *  proposal must not destroy a candidate the user has not ruled on. */
+  private async removeStoreStaging(agentId: string, dream: DreamInfo): Promise<void> {
+    const base = this.dreamDir(agentId, dream.dreamId)
+    const pending = (dream.skills ?? []).some((skill) => skill.state === 'proposed')
+    if (pending) {
+      for (const part of ['input', 'output']) {
+        await fsp.rm(join(base, part), { recursive: true, force: true })
+      }
+    } else {
+      await fsp.rm(base, { recursive: true, force: true })
+    }
   }
 
   /**
@@ -880,10 +919,10 @@ export class DreamRunner {
     return [...names]
   }
 
-  /** A discarded dream keeps its `skills/` only while a candidate is unreviewed;
-   *  once the last one is decided there is nothing left to review. */
+  /** A discarded or superseded dream keeps its `skills/` only while a candidate
+   *  is unreviewed; once the last one is decided there is nothing left to review. */
   private async sweepReviewedStaging(agentId: string, dream: DreamInfo): Promise<void> {
-    if (dream.status !== 'discarded') return
+    if (dream.status !== 'discarded' && dream.status !== 'superseded') return
     if ((dream.skills ?? []).some((skill) => skill.state === 'proposed')) return
     await fsp.rm(this.dreamDir(agentId, dream.dreamId), { recursive: true, force: true }).catch(() => {})
   }
