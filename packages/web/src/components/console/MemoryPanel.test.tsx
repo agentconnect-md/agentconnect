@@ -41,6 +41,10 @@ vi.mock('@/components/console/RecordMemoryPanel', () => ({
   RecordMemoryPanel: () => <div data-testid="record-memory-view" />
 }))
 
+vi.mock('@/components/console/DreamPanel', () => ({
+  DreamPanel: () => <div data-testid="dream-memory-view" />
+}))
+
 import { MemoryPanel } from './MemoryPanel'
 
 const CONNECTION_ID = '11111111-1111-4111-8111-111111111111'
@@ -257,6 +261,31 @@ describe('MemoryPanel settings draft', () => {
       root?.render(<MemoryPanel {...props} memoryDreaming={{ ...dreaming(), enabled: false }} />)
     })
     expect(dreamingBox()?.checked).toBe(false)
+  })
+
+  it('places dreaming below the live memory browser', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <MemoryPanel
+          agentId="33333333-3333-4333-8333-333333333333"
+          canEdit
+          memoryProvider="managed"
+          autoDistill={false}
+          memoryDreaming={{ enabled: true }}
+        />
+      )
+    })
+
+    const memory = container.querySelector('[data-testid="file-memory-view"]')
+    const dreaming = container.querySelector('[data-testid="dream-memory-view"]')
+    expect(memory).not.toBeNull()
+    expect(dreaming).not.toBeNull()
+    if (!memory || !dreaming) throw new Error('Expected memory and dreaming panels')
+    expect(memory.compareDocumentPosition(dreaming) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('resyncs on a timezone-only refresh, so a later save cannot restore the stale zone', async () => {

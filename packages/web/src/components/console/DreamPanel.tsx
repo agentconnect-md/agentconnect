@@ -187,14 +187,10 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
   return (
     <div className="flex flex-col gap-3 rounded-(--radius-lg) border border-(--border-subtle) p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex flex-col gap-1">
-          <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-            Dreams — offline consolidation
-          </span>
-          <span className="max-w-[62ch] font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary)">
-            A dream rereads this agent’s whole memory alongside its recent sessions and proposes a tidied-up store —
-            duplicates merged, stale entries replaced, the index rebuilt. It runs a model over all of that, so it takes
-            a few minutes and costs tokens. Nothing changes until you review the result and adopt it.
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Dreams</span>
+          <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary)">
+            Creates a reviewable draft; memory stays unchanged until adoption. Uses model tokens.
           </span>
         </div>
         <span title={startBlocker ?? undefined}>
@@ -207,6 +203,17 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
           </Button>
         </span>
       </div>
+
+      <details className="group">
+        <summary className="inline-flex cursor-pointer list-none items-center gap-1 font-sans text-[11.5px] font-semibold leading-normal text-(--text-tertiary) transition-colors hover:text-(--text-primary) [&::-webkit-details-marker]:hidden">
+          <Icon name="info" size={13} />
+          How dreaming works
+        </summary>
+        <p className="mt-2 mb-0 max-w-[68ch] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+          A dream rereads this agent’s memory and recent sessions, merges duplicates, replaces stale entries, and
+          rebuilds the index. It takes a few minutes. Review the proposed changes before adopting them.
+        </p>
+      </details>
 
       {startBlocker && !inFlight ? (
         <div className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">{startBlocker}</div>
