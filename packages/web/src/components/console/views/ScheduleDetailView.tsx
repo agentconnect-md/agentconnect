@@ -194,7 +194,7 @@ export default function ScheduleDetailView() {
             <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal">
               Task
             </div>
-            <div className="px-4 py-3 font-sans text-[14px] font-normal leading-[1.55] text-(--text-primary)">
+            <div className="whitespace-pre-wrap px-4 py-3 font-sans text-[14px] font-normal leading-[1.55] text-(--text-primary)">
               {c.trigger}
             </div>
           </div>
@@ -508,7 +508,7 @@ export default function ScheduleDetailView() {
         <div className="cardhead">
           <span className="cardtitle">Task</span>
         </div>
-        <div className="px-4 py-[14px] font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-primary)">
+        <div className="whitespace-pre-wrap px-4 py-[14px] font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-primary)">
           {c.trigger}
         </div>
       </div>
