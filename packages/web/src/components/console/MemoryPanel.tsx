@@ -816,7 +816,11 @@ export function MemoryPanel({
           {/* Dreaming is managed-only and is secondary to the live memory
               content, so it sits below the browser. Only render it when the
               persisted policy is on; otherwise its trigger would be noise. */}
-          {persistedSettings.dreaming.enabled ? <DreamPanel key={agentId} agentId={agentId} canEdit={canEdit} /> : null}
+          {persistedSettings.dreaming.enabled ? (
+            <div className="mt-4">
+              <DreamPanel key={agentId} agentId={agentId} canEdit={canEdit} />
+            </div>
+          ) : null}
         </>
       )}
       {confirmingBackendChange ? (

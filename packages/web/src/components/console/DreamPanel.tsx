@@ -85,6 +85,7 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [reviewing, setReviewing] = useState<string | null>(null)
+  const [confirmStart, setConfirmStart] = useState(false)
   const [confirmAdopt, setConfirmAdopt] = useState<string | null>(null)
   const listRequest = useRef(0)
 
@@ -181,46 +182,73 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
     )
   }
 
-  // Mirrors the Schedules "N runs · N success · …" summary so the history is
-  // scannable without reading every row.
-  const adopted = (dreams ?? []).filter((d) => d.status === 'adopted').length
-  const failed = (dreams ?? []).filter((d) => d.status === 'failed').length
-  const summary = dreams?.length
-    ? `${dreams.length} dream${dreams.length === 1 ? '' : 's'} · ${adopted} adopted · ${failed} failed`
-    : null
+  // Keep current work visible, but move terminal history behind one quiet
+  // disclosure so the Memory page stays focused on live memory.
+  const activeDreams = (dreams ?? []).filter((dream) =>
+    dream.status === 'completed' ? true : !isDreamTerminal(dream.status)
+  )
+  const pastDreams = (dreams ?? []).filter((dream) => dream.status !== 'completed' && isDreamTerminal(dream.status))
+
+  const renderDreamRows = (rows: DreamDto[]) => (
+    <ul className="flex list-none flex-col gap-0 p-0">
+      {rows.map((dream) => (
+        <li
+          key={dream.dreamId}
+          className="flex flex-wrap items-center justify-between gap-2 border-t border-(--border-subtle) py-2 first:border-t-0 first:pt-0 last:pb-0"
+        >
+          <span
+            className="mt-[6px] h-2 w-2 flex-none self-start rounded-full"
+            style={{ background: STATUS_DOT[dream.status] }}
+          />
+          <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+            <span className={`font-sans text-[12.5px] font-semibold leading-normal ${statusTone(dream.status)}`}>
+              {STATUS_LABEL[dream.status]}
+              {dream.trigger === 'schedule' ? ' · scheduled' : ''}
+            </span>
+            <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+              {when(dream.createdAt)} · {dream.sessionIds.length} session
+              {dream.sessionIds.length === 1 ? '' : 's'} mined
+              {dream.error ? ` · ${dream.error.message}` : ''}
+            </span>
+          </span>
+          <span className="flex flex-none items-center gap-2">
+            {dream.status === 'completed' ? (
+              <Button
+                variant="secondary"
+                size="xs"
+                onClick={() => setReviewing(reviewing === dream.dreamId ? null : dream.dreamId)}
+              >
+                {reviewing === dream.dreamId ? 'Hide' : 'Review'}
+              </Button>
+            ) : null}
+            {!isDreamTerminal(dream.status) && canEdit ? (
+              <Button
+                variant="secondary"
+                size="xs"
+                disabled={busy}
+                onClick={() => void run(() => cancelDream(agentId, dream.dreamId))}
+              >
+                Cancel
+              </Button>
+            ) : null}
+          </span>
+        </li>
+      ))}
+    </ul>
+  )
 
   return (
     <div className="card overflow-hidden max-desktop:rounded-lg">
       <div className="cardhead min-w-0 justify-between">
         <div className="cardtitle min-w-0 flex-1">Dreams</div>
         <span title={startBlocker ?? undefined}>
-          <Button
-            variant="secondary"
-            size="xs"
-            disabled={busy || !!startBlocker}
-            onClick={() => void run(() => startDream(agentId), 'start')}
-          >
+          <Button variant="secondary" size="xs" disabled={busy || !!startBlocker} onClick={() => setConfirmStart(true)}>
             {inFlight ? 'Dreaming…' : 'Dream now'}
           </Button>
         </span>
       </div>
 
       <div className="flex flex-col gap-3 p-4">
-        <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary)">
-          Creates a reviewable draft; memory stays unchanged until adoption. Uses model tokens.
-        </span>
-
-        <details className="group">
-          <summary className="inline-flex cursor-pointer list-none items-center gap-1 font-sans text-[11.5px] font-semibold leading-normal text-(--text-tertiary) transition-colors hover:text-(--text-primary) [&::-webkit-details-marker]:hidden">
-            <Icon name="info" size={13} />
-            How dreaming works
-          </summary>
-          <p className="mt-2 mb-0 max-w-[68ch] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-            A dream rereads this agent’s memory and recent sessions, merges duplicates, replaces stale entries, and
-            rebuilds the index. It takes a few minutes. Review the proposed changes before adopting them.
-          </p>
-        </details>
-
         {startBlocker && !inFlight ? (
           <div className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
             {startBlocker}
@@ -239,65 +267,9 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
           </div>
         ) : dreams.length === 0 && !listError ? (
           <div className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">No dreams yet.</div>
-        ) : (
-          <>
-            <div className="flex items-baseline justify-between gap-2 border-t border-(--border-subtle) pt-2">
-              <span className="font-sans text-[12px] font-semibold leading-normal text-(--text-secondary)">
-                History
-              </span>
-              {summary ? (
-                <span className="font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                  {summary}
-                </span>
-              ) : null}
-            </div>
-            <ul className="flex list-none flex-col gap-0 p-0">
-              {dreams.map((dream) => (
-                <li
-                  key={dream.dreamId}
-                  className="flex flex-wrap items-center justify-between gap-2 border-t border-(--border-subtle) py-2 first:border-t-0"
-                >
-                  <span
-                    className="mt-[6px] h-2 w-2 flex-none self-start rounded-full"
-                    style={{ background: STATUS_DOT[dream.status] }}
-                  />
-                  <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
-                    <span
-                      className={`font-sans text-[12.5px] font-semibold leading-normal ${statusTone(dream.status)}`}
-                    >
-                      {STATUS_LABEL[dream.status]}
-                      {dream.trigger === 'schedule' ? ' · scheduled' : ''}
-                    </span>
-                    <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                      {when(dream.createdAt)} · {dream.sessionIds.length} session
-                      {dream.sessionIds.length === 1 ? '' : 's'} mined
-                      {dream.error ? ` · ${dream.error.message}` : ''}
-                    </span>
-                  </span>
-                  <span className="flex flex-none items-center gap-2">
-                    {dream.status === 'completed' ? (
-                      <Button
-                        variant="secondary"
-                        onClick={() => setReviewing(reviewing === dream.dreamId ? null : dream.dreamId)}
-                      >
-                        {reviewing === dream.dreamId ? 'Hide' : 'Review'}
-                      </Button>
-                    ) : null}
-                    {!isDreamTerminal(dream.status) && canEdit ? (
-                      <Button
-                        variant="secondary"
-                        disabled={busy}
-                        onClick={() => void run(() => cancelDream(agentId, dream.dreamId))}
-                      >
-                        Cancel
-                      </Button>
-                    ) : null}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
+        ) : null}
+
+        {activeDreams.length ? renderDreamRows(activeDreams) : null}
 
         {reviewing ? (
           <DreamReview
@@ -313,6 +285,36 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
               })
             }
           />
+        ) : null}
+
+        {pastDreams.length ? (
+          <details className="group">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-2 border-t border-(--border-subtle) pt-3 font-sans text-[12px] font-semibold leading-normal text-(--text-secondary) transition-colors hover:text-(--text-primary) [&::-webkit-details-marker]:hidden">
+              <span className="inline-flex items-center gap-1">
+                <Icon name="chevron-right" size={13} className="transition-transform group-open:rotate-90" />
+                History
+              </span>
+              <span className="font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                {pastDreams.length}
+              </span>
+            </summary>
+            <div className="mt-3">{renderDreamRows(pastDreams)}</div>
+          </details>
+        ) : null}
+
+        {confirmStart ? (
+          <ConfirmationDialog
+            title="Start a memory dream?"
+            confirmLabel="Start dream"
+            onClose={() => setConfirmStart(false)}
+            onConfirm={() => {
+              setConfirmStart(false)
+              void run(() => startDream(agentId), 'start')
+            }}
+          >
+            This runs a model over the agent’s memory and recent sessions. It takes a few minutes and uses model tokens.
+            Nothing changes until you review and adopt the result.
+          </ConfirmationDialog>
         ) : null}
 
         {confirmAdopt ? (

@@ -89,18 +89,21 @@ const button = (host: HTMLElement, label: string) =>
 describe('DreamPanel', () => {
   it('triggers a dream and tells the user it costs a model run', async () => {
     const host = await render()
-    // The cost is stated up front — this is not a free click.
-    expect(host.textContent).toContain('Uses model tokens')
-
     await act(async () => button(host, 'Dream now')?.click())
+    expect(document.body.textContent).toContain('uses model tokens')
+    expect(api.startDream).not.toHaveBeenCalled()
+
+    await act(async () => button(document.body, 'Start dream')?.click())
     expect(api.startDream).toHaveBeenCalledWith(AGENT)
   })
 
-  it('keeps the detailed explanation collapsed by default', async () => {
+  it('keeps terminal history collapsed by default', async () => {
+    api.listDreams.mockResolvedValue([dream({ status: 'adopted' })])
     const host = await render()
-    const explanation = host.querySelector('details')
-    expect(explanation?.open).toBe(false)
-    expect(explanation?.querySelector('summary')?.textContent).toContain('How dreaming works')
+    const history = host.querySelector('details')
+    expect(history?.open).toBe(false)
+    expect(history?.querySelector('summary')?.textContent).toContain('History')
+    expect(history?.querySelector('summary')?.textContent).toContain('1')
   })
 
   it('uses the shared card shell with the action in its header', async () => {
@@ -185,6 +188,7 @@ describe('DreamPanel', () => {
     api.startDream.mockRejectedValue(new FakeApiError(409))
     const host = await render()
     await act(async () => button(host, 'Dream now')?.click())
+    await act(async () => button(document.body, 'Start dream')?.click())
     expect(host.textContent).toContain('already running')
   })
 
