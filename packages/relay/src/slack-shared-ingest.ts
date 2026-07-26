@@ -15,8 +15,8 @@
  *
  * Secret material (`botToken`/`signingSecret`) MUST NEVER be logged.
  */
-import { WebClient } from '@slack/web-api'
-import { HttpsProxyAgent } from 'https-proxy-agent'
+import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
+import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'
 import {
   ELICIT_ACTION_PREFIX,
   ELICIT_DISMISS_ACTION,
@@ -45,6 +45,7 @@ export interface SlackInteractiveBody {
   type: string
   api_app_id?: string
   team?: { id?: string }
+  user?: { id?: string }
   trigger_id?: string
   action_id?: string
   block_id?: string
@@ -75,6 +76,9 @@ interface SharedSlackInteractionReceipt {
 
 export type SharedSlackSessionAction = SharedSlackInteractionReceipt & {
   target: SharedSlackStatusTarget
+  /** Who tapped it (Slack `body.user`), forwarded so the daemon can attribute the
+   *  session change. Absent when the payload names no user. */
+  userId?: string
 } & RdSlackAction
 
 type SharedSlackAgent = { agentId: string; name: string }
@@ -154,6 +158,13 @@ function decodeAgentModalContext(value: string): SharedSlackAgentModalContext | 
  *  The target is opaque user-interface state at this edge; SharedBotManager validates
  *  its agent against the current bot assignment before choosing a daemon/integration. */
 export function parseSharedSlackSessionAction(body: SlackInteractiveBody): SharedSlackSessionAction | null {
+  const parsed = decodeSharedSlackSessionAction(body)
+  if (!parsed) return null
+  // Attach the actor at the single exit so every decoded verb carries it.
+  return body.user?.id ? { ...parsed, userId: body.user.id } : parsed
+}
+
+function decodeSharedSlackSessionAction(body: SlackInteractiveBody): SharedSlackSessionAction | null {
   if (body.type !== 'block_actions') return null
   const action = body.actions?.[0]
   if (!action?.action_id) return null
@@ -247,12 +258,15 @@ export function parseSharedSlackSessionAction(body: SlackInteractiveBody): Share
   }
 }
 
-/** Proxy agent from HTTPS_PROXY/HTTP_PROXY (as the daemon's SlackConnection does),
- *  or undefined for a direct connection. Threaded into the Web-API client used for
- *  `auth.test` (bot user id) and `views.open` (the config modal). */
-function proxyAgent(): HttpsProxyAgent<string> | undefined {
+/** Proxy dispatcher from HTTPS_PROXY/HTTP_PROXY (as the daemon's SlackConnection
+ *  does), or undefined for a direct connection. */
+function proxyDispatcher(): ProxyAgent | undefined {
   const url = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY
-  return url ? new HttpsProxyAgent(url) : undefined
+  return url ? new ProxyAgent(url) : undefined
+}
+
+function fetchWithDispatcher(dispatcher: Dispatcher): FetchFunction {
+  return (url, init) => undiciFetch(url, { ...(init as Parameters<typeof undiciFetch>[1]), dispatcher })
 }
 
 /** The subset of a Slack file element carried through as attachment metadata. */
@@ -370,7 +384,7 @@ export interface SlackSharedIngestDeps {
   /** Forward the current agent/session controls to its owning daemon. */
   onSessionAction: (action: SharedSlackSessionAction) => void
   /** Test seam for the bot-token Web API client. */
-  webClientFactory?: (botToken: string, agent?: HttpsProxyAgent<string>) => WebClient
+  webClientFactory?: (botToken: string, options?: WebClientOptions) => WebClient
   log: Logger
 }
 
@@ -396,10 +410,11 @@ export class SlackSharedIngest {
   /** Best-effort setup: resolve the bot user id for arbitration. No socket to open —
    *  inbound arrives on the shared HTTP routes and is dispatched via `handle*`. */
   async start(): Promise<void> {
-    const agent = proxyAgent()
+    const dispatcher = proxyDispatcher()
+    const options: WebClientOptions = dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}
     this.web = this.deps.webClientFactory
-      ? this.deps.webClientFactory(this.secrets.botToken, agent)
-      : new WebClient(this.secrets.botToken, agent ? { agent } : {})
+      ? this.deps.webClientFactory(this.secrets.botToken, options)
+      : new WebClient(this.secrets.botToken, options)
     // Resolve the bot user id (best-effort — arbitration degrades to keyword/default
     // if it fails; a later re-assign retries).
     try {

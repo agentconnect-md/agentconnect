@@ -44,6 +44,7 @@ import {
   PgAssignmentRepo,
   PgSessionRepo,
   PgSessionUsageRepo,
+  PgWebchatConversationRepo,
   PgLaunchRepo,
   PgSecretLeaseRepo,
   PgIntegrationRepo,
@@ -53,6 +54,7 @@ import {
   PgMcpProviderRepo,
   PgMcpProviderSecretStore,
   PgMcpGrantRepo,
+  PgSkillSourceRepo,
   PgMemoryPluginInstallationRepo,
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
@@ -118,6 +120,7 @@ import { replayMemoryConnectionsTo, syncMemoryConnectionsToDaemons } from './orc
 import { relayHttpOrigin } from './orchestrator/mcpProvider.js'
 import { CollabRoutesService } from './orchestrator/collabRoutes.service.js'
 import { AgentMutationGate } from './orchestrator/agentMutationGate.js'
+import { AgentMoveService } from './orchestrator/agentMove.js'
 import { ExclusiveMutationGate } from './orchestrator/exclusiveMutationGate.js'
 import { createDaemonWsServer } from './ws/gateway.js'
 import type { DaemonWsServerDeps } from './ws/gateway.js'
@@ -198,6 +201,7 @@ export function buildContainer(
     assignment: new PgAssignmentRepo(prisma),
     session: new PgSessionRepo(prisma),
     sessionUsage: new PgSessionUsageRepo(prisma),
+    webchatConversation: new PgWebchatConversationRepo(prisma),
     launch: new PgLaunchRepo(prisma),
     lease: new PgSecretLeaseRepo(prisma),
     integration: new PgIntegrationRepo(prisma),
@@ -209,6 +213,7 @@ export function buildContainer(
     mcpProvider: new PgMcpProviderRepo(prisma),
     mcpProviderSecret: new PgMcpProviderSecretStore(prisma, secretCipher),
     mcpGrant: new PgMcpGrantRepo(prisma, secretCipher),
+    skillSource: new PgSkillSourceRepo(prisma),
     memoryPluginInstallation: new PgMemoryPluginInstallationRepo(prisma),
     externalMemoryConnection: new PgExternalMemoryConnectionRepo(prisma),
     externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, secretCipher),
@@ -307,11 +312,11 @@ export function buildContainer(
   // The ONE assembler of CP→daemon AgentSpecs — owns secret loading (the only
   // AgentSecretStore VALUE reader) + icon bases, shared by every emission path:
   // reconcile roster, agent/upsert replicate, icon refresh, move activation.
-  const agentSpecs = new AgentSpecAssembler(repos.agentSecret, iconBases)
+  const agentSpecs = new AgentSpecAssembler(repos.agentSecret, iconBases, repos.skillSource)
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
-  // {userId, user, agentId, orgId}. The relay delegates verification here via
-  // rc/verify(webchat-token); the CP re-resolves the agent's CURRENT placement.
+  // {userId, user, agentId, orgId, conversationId}. The relay delegates verification
+  // here via rc/verify(webchat-token); the CP re-resolves the agent's CURRENT placement.
   const webchatTokens = new WebchatTokenService(config.API_KEY_PEPPER)
 
   const registry = new DaemonRegistryService(repos.daemon, repos.runtimeProfile, repos.daemonLifecycleOp, clock)
@@ -399,6 +404,23 @@ export function buildContainer(
       debug: (o, m) => http.log.debug(o, m)
     }
   )
+  const stagedAgentMoves = new AgentMoveService({
+    agents: repos.agent,
+    assignments: repos.assignment,
+    integrations: repos.integration,
+    integrationChannels: repos.integrationChannel,
+    bots: repos.bot,
+    botSecrets: repos.botSecret,
+    specs: agentSpecs,
+    crons: repos.cron,
+    control: sender,
+    hooks: hookService,
+    sharedBot,
+    collabRoutes,
+    mutations: agentMutations,
+    sessionOwners: connReg,
+    log: { warn: (o, m) => http.log.warn(o, m) }
+  })
 
   // C3 orchestrator with the live placement/rebalance surface fully wired.
   const orchestrator = new Placement(
@@ -555,6 +577,7 @@ export function buildContainer(
       relay: repos.relay,
       session: repos.session,
       sessionUsage: repos.sessionUsage,
+      webchatConversation: repos.webchatConversation,
       user: repos.user,
       org: repos.org,
       waitlist: repos.waitlist,
@@ -567,6 +590,7 @@ export function buildContainer(
       mcpProvider: repos.mcpProvider,
       mcpProviderSecret: repos.mcpProviderSecret,
       mcpGrant: repos.mcpGrant,
+      skillSource: repos.skillSource,
       memoryPluginInstallation: repos.memoryPluginInstallation,
       externalMemoryConnection: repos.externalMemoryConnection,
       externalMemoryConnectionSecret: repos.externalMemoryConnectionSecret,
@@ -747,6 +771,7 @@ export function buildContainer(
     integration: repos.integration,
     integrationChannel: repos.integrationChannel,
     agentMutations,
+    recoverStagedAgent: (agentId, daemonId, moveId) => stagedAgentMoves.recoverStaged(agentId, daemonId, moveId),
     collabRoutes,
     cron: repos.cron,
     hook: repos.hook,
@@ -799,7 +824,8 @@ export function buildContainer(
         user: claims.user,
         agentId: claims.agentId,
         daemonId: agent.daemonId,
-        orgId: claims.orgId
+        orgId: claims.orgId,
+        conversationId: claims.conversationId
       }
     },
     // Current-permission fallback for GitHub comment webhooks whose
@@ -868,7 +894,7 @@ export function buildContainer(
     onRunReport: async (report) => {
       const firedAt = new Date(report.firedAt)
       if (Number.isNaN(firedAt.getTime())) return
-      const projectionIntent = githubProjectionIntent(report.event, report.github)
+      const projectionIntent = githubProjectionIntent(report.event, report.github, report.reviewPolicy)
       const delivery = await repos.hook.recordDeliveryResult(HookId(report.hookId), {
         deliveryKey: report.deliveryKey,
         firedAt,

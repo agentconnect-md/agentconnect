@@ -80,6 +80,12 @@ describe('decodeEnvelope — first failing test (design §6 Phase 0)', () => {
     expect(r).toEqual({ ok: false, id: ID, msg: 'UNKNOWN_FRAME' })
   })
 
+  it('rejects inherited schema-map keys with UNKNOWN_FRAME', () => {
+    for (const type of ['__proto__', 'constructor', 'toString']) {
+      expect(decodeEnvelope(envelope(type, {}))).toEqual({ ok: false, id: ID, msg: 'UNKNOWN_FRAME' })
+    }
+  })
+
   it('rejects a frame larger than 256 KiB with FRAME_TOO_LARGE', () => {
     const big = 'x'.repeat(MAX_FRAME_BYTES + 1)
     const r = decodeEnvelope(envelope('auth', { ...validAuthPayload, agentVersion: big }))
@@ -107,6 +113,7 @@ describe('decodeEnvelope — additional codec/frame units', () => {
     // Rolling upgrade: older daemons omit replica inventories.
     expect(r.frame.payload.localState.agents).toEqual([])
     expect(r.frame.payload.localState.integrations).toEqual([])
+    expect(r.frame.payload.localState.stagedAgents).toEqual([])
   })
 
   it('register accepts discord in capabilities.platforms (handshake regression)', () => {
@@ -124,6 +131,25 @@ describe('decodeEnvelope — additional codec/frame units', () => {
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('register')(r.frame)) throw new Error('expected a register frame')
     expect(r.frame.payload.capabilities.platforms).toEqual(['slack', 'discord'])
+  })
+
+  it('register accepts a fail-closed staged tombstone without a recoverable token', () => {
+    const r = decodeEnvelope(
+      envelope('register', {
+        host: 'host-1',
+        capabilities: { platforms: [], runtimes: [], acp: true },
+        maxAgents: 4,
+        localState: {
+          assignments: [],
+          crons: [],
+          leases: [],
+          stagedAgents: [{ agentId: AGENT_ID }]
+        }
+      })
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || !isFrame('register')(r.frame)) throw new Error('expected a register frame')
+    expect(r.frame.payload.localState.stagedAgents).toEqual([{ agentId: AGENT_ID }])
   })
 
   it('round-trips an error frame through build → encode → decode', () => {
@@ -465,8 +491,24 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     if (r.frame.payload.platform !== 'feishu') throw new Error('expected feishu integration')
     expect(r.frame.payload.feishu.appId).toBe('cli_abc123')
     expect(r.frame.payload.feishu.appSecret).toBe('secret-xyz')
+    expect(r.frame.payload.feishu.region).toBe('feishu') // zod default — China gateway
     expect(r.frame.payload.feishu.allowedUserIds).toEqual([]) // zod default
     expect(r.frame.payload.feishu.bindRules).toEqual([]) // zod default
+  })
+
+  it("integration/upsert preserves an explicit feishu region 'lark' (international gateway)", () => {
+    const r = decodeEnvelope(
+      envelope('integration/upsert', {
+        integrationId: INTEGRATION_ID,
+        agentId: AGENT_ID,
+        platform: 'feishu',
+        feishu: { appId: 'cli_abc123', appSecret: 'secret-xyz', region: 'lark' }
+      })
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
+    if (r.frame.payload.platform !== 'feishu') throw new Error('expected feishu integration')
+    expect(r.frame.payload.feishu.region).toBe('lark')
   })
 
   it('integration/upsert rejects an unknown platform', () => {
@@ -664,22 +706,40 @@ describe('session read-back frames (console history pull)', () => {
   })
 
   it('session/history REQ defaults limit to 50; session/history/page round-trips messages + cursor', () => {
-    const req = decodeEnvelope(envelope('session/history', { sessionId: SESSION_ID, cursor: 'c-100' }))
+    const req = decodeEnvelope(
+      envelope('session/history', { agentId: AGENT_ID, sessionId: SESSION_ID, cursor: 'c-100' })
+    )
     expect(req.ok).toBe(true)
     if (!req.ok || !isFrame('session/history')(req.frame)) throw new Error('expected session/history')
+    expect(req.frame.payload.agentId).toBe(AGENT_ID)
     expect(req.frame.payload.limit).toBe(50) // zod default
     expect(req.frame.payload.cursor).toBe('c-100')
+    const legacyReq = decodeEnvelope(envelope('session/history', { sessionId: SESSION_ID }))
+    expect(legacyReq.ok).toBe(true)
+    if (!legacyReq.ok || !isFrame('session/history')(legacyReq.frame))
+      throw new Error('expected legacy session/history')
+    expect(legacyReq.frame.payload.agentId).toBeUndefined()
 
     const page = decodeEnvelope(
       envelope('session/history/page', {
         sessionId: SESSION_ID,
-        messages: [{ seq: 1, sender: '@dana', ts: '1718000000.000100', kind: 'text', text: 'ship it' }],
+        messages: [
+          {
+            seq: 1,
+            sender: '@dana',
+            ts: '1718000000.000100',
+            kind: 'text',
+            text: 'ship it',
+            attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: 'aW1hZ2U=' }]
+          }
+        ],
         nextCursor: 'c-50'
       })
     )
     expect(page.ok).toBe(true)
     if (!page.ok || !isFrame('session/history/page')(page.frame)) throw new Error('expected page')
     expect(page.frame.payload.messages[0]!.text).toBe('ship it')
+    expect(page.frame.payload.messages[0]!.attachments?.[0]?.name).toBe('screen.webp')
     expect(page.frame.payload.nextCursor).toBe('c-50')
   })
 
@@ -726,10 +786,18 @@ describe('session read-back frames (console history pull)', () => {
   })
 
   it('session/tool-body REQ defaults offset to 0; session/tool-body/chunk round-trips with nextOffset', () => {
-    const req = decodeEnvelope(envelope('session/tool-body', { sessionId: SESSION_ID, toolCallId: 'tc-1' }))
+    const req = decodeEnvelope(
+      envelope('session/tool-body', { agentId: AGENT_ID, sessionId: SESSION_ID, toolCallId: 'tc-1' })
+    )
     expect(req.ok).toBe(true)
     if (!req.ok || !isFrame('session/tool-body')(req.frame)) throw new Error('expected session/tool-body')
+    expect(req.frame.payload.agentId).toBe(AGENT_ID)
     expect(req.frame.payload.offset).toBe(0) // zod default
+    const legacyReq = decodeEnvelope(envelope('session/tool-body', { sessionId: SESSION_ID, toolCallId: 'tc-1' }))
+    expect(legacyReq.ok).toBe(true)
+    if (!legacyReq.ok || !isFrame('session/tool-body')(legacyReq.frame))
+      throw new Error('expected legacy session/tool-body')
+    expect(legacyReq.frame.payload.agentId).toBeUndefined()
 
     const chunk = decodeEnvelope(
       envelope(
@@ -765,7 +833,7 @@ describe('milestone A4 gate — the CP is off the webchat hot path', () => {
   })
 })
 
-describe('workspace file browsing frames (console live pull)', () => {
+describe('workspace file access frames (console live proxy)', () => {
   it('workspace/list REQ round-trips with the CP epoch ext (no seq/launchId)', () => {
     const r = decodeEnvelope(
       envelope(
@@ -900,6 +968,30 @@ describe('workspace file browsing frames (console live pull)', () => {
     if (!read.ok || !isFrame('workspace/read')(read.frame)) throw new Error('expected workspace/read')
     expect(read.frame.payload.offset).toBe(0) // zod default
     expect(read.frame.payload.limit).toBe(65536) // zod default (64 KiB slice)
+  })
+
+  it('workspace/delete REQ and REP round-trip the optimistic file identity', () => {
+    const req = decodeEnvelope(
+      envelope(
+        'workspace/delete',
+        {
+          agentId: 'local-agent-1',
+          path: 'notes/todo.md',
+          ifMatchMtime: '2026-07-25T00:00:00.000Z'
+        },
+        { epoch: 3 }
+      )
+    )
+    expect(req.ok).toBe(true)
+    if (!req.ok || !isFrame('workspace/delete')(req.frame)) throw new Error('expected workspace/delete')
+    expect(req.frame.payload.path).toBe('notes/todo.md')
+
+    const rep = decodeEnvelope(
+      envelope('workspace/delete/ok', { agentId: 'local-agent-1', path: 'notes/todo.md' }, { corr: ID })
+    )
+    expect(rep.ok).toBe(true)
+    if (!rep.ok || !isFrame('workspace/delete/ok')(rep.frame)) throw new Error('expected workspace/delete/ok')
+    expect(rep.frame.corr).toBe(ID)
   })
 })
 
@@ -1185,6 +1277,40 @@ describe('memory frames (CP↔daemon agent memory dir)', () => {
     if (!rep.ok || !isFrame('memory/history/page')(rep.frame)) throw new Error('expected memory/history/page')
     expect(rep.frame.payload.events[0]).toMatchObject({ before: 'v1', after: 'v2', source: 'console' })
     expect(rep.frame.payload.nextCursor).toBe(nextCursor)
+  })
+
+  it('keeps a five-event worst-case escaped history page below the wire cap', () => {
+    // NUL has the largest ordinary JSON string expansion (`\\u0000`, six wire
+    // bytes per input character), so this covers the schema maxima rather than
+    // only representative prose snapshots.
+    const escaped = '\u0000'
+    const event = {
+      id: '33333333-3333-4333-8333-333333333333',
+      path: escaped.repeat(255),
+      event: 'update' as const,
+      before: escaped.repeat(4001),
+      after: escaped.repeat(4001),
+      at: TS,
+      scope: 'agent' as const,
+      source: 'dream' as const,
+      truncated: true
+    }
+    const encoded = encode(
+      buildEnvelope('memory/history/page', {
+        agentId: escaped.repeat(255),
+        path: escaped.repeat(255),
+        events: Array.from({ length: 5 }, () => event),
+        nextCursor: '22222222-2222-4222-8222-222222222222'
+      })
+    )
+
+    expect(Buffer.byteLength(encoded)).toBeLessThanOrEqual(MAX_FRAME_BYTES)
+    const decoded = decodeEnvelope(encoded)
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok || !isFrame('memory/history/page')(decoded.frame)) {
+      throw new Error('expected memory/history/page')
+    }
+    expect(decoded.frame.payload.events).toHaveLength(5)
   })
 
   it('round-trips the provider-neutral memory surface without backend identity', () => {

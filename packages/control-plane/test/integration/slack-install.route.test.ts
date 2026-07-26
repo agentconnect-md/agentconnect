@@ -78,12 +78,14 @@ class StubConfigApi implements SlackConfigApi {
       accessExpiresAt: new Date(Date.now() + 12 * 3600_000)
     }
   }
+  // When non-empty, createApp shifts one result per call (models create → rotate → retry).
+  createResultQueue: SlackAppCreateResult[] = []
   createCalls: Array<{ configToken: string; manifest: unknown }> = []
   exchangeCalls: Array<{ clientId: string; clientSecret: string; code: string; redirectUri: string }> = []
   rotateCalls: string[] = []
   async createApp(configToken: string, manifest: unknown): Promise<SlackAppCreateResult> {
     this.createCalls.push({ configToken, manifest })
-    return this.createResult
+    return this.createResultQueue.length ? this.createResultQueue.shift()! : this.createResult
   }
   async exportApp(): Promise<SlackManifestExportResult> {
     return { ok: false, error: 'unused' }
@@ -259,16 +261,22 @@ describe('slack auto-install funnel', () => {
 
   it('POST /app maps a Slack rejection to 400 and an unreachable to 502', async () => {
     const agentId = await placedAgent()
-    await seedUserConfig()
     const { app, stub } = withFunnel()
+
+    await seedUserConfig()
+    // Auth rejection on both the create and the durable retry ⇒ 400 (and the config, proven
+    // unrecoverable, is invalidated — so the next case re-seeds).
     stub.createResult = { ok: false, error: 'token_expired' }
     const bad = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
     expect(bad.statusCode).toBe(400)
 
+    await seedUserConfig()
+    // unreachable is transient (not an auth error) ⇒ 502, and the config is kept.
     stub.createResult = { ok: false, error: 'unreachable' }
     const down = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
     expect(down.statusCode).toBe(502)
     expect(await prisma.slackInstall.count()).toBe(0)
+    expect(await prisma.slackUserConfig.count()).toBe(1) // transient failure keeps the config
   })
 
   it('the OAuth callback exchanges the code and stashes the bot token (never in a response)', async () => {
@@ -572,7 +580,7 @@ describe('slack per-user config storage', () => {
       payload: { accessToken: 'xoxe.xoxp-pasted', refreshToken: 'xoxe-pasted' }
     })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toMatchObject({ configured: true, autoAvailable: true })
+    expect(res.json()).toMatchObject({ configured: true, durable: true, autoAvailable: true })
     expect(stub.rotateCalls).toEqual(['xoxe-pasted'])
     // Stored the rotated pair — never the pasted one; and no token leaks to the DTO.
     const row = await prisma.slackUserConfig.findUnique({
@@ -580,6 +588,99 @@ describe('slack per-user config storage', () => {
     })
     expect(row).toMatchObject({ accessToken: 'xoxe.xoxp-rotated', refreshToken: 'xoxe-rotated' })
     expect(JSON.stringify(res.json())).not.toContain('xoxe')
+  })
+
+  it('PUT with only the config token stores an access-only row (durable:false, no rotate)', async () => {
+    const { app, stub } = withFunnel()
+    const res = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/slack/config`,
+      payload: { accessToken: 'xoxe.xoxp-access-only' } // no refresh token
+    })
+    expect(res.statusCode).toBe(200)
+    // Usable right now (fresh ~12h access token) even though it isn't durable.
+    expect(res.json()).toMatchObject({ configured: true, durable: false, autoAvailable: true })
+    expect((res.json() as { accessExpiresAt: string | null }).accessExpiresAt).toBeTruthy()
+    expect(stub.rotateCalls).toHaveLength(0) // nothing to rotate
+    // Stored the pasted access token as-is with no refresh token.
+    const row = await prisma.slackUserConfig.findUnique({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } }
+    })
+    expect(row?.accessToken).toBe('xoxe.xoxp-access-only')
+    expect(row?.refreshToken).toBeNull()
+    expect(JSON.stringify(res.json())).not.toContain('xoxe')
+  })
+
+  it('POST /app is 409 (expired) when only an EXPIRED access-only token is stored', async () => {
+    const { app } = withFunnel()
+    const agentId = await placedAgent()
+    // Access-only, already past expiry ⇒ nothing to rotate ⇒ must re-enter.
+    await prisma.slackUserConfig.create({
+      data: {
+        orgId: DEFAULT_ORG_ID,
+        userId: DEFAULT_OWNER_ID,
+        accessToken: 'xoxe.xoxp-old',
+        refreshToken: null,
+        accessExpiresAt: new Date(Date.now() - 60_000)
+      }
+    })
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app`,
+      payload: { agentId }
+    })
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).toMatch(/expired/i)
+  })
+
+  it('POST /app DROPS a rejected access-only config (auth error) so the console re-prompts', async () => {
+    const { app, stub } = withFunnel()
+    stub.createResult = { ok: false, error: 'invalid_auth' } // Slack rejects the token at create
+    const agentId = await placedAgent()
+    await prisma.slackUserConfig.create({
+      data: {
+        orgId: DEFAULT_ORG_ID,
+        userId: DEFAULT_OWNER_ID,
+        accessToken: 'xoxe.xoxp-bad',
+        refreshToken: null, // access-only ⇒ no recovery
+        accessExpiresAt: new Date(Date.now() + 3600_000) // fresh window, but the token is bad
+      }
+    })
+    const res = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+    expect(res.statusCode).toBe(400)
+    expect(await prisma.slackUserConfig.count()).toBe(0) // dropped ⇒ next status re-prompts
+  })
+
+  it('POST /app RECOVERS a durable config on auth rejection by rotating a fresh token and retrying', async () => {
+    const { app, stub } = withFunnel()
+    // resolve() returns the fresh (unexpired) access token WITHOUT re-validating it, so the
+    // first create is rejected. A durable config force-rotates and retries — that succeeds
+    // (the 2nd create falls back to the default ok result once the queue drains).
+    stub.createResultQueue = [{ ok: false, error: 'invalid_auth' }]
+    const agentId = await placedAgent()
+    await seedUserConfig() // durable + fresh
+    const res = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+    expect(res.statusCode).toBe(201) // recovered — no re-prompt
+    expect(stub.rotateCalls).toEqual(['xoxe-stored']) // forced a rotation despite the fresh window
+    expect(stub.createCalls.map((c) => c.configToken)).toEqual(['xoxe.xoxp-stored', 'xoxe.xoxp-rotated'])
+    const cfg = await prisma.slackUserConfig.findUnique({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } }
+    })
+    expect(cfg).toMatchObject({ accessToken: 'xoxe.xoxp-rotated', refreshToken: 'xoxe-rotated' }) // fresh pair kept
+  })
+
+  it('POST /app INVALIDATES a durable config when even a rotated token is rejected', async () => {
+    const { app, stub } = withFunnel()
+    stub.createResultQueue = [
+      { ok: false, error: 'invalid_auth' }, // stored token rejected
+      { ok: false, error: 'invalid_auth' } // rotated token also rejected ⇒ unrecoverable
+    ]
+    const agentId = await placedAgent()
+    await seedUserConfig() // durable + fresh
+    const res = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+    expect(res.statusCode).toBe(400)
+    expect(stub.rotateCalls).toEqual(['xoxe-stored']) // attempted recovery before giving up
+    expect(await prisma.slackUserConfig.count()).toBe(0) // dropped ⇒ next status re-prompts
   })
 
   it('PUT maps a rotate rejection to 400 and stores nothing', async () => {

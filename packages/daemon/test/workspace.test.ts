@@ -10,7 +10,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type { Agent } from '../src/agents/agent-schema.js'
 
 // Mock simple-git so clone/pull don't touch the network. The clone mock is
@@ -72,7 +72,7 @@ function gitRepoAgent(path: string, agentDir?: string): Agent {
     workspace: {
       mode: 'git-repo',
       path,
-      gitRepo: 'https://example.com/repo.git',
+      gitRepo: 'https://github.com/acme/repo.git',
       gitBranch: 'main',
       ...(agentDir !== undefined ? { agentDir } : {}),
       pullOnNewSession: true,
@@ -88,11 +88,20 @@ function gitRepoAgent(path: string, agentDir?: string): Agent {
 /** gitRepoAgent + the github-app credential channel (usesGithubApp true). */
 function githubAppAgent(path: string): Agent {
   const agent = gitRepoAgent(path)
-  return { ...agent, id: 'bot-git-app', workspace: { ...agent.workspace, gitCredential: 'github-app' } } as Agent
+  return {
+    ...agent,
+    id: 'bot-git-app',
+    workspace: {
+      ...agent.workspace,
+      gitRepo: 'https://github.com/acme/repo.git',
+      gitCredential: 'github-app'
+    }
+  } as Agent
 }
 
 beforeEach(() => {
   cloneImpl = vi.fn().mockResolvedValue(undefined)
+  lastGitEnv = undefined
   pullMock.mockClear()
   rawMock.mockReset().mockResolvedValue('')
 })
@@ -113,12 +122,42 @@ describe('prepareWorkspace', () => {
     const cwd = await prepareWorkspace(gitRepoAgent(path))
     expect(cwd).toBe(realpathSync(path))
     expect(cloneImpl).toHaveBeenCalledTimes(1)
-    expect(cloneImpl).toHaveBeenCalledWith('https://example.com/repo.git', path, [
+    expect(cloneImpl).toHaveBeenCalledWith('https://github.com/acme/repo.git', path, [
       '--branch',
       'main',
       '--single-branch'
     ])
     // clone, not pull, on a fresh checkout
+    expect(pullMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps ssh clone targets working', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'co')
+    const agent = gitRepoAgent(path)
+    agent.workspace.gitRepo = 'ssh://git@github.com/acme/repo.git'
+
+    await prepareWorkspace(agent)
+
+    expect(cloneImpl).toHaveBeenCalledWith('ssh://git@github.com/acme/repo.git', path, [
+      '--branch',
+      'main',
+      '--single-branch'
+    ])
+  })
+
+  it('rejects a hand-edited transport or unconfigured origin before clone or pull', async () => {
+    for (const gitRepo of ['file:///var/lib/agentconnect/other-workspace', 'https://git.example/acme/repo.git']) {
+      const fresh = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'fresh')
+      const existing = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'existing')
+      mkdirSync(join(existing, '.git'), { recursive: true })
+      for (const path of [fresh, existing]) {
+        const agent = gitRepoAgent(path)
+        agent.workspace.gitRepo = gitRepo
+        await expect(prepareWorkspace(agent)).rejects.toThrow()
+      }
+    }
+
+    expect(cloneImpl).not.toHaveBeenCalled()
     expect(pullMock).not.toHaveBeenCalled()
   })
 
@@ -150,7 +189,31 @@ describe('prepareWorkspace', () => {
     mkdirSync(join(dir, '.git'), { recursive: true })
     await prepareWorkspace(gitRepoAgent(dir))
     expect(cloneImpl).not.toHaveBeenCalled()
-    expect(pullMock).toHaveBeenCalledTimes(1)
+    expect(pullMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^agentconnect-[0-9a-f-]+$/),
+      '+refs/heads/main:refs/remotes/origin/main',
+      ['--ff-only', '--no-recurse-submodules']
+    )
+    expect(Object.values(lastGitEnv ?? {})).toContain('https://github.com/acme/repo.git')
+  })
+
+  it('ignores a checkout-controlled upstream when pulling an existing workspace', async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'co')
+    mkdirSync(join(dir, '.git'), { recursive: true })
+    const agent = gitRepoAgent(dir)
+    agent.workspace.gitBranch = 'release/v2'
+    rawMock.mockImplementation(async (args: string[]) =>
+      args[0] === 'remote' && args[1] === 'get-url' ? 'https://attacker.example/other.git\n' : ''
+    )
+
+    await prepareWorkspace(agent)
+
+    expect(pullMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^agentconnect-[0-9a-f-]+$/),
+      '+refs/heads/release/v2:refs/remotes/origin/release/v2',
+      ['--ff-only', '--no-recurse-submodules']
+    )
+    expect(Object.values(lastGitEnv ?? {})).toContain('https://github.com/acme/repo.git')
   })
 
   it('returns the canonical configured repository subdirectory', async () => {
@@ -207,7 +270,7 @@ describe('prefetchWorkspace (reconcile-time eager clone)', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'co')
     await prefetchWorkspace(gitRepoAgent(path))
     expect(cloneImpl).toHaveBeenCalledTimes(1)
-    expect(cloneImpl).toHaveBeenCalledWith('https://example.com/repo.git', path, [
+    expect(cloneImpl).toHaveBeenCalledWith('https://github.com/acme/repo.git', path, [
       '--branch',
       'main',
       '--single-branch'
@@ -293,13 +356,34 @@ describe('prepareWorkspaceForActivation', () => {
 
   it('preserves local files when repository and branch materialization are unchanged', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-edit-')), 'workspace')
-    const current = gitRepoAgent(path)
+    const current = githubAppAgent(path)
+    initGitInjection({
+      shimPath: '/run/helper.sh',
+      runDir: mkdtempSync(join(tmpdir(), 'ac-ws-gitcred-')),
+      preWarm: async () => undefined,
+      capabilityFor: (agentId) => `cap-${agentId}`
+    })
     mkdirSync(join(path, '.git'), { recursive: true })
     writeFileSync(join(path, 'local.txt'), 'keep me')
     recordWorkspaceMaterialization(current)
+    // Older daemons recorded the conventional `.git` suffix in this marker.
+    writeFileSync(
+      join(dirname(path), `.${basename(path)}.workspace-materialization.json`),
+      JSON.stringify({
+        version: 1,
+        key: JSON.stringify({
+          mode: 'github',
+          repo: 'https://github.com/acme/repo.git',
+          branch: 'main'
+        })
+      })
+    )
+    rawMock.mockImplementation(async (args: string[]) =>
+      args[0] === 'remote' && args[1] === 'get-url' ? 'https://github.com/acme/repo.git\n' : ''
+    )
 
     const rollback = await prepareWorkspaceForActivation(
-      { ...current, workspace: { ...current.workspace, gitCredential: 'github-app' } } as Agent,
+      { ...current, workspace: { ...current.workspace, gitRepo: 'https://github.com/acme/repo' } } as Agent,
       { reconcileMaterialization: true }
     )
 
@@ -309,7 +393,39 @@ describe('prepareWorkspaceForActivation', () => {
     expect(existsSync(join(path, 'local.txt'))).toBe(true)
   })
 
-  it('preserves a renamed checkout on a later agentDir-only workspace edit', async () => {
+  it('replaces a historical App-backed checkout materialized from a non-GitHub origin', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-edit-')), 'workspace')
+    const agent = githubAppAgent(path)
+    initGitInjection({
+      shimPath: '/run/helper.sh',
+      runDir: mkdtempSync(join(tmpdir(), 'ac-ws-gitcred-')),
+      preWarm: async () => undefined,
+      capabilityFor: (agentId) => `cap-${agentId}`
+    })
+    mkdirSync(join(path, '.git'), { recursive: true })
+    writeFileSync(join(path, 'untrusted.txt'), 'wrong-host content')
+    recordWorkspaceMaterialization(agent)
+    rawMock.mockImplementation(async (args: string[]) =>
+      args[0] === 'remote' && args[1] === 'get-url' ? 'https://other-host.example/acme/repo.git\n' : ''
+    )
+    cloneImpl = vi.fn().mockImplementation(async (_repo: string, target: string) => {
+      mkdirSync(join(target, '.git'), { recursive: true })
+      writeFileSync(join(target, 'README.md'), 'authorized GitHub content')
+    })
+
+    const rollback = await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
+
+    expect(cloneImpl).toHaveBeenCalledWith('https://github.com/acme/repo.git', expect.any(String), [
+      '--branch',
+      'main',
+      '--single-branch'
+    ])
+    expect(existsSync(join(path, 'untrusted.txt'))).toBe(false)
+    expect(readFileSync(join(path, 'README.md'), 'utf8')).toBe('authorized GitHub content')
+    rollback()
+  })
+
+  it('retries a failed rename convergence without replacing local files on a later agentDir-only edit', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-edit-')), 'workspace')
     const current = githubAppAgent(path)
     current.workspace.gitRepo = 'https://github.com/acme/old-name'
@@ -317,27 +433,32 @@ describe('prepareWorkspaceForActivation', () => {
     mkdirSync(join(path, 'packages', 'service'), { recursive: true })
     writeFileSync(join(path, 'local.txt'), 'keep me')
     recordWorkspaceMaterialization(current)
-    rawMock.mockImplementation(async (args: string[]) =>
-      args[0] === 'remote' && args[1] === 'get-url' ? 'https://github.com/acme/old-name\n' : ''
-    )
+    let failSetUrl = true
+    rawMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/old-name\n'
+      if (args[0] === 'remote' && args[1] === 'set-url' && failSetUrl) throw new Error('config locked')
+      return ''
+    })
 
     const renamed = {
       ...current,
       workspace: { ...current.workspace, gitRepo: 'https://github.com/acme/new-name' }
     } as Agent
-    await convergeGithubAppWorkspaceRename(renamed)
+    await expect(convergeGithubAppWorkspaceRename(renamed)).rejects.toThrow('config locked')
+    failSetUrl = false
 
     const rollback = await prepareWorkspaceForActivation(
       { ...renamed, workspace: { ...renamed.workspace, agentDir: 'packages/service' } } as Agent,
       { reconcileMaterialization: true }
     )
 
-    expect(rawMock.mock.calls.map((call) => call[0])).toContainEqual([
-      'remote',
-      'set-url',
-      'origin',
-      'https://github.com/acme/new-name'
-    ])
+    expect(
+      rawMock.mock.calls.filter(
+        (call) =>
+          JSON.stringify(call[0]) ===
+          JSON.stringify(['remote', 'set-url', 'origin', 'https://github.com/acme/new-name'])
+      )
+    ).toHaveLength(2)
     expect(cloneImpl).not.toHaveBeenCalled()
     expect(readFileSync(join(path, 'local.txt'), 'utf8')).toBe('keep me')
     rollback()
@@ -356,7 +477,7 @@ describe('prepareWorkspaceForActivation', () => {
     })
     const target = {
       ...current,
-      workspace: { ...current.workspace, gitRepo: 'https://example.com/another.git', gitBranch: 'next' }
+      workspace: { ...current.workspace, gitRepo: 'https://github.com/acme/another.git', gitBranch: 'next' }
     } as Agent
     // A crash can leave the target spec on disk before materialization. The next
     // detach must not overwrite the source marker merely because it sees that spec.
@@ -379,6 +500,9 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
       preWarm: async () => undefined,
       capabilityFor: (agentId) => `cap-${agentId}`
     })
+    rawMock.mockImplementation(async (args: string[]) =>
+      args[0] === 'remote' && args[1] === 'get-url' ? 'https://github.com/acme/repo.git\n' : ''
+    )
   })
 
   it('re-pins an existing checkout to the CURRENT agent id (a recreated agent adopts a stale pin)', async () => {
@@ -417,12 +541,115 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
     expect(cloneImpl).not.toHaveBeenCalled()
   })
 
-  it('leaves a non-github-app checkout untouched (machine credentials stay machine-managed)', async () => {
+  it('sanitizes host git context before inspecting and repointing an origin', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-ws-repin-'))
     mkdirSync(join(dir, '.git'))
+    const agent = githubAppAgent(dir)
+    agent.workspace.gitRepo = 'https://github.com/acme/new-name'
+    const previousGitDir = process.env.GIT_DIR
+    process.env.GIT_DIR = '/tmp/attacker-controlled-git-dir'
+    rawMock.mockImplementation(async (args: string[]) => {
+      expect(lastGitEnv).not.toHaveProperty('GIT_DIR')
+      expect(lastGitEnv?.GIT_ALLOW_PROTOCOL).toBe('')
+      return args[0] === 'remote' && args[1] === 'get-url' ? 'https://github.com/acme/old-name\n' : ''
+    })
+
+    try {
+      await prepareWorkspace(agent)
+    } finally {
+      if (previousGitDir === undefined) delete process.env.GIT_DIR
+      else process.env.GIT_DIR = previousGitDir
+    }
+
+    expect(rawMock.mock.calls.map((call) => call[0])).toContainEqual([
+      'remote',
+      'set-url',
+      'origin',
+      'https://github.com/acme/new-name'
+    ])
+  })
+
+  it('refuses to run an App-backed checkout whose origin is not GitHub', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-ws-repin-'))
+    mkdirSync(join(dir, '.git'))
+    rawMock.mockImplementation(async (args: string[]) =>
+      args[0] === 'remote' && args[1] === 'get-url' ? 'https://other-host.example/acme/repo.git\n' : ''
+    )
+
+    await expect(prepareWorkspace(githubAppAgent(dir))).rejects.toThrow('origin is not a trusted GitHub remote')
+    expect(pullMock).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when an App-backed origin cannot be rewritten', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-ws-repin-'))
+    mkdirSync(join(dir, '.git'))
+    const agent = githubAppAgent(dir)
+    agent.workspace.gitRepo = 'https://github.com/acme/new-name'
+    rawMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/old-name\n'
+      if (args[0] === 'remote' && args[1] === 'set-url') throw new Error('config locked')
+      return ''
+    })
+
+    await expect(prepareWorkspace(agent)).rejects.toThrow('config locked')
+    expect(pullMock).not.toHaveBeenCalled()
+  })
+
+  it('leaves a credential-free non-github-app origin untouched', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-ws-repin-'))
+    mkdirSync(join(dir, '.git'))
+    rawMock.mockImplementation(async (args: string[]) =>
+      args[0] === 'remote' && args[1] === 'get-url' ? 'https://github.com/acme/repo.git\n' : ''
+    )
 
     await prepareWorkspace(gitRepoAgent(dir))
 
-    expect(rawMock).not.toHaveBeenCalled()
+    expect(rawMock.mock.calls.map((call) => call[0])).toContainEqual(['remote', 'get-url', 'origin'])
+    expect(rawMock.mock.calls.map((call) => call[0])).not.toContainEqual([
+      'remote',
+      'set-url',
+      'origin',
+      'https://github.com/acme/repo.git'
+    ])
+  })
+
+  it('removes credentials from a historical anonymous origin before pull', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-ws-repin-'))
+    mkdirSync(join(dir, '.git'))
+    rawMock.mockImplementation(async (args: string[]) =>
+      args[0] === 'remote' && args[1] === 'get-url'
+        ? 'https://legacy-user:legacy-token@github.com/acme/repo.git?token=query-secret\n'
+        : ''
+    )
+
+    await prepareWorkspace(gitRepoAgent(dir))
+
+    expect(rawMock.mock.calls.map((call) => call[0])).toContainEqual([
+      'remote',
+      'set-url',
+      'origin',
+      'https://github.com/acme/repo.git'
+    ])
+    expect(pullMock).toHaveBeenCalled()
+  })
+
+  it('repoints a historical shorthand origin before pull', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-ws-repin-'))
+    mkdirSync(join(dir, '.git'))
+    const agent = gitRepoAgent(dir)
+    agent.workspace.gitRepo = 'https://github.com/acme/repo'
+    rawMock.mockImplementation(async (args: string[]) =>
+      args[0] === 'remote' && args[1] === 'get-url' ? 'acme/repo\n' : ''
+    )
+
+    await prepareWorkspace(agent)
+
+    expect(rawMock.mock.calls.map((call) => call[0])).toContainEqual([
+      'remote',
+      'set-url',
+      'origin',
+      'https://github.com/acme/repo'
+    ])
+    expect(pullMock).toHaveBeenCalled()
   })
 })

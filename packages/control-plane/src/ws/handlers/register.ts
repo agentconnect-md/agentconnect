@@ -11,7 +11,7 @@
  * snapshot (CP wins all conflicts) — reconnect is convergence, not replay.
  */
 import { isFrame } from '@agentconnect.md/protocol'
-import { DaemonId } from '../../domain/ids.js'
+import { AgentId, DaemonId } from '../../domain/ids.js'
 import type { Handler } from './index.js'
 
 export const handleRegister: Handler = async (frame, conn, deps) => {
@@ -27,7 +27,6 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
   if (state) {
     state.capabilities = req.capabilities
     state.maxAgents = req.maxAgents
-    state.state = 'READY'
     state.assignments.clear()
   }
   for (const a of snap.assignments) {
@@ -45,9 +44,21 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
     ...(gitCommitIdentity ? { gitCommitIdentity } : {}),
     serverFeatures: ['hook-report-ack-v1', 'gitcred-actions-v1']
   })
+  deps.connReg.markReady(conn.daemonId, conn)
 
   // Now that this connection has actually reached READY (reconcile succeeded above),
   // close any CP-commanded restart/upgrade op it was relaunching for (§7). Best-effort
   // — register/ok is already sent, so a settle failure must not disrupt registration.
   await deps.registry.settleLifecycleOpOnReady(did).catch(() => {})
+
+  // A socket can disappear after daemon-side detach/activate work but before its
+  // ACK reaches the request that initiated it. The durable staging fence rides
+  // reconnect registration; resume it only after register/ok made this socket
+  // READY. AgentMoveService waits behind that request's mutation gate and
+  // re-checks current DB placement before activating anything.
+  await Promise.all(
+    req.localState.stagedAgents.map(({ agentId, moveId }) =>
+      moveId ? deps.recoverStagedAgent(AgentId(agentId), did, moveId) : Promise.resolve()
+    )
+  )
 }

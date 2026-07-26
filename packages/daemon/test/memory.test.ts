@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -13,6 +13,7 @@ import {
   listMemoryHistory,
   memoryDir,
   resolveInMemoryDir,
+  withMemoryDirLock,
   MemoryPathError,
   MemoryTooLargeError,
   MemoryConflictError,
@@ -81,6 +82,15 @@ describe('agents/memory (directory model)', () => {
     expect(() => resolveInMemoryDir(dir, '/etc/passwd')).toThrow(MemoryPathError)
     expect(() => resolveInMemoryDir(dir, 'sub/topic.md')).toThrow(MemoryPathError) // flat only
     expect(() => resolveInMemoryDir(dir, '')).toThrow(MemoryPathError)
+    expect(() => resolveInMemoryDir(dir, MEMORY_HISTORY_FILENAME)).toThrow(MemoryPathError)
+  })
+
+  it('reserves .history from ordinary managed-memory reads and writes', async () => {
+    const dir = newDir()
+    await expect(readMemoryFile(dir, MEMORY_HISTORY_FILENAME)).rejects.toBeInstanceOf(MemoryPathError)
+    await expect(writeMemoryFile(dir, MEMORY_HISTORY_FILENAME, 'forged provenance')).rejects.toBeInstanceOf(
+      MemoryPathError
+    )
   })
 
   it('rejects a write over the size budget (MemoryTooLargeError)', async () => {
@@ -104,6 +114,39 @@ describe('agents/memory (directory model)', () => {
     expect(await readMemoryFile(dir, 'notes.md')).toBe('v2')
     // a precondition on a brand-new (absent) file with a non-empty mtime is a conflict
     await expect(writeMemoryFile(dir, 'fresh.md', 'x', 'some-mtime')).rejects.toBeInstanceOf(MemoryConflictError)
+  })
+
+  it('does not follow a pre-planted predictable temp symlink', async () => {
+    const dir = newDir()
+    const outside = join(newDir(), 'outside.txt')
+    const outsideHistory = join(newDir(), 'history.txt')
+    writeFileSync(outside, 'keep')
+    writeFileSync(outsideHistory, 'keep-history')
+    mkdirSync(memoryDir(dir), { recursive: true })
+    symlinkSync(outside, join(memoryDir(dir), 'notes.md.tmp'))
+    symlinkSync(outsideHistory, join(memoryDir(dir), MEMORY_HISTORY_FILENAME))
+
+    await writeMemoryFile(dir, 'notes.md', 'updated')
+
+    expect(readFileSync(outside, 'utf8')).toBe('keep')
+    expect(readFileSync(outsideHistory, 'utf8')).toBe('keep-history')
+    expect(readFileSync(join(memoryDir(dir), 'notes.md'), 'utf8')).toBe('updated')
+  })
+
+  it('does not read through a planted symlink (topic or index)', async () => {
+    const dir = newDir()
+    const secret = join(newDir(), 'secret.txt')
+    writeFileSync(secret, 'PRIVATE-KEY')
+    mkdirSync(memoryDir(dir), { recursive: true })
+    symlinkSync(secret, join(memoryDir(dir), 'leak.md'))
+    symlinkSync(secret, join(memoryDir(dir), MEMORY_INDEX))
+
+    await expect(readMemoryFile(dir, 'leak.md')).rejects.toBeInstanceOf(MemoryPathError)
+    // the index rides the session-start path, so it degrades to no injection rather
+    // than throwing — but it still must not read through the link
+    await expect(readIndex(dir)).resolves.toBe('')
+    // a symlinked entry is not even listed as a topic
+    expect((await listMemory(dir)).map((f) => f.name)).not.toContain('leak.md')
   })
 })
 
@@ -153,6 +196,68 @@ describe('agents/memory (.history change log)', () => {
     const names = (await listMemory(dir)).map((f) => f.name)
     expect(names).toEqual([MEMORY_INDEX, 'topic.md']) // .history excluded
     expect(existsSync(join(memoryDir(dir), MEMORY_HISTORY_FILENAME))).toBe(true) // but it exists
+  })
+
+  it('repairs a valid no-newline tail before appending the next event', async () => {
+    const dir = newDir()
+    mkdirSync(memoryDir(dir), { recursive: true })
+    const first: MemoryHistoryRecord = {
+      id: randomUUID(),
+      path: 'notes.md',
+      event: 'add',
+      after: 'v1',
+      at: '2026-01-01T00:00:00.000Z',
+      scope: 'agent',
+      source: 'tool'
+    }
+    writeFileSync(join(memoryDir(dir), MEMORY_HISTORY_FILENAME), JSON.stringify(first))
+
+    await appendHistory(dir, { ...first, id: undefined, event: 'update', before: 'v1', after: 'v2' })
+
+    expect(readHistory(dir).map((event) => event.after)).toEqual(['v1', 'v2'])
+  })
+
+  it('discards a torn tail before appending without losing the new event', async () => {
+    const dir = newDir()
+    mkdirSync(memoryDir(dir), { recursive: true })
+    const first: MemoryHistoryRecord = {
+      id: randomUUID(),
+      path: 'notes.md',
+      event: 'add',
+      after: 'v1',
+      at: '2026-01-01T00:00:00.000Z',
+      scope: 'agent',
+      source: 'tool'
+    }
+    writeFileSync(join(memoryDir(dir), MEMORY_HISTORY_FILENAME), `${JSON.stringify(first)}\n{"path":`)
+
+    await appendHistory(dir, { ...first, id: undefined, event: 'update', before: 'v1', after: 'v2' })
+
+    expect(readHistory(dir).map((event) => event.after)).toEqual(['v1', 'v2'])
+  })
+
+  it('does not use a planted .history.tmp symlink while compacting', async () => {
+    const dir = newDir()
+    const outside = join(newDir(), 'outside.txt')
+    writeFileSync(outside, 'keep')
+    mkdirSync(memoryDir(dir), { recursive: true })
+    symlinkSync(outside, join(memoryDir(dir), `${MEMORY_HISTORY_FILENAME}.tmp`))
+    writeFileSync(
+      join(memoryDir(dir), MEMORY_HISTORY_FILENAME),
+      JSON.stringify({
+        path: 'notes.md',
+        event: 'add',
+        after: 'v1',
+        at: '2026-01-01T00:00:00.000Z',
+        scope: 'agent',
+        source: 'tool'
+      })
+    )
+
+    await expect(listMemoryHistory(dir, 'notes.md', undefined, 5)).resolves.toMatchObject({
+      events: [{ after: 'v1' }]
+    })
+    expect(readFileSync(outside, 'utf8')).toBe('keep')
   })
 
   it('pages one file newest first without interleaved topic changes', async () => {
@@ -231,6 +336,43 @@ describe('agents/memory (.history change log)', () => {
     expect(log).toHaveLength(24)
     expect(new Set(log.map((event) => event.after)).size).toBe(24)
     expect(new Set(log.map((event) => event.id)).size).toBe(24)
+  })
+
+  it('serializes history reads behind a dream-style directory mutation', async () => {
+    const dir = newDir()
+    await writeMemoryFile(dir, 'notes.md', 'v1')
+    let entered!: () => void
+    let release!: () => void
+    const enteredLock = new Promise<void>((resolve) => (entered = resolve))
+    const releaseLock = new Promise<void>((resolve) => (release = resolve))
+    const mutation = withMemoryDirLock(dir, async () => {
+      entered()
+      await releaseLock
+      const adopted: MemoryHistoryRecord = {
+        id: randomUUID(),
+        path: 'notes.md',
+        event: 'update',
+        before: 'v1',
+        after: 'dream-v2',
+        at: '2026-01-01T00:00:00.000Z',
+        scope: 'agent',
+        source: 'dream'
+      }
+      writeFileSync(join(memoryDir(dir), MEMORY_HISTORY_FILENAME), `${JSON.stringify(adopted)}\n`)
+    })
+    await enteredLock
+
+    let settled = false
+    const read = listMemoryHistory(dir, 'notes.md', undefined, 5).then((page) => {
+      settled = true
+      return page
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(settled).toBe(false)
+
+    release()
+    await mutation
+    await expect(read).resolves.toMatchObject({ events: [{ after: 'dream-v2', source: 'dream' }] })
   })
 })
 

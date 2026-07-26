@@ -12,16 +12,24 @@ AgentConnect is a **daemon-centric** multi-agent platform that bridges IM platfo
 (Slack / Telegram / Discord) to AI coding agents (Claude, Codex) over ACP. The
 authoritative design lives in [`docs/designs/`](docs/designs/) — start with
 [daemon-centric-architecture.md](docs/designs/daemon-centric-architecture.md). Design
-documentation is maintained in English.
+documentation and every visual asset embedded in public documentation are maintained
+in English. Before adding or reusing a diagram or screenshot, inspect its visible text
+and verify that it still matches the current architecture. Prefer diffable SVG or
+Mermaid source over opaque raster diagrams.
 
 The defining architectural choice: **the Control Plane is never on the message hot
-path.** Platform I/O and agent execution happen entirely inside the daemon (edge);
-the CP only orchestrates. Concretely:
+path.** Agent execution always happens inside the daemon (edge). Platform ingress is
+either daemon-owned directly or forwarded by the optional relay when a stable public
+callback endpoint is required; the CP only orchestrates. Concretely:
 
-- A **daemon** holds the platform bot credentials, connects directly to Slack/Telegram,
-  normalizes messages, and drives the local agent over **ACP as an in-process/local
-  protocol** (no network hop). It is a self-contained "message + agent execution unit"
-  and keeps running established sessions even if the CP is down (graceful degradation).
+- A **daemon** owns direct platform connections, local routing, provider API egress,
+  and agent execution over **ACP as an in-process/local protocol** (no network hop).
+  It also accepts pre-addressed public ingress from the relay. It is a self-contained
+  "message + agent execution unit" and keeps running established sessions even if the
+  CP is down (graceful degradation).
+- The optional **relay** terminates Slack HTTP callbacks, GitHub and generic webhooks,
+  and webchat, then forwards content directly to the owning daemon. It does not persist
+  message content.
 - The **Control Plane** does orchestration/registry/auth + serves the Web UI BFF. It
   stores **only control-plane metadata** — never message bodies, ACP `session/update`
   streams, or attachment bytes. Authorized BFF reads may proxy bounded

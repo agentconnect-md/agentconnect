@@ -1,6 +1,7 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
+import type { DreamInfo, SessionImageAttachment } from '@agentconnect.md/protocol'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 
 // node:sqlite binds named params as a generic Record and returns rows as
@@ -158,6 +159,8 @@ export interface TranscriptEntry {
   sender: string
   kind: TranscriptKind
   text: string
+  /** Bounded inline webchat images. Persisted daemon-side; never provider-backed files. */
+  attachments?: SessionImageAttachment[]
   /** The agent this row was delivered TO (an inbound trigger / replayed context), when
    *  known. Absent for an agent's own output rows (those attribute via `sender`) and for
    *  unrouted messages. Lets the console session view show what one agent actually
@@ -173,6 +176,7 @@ export interface TranscriptRow extends TranscriptEntry {
   eventTimeUs: number
   toolCallId?: string | null
   body?: string | null // JSON.stringify(ToolBody); NULL for text/reasoning rows
+  attachmentsJson?: string | null // JSON.stringify(SessionImageAttachment[]); inline webchat only
 }
 
 export interface TranscriptEventCursor {
@@ -394,7 +398,8 @@ export class LocalStore {
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
         channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
         sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
-        tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER
+        tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
+        attachmentsJson TEXT
       );
       CREATE INDEX IF NOT EXISTS transcript_thread_seq ON transcript (channel, thread, seq);
       -- Dedup conversational rows by platform ts (double-fired inbound / redelivery);
@@ -410,7 +415,7 @@ export class LocalStore {
         channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT NOT NULL, agentId TEXT NOT NULL,
         PRIMARY KEY (channel, thread, ts, agentId)
       );
-      -- transcript_tool_call (partial unique on tool_call_id) is created in
+      -- transcript_agent_tool_call (partial unique on tool_call_id) is created in
       -- migrateTranscriptToolBody, after the column is guaranteed to exist — a legacy
       -- rebuild in migrateTranscript recreates the table without the new columns.
       CREATE TABLE IF NOT EXISTS cp_routing (
@@ -573,11 +578,34 @@ export class LocalStore {
         observedAt INTEGER NOT NULL,
         PRIMARY KEY (runtimeId, modelId)
       );
+      -- Memory dream jobs (docs/designs/memory-dreaming.md §4). METADATA ONLY —
+      -- staged store bodies live on disk under <agent-root>/memory-dreams/ and
+      -- never enter this DB. Column shapes mirror protocol DreamInfo; the JSON
+      -- columns hold its array/object fields verbatim.
+      CREATE TABLE IF NOT EXISTS dreams (
+        dreamId TEXT PRIMARY KEY,
+        agentId TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN
+          ('pending', 'running', 'completed', 'failed', 'canceled', 'adopted', 'discarded')),
+        triggerKind TEXT NOT NULL,
+        sessionIds TEXT NOT NULL,         -- JSON string[]
+        snapshotDigest TEXT NOT NULL,
+        snapshotWrites TEXT,              -- JSON {total, nonDistill} write-ledger marks
+        instructions TEXT,
+        skills TEXT,                      -- JSON DreamSkillInfo[]
+        usage TEXT,                       -- JSON {inputBytes, outputBytes}
+        error TEXT,                       -- JSON {type, message}
+        createdAt TEXT NOT NULL,
+        endedAt TEXT
+      );
+      CREATE INDEX IF NOT EXISTS dreams_agent_created ON dreams (agentId, createdAt DESC);
     `)
+    this.migrateDreamSnapshotWrites()
     this.migrateSessionUsage()
     this.migrateSessionMutes()
     this.migrateInboxLoopGuardCounted()
     this.migrateTranscriptToolBody()
+    this.migrateTranscriptAttachments()
     this.migrateTranscriptRecipient()
     this.migrateTranscriptEventTime()
     this.migrateInboxHookContext()
@@ -650,6 +678,15 @@ export class LocalStore {
   /** Backfill the durable mute tombstones from the legacy sessions.muted column.
    *  Both writes in setSessionMuted stay transactional, so this idempotent sync cannot
    *  resurrect a mute that was explicitly cleared. */
+  /** Dreams created before the distillation rebase existed carry no write-ledger
+   *  marks. NULL is the fail-closed value: such a dream simply can't be rebased
+   *  and falls back to the plain fence. */
+  private migrateDreamSnapshotWrites(): void {
+    const cols = this.db.prepare('PRAGMA table_info(dreams)').all() as { name: string }[]
+    if (!cols.some((c) => c.name === 'snapshotWrites'))
+      this.db.exec('ALTER TABLE dreams ADD COLUMN snapshotWrites TEXT')
+  }
+
   private migrateSessionMutes(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS session_mutes (key TEXT PRIMARY KEY);
@@ -667,19 +704,26 @@ export class LocalStore {
     else this.db.exec('UPDATE inbox SET loopGuardCounted = 0 WHERE loopGuardCounted IS NULL')
   }
 
-  /** Add the `transcript.tool_call_id` + `transcript.body` columns (and the partial
-   *  unique index) to a pre-existing DB. CREATE TABLE IF NOT EXISTS above adds them for
-   *  fresh DBs but never alters an existing table, so upgrade in place. No-op once the
-   *  columns are present. */
+  /** Add the `transcript.tool_call_id` + `transcript.body` columns and agent-scoped
+   *  partial unique index to a pre-existing DB. ACP tool ids are session-local, so
+   *  same-thread agents may legitimately reuse them. */
   private migrateTranscriptToolBody(): void {
     const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
     if (!cols.some((c) => c.name === 'tool_call_id'))
       this.db.exec('ALTER TABLE transcript ADD COLUMN tool_call_id TEXT')
     if (!cols.some((c) => c.name === 'body')) this.db.exec('ALTER TABLE transcript ADD COLUMN body TEXT')
-    this.db.exec(
-      `CREATE UNIQUE INDEX IF NOT EXISTS transcript_tool_call
-         ON transcript (channel, thread, tool_call_id) WHERE tool_call_id IS NOT NULL`
-    )
+    this.db.exec(`
+      DROP INDEX IF EXISTS transcript_tool_call;
+      CREATE UNIQUE INDEX IF NOT EXISTS transcript_agent_tool_call
+        ON transcript (channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
+    `)
+  }
+
+  /** Add daemon-local inline webchat image storage to existing transcript tables. */
+  private migrateTranscriptAttachments(): void {
+    const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
+    if (!cols.some((c) => c.name === 'attachmentsJson'))
+      this.db.exec('ALTER TABLE transcript ADD COLUMN attachmentsJson TEXT')
   }
 
   /** Add the defaultPermissionMode column to runtime_catalog_meta for DBs that
@@ -1353,15 +1397,140 @@ export class LocalStore {
     return rows
   }
 
-  appendTranscript(e: TranscriptEntry): void {
+  // ── memory dream jobs (docs/designs/memory-dreaming.md §4; DreamStorePort) ──
+
+  private dreamToRow(dream: DreamInfo): SqlParams {
+    return {
+      dreamId: dream.dreamId,
+      agentId: dream.agentId,
+      status: dream.status,
+      triggerKind: dream.trigger,
+      sessionIds: JSON.stringify(dream.sessionIds),
+      snapshotDigest: dream.snapshotDigest,
+      snapshotWrites: dream.snapshotWrites ? JSON.stringify(dream.snapshotWrites) : null,
+      instructions: dream.instructions ?? null,
+      skills: dream.skills ? JSON.stringify(dream.skills) : null,
+      usage: dream.usage ? JSON.stringify(dream.usage) : null,
+      error: dream.error ? JSON.stringify(dream.error) : null,
+      createdAt: dream.createdAt,
+      endedAt: dream.endedAt ?? null
+    }
+  }
+
+  private dreamFromRow(row: Record<string, unknown>): DreamInfo {
+    return {
+      dreamId: row.dreamId as string,
+      agentId: row.agentId as string,
+      status: row.status as DreamInfo['status'],
+      trigger: row.triggerKind as DreamInfo['trigger'],
+      sessionIds: JSON.parse(row.sessionIds as string) as string[],
+      snapshotDigest: row.snapshotDigest as string,
+      ...(row.snapshotWrites
+        ? { snapshotWrites: JSON.parse(row.snapshotWrites as string) as DreamInfo['snapshotWrites'] }
+        : {}),
+      ...(row.instructions ? { instructions: row.instructions as string } : {}),
+      ...(row.skills ? { skills: JSON.parse(row.skills as string) as DreamInfo['skills'] } : {}),
+      ...(row.usage ? { usage: JSON.parse(row.usage as string) as DreamInfo['usage'] } : {}),
+      ...(row.error ? { error: JSON.parse(row.error as string) as DreamInfo['error'] } : {}),
+      createdAt: row.createdAt as string,
+      ...(row.endedAt ? { endedAt: row.endedAt as string } : {})
+    }
+  }
+
+  insertDream(dream: DreamInfo): void {
     this.db
       .prepare(
-        'INSERT OR IGNORE INTO transcript (channel, thread, ts, sender, kind, text, recipient, eventTimeUs) VALUES (@channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs)'
+        `INSERT INTO dreams (dreamId, agentId, status, triggerKind, sessionIds, snapshotDigest,
+           snapshotWrites, instructions, skills, usage, error, createdAt, endedAt)
+         VALUES (@dreamId, @agentId, @status, @triggerKind, @sessionIds, @snapshotDigest,
+           @snapshotWrites, @instructions, @skills, @usage, @error, @createdAt, @endedAt)`
+      )
+      .run(this.dreamToRow(dream))
+  }
+
+  updateDream(dream: DreamInfo): void {
+    this.db
+      .prepare(
+        // Every column dreamToRow produces must appear here: better-sqlite3
+        // rejects a bound parameter the statement never references ("Unknown
+        // named parameter"). triggerKind/createdAt are immutable in practice but
+        // are still assigned, so the row shape and the SQL can't drift apart.
+        `UPDATE dreams SET status = @status, triggerKind = @triggerKind, sessionIds = @sessionIds,
+           snapshotDigest = @snapshotDigest, snapshotWrites = @snapshotWrites, instructions = @instructions,
+           skills = @skills, usage = @usage, error = @error, createdAt = @createdAt, endedAt = @endedAt
+         WHERE dreamId = @dreamId AND agentId = @agentId`
+      )
+      .run(this.dreamToRow(dream))
+  }
+
+  getDream(agentId: string, dreamId: string): DreamInfo | undefined {
+    const row = this.db.prepare('SELECT * FROM dreams WHERE dreamId = ? AND agentId = ?').get(dreamId, agentId) as
+      Record<string, unknown> | undefined
+    return row ? this.dreamFromRow(row) : undefined
+  }
+
+  listDreams(agentId: string, limit: number): DreamInfo[] {
+    return (
+      this.db
+        .prepare('SELECT * FROM dreams WHERE agentId = ? ORDER BY createdAt DESC, dreamId DESC LIMIT ?')
+        .all(agentId, limit) as Record<string, unknown>[]
+    ).map((row) => this.dreamFromRow(row))
+  }
+
+  /** Non-terminal dreams — the boot-time crash-recovery sweep. */
+  openDreams(): DreamInfo[] {
+    return (
+      this.db.prepare("SELECT * FROM dreams WHERE status IN ('pending', 'running')").all() as Record<string, unknown>[]
+    ).map((row) => this.dreamFromRow(row))
+  }
+
+  /** Newest-first addressable sessions to mine as dream transcript sources. */
+  dreamSessionSources(agentId: string, limit: number): { sessionId: string; channel: string; thread: string }[] {
+    return this.db
+      .prepare(
+        `SELECT acpSessionId AS sessionId, channel, thread FROM sessions
+         WHERE agentId = ? AND acpSessionId IS NOT NULL
+         ORDER BY updatedAt DESC LIMIT ?`
+      )
+      .all(agentId, limit) as { sessionId: string; channel: string; thread: string }[]
+  }
+
+  /** Chronological conversational text of one session thread, scoped like
+   *  `transcriptPageForAgent` (a peer's private rows never enter a dream). */
+  dreamTranscriptText(
+    channel: string,
+    thread: string,
+    agentId: string,
+    limit: number
+  ): { sender: string; text: string }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT sender, text FROM transcript
+         WHERE channel = ? AND thread = ? AND kind = 'text'
+           AND (sender = ? OR recipient = ? OR EXISTS (
+             SELECT 1 FROM transcript_recipient tr
+             WHERE tr.channel = transcript.channel AND tr.thread = transcript.thread
+               AND tr.ts = transcript.ts AND tr.agentId = ?))
+         ORDER BY seq DESC LIMIT ?`
+      )
+      .all(channel, thread, agentId, agentId, agentId, limit) as { sender: string; text: string }[]
+    return rows.reverse()
+  }
+
+  appendTranscript(e: TranscriptEntry): void {
+    const { attachments, ...entry } = e
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO transcript
+           (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson)
+         VALUES
+           (@channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson)`
       )
       .run({
-        ...e,
+        ...entry,
         recipient: e.recipient ?? null,
-        eventTimeUs: transcriptEventTimeUs(e.ts)
+        eventTimeUs: transcriptEventTimeUs(e.ts),
+        attachmentsJson: attachments?.length ? JSON.stringify(attachments) : null
       } as unknown as SqlParams)
     // Record the delivery separately so it survives the text-row dedup above: if this same
     // (channel, thread, ts) was already recorded by another agent, the INSERT OR IGNORE
@@ -1374,8 +1543,8 @@ export class LocalStore {
 
   /** First sight of a tool call: insert its kind='tool' row (title in `text`, the
    *  serialized ToolBody in `body`). INSERT OR IGNORE so a re-fired first update is a
-   *  no-op — the partial unique index on (channel, thread, tool_call_id) dedups. `seq`
-   *  is assigned here and stays stable across later `updateToolCall`s. */
+   *  no-op — the partial unique index on (channel, thread, sender, tool_call_id)
+   *  dedups within one agent. `seq` stays stable across later updates. */
   insertToolCall(e: {
     channel: string
     thread: string
@@ -1403,20 +1572,27 @@ export class LocalStore {
       })
   }
 
-  /** Later update for a tool call: overwrite `text` (title) + `body` on the existing
-   *  row, keyed by (channel, thread, tool_call_id). `seq`/`ts` are untouched so the
-   *  row keeps its first-seen position. No-op if the row is absent. */
-  updateToolCall(channel: string, thread: string, toolCallId: string, patch: { title: string; body: string }): void {
+  /** Later update for one agent's tool call. `seq`/`ts` keep their first-seen
+   *  values; a peer reusing the same session-local tool id cannot overwrite it. */
+  updateToolCall(
+    channel: string,
+    thread: string,
+    agentId: string,
+    toolCallId: string,
+    patch: { title: string; body: string }
+  ): void {
     this.db
-      .prepare('UPDATE transcript SET text = ?, body = ? WHERE channel = ? AND thread = ? AND tool_call_id = ?')
-      .run(patch.title, patch.body, channel, thread, toolCallId)
+      .prepare(
+        'UPDATE transcript SET text = ?, body = ? WHERE channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?'
+      )
+      .run(patch.title, patch.body, channel, thread, agentId, toolCallId)
   }
 
-  /** The full stored ToolBody JSON for one tool call, or undefined if unknown. */
-  getToolBody(channel: string, thread: string, toolCallId: string): string | undefined {
+  /** One agent's full stored ToolBody JSON, or undefined if unknown/not owned. */
+  getToolBodyForAgent(channel: string, thread: string, agentId: string, toolCallId: string): string | undefined {
     const row = this.db
-      .prepare('SELECT body FROM transcript WHERE channel = ? AND thread = ? AND tool_call_id = ?')
-      .get(channel, thread, toolCallId) as { body: string | null } | undefined
+      .prepare('SELECT body FROM transcript WHERE channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?')
+      .get(channel, thread, agentId, toolCallId) as { body: string | null } | undefined
     return row?.body ?? undefined
   }
 

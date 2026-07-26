@@ -481,6 +481,53 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     s.close()
   })
 
+  it('keeps a session-local tool id isolated between agents sharing a thread', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-tool-owner-mig-')), 'local.sqlite')
+    const legacy = new DatabaseSync(path)
+    legacy.exec(`
+      CREATE TABLE transcript (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
+        sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
+        tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
+        attachmentsJson TEXT
+      );
+      CREATE UNIQUE INDEX transcript_tool_call
+        ON transcript (channel, thread, tool_call_id) WHERE tool_call_id IS NOT NULL;
+    `)
+    legacy.close()
+
+    // Opening the upgraded store replaces the old thread-wide identity.
+    const s = new LocalStore(path)
+    const toolCallId = 'session-local-tc'
+    const aBody = JSON.stringify({ toolCallId, rawOutput: 'agent-a output' })
+    const bInitial = JSON.stringify({ toolCallId, rawOutput: 'agent-b partial' })
+    const bFinal = JSON.stringify({ toolCallId, rawOutput: 'agent-b final' })
+    s.insertToolCall({
+      channel: 'C1',
+      thread: 'T',
+      ts: '1',
+      sender: 'bot-a',
+      toolCallId,
+      title: 'agent-a tool',
+      body: aBody
+    })
+    s.insertToolCall({
+      channel: 'C1',
+      thread: 'T',
+      ts: '2',
+      sender: 'bot-b',
+      toolCallId,
+      title: 'agent-b tool',
+      body: bInitial
+    })
+    s.updateToolCall('C1', 'T', 'bot-b', toolCallId, { title: 'agent-b done', body: bFinal })
+
+    expect(s.getToolBodyForAgent('C1', 'T', 'bot-a', toolCallId)).toBe(aBody)
+    expect(s.getToolBodyForAgent('C1', 'T', 'bot-b', toolCallId)).toBe(bFinal)
+    s.close()
+  })
+
   it('transcriptPageForAgent scopes to what THAT agent received or produced (no peer cross-talk)', () => {
     const s = store()
     // Delivered to bot-a + bot-a's own reply.

@@ -1,35 +1,43 @@
 'use client'
 
 // Live workspace file browser for one agent — modelled on GitHub's file explorer:
-// a single repo/status card up top, an expandable directory tree on the left, and
+// a single workspace card up top, an expandable directory tree on the left, and
 // a file preview on the right. Listings and file bytes are proxied through the CP
 // straight from the owning daemon (never stored on the CP — body-locality), so a
 // 503 here just means that daemon is offline / the agent is unplaced — an expected
 // state, rendered as a friendly notice.
 //
-// This component owns the whole workspace surface for a live agent (repo card +
-// Files card); the parent just mounts it. Demo agents use <WorkspaceFilesMock>.
+// This component owns the live git read model (status / pull) but not the card
+// that displays it: it projects that state into a <WorkspaceHeaderInfo> and hands
+// it to `renderHeader`, so the workspace card can also carry the source and
+// repository-authorization controls, which need agent-level data this component
+// has no business fetching. Demo agents use <WorkspaceFilesMock>.
 
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import dynamic from 'next/dynamic'
 import {
+  ApiError,
+  deleteWorkspaceFile,
   fetchWorkspaceFile,
+  fetchWorkspaceFileFull,
   fetchWorkspaceFiles,
   fetchWorkspaceGitStatus,
+  writeWorkspaceFile,
   workspaceGitPull,
   type WorkspaceEntryDto,
   type WorkspaceFileDto,
   type WorkspaceGitStatusDto
 } from '@/lib/api'
-import { GithubMark, Spinner } from '@/components/marks'
-import { Icon } from '@/components/ui'
+import { Spinner } from '@/components/marks'
+import { Button, Icon } from '@/components/ui'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { escapeHtml, highlight, linkifyHtml, loadHljs } from '@/lib/highlight'
 import { resolveWorkspaceMarkdownLink } from '@/components/console/workspace-links'
+import type { WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
+import type { Agent } from '@/lib/data'
 import type { MarkdownLinkResolution } from '@/components/console/MarkdownView'
 import {
   FileBrowserLayout,
-  FileBrowserPreviewHeader,
   FileBrowserRow,
   FileBrowserShell,
   MARKDOWN_FILE_RE,
@@ -48,6 +56,24 @@ const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), 
 })
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+/**
+ * Identity of the daemon-local checkout one <WorkspaceFiles> instance reads.
+ *
+ * The tree, the open preview and the git status are fetched per agent and then
+ * cached in component state keyed only on `agentId`, so a workspace REPLACEMENT
+ * (mode / repo / branch / working subdirectory) has to remount the instance
+ * rather than reuse it. Since the workspace editor now lives in the card above
+ * the browser — same tab, same mounted tree — reuse would leave the refreshed
+ * source card sitting on top of files that belong to the workspace it replaced,
+ * and a GitHub → scratch conversion would additionally flip `canEdit` to true
+ * over that stale GitHub preview. Pass this as the instance's React `key`.
+ */
+export function workspaceReadModelKey(agent: Pick<Agent, 'id' | 'workspace' | 'workdir'>): string {
+  const ws = agent.workspace
+  const at = `${agent.id}:${agent.workdir}`
+  return ws.mode === 'github' ? `${at}:github:${ws.repo}@${ws.branch}:${ws.agentDir}` : `${at}:scratch`
+}
 
 function entryIcon(e: WorkspaceEntryDto): string {
   if (e.type === 'dir') return 'folder'
@@ -138,16 +164,50 @@ type Viewer = {
   loadingMore: boolean
 }
 
-export function WorkspaceFiles({ agentId, workdir }: { agentId: string; workdir?: string }) {
+type EditorDraft = {
+  target: string // '' creates; an existing path edits in place
+  directory: string
+  name: string
+  content: string
+  mtime: string | null
+  loading: boolean
+  saving: boolean
+  error: string | null
+}
+
+type DeleteDraft = {
+  path: string
+  mtime: string
+  deleting: boolean
+  error: string | null
+}
+
+export function WorkspaceFiles({
+  agentId,
+  workdir,
+  canEdit,
+  renderHeader
+}: {
+  agentId: string
+  workdir?: string
+  canEdit: boolean
+  /** Renders the workspace card above the tree from the live git read model.
+   *  Called on every render — including before the status lands (empty info) and
+   *  for non-repo workspaces — so the card's own controls are never gated on a
+   *  daemon round-trip. */
+  renderHeader: (header: WorkspaceHeaderInfo) => ReactNode
+}) {
   const isMobile = useIsMobile()
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [viewer, setViewer] = useState<Viewer | null>(null)
-  // git-repo workspaces: current-checkout status + on-demand pull. `scratch` is set
-  // only on a successful non-repo response — an offline daemon leaves both unset so
-  // we don't mislabel a repo as scratch.
+  const [editor, setEditor] = useState<EditorDraft | null>(null)
+  const [deleteDraft, setDeleteDraft] = useState<DeleteDraft | null>(null)
+  const [mobileListSignal, setMobileListSignal] = useState(0)
+  // git-repo workspaces: current-checkout status + on-demand pull. Null while
+  // loading, for a non-repo workspace, and when the owning daemon is offline —
+  // the workspace card falls back to the agent's configured source in all three.
   const [git, setGit] = useState<WorkspaceGitStatusDto | null>(null)
-  const [scratch, setScratch] = useState(false)
   const [gitPulling, setGitPulling] = useState(false)
   const [gitMsg, setGitMsg] = useState<string | null>(null)
   // Bumped after a pull to re-fetch both the git status and the tree.
@@ -219,6 +279,10 @@ export function WorkspaceFiles({ agentId, workdir }: { agentId: string; workdir?
 
   // Select a file into the right-hand preview pane (fetch its first slice).
   const selectFile = (filePath: string, name: string) => {
+    // Any explicit selection supersedes the desktop-only default preview,
+    // including a mobile selection carried across a breakpoint change.
+    autoOpenedRef.current = true
+    setDeleteDraft(null)
     const requestId = ++viewerRequestRef.current
     setViewer({
       path: filePath,
@@ -284,31 +348,70 @@ export function WorkspaceFiles({ agentId, workdir }: { agentId: string; workdir?
     viewerRequestRef.current += 1
     setGitMsg(null)
     setViewer(null)
+    setEditor(null)
+    setDeleteDraft(null)
+    setMobileListSignal(0)
     autoOpenedRef.current = false
     return () => {
       viewerRequestRef.current += 1
     }
   }, [agentId])
 
-  // git status of the workspace checkout. A thrown request (offline daemon) leaves
-  // both git and scratch unset → no top card; a clean non-repo answer → scratch card.
+  const editorTarget = editor?.target ?? null
+
+  // Existing files load in full before editing. Creation starts with an empty
+  // draft in the directory represented by the breadcrumb.
+  useEffect(() => {
+    if (!editorTarget) return
+    let active = true
+    fetchWorkspaceFileFull(agentId, editorTarget).then(
+      (file) => {
+        if (!active) return
+        setEditor((current) => {
+          if (!current || current.target !== editorTarget) return current
+          return !file.exists || file.encoding !== 'utf8' || !file.mtime
+            ? { ...current, loading: false, error: 'Only existing text files can be edited.' }
+            : { ...current, content: file.content ?? '', mtime: file.mtime, loading: false }
+        })
+      },
+      (e) => {
+        if (active) {
+          setEditor((current) =>
+            current?.target === editorTarget ? { ...current, loading: false, error: msg(e) } : current
+          )
+        }
+      }
+    )
+    return () => {
+      active = false
+    }
+  }, [agentId, editorTarget])
+
+  const mutationOpen = editor !== null || deleteDraft !== null
+  const mutationBusy = editor?.saving || deleteDraft?.deleting || false
+
+  useEffect(() => {
+    if (!mutationOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || mutationBusy) return
+      setEditor(null)
+      setDeleteDraft(null)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [mutationOpen, mutationBusy])
+
+  // git status of the workspace checkout. A non-repo answer and a thrown request
+  // (offline daemon) both leave `git` unset — the workspace card then renders the
+  // agent's configured source with no live status half.
   useEffect(() => {
     let active = true
     fetchWorkspaceGitStatus(agentId).then(
       (s) => {
-        if (!active) return
-        if (s.isRepo) {
-          setGit(s)
-          setScratch(false)
-        } else {
-          setGit(null)
-          setScratch(true)
-        }
+        if (active) setGit(s.isRepo ? s : null)
       },
       () => {
-        if (!active) return
-        setGit(null)
-        setScratch(false)
+        if (active) setGit(null)
       }
     )
     return () => {
@@ -372,6 +475,12 @@ export function WorkspaceFiles({ agentId, workdir }: { agentId: string; workdir?
     )
   }
 
+  const onFileSaved = (path: string) => {
+    setEditor(null)
+    setRefreshTick((tick) => tick + 1)
+    selectFile(path, path.split('/').at(-1) ?? path)
+  }
+
   // Map browse-relative path → git status letter for the tree badges. git file paths
   // are repo-relative; if the browse root sits in a repo subdir (agentDir), also index
   // the subdir-relative form so badges match whichever root the daemon lists from.
@@ -393,17 +502,129 @@ export function WorkspaceFiles({ agentId, workdir }: { agentId: string; workdir?
   }, [git])
 
   const root = dirs['']
-  // Header count + path follow the tree selection: the open file's workspace-
-  // relative path (root shows as '/'), counted against its containing directory.
-  // Hovering reveals the daemon-absolute workdir (dropped from the line itself).
-  const selDir = viewer ? viewer.path.split('/').slice(0, -1).join('/') : ''
-  const selCtx = dirs[selDir]
-  const selCount = selCtx?.entries?.length
-  const summary = root?.entries
-    ? `${
-        selCount != null ? `${selCount}${selCtx?.nextCursor ? '+' : ''} item${selCount === 1 ? '' : 's'} · ` : ''
-      }/${viewer?.path ?? ''}`
-    : (workdir ?? '')
+  const selectedDirectory = viewer ? viewer.path.split('/').slice(0, -1).join('/') : ''
+  const workspaceRoot = workdir?.replace(/\/+$/, '').split('/').at(-1) || 'Workspace'
+
+  const startCreate = () => {
+    setDeleteDraft(null)
+    setEditor({
+      target: '',
+      directory: selectedDirectory,
+      name: '',
+      content: '',
+      mtime: null,
+      loading: false,
+      saving: false,
+      error: null
+    })
+  }
+
+  const startEdit = (path: string) => {
+    setDeleteDraft(null)
+    setEditor({
+      target: path,
+      directory: path.split('/').slice(0, -1).join('/'),
+      name: path.split('/').at(-1) ?? path,
+      content: '',
+      mtime: null,
+      loading: true,
+      saving: false,
+      error: null
+    })
+  }
+
+  const startDelete = () => {
+    if (!viewer?.file?.exists || !viewer.file.mtime) return
+    setDeleteDraft({ path: viewer.path, mtime: viewer.file.mtime, deleting: false, error: null })
+  }
+
+  const closeEditor = () => {
+    if (!editor?.saving) setEditor(null)
+  }
+
+  const backFromEditor = () => {
+    if (editor?.saving) return
+    setEditor(null)
+    setMobileListSignal((signal) => signal + 1)
+  }
+
+  const saveEditor = async () => {
+    if (!editor || editor.saving || editor.loading || (editor.target && !editor.mtime)) return
+    const creating = editor.target === ''
+    const name = editor.name.trim().replace(/^\/+/, '').replace(/\/+/g, '/')
+    const filePath = creating ? [editor.directory, name].filter(Boolean).join('/') : editor.target
+    if (!filePath || (creating && !name.split('/').at(-1))) {
+      setEditor({ ...editor, error: 'Enter a file name or relative path.' })
+      return
+    }
+    setEditor({ ...editor, saving: true, error: null })
+    try {
+      await writeWorkspaceFile(
+        agentId,
+        filePath,
+        creating ? { content: editor.content } : { content: editor.content, ifMatchMtime: editor.mtime! }
+      )
+      onFileSaved(filePath)
+    } catch (e) {
+      setEditor((current) =>
+        current?.target === editor.target
+          ? {
+              ...current,
+              saving: false,
+              error:
+                e instanceof ApiError && e.status === 409
+                  ? 'The agent is working or the file changed. Retry when it is idle.'
+                  : msg(e)
+            }
+          : current
+      )
+    }
+  }
+
+  const confirmDelete = async () => {
+    if (!deleteDraft || deleteDraft.deleting) return
+    const deleting = deleteDraft
+    setDeleteDraft({ ...deleting, deleting: true, error: null })
+    try {
+      await deleteWorkspaceFile(agentId, deleting.path, deleting.mtime)
+      viewerRequestRef.current += 1
+      setDeleteDraft(null)
+      setViewer(null)
+      setRefreshTick((tick) => tick + 1)
+    } catch (e) {
+      setDeleteDraft((current) =>
+        current?.path === deleting.path
+          ? {
+              ...current,
+              deleting: false,
+              error:
+                e instanceof ApiError && e.status === 409
+                  ? 'The agent is working or the file changed. Reload and try again.'
+                  : msg(e)
+            }
+          : current
+      )
+    }
+  }
+
+  const updateCreateName = (name: string) => {
+    setEditor((current) => (current?.target === '' ? { ...current, name, error: null } : current))
+    if (editor?.target !== '') return
+    const typedDirectories = name.replace(/^\/+/, '').split('/').slice(0, -1).filter(Boolean)
+    const targetDirectory = [editor.directory, ...typedDirectories].filter(Boolean).join('/')
+    if (!targetDirectory) return
+    const parts = targetDirectory.split('/').filter(Boolean)
+    const paths = parts.map((_, index) => parts.slice(0, index + 1).join('/'))
+    setExpanded((current) => new Set([...current, ...paths]))
+    for (const directory of paths) {
+      if (!dirs[directory]) loadDir(directory)
+    }
+  }
+
+  const breadcrumbPath = editor ? editor.target || editor.directory : (viewer?.path ?? '')
+  const viewerCanEdit =
+    canEdit && !!viewer?.file?.exists && viewer.file.encoding === 'utf8' && !!viewer.file.mtime && !viewer.loading
+  const viewerCanDelete = canEdit && !!viewer?.file?.exists && !!viewer.file.mtime && !viewer.loading
 
   // Recursively render one directory level. Files open in the preview; folders toggle.
   const renderLevel = (dirPath: string, depth: number, openPreview?: () => void): React.ReactNode => {
@@ -477,31 +698,117 @@ export function WorkspaceFiles({ agentId, workdir }: { agentId: string; workdir?
     )
   }
 
+  // Project the live git read model onto the workspace card. Nothing here is
+  // required: an offline daemon (or a scratch workspace) simply leaves the
+  // status/commit/pull half of the card empty.
+  const remote = git ? parseRemote(git.repo) : null
+  const header: WorkspaceHeaderInfo = {
+    branch: git?.branch ?? null,
+    status: git
+      ? git.clean
+        ? { dot: 'var(--status-online)', bg: 'var(--status-online-soft)', text: '#0f7a48', label: 'clean' }
+        : {
+            dot: 'var(--amber-500)',
+            bg: 'var(--status-paused-soft)',
+            text: '#9a6500',
+            label: `${git.files.length}${git.truncated ? '+' : ''} uncommitted`
+          }
+      : null,
+    commit: git?.lastCommit
+      ? {
+          sha: git.lastCommit.shortSha,
+          time: fmtMtime(git.lastCommit.committedAt),
+          title: git.lastCommit.subject
+        }
+      : null,
+    repoUrl: remote?.url ?? null,
+    remoteLabel: remote ? (/github/i.test(remote.host) ? 'GitHub' : remote.host) : null,
+    ...(git ? { onPull: onGitPull } : {}),
+    pulling: gitPulling,
+    pullMsg: gitMsg
+  }
+
   return (
     <div className="flex flex-col gap-4">
-      {git ? (
-        <RepoCard git={git} pulling={gitPulling} msg={gitMsg} onPull={onGitPull} />
-      ) : scratch ? (
-        <ScratchCard workdir={workdir} />
-      ) : null}
+      {renderHeader(header)}
 
       <FileBrowserShell
-        title="Files"
+        title={
+          <WorkspaceBreadcrumb
+            root={workspaceRoot}
+            path={breadcrumbPath}
+            creating={editor?.target === ''}
+            draftName={editor?.name ?? ''}
+            onDraftNameChange={updateCreateName}
+            onBack={isMobile && editor ? backFromEditor : undefined}
+            disabled={editor?.saving}
+          />
+        }
         headerEnd={
-          summary ? (
-            <span className="mono text-[11px] text-(--text-tertiary)" title={workdir}>
-              {summary}
-            </span>
-          ) : undefined
+          <div className="flex flex-none items-center gap-2">
+            {editor ? (
+              <>
+                <Button variant="secondary" size="xs" onClick={closeEditor} disabled={editor.saving}>
+                  Cancel
+                </Button>
+                <Button
+                  size="xs"
+                  onClick={() => void saveEditor()}
+                  disabled={
+                    editor.saving ||
+                    editor.loading ||
+                    (!!editor.target && !editor.mtime) ||
+                    (!editor.target && !editor.name.trim().split('/').at(-1))
+                  }
+                >
+                  {editor.saving ? 'Saving…' : 'Save changes'}
+                </Button>
+              </>
+            ) : deleteDraft ? (
+              <>
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  onClick={() => setDeleteDraft(null)}
+                  disabled={deleteDraft.deleting}
+                >
+                  Cancel
+                </Button>
+                <Button variant="danger" size="xs" onClick={() => void confirmDelete()} disabled={deleteDraft.deleting}>
+                  <Icon name="trash-2" size={13} />
+                  {deleteDraft.deleting ? 'Deleting…' : 'Delete file'}
+                </Button>
+              </>
+            ) : canEdit ? (
+              <>
+                <Button variant="secondary" size="xs" className="flex-none" onClick={startCreate}>
+                  <Icon name="file-plus" size={13} />
+                  Add file
+                </Button>
+                {viewerCanEdit ? (
+                  <Button variant="secondary" size="xs" className="flex-none" onClick={() => startEdit(viewer!.path)}>
+                    <Icon name="pencil" size={13} />
+                    Edit
+                  </Button>
+                ) : null}
+                {viewerCanDelete ? (
+                  <Button variant="secondary" size="xs" className="flex-none" onClick={startDelete}>
+                    <Icon name="trash-2" size={13} />
+                    Delete
+                  </Button>
+                ) : null}
+              </>
+            ) : null}
+          </div>
         }
       >
-        {root?.loading && !root.entries && (
+        {!editor && root?.loading && !root.entries && (
           <div className="flex justify-center py-8">
             <Spinner size={30} />
           </div>
         )}
 
-        {root?.err && !root.entries && (
+        {!editor && root?.err && !root.entries && (
           <div className="flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
             <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
             <span>
@@ -511,28 +818,57 @@ export function WorkspaceFiles({ agentId, workdir }: { agentId: string; workdir?
           </div>
         )}
 
-        {root && !root.loading && !root.err && !root.exists && (
+        {!editor && root && !root.loading && !root.err && !root.exists && (
           <EmptyNote text="The workspace has no files yet — the agent creates them as it works." />
         )}
 
-        {root?.entries && root.exists && root.entries.length === 0 && <EmptyNote text="This workspace is empty." />}
+        {root?.entries && root.exists && root.entries.length === 0 && !editor && (
+          <EmptyNote text="This workspace is empty." />
+        )}
 
-        {root?.entries && root.exists && root.entries.length > 0 && (
+        {(editor || (root?.entries && root.exists && root.entries.length > 0)) && (
           <FileBrowserLayout
-            resetKey={agentId}
-            tree={(openPreview) => renderLevel('', 0, openPreview)}
+            resetKey={`${agentId}:${mobileListSignal}`}
+            previewOpen={editor !== null || deleteDraft !== null}
+            tree={(openPreview) =>
+              root?.entries && root.exists && root.entries.length > 0 ? (
+                renderLevel('', 0, openPreview)
+              ) : (
+                <div className="px-3 py-4 text-center font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                  No files yet.
+                </div>
+              )
+            }
             preview={
-              viewer
-                ? (onBack) => (
-                    <FilePreview
-                      key={viewer.path}
-                      viewer={viewer}
-                      onMore={onViewerMore}
-                      resolveLink={resolveWorkspaceLink}
-                      onBack={onBack}
+              editor
+                ? () => (
+                    <WorkspaceFileEditor
+                      draft={editor}
+                      onContentChange={(content) =>
+                        setEditor((current) => (current ? { ...current, content, error: null } : current))
+                      }
+                      onSubmit={() => void saveEditor()}
                     />
                   )
-                : null
+                : viewer
+                  ? (onBack) => (
+                      <FilePreview
+                        key={viewer.path}
+                        viewer={viewer}
+                        onMore={onViewerMore}
+                        resolveLink={resolveWorkspaceLink}
+                        onBack={
+                          onBack
+                            ? () => {
+                                setDeleteDraft(null)
+                                onBack()
+                              }
+                            : undefined
+                        }
+                        deletePrompt={deleteDraft?.path === viewer.path ? deleteDraft : null}
+                      />
+                    )
+                  : null
             }
           />
         )}
@@ -550,6 +886,99 @@ function EmptyNote({ text }: { text: string }) {
   )
 }
 
+function WorkspaceBreadcrumb({
+  root,
+  path,
+  creating,
+  draftName,
+  onDraftNameChange,
+  onBack,
+  disabled
+}: {
+  root: string
+  path: string
+  creating: boolean
+  draftName: string
+  onDraftNameChange: (name: string) => void
+  onBack?: () => void
+  disabled?: boolean
+}) {
+  const baseSegments = path.split('/').filter(Boolean)
+  const draftParts = creating ? draftName.replace(/^\/+/, '').split('/') : []
+  const draftDirectories = draftParts.slice(0, -1).filter(Boolean)
+  const draftLeaf = creating ? (draftParts.at(-1) ?? '') : ''
+  const segments = [...baseSegments, ...draftDirectories]
+  const updateDraftLeaf = (leaf: string) => onDraftNameChange([...draftDirectories, leaf].join('/'))
+
+  return (
+    <nav className="flex min-w-0 items-center gap-[6px] overflow-hidden" aria-label="Workspace path">
+      {onBack ? (
+        <button
+          type="button"
+          className="iconbtn h-7 w-7 flex-none"
+          onClick={onBack}
+          title="Back to files"
+          aria-label="Back to files"
+        >
+          <Icon name="arrow-left" size={15} />
+        </button>
+      ) : null}
+      <span
+        className={`mono max-w-[120px] flex-none truncate text-[12px] font-semibold text-(--text-primary) ${
+          segments.length > 0 || creating ? 'max-desktop:hidden' : ''
+        }`}
+      >
+        {root}
+      </span>
+      {segments.map((segment, index) => {
+        const current = !creating && index === segments.length - 1
+        const mobileCurrent = index === segments.length - 1
+        return (
+          <Fragment key={`${index}:${segment}`}>
+            <span className="flex-none text-[12px] font-normal text-(--text-tertiary) max-desktop:hidden" aria-hidden>
+              /
+            </span>
+            <span
+              className={`mono min-w-[24px] max-w-[140px] shrink truncate text-[12px] ${
+                current ? 'font-semibold text-(--text-primary)' : 'font-medium text-(--text-secondary)'
+              } ${mobileCurrent ? '' : 'max-desktop:hidden'}`}
+            >
+              {segment}
+            </span>
+          </Fragment>
+        )
+      })}
+      {segments.length === 0 && !creating ? (
+        <span className="flex-none text-[12px] font-normal text-(--text-tertiary)" aria-hidden>
+          /
+        </span>
+      ) : null}
+      {creating ? (
+        <>
+          <span className="flex-none text-[12px] font-normal text-(--text-tertiary)" aria-hidden>
+            /
+          </span>
+          <input
+            className="inp mono h-7 w-[96px] min-w-16 max-w-full shrink px-2 py-1 text-[12px] desktop:w-[170px] desktop:min-w-[80px] desktop:max-w-[30vw]"
+            value={draftLeaf}
+            onChange={(event) => updateDraftLeaf(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Backspace' || draftLeaf || draftDirectories.length === 0) return
+              event.preventDefault()
+              onDraftNameChange([...draftDirectories.slice(0, -1), draftDirectories.at(-1)!].join('/'))
+            }}
+            placeholder="Name your file…"
+            aria-label="New file path"
+            spellCheck={false}
+            disabled={disabled}
+            autoFocus
+          />
+        </>
+      ) : null}
+    </nav>
+  )
+}
+
 export function StatusBadge({ ch }: { ch: string }) {
   const { color, title } = statusMeta(ch)
   return (
@@ -563,21 +992,22 @@ export function StatusBadge({ ch }: { ch: string }) {
   )
 }
 
-// The right-hand preview pane: a minimal header (icon · name · meta, plus a
-// Preview/Code toggle for markdown) then the file body. Markdown renders through
-// react-markdown by default (GitHub-style); everything else is syntax-highlighted
-// code with bare URLs linkified. Owns the lazy highlight.js pass (loaded only
-// when the code view is shown).
+// The right-hand preview pane: file identity lives in the shell breadcrumb, so
+// this toolbar carries only metadata and the Markdown Preview/Code toggle.
+// Markdown renders through react-markdown by default (GitHub-style); everything
+// else is syntax-highlighted code with bare URLs linkified.
 function FilePreview({
   viewer,
   onMore,
   resolveLink,
-  onBack
+  onBack,
+  deletePrompt
 }: {
   viewer: Viewer
   onMore: () => void
   resolveLink: (href: string) => MarkdownLinkResolution | undefined
   onBack?: () => void
+  deletePrompt: DeleteDraft | null
 }) {
   const isMd = MARKDOWN_FILE_RE.test(viewer.name)
   const [mode, setMode] = useState<'preview' | 'code'>(isMd ? 'preview' : 'code')
@@ -618,24 +1048,45 @@ function FilePreview({
 
   return (
     <>
-      <FileBrowserPreviewHeader
-        icon={fileBrowserGlyph(viewer.name)}
-        name={viewer.name}
-        meta={meta}
-        onBack={onBack}
-        actions={
-          isMd && isText ? (
-            <span className="pillbar flex-none">
-              <button className={mode === 'preview' ? 'pill on' : 'pill'} onClick={() => setMode('preview')}>
-                Preview
-              </button>
-              <button className={mode === 'code' ? 'pill on' : 'pill'} onClick={() => setMode('code')}>
-                Code
-              </button>
-            </span>
-          ) : undefined
-        }
-      />
+      <div className="flex h-[37px] min-w-0 flex-none items-center gap-2 border-b border-(--border-subtle) px-4">
+        {onBack ? (
+          <button
+            type="button"
+            className="iconbtn h-7 w-7 flex-none"
+            onClick={onBack}
+            title="Back to files"
+            aria-label="Back to files"
+          >
+            <Icon name="arrow-left" size={15} />
+          </button>
+        ) : null}
+        <span className="min-w-0 flex-1 truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+          {meta}
+        </span>
+        {isMd && isText ? (
+          <span className="pillbar flex-none">
+            <button className={mode === 'preview' ? 'pill on' : 'pill'} onClick={() => setMode('preview')}>
+              Preview
+            </button>
+            <button className={mode === 'code' ? 'pill on' : 'pill'} onClick={() => setMode('code')}>
+              Code
+            </button>
+          </span>
+        ) : null}
+      </div>
+
+      {deletePrompt ? (
+        <div
+          className="flex items-start gap-[10px] border-b border-(--border-subtle) bg-(--status-error-soft) px-4 py-3 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)"
+          role="alert"
+        >
+          <Icon name="triangle-alert" size={15} color="var(--status-error)" className="mt-[2px] flex-none" />
+          <div>
+            <span className="font-semibold text-(--text-primary)">Delete this file?</span> This cannot be undone.
+            {deletePrompt.error ? <div className="mt-1 text-(--status-error)">{deletePrompt.error}</div> : null}
+          </div>
+        </div>
+      ) : null}
 
       {viewer.loading && (
         <div className="flex justify-center py-10">
@@ -693,126 +1144,48 @@ function FilePreview({
   )
 }
 
-// The git-repo header card: remote / branch / working dir on top, the HEAD commit
-// + last-pull time below, and Pull-latest / View-on-remote actions in a footer.
-function RepoCard({
-  git,
-  pulling,
-  msg,
-  onPull
+function WorkspaceFileEditor({
+  draft,
+  onContentChange,
+  onSubmit
 }: {
-  git: WorkspaceGitStatusDto
-  pulling: boolean
-  msg: string | null
-  onPull: () => void
+  draft: EditorDraft
+  onContentChange: (content: string) => void
+  onSubmit: () => void
 }) {
-  const remote = parseRemote(git.repo)
-  const dirty = !git.clean
-  const uncommitted = git.files.length + (git.truncated ? '+' : '')
-  const onGitHub = remote ? /github/i.test(remote.host) : false
+  const creating = draft.target === ''
 
   return (
-    <div className="card">
-      <div className="flex items-start gap-3 px-4 py-[14px]">
-        <div className="imark h-[38px] w-[38px] text-(--text-secondary)" aria-hidden>
-          {onGitHub ? (
-            <span className="inline-flex h-[19px] w-[19px]">
-              <GithubMark color="var(--text-secondary)" />
-            </span>
-          ) : (
-            <Icon name="git-branch" size={19} />
-          )}
+    <form
+      className="flex min-h-[300px] flex-1 flex-col"
+      aria-label={creating ? 'New workspace file' : `Edit ${draft.target}`}
+      onSubmit={(event) => {
+        event.preventDefault()
+        onSubmit()
+      }}
+    >
+      {draft.loading ? (
+        <div className="flex flex-1 justify-center py-10">
+          <Spinner size={28} />
         </div>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
-              {remote?.label ?? 'workspace'}
-            </span>
-            {git.branch && (
-              <span className="scope inline-flex items-center gap-1">
-                <Icon name="git-branch" size={11} />
-                {git.branch}
-              </span>
-            )}
-            {git.agentDir && <span className="mono text-[12px] text-(--text-tertiary)">{git.agentDir}</span>}
-            <span
-              className={`badge ml-auto ${
-                dirty ? 'bg-(--status-paused-soft) text-(--amber-500)' : 'bg-(--status-online-soft) text-(--green-500)'
-              }`}
-              title={dirty ? 'Working tree has uncommitted changes' : 'Working tree clean'}
-            >
-              <span className="dot h-[6px] w-[6px] bg-current" />
-              {dirty ? `${uncommitted} uncommitted` : 'clean'}
-            </span>
-          </div>
-
-          <div className="mt-1 flex flex-wrap items-center gap-[7px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-            {git.lastFetchAt && <span>pulled {fmtMtime(git.lastFetchAt)}</span>}
-            {git.lastFetchAt && git.lastCommit && <span aria-hidden>·</span>}
-            {git.lastCommit && (
-              <span className="inline-flex min-w-0 items-center gap-[7px]">
-                <span className="mono font-semibold text-(--brand-soft-text)">{git.lastCommit.shortSha}</span>
-                <span className="max-w-[380px] truncate text-(--text-secondary)" title={git.lastCommit.subject}>
-                  {git.lastCommit.subject}
-                </span>
-                <span aria-hidden>·</span>
-                <span>{fmtMtime(git.lastCommit.committedAt)}</span>
-              </span>
-            )}
-            {!git.lastFetchAt && !git.lastCommit && <span>No commits yet.</span>}
-          </div>
+      ) : (
+        <div className="flex flex-1 flex-col gap-3 p-4">
+          {draft.error ? (
+            <div className="text-[12.5px] text-(--status-error)" role="alert">
+              {draft.error}
+            </div>
+          ) : null}
+          <textarea
+            className="inp mono min-h-[390px] flex-1 resize-y items-start justify-start px-3 py-[10px] leading-[1.6] focus:border-(--brand) focus:outline-none"
+            value={draft.content}
+            onChange={(event) => onContentChange(event.target.value)}
+            aria-label={creating ? 'New file content' : `Edit ${draft.target}`}
+            spellCheck={false}
+            disabled={draft.saving || (!creating && !draft.mtime)}
+            autoFocus={!creating}
+          />
         </div>
-      </div>
-
-      <div className="flex items-center gap-[14px] border-t border-(--border-subtle) px-4 py-[10px]">
-        <button
-          className="iconbtn h-[30px] w-auto gap-[7px] px-3 py-0 text-[13px] font-medium"
-          onClick={onPull}
-          disabled={pulling}
-          title="Fast-forward pull from the remote"
-        >
-          <Icon name="refresh-cw" size={14} />
-          {pulling ? 'Pulling…' : 'Pull latest'}
-        </button>
-        {remote && (
-          <a
-            className="lnk text-[13px] text-(--text-secondary)"
-            href={remote.url}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Icon name="external-link" size={14} />
-            {onGitHub ? 'View on GitHub' : `View on ${remote.host}`}
-          </a>
-        )}
-        {msg && (
-          <span className="ml-auto font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">{msg}</span>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// Non-git ("scratch") live workspace: files exist only on the daemon's disk.
-function ScratchCard({ workdir }: { workdir?: string }) {
-  return (
-    <div className="card">
-      <div className="flex items-center gap-[11px] px-4 py-[13px]">
-        <span className="imark flex h-[30px] w-[30px] items-center justify-center" aria-hidden>
-          <Icon name="folder" size={16} color="var(--text-tertiary)" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
-            Scratch workspace
-          </div>
-          {workdir && <div className="mono mt-[2px] text-[11.5px] text-(--text-tertiary)">{workdir}</div>}
-        </div>
-      </div>
-      <div className="flex items-center gap-[7px] border-t border-(--border-subtle) px-4 py-[11px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
-        <Icon name="info" size={14} />
-        Files here are created by the agent and live only on this machine — not version-controlled.
-      </div>
-    </div>
+      )}
+    </form>
   )
 }

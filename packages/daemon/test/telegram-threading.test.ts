@@ -327,6 +327,34 @@ describe('session-control cards (/models tappable buttons)', () => {
     expect(conn.editCard).toHaveBeenCalled()
   })
 
+  it('attributes an applied tap to the tapping user, and records nothing when refused', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    await daemon.start()
+    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    const conn = makeTelegramRoutable(daemon)
+    injectHost(daemon)
+    seedSession(daemon, '-100', 'tg:100')
+    const lines: string[] = []
+    ;(daemon as any).log = { info: (m: string) => lines.push(m), warn: () => {}, error: () => {}, debug: () => {} }
+
+    ;(daemon as any).handleTelegramCallback(
+      { id: 'cb-a', data: 'm:1', channel: '-100', messageId: 55, userId: 'U-DANA' },
+      conn
+    )
+    const applied = lines.filter((l) => l.includes('select:model'))
+    expect(applied).toHaveLength(1)
+    expect(applied[0]).toContain('U-DANA')
+
+    // Withdraw chat authority: the next tap changes nothing, so it records nothing.
+    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = false
+    lines.length = 0
+    ;(daemon as any).handleTelegramCallback(
+      { id: 'cb-b', data: 'm:0', channel: '-100', messageId: 55, userId: 'U-DANA' },
+      conn
+    )
+    expect(lines.filter((l) => l.includes('select:model'))).toEqual([])
+  })
+
   it('rejects a tap from a user outside allowedUserIds', async () => {
     const daemon = new Daemon({ root: scaffold() })
     await daemon.start()

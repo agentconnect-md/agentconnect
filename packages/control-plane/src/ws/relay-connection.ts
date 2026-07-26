@@ -71,7 +71,7 @@ export interface RelayConnDeps {
   /** The in-memory relay index — this connection registers itself for `rc/daemon-revoke` push. */
   relayReg: RelayRegistry
   /** Resolve a browser webchat token → identity + the agent's CURRENT placement
-   *  (userId, user, agentId, daemonId, orgId), or `{ ok:false }` (§10). May throw on a
+   *  (userId, user, agentId, daemonId, orgId, conversationId), or `{ ok:false }` (§10). May throw on a
    *  transient store error → the handler answers a retryable error. */
   verifyWebchatToken: (token: string) => Promise<RcVerifyResult>
   /** Re-check a GitHub comment sender against the current repository permission.
@@ -94,7 +94,11 @@ export class RelayConnection implements RelayChannel {
 
   /** Begin: wire transport callbacks (the gate opens at AUTHENTICATING). */
   start(): void {
-    this.transport.onMessage((t) => void this.onText(t))
+    this.transport.onMessage((t) => {
+      void this.onText(t).catch(() => {
+        if (this.state !== 'CLOSED') this.close(1011, 'SERVER_INTERNAL')
+      })
+    })
     this.transport.onClose(() => this.onClose())
   }
 
@@ -267,7 +271,9 @@ export class RelayConnection implements RelayChannel {
       result =
         req.kind === 'daemon-key'
           ? await this.verifyDaemonKey(req.credential)
-          : await this.deps.verifyWebchatToken(req.credential)
+          : req.conversationBinding === 'v1'
+            ? await this.deps.verifyWebchatToken(req.credential)
+            : { ok: false, reason: 'unsupported webchat binding' }
     } catch {
       this.sendError(frame.id, 'INTERNAL', 'verify failed', true)
       return

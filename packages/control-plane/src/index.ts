@@ -14,11 +14,32 @@ import { startControlPlaneOpenTelemetry } from './observability.js'
 
 const telemetry = startControlPlaneOpenTelemetry()
 
+// One process co-hosts the BFF REST surface, the daemon WS gateway, and the relay
+// WS gateway for EVERY tenant, so a single floating rejection anywhere must not take
+// the whole control plane down (and, under a restart loop, keep taking it down). The
+// WS connections catch their own frame-processing rejections at the transport
+// boundary; this is the last resort for the paths that cannot — mirroring the guards
+// the daemon (index.ts) and relay (index.ts) already install. Node's default here is
+// to crash the process.
+process.on('unhandledRejection', (reason) => {
+  console.error(
+    `control-plane: unhandled rejection (continuing): ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`
+  )
+})
+
 async function main(): Promise<void> {
-  const [{ loadConfig }, { systemClock }, { createPrisma }, { makeSecretsProvider }, { buildApp }] = await Promise.all([
+  const [
+    { loadConfig },
+    { systemClock },
+    { createPrisma },
+    { ensureDefaultTenant },
+    { makeSecretsProvider },
+    { buildApp }
+  ] = await Promise.all([
     import('./config/env.js'),
     import('./domain/clock.js'),
     import('./persistence/prisma.js'),
+    import('./persistence/ensure-default-tenant.js'),
     import('./secrets/providers/memory.js'),
     import('./app.js')
   ])
@@ -28,6 +49,9 @@ async function main(): Promise<void> {
 
   // 2. The single Prisma touch in the process; the only seam the bootstrap owns.
   const prisma = createPrisma(config.DATABASE_URL)
+  if (!config.OIDC_ISSUER) {
+    await ensureDefaultTenant(prisma)
+  }
 
   // 3. Assemble the identical graph prod and tests share.
   const app = buildApp({

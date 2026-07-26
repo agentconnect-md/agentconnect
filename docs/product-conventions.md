@@ -168,6 +168,12 @@ the draft differs, show both the currently active backend and the unsaved select
 settings. Content and records continue to reflect the active backend until Save
 succeeds.
 
+On the agent Memory page the settings form is collapsed by default behind a one-line
+summary of the persisted backend (backend name, its key policy values, and the fixed
+Agent scope) so the memory content itself stays the page's focus. Expanding the form
+edits the draft; closing or cancelling it discards the draft, so a collapsed form
+always describes the persisted settings. A successful save collapses the form again.
+
 External memory always requires a connection. If no connection is selected, explain
 inline that the draft cannot be saved and that the current backend remains active. An
 already-bound external agent must not offer an empty selection that merely looks
@@ -197,17 +203,47 @@ installation attribution, collaborator authorization, or bot-sender veto. A
 targeted agent mention narrows an otherwise broader `updated` fan-out, while an
 event with no AgentConnect mention continues to follow its configured cadence.
 In a pull request conversation, an authorized explicit AgentConnect mention
-starts a new review generation for the current revision, so its informational
-Check reopens and enters in progress when analysis starts. An ordinary
-unmentioned follow-up remains conversation-only and does not replace the current
-review verdict.
+starts a new review generation for the current revision when the integration
+allows formal reviews, so its informational Check reopens and enters in progress
+when analysis starts. Turning formal reviews off must not change trigger
+matching: selected PR events and authorized mentions still activate the agent,
+but an authorized mention no longer requests or permits a formal review, opens a
+mention-driven review generation, or requires a review verdict. Independently
+configured reporting for PR revision events remains separate. Review policy does
+not select or change the hook's reply/output path; existing delivery behavior
+continues to own that decision. The console presents review and reporting both
+being off as `None`; selecting it changes neither trigger matching nor output
+delivery. An ordinary unmentioned follow-up also remains conversation-only and
+does not replace the current review verdict.
 
 ## Workspace navigation and repository access
 
-The workspace summary row is navigation: selecting either its GitHub repository or
-its scratch label opens the agent's Workspace tab. Do not add a second "View
-workspace" action to the row. A single right-aligned `Edit` action owns workspace
-type, repository, branch, working-subdirectory, and repository-access settings.
+The workspace options live in the agent's Workspace tab, above the files they
+configure — not in Configuration, and not behind a summary row that navigates
+there. A `Source` control owns conversion between scratch and GitHub; a single
+`Edit` action owns repository, branch, working-subdirectory, and
+repository-access settings. Replacing a workspace must replace the file browser
+with it: the tree, the open preview, and the git status below the card always
+belong to the workspace the card currently describes, never to the one it
+replaced.
+
+In the Workspace tab, callers who can edit the agent may create, edit, or delete
+one file at a time when the workspace is scratch. New UTF-8 files use exclusive
+creation and never overwrite an existing path; slash-separated names locate an
+existing subdirectory or create the missing parent directories. Existing-file
+edits load the complete file and save against the mtime they opened. Deletion also
+requires the last-read mtime and an inline confirmation. Saving or deleting while
+the agent is working surfaces a conflict; otherwise the daemon quiesces its
+runtime before atomically applying the mutation, so an agent change is never
+silently overwritten or removed. GitHub workspace files remain read-only, and
+workspace bodies continue to transit the control plane without being persisted.
+File creation and editing stay inline in the Workspace file browser, replacing the
+preview pane instead of opening a modal. Desktop keeps the file tree visible;
+mobile uses the browser's existing list-to-preview drill-in and back action. The
+file-browser header shows the current workspace-relative breadcrumb on the left
+and `Add file`, `Edit`, and `Delete` actions on the right. New-file naming happens
+in that breadcrumb; completed slash-separated directory names become breadcrumb
+segments. The preview pane does not repeat the file name, path, or workspace label.
 
 For a GitHub workspace, show the effective `read` or `write` access beside the
 repository. The editor may switch freely between scratch and GitHub, choose another

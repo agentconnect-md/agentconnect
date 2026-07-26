@@ -10,6 +10,19 @@ on:
   # Release calls this workflow as its quality gate for main/release pushes.
   # Keeping the jobs here avoids duplicating CI logic between PRs and releases.
   workflow_call:
+    inputs:
+      defer_summaries:
+        description: 'Return job summaries to the caller instead of publishing them here'
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      build_test_summary:
+        description: 'Unit test summary markdown'
+        value: ${{ jobs.unit.outputs.summary }}
+      integration_test_summary:
+        description: 'Integration test summary markdown'
+        value: ${{ format('{0}{1}', jobs.integration.outputs.summary_1, jobs.integration.outputs.summary_2) }}
 
 # Cancel superseded runs for the same PR (a newer push makes the old one moot).
 # Reusable release-gate calls use a run-scoped group so their tests can proceed
@@ -18,18 +31,12 @@ concurrency:
   group: test-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Keep the Docker-bound integration suite separate from static checks and unit
-# tests so either workload can be scheduled independently.
+# Keep builds, static checks, Docker-free unit tests, and the Docker-bound
+# integration suite separate so all four workloads can be scheduled independently.
 jobs:
-  # Build + all static analysis + the fast (Docker-free) unit tests. The tsc and
-  # Next builds already typecheck their packages; the parallel no-emit check only
-  # covers daemon (tsdown) and control-plane files excluded from its production build.
-  # Prisma is generated once before the group, and CI skips duplicate pre-hooks.
-  # Unit tests run after the resource-heavy build/static group so their short
-  # per-test timeouts measure code rather than runner scheduling delay.
-  test:
-    name: Build & Test
-    runs-on: self-hosted
+  build:
+    name: Build
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -37,6 +44,42 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Restore Next.js build cache
+        uses: actions/cache@v6
+        with:
+          path: packages/web/.next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('packages/web/**') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ hashFiles('pnpm-lock.yaml') }}-
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm -r prisma:generate
+      - name: Build
+        env:
+          pnpm_config_enable_pre_post_scripts: false
+        run: pnpm build
+
+  # The tsc and Next builds already typecheck their packages; the parallel
+  # no-emit check only covers daemon (tsdown) and control-plane files excluded
+  # from their production builds. CI skips duplicate pre-hooks.
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -50,41 +93,18 @@ jobs:
         run: pnpm eval:validate
       - name: Generate Prisma client
         run: pnpm -r prisma:generate
-      - name: Build · Lint · Format · Typecheck
+      - name: Lint · Format · Typecheck
         env:
           pnpm_config_enable_pre_post_scripts: false
-        run: pnpm --workspace-concurrency=5 run "/^(build|lint|format:check|typecheck:ci)$/"
-      - name: Unit tests
-        env:
-          pnpm_config_enable_pre_post_scripts: false
-          VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
-        run: pnpm test:unit
-      - name: Evaluation contracts
-        env:
-          PROMPTFOO_DISABLE_TELEMETRY: '1'
-        run: pnpm eval:contracts
-      - name: Publish unit test summary
-        if: ${{ !cancelled() }}
-        env:
-          VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
-        run: |
-          node scripts/merge-vitest-summaries.mjs \
-            'Unit test report' \
-            'protocol=@agentconnect.md/protocol' \
-            'connection=@agentconnect.md/connection' \
-            'control-plane=@agentconnect.md/control-plane' \
-            'relay=@agentconnect.md/relay' \
-            'daemon=@agentconnect.md/daemon' \
-            'cli=@agentconnect.md/cli'
+        run: pnpm --workspace-concurrency=5 run "/^(lint|format:check|typecheck:ci)$/"
 
-  # control-plane integration tests against a real Postgres booted by
-  # Testcontainers. Each Vitest worker gets an isolated database cloned from one
-  # migrated template, so files run concurrently without cross-test TRUNCATEs.
-  # It needs Docker, so it gets its own runner off the critical path.
-  # No build needed — the suite resolves workspace deps from source.
-  integration:
-    name: Integration tests
-    runs-on: self-hosted
+  # Keep the fast, Docker-free suites away from the resource-heavy build group
+  # so their short per-test timeouts measure code rather than runner contention.
+  unit:
+    name: Unit Test
+    runs-on: ubuntu-latest
+    outputs:
+      summary: ${{ steps.export-summary.outputs.markdown }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -92,6 +112,85 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm -r prisma:generate
+      - name: Unit tests
+        env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
+          pnpm_config_enable_pre_post_scripts: false
+          VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
+        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm test:unit
+      - name: Evaluation contracts
+        env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
+          PROMPTFOO_DISABLE_TELEMETRY: '1'
+        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm eval:contracts
+      - name: Merge unit test summaries
+        if: ${{ !cancelled() }}
+        env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
+          VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
+        run: |
+          GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" node scripts/merge-vitest-summaries.mjs \
+            'Unit test report' \
+            'protocol=@agentconnect.md/protocol' \
+            'connection=@agentconnect.md/connection' \
+            'control-plane=@agentconnect.md/control-plane' \
+            'relay=@agentconnect.md/relay' \
+            'daemon=@agentconnect.md/daemon' \
+            'cli=@agentconnect.md/cli'
+      - name: Publish unit test summary
+        if: ${{ !cancelled() && !inputs.defer_summaries }}
+        env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
+        run: cat "$CAPTURED_JOB_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+      - name: Export unit test summary
+        id: export-summary
+        if: ${{ !cancelled() && inputs.defer_summaries }}
+        env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
+        run: |
+          {
+            echo 'markdown<<__AGENTCONNECT_UNIT_TEST_SUMMARY__'
+            cat "$CAPTURED_JOB_SUMMARY"
+            echo '__AGENTCONNECT_UNIT_TEST_SUMMARY__'
+          } >> "$GITHUB_OUTPUT"
+
+  # control-plane integration tests against a real Postgres booted by
+  # Testcontainers. Each Vitest worker gets an isolated database cloned from one
+  # migrated template, so files run concurrently without cross-test TRUNCATEs.
+  # Each shard needs Docker, so it gets its own runner off the critical path.
+  # No build needed — the suite resolves workspace deps from source.
+  integration:
+    name: Integration tests (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    outputs:
+      summary_1: ${{ steps.export-summary.outputs.summary_1 }}
+      summary_2: ${{ steps.export-summary.outputs.summary_2 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: '1/2'
+            summary_output: summary_1
+          - shard: '2/2'
+            summary_output: summary_2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -101,13 +200,31 @@ jobs:
         run: pnpm -r prisma:generate
       - name: Integration tests
         env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/integration-test-summary.md
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
-        run: pnpm --filter @agentconnect.md/control-plane test:int
-      - name: Publish integration test summary
+        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm --filter @agentconnect.md/control-plane test:int --shard=${{ matrix.shard }}
+      - name: Merge integration test summaries
         if: ${{ !cancelled() }}
         env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/integration-test-summary.md
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
         run: |
-          node scripts/merge-vitest-summaries.mjs \
-            'Integration test report' \
+          GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" node scripts/merge-vitest-summaries.mjs \
+            'Integration test report · shard ${{ matrix.shard }}' \
             'control-plane=@agentconnect.md/control-plane'
+      - name: Publish integration test summary
+        if: ${{ !cancelled() && !inputs.defer_summaries }}
+        env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/integration-test-summary.md
+        run: cat "$CAPTURED_JOB_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+      - name: Export integration test summary
+        id: export-summary
+        if: ${{ !cancelled() && inputs.defer_summaries }}
+        env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/integration-test-summary.md
+        run: |
+          {
+            echo '${{ matrix.summary_output }}<<__AGENTCONNECT_INTEGRATION_TEST_SUMMARY__'
+            cat "$CAPTURED_JOB_SUMMARY"
+            echo '__AGENTCONNECT_INTEGRATION_TEST_SUMMARY__'
+          } >> "$GITHUB_OUTPUT"

@@ -70,7 +70,48 @@ const recallPolicy = () => ({
   timeoutMs: 3000
 })
 
+/** The settings form is collapsed behind the summary bar; expand it. */
+const openSettings = async (host: HTMLElement) => {
+  const editButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Edit')
+  expect(editButton).toBeTruthy()
+  await act(async () => editButton?.click())
+}
+
 describe('MemoryPanel settings draft', () => {
+  it('collapses the settings form behind a summary of the persisted backend', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <MemoryPanel
+          agentId="22222222-2222-4222-8222-222222222222"
+          canEdit
+          memoryProvider="managed"
+          autoDistill={false}
+        />
+      )
+    })
+
+    // Collapsed: no provider picker, but the summary names the active backend
+    // and scope; the persisted memory content is shown.
+    expect(container.querySelector('[data-memory-provider="managed"]')).toBeNull()
+    expect(container.textContent).toContain('Managed')
+    expect(container.textContent).toContain('Agent scope')
+    expect(container.querySelector('[data-testid="file-memory-view"]')).not.toBeNull()
+
+    await openSettings(container)
+    expect(container.querySelector('[data-memory-provider="managed"]')).not.toBeNull()
+
+    // Closing without changes collapses it again.
+    const closeButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Close'
+    )
+    await act(async () => closeButton?.click())
+    expect(container.querySelector('[data-memory-provider="managed"]')).toBeNull()
+  })
+
   it('shows the fixed agent scope and explains that memory is shared across users', async () => {
     container = document.createElement('div')
     document.body.append(container)
@@ -87,6 +128,7 @@ describe('MemoryPanel settings draft', () => {
       )
     })
 
+    await openSettings(container)
     const scope = container.querySelector<HTMLButtonElement>('[data-memory-scope="agent"]')
     expect(scope?.textContent).toBe('Agent')
     expect(scope?.disabled).toBe(true)
@@ -116,6 +158,7 @@ describe('MemoryPanel settings draft', () => {
     })
 
     expect(container.querySelector('[data-testid="file-memory-view"]')).not.toBeNull()
+    await openSettings(container)
     await act(async () => {
       container?.querySelector<HTMLButtonElement>('[data-memory-provider="external"]')?.click()
     })
@@ -124,12 +167,14 @@ describe('MemoryPanel settings draft', () => {
     expect(container.querySelector('[data-testid="record-memory-view"]')).toBeNull()
     expect(container.textContent).toContain('Save memory settings to switch to External and view its memory.')
 
-    const discardButton = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Discard changes'
+    const cancelButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Cancel'
     )
-    await act(async () => discardButton?.click())
+    await act(async () => cancelButton?.click())
 
     expect(container.querySelector('[data-testid="file-memory-view"]')).not.toBeNull()
+    // Cancelling also collapses the form back to the summary bar.
+    expect(container.querySelector('[data-memory-provider="external"]')).toBeNull()
   })
 
   it('preserves unsaved edits when refreshed props contain an equivalent recall object', async () => {
@@ -149,6 +194,7 @@ describe('MemoryPanel settings draft', () => {
       root?.render(<MemoryPanel {...props} memoryRecall={recallPolicy()} />)
     })
 
+    await openSettings(container)
     const nativeButton = container.querySelector<HTMLButtonElement>('[data-memory-provider="native"]')
     expect(nativeButton).not.toBeNull()
     await act(async () => {
@@ -172,6 +218,92 @@ describe('MemoryPanel settings draft', () => {
     )
   })
 
+  it('keeps a persisted dreaming policy across mount and equivalent prop refreshes', async () => {
+    // Regression: the prop-sync effect must carry `memoryDreaming` (otherwise an
+    // enabled policy renders as off right after mount and a later save erases
+    // it), and must compare the policy's semantic fields — polling hands us a new
+    // object every refresh, which must not clobber an in-progress draft.
+    const dreaming = () => ({ enabled: true, sessionWindow: 40, instructions: 'focus on prefs' })
+    const props = {
+      agentId: '33333333-3333-4333-8333-333333333333',
+      canEdit: true,
+      memoryProvider: 'managed',
+      autoDistill: false
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root?.render(<MemoryPanel {...props} memoryDreaming={dreaming()} />)
+    })
+
+    await openSettings(container)
+    const dreamingBox = () =>
+      [...container!.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((box) =>
+        box.parentElement?.textContent?.includes('Enable dreaming')
+      )
+    // Survives the mount effect rather than resetting to "Dreaming off".
+    expect(dreamingBox()?.checked).toBe(true)
+
+    // An equivalent (re-created) policy object must not reset the toggle.
+    await act(async () => {
+      root?.render(<MemoryPanel {...props} memoryDreaming={dreaming()} />)
+    })
+    expect(dreamingBox()?.checked).toBe(true)
+
+    // A genuine change in a semantic field does re-sync.
+    await act(async () => {
+      root?.render(<MemoryPanel {...props} memoryDreaming={{ ...dreaming(), enabled: false }} />)
+    })
+    expect(dreamingBox()?.checked).toBe(false)
+  })
+
+  it('resyncs on a timezone-only refresh, so a later save cannot restore the stale zone', async () => {
+    // `timezone` is preserved through the wholesale memory PATCH but not edited
+    // in the UI. If it were missing from the prop-sync dependency list, a
+    // timezone-only poll would leave the draft on the old zone and the next
+    // unrelated edit would silently write it back.
+    const props = {
+      agentId: '44444444-4444-4444-8444-444444444444',
+      canEdit: true,
+      memoryProvider: 'managed',
+      autoDistill: false
+    }
+    const policy = (timezone: string) => ({ enabled: true, schedule: '0 4 * * *', timezone })
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root?.render(<MemoryPanel {...props} memoryDreaming={policy('UTC')} />)
+    })
+    await openSettings(container)
+
+    // Only the timezone changes upstream.
+    await act(async () => {
+      root?.render(<MemoryPanel {...props} memoryDreaming={policy('America/New_York')} />)
+    })
+
+    // An unrelated edit (auto-distill) then saves the WHOLE binding.
+    const distillBox = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((box) =>
+      box.parentElement?.textContent?.includes('Automatically distill')
+    )
+    await act(async () => {
+      distillBox?.click()
+    })
+    const save = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.textContent === 'Save memory settings'
+    )
+    await act(async () => {
+      save?.click()
+    })
+
+    const saved = mocks.updateAgent.mock.calls.at(-1)?.[1] as
+      { memory?: { dreaming?: { timezone?: string } } } | undefined
+    expect(saved?.memory?.dreaming?.timezone).toBe('America/New_York')
+  })
+
   it('uses an app confirmation before persisting a backend switch', async () => {
     const nativeConfirm = vi.fn(() => true)
     vi.stubGlobal('confirm', nativeConfirm)
@@ -190,6 +322,7 @@ describe('MemoryPanel settings draft', () => {
       )
     })
 
+    await openSettings(container)
     await act(async () => {
       container?.querySelector<HTMLButtonElement>('[data-memory-provider="native"]')?.click()
     })
@@ -211,5 +344,7 @@ describe('MemoryPanel settings draft', () => {
     expect(mocks.updateAgent).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', {
       memory: { provider: 'native', autoDistill: false }
     })
+    // A successful save collapses the form back to the summary bar.
+    expect(container.querySelector('[data-memory-provider="native"]')).toBeNull()
   })
 })

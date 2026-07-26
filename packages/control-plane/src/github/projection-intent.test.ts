@@ -28,13 +28,24 @@ describe('githubProjectionIntent', () => {
     )
   })
 
-  it('opens a new review generation for an explicit PR comment request', () => {
+  it('opens an explicit PR-comment review generation only when formal reviews are enabled', () => {
     expect(
-      githubProjectionIntent('issue_comment:created', {
-        subjectKind: 'pull_request',
-        explicitReviewRequest: true
-      })
+      githubProjectionIntent(
+        'issue_comment:created',
+        {
+          subjectKind: 'pull_request',
+          explicitReviewRequest: true
+        },
+        'full'
+      )
     ).toBe('revision_event')
+    expect(
+      githubProjectionIntent(
+        'issue_comment:created',
+        { subjectKind: 'pull_request', explicitReviewRequest: true },
+        'off'
+      )
+    ).toBe('review_action_only')
     expect(githubProjectionIntent('issue_comment:created', { subjectKind: 'pull_request' })).toBe('review_action_only')
   })
 

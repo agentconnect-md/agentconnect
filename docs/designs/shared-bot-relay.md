@@ -223,7 +223,7 @@ rc/thread-lookup/ok { botId, sessionKey, target }
 rc/bot-channels      { botId, channels }
 rc/set-channel-agent { botId, channelId, agentId }
 rc/daemon-revoke     { daemonId }
-rc/verify            { kind: 'daemon-key' | 'webchat-token', credential }
+rc/verify            { kind: 'daemon-key' | 'webchat-token', credential, conversationBinding?: 'v1' }
 ```
 
 `rc/bot-assign`, `rc/routes`, and `rc/assign` are broadcast to the pool.
@@ -255,8 +255,12 @@ rd/chat { chatId, seq, event }
 
 `rd/msg` already names the destination agent. IM payloads contain normalized
 message data and attachment metadata; attachment bytes are fetched by the
-daemon directly from the platform. `rd/chat` is used only to return webchat
-output to the browser connection held by that relay.
+daemon directly from the platform. A webchat turn may instead carry one inline
+PNG, JPEG, or WebP image: the browser rasterizes and compresses it to at most
+160 KiB before sending, leaving room for base64 expansion under the 256 KiB
+frame ceiling. The relay forwards those bytes without storing them. `rd/chat`
+is used only to return webchat output to the browser connection held by that
+relay.
 
 The same authenticated data plane also carries cross-daemon collaboration
 frames. Their authorization rules are defined in
@@ -362,9 +366,27 @@ returns over a control channel without the original payload. The detailed
 rules remain in
 [webhook-triggers-and-github-events.md](webhook-triggers-and-github-events.md).
 
-A webchat browser presents a short-lived CP-minted token. The relay delegates
-verification, resolves the agent's current daemon placement, and bridges
-browser turns and daemon output without routing arbitration.
+A webchat browser presents a short-lived CP-minted token. For a new
+conversation, CP allocates its id and persists only the ownership tuple
+`(conversationId, userId, agentId, orgId)`. A resume mint succeeds only when
+that tuple matches the authenticated caller; unknown and foreign ids fail
+closed. The token carries the authorized conversation id, and the relay uses
+that token-bound value rather than trusting the browser query. It then resolves
+the agent's current daemon placement and bridges browser turns and daemon
+output without routing arbitration. Webchat verification carries a
+`conversationBinding: 'v1'` fence and uses a v2 token-signing domain so mixed
+old/new CP and relay instances fail closed instead of silently downgrading.
+Conversation bodies remain daemon-local. While a turn is active or recently
+completed, the daemon retains a bounded, short-lived output window keyed by the
+browser-allocated turn id. A reconnecting browser reports its last contiguous
+output index and an increasing connection generation through any healthy relay;
+the browser rejects frames for any other turn while the daemon rejects stale
+generations, rebinds the live stream, and replays the missing tail. This window
+is volatile, has explicit size and age limits, and does not create a durable
+transcript or offline inbox.
+An optional image upload follows the same browser-to-relay-to-daemon content
+path, is bounded to one compressed image per turn, becomes an ACP image prompt
+block at the daemon, and is never persisted by the relay or Control Plane.
 
 ## 11. Daemon Responsibilities
 
@@ -378,7 +400,9 @@ browser turns and daemon output without routing arbitration.
   the normal daemon path.
 - Direct Slack integrations retain their daemon-owned socket transport.
 - Webchat output is returned through `rd/chat` to the relay holding the browser
-  session.
+  session. The daemon assigns monotonically increasing output indexes, retains
+  the bounded replay window, and can rebind an accepted turn to a replacement
+  relay connection.
 
 Slack rate limits are global to a bot while send queues are local to member
 daemons. Each daemon respects `429` and `Retry-After`; channel ownership reduces
@@ -414,8 +438,17 @@ Hook ingress responds quickly after verification and admission. Stable
 provider retry behavior is not treated as a durable queue.
 
 Webchat uses connection semantics: `rd/ack` reports whether the daemon accepted
-a turn, and `rd/chat` streams output until completion. Browser reconnect
-behavior is separate from IM delivery.
+a turn, and `rd/chat` streams indexed output until completion. After a browser
+reconnect, the browser sends the last contiguous index it assembled. The daemon
+accepts only a newer reconnect generation, then either replays the missing tail
+and continues the same turn or returns an explicit resume failure when the turn
+is unknown, the reconnect is stale, the cursor is invalid, or the bounded replay
+window has overflowed. Completion includes the final output index so the browser
+does not render a response as complete while an earlier frame is still missing.
+A not-found result is retried only through the original turn-admission window,
+covering a resume that reaches the daemon before its delayed turn. Browser
+reconnect behavior is separate from IM delivery, and replay is not guaranteed
+after the bounded window expires.
 
 All writers and retry caches must comply with
 [high-availability.md](high-availability.md#backpressure-and-delivery):
@@ -427,7 +460,7 @@ delivery.
 | Failure                             | Shared Slack ingress                                                                                           | Hook ingress                                                     | Webchat                                                            | Agent API egress                              |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------- |
 | CP unavailable                      | Cached assignments and existing daemon sockets continue; affinity misses and new authentication fail closed    | Cached rules continue; metadata reports may wait or fail visibly | Established sessions continue; new verification is unavailable     | Continues directly from online daemons        |
-| Relay instance unavailable          | Other healthy instances continue receiving public callbacks; daemons reconnect according to the updated roster | Other healthy instances continue                                 | Browser reconnects through the public origin                       | Unaffected                                    |
+| Relay instance unavailable          | Other healthy instances continue receiving public callbacks; daemons reconnect according to the updated roster | Other healthy instances continue                                 | Browser reconnects and resumes from the daemon replay window       | Unaffected                                    |
 | Entire relay pool unavailable       | HTTP bot callbacks cannot be processed                                                                         | Public hook ingress is unavailable                               | Browser sessions are unavailable                                   | Existing daemons can still call platform APIs |
 | Target daemon unavailable           | Selected messages are dropped and counted; unrelated daemons continue                                          | Target delivery fails visibly                                    | Target session cannot start or continue                            | That daemon cannot send                       |
 | Partial daemon-to-pool connectivity | A callback landing without its target socket is dropped and counted                                            | Same bounded-loss outcome                                        | A browser must reconnect to an instance with the target connection | Unaffected                                    |
@@ -492,6 +525,9 @@ The smallest useful evidence for this design includes:
 - relay-daemon tests for identity verification, relay identity mismatch,
   revocation, typed acknowledgement, offline-target drops, and daemon-side
   deduplication;
+- webchat tests for ordered output assembly, reconnect replay in both
+  turn/resume arrival orders, stale-generation fencing, terminal-frame gaps, and
+  explicit replay-window overflow;
 - end-to-end tests that confirm Slack ingress reaches the selected daemon while
   normal agent replies bypass the relay;
 - security assertions that logs contain no credentials, signatures, message

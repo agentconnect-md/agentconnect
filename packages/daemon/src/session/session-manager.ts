@@ -10,7 +10,7 @@ import type { AcpHost } from '../acp/acp-host.js'
 import type { Agent } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
-import { buildAttachmentBlocks, attachmentMention } from './attachment-block.js'
+import { buildAttachmentBlocks, attachmentMention, transcriptImageAttachments } from './attachment-block.js'
 import { EXPLICIT_MENTION_REMINDER, NO_RESPONSE_RULE, NO_RESPONSE_REMINDER } from './no-response.js'
 
 /** Metadata-only semantic lifecycle for one provider-neutral recall attempt. Query
@@ -140,6 +140,9 @@ export class SessionManager {
     private deps: {
       store: LocalStore
       hostFor: (agentId: string) => Promise<AcpHost>
+      /** Whether the runtime process is already running (so hostFor won't cold-start
+       *  it). When it's cold, the workspace + skills must be prepared before hostFor. */
+      isHostRunning?: (agentId: string) => boolean
       agentById: (id: string) => LoadedAgent | undefined
       /** The agent memory provider — seeds the memory dir and supplies the index
        *  injected at the start of a fresh session. */
@@ -233,7 +236,10 @@ export class SessionManager {
     /** session-concept §2.3/§5.3: the origin (parent) session's stable id, present only when
      *  THIS turn was woken by another session's `sendMessage`. Surfaced to the agent as the
      *  `Parent session` line of the `# Agent` block — the SessionTarget it replies into. */
-    originSessionId?: string
+    originSessionId?: string,
+    /** A chat-selected effort needed by session/new metadata before the session row exists.
+     *  The daemon revalidates current Agent authority before persisting or prompting. */
+    initialEffort?: string
   ): Promise<{
     sessionId: string
     blocks: ContentBlock[]
@@ -263,8 +269,9 @@ export class SessionManager {
     const key = sessionKey(msg.platform, msg.channel, thread, agentId)
 
     // record the triggering message in the transcript (with an attachment mention
-    // so later catch-up replay notes shared files even though bytes aren't stored)
+    // for prompt replay; bounded inline webchat images remain daemon-local for UI replay)
     const mention = attachmentMention(msg.attachments)
+    const transcriptAttachments = transcriptImageAttachments(msg.attachments)
     this.deps.store.appendTranscript({
       channel: msg.channel,
       thread,
@@ -274,7 +281,8 @@ export class SessionManager {
       // recipient — the console session view scopes to what THIS agent received + produced.
       recipient: agentId,
       kind: 'text',
-      text: mention ? `${msg.text}\n${mention}`.trim() : msg.text
+      text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
+      ...(transcriptAttachments.length ? { attachments: transcriptAttachments } : {})
     })
 
     let rec = this.deps.store.getSession(key)
@@ -301,11 +309,49 @@ export class SessionManager {
     // once persisted, is what authorizes SessionTarget replies to the parent on later
     // human-triggered turns that have no per-turn CallMeta.
     const effectiveOriginSessionId = rec?.originSessionId ?? originSessionId
+    // Prepare the workspace (clone/pull + skill install) BEFORE acquiring the host,
+    // but ONLY when the runtime process is COLD — that's when hostFor spawns it, so
+    // skills must be on disk first (design §6). This covers both a brand-new session
+    // and a persisted session whose host was evicted/restarted (resume cold-start). A
+    // warm turn on a live host must NOT re-run prepareWorkspace: pulling/reconciling
+    // would mutate a checkout the running ACP process is using — the per-branch
+    // prepareWorkspace below handles the warm-host new-session/resume cases instead.
+    const hostCold = !(this.deps.isHostRunning?.(agentId) ?? false)
+    const preparedCwd = hostCold ? await abortable(() => prepareWorkspace(agent), signal) : undefined
     const host = await abortable(() => this.deps.hostFor(agentId), signal)
     // The sticky per-session effort override rides session `_meta` on new/load so the
-    // `ultracode` sentinel (rejected by the `thought_level` select) takes effect;
-    // select-based effort/model/fast overrides layer on afterward at turn start.
-    const effortOverride = this.deps.store.getEffortOverride(key)
+    // `ultracode` sentinel (rejected by the `thought_level` select) takes effect.
+    // Resolve chat authority immediately before each request, then fence the await:
+    // metadata-only settings cannot be reversed by a later live selector.
+    const sessionStartEffort = (): { value?: string; chatSelected: boolean } => {
+      const allowed = this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true
+      if (!allowed) return { chatSelected: false }
+      const value = initialEffort ?? this.deps.store.getEffortOverride(key)
+      return { value, chatSelected: value !== undefined }
+    }
+    const newRuntimeSession = async (cwd: string, mcpServers: McpServer[], systemAppend?: string): Promise<string> => {
+      while (true) {
+        const selected = sessionStartEffort()
+        const sessionId = await abortable(() => host.newSession(cwd, mcpServers, selected.value, systemAppend), signal)
+        if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return sessionId
+        host.discardSession(sessionId)
+      }
+    }
+    const loadRuntimeSession = async (
+      sessionId: string,
+      cwd: string,
+      mcpServers: McpServer[],
+      systemAppend?: string
+    ): Promise<boolean> => {
+      const selected = sessionStartEffort()
+      await abortable(() => host.loadSession(sessionId, cwd, mcpServers, selected.value, systemAppend), signal)
+      if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return true
+      // The pinned Claude adapter treats a repeated load of the same session/cwd/MCP
+      // fingerprint as idempotent, so another load cannot replace metadata-only effort.
+      // Forget this local attachment and let the caller create a fresh safe session.
+      host.discardSession(sessionId)
+      return false
+    }
 
     // Agent memory INDEX (agents/memory-provider.ts), read fresh. It's STANDING
     // context (like the system prompt), NOT a user turn — so it rides the system-prompt
@@ -464,8 +510,9 @@ export class SessionManager {
     // the CP already knows). Drives the daemon's one-shot `event/session` start emit.
     let created = false
     if (!rec || !rec.acpSessionId) {
-      // brand-new session for this (channel, thread, agent)
-      const cwd = await abortable(() => prepareWorkspace(agent), signal)
+      // brand-new session; use the pre-host preparation when the host was cold, else
+      // prepare now (warm host — ordering vs spawn is moot).
+      const cwd = preparedCwd ?? (await abortable(() => prepareWorkspace(agent), signal))
       const mcpServers =
         this.deps.mcpServersFor?.({
           agent,
@@ -475,7 +522,7 @@ export class SessionManager {
           ...(integrationId !== undefined ? { integrationId } : {}),
           isDm: msg.isDm
         }) ?? []
-      const acpSessionId = await abortable(() => host.newSession(cwd, mcpServers, effortOverride, metaContext), signal)
+      const acpSessionId = await newRuntimeSession(cwd, mcpServers, metaContext)
       created = true
       rec = {
         key,
@@ -502,7 +549,9 @@ export class SessionManager {
       // (session/load — the agent restores its own history, so the §8.5 gap replay
       // below only re-feeds messages it missed). If the agent can't load it, recreate
       // a fresh session and replay the whole thread as context (lastDeliveredTs=null).
-      const cwd = await abortable(() => prepareWorkspace(agent), signal)
+      // Resume: use the pre-host preparation when the host cold-started here (persisted
+      // session after restart/eviction — skills must precede spawn), else prepare now.
+      const cwd = preparedCwd ?? (await abortable(() => prepareWorkspace(agent), signal))
       // Resolved once, shared by both paths: session/load must re-attach the same
       // MCP servers a fresh session would get (the agent doesn't persist them
       // across processes), and resolving twice would register two bridge tokens.
@@ -521,28 +570,19 @@ export class SessionManager {
         // isn't seen as `closed` mid-load, then fall through to `prompting` below.
         this.deps.store.setSessionState(key, 'resuming', Date.now())
         try {
-          await abortable(
-            () =>
-              host.loadSession(
-                persistedSessionId,
-                cwd,
-                mcpServers,
-                effortOverride,
-                usesMeta ? resumeSystemContext : undefined
-              ),
-            signal
+          resumed = await loadRuntimeSession(
+            persistedSessionId,
+            cwd,
+            mcpServers,
+            usesMeta ? resumeSystemContext : undefined
           )
-          resumed = true
         } catch {
           if (signal?.aborted) throw interrupted(signal)
           // agent couldn't load it (GC'd / not durably persisted) — recreate below
         }
       }
       if (!resumed) {
-        const acpSessionId = await abortable(
-          () => host.newSession(cwd, mcpServers, effortOverride, metaContext),
-          signal
-        )
+        const acpSessionId = await newRuntimeSession(cwd, mcpServers, metaContext)
         // A fresh ACP id the CP has never seen (the persisted one couldn't be resumed),
         // so this counts as a create for `event/session`. A resumed session (loadSession
         // above) keeps its id — the CP already knows it — so `created` stays false there.

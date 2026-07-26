@@ -3,7 +3,7 @@
  */
 import { Prisma } from '../../generated/prisma/client.js'
 import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js'
-import type { AgentMemoryBinding } from '@agentconnect.md/protocol'
+import { redactGitUrlSecrets, type AgentMemoryBinding } from '@agentconnect.md/protocol'
 import type { PrismaLike } from '../prisma.js'
 import type {
   AgentCallPolicy,
@@ -75,6 +75,10 @@ type RuntimeOverrides = {
   // NOTE: write-only secret env vars deliberately do NOT live in this bag — they
   // are rows in `agent_secret` behind the AgentSecretStore seam.
   mcpServers?: string[]
+  // Enabled shared-skills, "<sourceName>/<skillName>" or "<sourceName>/*". Stored in
+  // the overrides bag like mcpServers; the CP resolves these into self-contained
+  // AgentSpec.skills entries (agentSpecAssembler) when it builds the spec.
+  skills?: string[]
   // Which memory backend the agent uses (managed | native | external). Stored in
   // the overrides bag like the sibling knobs; the daemon builds the provider from it.
   memory?: AgentMemoryBinding
@@ -88,7 +92,10 @@ function workspaceOf(a: Agent): AgentWorkspace {
   if (a.workspaceMode === 'github') {
     return {
       mode: 'github',
-      gitRepo: a.gitRepo ?? '',
+      // Legacy rows may predate the credential-free clone URL invariant. Keep
+      // reads total, but never let URL userinfo/query secrets enter DTOs or wire
+      // projections through the domain record.
+      gitRepo: redactGitUrlSecrets(a.gitRepo ?? ''),
       ...(a.gitBranch !== null ? { gitBranch: a.gitBranch } : {}),
       ...(a.agentDir !== null ? { agentDir: a.agentDir } : {}),
       ...(a.installationId !== null ? { installationId: a.installationId, gitAccess: a.gitAccess } : {})
@@ -117,6 +124,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     pause: ov.pause ?? null,
     env: ov.env ?? {},
     mcpServers: ov.mcpServers ?? [],
+    skills: ov.skills ?? [],
     memory: ov.memory ?? null,
     status: a.status as AgentRecord['status'],
     daemonId: a.daemonId ? DaemonId(a.daemonId) : null,
@@ -181,6 +189,7 @@ export class PgAgentRepo implements AgentRepo {
           input.pause !== undefined ||
           input.env ||
           input.mcpServers ||
+          input.skills ||
           input.memory
             ? {
                 runtimeOverrides: {
@@ -196,6 +205,7 @@ export class PgAgentRepo implements AgentRepo {
                   ...(input.pause !== undefined ? { pause: input.pause } : {}),
                   ...(input.env ? { env: input.env } : {}),
                   ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+                  ...(input.skills ? { skills: input.skills } : {}),
                   ...(input.memory ? { memory: input.memory } : {})
                 }
               }
@@ -224,7 +234,10 @@ export class PgAgentRepo implements AgentRepo {
           // Initial call policy (absent ⇒ DB default 'all'). allowedCallerAgentIds
           // only bites when 'selected'; the route intersects it with visible peers.
           ...(input.callPolicy ? { callPolicy: input.callPolicy } : {}),
-          ...(input.allowedCallerAgentIds ? { allowedCallerAgentIds: input.allowedCallerAgentIds } : {})
+          ...(input.allowedCallerAgentIds ? { allowedCallerAgentIds: input.allowedCallerAgentIds } : {}),
+          // Same for the outbound half (which peers this agent may call).
+          ...(input.outboundPolicy ? { outboundPolicy: input.outboundPolicy } : {}),
+          ...(input.allowedTargetAgentIds ? { allowedTargetAgentIds: input.allowedTargetAgentIds } : {})
         },
         include: withUsers
       })
@@ -252,6 +265,7 @@ export class PgAgentRepo implements AgentRepo {
       patch.pause !== undefined ||
       patch.env !== undefined ||
       patch.mcpServers !== undefined ||
+      patch.skills !== undefined ||
       patch.memory !== undefined
     ) {
       const cur = (await this.db.agent.findUnique({ where: { id: agentId } }))
@@ -292,6 +306,10 @@ export class PgAgentRepo implements AgentRepo {
       if (patch.mcpServers !== undefined) {
         if (patch.mcpServers === null) delete next.mcpServers
         else next.mcpServers = patch.mcpServers
+      }
+      if (patch.skills !== undefined) {
+        if (patch.skills === null) delete next.skills
+        else next.skills = patch.skills
       }
       if (patch.memory !== undefined) {
         if (patch.memory === null) delete next.memory

@@ -23,6 +23,7 @@ function eventLabel(event: MemoryFileHistoryEventDto['event']): string {
 function sourceLabel(source: MemoryFileHistoryEventDto['source']): string {
   if (source === 'console') return 'Console'
   if (source === 'distill') return 'Automatic distillation'
+  if (source === 'dream') return 'Dream adoption'
   return 'Agent tool'
 }
 

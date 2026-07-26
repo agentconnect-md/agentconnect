@@ -9,18 +9,21 @@ const ORG = OrgId('org_test')
 const USER = 'user_test'
 const NOW = new Date('2026-01-01T00:00:00Z')
 
-function row(expiresAt: Date, access = 'access'): SlackUserConfigRecord {
+function row(expiresAt: Date, access = 'access', refreshToken: string | null = 'refresh'): SlackUserConfigRecord {
   return {
     orgId: ORG,
     userId: USER,
     accessToken: access,
-    refreshToken: 'refresh',
+    refreshToken,
     accessExpiresAt: expiresAt,
     updatedAt: NOW
   }
 }
 const fresh = (access?: string) => row(new Date(NOW.getTime() + 3600_000), access) // +1h ⇒ fresh
 const stale = (access?: string) => row(new Date(NOW.getTime() + 60_000), access) // +1m ⇒ within margin ⇒ stale
+// Access-only rows (no refresh token to rotate).
+const freshAccessOnly = (access?: string) => row(new Date(NOW.getTime() + 3600_000), access, null)
+const staleAccessOnly = (access?: string) => row(new Date(NOW.getTime() + 60_000), access, null)
 
 /** Fake deps: `rows` are returned by successive get() calls; captures rotate calls + puts. */
 function makeDeps(rows: (SlackUserConfigRecord | null)[], rotate: SlackRotateResult) {
@@ -98,5 +101,18 @@ describe('resolveUserConfigAccessToken', () => {
   it('is rotate_failed when the rotate is rejected and the reloaded row is still stale', async () => {
     const { deps } = makeDeps([stale(), stale()], { ok: false, error: 'invalid_refresh_token' })
     expect(await resolveUserConfigAccessToken(deps, ORG, USER, NOW)).toEqual({ ok: false, reason: 'rotate_failed' })
+  })
+
+  it('returns an access-only token as-is while fresh (no refresh, no rotate)', async () => {
+    const { deps, rotateCalls } = makeDeps([freshAccessOnly('live')], okRotate)
+    expect(await resolveUserConfigAccessToken(deps, ORG, USER, NOW)).toEqual({ ok: true, accessToken: 'live' })
+    expect(rotateCalls).toHaveLength(0)
+  })
+
+  it('is expired for a stale access-only token (nothing to rotate)', async () => {
+    const { deps, rotateCalls, puts } = makeDeps([staleAccessOnly()], okRotate)
+    expect(await resolveUserConfigAccessToken(deps, ORG, USER, NOW)).toEqual({ ok: false, reason: 'expired' })
+    expect(rotateCalls).toHaveLength(0) // no refresh token ⇒ never calls rotate
+    expect(puts).toHaveLength(0)
   })
 })

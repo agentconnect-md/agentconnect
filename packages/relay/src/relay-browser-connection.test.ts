@@ -65,9 +65,44 @@ const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 describe('parseBrowserFrame', () => {
   it('maps a bare {text} and {type:"message",text} to a turn op carrying the user', () => {
     expect(parseBrowserFrame({ text: 'hi' }, USER)).toEqual({ op: 'turn', text: 'hi', user: USER })
-    expect(parseBrowserFrame({ type: 'message', text: 'hi' }, USER)).toEqual({ op: 'turn', text: 'hi', user: USER })
+    expect(parseBrowserFrame({ type: 'message', text: 'hi', turnId: AGENT }, USER)).toEqual({
+      op: 'turn',
+      text: 'hi',
+      user: USER,
+      turnId: AGENT
+    })
+  })
+  it('carries staged runtime choices on the first turn', () => {
+    const runtime = { model: 'gpt-5.6-sol', effort: 'xhigh', permissionMode: 'full-access', fastMode: true }
+    expect(parseBrowserFrame({ text: 'hi', runtime }, USER)).toEqual({
+      op: 'turn',
+      text: 'hi',
+      user: USER,
+      runtime
+    })
+    expect(parseBrowserFrame({ text: 'hi', runtime: { fastMode: 'yes' } }, USER)).toBeNull()
+  })
+  it('maps a bounded image attachment while keeping the verified user authoritative', () => {
+    const attachment = {
+      name: 'screen.webp',
+      mimeType: 'image/webp',
+      data: Buffer.from('image').toString('base64')
+    }
+    expect(parseBrowserFrame({ text: '', user: 'spoofed', attachments: [attachment] }, USER)).toEqual({
+      op: 'turn',
+      text: '',
+      user: USER,
+      attachments: [attachment]
+    })
+    expect(parseBrowserFrame({ text: '', attachments: [{ ...attachment, data: 'invalid' }] }, USER)).toBeNull()
   })
   it('maps the session-control envelopes', () => {
+    expect(parseBrowserFrame({ type: 'resume', turnId: AGENT, generation: 3, afterIndex: 4 }, USER)).toEqual({
+      op: 'resume',
+      turnId: AGENT,
+      generation: 3,
+      afterIndex: 4
+    })
     expect(parseBrowserFrame({ type: 'set_model', model: 'claude' }, USER)).toEqual({
       op: 'set_model',
       model: 'claude'
@@ -86,6 +121,10 @@ describe('parseBrowserFrame', () => {
   it('rejects malformed / unknown envelopes', () => {
     expect(parseBrowserFrame({ type: 'set_model' }, USER)).toBeNull() // no model
     expect(parseBrowserFrame({ type: 'set_fast', fastMode: 'yes' }, USER)).toBeNull() // wrong type
+    expect(parseBrowserFrame({ type: 'resume', turnId: AGENT, generation: 1, afterIndex: -2 }, USER)).toBeNull()
+    expect(parseBrowserFrame({ type: 'resume', turnId: AGENT, generation: 1, afterIndex: 1.5 }, USER)).toBeNull()
+    expect(parseBrowserFrame({ type: 'resume', turnId: AGENT, generation: 0, afterIndex: 0 }, USER)).toBeNull()
+    expect(parseBrowserFrame({ type: 'resume', generation: 1, afterIndex: 0 }, USER)).toBeNull()
     expect(parseBrowserFrame({ type: 'nope' }, USER)).toBeNull()
     expect(parseBrowserFrame(null, USER)).toBeNull()
     expect(parseBrowserFrame(42, USER)).toBeNull()
@@ -114,11 +153,38 @@ describe('RelayBrowserConnection', () => {
     expect(transport.last('ack')).toEqual({ type: 'ack', ack: { accepted: true } })
   })
 
+  it('bridges an image-only turn without putting the bytes on any control-plane path', async () => {
+    const { transport, sent } = build()
+    const attachment = {
+      name: 'screen.webp',
+      mimeType: 'image/webp',
+      data: Buffer.from('image').toString('base64')
+    }
+    transport.feed({ attachments: [attachment] })
+    await tick()
+    expect(sent[0]).toMatchObject({
+      source: 'webchat',
+      payload: { op: 'turn', text: '', user: USER, attachments: [attachment] }
+    })
+  })
+
   it('surfaces a rejected turn ack with its reason', async () => {
     const { transport } = build({ ack: { msgId: 'x', accepted: false, reason: 'paused' } })
     transport.feed({ text: 'hi' })
     await tick()
     expect(transport.last('ack')).toEqual({ type: 'ack', ack: { accepted: false, reason: 'paused' } })
+  })
+
+  it('forwards a resume cursor and surfaces its replay verdict', async () => {
+    const turnId = '22222222-2222-4222-8222-222222222222'
+    const { transport, sent } = build({ ack: { msgId: 'resume-1', accepted: true, turnId } })
+    transport.feed({ type: 'resume', turnId, generation: 4, afterIndex: 7 })
+    await tick()
+    expect(sent[0]).toMatchObject({ payload: { op: 'resume', turnId, generation: 4, afterIndex: 7 } })
+    expect(transport.last('resumed')).toEqual({
+      type: 'resumed',
+      ack: { accepted: true, turnId }
+    })
   })
 
   it('translates an rd/chat output/done back to {type:output}/{type:done}', () => {

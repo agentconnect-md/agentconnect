@@ -55,8 +55,10 @@ model Org {
   slackUserConfigs          SlackUserConfig[]
   inviteLink                OrgInviteLink?
   mcpProviders              McpProvider[]
+  skillSources              SkillSource[]
   memoryPluginInstallations MemoryPluginInstallation[]
   externalMemoryConnections ExternalMemoryConnection[]
+  webchatConversations      WebchatConversation[]
 
   @@map("org")
 }
@@ -86,6 +88,7 @@ model User {
   createdIntegrations              Integration[]
   createdBots                      Bot[]
   createdMcpProviders              McpProvider[]
+  createdSkillSources              SkillSource[]
   createdMemoryPluginInstallations MemoryPluginInstallation[] @relation("MemoryPluginInstallationCreatedBy")
   createdExternalMemoryConnections ExternalMemoryConnection[] @relation("ExternalMemoryConnectionCreatedBy")
   createdDaemons                   Daemon[]                   @relation("DaemonCreatedBy")
@@ -98,6 +101,7 @@ model User {
   slackConfigs                     SlackUserConfig[]
   createdInviteLinks               OrgInviteLink[]            @relation("OrgInviteLinkCreatedBy")
   inviteRedemptions                OrgInviteRedemption[]
+  webchatConversations             WebchatConversation[]
 
   @@map("app_user")
 }
@@ -552,7 +556,7 @@ model Agent {
   gitAccess             GitAccess          @default(write) // ceiling for minted tokens (contents read|write)
   capabilities          String[]           @default([]) // → AgentLaunch.activeCapabilities
   permissions           Json               @default("{}") @db.JsonB // {policy:"ask",autoApprove:[...]}
-  runtimeOverrides      Json?              @db.JsonB // {model, reasoningEffort, outputMode, fastMode, env{K:V}, mcpServers[]} — NO secret values (those live in agent_secret)
+  runtimeOverrides      Json?              @db.JsonB // {model, reasoningEffort, outputMode, fastMode, env{K:V}, mcpServers[], skills[]} — NO secret values (those live in agent_secret)
   createdByUserId       String? // WebUI user who created the agent (audit; null for daemon/CLI-created). Surfaced in the console "Created" row.
   // Last-modification audit (human edits only): stamped on create + PATCH. Kept
   // separate from `updatedAt`, which also bumps on system writes (e.g. placement).
@@ -572,19 +576,20 @@ model Agent {
   createdAt             DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt             DateTime           @updatedAt @db.Timestamptz(6)
 
-  org            Org                      @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  daemon         Daemon?                  @relation(fields: [daemonId], references: [id], onDelete: SetNull)
-  createdBy      User?                    @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  lastModifiedBy User?                    @relation("AgentModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
-  assignments    Assignment[]
-  launches       AgentLaunch[]
-  sessions       SessionMeta[]
-  sessionUsage   SessionUsage[]
-  crons          CronDef[]
-  hooks          HookDef[]
-  integrations   Integration[]
-  repoAuths      AgentRepoAuthorization[]
-  secrets        AgentSecret[]
+  org                  Org                      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  daemon               Daemon?                  @relation(fields: [daemonId], references: [id], onDelete: SetNull)
+  createdBy            User?                    @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  lastModifiedBy       User?                    @relation("AgentModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
+  assignments          Assignment[]
+  launches             AgentLaunch[]
+  sessions             SessionMeta[]
+  sessionUsage         SessionUsage[]
+  crons                CronDef[]
+  hooks                HookDef[]
+  integrations         Integration[]
+  repoAuths            AgentRepoAuthorization[]
+  secrets              AgentSecret[]
+  webchatConversations WebchatConversation[]
 
   @@unique([orgId, name]) // slug is unique within an org
   @@index([orgId])
@@ -761,6 +766,26 @@ model SessionMeta {
   @@index([launchId])
   @@index([daemonId])
   @@map("session_meta")
+}
+
+// Durable ownership metadata for a browser webchat conversation. The message
+// stream and transcript remain daemon-local; this row only lets the CP prove
+// that a requested resume belongs to the authenticated human, agent, and org.
+model WebchatConversation {
+  id        String   @id @db.Uuid
+  orgId     String
+  agentId   String   @db.Uuid
+  userId    String
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  org   Org   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@index([agentId])
+  @@index([userId])
+  @@map("webchat_conversation")
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1248,6 +1273,7 @@ model Bot {
   prebuilt        Boolean        @default(false) // provisioned by AgentConnect, not a console user
   slackAppId      String? // Slack app id (A…), parsed from the pasted xapp token — deep-links the console to api.slack.com/apps/{id}. Public metadata, NOT secret material.
   discordAppId    String? // Discord application (client) id, decoded from the bot token's first segment — lets the console offer a ready-made "Add to Discord" invite URL. Public metadata (it IS the bot's user id), NOT secret material.
+  feishuRegion    String? // Feishu/Lark open-platform gateway for this app: 'feishu' (open.feishu.cn) | 'lark' (open.larksuite.com). NULL ⇒ 'feishu'. DURABLE home (survives uninstall) so a freed Lark bot reinstalls against the right gateway. Public config, NOT secret.
   // Shared-bot opt-in (shared-bot-relay.md §4.1). false ⇒ classic 1-bot:1-agent
   // (daemon owns the whole socket, zero behaviour change). true ⇒ the bot's
   // INBOUND migrates to a relay and it may serve MULTIPLE agents (one Integration
@@ -1335,6 +1361,7 @@ model Integration {
   platform        Platform          @default(slack)
   name            String // Slack app / display name (mirrors bot.name at install time)
   status          IntegrationStatus @default(active)
+  feishuRegion    String? // Feishu/Lark open-platform gateway: 'feishu' (open.feishu.cn) | 'lark' (open.larksuite.com). NULL ⇒ 'feishu' (default / non-feishu integrations). Public config, NOT secret.
   createdByUserId String? // WebUI user who installed it (audit)
   createdAt       DateTime          @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime          @updatedAt @db.Timestamptz(6)
@@ -1434,8 +1461,8 @@ model SlackUserConfig {
   orgId           String
   userId          String
   accessToken     String // xoxe.xoxp-… — the App Configuration access token
-  refreshToken    String // xoxe-… — used to rotate a fresh access token
-  accessExpiresAt DateTime @db.Timestamptz(6) // when accessToken expires (~12h; drives rotation)
+  refreshToken    String? // xoxe-… — used to rotate a fresh access token; null ⇒ access-only (expires ~12h, then re-enter)
+  accessExpiresAt DateTime @db.Timestamptz(6) // when accessToken expires (~12h; drives rotation / re-entry)
   createdAt       DateTime @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime @updatedAt @db.Timestamptz(6)
 
@@ -1623,6 +1650,41 @@ model McpGrant {
 
   @@index([mcpProviderId])
   @@map("mcp_grant")
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Shared skills registry (docs/designs/shared-skills.md). The CP records only
+// the SOURCE (a repo / git URL / tree path) plus an optional ref + skill
+// filter — skill CONTENT never touches the CP. The daemon installs enabled
+// skills via `npx skills` after clone and before the ACP host spawns. There is
+// no secret side-table or grant: skills are plain content, and private-repo
+// reads reuse the existing GitHub App short-lived token path on the daemon.
+//
+// The per-agent enable-list is NOT a relation here; like mcpServers it lives as
+// a string[] of "<sourceName>/<skillName>" (or "<sourceName>/*") inside the
+// agent's runtimeOverrides JSON bag. The CP resolves those into self-contained
+// AgentSpec.skills entries when it assembles the spec (agentSpecAssembler).
+model SkillSource {
+  id              String             @id @default(uuid()) @db.Uuid
+  orgId           String
+  name            String // reference key; the agent enable-list keys on it. @@unique([orgId, name])
+  source          String // fed to `npx skills add` (owner/repo | git URL | tree/<ref>/<subdir>)
+  githubRepoId    BigInt? // GitHub numeric id — survives rename/re-create (mirrors AgentRepoAuthorization)
+  ref             String? // optional branch/tag/commit; composed into the source (design §5)
+  subDir          String? // optional repo-relative install dir
+  skills          String[]           @default([]) // empty ⇒ install every skill; else only these (passed as -s)
+  visibility      ResourceVisibility @default(org)
+  sharedWith      String[]           @default([]) // app_user.id set granted view when visibility='restricted'
+  createdByUserId String?
+  createdAt       DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime           @updatedAt @db.Timestamptz(6)
+
+  org       Org   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@map("skill_source")
 }
 
 // ───────────────────────────────────────────────────────────────────────

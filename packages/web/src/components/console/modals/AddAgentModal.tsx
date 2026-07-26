@@ -48,6 +48,14 @@ import type { AgentCallPolicy } from '@/lib/data'
 import { OutputModeField } from '@/components/console/OutputModeField'
 import { RuntimeChatField } from '@/components/console/RuntimeChatField'
 import { SandboxField } from '@/components/console/SandboxField'
+import {
+  EnvSecretsFields,
+  envRecordFromRows,
+  envSecretsError,
+  secretsRecordFromRows,
+  type EnvVarDraft,
+  type SecretDraft
+} from '@/components/console/EnvSecretsFields'
 import { normalizeAgentDir } from '@/lib/repo-subdir'
 import {
   DEFAULT_EXTERNAL_MEMORY_BINDING,
@@ -76,14 +84,15 @@ type RepoCheckState = 'idle' | 'checking' | 'missing' | 'found'
 // labels the runtime *behavior* group rather than plain "Runtime" — the runtime
 // picker itself lives in Basics, and two things named Runtime would send you to
 // the wrong place.
-type SectionId = 'basics' | 'runtime' | 'workspace' | 'access' | 'memory'
+type SectionId = 'basics' | 'runtime' | 'workspace' | 'access' | 'memory' | 'secrets'
 
 const SECTIONS: ReadonlyArray<{ id: SectionId; label: string; icon: string }> = [
   { id: 'basics', label: 'Basics', icon: 'id-card' },
-  { id: 'runtime', label: 'Runtime behavior', icon: 'sliders-horizontal' },
+  { id: 'runtime', label: 'Runtime', icon: 'sliders-horizontal' },
   { id: 'workspace', label: 'Workspace', icon: 'folder-git-2' },
   { id: 'access', label: 'Access', icon: 'lock' },
-  { id: 'memory', label: 'Memory', icon: 'database' }
+  { id: 'memory', label: 'Memory', icon: 'database' },
+  { id: 'secrets', label: 'Variables and Secrets', icon: 'code-xml' }
 ]
 
 const RAIL_ITEM_ON =
@@ -242,6 +251,14 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // Default 'all' (the CP's default); selected callers are picked from peers.
   const [callPolicy, setCallPolicy] = useState<AgentCallPolicy>('all')
   const [allowedCallers, setAllowedCallers] = useState<string[]>([])
+  // Outbound half — which peers this agent may call. Same default ('all') and the
+  // same server-side intersection as inbound.
+  const [outboundPolicy, setOutboundPolicy] = useState<AgentCallPolicy>('all')
+  const [allowedTargets, setAllowedTargets] = useState<string[]>([])
+  // Optional env vars + write-only secrets to seed at create (createAgent accepts
+  // both). Shared "Secrets and variables" editor with the Edit-agent modal.
+  const [envRows, setEnvRows] = useState<EnvVarDraft[]>([])
+  const [secretRows, setSecretRows] = useState<SecretDraft[]>([])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [activeSection, setActiveSection] = useState<SectionId>('basics')
@@ -711,6 +728,12 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       setErr('Select an external-memory connection, or choose another memory backend.')
       return
     }
+    if (envSecretError) {
+      setErr(envSecretError)
+      return
+    }
+    const envRecord = envRecordFromRows(envRows)
+    const secretsRecord = secretsRecordFromRows(secretRows)
     let normalizedAgentDir: string | undefined
     if (wsMode === 'github') {
       try {
@@ -773,6 +796,8 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
             ? { memory: { provider: memoryProvider as 'native' | 'none' } }
             : {}),
         restrictFileAccess: effectiveRunInSandbox,
+        ...(Object.keys(envRecord).length ? { env: envRecord } : {}),
+        ...(Object.keys(secretsRecord).length ? { secrets: secretsRecord } : {}),
         permissionMode: selectedPermissionMode,
         allowRuntimeChangesInChat,
         workspace,
@@ -782,7 +807,12 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           : {}),
         // Selected-callers-create: send only when restricting (default 'all' is
         // implicit). The CP intersects the allow-list with visible org peers.
-        ...(callPolicy === 'selected' ? { callPolicy: 'selected' as const, allowedCallerAgentIds: allowedCallers } : {})
+        ...(callPolicy === 'selected'
+          ? { callPolicy: 'selected' as const, allowedCallerAgentIds: allowedCallers }
+          : {}),
+        ...(outboundPolicy === 'selected'
+          ? { outboundPolicy: 'selected' as const, allowedTargetAgentIds: allowedTargets }
+          : {})
       })
       onClose()
     } catch (e) {
@@ -820,6 +850,15 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // in the footer, the first one you have to go fix. These mirror `submit`'s
   // guards, so the dots clear exactly when the button starts working. Access
   // never appears: visibility always carries a value (org by default).
+  const envSecretError = envSecretsError(envRows, secretRows)
+  // What the agent-visibility copy calls this not-yet-created agent.
+  const callVisibilityTarget =
+    agentSlugFinalize(name) || agentSlugFinalize(displayName) ? (
+      <span className="font-mono text-[12.5px]">{agentSlugFinalize(name) || agentSlugFinalize(displayName)}</span>
+    ) : (
+      'this agent'
+    )
+
   const blockers: Partial<Record<SectionId, string>> = {}
   if (!(agentSlugFinalize(name) || agentSlugFinalize(displayName))) blockers.basics = 'name is required'
   else if (!daemon) blockers.basics = 'no daemon available'
@@ -827,6 +866,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   else if (usingPicker && ghDenied) blockers.workspace = 'no access to this repository'
   else if (usingPicker && !picked && !publicRepo) blockers.workspace = 'pick a repository'
   else if (wsMode === 'github' && !usingPicker && !repo.trim()) blockers.workspace = 'add a repository'
+  if (envSecretError) blockers.secrets = envSecretError
   if (memoryProvider === 'external' && !externalMemory.connectionId) blockers.memory = 'select a connection'
   const firstBlocker = SECTIONS.find((s) => blockers[s.id])
   const blockerHint = firstBlocker ? `${firstBlocker.label}: ${blockers[firstBlocker.id]}` : null
@@ -843,7 +883,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       <div className="flex min-h-0 flex-1 flex-col desktop:min-h-[420px] desktop:flex-row">
         {/* Section rail: a column beside the form on desktop, a scrollable strip
             above it on phones (a 172px rail would eat a bottom sheet). */}
-        <nav className="flex flex-none items-center gap-1 overflow-x-auto border-b border-(--border-subtle) bg-(--surface-sunken) p-2 desktop:w-[172px] desktop:flex-col desktop:items-stretch desktop:gap-[2px] desktop:overflow-x-visible desktop:overflow-y-auto desktop:border-r desktop:border-b-0 desktop:py-[10px]">
+        <nav className="flex flex-none items-center gap-1 overflow-x-auto border-b border-(--border-subtle) bg-(--surface-sunken) p-2 desktop:w-[200px] desktop:flex-col desktop:items-stretch desktop:gap-[2px] desktop:overflow-x-visible desktop:overflow-y-auto desktop:border-r desktop:border-b-0 desktop:py-[10px]">
           {SECTIONS.map((s) => (
             <button
               key={s.id}
@@ -984,9 +1024,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           </section>
 
           <section ref={sectionRef('runtime')} className="mt-5 border-t border-(--border-subtle) pt-5">
-            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-              Runtime behavior
-            </div>
+            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Runtime</div>
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
               {(showEffort || fastModeAvailable || showPermission) && (
                 <div className="fld desktop:col-span-2">
@@ -1314,28 +1352,45 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
 
           <section ref={sectionRef('access')} className="mt-5 border-t border-(--border-subtle) pt-5">
             <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Access</div>
-            <div className="mt-[13px] flex flex-col gap-[14px]">
-              <VisibilityField value={sharing} onChange={setSharing} creatorUserId={me?.userId} />
-              <AgentCallVisibility
-                variant="inline"
-                mode={callPolicy}
-                selectedIds={allowedCallers}
-                peers={agents}
-                daemons={daemons}
-                target={
-                  agentSlugFinalize(name) || agentSlugFinalize(displayName) ? (
-                    <span className="font-mono text-[12.5px]">
-                      {agentSlugFinalize(name) || agentSlugFinalize(displayName)}
-                    </span>
-                  ) : (
-                    'this agent'
-                  )
-                }
-                onChange={(nextMode, nextSelected) => {
-                  setCallPolicy(nextMode)
-                  setAllowedCallers(nextSelected)
-                }}
+            <div className="flex flex-col gap-[14px]">
+              <VisibilityField
+                value={sharing}
+                onChange={setSharing}
+                creatorUserId={me?.userId}
+                label="Team visibility"
               />
+              {/* Both directions, same cards as the Edit modal's Access section. */}
+              <div className="fld">
+                <span className="fldlbl">Agent visibility</span>
+                <div className="flex flex-col gap-3">
+                  <AgentCallVisibility
+                    variant="section"
+                    direction="inbound"
+                    mode={callPolicy}
+                    selectedIds={allowedCallers}
+                    peers={agents}
+                    daemons={daemons}
+                    target={callVisibilityTarget}
+                    onChange={(nextMode, nextSelected) => {
+                      setCallPolicy(nextMode)
+                      setAllowedCallers(nextSelected)
+                    }}
+                  />
+                  <AgentCallVisibility
+                    variant="section"
+                    direction="outbound"
+                    mode={outboundPolicy}
+                    selectedIds={allowedTargets}
+                    peers={agents}
+                    daemons={daemons}
+                    target={callVisibilityTarget}
+                    onChange={(nextMode, nextSelected) => {
+                      setOutboundPolicy(nextMode)
+                      setAllowedTargets(nextSelected)
+                    }}
+                  />
+                </div>
+              </div>
             </div>
             <div className="mt-[14px] flex items-center gap-2 rounded-md bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
               <Icon name="info" size={14} />
@@ -1365,6 +1420,15 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                 </div>
               )}
             </div>
+          </section>
+
+          <section ref={sectionRef('secrets')} className="mt-5 border-t border-(--border-subtle) pt-5">
+            <EnvSecretsFields
+              envRows={envRows}
+              setEnvRows={setEnvRows}
+              secretRows={secretRows}
+              setSecretRows={setSecretRows}
+            />
           </section>
         </div>
       </div>

@@ -4,7 +4,7 @@
 // Split into its own module so react-markdown + remark-gfm are loaded lazily (via
 // next/dynamic) and never ship in the main console bundle.
 //
-// Safety: react-markdown v9 escapes raw HTML and sanitizes URLs by default, so
+// Safety: react-markdown escapes raw HTML and sanitizes URLs by default, so
 // untrusted agent-authored files can't inject scripts. A caller may opt in to
 // resolving a link as an in-app action or marking it unavailable; every unresolved
 // URL keeps the existing opener-isolated new-tab behavior.

@@ -1,8 +1,9 @@
 /**
- * A file shared alongside a message. Carries only metadata + a fetch URL — the
- * bytes are downloaded daemon-locally (with the bot token) at prompt-assembly
- * time and turned into an ACP image/resource content block. Attachment bytes
- * never traverse the daemon↔CP WS (they stay edge-local; see §9.2 / §3.2).
+ * A file shared alongside a message. Platform ingresses carry metadata + a
+ * fetch URL and download the bytes daemon-locally with the provider token.
+ * Webchat may instead arrive with bounded inline bytes from the relay content
+ * plane. Both forms become ACP image/resource blocks at prompt assembly; the
+ * daemon also retains bounded webchat images for authorized transcript replay.
  */
 export interface Attachment {
   /** Stable source id (Slack file.id). */
@@ -13,11 +14,10 @@ export interface Attachment {
   mimeType: string
   /** Bytes, when the platform reports it. */
   size?: number
-  /**
-   * Auth-gated source URL (Slack `url_private_download`). Fetching it requires
-   * `Authorization: Bearer <botToken>`; resolved by the owning SlackConnection.
-   */
-  sourceUrl: string
+  /** Auth-gated provider URL/key, absent for an inline webchat upload. */
+  sourceUrl?: string
+  /** Already-bounded bytes from webchat, absent for provider-backed attachments. */
+  inlineData?: Buffer
 }
 
 export interface NormalizedMessage {

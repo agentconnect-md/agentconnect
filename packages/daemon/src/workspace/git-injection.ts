@@ -27,11 +27,12 @@
  * Everything written here is a POINTER to the daemon — never a secret.
  */
 import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { simpleGit, type SimpleGit } from 'simple-git'
-import type { GitCommitIdentity } from '@agentconnect.md/protocol'
+import { normalizeGitCloneUrl, type GitCommitIdentity } from '@agentconnect.md/protocol'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../cp/gitcred-server.js'
 
 /**
@@ -54,7 +55,9 @@ import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../cp/gitcred-server.
 const UNSAFE_OPTS = {
   unsafe: {
     allowUnsafeCredentialHelper: true, // the daemon-built credential.https://github.com.helper pairs
-    allowUnsafeConfigEnvCount: true // the daemon-built GIT_CONFIG_COUNT/KEY_n/VALUE_n channel
+    allowUnsafeConfigEnvCount: true, // the daemon-built GIT_CONFIG_COUNT/KEY_n/VALUE_n channel
+    allowUnsafeConfigPaths: true, // the daemon-selected empty global/system config view
+    allowUnsafeSshCommand: true // the daemon-built ssh command that ignores user routing config
   }
 } as const
 
@@ -93,9 +96,19 @@ const HOST_ENV_STRIP = new Set([
   'GIT_EXTERNAL_DIFF',
   'GIT_PROXY_COMMAND',
   'GIT_TEMPLATE_DIR',
+  // `git rev-parse --local-env-vars`: none of the caller's repository context
+  // may redirect daemon-managed operations away from their explicit cwd.
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_COMMON_DIR',
   'GIT_DIR',
-  'GIT_WORK_TREE',
+  'GIT_GRAFT_FILE',
+  'GIT_IMPLICIT_WORK_TREE',
   'GIT_INDEX_FILE',
+  'GIT_NO_REPLACE_OBJECTS',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_REPLACE_REF_BASE',
+  'GIT_SHALLOW_FILE',
+  'GIT_WORK_TREE',
   'GIT_NAMESPACE',
   'GIT_CONFIG',
   'GIT_CONFIG_GLOBAL',
@@ -120,6 +133,140 @@ export function gitEnvBase(): Record<string, string> {
     env[k] = v
   }
   return env
+}
+
+const WORKSPACE_GIT_PROXY_ENV = /^(?:all|ftp|http|https|no)_proxy$/i
+const EMPTY_GIT_CONFIG = process.platform === 'win32' ? 'NUL' : '/dev/null'
+const WORKSPACE_SSH_COMMAND =
+  'ssh -F none -o ProxyCommand=none -o ProxyJump=none -o PermitLocalCommand=no -o ClearAllForwardings=yes'
+const UNSAFE_LOCAL_WORKSPACE_GIT_CONFIG =
+  /^(?:url\..*\.insteadof|include(?:if\..*)?\.path|http(?:\..*)?\.(?:proxy|curloptresolve)|remote\..*\.proxy|core\.sshcommand|fetch\.bundleuri)$/i
+const WORKSPACE_GIT_CONTROLLED_ENV = new Set([
+  'GIT_ALLOW_PROTOCOL',
+  'GIT_CONFIG_NOSYSTEM',
+  'GIT_LFS_SKIP_SMUDGE',
+  'GIT_NO_LAZY_FETCH',
+  'GIT_SSH_VARIANT',
+  'GIT_TERMINAL_PROMPT'
+])
+
+function workspaceGitProcessEnv(): Record<string, string> {
+  const env = gitEnvBase()
+  for (const key of Object.keys(env)) {
+    if (WORKSPACE_GIT_PROXY_ENV.test(key) || WORKSPACE_GIT_CONTROLLED_ENV.has(key.toUpperCase())) delete env[key]
+  }
+  // Daemon-managed workspace Git must not inherit user-writable routing rules
+  // from ~/.gitconfig or system config. Local checkout config is audited
+  // separately before an existing workspace performs network I/O.
+  env.GIT_CONFIG_NOSYSTEM = '1'
+  env.GIT_CONFIG_GLOBAL = EMPTY_GIT_CONFIG
+  env.GIT_LFS_SKIP_SMUDGE = '1'
+  env.GIT_NO_LAZY_FETCH = '1'
+  return env
+}
+
+function workspaceGitConfigPairs(repository?: string): ReadonlyArray<readonly [string, string]> {
+  const pairs: Array<readonly [string, string]> = [
+    ['http.followRedirects', 'false'],
+    // Disable checkout- or server-selected secondary download locations.
+    ['fetch.bundleURI', ''],
+    ['transfer.bundleURI', 'false'],
+    ['fetch.uriProtocols', '']
+  ]
+  if (!repository) return pairs
+  const normalized = normalizeGitCloneUrl(repository)
+  // Pin the complete URL against broader url.*.insteadOf rules. Existing
+  // checkout config is also audited because Git keeps the earlier value when
+  // an untrusted rule has the same match length.
+  pairs.push([`url.${normalized}.insteadOf`, normalized])
+  if (normalized.toLowerCase().startsWith('https://')) {
+    // URL-specific values outrank generic http.* values. Disable redirects,
+    // proxies, and libcurl's host-to-address override for the explicit target.
+    pairs.push([`http.${normalized}.followRedirects`, 'false'])
+    pairs.push([`http.${normalized}.proxy`, ''])
+    pairs.push([`http.${normalized}.curloptResolve`, ''])
+  } else {
+    // Ignore ~/.ssh/config and checkout-controlled core.sshCommand routing.
+    pairs.push(['core.sshCommand', WORKSPACE_SSH_COMMAND])
+    pairs.push(['ssh.variant', 'ssh'])
+  }
+  return pairs
+}
+
+function gitConfigEnv(pairs: ReadonlyArray<readonly [string, string]>): Record<string, string> {
+  const env: Record<string, string> = { GIT_CONFIG_COUNT: String(pairs.length) }
+  pairs.forEach(([key, value], index) => {
+    env[`GIT_CONFIG_KEY_${index}`] = key
+    env[`GIT_CONFIG_VALUE_${index}`] = value
+  })
+  return env
+}
+
+/** Workspace clone/pull policy. Keep this separate from `gitEnvBase`: skill
+ * installation intentionally supports a broader set of operator-chosen sources. */
+export function workspaceGitEnvBase(repository?: string): Record<string, string> {
+  const env = workspaceGitProcessEnv()
+  // Git applies this allowlist after url.*.insteadOf rewriting.
+  env.GIT_ALLOW_PROTOCOL = 'https:ssh'
+  // Do not let an otherwise allowed HTTPS origin redirect daemon egress to a
+  // second, unvalidated origin.
+  return { ...env, ...gitConfigEnv(workspaceGitConfigPairs(repository)) }
+}
+
+/**
+ * Bind a validated pull URL to an unguessable daemon-owned remote name.
+ * Git otherwise resolves a URL-shaped argument as a checkout-defined remote
+ * name first, which could replace the authorized target through remote.*.url.
+ */
+export function workspaceGitPullTarget(repository: string): {
+  remote: string
+  env: Record<string, string>
+} {
+  const normalized = normalizeGitCloneUrl(repository)
+  const remote = `agentconnect-${randomUUID()}`
+  const pairs = [
+    ...workspaceGitConfigPairs(normalized),
+    // An empty value clears lower-priority URL lists before the daemon target.
+    [`remote.${remote}.url`, ''] as const,
+    [`remote.${remote}.url`, normalized] as const,
+    [`remote.${remote}.proxy`, ''] as const
+  ]
+  const env = workspaceGitProcessEnv()
+  env.GIT_ALLOW_PROTOCOL = 'https:ssh'
+  return { remote, env: { ...env, ...gitConfigEnv(pairs) } }
+}
+
+/** Environment for workspace Git operations that must never contact a remote. */
+export function workspaceGitLocalEnv(): Record<string, string> {
+  return { ...workspaceGitProcessEnv(), GIT_ALLOW_PROTOCOL: '' }
+}
+
+/**
+ * Reject checkout-owned routing includes and URL rewrites before a daemon-run
+ * pull. Git has no switch that disables only repository config, so inspect the
+ * local/worktree keys with includes disabled, while global/system config is
+ * already excluded by the environment above.
+ */
+export async function assertSafeWorkspaceGitConfig(cwd: string): Promise<void> {
+  const names = await gitFor(cwd)
+    .env(workspaceGitLocalEnv())
+    .raw(['config', '--no-includes', '--name-only', '-z', '--list'])
+  if (names.split('\0').some((name) => UNSAFE_LOCAL_WORKSPACE_GIT_CONFIG.test(name))) {
+    throw new Error('workspace Git configuration contains a disallowed network override')
+  }
+}
+
+/**
+ * Pull exactly the daemon-authorized repository and branch. Supplying both
+ * operands keeps checkout-controlled branch.*.remote / branch.*.merge config
+ * out of daemon-managed network selection; the explicit destination also keeps
+ * origin/<branch> current for status. check-ref-format prevents a configured
+ * branch from being interpreted as an option or refspec.
+ */
+export async function pullWorkspaceRef(git: SimpleGit, remote: string, branch: string) {
+  await git.raw(['check-ref-format', '--branch', branch])
+  const refspec = `+refs/heads/${branch}:refs/remotes/origin/${branch}`
+  return git.pull(remote, refspec, ['--ff-only', '--no-recurse-submodules'])
 }
 
 /** Module-level init (workspace-manager is functional; mirrors cloneInFlight). */
@@ -157,7 +304,7 @@ function quotedHelper(agentId: string): string {
 }
 
 /** The three github.com-scoped config pairs both channels share. */
-function configPairs(agentId: string): Array<[string, string]> {
+function credentialConfigPairs(agentId: string): Array<[string, string]> {
   return [
     ['credential.https://github.com.helper', ''], // reset: machine helpers must never answer for github.com
     ['credential.https://github.com.helper', quotedHelper(agentId)],
@@ -170,17 +317,13 @@ function configPairs(agentId: string): Array<[string, string]> {
  * Spread over `process.env` by the caller: simple-git's `.env()` REPLACES the
  * child environment (v3.36 verified), a bare object would strip PATH/HOME.
  */
-export function cloneGitEnv(agentId: string): Record<string, string> {
-  const pairs = configPairs(agentId)
+export function cloneGitEnv(agentId: string, repository?: string): Record<string, string> {
+  const pairs = [...workspaceGitConfigPairs(repository), ...credentialConfigPairs(agentId)]
   const env: Record<string, string> = {
     ...gitCredentialEnv(agentId),
     GIT_TERMINAL_PROMPT: '0',
-    GIT_CONFIG_COUNT: String(pairs.length)
+    ...gitConfigEnv(pairs)
   }
-  pairs.forEach(([k, v], i) => {
-    env[`GIT_CONFIG_KEY_${i}`] = k
-    env[`GIT_CONFIG_VALUE_${i}`] = v
-  })
   return env
 }
 
@@ -223,7 +366,7 @@ export function sessionGitEnv(agentId: string, commitIdentity?: GitCommitIdentit
 
 /** Post-clone: pin the repo-local helper so agent-run git in the checkout works. */
 export async function writeRepoHelperConfig(cwd: string, agentId: string): Promise<void> {
-  const git = gitFor(cwd)
+  const git = gitFor(cwd).env(workspaceGitLocalEnv())
   // `--replace-all` on the first write resets any stale helper list from a
   // previous agent generation; addConfig(append=true) accumulates the rest.
   await git.raw(['config', '--replace-all', 'credential.https://github.com.helper', ''])

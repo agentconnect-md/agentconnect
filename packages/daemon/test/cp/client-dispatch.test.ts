@@ -71,6 +71,8 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
   const workspaceRead = {
     list: vi.fn(async () => ({ agentId: 'a', path: '', exists: true, entries: [] })),
     read: vi.fn(async () => ({ agentId: 'a', path: 'f', exists: false })),
+    write: vi.fn(async () => ({ agentId: 'a', path: 'f', size: 0, mtime: '2026-06-26T00:00:00.000Z' })),
+    delete: vi.fn(async () => ({ agentId: 'a', path: 'f' })),
     ...((over.workspaceRead as any) ?? {})
   }
   const workspaceGit = {
@@ -88,7 +90,7 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
     maxAgents: 4,
     capabilities: () => ({ platforms: ['slack'], runtimes: [], acp: true, features: [] }),
     runtimeProfiles: () => [],
-    localState: () => ({ assignments: [], crons: [], leases: [], agents: [], integrations: [] }),
+    localState: () => ({ assignments: [], crons: [], leases: [], agents: [], integrations: [], stagedAgents: [] }),
     loadSnapshot: () => ({ cpu: 0.1, mem: 0.2, agents: 1 }),
     activeSessions: () => 2,
     configApply,
@@ -320,13 +322,14 @@ describe('CpClient dispatch', () => {
     )
     // Legacy payloads still receive the inbound collection default, but the
     // outbound list remains absent with its optional policy so a mixed-version
-    // update cannot clear an existing selected allow-list.
+    // update cannot clear an existing selected allow-list. skills defaults to [].
     expect(configApply.applyAgentUpsert).toHaveBeenCalledWith({
       agentId: DAEMON_ID,
       spec: {
         name: 'helper',
         model: 'opus',
         mcpServers: [],
+        skills: [],
         allowedCallerAgentIds: []
       }
     })
@@ -363,7 +366,7 @@ describe('CpClient dispatch', () => {
     await tick()
     expect(configApply.applyAgentActivate).toHaveBeenCalledWith({
       ...payload,
-      spec: { name: 'helper', mcpServers: [], allowedCallerAgentIds: [] }
+      spec: { name: 'helper', mcpServers: [], skills: [], allowedCallerAgentIds: [] }
     })
     expect(JSON.parse(t.sent[0]!)).toMatchObject({
       type: 'ack',
@@ -511,6 +514,47 @@ describe('CpClient dispatch', () => {
     expect(ack.corr).toBe(f.id)
   })
 
+  it('replies workspace/write/ok from the scratch workspace file seam', async () => {
+    const write = vi.fn(async () => ({
+      agentId: 'a1',
+      path: 'notes.md',
+      size: 7,
+      mtime: '2026-06-26T00:01:00.000Z'
+    }))
+    const { t, workspaceRead } = await readyClient({ workspaceRead: { write } as any })
+    const payload = {
+      agentId: 'a1',
+      path: 'notes.md',
+      contentBase64: Buffer.from('updated').toString('base64'),
+      ifMatchMtime: '2026-06-26T00:00:00.000Z'
+    }
+    const f = JSON.parse(frame('workspace/write', payload, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    expect(workspaceRead.write).toHaveBeenCalledWith(payload)
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('workspace/write/ok')
+    expect(rep.corr).toBe(f.id)
+    expect(rep.payload.size).toBe(7)
+  })
+
+  it('replies workspace/delete/ok from the scratch workspace file seam', async () => {
+    const del = vi.fn(async () => ({ agentId: 'a1', path: 'notes.md' }))
+    const { t, workspaceRead } = await readyClient({ workspaceRead: { delete: del } as any })
+    const payload = {
+      agentId: 'a1',
+      path: 'notes.md',
+      ifMatchMtime: '2026-06-26T00:00:00.000Z'
+    }
+    const f = JSON.parse(frame('workspace/delete', payload, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    expect(workspaceRead.delete).toHaveBeenCalledWith(payload)
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('workspace/delete/ok')
+    expect(rep.corr).toBe(f.id)
+  })
+
   it('replies workspace/gitstatus/result from the workspaceGit seam', async () => {
     const status = vi.fn(async () => ({
       agentId: 'a1',
@@ -602,7 +646,9 @@ describe('CpClient dispatch', () => {
 
   it('answers session/history with a session/history/page reply correlated to the req', async () => {
     const { t } = await readyClient()
-    const f = JSON.parse(frame('session/history', { sessionId: DAEMON_ID, limit: 50 }, { epoch: 5 }))
+    const f = JSON.parse(
+      frame('session/history', { agentId: CRON_AGENT_ID, sessionId: DAEMON_ID, limit: 50 }, { epoch: 5 })
+    )
     t.pushInbound(JSON.stringify(f))
     const rep = JSON.parse(t.sent[0]!)
     expect(rep.type).toBe('session/history/page')

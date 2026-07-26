@@ -1,7 +1,6 @@
-import { HttpsProxyAgent } from 'https-proxy-agent'
-import pkg from '@slack/bolt'
-const { App, LogLevel } = pkg
-import { WebClient } from '@slack/web-api'
+import { App, LogLevel, SocketModeReceiver } from '@slack/bolt'
+import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
+import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'
 import {
   decodeSlackStatusOverflowValue,
   extractSlackMessageText,
@@ -99,6 +98,16 @@ export function consolidateShared(agents: Agent[]): Map<string, ConsolidatedGrou
   return groups
 }
 
+/** The human behind one interactive click (button / select / modal submit). Carried
+ *  alongside the action so the daemon records WHO changed a session, which a bare
+ *  `sessionKey` cannot say. */
+export interface InteractionActor {
+  userId: string
+  /** Only set where the platform reports it on the interaction (Discord does; a Slack
+   *  `block_actions` payload carries no bot flag on its `user`). */
+  isBot?: boolean
+}
+
 export interface SlackDeps {
   group: ConsolidatedGroup
   onMessage: (msg: NormalizedMessage) => void
@@ -111,6 +120,9 @@ export interface SlackDeps {
   onStatusAction?: (a: {
     kind: 'set-model' | 'set-effort' | 'set-permission-mode' | 'set-fast' | 'set-output' | 'cancel'
     sessionKey: string
+    /** Who tapped it (Block Kit `body.user`), so the daemon can record the operator
+     *  behind a session change. Absent only if Slack omits the actor on the payload. */
+    actor?: InteractionActor
     model?: string
     effort?: string
     permissionMode?: string
@@ -126,7 +138,7 @@ export interface SlackDeps {
   /** Fired when a user taps a button on an interactive permission card
    *  (render.buildPermissionCard). The decoded `requestId` ties the click back to the
    *  pending ACP `session/request_permission`; `optionId` is the chosen option. */
-  onPermissionChoice?: (a: { requestId: string; optionId: string }) => void
+  onPermissionChoice?: (a: { requestId: string; optionId: string; actor?: InteractionActor }) => void
   /** Fired when a user taps a button on an interactive elicitation card
    *  (render.buildElicitationCard). `value` is the chosen option's wire value, or null
    *  for the Dismiss button (decline). */
@@ -167,7 +179,13 @@ type BlockActionArgs = {
     trigger_id?: string
     view?: { id?: string; private_metadata?: string }
     actions?: { block_id?: string }[]
+    user?: { id?: string }
   }
+}
+
+/** The clicking user off a `block_actions` payload, for the action's audit record. */
+function actorOf(body: BlockActionArgs['body']): InteractionActor | undefined {
+  return body?.user?.id ? { userId: body.user.id } : undefined
 }
 
 type AppLike = {
@@ -226,6 +244,7 @@ type AppLike = {
       }
     }
   }
+  init?: () => Promise<void>
   start: () => Promise<void>
   stop: () => Promise<void>
 }
@@ -269,6 +288,7 @@ function isRoutableMessageEvent(ev: SlackMessageEvent): boolean {
 
 /** Cap on members enriched per `listChannelMembers` call (bounds users.info fan-out). */
 const MEMBER_ENRICH_CAP = 50
+const SLACK_FILE_ORIGIN = 'https://files.slack.com'
 
 /**
  * Build a chat.postMessage/update payload that renders the body as a Block Kit
@@ -298,14 +318,22 @@ function isMissingCustomizeScope(err: unknown): boolean {
 // call per message for installations that have not been upgraded yet.
 const CUSTOM_USERNAME_REPROBE_MS = 5 * 60_000
 
+function proxyDispatcher(): ProxyAgent | undefined {
+  const url = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY
+  return url ? new ProxyAgent(url) : undefined
+}
+
+function fetchWithDispatcher(dispatcher: Dispatcher): FetchFunction {
+  return (url, init) => undiciFetch(url, { ...(init as Parameters<typeof undiciFetch>[1]), dispatcher })
+}
+
 /** Build the send-only {@link AppLike}: a real Slack `WebClient` (xoxb) for the send
  *  surface + inert event/start/stop members (shared-bot-relay.md §11). Same proxy +
  *  timeout/retry tuning as the socket-mode factory. */
 function sendOnlyApp(botToken: string): AppLike {
-  const proxyUrl = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY
-  const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined
+  const dispatcher = proxyDispatcher()
   const client = new WebClient(botToken, {
-    ...(agent ? { agent } : {}),
+    ...(dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}),
     timeout: 30_000,
     retryConfig: { retries: 2 }
   })
@@ -348,24 +376,32 @@ export class SlackConnection {
     factory: (opts: { token: string; appToken: string }) => AppLike = (o) => {
       // If HTTPS_PROXY or HTTP_PROXY is set, route all Slack API calls and
       // WebSocket connections through that proxy.
-      const proxyUrl = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY
-      const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined
-      return new App({
-        token: o.token,
-        appToken: o.appToken,
-        socketMode: true,
-        ...(agent ? { agent } : {}),
+      const dispatcher = proxyDispatcher()
+      const clientOptions: WebClientOptions = {
+        ...(dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}),
         // Bound the Web API per-request time + retries. The @slack/web-api default
         // "10 retries over ~30 minutes" would, combined with our serial send-queue,
         // let one transient failure block all delivery for a whole turn. 30s is a
-        // compromise: long enough for the initial connect handshake (auth.test /
-        // apps.connections.open) to survive a slow/VPN link, yet still bounded so a
-        // stuck send can't wedge the queue indefinitely. Tradeoff: this timeout is
-        // shared by connect AND send calls, so the ceiling also caps the worst-case
-        // stall on the hot send path — acceptable given retries:2 and the daemon's
-        // background reconnect loop retries a failed connect anyway.
-        clientOptions: { timeout: 30_000, retryConfig: { retries: 2 } },
-        ...(deps.boltDebug ? { logLevel: LogLevel.DEBUG } : {})
+        // compromise: long enough for auth.test and sends to survive a slow/VPN link,
+        // yet still bounded so a stuck call cannot wedge the queue indefinitely.
+        timeout: 30_000,
+        retryConfig: { retries: 2 }
+      }
+      const logLevel = deps.boltDebug ? LogLevel.DEBUG : undefined
+      const receiver = new SocketModeReceiver({
+        appToken: o.appToken,
+        ...(dispatcher ? { dispatcher } : {}),
+        installerOptions: { clientOptions },
+        ...(logLevel ? { logLevel } : {})
+      })
+      return new App({
+        token: o.token,
+        receiver,
+        clientOptions,
+        // Bolt v5 otherwise starts token verification from its constructor without
+        // an awaitable lifecycle. start() calls init() before opening the socket.
+        deferInitialization: true,
+        ...(logLevel ? { logLevel } : {})
       }) as unknown as AppLike
     }
   ) {
@@ -382,6 +418,8 @@ export class SlackConnection {
 
   async start(): Promise<void> {
     const log = this.deps.log
+    log?.debug('slack: initializing Bolt authorization…')
+    await this.app.init?.()
     log?.debug('slack: auth.test → resolving bot identity (HTTPS)…')
     const auth = await this.app.client.auth.test()
     this.botUserId = auth.user_id ?? ''
@@ -459,7 +497,7 @@ export class SlackConnection {
         const triggerId = body?.trigger_id
         if (triggerId) await this.openStatusModal(triggerId, sessionKey)
       } else if (choice.action === 'cancel') {
-        this.deps.onStatusAction?.({ kind: 'cancel', sessionKey })
+        this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, actor: actorOf(body) })
       }
     })
     this.app.action(STATUS_ACTION.manage, async ({ ack, action, body }) => {
@@ -473,26 +511,29 @@ export class SlackConnection {
       await ack()
       const sessionKey = body?.view?.private_metadata ?? action.block_id
       const model = action.selected_option?.value
-      if (sessionKey && model) this.deps.onStatusAction?.({ kind: 'set-model', sessionKey, model })
+      if (sessionKey && model)
+        this.deps.onStatusAction?.({ kind: 'set-model', sessionKey, model, actor: actorOf(body) })
     })
     this.app.action(STATUS_ACTION.setEffort, async ({ ack, action, body }) => {
       await ack()
       const sessionKey = body?.view?.private_metadata ?? action.block_id
       const effort = action.selected_option?.value
-      if (sessionKey && effort) this.deps.onStatusAction?.({ kind: 'set-effort', sessionKey, effort })
+      if (sessionKey && effort)
+        this.deps.onStatusAction?.({ kind: 'set-effort', sessionKey, effort, actor: actorOf(body) })
     })
     this.app.action(STATUS_ACTION.setPermissionMode, async ({ ack, action, body }) => {
       await ack()
       const sessionKey = body?.view?.private_metadata ?? action.block_id
       const permissionMode = action.selected_option?.value
       if (sessionKey && permissionMode)
-        this.deps.onStatusAction?.({ kind: 'set-permission-mode', sessionKey, permissionMode })
+        this.deps.onStatusAction?.({ kind: 'set-permission-mode', sessionKey, permissionMode, actor: actorOf(body) })
     })
     this.app.action(STATUS_ACTION.setFast, async ({ ack, action, body }) => {
       await ack()
       const sessionKey = body?.view?.private_metadata ?? action.block_id
       const value = action.selected_option?.value
-      if (sessionKey && value) this.deps.onStatusAction?.({ kind: 'set-fast', sessionKey, fastMode: value === 'on' })
+      if (sessionKey && value)
+        this.deps.onStatusAction?.({ kind: 'set-fast', sessionKey, fastMode: value === 'on', actor: actorOf(body) })
     })
     this.app.action(STATUS_ACTION.setOutput, async ({ ack, action, body }) => {
       await ack()
@@ -502,12 +543,12 @@ export class SlackConnection {
         sessionKey &&
         (mode === 'none' || mode === 'minimal' || mode === 'low' || mode === 'medium' || mode === 'high')
       )
-        this.deps.onStatusAction?.({ kind: 'set-output', sessionKey, outputMode: mode })
+        this.deps.onStatusAction?.({ kind: 'set-output', sessionKey, outputMode: mode, actor: actorOf(body) })
     })
     this.app.action(STATUS_ACTION.cancel, async ({ ack, action, body }) => {
       await ack()
       const sessionKey = body?.view?.private_metadata ?? action.value
-      if (sessionKey) this.deps.onStatusAction?.({ kind: 'cancel', sessionKey })
+      if (sessionKey) this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, actor: actorOf(body) })
     })
     this.app.action(STATUS_ACTION.view, async ({ ack }) => {
       await ack() // URL button — the browser follows the link; nothing to do here.
@@ -515,10 +556,10 @@ export class SlackConnection {
     // Interactive permission card (buildPermissionCard): every option button shares the
     // `ac_perm:<index>` prefix, matched here by RegExp. The chosen requestId+optionId ride
     // the button `value`; the daemon resolves the pending ACP request from them.
-    this.app.action(new RegExp(`^${PERMISSION_ACTION_PREFIX}:`), async ({ ack, action }) => {
+    this.app.action(new RegExp(`^${PERMISSION_ACTION_PREFIX}:`), async ({ ack, action, body }) => {
       await ack()
       const decoded = action.value ? decodePermValue(action.value) : null
-      if (decoded) this.deps.onPermissionChoice?.(decoded)
+      if (decoded) this.deps.onPermissionChoice?.({ ...decoded, actor: actorOf(body) })
     })
     // Interactive elicitation card (buildElicitationCard): option buttons share the
     // `ac_elicit:<index>` prefix (value = `<requestId>|<optionValue>`); the Dismiss button
@@ -809,33 +850,48 @@ export class SlackConnection {
    * stay daemon-local.
    */
   async downloadFile(sourceUrl: string, maxBytes = 8 * 1024 * 1024): Promise<Buffer | null> {
+    let url: URL
     try {
-      const res = await fetch(sourceUrl, { headers: { Authorization: `Bearer ${this.deps.group.botToken}` } })
+      url = new URL(sourceUrl)
+    } catch {
+      this.deps.log?.debug('slack: downloadFile rejected an invalid file URL')
+      return null
+    }
+    if (url.protocol !== 'https:' || url.origin !== SLACK_FILE_ORIGIN || url.username || url.password) {
+      this.deps.log?.debug('slack: downloadFile rejected a non-Slack file URL')
+      return null
+    }
+
+    try {
+      const res = await fetch(url.href, {
+        headers: { Authorization: `Bearer ${this.deps.group.botToken}` },
+        redirect: 'error'
+      })
       if (!res.ok) {
-        this.deps.log?.debug(`slack: downloadFile ${sourceUrl} → HTTP ${res.status}`)
+        this.deps.log?.debug(`slack: downloadFile ${url.href} → HTTP ${res.status}`)
         return null
       }
       const declared = Number(res.headers.get('content-length'))
       if (Number.isFinite(declared) && declared > maxBytes) {
-        this.deps.log?.debug(`slack: downloadFile ${sourceUrl} skipped — ${declared} bytes > cap ${maxBytes}`)
+        this.deps.log?.debug(`slack: downloadFile ${url.href} skipped — ${declared} bytes > cap ${maxBytes}`)
         return null
       }
       // An unauthorized url_private fetch is redirected to an HTML login page
       // (HTTP 200, text/html) rather than 401 — never mistake that for the file.
       const ctype = res.headers.get('content-type') ?? ''
       if (ctype.includes('text/html')) {
-        this.deps.log?.debug(`slack: downloadFile ${sourceUrl} got text/html (login page?) — treating as inaccessible`)
+        this.deps.log?.debug(`slack: downloadFile ${url.href} got text/html (login page?) — treating as inaccessible`)
         return null
       }
       // Defensively bound the read even when content-length is absent/untrustworthy.
       const buf = Buffer.from(await res.arrayBuffer())
       if (buf.byteLength > maxBytes) {
-        this.deps.log?.debug(`slack: downloadFile ${sourceUrl} discarded — ${buf.byteLength} bytes > cap ${maxBytes}`)
+        this.deps.log?.debug(`slack: downloadFile ${url.href} discarded — ${buf.byteLength} bytes > cap ${maxBytes}`)
         return null
       }
       return buf
     } catch (err) {
-      this.deps.log?.debug(`slack: downloadFile ${sourceUrl} failed: ${(err as Error).message}`)
+      this.deps.log?.debug(`slack: downloadFile ${url.href} failed: ${(err as Error).message}`)
       return null
     }
   }

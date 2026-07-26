@@ -2,6 +2,7 @@
 // Ported from the AgentConnect design (static demo content for the console UI).
 
 import type { AgentIcon } from '@/lib/agent-icon'
+import type { MemoryDreamingConfig } from '@/lib/api'
 
 export type StatusKey = 'online' | 'paused' | 'offline'
 
@@ -210,6 +211,8 @@ export interface Agent {
   memoryProvider: string
   /** Opt-in managed-memory extraction after each completed turn. */
   memoryAutoDistill: boolean
+  /** Managed-memory dreaming policy; present only when configured (managed provider). */
+  memoryDreaming?: MemoryDreamingConfig
   /** External-memory binding metadata; present only when memoryProvider='external'. */
   memoryConnectionId?: string
   memoryRecall?: {
@@ -682,6 +685,13 @@ export interface SessionFile {
   path: string
 }
 
+/** Bounded image on a live or daemon-backed Playground/WebChat user turn. */
+export interface SessionImage {
+  name: string
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp'
+  data: string
+}
+
 export interface SessionStep {
   kind: LaneKind
   who?: string
@@ -690,6 +700,7 @@ export interface SessionStep {
   text: string
   code?: string
   files?: SessionFile[]
+  image?: SessionImage
   /** Client-side timestamp for live playground/webchat steps. Persisted transcripts
    *  carry their own message `ts`; this only keeps in-memory live stats moving. */
   observedAtMs?: number
@@ -1473,59 +1484,6 @@ export interface DaemonRow {
   /** Whether the caller may change this daemon's sharing (= canEdit). */
   canManageSharing: boolean
 }
-
-export interface Skill {
-  icon: string
-  name: string
-  desc: string
-  agents: string
-  extracted: boolean
-}
-
-export const SKILLS: Skill[] = [
-  {
-    icon: 'git-pull-request',
-    name: 'review-pr',
-    desc: 'Fetch a PR, run the diff, leave inline review comments.',
-    agents: '3',
-    extracted: false
-  },
-  {
-    icon: 'rocket',
-    name: 'safe-deploy',
-    desc: 'Migrate, deploy, smoke-test, with auto-rollback on failure.',
-    agents: '2',
-    extracted: true
-  },
-  {
-    icon: 'search',
-    name: 'triage-incident',
-    desc: 'Pull logs and metrics, correlate, post a summary.',
-    agents: '2',
-    extracted: false
-  },
-  {
-    icon: 'book',
-    name: 'write-runbook',
-    desc: 'Turn a resolved incident into a markdown runbook.',
-    agents: '1',
-    extracted: false
-  },
-  {
-    icon: 'flask-conical',
-    name: 'flake-hunter',
-    desc: 'Re-run a test N times and report flake rate.',
-    agents: '1',
-    extracted: true
-  },
-  {
-    icon: 'shield-check',
-    name: 'dep-audit',
-    desc: 'Scan dependencies for advisories and open fix PRs.',
-    agents: '2',
-    extracted: false
-  }
-].map(tagName)
 
 export interface Member {
   initials: string

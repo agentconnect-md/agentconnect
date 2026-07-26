@@ -119,6 +119,24 @@ describe('diffAgents', () => {
       workspace: true,
       workspaceRepoRename: false
     })
+
+    const wrongHost = {
+      ...before,
+      workspace: { ...before.workspace, gitRepo: 'https://other-host.example/acme/new-name' }
+    } as Agent
+    expect(diffAgents([after], actual(wrongHost)).toChange[0]).toMatchObject({
+      workspace: true,
+      workspaceRepoRename: false
+    })
+
+    const shorthand = {
+      ...before,
+      workspace: { ...before.workspace, gitRepo: 'acme/old-name' }
+    } as Agent
+    expect(diffAgents([after], actual(shorthand)).toChange[0]).toMatchObject({
+      workspace: true,
+      workspaceRepoRename: false
+    })
   })
 
   it('respawns for an external connection switch but keeps policy-only edits hot', () => {

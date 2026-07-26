@@ -10,14 +10,16 @@
  * full-write and str-replace edits); the daemon serves the same directory to the CP
  * for the console (which still lists files via the internal `listMemory` helper).
  *
- * SECURITY: topic paths are agent/console-supplied, so every path is contained to
- * the memory dir — absolute paths and `..` escapes are rejected, and the resolved
- * path is re-checked so a symlink can't smuggle a target out. Flat by design (one
- * level): a topic is a file directly under `memory/`, no nested dirs.
+ * SECURITY: topic paths are agent/console-supplied, so absolute paths and `..`
+ * escapes are rejected. Reads and writes both walk and canonicalise every parent
+ * and reject symlinks/non-files — the daemon is outside the agent's sandbox, so a
+ * link planted in the writable memory dir must not redirect either direction.
+ * Writes additionally publish through a random exclusive temp file. Flat by design
+ * (one level): a topic is a file directly under `memory/`, no nested dirs.
  */
 import { randomUUID } from 'node:crypto'
-import { promises as fsp, mkdirSync, existsSync, writeFileSync } from 'node:fs'
-import { join, resolve, isAbsolute, sep } from 'node:path'
+import { constants, promises as fsp, lstatSync, mkdirSync, realpathSync, writeFileSync, type Stats } from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import {
   MEMORY_INDEX,
   MemoryFileHistoryEvent as MemoryFileHistoryEventSchema,
@@ -52,7 +54,7 @@ export const MAX_HISTORY_VERSIONS_PER_FILE = 100
 export const MAX_HISTORY_FILE_BYTES = 2 * 1024 * 1024
 
 /** Where a memory write originated — for change-log provenance. */
-export type MemoryWriteSource = 'tool' | 'console' | 'distill'
+export type MemoryWriteSource = 'tool' | 'console' | 'distill' | 'dream'
 
 /** One line in the memory change log (`.history`). `event` is `add` on a first write,
  *  `update` on an overwrite; `delete` is reserved (no delete op exists today — a
@@ -74,10 +76,6 @@ const DEFAULT_HISTORY_RETENTION: MemoryHistoryRetentionLimits = {
   maxBytes: MAX_HISTORY_FILE_BYTES,
   maxVersionsPerFile: MAX_HISTORY_VERSIONS_PER_FILE
 }
-
-/** One in-process mutation chain per agent sidecar. A managed memory directory
- * has one daemon owner, so this prevents append/compact races without a lockfile. */
-const historyMutations = new Map<string, Promise<void>>()
 
 /** Raised when a memory path escapes the memory dir. Surfaces as `BAD_PAYLOAD`. */
 export class MemoryPathError extends Error {
@@ -109,6 +107,30 @@ export function memoryDir(agentDir: string): string {
   return join(agentDir, MEMORY_DIRNAME)
 }
 
+/**
+ * Per-memory-directory serial mutex shared by ALL managed-store writers
+ * (`writeMemoryFile` below, and dream adoption via `DreamRunner`). This is the
+ * shared exclusion the dream adoption fence relies on: a console/tool/distill
+ * write cannot land between adoption's final digest re-check and its swap, so a
+ * non-forced adoption can never silently overwrite a post-fence write. Keyed by
+ * the resolved memory dir; a rejected critical section never wedges the chain.
+ */
+const memoryDirLocks = new Map<string, Promise<unknown>>()
+
+export function withMemoryDirLock<T>(agentDir: string, fn: () => Promise<T>): Promise<T> {
+  const key = memoryDir(agentDir)
+  const prev = memoryDirLocks.get(key) ?? Promise.resolve()
+  const result = prev.then(fn, fn)
+  memoryDirLocks.set(
+    key,
+    result.then(
+      () => {},
+      () => {}
+    )
+  )
+  return result
+}
+
 /** Resolve a memory-dir-relative path to an absolute one, contained to the dir.
  *  Rejects absolute paths, `..` escapes, and any nested directory (flat only). */
 export function resolveInMemoryDir(agentDir: string, relPath: string): string {
@@ -120,7 +142,203 @@ export function resolveInMemoryDir(agentDir: string, relPath: string): string {
   const rel = abs.slice(dir.length + 1)
   if (rel.includes(sep)) throw new MemoryPathError('memory is a flat directory (no subdirectories)')
   if (rel.length === 0) throw new MemoryPathError('a file name is required')
+  if (rel === MEMORY_HISTORY_FILENAME) throw new MemoryPathError('memory history is a reserved internal file')
   return abs
+}
+
+function isErrno(err: unknown, code: string): boolean {
+  return (err as NodeJS.ErrnoException | null)?.code === code
+}
+
+function under(root: string, path: string): boolean {
+  const rel = relative(root, path)
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
+}
+
+function sameFileVersion(a: Stats, b: Stats): boolean {
+  return b.isFile() && a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs
+}
+
+/**
+ * Create and canonicalise a destination's parent one component at a time.
+ * `root` is the provider-owned memory tree; `agentDir` is the trusted outer
+ * boundary. Existing symlink components are rejected instead of followed.
+ */
+async function containedWriteTarget(agentDir: string, root: string, destination: string): Promise<string> {
+  const lexicalAgent = resolve(agentDir)
+  const lexicalRoot = resolve(root)
+  const lexicalTarget = resolve(destination)
+  if (!under(lexicalAgent, lexicalRoot) || !under(lexicalRoot, lexicalTarget)) {
+    throw new MemoryPathError('path escapes the memory dir')
+  }
+
+  const realAgent = await fsp.realpath(lexicalAgent)
+  let parent = realAgent
+  for (const part of relative(lexicalAgent, dirname(lexicalTarget)).split(sep).filter(Boolean)) {
+    const candidate = join(parent, part)
+    let stat: Stats
+    try {
+      stat = await fsp.lstat(candidate)
+    } catch (err) {
+      if (!isErrno(err, 'ENOENT')) throw err
+      try {
+        await fsp.mkdir(candidate)
+      } catch (mkdirErr) {
+        if (!isErrno(mkdirErr, 'EEXIST')) throw mkdirErr
+      }
+      stat = await fsp.lstat(candidate)
+    }
+    if (!stat.isDirectory()) throw new MemoryPathError('memory path contains a symlink or non-directory')
+    parent = await fsp.realpath(candidate)
+    if (!under(realAgent, parent)) throw new MemoryPathError('path resolves outside the agent root')
+  }
+
+  const realRoot = await fsp.realpath(lexicalRoot)
+  if (!under(realAgent, realRoot) || !under(realRoot, parent)) {
+    throw new MemoryPathError('path resolves outside the memory dir')
+  }
+  return join(parent, basename(lexicalTarget))
+}
+
+/**
+ * Canonicalise a destination's parent one component at a time WITHOUT creating
+ * anything — the read-side twin of `containedWriteTarget`. Existing symlink
+ * components are rejected instead of followed; a missing component means there is
+ * nothing to read, reported as `null` so callers keep their "'' when absent"
+ * contract.
+ */
+async function containedReadTarget(agentDir: string, root: string, destination: string): Promise<string | null> {
+  const lexicalAgent = resolve(agentDir)
+  const lexicalRoot = resolve(root)
+  const lexicalTarget = resolve(destination)
+  if (!under(lexicalAgent, lexicalRoot) || !under(lexicalRoot, lexicalTarget)) {
+    throw new MemoryPathError('path escapes the memory dir')
+  }
+
+  let realAgent: string
+  try {
+    realAgent = await fsp.realpath(lexicalAgent)
+  } catch (err) {
+    if (isErrno(err, 'ENOENT')) return null
+    throw err
+  }
+  let parent = realAgent
+  for (const part of relative(lexicalAgent, dirname(lexicalTarget)).split(sep).filter(Boolean)) {
+    const candidate = join(parent, part)
+    let stat: Stats
+    try {
+      stat = await fsp.lstat(candidate)
+    } catch (err) {
+      if (isErrno(err, 'ENOENT')) return null
+      throw err
+    }
+    if (!stat.isDirectory()) throw new MemoryPathError('memory path contains a symlink or non-directory')
+    parent = await fsp.realpath(candidate)
+    if (!under(realAgent, parent)) throw new MemoryPathError('path resolves outside the agent root')
+  }
+
+  let realRoot: string
+  try {
+    realRoot = await fsp.realpath(lexicalRoot)
+  } catch (err) {
+    if (isErrno(err, 'ENOENT')) return null
+    throw err
+  }
+  if (!under(realAgent, realRoot) || !under(realRoot, parent)) {
+    throw new MemoryPathError('path resolves outside the memory dir')
+  }
+  return join(parent, basename(lexicalTarget))
+}
+
+/**
+ * Read one file out of a memory provider's tree without following symlinks; ''
+ * when it does not exist. The daemon is NOT inside the agent's sandbox, so a link
+ * planted in a writable memory dir would otherwise turn a memory read into an
+ * arbitrary-file read — the mirror of the write path's escape.
+ */
+export async function readContainedMemoryFile(agentDir: string, root: string, destination: string): Promise<string> {
+  const target = await containedReadTarget(agentDir, root, destination)
+  if (target === null) return ''
+  return (await readCurrentMemoryFile(target)).before
+}
+
+type CurrentMemoryFile =
+  { existed: false; before: ''; stat?: undefined } | { existed: true; before: string; stat: Stats }
+
+async function readCurrentMemoryFile(target: string): Promise<CurrentMemoryFile> {
+  let handle
+  try {
+    handle = await fsp.open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  } catch (err) {
+    if (isErrno(err, 'ENOENT')) return { existed: false, before: '' }
+    if (isErrno(err, 'ELOOP')) throw new MemoryPathError('memory target is not a regular file')
+    throw err
+  }
+  try {
+    const stat = await handle.stat()
+    if (!stat.isFile()) throw new MemoryPathError('memory target is not a regular file')
+    return { existed: true, before: await handle.readFile('utf8'), stat }
+  } finally {
+    await handle.close()
+  }
+}
+
+/**
+ * Atomically replace one file under a memory provider's tree without following
+ * symlinks. The random `wx` temp defeats pre-planted `<target>.tmp` links; the
+ * canonical parent walk also rejects a symlinked native-memory directory.
+ */
+export async function atomicWriteContainedMemoryFile(
+  agentDir: string,
+  root: string,
+  destination: string,
+  content: string,
+  ifMatchMtime?: string,
+  mode?: number
+): Promise<{ before: string; existed: boolean; stat: Stats }> {
+  const target = await containedWriteTarget(agentDir, root, destination)
+  const current = await readCurrentMemoryFile(target)
+  if (ifMatchMtime && current.stat?.mtime.toISOString() !== ifMatchMtime) {
+    throw new MemoryConflictError('the memory file changed since it was read; reload and retry')
+  }
+
+  const parent = dirname(target)
+  const temp = join(parent, `.agentconnect-memory-${randomUUID()}.tmp`)
+  try {
+    if ((await fsp.realpath(parent)) !== parent) {
+      throw new MemoryPathError('path resolves outside the memory dir')
+    }
+    await fsp.writeFile(temp, content, {
+      encoding: 'utf8',
+      flag: 'wx',
+      ...(mode === undefined ? {} : { mode })
+    })
+
+    if (ifMatchMtime && current.stat) {
+      let latest: Stats
+      try {
+        latest = await fsp.lstat(target)
+      } catch (err) {
+        if (isErrno(err, 'ENOENT')) {
+          throw new MemoryConflictError('the memory file changed since it was read; reload and retry')
+        }
+        throw err
+      }
+      if (!sameFileVersion(current.stat, latest)) {
+        throw new MemoryConflictError('the memory file changed since it was read; reload and retry')
+      }
+    }
+    if ((await fsp.realpath(parent)) !== parent) {
+      throw new MemoryPathError('path resolves outside the memory dir')
+    }
+    await fsp.rename(temp, target)
+  } finally {
+    await fsp.rm(temp, { force: true }).catch(() => {})
+  }
+
+  const stat = await fsp.lstat(target)
+  if (!stat.isFile()) throw new MemoryPathError('memory target is not a regular file')
+  return { before: current.before, existed: current.existed, stat }
 }
 
 /** Seed `<agent-root>/memory/MEMORY.md` with a header if the dir/index is absent
@@ -128,20 +346,37 @@ export function resolveInMemoryDir(agentDir: string, relPath: string): string {
 export function ensureMemory(agentDir: string, agentName: string): void {
   const dir = memoryDir(agentDir)
   mkdirSync(dir, { recursive: true })
-  const index = join(dir, MEMORY_INDEX)
-  if (!existsSync(index)) {
+  if (!lstatSync(dir).isDirectory()) throw new MemoryPathError('memory path contains a symlink or non-directory')
+  const realAgent = realpathSync(agentDir)
+  const realDir = realpathSync(dir)
+  if (!under(realAgent, realDir)) throw new MemoryPathError('path resolves outside the agent root')
+  try {
     writeFileSync(
-      index,
+      join(realDir, MEMORY_INDEX),
       `# ${agentName} memory\n\nYour long-term memory index. Keep it short — link out to topic files ` +
-        `(e.g. \`[deploys](deploys.md)\`) for detail and read them on demand with the readMemory tool.\n`
+        `(e.g. \`[deploys](deploys.md)\`) for detail and read them on demand with the readMemory tool.\n`,
+      { encoding: 'utf8', flag: 'wx' }
     )
+  } catch (err) {
+    if (!isErrno(err, 'EEXIST')) throw err
   }
 }
 
 /** Read the memory index (`MEMORY.md`) for prompt injection, trimmed to the inject
  *  cap so a large index can't blow up the prompt; '' when absent. */
 export async function readIndex(agentDir: string): Promise<string> {
-  const text = await readMemoryFile(agentDir, MEMORY_INDEX)
+  let text: string
+  try {
+    text = await readMemoryFile(agentDir, MEMORY_INDEX)
+  } catch (err) {
+    // This runs at session start for EVERY new session, and its contract is already
+    // "'' when absent". A rejected index — a symlink planted where MEMORY.md belongs —
+    // must not be read through, but it must not brick the agent either: inject
+    // nothing and let the session proceed. The explicit readMemory/writeMemory and
+    // console paths still raise, so the cause stays visible where it is actionable.
+    if (err instanceof MemoryPathError) return ''
+    throw err
+  }
   if (Buffer.byteLength(text) <= MAX_INDEX_INJECT_BYTES) return text
   // Cut on a UTF-8 boundary near the cap and flag the truncation.
   const buf = Buffer.from(text, 'utf8').subarray(0, MAX_INDEX_INJECT_BYTES)
@@ -151,12 +386,7 @@ export async function readIndex(agentDir: string): Promise<string> {
 /** Read a memory file's text; '' when it does not exist (never throws on ENOENT). */
 export async function readMemoryFile(agentDir: string, relPath: string): Promise<string> {
   const abs = resolveInMemoryDir(agentDir, relPath)
-  try {
-    return await fsp.readFile(abs, 'utf8')
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return ''
-    throw err
-  }
+  return readContainedMemoryFile(agentDir, memoryDir(agentDir), abs)
 }
 
 /** Truncate a snapshot to the history value cap, on a UTF-8 boundary, flagging it. */
@@ -219,27 +449,16 @@ export function retainMemoryHistoryRecords(
   return perFile.slice(first)
 }
 
-async function serializeHistoryMutation(path: string, mutation: () => Promise<void>): Promise<void> {
-  const previous = historyMutations.get(path) ?? Promise.resolve()
-  const current = previous.catch(() => undefined).then(mutation)
-  historyMutations.set(path, current)
-  try {
-    await current
-  } finally {
-    if (historyMutations.get(path) === current) historyMutations.delete(path)
-  }
-}
-
 /** Compact one sidecar atomically. Invalid legacy/torn rows are discarded and
  * rows written before stable event IDs existed are upgraded during the rewrite. */
-async function compactHistoryFile(path: string): Promise<void> {
-  let raw: string
-  try {
-    raw = await fsp.readFile(path, 'utf8')
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
-    throw err
-  }
+async function compactHistoryFile(agentDir: string): Promise<void> {
+  const dir = memoryDir(agentDir)
+  const lexicalPath = join(dir, MEMORY_HISTORY_FILENAME)
+  const path = await containedReadTarget(agentDir, dir, lexicalPath)
+  if (path === null) return
+  const current = await readCurrentMemoryFile(path)
+  if (!current.existed) return
+  const raw = current.before
 
   const parsed = parseHistory(raw)
   let upgraded = false
@@ -253,32 +472,54 @@ async function compactHistoryFile(path: string): Promise<void> {
     upgraded ||
     retained.length !== withIds.length ||
     parsed.records.length !== parsed.nonEmptyLines ||
+    (raw.length > 0 && !raw.endsWith('\n')) ||
     Buffer.byteLength(raw) > MAX_HISTORY_FILE_BYTES
   if (!needsRewrite) return
 
-  const tmp = `${path}.tmp`
-  await fsp.writeFile(tmp, retained.map(historyLine).join(''), 'utf8')
-  await fsp.rename(tmp, path)
+  await atomicWriteContainedMemoryFile(agentDir, dir, lexicalPath, retained.map(historyLine).join(''), undefined, 0o600)
 }
 
-/** Apply system retention to an existing sidecar (including legacy files) while
- * serializing with appends. Callers decide whether failure is best-effort. */
-export async function enforceMemoryHistoryRetention(agentDir: string): Promise<void> {
-  const path = join(memoryDir(agentDir), MEMORY_HISTORY_FILENAME)
-  await serializeHistoryMutation(path, () => compactHistoryFile(path))
+/** Apply system retention while the caller already holds the memory-dir lock.
+ * Exported for dream adoption, whose directory swap is one larger critical
+ * section. Calling this without the shared lock would race ordinary writes. */
+export async function enforceMemoryHistoryRetentionHoldingLock(agentDir: string): Promise<void> {
+  await compactHistoryFile(agentDir)
+}
+
+/** Apply system retention to an existing sidecar (including legacy files).
+ * Callers decide whether failure is best-effort. */
+export function enforceMemoryHistoryRetention(agentDir: string): Promise<void> {
+  return withMemoryDirLock(agentDir, () => enforceMemoryHistoryRetentionHoldingLock(agentDir))
 }
 
 /** Append one line to the memory change log and enforce fixed retention. The
- * mutation queue prevents a compaction rename from dropping a concurrent append.
+ * shared memory-dir lock prevents compaction from dropping a concurrent append.
  * Best-effort: provenance/retention failure must never fail the memory write. */
-export async function appendHistory(agentDir: string, record: MemoryHistoryRecord): Promise<void> {
-  const path = join(memoryDir(agentDir), MEMORY_HISTORY_FILENAME)
+async function appendHistoryHoldingLock(agentDir: string, record: MemoryHistoryRecord): Promise<void> {
+  const dir = memoryDir(agentDir)
+  const path = await containedWriteTarget(agentDir, dir, join(dir, MEMORY_HISTORY_FILENAME))
+  // Canonicalize first: a valid legacy row without its final newline, or a torn
+  // JSON tail, would otherwise absorb this append into one invalid combined row.
+  await compactHistoryFile(agentDir)
+  let handle
   try {
-    await serializeHistoryMutation(path, async () => {
-      await fsp.mkdir(memoryDir(agentDir), { recursive: true })
-      await fsp.appendFile(path, historyLine({ ...record, id: record.id ?? randomUUID() }), 'utf8')
-      await compactHistoryFile(path)
-    })
+    handle = await fsp.open(
+      path,
+      constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      0o600
+    )
+    const stat = await handle.stat()
+    if (!stat.isFile()) throw new MemoryPathError('memory target is not a regular file')
+    await handle.writeFile(historyLine({ ...record, id: record.id ?? randomUUID() }), 'utf8')
+  } finally {
+    await handle?.close()
+  }
+  await compactHistoryFile(agentDir)
+}
+
+export async function appendHistory(agentDir: string, record: MemoryHistoryRecord): Promise<void> {
+  try {
+    await withMemoryDirLock(agentDir, () => appendHistoryHoldingLock(agentDir, record))
   } catch {
     // Provenance is best-effort — retry compaction on the next append/read.
   }
@@ -301,46 +542,107 @@ export async function listMemoryHistory(
   // even though `relPath` is used only as a filter below.
   resolveInMemoryDir(agentDir, relPath)
 
-  // Enforce retention on first access too, so a legacy oversized file is
-  // tightened even before the next managed memory write.
-  try {
-    await enforceMemoryHistoryRetention(agentDir)
-  } catch {
-    // History remains readable when best-effort compaction cannot run.
-  }
-
-  let raw: string
-  try {
-    raw = await fsp.readFile(join(memoryDir(agentDir), MEMORY_HISTORY_FILENAME), 'utf8')
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { events: [] }
-    throw err
-  }
-
-  const records = parseHistory(raw).records
-  let start = records.length - 1
-  if (cursor) {
-    start = records.findIndex((record) => record.id === cursor && record.path === relPath)
-    // A retention pass may have evicted this cursor. Because eviction is always
-    // oldest-first, no older retained rows can remain for this file.
-    if (start < 0) return { events: [] }
-  }
-
-  const events: MemoryHistoryRecord[] = []
-  let nextCursor: string | undefined
-  for (let index = start; index >= 0; index -= 1) {
-    const record = records[index]!
-    if (record.path !== relPath) continue
-    if (events.length === limit) {
-      // Point at the next not-yet-returned row. IDs remain stable when older
-      // rows are pruned or newer rows are appended between requests.
-      nextCursor = record.id
-      break
+  return withMemoryDirLock(agentDir, async () => {
+    // Enforce retention on first access too, so a legacy oversized file is
+    // tightened even before the next managed memory write.
+    try {
+      await enforceMemoryHistoryRetentionHoldingLock(agentDir)
+    } catch {
+      // History remains readable when best-effort compaction cannot run.
     }
-    events.push(record)
-  }
 
-  return { events, ...(nextCursor ? { nextCursor } : {}) }
+    const dir = memoryDir(agentDir)
+    const path = await containedReadTarget(agentDir, dir, join(dir, MEMORY_HISTORY_FILENAME))
+    if (path === null) return { events: [] }
+    const current = await readCurrentMemoryFile(path)
+    if (!current.existed) return { events: [] }
+
+    const records = parseHistory(current.before).records
+    let start = records.length - 1
+    if (cursor) {
+      start = records.findIndex((record) => record.id === cursor && record.path === relPath)
+      // A retention pass may have evicted this cursor. Because eviction is always
+      // oldest-first, no older retained rows can remain for this file.
+      if (start < 0) return { events: [] }
+    }
+
+    const events: MemoryHistoryRecord[] = []
+    let nextCursor: string | undefined
+    for (let index = start; index >= 0; index -= 1) {
+      const record = records[index]!
+      if (record.path !== relPath) continue
+      if (events.length === limit) {
+        // Point at the next not-yet-returned row. IDs remain stable when older
+        // rows are pruned or newer rows are appended between requests.
+        nextCursor = record.id
+        break
+      }
+      events.push(record)
+    }
+
+    return { events, ...(nextCursor ? { nextCursor } : {}) }
+  })
+}
+
+/**
+ * Per-memory-dir write ledger — the AUTHORITATIVE record of what has mutated a
+ * store in this process, and the counterpart to `.history`.
+ *
+ * `.history` is deliberately best-effort: {@link appendHistory} swallows its
+ * errors so a logging failure can never fail the write it describes. That makes
+ * it a fine audit trail but an unsound *authorization* ledger — a tool write
+ * whose append transiently failed would be invisible, and a later distill append
+ * would make the window look distill-only. The dream adoption fence therefore
+ * authorizes its rebase from these counters, which are bumped inside the write
+ * itself under the same lock and cannot silently drop an entry.
+ *
+ * In-process only, so a daemon restart resets them; adoption treats a counter
+ * that moved backwards as unprovable and fails closed.
+ */
+export interface MemoryWriteMarks {
+  /** Opaque id of the daemon process+store instance these counts belong to.
+   *  Counts are only comparable WITHIN one generation: a restart resets the
+   *  counters, and numeric comparison alone cannot see that (a `{0,0}` snapshot
+   *  never moves backwards, and any older snapshot is eventually caught up by
+   *  new writes). Adoption requires an exact generation match before it trusts a
+   *  single count. */
+  generation: string
+  /** Every successful managed mutation, whatever its source. */
+  total: number
+  /** The subset NOT written by per-turn distillation — tool, console, and dream
+   *  mutations, the ones a rebase may never silently roll over. */
+  nonDistill: number
+}
+
+/** New per process: every store's marks are stamped with it, so marks recorded
+ *  by an earlier daemon can never be compared against this one's counts. */
+const WRITE_MARK_GENERATION = randomUUID()
+
+const writeMarks = new Map<string, { total: number; nonDistill: number }>()
+
+/** A snapshot copy of one store's write marks (zeroed when never written). */
+export function memoryWriteMarks(agentDir: string): MemoryWriteMarks {
+  const marks = writeMarks.get(memoryDir(agentDir)) ?? { total: 0, nonDistill: 0 }
+  return { generation: WRITE_MARK_GENERATION, ...marks }
+}
+
+/**
+ * Count a managed-store mutation that did NOT go through {@link writeMemoryFile}
+ * — today, a dream adoption's directory swap. Such a mutation is invisible to
+ * the ledger otherwise, which would let a second dream staged from the same
+ * snapshot classify the first adoption as distill-only drift and roll over it.
+ * Callers must already hold the memory-dir lock.
+ */
+export function recordExternalMemoryMutation(agentDir: string, source: MemoryWriteSource): void {
+  bumpWriteMarks(agentDir, source)
+}
+
+function bumpWriteMarks(agentDir: string, source: MemoryWriteSource): void {
+  const key = memoryDir(agentDir)
+  const marks = writeMarks.get(key) ?? { total: 0, nonDistill: 0 }
+  marks.total++
+  if (source !== 'distill') marks.nonDistill++
+  writeMarks.set(key, marks)
 }
 
 /** Overwrite a memory file with `content` (creating the dir if needed). Atomic
@@ -353,56 +655,62 @@ export async function listMemoryHistory(
  *    must equal it, else {@link MemoryConflictError} — so a console edit can't
  *    clobber a newer write. A brand-new file (no mtime) matches `ifMatchMtime`
  *    only when the caller passes none (or the empty string). */
-export async function writeMemoryFile(
+export function writeMemoryFile(
   agentDir: string,
   relPath: string,
   content: string,
   ifMatchMtime?: string,
   source: MemoryWriteSource = 'tool'
 ): Promise<{ size: number; mtime: string }> {
+  // Serialize every write behind the shared per-dir lock so it can't interleave
+  // with a dream adoption's fence-and-swap (nor another write).
+  return withMemoryDirLock(agentDir, () => writeMemoryFileHoldingLock(agentDir, relPath, content, ifMatchMtime, source))
+}
+
+/**
+ * The write itself, WITHOUT taking the memory-dir lock — for a caller that
+ * already holds it and needs several writes to be one critical section (the
+ * distiller's topic+index batch: an adoption slipping between those two writes
+ * would be overwritten by the batch's stale index). The lock is not reentrant,
+ * so calling {@link writeMemoryFile} from inside it would deadlock.
+ */
+export async function writeMemoryFileHoldingLock(
+  agentDir: string,
+  relPath: string,
+  content: string,
+  ifMatchMtime: string | undefined,
+  source: MemoryWriteSource
+): Promise<{ size: number; mtime: string }> {
   if (Buffer.byteLength(content) > MAX_MEMORY_FILE_BYTES) {
     throw new MemoryTooLargeError(`memory file exceeds the ${MAX_MEMORY_FILE_BYTES}-byte limit`)
   }
   const abs = resolveInMemoryDir(agentDir, relPath)
-  // Read the prior contents (for the change log's `before` + to decide add vs update)
-  // before we overwrite. '' when absent ⇒ this is an `add`.
-  let before = ''
-  let existed = false
-  try {
-    before = await fsp.readFile(abs, 'utf8')
-    existed = true
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
-  }
-  if (ifMatchMtime) {
-    let current: string | null = null
-    try {
-      current = (await fsp.stat(abs)).mtime.toISOString()
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
-    }
-    if (current !== ifMatchMtime) {
-      throw new MemoryConflictError('the memory file changed since it was read; reload and retry')
-    }
-  }
-  await fsp.mkdir(memoryDir(agentDir), { recursive: true })
-  const tmp = `${abs}.tmp`
-  await fsp.writeFile(tmp, content, 'utf8')
-  await fsp.rename(tmp, abs)
-  const st = await fsp.stat(abs)
+  const {
+    before,
+    existed,
+    stat: st
+  } = await atomicWriteContainedMemoryFile(agentDir, memoryDir(agentDir), abs, content, ifMatchMtime)
+  // Bump the authoritative ledger the moment the write is durable — BEFORE the
+  // best-effort history append, which is allowed to fail silently. The dream
+  // adoption fence authorizes from these counters, never from `.history`.
+  bumpWriteMarks(agentDir, source)
 
   const beforeClamped = existed ? clampHistoryValue(before) : undefined
   const afterClamped = clampHistoryValue(content)
-  await appendHistory(agentDir, {
-    path: relPath,
-    event: existed ? 'update' : 'add',
-    ...(beforeClamped ? { before: beforeClamped.value } : {}),
-    after: afterClamped.value,
-    at: st.mtime.toISOString(),
-    scope: 'agent',
-    source,
-    ...(afterClamped.truncated || beforeClamped?.truncated ? { truncated: true } : {})
-  })
+  try {
+    await appendHistoryHoldingLock(agentDir, {
+      path: relPath,
+      event: existed ? 'update' : 'add',
+      ...(beforeClamped ? { before: beforeClamped.value } : {}),
+      after: afterClamped.value,
+      at: st.mtime.toISOString(),
+      scope: 'agent',
+      source,
+      ...(afterClamped.truncated || beforeClamped?.truncated ? { truncated: true } : {})
+    })
+  } catch {
+    // Provenance is best-effort — retry compaction on the next append/read.
+  }
   return { size: st.size, mtime: st.mtime.toISOString() }
 }
 

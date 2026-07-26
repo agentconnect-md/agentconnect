@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../../src/daemon.js'
 import { detachedAgentDir, readAgentMoveStage, stageAgentMove, stagedAgentDir } from '../../src/agents/write-agent.js'
-import type { AgentSpec } from '@agentconnect.md/protocol'
+import { RegisterReq, type AgentSpec } from '@agentconnect.md/protocol'
 
 const MOVE_ID = '77777777-7777-4777-8777-777777777777'
 const MOVE_ID_2 = '88888888-8888-4888-8888-888888888888'
@@ -65,6 +65,30 @@ function makeDaemon(root: string) {
 const seam = (d: Daemon) => (d as any).cpConfigApply()
 
 describe('Daemon CP agent → disk + reconcile', () => {
+  it('keeps a corrupt move tombstone fail-closed without poisoning reconnect registration', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const stageDir = stagedAgentDir(join(root, 'agents'), 'bot-a')
+    mkdirSync(stageDir, { recursive: true })
+    writeFileSync(join(stageDir, 'metadata.json'), '{')
+
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
+    const localState = (daemon as any).cpLocalState()
+    expect(localState.stagedAgents).toEqual([{ agentId: 'bot-a' }])
+    expect(
+      RegisterReq.safeParse({
+        host: 'test',
+        capabilities: { platforms: [], runtimes: [], acp: true },
+        maxAgents: 1,
+        localState
+      }).success
+    ).toBe(true)
+    await daemon.stop()
+  })
+
   it('writes a CP spec onto the matching file agent.json (merge), keeping file runtime/workspace', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
@@ -156,6 +180,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
     expect((daemon as any).agents.has('bot-a')).toBe(false)
     expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
     expect(existsSync(stagedAgentDir(join(root, 'agents'), 'bot-a'))).toBe(true)
+    expect((daemon as any).cpLocalState().stagedAgents).toEqual([{ agentId: 'bot-a', moveId: MOVE_ID }])
     expect(
       readFileSync(join(detachedAgentDir(join(root, 'agents'), 'bot-a'), 'agent', 'memory', 'keep.md'), 'utf8')
     ).toBe('local-memory')
@@ -213,6 +238,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
     expect((daemon as any).hosts.has('bot-a')).toBe(true) // activate proves ACP can start before ACK
     expect((daemon as any).drainingAgents.has('bot-a')).toBe(false)
     expect(readAgentMoveStage(join(root, 'agents'), 'bot-a')).toEqual({ moveId: MOVE_ID, state: 'committed' })
+    expect((daemon as any).cpLocalState().stagedAgents).toEqual([])
     expect(readFileSync(join(root, 'agents', 'bot-a', 'memory', 'keep.md'), 'utf8')).toBe('local-memory')
     expect(existsSync(detachedAgentDir(join(root, 'agents'), 'bot-a'))).toBe(false)
     // ACK-loss retransmit: committed metadata makes the identical activate a no-op ACK.
@@ -258,7 +284,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
         workspace: {
           mode: 'git-repo',
           path: workspace,
-          gitRepo: 'https://example.com/acme/repo.git',
+          gitRepo: 'https://github.com/acme/repo.git',
           gitBranch: 'main'
         },
         integrations: [],
@@ -290,7 +316,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
           runtime: 'claude',
           workspace: {
             mode: 'github',
-            gitRepo: 'https://example.com/acme/repo.git',
+            gitRepo: 'https://github.com/acme/repo.git',
             branch: 'main'
           }
         },

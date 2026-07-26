@@ -3,8 +3,9 @@
  *
  * - `GET /sessions` reads CP-stored metadata synced from daemon `event/session`
  *   snapshots; transcript bodies remain daemon-local.
- * - `GET /sessions/:id/messages?agentId=` resolves the owning daemon via the
- *   agent and proxies one history page; 404 unknown agent, 503 unplaced/offline.
+ * - `GET /sessions/:id/messages` resolves and authorizes the owning agent from
+ *   SessionMeta, then proxies one history page; 404 unknown/hidden session,
+ *   503 unplaced/offline.
  *
  * Driven with `app.inject`, a spy `ControlSender`, and a liveness override that
  * marks the seeded daemon connected.
@@ -57,6 +58,19 @@ class SpyControl {
 }
 
 const emptyHist: SessionHistoryPage = { sessionId: SESSION, messages: [] }
+
+async function seedSession(agentId = AGENT): Promise<void> {
+  await prisma.sessionMeta.create({
+    data: {
+      id: SESSION,
+      agentId,
+      platform: 'slack',
+      channel: '#deploys',
+      phase: 'start',
+      lastActivityAt: new Date('2026-07-05T08:00:00.000Z')
+    }
+  })
+}
 
 describe('GET /sessions (metadata list from CP DB)', () => {
   it('lists CP-stored session metadata and maps the row shape', async () => {
@@ -531,14 +545,24 @@ describe('GET /sessions (metadata list from CP DB)', () => {
 })
 
 describe('GET /sessions/:id/messages (history pull via the owning agent)', () => {
-  it('resolves the daemon via ?agentId and proxies a page', async () => {
+  it('resolves the owner from SessionMeta and proxies a page', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedSession()
     const spy = new SpyControl(
       { sessions: [] },
       {
         sessionId: SESSION,
-        messages: [{ seq: 1, sender: '@dana', ts: '1718000000.000100', kind: 'text', text: 'ship it' }],
+        messages: [
+          {
+            seq: 1,
+            sender: '@dana',
+            ts: '1718000000.000100',
+            kind: 'text',
+            text: 'ship it',
+            attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: 'aW1hZ2U=' }]
+          }
+        ],
         nextCursor: 'c-50'
       }
     )
@@ -546,41 +570,47 @@ describe('GET /sessions/:id/messages (history pull via the owning agent)', () =>
 
     const res = await running.app.inject({
       method: 'GET',
-      url: `${ORG}/sessions/${SESSION}/messages?agentId=${AGENT}&cursor=c-100&limit=25`
+      url: `${ORG}/sessions/${SESSION}/messages?cursor=c-100&limit=25`
     })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { messages: Array<{ text: string }>; nextCursor: string | null }
+    const body = res.json() as {
+      messages: Array<{ text: string; attachments?: Array<{ name: string }> }>
+      nextCursor: string | null
+    }
     expect(body.messages[0]!.text).toBe('ship it')
+    expect(body.messages[0]!.attachments?.[0]?.name).toBe('screen.webp')
     expect(body.nextCursor).toBe('c-50')
     expect(spy.histCalls[0]!.daemonId).toBe(DAEMON)
-    expect(spy.histCalls[0]!.req).toEqual({ sessionId: SESSION, cursor: 'c-100', limit: 25 })
+    expect(spy.histCalls[0]!.req).toEqual({ agentId: AGENT, sessionId: SESSION, cursor: 'c-100', limit: 25 })
   })
 
-  it('404s for an unknown agent', async () => {
+  it('404s for an unknown session', async () => {
     running = buildHttpApp(prisma)
     const res = await running.app.inject({
       method: 'GET',
-      url: `${ORG}/sessions/${SESSION}/messages?agentId=${randomUUID()}`
+      url: `${ORG}/sessions/${SESSION}/messages`
     })
     expect(res.statusCode).toBe(404)
   })
 
   it('503s when the agent is unplaced (no live daemon)', async () => {
     await seedAgent(prisma, AGENT) // no daemonId
+    await seedSession()
     running = buildHttpApp(prisma)
-    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages?agentId=${AGENT}` })
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
     expect(res.statusCode).toBe(503)
   })
 
   it('503s when the owning daemon is offline (NoConnection → 503)', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedSession()
     const offline = new ControlSender(
       { get: () => undefined } as unknown as ConstructorParameters<typeof ControlSender>[0],
       { currentLaunch: async () => undefined } as unknown as ConstructorParameters<typeof ControlSender>[1]
     )
     running = buildHttpApp(prisma, undefined, undefined, offline)
-    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages?agentId=${AGENT}` })
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
     expect(res.statusCode).toBe(503)
   })
 })

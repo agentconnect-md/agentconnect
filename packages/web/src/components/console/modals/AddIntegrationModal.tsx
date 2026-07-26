@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
-import Link from 'next/link'
 import { GithubMark, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
@@ -17,6 +16,7 @@ import {
   startSlackInstall,
   getSlackInstall,
   fetchSlackConfig,
+  saveSlackConfig,
   fetchAgentHooks,
   fetchAgentRepos,
   fetchAllGithubRepos,
@@ -56,7 +56,13 @@ import {
   type HookReportingMode,
   type HookReviewPolicy
 } from '@/lib/github-review-settings'
-import { slackAppIdFromAppToken, slackAppOAuthUrl, slackAppSettingsUrl, slackCreateAppUrl } from '@/lib/slack-manifest'
+import {
+  slackAppIdFromAppToken,
+  slackAppOAuthUrl,
+  slackAppSettingsUrl,
+  slackCreateAppUrl,
+  slackManifestJson
+} from '@/lib/slack-manifest'
 import { agentIconBackgroundColor } from '@/lib/agent-icon'
 import { discordApplicationIdFromToken, discordBotInviteUrl } from '@/lib/discord-invite'
 
@@ -65,19 +71,22 @@ import { discordApplicationIdFromToken, discordBotInviteUrl } from '@/lib/discor
 // agent-fired-by-URL, github subscribes a repo's issue/PR/commit events. Both
 // live on the relay pool, so neither is gated by the daemon's adapter
 // capabilities.
-type BotPlatform = 'slack' | 'telegram' | 'discord' | 'feishu'
+export type BotPlatform = 'slack' | 'telegram' | 'discord' | 'feishu'
 export type Platform = BotPlatform | 'webhook' | 'github'
 
 type GithubRepoChoice = GithubRepoDto & { installationId: string }
 
-const BOT_PLATFORMS: { key: BotPlatform; label: string }[] = [
+// Bot platforms are gated on the owning daemon's advertised adapters; the agent
+// page's empty-integrations tiles filter this same list so a tile can never
+// promise a platform this modal would refuse.
+export const BOT_PLATFORMS: { key: BotPlatform; label: string }[] = [
   { key: 'slack', label: 'Slack' },
   { key: 'telegram', label: 'Telegram' },
   { key: 'discord', label: 'Discord' },
   { key: 'feishu', label: 'Feishu' }
 ]
 
-const PLATFORMS: { key: Platform; label: string }[] = [
+export const PLATFORMS: { key: Platform; label: string }[] = [
   ...BOT_PLATFORMS,
   { key: 'webhook', label: 'Webhook' },
   { key: 'github', label: 'GitHub' }
@@ -286,6 +295,121 @@ function SlackDeliveryLine({
   )
 }
 
+// Hover preview for the "Copy manifest & open Slack" button — a miniature of Slack's
+// "Create new app" dialog cropped to the two "Or start your own way" tiles, with the
+// "From a manifest" tile blinking so the user knows exactly which option to click once the
+// manifest is on their clipboard. Styled like Slack's own (light) dialog; pointer-events-none
+// so it never intercepts the button's click.
+function SlackManifestPreview() {
+  return (
+    <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 w-[320px] -translate-x-1/2 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+      <div className="rounded-xl border border-[#e0e0e2] bg-white p-3 shadow-(--shadow-xl)">
+        <div className="mb-2 flex items-center gap-1.5 font-sans text-[11px] font-semibold leading-normal text-[#616061]">
+          <Icon name="mouse-pointer-click" size={12} />
+          In Slack, pick &ldquo;From a manifest&rdquo;
+        </div>
+        <div className="mb-1.5 font-sans text-[9.5px] font-semibold uppercase leading-normal tracking-wide text-[#8d8d8d]">
+          Or start your own way
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="relative rounded-lg border-2 border-[#1264a3] bg-white p-2.5">
+            <span className="pointer-events-none absolute -inset-0.5 slack-hint-blink rounded-[10px] ring-2 ring-[#1264a3]" />
+            <span className="mb-1.5 flex h-6 w-6 items-center justify-center rounded-md bg-[#f4f4f4] text-[#454545]">
+              <Icon name="scroll-text" size={14} />
+            </span>
+            <div className="font-sans text-[11.5px] font-bold leading-tight text-[#1d1c1d]">From a manifest</div>
+            <div className="mt-0.5 font-sans text-[10px] leading-tight text-[#616061]">Upload JSON or YAML config.</div>
+          </div>
+          <div className="rounded-lg border border-[#e0e0e2] bg-white p-2.5">
+            <span className="mb-1.5 flex h-6 w-6 items-center justify-center rounded-md bg-[#f4f4f4] text-[#454545]">
+              <Icon name="clapperboard" size={14} />
+            </span>
+            <div className="font-sans text-[11.5px] font-bold leading-tight text-[#1d1c1d]">Blank app</div>
+            <div className="mt-0.5 font-sans text-[10px] leading-tight text-[#616061]">
+              Empty app with minimal setup.
+            </div>
+          </div>
+        </div>
+        <div className="mt-2 font-sans text-[10px] leading-snug text-[#616061]">
+          Then paste the copied manifest, choose a workspace, and create the app.
+        </div>
+      </div>
+      <div className="absolute -bottom-1 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rotate-45 border-r border-b border-[#e0e0e2] bg-white" />
+    </div>
+  )
+}
+
+// Hover preview for "Open Slack app config tokens" — an animated mock of Slack's apps page
+// scrolling down to the "Your App Configuration Tokens" section and pulsing the access
+// token's Copy button (then the refresh token's), so the user sees exactly where the pair
+// lives. Uses the design's .cfgtok-pop container (above the button, surface-card, downward
+// caret). pointer-events-none.
+function SlackConfigTokenPreview() {
+  return (
+    <div className="cfgtok-pop rounded-xl border border-(--border-default) bg-(--surface-card) p-2 shadow-(--shadow-xl)">
+      <div className="overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-app)">
+        <div className="flex items-center gap-1.5 border-b border-(--border-subtle) px-2.5 py-1.5">
+          <span className="h-2 w-2 flex-none rounded-full bg-[#e0605a]" />
+          <span className="h-2 w-2 flex-none rounded-full bg-[#e8b13a]" />
+          <span className="h-2 w-2 flex-none rounded-full bg-[#4aa564]" />
+          <span className="ml-1 min-w-0 truncate font-mono text-[9px] leading-normal text-(--text-tertiary)">
+            api.slack.com/apps
+          </span>
+        </div>
+        <div className="h-[140px] overflow-hidden bg-(--surface-card)">
+          <div className="cfg-scroll px-2.5 py-2">
+            <div className="mb-1.5 font-sans text-[10px] font-bold leading-tight text-(--text-primary)">Your apps</div>
+            {[0, 1].map((i) => (
+              <div
+                key={i}
+                className="mb-1.5 flex items-center gap-2 rounded-md border border-(--border-subtle) px-2 py-1.5"
+              >
+                <span className="h-4 w-4 flex-none rounded bg-(--surface-active)" />
+                <span className="h-1.5 w-24 rounded-full bg-(--surface-active)" />
+              </div>
+            ))}
+            <div className="mt-2 rounded-md border border-(--border-subtle) bg-(--surface-app) p-2">
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <span className="font-sans text-[10px] font-bold leading-tight text-(--text-primary)">
+                  Your App Configuration Tokens
+                </span>
+                <span className="flex-none rounded bg-(--surface-active) px-1.5 py-[3px] font-sans text-[8px] font-semibold leading-normal text-(--text-secondary)">
+                  Generate Token
+                </span>
+              </div>
+              <div className="grid grid-cols-[1fr_auto_auto] items-center gap-x-2 gap-y-1">
+                <span className="font-sans text-[8px] font-semibold uppercase leading-normal text-(--text-tertiary)">
+                  Workspace
+                </span>
+                <span className="font-sans text-[8px] font-semibold uppercase leading-normal text-(--text-tertiary)">
+                  Access
+                </span>
+                <span className="font-sans text-[8px] font-semibold uppercase leading-normal text-(--text-tertiary)">
+                  Refresh
+                </span>
+                <span className="font-mono text-[9px] leading-normal text-(--text-secondary)">your-workspace</span>
+                <span className="relative rounded border border-(--border-default) bg-(--surface-card) px-1.5 py-[3px] font-sans text-[8.5px] font-semibold leading-normal text-(--text-secondary)">
+                  Copy
+                  <span className="pointer-events-none absolute -inset-[3px] cfg-click-a rounded ring-2 ring-(--brand)" />
+                </span>
+                <span className="relative rounded border border-(--border-default) bg-(--surface-card) px-1.5 py-[3px] font-sans text-[8.5px] font-semibold leading-normal text-(--text-secondary)">
+                  Copy
+                  <span className="pointer-events-none absolute -inset-[3px] cfg-click-b rounded ring-2 ring-(--brand)" />
+                </span>
+              </div>
+              <div className="mt-1 font-sans text-[8px] leading-normal text-(--text-tertiary)">Expires in 5 hours</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="mt-1.5 px-1 font-sans text-[10.5px] font-normal leading-[1.45] text-(--text-secondary)">
+        Scroll to the bottom of <span className="mono">Your apps</span> — the token pair lives under &ldquo;App
+        configuration tokens&rdquo;.
+      </div>
+    </div>
+  )
+}
+
 // The integration is owned by one agent; that agent's daemon opens the connection.
 // The dialog is only reachable from a specific agent (its row / detail page), so the
 // agent is fixed — no picker. `initialPlatform` lets a caller land on a specific
@@ -316,6 +440,8 @@ export default function AddIntegrationModal({
   const [appName, setAppName] = useState(agent.name)
   const [botToken, setBotToken] = useState('')
   const [appToken, setAppToken] = useState('')
+  // Feishu/Lark gateway: new installs default to international Lark.
+  const [feishuRegion, setFeishuRegion] = useState<'feishu' | 'lark'>('lark')
   const [saving, setSaving] = useState(false)
   const [showErrors, setShowErrors] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -330,11 +456,21 @@ export default function AddIntegrationModal({
   // PER-USER: the app is created with the CALLER's own config token, so it belongs to
   // them and only they can mint its app-level token. `slackFunnel`: null = still
   // checking, true = this deployment supports auto-install (public callback), false =
-  // manual (create the app yourself). `myConfig` = the caller has stored their own
-  // token; without it, the modal stays on the manual app-token + bot-token flow and
-  // points them to Profile for an easier setup next time. Fetched on open.
+  // manual (create the app yourself). Fetched on open; `autoUsable` (below) tracks whether
+  // the caller's stored config token can one-click right now.
   const [slackFunnel, setSlackFunnel] = useState<boolean | null>(null)
-  const [myConfig, setMyConfig] = useState(false)
+  // The caller's stored config token is USABLE for a one-click install right now: it
+  // auto-rotates (durable) or its access token is still fresh. False when they've stored
+  // nothing OR their access-only token expired — either way the config method shows the
+  // inline token entry instead.
+  const [autoUsable, setAutoUsable] = useState(false)
+  // "Create a new bot" method (Slack): 'config' = recommended config-token quick install
+  // (works for socket AND http), 'bot' = manual bot-token flow. Null ⇒ derive the default.
+  const [createMethod, setCreateMethod] = useState<'config' | 'bot' | null>(null)
+  // Inline config-token entry, shown under the config method — saved to the same per-user
+  // store as the Profile card (so it appears there too).
+  const [cfgAccess, setCfgAccess] = useState('')
+  const [cfgRefresh, setCfgRefresh] = useState('')
   // Slack inbound transport (locked rule): `http` (Events API via relay) is the
   // default when a relay is available; `socket` (Socket Mode) is the only choice
   // when none. `transport` null = not yet chosen ⇒ derive the default from
@@ -390,7 +526,7 @@ export default function AddIntegrationModal({
   const [ghWorkspaceAccessOverride, setGhWorkspaceAccessOverride] = useState<'write' | null>(null)
   // Repos this agent ALREADY watches — offered rows are disabled, free-typed
   // duplicates rejected inline (the CP 409s them as the backstop).
-  const { activeOrg, orgPath } = useOrgs()
+  const { activeOrg } = useOrgs()
   const agentHooksKey = consoleKeys.agentHooks(activeOrg?.id, agent.id)
   const { data: agentHooksData } = useSWR(agentHooksKey, ([, orgId, , agentId]) => fetchAgentHooks(agentId, orgId))
   const watchedRepos = useMemo(
@@ -486,6 +622,9 @@ export default function AddIntegrationModal({
     setAppName(agent.name)
     setBotToken('')
     setAppToken('')
+    setCreateMethod(null)
+    setCfgAccess('')
+    setCfgRefresh('')
     setShowErrors(false)
     setErr(null)
   }
@@ -584,6 +723,7 @@ export default function AddIntegrationModal({
     backgroundColor: agentIconBackgroundColor(agent.icon),
     ...(relayPublicUrl ? { relayUrl: relayPublicUrl } : {})
   }
+  const manifestJson = slackManifestJson(manifestNames, manifestOpts)
   const createUrl = slackCreateAppUrl(manifestNames, manifestOpts)
 
   // Webhook path: create the hook (secret always minted), then flip to the reveal
@@ -931,7 +1071,11 @@ export default function AddIntegrationModal({
       } else if (platform === 'telegram') {
         input = { platform: 'telegram', agentId: agent.id, telegram: { botToken: tokenTrim } }
       } else if (platform === 'feishu') {
-        input = { platform: 'feishu', agentId: agent.id, feishu: { appId: tokenTrim, appSecret: appToken.trim() } }
+        input = {
+          platform: 'feishu',
+          agentId: agent.id,
+          feishu: { appId: tokenTrim, appSecret: appToken.trim(), region: feishuRegion }
+        }
       } else {
         input = { platform: 'discord', agentId: agent.id, discord: { botToken: tokenTrim } }
       }
@@ -939,6 +1083,62 @@ export default function AddIntegrationModal({
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
+      setSaving(false)
+      busyRef.current = false
+    }
+  }
+
+  // Config-token method commit: store the pasted configuration token (same per-user store
+  // as the Profile card), then immediately create the Slack app + open OAuth — the CP uses
+  // the stored config token to mint the app. Refresh token optional (access-only lasts ~12h;
+  // a refresh token keeps it from expiring).
+  const saveConfigAndStart = async () => {
+    setShowErrors(true)
+    if (busyRef.current || !cfgAccess.trim() || install) return
+    busyRef.current = true
+    setSaving(true)
+    setErr(null)
+    try {
+      const refreshTrim = cfgRefresh.trim()
+      const s = await saveSlackConfig({
+        accessToken: cfgAccess.trim(),
+        ...(refreshTrim ? { refreshToken: refreshTrim } : {})
+      })
+      setRelayAvailable(s.relayAvailable)
+      setRelayPublicUrl(s.relayPublicUrl)
+      // Create the app BEFORE flipping to the auto flow: this is where Slack first
+      // validates the config token (access-only tokens aren't validated on save). Keeping
+      // the flip until AFTER success means a rejected/typo'd or already-expired token stays
+      // recoverable in the inline entry (fields kept, still on the config-setup branch).
+      const nextTransport = transport ?? (s.relayAvailable ? 'http' : 'socket')
+      const started = await startSlackInstall({
+        agentId: agent.id,
+        transport: nextTransport,
+        ...(appName.trim() ? { name: appName.trim() } : {})
+      })
+      // App + pending install created ⇒ now it's safe to move to the auto flow.
+      setAutoUsable(true)
+      setInstall(started)
+      setAutoPhase('authorizing')
+      setCfgAccess('')
+      setCfgRefresh('')
+      window.open(started.installUrl, '_blank', 'noopener,noreferrer')
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      // The app wasn't created. Re-read status rather than blindly deleting: the CP drops
+      // only a rejected ACCESS-ONLY token server-side, so autoAvailable now reflects reality
+      // — a rejected access-only token flips false and stays on the inline entry (re-prompt,
+      // fields kept for correction), while a durable config or a transient failure stays
+      // usable so a retry works.
+      try {
+        const c = await fetchSlackConfig()
+        setAutoUsable(c.autoAvailable)
+        setRelayAvailable(c.relayAvailable)
+        setRelayPublicUrl(c.relayPublicUrl)
+      } catch {
+        setAutoUsable(false)
+      }
+    } finally {
       setSaving(false)
       busyRef.current = false
     }
@@ -963,6 +1163,16 @@ export default function AddIntegrationModal({
       window.open(started.installUrl, '_blank', 'noopener,noreferrer')
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
+      // Re-read status: if the CP invalidated a rejected access-only token (incl. one saved
+      // from Profile), autoAvailable flips false and the modal falls back to the inline
+      // config-token entry so the caller can re-enter it; a durable config stays usable so
+      // "Create & install" can retry.
+      try {
+        const c = await fetchSlackConfig()
+        setAutoUsable(c.autoAvailable)
+      } catch {
+        /* keep current state */
+      }
     } finally {
       setSaving(false)
       busyRef.current = false
@@ -1016,7 +1226,7 @@ export default function AddIntegrationModal({
       .then((c) => {
         if (!alive) return
         setSlackFunnel(c.funnelEnabled)
-        setMyConfig(c.configured)
+        setAutoUsable(c.autoAvailable)
         setRelayAvailable(c.relayAvailable)
         setRelayPublicUrl(c.relayPublicUrl)
       })
@@ -1056,7 +1266,23 @@ export default function AddIntegrationModal({
   // operator pasting the app-level (xapp) token; http is fully automatic — the CP builds
   // an Events-API manifest and captures the signing secret from apps.manifest.create, so
   // there's no paste step. `shareable` is threaded through `startAuto`.
-  const isAuto = mode === 'create' && platform === 'slack' && slackFunnel === true && myConfig
+  // Config token is the recommended method for both transports; `bot` is the manual
+  // fallback the user can switch to. Default to config when the funnel is enabled.
+  const slackMethod: 'config' | 'bot' = createMethod ?? (slackFunnel === true ? 'config' : 'bot')
+  const selectMethod = (m: 'config' | 'bot') => {
+    // Locked once an auto-install has created the app + pending row: switching methods
+    // here would route the footer through the manual `submit()` and orphan that install.
+    if (install) return
+    setCreateMethod(m)
+    setShowErrors(false)
+    setErr(null)
+  }
+  const isAuto =
+    mode === 'create' && platform === 'slack' && slackFunnel === true && slackMethod === 'config' && autoUsable
+  // Config method chosen but nothing usable stored yet ⇒ the inline config-token entry
+  // is shown and the footer commits it (save + create the app).
+  const isConfigSetup =
+    mode === 'create' && platform === 'slack' && slackFunnel === true && slackMethod === 'config' && !autoUsable
   const footer =
     platform === 'webhook'
       ? createdHook
@@ -1076,7 +1302,9 @@ export default function AddIntegrationModal({
               // app-level token; http finalizes with none (signing secret already captured).
               enabled: autoPhase === 'appToken' && (effTransport === 'http' || appOk)
             }
-          : { label: 'Connect & authorize', act: () => void submit(), enabled: valid }
+          : isConfigSetup
+            ? { label: 'Connect & authorize', act: () => void saveConfigAndStart(), enabled: !!cfgAccess.trim() }
+            : { label: 'Connect & authorize', act: () => void submit(), enabled: valid }
 
   return (
     <>
@@ -1807,270 +2035,373 @@ export default function AddIntegrationModal({
                 <Icon name="loader" size={15} className="flex-none animate-spin" />
                 Checking your Slack setup…
               </div>
-            ) : slackFunnel && myConfig ? (
-              <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-                <div className="mb-[14px]">
-                  <SlackDeliveryLine
-                    transport={effTransport}
-                    relayAvailable={relayAvailable}
-                    locked={!!install}
-                    onSwitch={switchTransport}
-                  />
-                </div>
-
-                {/* Step 1 — create & install (content changes by phase). */}
-                <div className="flex gap-[10px]">
-                  {autoPhase === 'appToken' ? (
-                    <span className="flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--brand-soft)">
-                      <Icon name="check" size={12} color="var(--brand)" />
-                    </span>
-                  ) : (
-                    <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                      1
-                    </span>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    {autoPhase === 'config' && (
-                      <>
-                        <div className="mb-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                          Name &amp; create the app (name optional)
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <div className="fld flex-1">
-                            <input
-                              className="inp mn"
-                              placeholder={
-                                manifestNames.name
-                                  ? `${manifestNames.name} — from the agent's name`
-                                  : 'Bot name (optional) — e.g. acme-agent'
-                              }
-                              value={appName}
-                              onChange={(e) => setAppName(e.target.value)}
-                            />
-                          </div>
-                          <Button
-                            onClick={() => void startAuto()}
-                            className={saving ? 'flex-none cursor-default opacity-50' : 'flex-none'}
+            ) : (
+              <>
+                {slackFunnel === true && (
+                  <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-[6px]">
+                    <div className="inline-flex flex-none rounded-lg border border-(--border-default) bg-(--surface-card) p-[3px]">
+                      {(['config', 'bot'] as const).map((m) => {
+                        const on = slackMethod === m
+                        return (
+                          <button
+                            key={m}
+                            type="button"
+                            disabled={!!install}
+                            onClick={() => selectMethod(m)}
+                            title={install ? 'Install in progress — “Start over” to switch method' : undefined}
+                            className={`rounded-[6px] px-[11px] py-[5px] font-sans text-[12px] font-semibold leading-normal ${
+                              on ? 'bg-(--brand-soft) text-(--brand)' : 'bg-transparent text-(--text-tertiary)'
+                            } ${install ? 'cursor-not-allowed opacity-50' : ''}`}
                           >
-                            <Icon name="plus" size={14} />
-                            {saving ? 'Creating…' : 'Create & install'}
-                          </Button>
-                        </div>
-                        <div className="mt-[10px] flex items-center gap-[6px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                          <Icon name="sparkles" size={13} color="var(--brand)" className="flex-none" />
-                          Quick install is on for this workspace
-                        </div>
-                      </>
-                    )}
-                    {autoPhase === 'authorizing' && (
-                      <>
-                        <div className="flex items-center gap-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                          <Icon name="loader" size={14} className="flex-none animate-spin" />
-                          Approve the install in Slack
-                        </div>
-                        <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                          We opened Slack in a new tab — click &ldquo;Allow&rdquo;, then come back. This updates
-                          automatically.
-                        </div>
-                        {install && (
-                          <div className="mt-2 flex items-center gap-[14px]">
-                            <a
-                              href={install.installUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="lnk inline-flex items-center gap-[5px]"
-                            >
-                              Reopen the Slack install
-                              <Icon name="external-link" size={12} />
-                            </a>
-                            <button type="button" className="lnk" onClick={restartAuto}>
-                              Start over
-                            </button>
+                            {m === 'config' ? 'Config token' : 'Bot token'}
+                          </button>
+                        )
+                      })}
+                    </div>
+                    <span className="min-w-0 flex-1 font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                      {slackMethod === 'config'
+                        ? 'Recommended — one-click install, no manifest to copy or tokens to paste.'
+                        : 'Manual — copy our manifest into Slack, install, and paste the tokens back.'}
+                    </span>
+                  </div>
+                )}
+                {slackMethod === 'config' && autoUsable ? (
+                  <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
+                    <div className="mb-[14px]">
+                      <SlackDeliveryLine
+                        transport={effTransport}
+                        relayAvailable={relayAvailable}
+                        locked={!!install}
+                        onSwitch={switchTransport}
+                      />
+                    </div>
+
+                    {/* Step 1 — create & install (content changes by phase). */}
+                    <div className="flex gap-[10px]">
+                      {autoPhase === 'appToken' ? (
+                        <span className="flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--brand-soft)">
+                          <Icon name="check" size={12} color="var(--brand)" />
+                        </span>
+                      ) : (
+                        <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
+                          1
+                        </span>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        {autoPhase === 'config' && (
+                          <>
+                            <div className="mb-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+                              Name &amp; create the app (name optional)
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <div className="fld flex-1">
+                                <input
+                                  className="inp mn"
+                                  placeholder={
+                                    manifestNames.name
+                                      ? `${manifestNames.name} — from the agent's name`
+                                      : 'Bot name (optional) — e.g. acme-agent'
+                                  }
+                                  value={appName}
+                                  onChange={(e) => setAppName(e.target.value)}
+                                />
+                              </div>
+                              <Button
+                                onClick={() => void startAuto()}
+                                className={saving ? 'flex-none cursor-default opacity-50' : 'flex-none'}
+                              >
+                                <Icon name="plus" size={14} />
+                                {saving ? 'Creating…' : 'Create & install'}
+                              </Button>
+                            </div>
+                          </>
+                        )}
+                        {autoPhase === 'authorizing' && (
+                          <>
+                            <div className="flex items-center gap-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+                              <Icon name="loader" size={14} className="flex-none animate-spin" />
+                              Approve the install in Slack
+                            </div>
+                            <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+                              We opened Slack in a new tab — click &ldquo;Allow&rdquo;, then come back. This updates
+                              automatically.
+                            </div>
+                            {install && (
+                              <div className="mt-2 flex items-center gap-[14px]">
+                                <a
+                                  href={install.installUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="lnk inline-flex items-center gap-[5px]"
+                                >
+                                  Reopen the Slack install
+                                  <Icon name="external-link" size={12} />
+                                </a>
+                                <button type="button" className="lnk" onClick={restartAuto}>
+                                  Start over
+                                </button>
+                              </div>
+                            )}
+                          </>
+                        )}
+                        {autoPhase === 'appToken' && (
+                          <div className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+                            {effTransport === 'http'
+                              ? 'App created & installed — click Connect to finish'
+                              : 'App created & installed — bot token secured'}
                           </div>
                         )}
-                      </>
-                    )}
-                    {autoPhase === 'appToken' && (
-                      <div className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                        {effTransport === 'http'
-                          ? 'App created & installed — click Connect to finish'
-                          : 'App created & installed — bot token secured'}
+                      </div>
+                    </div>
+
+                    {/* Step 2 — app-level token. Socket only: http needs no xapp paste
+                    (the CP reads the signing secret itself), so the footer Connect
+                    finalizes directly once the install is approved. */}
+                    {effTransport === 'socket' && (
+                      <div
+                        className={`mt-[14px] border-t border-dashed border-(--border-default) pt-[13px] ${
+                          autoPhase === 'appToken' ? '' : 'opacity-55'
+                        }`}
+                      >
+                        <div className="flex gap-[10px]">
+                          <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
+                            2
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="mb-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+                              Generate the App-Level token &amp; paste it{' '}
+                              <span className="font-normal text-(--text-tertiary)">
+                                (Slack has no API for this one)
+                              </span>
+                            </div>
+                            <div className="fld">
+                              <input
+                                className={`inp mn ${showErrors && !appOk ? 'border-(--status-error)' : ''}`}
+                                placeholder="xapp-…"
+                                value={appToken}
+                                onChange={(e) => setAppToken(e.target.value)}
+                                disabled={autoPhase !== 'appToken'}
+                              />
+                            </div>
+                            {autoPhase === 'appToken' && install ? (
+                              <a
+                                href={slackAppSettingsUrl(install.appId)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="lnk mt-[10px] inline-flex items-center gap-[5px]"
+                              >
+                                Generate the App-Level token
+                                <Icon name="external-link" size={12} />
+                              </a>
+                            ) : (
+                              <div className="mt-[8px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+                                Unlocks once you approve the install in Slack.
+                              </div>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>
-                </div>
-
-                {/* Step 2 — app-level token. Socket only: http needs no xapp paste
-                    (the CP reads the signing secret itself), so the footer Connect
-                    finalizes directly once the install is approved. */}
-                {effTransport === 'socket' && (
-                  <div
-                    className={`mt-[14px] border-t border-dashed border-(--border-default) pt-[13px] ${
-                      autoPhase === 'appToken' ? '' : 'opacity-55'
-                    }`}
-                  >
+                ) : slackMethod === 'config' ? (
+                  <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
+                    {/* Step 1 — open Slack's App Configuration Tokens page (hover previews
+                    where it lives: scroll to the bottom of Your apps, then Copy). */}
                     <div className="flex gap-[10px]">
+                      <span className="mono mt-[1px] flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
+                        1
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="cfgtok relative">
+                          <SlackConfigTokenPreview />
+                          <a
+                            href="https://api.slack.com/apps"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
+                          >
+                            <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
+                              <PlatformMark platform="slack" />
+                            </span>
+                            Open Slack app config tokens
+                            <Icon name="external-link" size={14} />
+                          </a>
+                        </div>
+                        <div className="mt-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+                          Under <span className="mono">Your apps</span> →{' '}
+                          <span className="mono">configuration tokens</span>, pick the workspace and generate a token
+                          pair. The app is created in that workspace.
+                        </div>
+                      </div>
+                    </div>
+                    {/* Step 2 — paste the configuration token pair (one row; hints inline). */}
+                    <div className="mt-[14px] mb-[11px] flex items-center gap-[10px] border-t border-dashed border-(--border-default) pt-[13px]">
                       <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
                         2
                       </span>
+                      <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+                        Paste your configuration token
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-[10px] pl-[30px] min-[440px]:grid-cols-2">
+                      <div className="fld">
+                        <span className="fldlbl">
+                          Access Token <span className="font-normal text-(--text-tertiary)">· required</span>
+                        </span>
+                        <input
+                          className={`inp mn ${showErrors && !cfgAccess.trim() ? 'border-(--status-error)' : ''}`}
+                          placeholder="xoxe.xoxp-1-…"
+                          value={cfgAccess}
+                          onChange={(e) => setCfgAccess(e.target.value)}
+                        />
+                      </div>
+                      <div className="fld">
+                        <span className="fldlbl">
+                          Refresh Token{' '}
+                          <span className="font-normal text-(--text-tertiary)">· optional, saved for reuse</span>
+                        </span>
+                        <input
+                          className="inp mn"
+                          placeholder="xoxe-1-…"
+                          value={cfgRefresh}
+                          onChange={(e) => setCfgRefresh(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
+                    {/* Step 1 — create & install from our manifest. The agent name is
+                    built into the manifest, so no separate name field here. */}
+                    <div className="mb-3 flex gap-[10px]">
+                      <span className="mono mt-[1px] flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
+                        1
+                      </span>
                       <div className="min-w-0 flex-1">
                         <div className="mb-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                          Generate the App-Level token &amp; paste it{' '}
-                          <span className="font-normal text-(--text-tertiary)">(Slack has no API for this one)</span>
+                          Create &amp; install the Slack app from our manifest
                         </div>
-                        <div className="fld">
-                          <input
-                            className={`inp mn ${showErrors && !appOk ? 'border-(--status-error)' : ''}`}
-                            placeholder="xapp-…"
-                            value={appToken}
-                            onChange={(e) => setAppToken(e.target.value)}
-                            disabled={autoPhase !== 'appToken'}
-                          />
-                        </div>
-                        {autoPhase === 'appToken' && install ? (
+                        <div className="group relative">
                           <a
-                            href={slackAppSettingsUrl(install.appId)}
+                            href={createUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="lnk mt-[10px] inline-flex items-center gap-[5px]"
+                            onClick={() => void navigator.clipboard?.writeText?.(manifestJson)?.catch?.(() => {})}
+                            className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
                           >
-                            Generate the App-Level token
-                            <Icon name="external-link" size={12} />
+                            <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
+                              <PlatformMark platform="slack" />
+                            </span>
+                            Copy manifest &amp; open Slack
+                            <Icon name="external-link" size={14} />
                           </a>
+                          <SlackManifestPreview />
+                        </div>
+                        <div className="mt-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+                          In Slack, choose <span className="font-medium text-(--text-secondary)">From a manifest</span>,
+                          paste, select a workspace, then create and install the app.
+                        </div>
+                        <SlackDeliveryLine
+                          transport={effTransport}
+                          relayAvailable={relayAvailable}
+                          locked={false}
+                          onSwitch={switchTransport}
+                        />
+                      </div>
+                    </div>
+                    {/* Step 2 — paste the tokens the install gives back. */}
+                    <div className="mt-[14px] mb-[11px] flex items-center gap-[10px] border-t border-dashed border-(--border-default) pt-[13px]">
+                      <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
+                        2
+                      </span>
+                      <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+                        Paste the tokens it gives you — required to connect
+                      </span>
+                    </div>
+                    <div className="pl-[30px]">
+                      <div className="grid grid-cols-1 gap-[10px] min-[440px]:grid-cols-2">
+                        <div className="fld">
+                          <span className="fldlbl">Bot token</span>
+                          <input
+                            className={`inp mn ${showErrors && !botOk ? 'border-(--status-error)' : ''}`}
+                            placeholder="xoxb-…"
+                            value={botToken}
+                            onChange={(e) => setBotToken(e.target.value)}
+                          />
+                        </div>
+                        {effTransport === 'http' ? (
+                          <div className="fld">
+                            <span className="fldlbl">Signing secret</span>
+                            <input
+                              className={`inp mn ${showErrors && !slackSigningOk ? 'border-(--status-error)' : ''}`}
+                              placeholder="Signing secret (Basic Information → App Credentials)"
+                              value={signingSecret}
+                              onChange={(e) => setSigningSecret(e.target.value)}
+                            />
+                          </div>
                         ) : (
-                          <div className="mt-[8px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                            Unlocks once you approve the install in Slack.
+                          <div className="fld">
+                            <span className="fldlbl">App-level token</span>
+                            <input
+                              className={`inp mn ${showErrors && !appOk ? 'border-(--status-error)' : ''}`}
+                              placeholder="xapp-…"
+                              value={appToken}
+                              onChange={(e) => setAppToken(e.target.value)}
+                            />
                           </div>
                         )}
+                      </div>
+                      {/* Socket: once the app-level token decodes, deep-link to the app's
+                      Bot-token + settings pages (progressive — hidden until pasted). */}
+                      {effTransport === 'socket' && appId && (
+                        <div className="mt-[10px] flex flex-wrap items-center gap-x-[14px] gap-y-1 font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+                          <span className="flex items-center gap-[5px]">
+                            <Icon name="corner-down-right" size={12} className="flex-none" />
+                            App&nbsp;<span className="mono">{appId}</span>
+                          </span>
+                          <a
+                            href={slackAppOAuthUrl(appId)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="lnk inline-flex items-center gap-[5px]"
+                          >
+                            Copy the Bot token
+                            <Icon name="external-link" size={12} />
+                          </a>
+                          <a
+                            href={slackAppSettingsUrl(appId)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="lnk inline-flex items-center gap-[5px]"
+                          >
+                            Open app settings
+                            <Icon name="external-link" size={12} />
+                          </a>
+                        </div>
+                      )}
+                      {/* Bot-token path only: getting the Bot User OAuth token means installing
+                      the app, and if Slack flags changed scopes it shows a "reinstall your
+                      app" banner — reinstalling once is what activates the token pasted above. */}
+                      <div className="mt-[11px] flex items-start gap-2 rounded-lg bg-(--status-paused-soft) px-[11px] py-[9px]">
+                        <Icon
+                          name="triangle-alert"
+                          size={14}
+                          color="var(--status-paused)"
+                          className="mt-[1px] flex-none"
+                        />
+                        <span className="min-w-0 flex-1 font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-secondary)">
+                          If Slack shows{' '}
+                          <span className="font-medium">
+                            “You’ve changed the permission scopes… reinstall your app”
+                          </span>
+                          , click <span className="font-medium">Reinstall</span> once — that’s what activates the Bot
+                          User OAuth token you paste above.
+                        </span>
                       </div>
                     </div>
                   </div>
                 )}
-              </div>
-            ) : (
-              <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-                {/* Step 1 — create & install from our manifest. The app name is
-                    prefilled INTO the manifest (agent name), so no name field here. */}
-                <div className="mb-3 flex gap-[10px]">
-                  <span className="mono mt-[1px] flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                    1
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="mb-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                      Create &amp; install the Slack app from our manifest
-                    </div>
-                    <a
-                      href={createUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
-                    >
-                      <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
-                        <PlatformMark platform="slack" />
-                      </span>
-                      Add to Slack with manifest
-                      <Icon name="external-link" size={14} />
-                    </a>
-                    <div className="mt-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                      Opens Slack with our manifest prefilled. Install the app, then paste its tokens.
-                    </div>
-                    <SlackDeliveryLine
-                      transport={effTransport}
-                      relayAvailable={relayAvailable}
-                      locked={false}
-                      onSwitch={switchTransport}
-                    />
-                  </div>
-                </div>
-                {/* Step 2 — paste the tokens the install gives back. */}
-                <div className="mt-[14px] mb-[11px] flex items-center gap-[10px] border-t border-dashed border-(--border-default) pt-[13px]">
-                  <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                    2
-                  </span>
-                  <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                    Paste the tokens it gives you — required to connect
-                  </span>
-                </div>
-                <div className="pl-[30px]">
-                  <div className="grid grid-cols-1 gap-[10px] min-[440px]:grid-cols-2">
-                    <div className="fld">
-                      <span className="fldlbl">Bot token</span>
-                      <input
-                        className={`inp mn ${showErrors && !botOk ? 'border-(--status-error)' : ''}`}
-                        placeholder="xoxb-…"
-                        value={botToken}
-                        onChange={(e) => setBotToken(e.target.value)}
-                      />
-                    </div>
-                    {effTransport === 'http' ? (
-                      <div className="fld">
-                        <span className="fldlbl">Signing secret</span>
-                        <input
-                          className={`inp mn ${showErrors && !slackSigningOk ? 'border-(--status-error)' : ''}`}
-                          placeholder="Signing secret (Basic Information → App Credentials)"
-                          value={signingSecret}
-                          onChange={(e) => setSigningSecret(e.target.value)}
-                        />
-                      </div>
-                    ) : (
-                      <div className="fld">
-                        <span className="fldlbl">App-level token</span>
-                        <input
-                          className={`inp mn ${showErrors && !appOk ? 'border-(--status-error)' : ''}`}
-                          placeholder="xapp-…"
-                          value={appToken}
-                          onChange={(e) => setAppToken(e.target.value)}
-                        />
-                      </div>
-                    )}
-                  </div>
-                  {/* Socket: once the app-level token decodes, deep-link to the app's
-                      Bot-token + settings pages (progressive — hidden until pasted). */}
-                  {effTransport === 'socket' && appId && (
-                    <div className="mt-[10px] flex flex-wrap items-center gap-x-[14px] gap-y-1 font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                      <span className="flex items-center gap-[5px]">
-                        <Icon name="corner-down-right" size={12} className="flex-none" />
-                        App&nbsp;<span className="mono">{appId}</span>
-                      </span>
-                      <a
-                        href={slackAppOAuthUrl(appId)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="lnk inline-flex items-center gap-[5px]"
-                      >
-                        Copy the Bot token
-                        <Icon name="external-link" size={12} />
-                      </a>
-                      <a
-                        href={slackAppSettingsUrl(appId)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="lnk inline-flex items-center gap-[5px]"
-                      >
-                        Open app settings
-                        <Icon name="external-link" size={12} />
-                      </a>
-                    </div>
-                  )}
-                  {/* Quick-install nudge — only when this deployment's funnel is on but
-                      the caller hasn't stored their own config token yet. */}
-                  {slackFunnel && !myConfig && (
-                    <Link
-                      href={orgPath('/profile')}
-                      onClick={onClose}
-                      className="mt-[11px] flex items-center gap-[7px] rounded-lg bg-(--brand-soft) px-[11px] py-[9px] no-underline"
-                    >
-                      <Icon name="zap" size={14} color="var(--brand-soft-text)" className="flex-none" />
-                      <span className="min-w-0 flex-1 font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)">
-                        Want a quick install without pasting tokens?
-                      </span>
-                      <span className="flex-none whitespace-nowrap font-sans text-[11.5px] font-semibold leading-normal text-(--brand)">
-                        Set up quick install →
-                      </span>
-                    </Link>
-                  )}
-                </div>
-              </div>
+              </>
             )}
           </>
         )}
@@ -2163,17 +2494,51 @@ export default function AddIntegrationModal({
             block instead of the single-token generic one above — mirroring Slack. */}
         {mode === 'create' && platform === 'feishu' && (
           <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
+            {/* Region picks the open-platform gateway: Feishu (China, open.feishu.cn) vs
+                Lark (international, open.larksuite.com). Same app model, different console
+                + host — an app is registered in one region, so the operator chooses first. */}
+            <div className="mb-3">
+              <span className="fldlbl mb-[6px] block">Region</span>
+              <div className="grid grid-cols-2 gap-[6px]" role="radiogroup" aria-label="Feishu region">
+                {(
+                  [
+                    { key: 'feishu', label: 'Feishu', sub: '飞书 · China' },
+                    { key: 'lark', label: 'Lark', sub: 'International' }
+                  ] as const
+                ).map((r) => (
+                  <button
+                    key={r.key}
+                    type="button"
+                    role="radio"
+                    aria-checked={feishuRegion === r.key}
+                    onClick={() => setFeishuRegion(r.key)}
+                    className={`flex flex-col items-start gap-[1px] rounded-md border px-[11px] py-[7px] text-left ${
+                      feishuRegion === r.key
+                        ? 'border-(--brand) bg-(--surface-active)'
+                        : 'border-(--border-default) bg-(--surface-app)'
+                    }`}
+                  >
+                    <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                      {r.label}
+                    </span>
+                    <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                      {r.sub}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="mb-3 flex gap-[10px]">
               <span className="mono mt-[1px] flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
                 1
               </span>
               <div className="min-w-0 flex-1">
                 <div className="mb-2 font-sans text-[12.5px] font-medium leading-[1.45] text-(--text-secondary)">
-                  Create a self-built app in the Feishu console, enable the bot, then copy its App ID and App Secret
-                  from Credentials &amp; Basic Info.
+                  Create a self-built app in the {feishuRegion === 'lark' ? 'Lark' : 'Feishu'} console, enable the bot,
+                  then copy its App ID and App Secret from Credentials &amp; Basic Info.
                 </div>
                 <a
-                  href="https://open.feishu.cn/"
+                  href={feishuRegion === 'lark' ? 'https://open.larksuite.com/' : 'https://open.feishu.cn/'}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
@@ -2181,7 +2546,7 @@ export default function AddIntegrationModal({
                   <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
                     <PlatformMark platform="feishu" />
                   </span>
-                  Open the Feishu console
+                  Open the {feishuRegion === 'lark' ? 'Lark' : 'Feishu'} console
                   <Icon name="external-link" size={14} />
                 </a>
               </div>

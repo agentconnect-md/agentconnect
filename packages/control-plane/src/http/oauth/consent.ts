@@ -1,8 +1,9 @@
 /**
  * `http/oauth/consent.ts` — the consent-page BACKEND (agent-assistant.md §7.3),
- * mounted under `/api/v1` with `humanAuth` (Logto / devAuth identity). The web
- * console's consent page (which is where the human actually logs in — the CP holds
- * no browser session) calls these:
+ * mounted under `/api/v1` with interactive human authentication (Logto / devAuth;
+ * API keys and OAuth access tokens are rejected). The web console's consent page
+ * (which is where the human actually logs in — the CP holds no browser session)
+ * calls these:
  *
  *   - `GET  /oauth/consent/context` — the client name, the requested scopes, and the
  *     caller's orgs (the org picker), so the page can render the approval screen.
@@ -22,8 +23,17 @@ const str = (v: unknown): string | undefined => (typeof v === 'string' && v.leng
 
 export function oauthConsentRoutes(deps: HttpDeps) {
   return async function oauthConsentPlugin(app: FastifyInstance): Promise<void> {
+    app.addHook('preHandler', app.humanAuth)
+    app.addHook('preHandler', async (req, reply) => {
+      // Derived credentials may exercise their existing authority, but must not
+      // mint, enumerate, or revoke OAuth grants.
+      if (req.apiKeyId !== undefined) {
+        return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'interactive sign-in required' })
+      }
+    })
+
     // Approval-screen data: who's asking, for what, and which org to bind.
-    app.get('/oauth/consent/context', { preHandler: app.humanAuth, schema: { hide: true } }, async (req, reply) => {
+    app.get('/oauth/consent/context', { schema: { hide: true } }, async (req, reply) => {
       const q = req.query as Record<string, unknown>
       const clientId = str(q.client_id)
       if (!clientId)
@@ -41,7 +51,7 @@ export function oauthConsentRoutes(deps: HttpDeps) {
     })
 
     // Approve/deny. On approve, mint a single-use code bound to the consenting user+org.
-    app.post('/oauth/consent', { preHandler: app.humanAuth, schema: { hide: true } }, async (req, reply) => {
+    app.post('/oauth/consent', { schema: { hide: true } }, async (req, reply) => {
       const b = (req.body ?? {}) as Record<string, unknown>
       const clientId = str(b.clientId)
       const redirectUri = str(b.redirectUri)
@@ -103,7 +113,7 @@ export function oauthConsentRoutes(deps: HttpDeps) {
     })
 
     // Profile "Connected AI tools": list the caller's active grants.
-    app.get('/oauth/grants', { preHandler: app.humanAuth, schema: { hide: true } }, async (req) => {
+    app.get('/oauth/grants', { schema: { hide: true } }, async (req) => {
       const grants = await deps.oauth.listGrants(req.principal!.userId)
       const named = await Promise.all(
         grants.map(async (g) => {
@@ -123,7 +133,7 @@ export function oauthConsentRoutes(deps: HttpDeps) {
     })
 
     // Disconnect: revoke the grant + cascade-revoke its access tokens.
-    app.delete('/oauth/grants/:id', { preHandler: app.humanAuth, schema: { hide: true } }, async (req, reply) => {
+    app.delete('/oauth/grants/:id', { schema: { hide: true } }, async (req, reply) => {
       const { id } = req.params as { id: string }
       const ok = await deps.oauth.revokeGrant(req.principal!.userId, id)
       if (!ok) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'grant not found' })

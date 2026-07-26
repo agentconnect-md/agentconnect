@@ -3,9 +3,9 @@
  * session (shared-bot-relay.md §7.2 / §10). One socket == one conversation.
  *
  * It speaks the browser-facing, type-tagged webchat envelope. The browser sends
- * `{text}` (a turn) or
- * `{type:'set_model'|'set_effort'|'set_permission_mode'|'set_fast'|'cancel'}`, and the
- * relay sends `{type:'ready'|'output'|'done'|'ack'|'error'}`. Internally each inbound
+ * `{text, turnId, attachments?, runtime?}` (a turn with at most one bounded inline image) or
+ * `{type:'resume'|'set_model'|'set_effort'|'set_permission_mode'|'set_fast'|'cancel'}`,
+ * and the relay sends `{type:'ready'|'output'|'done'|'ack'|'resumed'|'error'}`. Internally each inbound
  * op becomes an `rd/msg(webchat)` bridged onto the target daemon's rd/* socket, and
  * each `rd/chat` chunk the daemon streams back is translated to `{type:'output'|'done'}`.
  *
@@ -13,7 +13,7 @@
  * daemon has no live rd/* socket on THIS relay the op fails with an error frame.
  */
 import { randomUUID } from 'node:crypto'
-import type { RdChat, RdMsgWebchat, RelayWebchatOp } from '@agentconnect.md/protocol'
+import { RelayWebchatOp, type RdChat, type RdMsgWebchat } from '@agentconnect.md/protocol'
 import type { ServerTransport } from '@agentconnect.md/connection'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { ChatSink } from './webchat-router.js'
@@ -36,11 +36,32 @@ export interface RelayBrowserConnDeps {
 export function parseBrowserFrame(msg: unknown, user: string): RelayWebchatOp | null {
   if (typeof msg !== 'object' || msg === null) return null
   const m = msg as Record<string, unknown>
-  // A bare {text} (no type) OR {type:'message', text} is a turn.
-  if ((m.type === undefined || m.type === 'message') && typeof m.text === 'string') {
-    return { op: 'turn', text: m.text, user }
+  // A bare message envelope (no type) or {type:'message', ...} is a turn.
+  if ((m.type === undefined || m.type === 'message') && (typeof m.text === 'string' || Array.isArray(m.attachments))) {
+    const parsed = RelayWebchatOp.safeParse({
+      op: 'turn',
+      text: typeof m.text === 'string' ? m.text : '',
+      user,
+      ...(m.turnId !== undefined ? { turnId: m.turnId } : {}),
+      ...(m.attachments !== undefined ? { attachments: m.attachments } : {}),
+      ...(m.runtime !== undefined ? { runtime: m.runtime } : {})
+    })
+    return parsed.success && parsed.data.op === 'turn' ? parsed.data : null
   }
   switch (m.type) {
+    case 'resume':
+      return Number.isInteger(m.afterIndex) &&
+        (m.afterIndex as number) >= -1 &&
+        typeof m.turnId === 'string' &&
+        Number.isSafeInteger(m.generation) &&
+        (m.generation as number) >= 1
+        ? {
+            op: 'resume',
+            turnId: m.turnId,
+            generation: m.generation as number,
+            afterIndex: m.afterIndex as number
+          }
+        : null
     case 'set_model':
       return typeof m.model === 'string' ? { op: 'set_model', model: m.model } : null
     case 'set_effort':
@@ -112,9 +133,15 @@ export class RelayBrowserConnection implements ChatSink {
     }
     try {
       const ack = await daemon.sendMsg(rdMsg)
-      // Only a turn's verdict is surfaced (accepted:false ⇒ paused / no daemon).
+      const browserAck = {
+        accepted: ack.accepted,
+        ...(ack.turnId ? { turnId: ack.turnId } : {}),
+        ...(ack.reason ? { reason: ack.reason } : {})
+      }
       if (op.op === 'turn') {
-        this.send({ type: 'ack', ack: { accepted: ack.accepted, ...(ack.reason ? { reason: ack.reason } : {}) } })
+        this.send({ type: 'ack', ack: browserAck })
+      } else if (op.op === 'resume') {
+        this.send({ type: 'resumed', ack: browserAck })
       }
     } catch (err) {
       this.deps.log.warn(`relay: webchat op delivery failed: ${(err as Error).message}`)

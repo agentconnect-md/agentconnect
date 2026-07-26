@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { once } from 'node:events'
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
+import { McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import {
   MEMORY_PLUGIN_ERROR_TOKEN,
@@ -29,10 +29,7 @@ import { MEM0_CLOUD_API, Mem0CloudClient, Mem0CloudConflictError, type Mem0Cloud
 const MAX_MCP_REQUEST_BYTES = 512 * 1024
 const API_KEY_HEADER = 'x-mem0-api-key'
 
-export interface MemoryPluginCredentialExtra {
-  requestInfo?: { headers: Record<string, string | string[] | undefined> }
-}
-export type MemoryPluginCredentialSource = (extra: MemoryPluginCredentialExtra) => string
+export type MemoryPluginCredentialSource = (ctx: ServerContext) => string
 
 export const MEM0_CLOUD_MANIFEST: Manifest = {
   profile: MEMORY_PLUGIN_PROFILE,
@@ -52,21 +49,9 @@ export const MEM0_CLOUD_MANIFEST: Manifest = {
   declaredEgressHosts: ['api.mem0.ai']
 }
 
-function header(headers: Record<string, string | string[] | undefined> | undefined, name: string): string | undefined {
-  if (!headers) return undefined
-  const direct = headers[name] ?? headers[name.toLowerCase()]
-  if (Array.isArray(direct)) return direct.length === 1 ? direct[0] : undefined
-  if (direct !== undefined) return direct
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() !== name.toLowerCase()) continue
-    return Array.isArray(value) ? (value.length === 1 ? value[0] : undefined) : value
-  }
-  return undefined
-}
-
 export function requestHeaderCredential(headerName: string): MemoryPluginCredentialSource {
-  return (extra) => {
-    const value = header(extra.requestInfo?.headers, headerName)?.trim()
+  return (ctx) => {
+    const value = ctx.http?.req?.headers.get(headerName)?.trim()
     if (!value) throw new Error('memory backend credential is unavailable')
     return value
   }
@@ -111,8 +96,8 @@ export function createMem0CloudMcpServer(
       inputSchema: MemoryPluginRecallInput,
       outputSchema: MemoryPluginRecallOutput
     },
-    async (input, extra) => {
-      const output = await client.recall(input, credential(extra), extra.signal)
+    async (input, ctx) => {
+      const output = await client.recall(input, credential(ctx), ctx.mcpReq.signal)
       return result(output as unknown as Record<string, unknown>, 'recall completed')
     }
   )
@@ -124,8 +109,8 @@ export function createMem0CloudMcpServer(
       inputSchema: MemoryPluginCaptureInput,
       outputSchema: MemoryPluginCaptureOutput
     },
-    async (input, extra) => {
-      const output = await client.capture(input, credential(extra), extra.signal)
+    async (input, ctx) => {
+      const output = await client.capture(input, credential(ctx), ctx.mcpReq.signal)
       return result(output as unknown as Record<string, unknown>, 'capture submitted')
     }
   )
@@ -137,8 +122,8 @@ export function createMem0CloudMcpServer(
       inputSchema: MemoryPluginOperationStatusInput,
       outputSchema: MemoryPluginOperationStatusOutput
     },
-    async (input, extra) => {
-      const output = await client.operationStatus(input, credential(extra), extra.signal)
+    async (input, ctx) => {
+      const output = await client.operationStatus(input, credential(ctx), ctx.mcpReq.signal)
       return result(output as unknown as Record<string, unknown>, 'capture status checked')
     }
   )
@@ -150,8 +135,8 @@ export function createMem0CloudMcpServer(
       inputSchema: MemoryPluginListInput,
       outputSchema: MemoryPluginListOutput
     },
-    async (input, extra) => {
-      const output = await client.list(input, credential(extra), extra.signal)
+    async (input, ctx) => {
+      const output = await client.list(input, credential(ctx), ctx.mcpReq.signal)
       return result(output as unknown as Record<string, unknown>, 'memory page listed')
     }
   )
@@ -163,8 +148,8 @@ export function createMem0CloudMcpServer(
       inputSchema: MemoryPluginGetInput,
       outputSchema: MemoryPluginGetOutput
     },
-    async (input, extra) => {
-      const output = await client.get(input, credential(extra), extra.signal)
+    async (input, ctx) => {
+      const output = await client.get(input, credential(ctx), ctx.mcpReq.signal)
       return result(output as unknown as Record<string, unknown>, 'memory retrieved')
     }
   )
@@ -176,9 +161,9 @@ export function createMem0CloudMcpServer(
       inputSchema: MemoryPluginDeleteInput,
       outputSchema: MemoryPluginDeleteOutput
     },
-    async (input, extra) => {
+    async (input, ctx) => {
       try {
-        const output = await client.delete(input, credential(extra), extra.signal)
+        const output = await client.delete(input, credential(ctx), ctx.mcpReq.signal)
         return result(output as unknown as Record<string, unknown>, 'memory delete completed')
       } catch (error) {
         if (error instanceof Mem0CloudConflictError) return conflictResult()
@@ -194,8 +179,8 @@ export function createMem0CloudMcpServer(
       inputSchema: MemoryPluginHistoryInput,
       outputSchema: MemoryPluginHistoryOutput
     },
-    async (input, extra) => {
-      const output = await client.history(input, credential(extra), extra.signal)
+    async (input, ctx) => {
+      const output = await client.history(input, credential(ctx), ctx.mcpReq.signal)
       return result(output as unknown as Record<string, unknown>, 'memory history listed')
     }
   )
@@ -259,7 +244,10 @@ export async function startMemoryPluginHttpServer(
       if (path !== '/mcp') return plain(res, 404, 'not found\n')
       const body = req.method === 'POST' ? await readJsonBody(req) : undefined
       const mcp = options.createMcpServer()
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
+      const transport = new NodeStreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true
+      })
       active.add(mcp)
       res.once('close', () => {
         active.delete(mcp)

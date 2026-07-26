@@ -26,7 +26,7 @@ function makeDeps(transport: FakeTransport, over: Partial<CpClientDeps> = {}): C
     maxAgents: 4,
     capabilities: () => ({ platforms: ['slack'], runtimes: ['claude'], acp: true, features: [] }),
     runtimeProfiles: () => [],
-    localState: () => ({ assignments: [], crons: [], leases: [], agents: [], integrations: [] }),
+    localState: () => ({ assignments: [], crons: [], leases: [], agents: [], integrations: [], stagedAgents: [] }),
     loadSnapshot: () => ({ cpu: 0, mem: 0, agents: 0 }),
     activeSessions: () => 0,
     configApply: snap,
@@ -90,6 +90,7 @@ describe('CpClient handshake', () => {
     expect(reg.payload.capabilities.runtimes).toEqual(['claude'])
     expect(reg.payload.localState.agents).toEqual([])
     expect(reg.payload.localState.integrations).toEqual([])
+    expect(reg.payload.localState.stagedAgents).toEqual([])
 
     // 4. CP replies register/ok → snapshot applied, READY
     t.pushInbound(

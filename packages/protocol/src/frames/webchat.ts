@@ -4,10 +4,41 @@ import { z } from 'zod'
 // a browser dials the relay pool with a CP-minted token and the relay bridges the
 // conversation onto the target daemon's rd/* socket. These payloads describe the reply
 // stream + the turn verdict; the relay's `rd/chat` / `rd/ack` frames REUSE them verbatim
-// (packages/protocol/src/frames/relay-daemon.ts). Content never touches the CP.
+// (packages/protocol/src/frames/relay-daemon.ts). Live content never touches the CP;
+// an authorized session-history read may later proxy a daemon-local image for display.
+
+// The browser rasterizes/compresses one selected image below this cap. It fits the
+// relay ingress frame and, later, one daemon→CP history frame with base64 expansion.
+export const WEBCHAT_IMAGE_MAX_BYTES = 160 * 1024
+export const WEBCHAT_IMAGE_MAX_BASE64_CHARS = Math.ceil(WEBCHAT_IMAGE_MAX_BYTES / 3) * 4
+
+const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
+
+function decodedBase64Bytes(value: string): number {
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0
+  return (value.length / 4) * 3 - padding
+}
+
+export const WebchatImageAttachment = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(255)
+    .regex(/^[^\u0000-\u001f\u007f]+$/, 'webchat image name must not contain control characters'),
+  mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+  data: z
+    .string()
+    .min(4)
+    .max(WEBCHAT_IMAGE_MAX_BASE64_CHARS)
+    .refine((value) => CANONICAL_BASE64.test(value) && decodedBase64Bytes(value) <= WEBCHAT_IMAGE_MAX_BYTES, {
+      message: `webchat image must be canonical base64 encoding at most ${WEBCHAT_IMAGE_MAX_BYTES} bytes`
+    })
+})
+export type WebchatImageAttachment = z.infer<typeof WebchatImageAttachment>
 
 // The webchat turn verdict — `dispatchWebchatTurn` returns this and the relay path folds
-// it into `rd/ack` (accepted + a fresh turnId that correlates the reply stream; `reason`
+// it into `rd/ack` (accepted + the turnId that correlates the reply stream; `reason`
 // explains a rejection). Not a wire frame of its own anymore.
 export const WebchatAck = z.object({
   accepted: z.boolean(),
@@ -93,6 +124,10 @@ export type WebchatOutput = z.infer<typeof WebchatOutput>
 export const WebchatDone = z.object({
   conversationId: z.string().uuid(),
   turnId: z.string().uuid(),
+  // Last output index emitted before this terminal marker. A reconnecting browser
+  // holds `done` until it has assembled every output through this index, so an
+  // early terminal frame cannot hide a gap. Optional for rolling compatibility.
+  lastIndex: z.number().int().min(-1).optional(),
   stopReason: z.string().optional(),
   usage: z.object({ used: z.number().int().optional(), cost: z.number().optional() }).optional(),
   error: z.string().optional()

@@ -279,7 +279,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect((unreachable.json() as { name: string }).name).toBe(`agent-${agentId2.slice(0, 4)}`)
   })
 
-  it('POST feishu stores the appId+appSecret pair in the two-slot secret (botToken=appSecret, appToken=appId), pushes a feishu-shaped upsert', async () => {
+  it('POST feishu defaults omitted region to Lark, stores the credential pair, and pushes a feishu-shaped upsert', async () => {
     const agentId = await placedAgent()
     const { app, spy } = withSpy()
 
@@ -298,7 +298,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     const secret = await prisma.botSecret.findUnique({ where: { botId: dto.botId as string } })
     expect(secret).toMatchObject({ botToken: FEISHU.appSecret, appToken: FEISHU.appId })
     const bot = await prisma.bot.findUnique({ where: { id: dto.botId as string } })
-    expect(bot).toMatchObject({ platform: 'feishu' })
+    expect(bot).toMatchObject({ platform: 'feishu', feishuRegion: 'lark' })
 
     // The daemon got a feishu-shaped spec: appId + appSecret, no slack/discord block.
     expect(spy.upserts).toHaveLength(1)
@@ -308,8 +308,42 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       integrationId: dto.id,
       agentId,
       platform: 'feishu',
-      feishu: { appId: FEISHU.appId, appSecret: FEISHU.appSecret }
+      // New installs default to the international Lark gateway when region is omitted.
+      feishu: { appId: FEISHU.appId, appSecret: FEISHU.appSecret, region: 'lark' }
     })
+    expect(dto.region).toBe('lark')
+  })
+
+  it("POST feishu with region 'feishu' verifies against + pushes the China gateway", async () => {
+    const agentId = await placedAgent()
+    const { app, spy } = withSpy()
+    const verifierCalls: Array<string | undefined> = []
+    app.deps.verifyFeishuBot = async (_appId, _appSecret, region) => {
+      verifierCalls.push(region)
+      return { status: 'ok', name: null }
+    }
+
+    const FEISHU = { appId: 'cli_feishu123', appSecret: 's3cr3t-feishu-xyz', region: 'feishu' as const }
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'acme-feishu', platform: 'feishu', agentId, feishu: FEISHU }
+    })
+    expect(res.statusCode).toBe(201)
+    const dto = res.json() as Record<string, unknown>
+    expect(dto.region).toBe('feishu')
+
+    // Explicit Feishu selection overrides the new Lark default.
+    expect(verifierCalls).toEqual(['feishu'])
+
+    // The daemon's spec carries region 'feishu' so its SDK dials open.feishu.cn.
+    const u = spy.upserts[0]!.u
+    if (u.platform !== 'feishu') throw new Error('expected feishu upsert')
+    expect(u.feishu).toMatchObject({ appId: FEISHU.appId, region: 'feishu' })
+
+    // Persisted on the integration row so a reconnect reconstructs the same region.
+    const row = await prisma.integration.findUnique({ where: { id: dto.id as string } })
+    expect(row?.feishuRegion).toBe('feishu')
   })
 
   it('POST rejects feishu credentials Feishu refuses (400) and stores nothing', async () => {
@@ -577,6 +611,44 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     // The daemon still gets the tokens (from the bot's stored secret).
     expect(spy.upserts).toHaveLength(2)
     expect(spy.upserts[1]!.u).toMatchObject({ slack: { botToken: SLACK.botToken, appToken: SLACK.appToken } })
+  })
+
+  it("reinstalling a freed Lark bot by botId preserves region 'lark' (retained creds keep their gateway)", async () => {
+    const agentId = await placedAgent()
+    const { app, spy } = withSpy()
+    // Install a Lark-region bot, then uninstall — the integration row (holding its region
+    // mirror) is deleted, but the durable bot row + credentials survive.
+    const first = (
+      await app.app.inject({
+        method: 'POST',
+        url: `${ORG}/integrations`,
+        payload: {
+          platform: 'feishu',
+          agentId,
+          feishu: { appId: 'cli_lark123', appSecret: 's3cr3t-lark', region: 'lark' }
+        }
+      })
+    ).json() as { id: string; botId: string }
+    await app.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${first.id}` })
+    // Region lives durably on the freed bot.
+    expect((await prisma.bot.findUnique({ where: { id: first.botId } }))?.feishuRegion).toBe('lark')
+
+    const otherAgent = randomUUID()
+    await seedAgent(prisma, otherAgent, { daemonId: DAEMON })
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'feishu', agentId: otherAgent, botId: first.botId }
+    })
+    expect(res.statusCode).toBe(201)
+    const dto = res.json() as Record<string, unknown>
+    // The reinstall carries the region forward — NOT silently defaulted to Feishu.
+    expect(dto.region).toBe('lark')
+    expect((await prisma.integration.findUnique({ where: { id: dto.id as string } }))?.feishuRegion).toBe('lark')
+    // The daemon's spec dials the Lark gateway for the reinstalled bot.
+    const u = spy.upserts[1]!.u
+    if (u.platform !== 'feishu') throw new Error('expected feishu upsert')
+    expect(u.feishu.region).toBe('lark')
   })
 
   it('reusing a bot that is STILL installed is refused with 409', async () => {

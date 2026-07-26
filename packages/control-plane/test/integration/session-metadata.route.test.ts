@@ -12,13 +12,14 @@ import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent, seedLaunch } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
-import { PgSessionRepo } from '../../src/persistence/index.js'
+import { PgAgentRepo, PgSessionRepo } from '../../src/persistence/index.js'
 import { handleEventSession } from '../../src/ws/handlers/index.js'
 import type { DaemonConnection } from '../../src/ws/connection.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import type { AnyFrame } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { InMemorySessionEventSink } from '../../src/events/sink.js'
+import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 
@@ -34,7 +35,7 @@ const LAUNCH = '10101010-1111-4111-8111-111111111111'
 const SESSION = '4691f21b-3911-4d7f-a45d-28ce75d79337'
 
 /** Dispatch an `event/session` EVT through the real handler (stores SessionMeta). */
-async function reportSession(payload: Record<string, unknown>): Promise<void> {
+async function reportSession(payload: Record<string, unknown>, daemonId = DAEMON): Promise<void> {
   const frame = {
     v: 1,
     id: randomUUID(),
@@ -43,13 +44,34 @@ async function reportSession(payload: Record<string, unknown>): Promise<void> {
     payload
   } as AnyFrame
   const deps = {
+    agent: new PgAgentRepo(prisma),
+    agentMutations: new AgentMutationGate(),
     session: new PgSessionRepo(prisma),
     events: new InMemorySessionEventSink()
   } as unknown as DaemonWsDeps
-  await handleEventSession(frame, { daemonId: DAEMON } as DaemonConnection, deps)
+  await handleEventSession(frame, { daemonId } as DaemonConnection, deps)
 }
 
 describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
+  it('drops a foreign daemon report before it reaches session storage', async () => {
+    const otherDaemon = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, otherDaemon)
+    await seedAgent(prisma, AGENT, { daemonId: otherDaemon })
+
+    await reportSession({
+      sessionId: SESSION,
+      agentId: AGENT,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C123',
+      title: 'Forged',
+      ts: '2026-07-05T00:00:00.000Z'
+    })
+
+    expect(await prisma.sessionMeta.findUnique({ where: { id: SESSION } })).toBeNull()
+  })
+
   it('stores a daemon-reported session and serves it at the deep-link detail route', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })

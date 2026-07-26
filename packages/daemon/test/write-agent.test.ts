@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentSpec, CronUpsert, IntegrationSpec } from '@agentconnect.md/protocol'
@@ -382,6 +382,55 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
     expect((readJson(file).workspace as { agentDir?: string }).agentDir).toBe('services/api')
   })
 
+  it('sanitizes legacy clone credentials and refuses unsafe replicated transports', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'git-repo', path: './workspace' }
+    })
+
+    writeAgentSpec(
+      dir,
+      'bot-a',
+      baseSpec({
+        workspace: {
+          mode: 'github',
+          gitRepo: 'https://legacy-user:legacy-token@example.com/repo?token=query-secret',
+          branch: 'main'
+        }
+      }),
+      deps
+    )
+    expect((readJson(file).workspace as { gitRepo: string }).gitRepo).toBe('https://example.com/repo')
+
+    writeAgentSpec(
+      dir,
+      'bot-a',
+      baseSpec({
+        workspace: {
+          mode: 'github',
+          gitRepo: 'https://legacy-user:legacy-token@other-host.example/acme/repo?token=query-secret',
+          branch: 'main',
+          gitCredential: 'github-app'
+        }
+      }),
+      deps
+    )
+    expect((readJson(file).workspace as { gitRepo: string }).gitRepo).toBe('https://github.com/acme/repo')
+
+    expect(() =>
+      writeAgentSpec(
+        dir,
+        'bot-a',
+        baseSpec({ workspace: { mode: 'github', gitRepo: 'file:///tmp/repo', branch: 'main' } }),
+        deps
+      )
+    ).toThrow('git clone url must use https or ssh')
+  })
+
   it('clears a stale working subdirectory for repo-root and scratch specs', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
     const file = seedAgent(dir, 'bot-a', {
@@ -431,6 +480,16 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
 })
 
 describe('writeAgentSpec — create (no agent.json)', () => {
+  it.skipIf(process.platform === 'win32')('creates the agent root and agent.json with owner-only modes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+
+    writeAgentSpec(dir, 'bot-new', baseSpec({ name: 'bot-new' }), deps)
+
+    const file = join(dir, 'bot-new', 'agent.json')
+    expect(statSync(join(dir, 'bot-new')).mode & 0o777).toBe(0o700)
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+  })
+
   it('persists displayName for a fresh agent', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
 
@@ -459,6 +518,41 @@ describe('writeAgentSpec — create (no agent.json)', () => {
 
     const file = findAgentFileById(dir, 'bot-new')
     expect(readJson(file!).runtime).toBe('claude')
+  })
+
+  it.skipIf(process.platform === 'win32')('repairs legacy modes when an integration rewrites agent.json', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+    chmodSync(join(dir, 'bot-a'), 0o755)
+    chmodSync(file, 0o644)
+
+    expect(
+      writeIntegrationSpec(
+        dir,
+        {
+          integrationId: 'int-a',
+          agentId: 'bot-a',
+          platform: 'slack',
+          slack: {
+            mode: 'direct',
+            shareable: false,
+            botToken: 'xoxb-secret',
+            appToken: 'xapp-secret',
+            allowedUserIds: [],
+            bindRules: []
+          }
+        },
+        {}
+      )
+    ).toBe(true)
+    expect(statSync(join(dir, 'bot-a')).mode & 0o777).toBe(0o755)
+    expect(statSync(file).mode & 0o777).toBe(0o600)
   })
 })
 

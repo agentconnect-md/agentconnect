@@ -16,6 +16,7 @@ import {
   gitRepoLabel,
   type Ack,
   type AgentActivate,
+  type AgentSkillEntry,
   type CronUpsert,
   type IntegrationSpec
 } from '@agentconnect.md/protocol'
@@ -91,6 +92,9 @@ interface MoveBundle {
   /** The agent's write-only secret env vars (AgentSecretStore) — part of the wire
    *  definition, so a mid-move secret edit trips the fingerprint stability check. */
   secrets: Record<string, string>
+  /** Resolved skill entries (shared-skills.md) — pinned so the authoritative
+   *  `agent/activate` ships them; a bare project() would clear skills on the target. */
+  skills: AgentSkillEntry[]
 }
 
 interface ActivationSnapshot {
@@ -141,6 +145,17 @@ export class AgentMoveService {
     return this.withMoveGate(agent.id, async () => this.ensureActiveLocked(await this.reloadAfterGate(agent)))
   }
 
+  /** Resume a durable daemon-side staging fence reported during register. The
+   * queued gate waits for the request that lost its socket to settle first, then
+   * re-checks authoritative placement before sending any activation material. */
+  async recoverStaged(agentId: AgentId, daemonId: DaemonId, moveId: string): Promise<void> {
+    try {
+      await this.recoverStagedOnce(agentId, daemonId, moveId)
+    } catch (err) {
+      this.deps.log?.warn({ err, agentId, daemonId }, 'agent move: staged reconnect recovery failed')
+    }
+  }
+
   async move(agent: AgentRecord, targetDaemonId: DaemonId, editor?: string): Promise<AgentRecord> {
     return this.withMoveGate(agent.id, async () =>
       this.moveLocked(await this.reloadAfterGate(agent), targetDaemonId, editor)
@@ -183,11 +198,52 @@ export class AgentMoveService {
     }
   }
 
+  private async recoverStagedOnce(agentId: AgentId, daemonId: DaemonId, moveId: string): Promise<void> {
+    const release = await this.deps.mutations.beginMoveWhenIdle(agentId)
+    try {
+      const current = await this.deps.agents.get(agentId)
+      if (!current || current.daemonId !== daemonId) return
+
+      const candidate = await this.snapshotOwned(agentId, daemonId)
+      const resumed = await this.deps.control.agentActivate(daemonId, {
+        ...this.activationDefinition(candidate.agent, candidate.bundle),
+        moveId,
+        reconcileWorkspace: true
+      })
+
+      let stable: ActivationSnapshot
+      if (resumed.ok) {
+        const observed = await this.snapshotOwned(agentId, daemonId)
+        if (candidate.fingerprint === observed.fingerprint) {
+          const confirmed = await this.deps.agents.get(agentId)
+          if (!confirmed || confirmed.daemonId !== daemonId) return this.failClosedOwnership(agentId, daemonId)
+          stable = { ...observed, agent: confirmed }
+        } else {
+          stable = await this.activateUntilStable(agentId, daemonId, 'staged reconnect recovery', {
+            reconcileWorkspace: true
+          })
+        }
+      } else {
+        // A conversion may have crashed after swapping its checkout, where the
+        // old token retains a one-shot empty-workspace guard. A fresh generic
+        // token safely supersedes that fence and completes from current CP state.
+        stable = await this.activateUntilStable(agentId, daemonId, 'staged reconnect recovery', {
+          reconcileWorkspace: true
+        })
+      }
+      await this.convergeDerived(stable.agent, stable.bundle.sharedBotIds)
+    } finally {
+      release()
+    }
+  }
+
   private async ensureActiveLocked(agent: AgentRecord): Promise<AgentRecord> {
     if (!agent.daemonId) throw new AgentMoveConflict('agent is not placed')
     let stable: ActivationSnapshot
     try {
-      stable = await this.activateUntilStable(agent.id, agent.daemonId, 'target repair')
+      stable = await this.activateUntilStable(agent.id, agent.daemonId, 'target repair', {
+        reconcileWorkspace: true
+      })
     } catch (err) {
       if (err instanceof AgentMoveFailed) throw err
       throw new AgentMoveFailed('target daemon repair failed', err)
@@ -477,10 +533,11 @@ export class AgentMoveService {
 
   /** Read every placement-dependent wire definition. */
   private async snapshot(agent: AgentRecord): Promise<MoveBundle> {
-    const [integrations, cronRows, secrets] = await Promise.all([
+    const [integrations, cronRows, secrets, skills] = await Promise.all([
       this.deps.integrations.listForAgent(agent.id),
       this.deps.crons.listForAgent(agent.id),
-      this.deps.specs.secretsOf(agent)
+      this.deps.specs.secretsOf(agent),
+      this.deps.specs.skillsOf(agent)
     ])
     const specs = await Promise.all(
       integrations.map(async (integration) => {
@@ -510,16 +567,17 @@ export class AgentMoveService {
       integrations: specs,
       crons,
       sharedBotIds: [...new Set(specs.filter((s) => s.shared).map((s) => s.botId))].sort(),
-      secrets
+      secrets,
+      skills
     }
   }
 
   private activationDefinition(agent: AgentRecord, bundle: MoveBundle): Omit<AgentActivate, 'moveId'> {
     return {
       agentId: agent.id,
-      // project() (not assemble()): the snapshot pinned the secrets into the
+      // project() (not assemble()): the snapshot pinned the secrets + skills into the
       // bundle so the activation fingerprint compares stable inputs.
-      spec: this.deps.specs.project(agent, bundle.secrets),
+      spec: this.deps.specs.project(agent, bundle.secrets, bundle.skills),
       integrations: bundle.integrations.map(({ spec }) => spec),
       crons: bundle.crons
     }

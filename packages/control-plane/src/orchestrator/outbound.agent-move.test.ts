@@ -1,18 +1,18 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Ack } from '@agentconnect.md/protocol'
 import type { LaunchRepo } from '../persistence/ports.js'
-import { ConnectionRegistry, type ConnChannel, type DaemonConnState } from '../ws/registry.js'
+import { ConnectionClosed, ConnectionRegistry, type ConnChannel, type DaemonConnState } from '../ws/registry.js'
 import { ControlSender } from './outbound.js'
 
 const DAEMON = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const MOVE = '22222222-2222-4222-8222-222222222222'
 
-function state(conn: ConnChannel): DaemonConnState {
+function state(conn: ConnChannel, sessionEpoch = 7): DaemonConnState {
   return {
     daemonId: DAEMON,
     conn,
-    sessionEpoch: 7,
+    sessionEpoch,
     state: 'READY',
     maxAgents: 2,
     load: { cpu: 0, mem: 0, agents: 1 },
@@ -54,6 +54,47 @@ describe('ControlSender agent move controls', () => {
       'agent/activate',
       { agentId: AGENT, moveId: MOVE, spec: { name: 'mover' }, integrations: [], crons: [] },
       { epoch: 7, agentId: AGENT },
+      { ackTimeoutMs: 60_000, maxTries: 5 }
+    )
+  })
+
+  it('resumes an idempotent activation on the next READY connection', async () => {
+    const firstRequest = vi.fn(async () => {
+      throw new ConnectionClosed()
+    })
+    const first = {
+      daemonId: DAEMON,
+      request: firstRequest,
+      send: vi.fn(),
+      close: vi.fn()
+    } as unknown as ConnChannel
+    const registry = new ConnectionRegistry()
+    registry.add(state(first))
+    const sender = new ControlSender(registry, {} as LaunchRepo)
+
+    const activation = sender.agentActivate(DAEMON, {
+      agentId: AGENT,
+      moveId: MOVE,
+      spec: { name: 'mover' },
+      integrations: [],
+      crons: []
+    })
+    await vi.waitFor(() => expect(firstRequest).toHaveBeenCalledOnce())
+
+    const nextRequest = vi.fn(async () => ({ ok: true }) as Ack)
+    const next = {
+      daemonId: DAEMON,
+      request: nextRequest,
+      send: vi.fn(),
+      close: vi.fn()
+    } as unknown as ConnChannel
+    registry.add(state(next, 8))
+
+    await expect(activation).resolves.toEqual({ ok: true })
+    expect(nextRequest).toHaveBeenCalledWith(
+      'agent/activate',
+      { agentId: AGENT, moveId: MOVE, spec: { name: 'mover' }, integrations: [], crons: [] },
+      { epoch: 8, agentId: AGENT },
       { ackTimeoutMs: 60_000, maxTries: 5 }
     )
   })

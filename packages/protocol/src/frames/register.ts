@@ -35,7 +35,12 @@ export const RegisterReq = z.object({
     // the CP may prune it only when the durable row proves the replica moved.
     // Defaults keep an older daemon compatible with a newer CP.
     agents: z.array(z.object({ agentId: z.string(), origin: z.enum(['cp', 'unknown']) })).default([]),
-    integrations: z.array(z.object({ integrationId: z.string(), origin: z.enum(['cp', 'unknown']) })).default([])
+    integrations: z.array(z.object({ integrationId: z.string(), origin: z.enum(['cp', 'unknown']) })).default([]),
+    // Durable fail-closed move tombstones. A newer CP repairs entries with a
+    // valid token after register/ok. A missing token represents corrupt local
+    // metadata: the daemon keeps that agent drained for manual repair without
+    // making the whole registration undecodable.
+    stagedAgents: z.array(z.object({ agentId: z.string(), moveId: z.string().uuid().optional() })).default([])
   })
 })
 export type RegisterReq = z.infer<typeof RegisterReq>

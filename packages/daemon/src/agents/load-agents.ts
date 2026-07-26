@@ -1,15 +1,18 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, resolve, isAbsolute, dirname } from 'node:path'
 import { AgentSchema, type Agent } from './agent-schema.js'
+import { protectAgentJson } from './agent-json-file.js'
 
 const IGNORED_DIRS = new Set(['node_modules', '.git'])
 const MAX_DEPTH = 4
+const DETACHED_DIR = '.detached'
 
 // Agent plus loader-derived data: the directory containing agent.json.
 export type LoadedAgent = Agent & { dir: string }
 
 // Parse one agent.json, then resolve workspace.path relative to the agent dir.
 function parseAgentFile(file: string): LoadedAgent {
+  protectAgentJson(file)
   const dir = dirname(file)
   const agent = AgentSchema.parse(JSON.parse(readFileSync(file, 'utf8')))
   if (!isAbsolute(agent.workspace.path)) {
@@ -41,9 +44,18 @@ export function findAgentFiles(dir: string, depth = 0): string[] {
   return out
 }
 
+function protectDetachedAgentFiles(agentsDir: string): void {
+  for (const file of findAgentFiles(join(agentsDir, DETACHED_DIR))) {
+    protectAgentJson(file)
+  }
+}
+
 // All parsed agents under `agentsDir`, no status filter. `dir` is the directory
 // holding each agent.json.
 export function discoverAgents(agentsDir: string): { agent: LoadedAgent; dir: string }[] {
+  // Hidden cold-move archives are intentionally excluded from discovery, but
+  // legacy copies may still contain runtime secrets and must converge too.
+  protectDetachedAgentFiles(agentsDir)
   return findAgentFiles(agentsDir).map((file) => {
     try {
       return { agent: parseAgentFile(file), dir: dirname(file) }

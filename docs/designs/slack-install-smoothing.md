@@ -21,21 +21,32 @@ the created Slack app belongs to that person.
 
 The organization-scoped routes are:
 
-| Endpoint               | Behavior                                                   |
-| ---------------------- | ---------------------------------------------------------- |
-| `GET /slack/config`    | Returns availability and timestamps only.                  |
-| `PUT /slack/config`    | Validates, normalizes, and stores the caller's token pair. |
-| `DELETE /slack/config` | Removes the caller's stored configuration.                 |
+| Endpoint               | Behavior                                                            |
+| ---------------------- | ------------------------------------------------------------------- |
+| `GET /slack/config`    | Returns availability, durability, and timestamps only.              |
+| `PUT /slack/config`    | Validates and stores the caller's token; refresh token is optional. |
+| `DELETE /slack/config` | Removes the caller's stored configuration.                          |
 
 No read response returns either the access token or refresh token.
 
 `PgSlackUserConfigStore` seals every token through `SecretCipher`. The
 repository supports multiple cipher implementations; runtime configuration
-selects which one is active.
+selects which one is active. The refresh-token column is nullable.
+
+The access (config) token is required; the refresh token is optional:
+
+- **With a refresh token** the pair is validated and normalized by rotating it
+  once on save, and rotated again whenever the access token nears expiry — so it
+  auto-renews and never needs re-entry. This row is **durable**.
+- **Access token only** — nothing to rotate. It is stored as-is with Slack's
+  documented ~12h lifetime and verified when the caller starts an install
+  (`apps.manifest.create` rejects a bad or expired token). Once it lapses the
+  resolution is `expired` and the Console asks the caller to re-enter it (or add
+  a refresh token to make it durable).
 
 Slack configuration access tokens are short-lived. Before creating an app, the
-Control Plane rotates a stored token when it is close to expiry and persists
-the replacement pair. Because refresh rotation is single-use, a failed rotate
+Control Plane rotates a stored token when it is close to expiry and persists the
+replacement pair. Because refresh rotation is single-use, a failed rotate
 reloads the row once in case another request already rotated and saved a fresh
 pair.
 
@@ -46,11 +57,14 @@ pair.
 Automatic installation is available only when:
 
 - the Slack configuration API is enabled;
-- the caller has stored a valid App Configuration token; and
+- the caller has stored an App Configuration token that is usable right now —
+  durable (a refresh token is stored) or its access token is still fresh; and
 - a public HTTPS Control Plane callback base is configured.
 
-`GET /slack/config` reports this as metadata such as `configured`,
-`funnelEnabled`, and `autoAvailable`.
+`GET /slack/config` reports this as metadata such as `configured`, `durable`,
+`funnelEnabled`, `autoAvailable`, and `accessExpiresAt`. `autoAvailable` is true
+only when the funnel is enabled and the stored token is usable; a stored but
+expired access-only token reports `configured: true` with `autoAvailable: false`.
 
 HTTP-mode installation additionally requires:
 

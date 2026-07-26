@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ApiError,
+  listDreams,
   setAgentWorkspace,
   createGithubHook,
   createMemoryRecord,
@@ -450,5 +451,34 @@ describe('managed-memory history API', () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
       `/orgs/org-1/agents/agent-1/memory/history?path=release+notes.md&cursor=${cursor}&limit=5`
     )
+  })
+})
+
+describe('GET denials keep the machine-readable code', () => {
+  it('surfaces the CP capability denial through listDreams (not just the status)', async () => {
+    // Regression: apiGet used to build ApiError from the status alone, so the
+    // console's DAEMON_FEATURE_MISSING branch was unreachable in production even
+    // though a mocked ApiError made it look covered.
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'this agent version does not support memory dreaming; upgrade its daemon',
+            code: 'DAEMON_FEATURE_MISSING'
+          }),
+          { status: 409, headers: { 'content-type': 'application/json' } }
+        )
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    setApiOrgId('org-1')
+
+    await expect(listDreams('agent-1')).rejects.toMatchObject({
+      status: 409,
+      code: 'DAEMON_FEATURE_MISSING',
+      message: 'this agent version does not support memory dreaming; upgrade its daemon'
+    })
+    await expect(listDreams('agent-1')).rejects.toBeInstanceOf(ApiError)
   })
 })

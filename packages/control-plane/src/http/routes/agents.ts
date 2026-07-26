@@ -4,7 +4,7 @@
  * `route/*`, `agent/*`, `event/session`). Scoped to the caller's org (the
  * devAuth/OIDC principal). Placement/launch happen over the WS edge — not here.
  */
-import type { FastifyInstance, FastifyRequest } from 'fastify'
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type {
@@ -22,9 +22,13 @@ import type {
   MemoryRecordCreateResult,
   MemoryRecordUpdateResult,
   MemoryRecordDeleteResult,
-  MemoryRecordHistoryPage
+  MemoryRecordHistoryPage,
+  DreamInfo,
+  DreamListPage,
+  DreamFilesPage,
+  DreamFileReadContent
 } from '@agentconnect.md/protocol'
-import { gitRepoLabel, normalizeGitUrl } from '@agentconnect.md/protocol'
+import { MAX_WORKSPACE_EDIT_BYTES, gitRepoLabel, normalizeGitUrl } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { type AgentRecord, type AgentWorkspace, isSyntheticEmail } from '../../persistence/ports.js'
@@ -58,6 +62,11 @@ import {
   WorkspaceFilesDto,
   WorkspaceFileQueryDto,
   WorkspaceFileDto,
+  PutWorkspaceFileQueryDto,
+  PutWorkspaceFileBody,
+  WorkspaceFileWriteDto,
+  DeleteWorkspaceFileQueryDto,
+  WorkspaceFileDeleteDto,
   WorkspaceGitStatusDto,
   WorkspaceGitPullDto,
   AgentMemoryDto,
@@ -80,6 +89,13 @@ import {
   CreateMemoryRecordBody,
   UpdateMemoryRecordBody,
   DeleteMemoryRecordBody,
+  DreamDto,
+  DreamListDto,
+  DreamFilesDto,
+  DreamFileDto,
+  DreamIdParam,
+  StartDreamBody,
+  AdoptDreamBody,
   type AgentDtoT,
   type WorkspaceFilesDtoT,
   type WorkspaceFileDtoT,
@@ -93,7 +109,11 @@ import {
   type MemoryRecordResultDtoT,
   type MemoryRecordGetResultDtoT,
   type MemoryRecordDeleteResultDtoT,
-  type MemoryRecordHistoryPageDtoT
+  type MemoryRecordHistoryPageDtoT,
+  type DreamDtoT,
+  type DreamListDtoT,
+  type DreamFilesDtoT,
+  type DreamFileDtoT
 } from '../dto/index.js'
 import { provisionDaemonConnect } from '../onboarding.js'
 import { Tag } from '../plugins/openapi.js'
@@ -123,6 +143,17 @@ function sandboxPolicyOf(daemon: DaemonView | null): SandboxPolicy {
     supported: required || daemon.capabilities.features.includes('sandbox'),
     required
   }
+}
+
+/** Version-skew gate for memory dreaming. A daemon that predates the feature
+ *  omits it, and the CP must NOT forward `memory/dream/*` to it: that daemon
+ *  silently ignores unknown frames, so the request would hang until it times
+ *  out and surface as a misleading 503. Gating here fails fast with a clear
+ *  message, and the DTO projection lets the console hide the panel outright. */
+const DREAMING_FEATURE = 'memory-dreaming-v1'
+
+function dreamingSupportedOn(daemon: DaemonView | null): boolean {
+  return !!daemon?.capabilities.features.includes(DREAMING_FEATURE)
 }
 
 function toDto(
@@ -157,6 +188,7 @@ function toDto(
     // write-only and never on the record). Sorted for a stable DTO.
     secretKeys: [...secretKeys].sort(),
     mcpServers: a.mcpServers,
+    skills: a.skills,
     memory: a.memory,
     status: a.status,
     daemonId: a.daemonId,
@@ -252,6 +284,45 @@ export function toMemoryFilesDto(rep: MemoryListPage): MemoryFilesDtoT {
 /** Wire REP → bounded HTTP page for managed file provenance. */
 export function toMemoryHistoryPageDto(rep: MemoryHistoryPage): MemoryHistoryPageDtoT {
   return { events: rep.events, nextCursor: rep.nextCursor ?? null }
+}
+
+/** Wire REP → HTTP body for one dream job's metadata (never staged bodies). */
+export function toDreamDto(dream: DreamInfo): DreamDtoT {
+  return {
+    dreamId: dream.dreamId,
+    agentId: dream.agentId,
+    status: dream.status,
+    trigger: dream.trigger,
+    sessionIds: dream.sessionIds,
+    snapshotDigest: dream.snapshotDigest,
+    instructions: dream.instructions ?? null,
+    skills: dream.skills ?? null,
+    usage: dream.usage ?? null,
+    error: dream.error ?? null,
+    createdAt: dream.createdAt,
+    endedAt: dream.endedAt ?? null
+  }
+}
+
+export function toDreamListDto(rep: DreamListPage): DreamListDtoT {
+  return { dreams: rep.dreams.map(toDreamDto) }
+}
+
+export function toDreamFilesDto(rep: DreamFilesPage): DreamFilesDtoT {
+  return { exists: rep.exists, files: rep.entries }
+}
+
+export function toDreamFileDto(rep: DreamFileReadContent): DreamFileDtoT {
+  return {
+    path: rep.path,
+    exists: rep.exists,
+    size: rep.size ?? null,
+    mtime: rep.mtime ?? null,
+    content: rep.content ?? null,
+    offset: rep.offset ?? null,
+    nextOffset: rep.nextOffset ?? null,
+    truncated: rep.truncated ?? null
+  }
 }
 
 export function toMemorySurfaceDto(rep: MemorySurfaceInfo): MemorySurfaceDtoT {
@@ -491,6 +562,28 @@ export function agentRoutes(deps: HttpDeps) {
       return blocked.length ? `cannot enable MCP provider you don't have access to: ${blocked.join(', ')}` : null
     }
 
+    // Skills enablement authorization (shared-skills.md §9). A skill-ref is
+    // "<source>/<skill>" / "<source>/*" / "<source>"; its self-contained definition
+    // is pushed to the daemon, so a caller may only ADD refs to sources they can see.
+    // Newly-added refs to an unknown OR unviewable source are blocked, so the
+    // enable-list surface mirrors source visibility (same rule as MCP providers);
+    // removing/keeping a ref to a source they can't see is allowed. `before` is [] on create.
+    const enablingUnseenSkillDenied = async (
+      orgId: OrgId,
+      ctx: ViewCtx,
+      before: readonly string[],
+      after: readonly string[]
+    ): Promise<string | null> => {
+      const sourceOf = (ref: string) => (ref.includes('/') ? ref.slice(0, ref.indexOf('/')) : ref)
+      const addedSources = [...new Set(after.filter((r) => !before.includes(r)).map(sourceOf))]
+      if (addedSources.length === 0) return null
+      const visible = new Set((await deps.repos.skillSource.listForOrg(orgId, ctx)).map((s) => s.name))
+      const blocked = addedSources.filter((n) => !visible.has(n))
+      return blocked.length
+        ? `cannot enable skills from a source you don't have access to: ${blocked.join(', ')}`
+        : null
+    }
+
     const validateExternalMemoryBinding = async (
       memory: AgentRecord['memory'] | undefined,
       orgId: OrgId
@@ -676,6 +769,7 @@ export function agentRoutes(deps: HttpDeps) {
         // these answer 409 — installations and their grant sets are org-level
         // infrastructure (visibility taxonomy), so a 409 is not an oracle.
         const ws = req.body.workspace
+        let workspace = ws
         let workspaceRepoId: bigint | undefined
         if (ws?.mode === 'github' && ws.installationId === undefined && ws.gitAccess === 'write') {
           return conflict('github write access requires a GitHub App installation')
@@ -686,8 +780,11 @@ export function agentRoutes(deps: HttpDeps) {
           if (!ins || ins.orgId !== req.orgCtx!.orgId || ins.revokedAt) {
             return conflict('github installation not found in this org')
           }
-          const [owner, repo] = gitRepoLabel(ws.gitRepo).split('/')
-          if (!owner || !repo) return conflict('workspace gitRepo is not a github repository')
+          const repoParts = gitRepoLabel(ws.gitRepo).split('/')
+          const [owner, repo] = repoParts
+          if (repoParts.length !== 2 || !owner || !repo) {
+            return conflict('workspace gitRepo is not a github repository')
+          }
           if (owner.toLowerCase() !== ins.accountLogin.toLowerCase()) {
             return conflict(`repo owner ${owner} does not match the installation account ${ins.accountLogin}`)
           }
@@ -697,6 +794,9 @@ export function agentRoutes(deps: HttpDeps) {
               return conflict(`${owner}/${repo} is not granted to the installation — re-select it on GitHub`)
             }
             workspaceRepoId = ref.repoId
+            // The installation lookup, not the caller's clone host/path, is the
+            // authority for an App-backed workspace.
+            workspace = { ...ws, gitRepo: normalizeGitUrl(ref.fullName) }
             // Per-user gate (identity assertion, open question #7) — the SECURITY check;
             // the picker's preflight is UX only. The creator must hold the
             // access level the agent will run with: gitAccess=write (the
@@ -736,6 +836,10 @@ export function agentRoutes(deps: HttpDeps) {
           const denied = await enablingUnseenDenied(orgOf(req), ctxOf(req), [], req.body.mcpServers)
           if (denied) return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: denied })
         }
+        if (Array.isArray(req.body.skills)) {
+          const denied = await enablingUnseenSkillDenied(orgOf(req), ctxOf(req), [], req.body.skills)
+          if (denied) return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: denied })
+        }
         const memoryRelease = deps.memoryConnectionMutations.tryBeginMutation(
           externalMemoryConnectionIds(req.body.memory)
         )
@@ -764,6 +868,10 @@ export function agentRoutes(deps: HttpDeps) {
             req.body.callPolicy === 'selected'
               ? await resolvePolicyAgentIds(req, agentId, req.body.allowedCallerAgentIds ?? [], [])
               : undefined
+          const initialAllowedTargets =
+            req.body.outboundPolicy === 'selected'
+              ? await resolvePolicyAgentIds(req, agentId, req.body.allowedTargetAgentIds ?? [], [])
+              : undefined
           // One transaction for the agent row + its initial secret rows (sealing
           // happens before it opens) — a failure can't leave a partial definition.
           const agent = await deps.repos.agentConfig.create(
@@ -790,15 +898,18 @@ export function agentRoutes(deps: HttpDeps) {
               restrictFileAccess,
               ...(req.body.env !== undefined ? { env: req.body.env } : {}),
               ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
+              ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
               ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
               ...(req.body.daemonId !== undefined ? { daemonId: DaemonId(req.body.daemonId) } : {}),
-              ...(req.body.workspace !== undefined ? { workspace: req.body.workspace } : {}),
+              ...(workspace !== undefined ? { workspace } : {}),
               ...(workspaceRepoId !== undefined ? { workspaceRepoId } : {}),
               ...(req.principal ? { createdByUserId: req.principal.userId } : {}),
               ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
               ...(initialSharedWith ? { sharedWith: initialSharedWith } : {}),
               ...(req.body.callPolicy ? { callPolicy: req.body.callPolicy } : {}),
               ...(initialAllowedCallers ? { allowedCallerAgentIds: initialAllowedCallers } : {}),
+              ...(req.body.outboundPolicy ? { outboundPolicy: req.body.outboundPolicy } : {}),
+              ...(initialAllowedTargets ? { allowedTargetAgentIds: initialAllowedTargets } : {}),
               capabilities: req.body.capabilities
             },
             // Initial write-only secrets — same transaction, so the first
@@ -1128,6 +1239,10 @@ export function agentRoutes(deps: HttpDeps) {
           // array can add a provider.
           if (Array.isArray(req.body.mcpServers)) {
             const denied = await enablingUnseenDenied(orgOf(req), ctxOf(req), existing.mcpServers, req.body.mcpServers)
+            if (denied) return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: denied })
+          }
+          if (Array.isArray(req.body.skills)) {
+            const denied = await enablingUnseenSkillDenied(orgOf(req), ctxOf(req), existing.skills, req.body.skills)
             if (denied) return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: denied })
           }
           const memoryError = await validateExternalMemoryBinding(targetMemory ?? undefined, orgOf(req))
@@ -1770,6 +1885,166 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toWorkspaceFileDto(rep)
         } catch (err) {
+          const unavailable = daemonEdgeFailure(err)
+          if (unavailable !== null) {
+            return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
+          }
+          throw err
+        }
+      }
+    )
+
+    // Create or replace one scratch-workspace text file. The caller must be able
+    // to edit the agent; bytes transit to the daemon and are never persisted here.
+    r.put(
+      '/agents/:id/workspace/file',
+      {
+        schema: {
+          tags: [Tag.Workspace],
+          summary: 'Create or replace a scratch workspace file',
+          description:
+            'Atomically create or replace one UTF-8 file in a scratch workspace on the owning daemon. Requires edit access to the agent. Creation never overwrites an existing file; replacement requires the mtime returned by the last read. Conflicts return 409. GitHub workspaces remain read-only. The control plane stores no file content.',
+          operationId: 'putAgentWorkspaceFile',
+          params: IdParam,
+          querystring: PutWorkspaceFileQueryDto,
+          body: PutWorkspaceFileBody,
+          response: {
+            200: WorkspaceFileWriteDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (!canEdit(agent, ctxOf(req))) {
+          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        }
+        if (agent.workspace.mode !== 'scratch') {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: 'workspace files are editable only in scratch workspaces'
+          })
+        }
+        if (Buffer.byteLength(req.body.content, 'utf8') > MAX_WORKSPACE_EDIT_BYTES) {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: `workspace file exceeds the ${MAX_WORKSPACE_EDIT_BYTES}-byte edit limit`
+          })
+        }
+        if (!agent.daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+
+        const daemon = await deps.registry.get(agent.daemonId)
+        if (!daemon?.capabilities.features.includes('workspace-file-edit-v1')) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'this agent version does not support workspace file editing'
+          })
+        }
+
+        try {
+          const writeReq = {
+            agentId: agent.id,
+            path: req.query.path,
+            contentBase64: Buffer.from(req.body.content, 'utf8').toString('base64'),
+            ...(req.body.ifMatchMtime ? { ifMatchMtime: req.body.ifMatchMtime } : {})
+          }
+          const ok = await deps.control.workspaceWrite(agent.daemonId, writeReq)
+          return { path: ok.path, size: ok.size, mtime: ok.mtime }
+        } catch (err) {
+          if (err instanceof ProtocolError && err.code === 'CONFLICT') {
+            return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: err.message })
+          }
+          if (err instanceof ProtocolError && err.code === 'BAD_PAYLOAD') {
+            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: err.message })
+          }
+          const unavailable = daemonEdgeFailure(err)
+          if (unavailable !== null) {
+            return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
+          }
+          throw err
+        }
+      }
+    )
+
+    // Delete one unchanged scratch-workspace file. Like writes, this is
+    // authorized by the CP but executed only on the owning daemon.
+    r.delete(
+      '/agents/:id/workspace/file',
+      {
+        schema: {
+          tags: [Tag.Workspace],
+          summary: 'Delete a scratch workspace file',
+          description:
+            'Delete one regular file from a scratch workspace on the owning daemon. Requires edit access and the mtime returned by the last read, so a newer agent revision is never removed silently. Conflicts return 409. GitHub workspaces remain read-only.',
+          operationId: 'deleteAgentWorkspaceFile',
+          params: IdParam,
+          querystring: DeleteWorkspaceFileQueryDto,
+          response: {
+            200: WorkspaceFileDeleteDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (!canEdit(agent, ctxOf(req))) {
+          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        }
+        if (agent.workspace.mode !== 'scratch') {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: 'workspace files are editable only in scratch workspaces'
+          })
+        }
+        if (!agent.daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+
+        const daemon = await deps.registry.get(agent.daemonId)
+        if (!daemon?.capabilities.features.includes('workspace-file-delete-v1')) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'this agent version does not support workspace file deletion'
+          })
+        }
+
+        try {
+          const ok = await deps.control.workspaceDelete(agent.daemonId, {
+            agentId: agent.id,
+            path: req.query.path,
+            ifMatchMtime: req.query.ifMatchMtime
+          })
+          return { path: ok.path }
+        } catch (err) {
+          if (err instanceof ProtocolError && err.code === 'CONFLICT') {
+            return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: err.message })
+          }
+          if (err instanceof ProtocolError && err.code === 'BAD_PAYLOAD') {
+            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: err.message })
+          }
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
@@ -2431,6 +2706,316 @@ export function agentRoutes(deps: HttpDeps) {
             return reply
               .code(failure.status)
               .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+          throw err
+        }
+      }
+    )
+
+    // ── Memory dreaming (docs/designs/memory-dreaming.md §10) ──────────────────
+    // Offline consolidation jobs over the managed store. The CP is a pure relay
+    // here: lifecycle + staged-output review are forwarded to the owning daemon
+    // and nothing (metadata or bodies) is persisted CP-side — list/get require a
+    // live daemon (offline metadata caching is deferred, design §8/§10).
+    // Managed-provider only; a non-managed agent is a 400. Lifecycle mutations
+    // require edit rights (viewers get 403).
+
+    /** Guard: managed provider + a live daemon, or the right 4xx/503 reply.
+     *  `edit: true` additionally requires edit rights (403 for a viewer) — dream
+     *  lifecycle mutations run agent work or replace the live store, so they must
+     *  match the viewer-read-only invariant of the other memory mutations. */
+    const dreamAgentOrReply = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      id: string,
+      edit = false
+    ): Promise<(AgentRecord & { daemonId: string }) | null> => {
+      const agent = await getOrgAgent(req, id)
+      if (!agent) {
+        await reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        return null
+      }
+      if (edit && !canEdit(agent, ctxOf(req))) {
+        await reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        return null
+      }
+      if (agent.memory?.provider !== undefined && agent.memory.provider !== 'managed') {
+        await reply
+          .code(400)
+          .send({ error: 'Bad Request', statusCode: 400, message: 'dreaming requires the managed memory provider' })
+        return null
+      }
+      if (!agent.daemonId) {
+        await reply
+          .code(503)
+          .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        return null
+      }
+      // Version skew: refuse before we send a frame the daemon would drop.
+      if (!dreamingSupportedOn(await deps.registry.get(agent.daemonId))) {
+        await reply.code(409).send({
+          error: 'Conflict',
+          statusCode: 409,
+          message: 'this agent version does not support memory dreaming; upgrade its daemon',
+          // Machine-readable so the console can hide the panel instead of
+          // string-matching the prose.
+          code: 'DAEMON_FEATURE_MISSING'
+        })
+        return null
+      }
+      return agent as AgentRecord & { daemonId: string }
+    }
+
+    const sendDreamFailure = (reply: FastifyReply, err: unknown): boolean => {
+      const failure = memoryAdminFailure(err)
+      if (!failure) return false
+      void reply
+        .code(failure.status)
+        .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+      return true
+    }
+
+    // Start a dream (manual trigger).
+    r.post(
+      '/agents/:id/memory/dreams',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Start a memory dream',
+          description:
+            'Kick off an offline consolidation job over the managed store on the owning daemon. Returns the pending job; poll it for status. 400 if dreaming is not enabled, 409 if one is already in flight, 503 when the daemon is offline.',
+          operationId: 'startAgentMemoryDream',
+          params: IdParam,
+          body: StartDreamBody,
+          response: { 200: DreamDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id, true)
+        if (!agent) return
+        try {
+          const { dream } = await deps.control.dreamStart(agent.daemonId, {
+            agentId: agent.id,
+            trigger: 'manual',
+            ...(req.body.sessionWindow !== undefined ? { sessionWindow: req.body.sessionWindow } : {}),
+            ...(req.body.instructions !== undefined ? { instructions: req.body.instructions } : {})
+          })
+          return toDreamDto(dream)
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // List an agent's dream jobs (newest first).
+    r.get(
+      '/agents/:id/memory/dreams',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'List memory dreams',
+          description:
+            "List the agent's memory dream jobs (newest first), proxied from the owning daemon. 409 when the owning daemon is too old to support dreaming (code DAEMON_FEATURE_MISSING).",
+          operationId: 'listAgentMemoryDreams',
+          params: IdParam,
+          querystring: z.object({ limit: z.coerce.number().int().positive().max(50).optional() }),
+          response: { 200: DreamListDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id)
+        if (!agent) return
+        try {
+          return toDreamListDto(
+            await deps.control.dreamList(agent.daemonId, { agentId: agent.id, limit: req.query.limit ?? 20 })
+          )
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Fetch one dream job's metadata.
+    r.get(
+      '/agents/:id/memory/dreams/:dreamId',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Get a memory dream',
+          description:
+            "Fetch one dream job's metadata (never staged bodies), proxied from the owning daemon. 409 when the owning daemon is too old to support dreaming (code DAEMON_FEATURE_MISSING).",
+          operationId: 'getAgentMemoryDream',
+          params: DreamIdParam,
+          response: { 200: DreamDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id)
+        if (!agent) return
+        try {
+          const { dream } = await deps.control.dreamGet(agent.daemonId, {
+            agentId: agent.id,
+            dreamId: req.params.dreamId
+          })
+          return toDreamDto(dream)
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Cancel a pending|running dream.
+    r.post(
+      '/agents/:id/memory/dreams/:dreamId/cancel',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Cancel a memory dream',
+          description:
+            'Cancel a pending or running dream on the owning daemon (cancel-wins; a late extraction result is never staged). 409 if the dream is already terminal.',
+          operationId: 'cancelAgentMemoryDream',
+          params: DreamIdParam,
+          response: { 200: DreamDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id, true)
+        if (!agent) return
+        try {
+          const { dream } = await deps.control.dreamCancel(agent.daemonId, {
+            agentId: agent.id,
+            dreamId: req.params.dreamId
+          })
+          return toDreamDto(dream)
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Adopt a completed dream's staged store (fenced; `force` overrides the fence).
+    r.post(
+      '/agents/:id/memory/dreams/:dreamId/adopt',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Adopt a memory dream',
+          description:
+            "Atomically replace the agent's live managed store with this dream's staged output (with a backup). Fenced against changes since the snapshot unless `force` is set. 409 on a fence conflict or a non-completed dream.",
+          operationId: 'adoptAgentMemoryDream',
+          params: DreamIdParam,
+          body: AdoptDreamBody,
+          response: { 200: DreamDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id, true)
+        if (!agent) return
+        try {
+          const { dream } = await deps.control.dreamAdopt(agent.daemonId, {
+            agentId: agent.id,
+            dreamId: req.params.dreamId,
+            force: req.body.force ?? false
+          })
+          return toDreamDto(dream)
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Discard a terminal dream's staged output (keeps the job record).
+    r.post(
+      '/agents/:id/memory/dreams/:dreamId/discard',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Discard a memory dream',
+          description:
+            "Delete a terminal dream's staged output on the owning daemon, keeping the job record for history. 409 if the dream is not in a terminal state.",
+          operationId: 'discardAgentMemoryDream',
+          params: DreamIdParam,
+          response: { 200: DreamDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id, true)
+        if (!agent) return
+        try {
+          const { dream } = await deps.control.dreamDiscard(agent.daemonId, {
+            agentId: agent.id,
+            dreamId: req.params.dreamId
+          })
+          return toDreamDto(dream)
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // List a dream's staged output files (the review surface).
+    r.get(
+      '/agents/:id/memory/dreams/:dreamId/files',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: "List a dream's staged files",
+          description:
+            "List the files in this dream's staged output store (index + topics). Nothing staged yet is data (exists:false), not an error.",
+          operationId: 'listAgentMemoryDreamFiles',
+          params: DreamIdParam,
+          response: { 200: DreamFilesDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id)
+        if (!agent) return
+        try {
+          return toDreamFilesDto(
+            await deps.control.dreamFiles(agent.daemonId, { agentId: agent.id, dreamId: req.params.dreamId })
+          )
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Read one byte slice of a dream's staged file (memory/read semantics).
+    r.get(
+      '/agents/:id/memory/dreams/:dreamId/file',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: "Read a dream's staged file",
+          description:
+            'Proxy one byte slice of a staged output file (default the MEMORY.md index) live from the owning daemon. `nextOffset` is authoritative — clients must not recompute it.',
+          operationId: 'readAgentMemoryDreamFile',
+          params: DreamIdParam,
+          querystring: MemoryFileQueryDto,
+          response: { 200: DreamFileDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id)
+        if (!agent) return
+        try {
+          return toDreamFileDto(
+            await deps.control.dreamFileRead(agent.daemonId, {
+              agentId: agent.id,
+              dreamId: req.params.dreamId,
+              path: req.query.path ?? 'MEMORY.md',
+              offset: req.query.offset ?? 0,
+              limit: req.query.limit ?? 65536
+            })
+          )
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
           throw err
         }
       }

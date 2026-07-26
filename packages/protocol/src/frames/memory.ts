@@ -108,8 +108,8 @@ export const MemoryFileHistoryEvent = z
     before: z.string().max(4001).optional(),
     after: z.string().max(4001),
     at: z.string().datetime(),
-    scope: z.string().min(1),
-    source: z.enum(['tool', 'console', 'distill']),
+    scope: z.literal('agent'),
+    source: z.enum(['tool', 'console', 'distill', 'dream']),
     truncated: z.boolean().optional()
   })
   .strict()
@@ -118,7 +118,7 @@ export type MemoryFileHistoryEvent = z.infer<typeof MemoryFileHistoryEvent>
 /** C→D REQ: page the history of one managed memory file, newest first. */
 export const MemoryHistoryReq = z
   .object({
-    agentId: z.string().min(1),
+    agentId: z.string().min(1).max(255),
     path: z.string().min(1).max(255),
     // Opaque to callers. This is a stable event ID, so appends and retention
     // cannot shift older pages.
@@ -132,7 +132,7 @@ export type MemoryHistoryReq = z.infer<typeof MemoryHistoryReq>
 /** D→C REP: one newest-first page from managed memory's change log. */
 export const MemoryHistoryPage = z
   .object({
-    agentId: z.string().min(1),
+    agentId: z.string().min(1).max(255),
     path: z.string().min(1).max(255),
     events: z.array(MemoryFileHistoryEvent).max(5),
     nextCursor: z.string().uuid().optional()
@@ -277,3 +277,188 @@ export const MemoryRecordHistoryPage = z
   })
   .strict()
 export type MemoryRecordHistoryPage = z.infer<typeof MemoryRecordHistoryPage>
+
+/**
+ * Memory dreaming (C→D REQ → REP) — offline consolidation jobs over the
+ * MANAGED store (design: docs/designs/memory-dreaming.md).
+ *
+ * A dream reads a snapshot of `<agent-root>/memory/` plus recent session
+ * transcripts and stages a rebuilt store under
+ * `<agent-root>/memory-dreams/<dreamId>/`; the live store is never modified by
+ * a running dream. The CP relays these frames and persists at most the
+ * metadata (`DreamInfo`) — staged bodies transit only as correlated
+ * request/reply payloads, exactly like `memory/read` (body-locality).
+ *
+ * - `memory/dream/start|cancel|adopt|discard`: lifecycle commands; each REP is
+ *   the updated `DreamInfo` so the console can refresh without a second read.
+ * - `memory/dream/list|get`: job metadata for the history view.
+ * - `memory/dream/files` + `memory/dream/file/read`: browse the STAGED output
+ *   tree (byte-sliced like `memory/read`; same UTF-8-boundary semantics).
+ * - `memory/dream/skill/accept|dismiss`: review actions on mined skill
+ *   candidates (skills are never auto-adopted; see the design §7).
+ */
+
+export const DreamStatus = z.enum(['pending', 'running', 'completed', 'failed', 'canceled', 'adopted', 'discarded'])
+export type DreamStatus = z.infer<typeof DreamStatus>
+
+export const DreamTrigger = z.enum(['manual', 'schedule', 'auto'])
+export type DreamTrigger = z.infer<typeof DreamTrigger>
+
+/** Review state of one mined skill candidate (design §7). */
+export const DreamSkillInfo = z
+  .object({
+    name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'skill name must be lowercase kebab-case'),
+    description: z.string().max(1024),
+    state: z.enum(['proposed', 'accepted', 'dismissed'])
+  })
+  .strict()
+export type DreamSkillInfo = z.infer<typeof DreamSkillInfo>
+
+/** Dream job metadata (never staged bodies). The only dream shape the CP may persist. */
+export const DreamInfo = z
+  .object({
+    dreamId: z.string().min(1).max(128),
+    agentId: z.string().min(1),
+    status: DreamStatus,
+    trigger: DreamTrigger,
+    sessionIds: z.array(z.string().min(1)).max(100),
+    snapshotDigest: z.string().min(1).max(128),
+    /** The store's write counters when it was snapshotted, captured under the
+     *  memory-dir lock. Adoption compares them with the live counters to tell a
+     *  distill-only drift — which it may rebase over — from a tool/console write,
+     *  which must hard-fence to review. These come from the daemon's in-process
+     *  write ledger, NOT from the best-effort `.history` log, which can silently
+     *  drop an entry and so cannot authorize anything. */
+    snapshotWrites: z
+      .object({
+        /** Opaque daemon-process/store generation. Counts are comparable only
+         *  within one generation — a restart resets them, which numeric
+         *  comparison alone cannot detect. */
+        generation: z.string().min(1).max(64),
+        total: z.number().int().nonnegative(),
+        nonDistill: z.number().int().nonnegative()
+      })
+      .strict()
+      .optional(),
+    instructions: z.string().max(4096).optional(),
+    skills: z.array(DreamSkillInfo).max(16).optional(),
+    usage: z
+      .object({
+        inputBytes: z.number().int().nonnegative(),
+        outputBytes: z.number().int().nonnegative()
+      })
+      .strict()
+      .optional(),
+    error: z
+      .object({ type: z.string().min(1).max(128), message: z.string().max(2048) })
+      .strict()
+      .optional(),
+    createdAt: z.string(), // RFC3339
+    endedAt: z.string().optional() // RFC3339
+  })
+  .strict()
+export type DreamInfo = z.infer<typeof DreamInfo>
+
+/** C→D REQ: start a dream for one agent (managed provider only). */
+export const DreamStartReq = z
+  .object({
+    agentId: z.string().min(1),
+    trigger: DreamTrigger.default('manual'),
+    /** Per-run overrides of the agent's configured dreaming policy. */
+    sessionWindow: z.number().int().min(1).max(100).optional(),
+    instructions: z.string().max(4096).optional()
+  })
+  .strict()
+export type DreamStartReq = z.infer<typeof DreamStartReq>
+
+/** D→C REP (corr = the req id): the created/updated dream job. Shared by every
+ *  lifecycle command so the console always renders from one shape. */
+export const DreamState = z.object({ dream: DreamInfo }).strict()
+export type DreamState = z.infer<typeof DreamState>
+
+/** C→D REQ: cancel a pending|running dream. */
+export const DreamCancelReq = z.object({ agentId: z.string().min(1), dreamId: z.string().min(1) }).strict()
+export type DreamCancelReq = z.infer<typeof DreamCancelReq>
+
+/** C→D REQ: list dream jobs for one agent (newest first; bounded). */
+export const DreamListReq = z
+  .object({ agentId: z.string().min(1), limit: z.number().int().positive().max(50).default(20) })
+  .strict()
+export type DreamListReq = z.infer<typeof DreamListReq>
+
+/** D→C REP (corr = the req id). */
+export const DreamListPage = z.object({ agentId: z.string().min(1), dreams: z.array(DreamInfo).max(50) }).strict()
+export type DreamListPage = z.infer<typeof DreamListPage>
+
+/** C→D REQ: fetch one dream job's metadata. */
+export const DreamGetReq = DreamCancelReq
+export type DreamGetReq = z.infer<typeof DreamGetReq>
+
+/** C→D REQ: adopt a completed dream's staged store (atomic swap + backup). */
+export const DreamAdoptReq = z
+  .object({
+    agentId: z.string().min(1),
+    dreamId: z.string().min(1),
+    /** Adopt even when the live store changed since the snapshot (fence override). */
+    force: z.boolean().default(false)
+  })
+  .strict()
+export type DreamAdoptReq = z.infer<typeof DreamAdoptReq>
+
+/** C→D REQ: discard a terminal dream's staged output. */
+export const DreamDiscardReq = DreamCancelReq
+export type DreamDiscardReq = z.infer<typeof DreamDiscardReq>
+
+/** C→D REQ: list the STAGED output files of one dream (review surface). */
+export const DreamFilesReq = DreamCancelReq
+export type DreamFilesReq = z.infer<typeof DreamFilesReq>
+
+/** D→C REP (corr = the req id): staged store listing (or `exists:false`). */
+export const DreamFilesPage = z
+  .object({
+    agentId: z.string(),
+    dreamId: z.string(),
+    exists: z.boolean(), // false ⇒ nothing staged (yet) — DATA, not an error
+    entries: z.array(MemoryEntry)
+  })
+  .strict()
+export type DreamFilesPage = z.infer<typeof DreamFilesPage>
+
+/** C→D REQ: read one byte slice of a STAGED dream file (semantics of `memory/read`). */
+export const DreamFileReadReq = z
+  .object({
+    agentId: z.string().min(1),
+    dreamId: z.string().min(1),
+    path: z.string().default(MEMORY_INDEX),
+    offset: z.number().int().nonnegative().default(0),
+    limit: z.number().int().positive().max(65536).default(65536)
+  })
+  .strict()
+export type DreamFileReadReq = z.infer<typeof DreamFileReadReq>
+
+/** D→C REP (corr = the req id): the staged file slice (fields as `memory/read/content`). */
+export const DreamFileReadContent = z
+  .object({
+    agentId: z.string(),
+    dreamId: z.string(),
+    path: z.string(),
+    exists: z.boolean(),
+    size: z.number().int().nonnegative().optional(),
+    mtime: z.string().optional(),
+    content: z.string().optional(),
+    offset: z.number().int().nonnegative().optional(),
+    nextOffset: z.number().int().nonnegative().optional(),
+    truncated: z.boolean().optional()
+  })
+  .strict()
+export type DreamFileReadContent = z.infer<typeof DreamFileReadContent>
+
+/** C→D REQ: accept or dismiss one mined skill candidate (design §7). */
+export const DreamSkillReviewReq = z
+  .object({
+    agentId: z.string().min(1),
+    dreamId: z.string().min(1),
+    name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/)
+  })
+  .strict()
+export type DreamSkillReviewReq = z.infer<typeof DreamSkillReviewReq>

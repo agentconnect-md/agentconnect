@@ -15,6 +15,7 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -24,6 +25,10 @@ import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
+const REDACT_GIT_REPO_MIGRATION = readFileSync(
+  new URL('../../prisma/migrations/20260725120000_redact_agent_git_repo_secrets/migration.sql', import.meta.url),
+  'utf8'
+)
 
 let running: HttpApp | undefined
 
@@ -290,7 +295,10 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       data: { id: foreignCallerId, orgId: foreignOrgId, name: 'foreign-bot', runtime: 'claude' }
     })
 
-    // A cross-org caller and duplicates are dropped; only the visible same-org peer survives.
+    // A cross-org peer and duplicates are dropped in BOTH directions; only the
+    // visible same-org peer survives. Both halves must reach the row — a create
+    // that accepted the outbound half but never persisted it would silently leave
+    // the agent able to call everyone.
     const selected = await app.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
@@ -298,24 +306,63 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         name: 'deploy-bot',
         runtime: 'claude',
         callPolicy: 'selected',
-        allowedCallerAgentIds: [callerId, foreignCallerId, callerId]
+        allowedCallerAgentIds: [callerId, foreignCallerId, callerId],
+        outboundPolicy: 'selected',
+        allowedTargetAgentIds: [callerId, foreignCallerId, callerId]
       }
     })
     expect(selected.statusCode).toBe(201)
-    expect(selected.json()).toMatchObject({ callPolicy: 'selected', allowedCallerAgentIds: [callerId] })
+    expect(selected.json()).toMatchObject({
+      callPolicy: 'selected',
+      allowedCallerAgentIds: [callerId],
+      outboundPolicy: 'selected',
+      allowedTargetAgentIds: [callerId]
+    })
     const selectedId = (selected.json() as { id: string }).id
     const selectedRow = await prisma.agent.findUnique({ where: { id: selectedId } })
     expect(selectedRow?.callPolicy).toBe('selected')
     expect(selectedRow?.allowedCallerAgentIds).toEqual([callerId])
+    expect(selectedRow?.outboundPolicy).toBe('selected')
+    expect(selectedRow?.allowedTargetAgentIds).toEqual([callerId])
 
-    // Omitting the policy keeps the DB default (any org peer may call it).
+    // The halves are independent: restricting only the outbound side leaves the
+    // inbound side at the DB default.
+    const outboundOnly = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: {
+        name: 'triage-bot',
+        runtime: 'claude',
+        outboundPolicy: 'selected',
+        allowedTargetAgentIds: [callerId]
+      }
+    })
+    expect(outboundOnly.statusCode).toBe(201)
+    expect(outboundOnly.json()).toMatchObject({
+      callPolicy: 'all',
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'selected',
+      allowedTargetAgentIds: [callerId]
+    })
+    const outboundOnlyRow = await prisma.agent.findUnique({
+      where: { id: (outboundOnly.json() as { id: string }).id }
+    })
+    expect(outboundOnlyRow?.outboundPolicy).toBe('selected')
+    expect(outboundOnlyRow?.allowedTargetAgentIds).toEqual([callerId])
+
+    // Omitting the policy keeps the DB default in both directions.
     const dflt = await app.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
       payload: { name: 'docs-bot', runtime: 'claude' }
     })
     expect(dflt.statusCode).toBe(201)
-    expect(dflt.json()).toMatchObject({ callPolicy: 'all', allowedCallerAgentIds: [] })
+    expect(dflt.json()).toMatchObject({
+      callPolicy: 'all',
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'all',
+      allowedTargetAgentIds: []
+    })
   })
 
   it('DELETE /agents/:id cascades agent-owned hooks and secrets but preserves run history', async () => {
@@ -406,6 +453,65 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect((scratch.json() as { workspace: { mode: string } }).workspace).toEqual({ mode: 'scratch' })
   })
 
+  it('POST /agents rejects unsafe and credential-bearing clone targets without persisting or echoing secrets', async () => {
+    const app = build()
+    const rejected = [
+      'http://github.com/acme/infra',
+      'file:///tmp/infra',
+      'git://github.com/acme/infra',
+      'ftp://example.com/acme/infra',
+      'ext::sh -c harmless'
+    ]
+
+    for (const [index, gitRepo] of rejected.entries()) {
+      const name = `unsafe-repo-${index}`
+      const response = await app.app.inject({
+        method: 'POST',
+        url: `${ORG}/agents`,
+        payload: { name, runtime: 'claude', workspace: { mode: 'github', gitRepo } }
+      })
+      expect(response.statusCode).toBe(400)
+      expect(await prisma.agent.findFirst({ where: { name } })).toBeNull()
+    }
+
+    const secret = 'super-secret-pat'
+    const credentialName = 'credential-repo'
+    const credential = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: {
+        name: credentialName,
+        runtime: 'claude',
+        workspace: {
+          mode: 'github',
+          gitRepo: `https://alice:${secret}@github.com/acme/infra?token=query-secret#fragment`
+        }
+      }
+    })
+    expect(credential.statusCode).toBe(400)
+    expect(credential.body).not.toContain(secret)
+    expect(credential.body).not.toContain('query-secret')
+    expect(await prisma.agent.findFirst({ where: { name: credentialName } })).toBeNull()
+
+    const ambiguousSecret = 'ambiguous-secret'
+    const ambiguousName = 'ambiguous-authority-repo'
+    const ambiguous = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: {
+        name: ambiguousName,
+        runtime: 'claude',
+        workspace: {
+          mode: 'github',
+          gitRepo: `https://good.example\\alice:${ambiguousSecret}@127.0.0.1/acme/infra`
+        }
+      }
+    })
+    expect(ambiguous.statusCode).toBe(400)
+    expect(ambiguous.body).not.toContain(ambiguousSecret)
+    expect(await prisma.agent.findFirst({ where: { name: ambiguousName } })).toBeNull()
+  })
+
   it('validates, updates, and clears a GitHub working subdirectory', async () => {
     const app = build()
     const create = await app.app.inject({
@@ -476,6 +582,62 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
 
     expect(get.statusCode).toBe(200)
     expect((get.json() as { workspace: { agentDir?: string } }).workspace.agentDir).toBe('../legacy-outside')
+  })
+
+  it('keeps a historical credential-bearing gitRepo readable without returning its secrets', async () => {
+    const app = build()
+    const agentId = randomUUID()
+    const missingRepoAgentId = randomUUID()
+    const stored = 'https://legacy-user:legacy-password@github.com/acme/legacy.git?access_token=query-secret#fragment'
+    await seedAgent(prisma, agentId, { gitRepo: stored })
+    await seedAgent(prisma, missingRepoAgentId)
+    await prisma.agent.update({
+      where: { id: missingRepoAgentId },
+      data: { workspaceMode: 'github', gitRepo: null }
+    })
+
+    const get = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })
+    const getMissing = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${missingRepoAgentId}` })
+
+    expect(get.statusCode).toBe(200)
+    expect(get.body).not.toContain('legacy-user')
+    expect(get.body).not.toContain('legacy-password')
+    expect(get.body).not.toContain('query-secret')
+    expect((get.json() as { workspace: { gitRepo: string } }).workspace.gitRepo).toBe(
+      'https://github.com/acme/legacy.git'
+    )
+    // Read sanitization is compatibility protection, not an implicit write.
+    expect((await prisma.agent.findUnique({ where: { id: agentId } }))?.gitRepo).toBe(stored)
+    expect(getMissing.statusCode).toBe(200)
+    expect((getMissing.json() as { workspace: { gitRepo: string } }).workspace.gitRepo).toBe('')
+  })
+
+  it('migration clears ambiguous userinfo while preserving a host-port path', async () => {
+    const cases = new Map<string, { stored: string; expected: string | null }>([
+      [randomUUID(), { stored: 'https://user:password?metadata@host.example/owner/repo', expected: null }],
+      [randomUUID(), { stored: 'https://user:password#metadata@host.example/owner/repo', expected: null }],
+      [randomUUID(), { stored: 'ssh://git:password?metadata@host.example/owner/repo', expected: null }],
+      [randomUUID(), { stored: 'ssh://git:password#metadata@host.example/owner/repo', expected: null }],
+      [
+        randomUUID(),
+        {
+          stored: 'https://example.com:443/repo?contact=user@example.com',
+          expected: 'https://example.com:443/repo'
+        }
+      ]
+    ])
+    await Promise.all([...cases].map(([id, testCase]) => seedAgent(prisma, id, { gitRepo: testCase.stored })))
+
+    // Re-run the exact committed migration against historical rows. The global
+    // setup already applied it before these fixtures existed.
+    await prisma.$executeRawUnsafe(REDACT_GIT_REPO_MIGRATION)
+
+    const migrated = await prisma.agent.findMany({
+      where: { id: { in: [...cases.keys()] } },
+      select: { id: true, gitRepo: true }
+    })
+    expect(migrated).toHaveLength(cases.size)
+    for (const agent of migrated) expect(agent.gitRepo).toBe(cases.get(agent.id)?.expected)
   })
 
   it('POST /agents rejects write access for anonymous GitHub workspaces', async () => {

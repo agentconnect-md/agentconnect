@@ -20,6 +20,7 @@ export { PgAgentRepoAuthorizationRepo } from './repositories/agent-repo-auth.rep
 export { PgAssignmentRepo } from './repositories/assignment.repo.js'
 export { PgSessionRepo } from './repositories/session.repo.js'
 export { PgSessionUsageRepo } from './repositories/session-usage.repo.js'
+export { PgWebchatConversationRepo } from './repositories/webchat-conversation.repo.js'
 export { PgLaunchRepo } from './repositories/launch.repo.js'
 export { PgSecretLeaseRepo } from './repositories/secret-lease.repo.js'
 export { PgAgentSecretStore } from './repositories/agent-secret.repo.js'
@@ -31,6 +32,7 @@ export {
   PgIntegrationChannelRepo
 } from './repositories/integration.repo.js'
 export { PgMcpProviderRepo, PgMcpProviderSecretStore, PgMcpGrantRepo } from './repositories/mcp.repo.js'
+export { PgSkillSourceRepo } from './repositories/skill-source.repo.js'
 export {
   PgMemoryPluginInstallationRepo,
   PgExternalMemoryConnectionRepo,

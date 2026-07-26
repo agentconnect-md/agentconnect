@@ -56,8 +56,8 @@ export function FileBrowserShell({
 }) {
   return (
     <div className="card overflow-hidden max-desktop:rounded-lg">
-      <div className="cardhead justify-between">
-        <span className="cardtitle">{title}</span>
+      <div className="cardhead min-w-0 justify-between">
+        <div className="cardtitle min-w-0 flex-1">{title}</div>
         {headerEnd}
       </div>
       {children}
@@ -70,13 +70,16 @@ export function FileBrowserLayout({
   preview,
   emptyPreview,
   resetKey,
-  openPreviewSignal
+  openPreviewSignal,
+  previewOpen = false
 }: {
   tree: (openPreview: () => void) => ReactNode
   preview: ((onBack?: () => void) => ReactNode) | null
   emptyPreview?: ReactNode
   resetKey?: string
   openPreviewSignal?: number
+  /** Keep the mobile preview visible while the parent owns an active inline flow. */
+  previewOpen?: boolean
 }) {
   const isMobile = useIsMobile()
   const [mobilePreviewOpen, setMobilePreviewOpen] = useState(false)
@@ -97,22 +100,24 @@ export function FileBrowserLayout({
     if (isMobile) setMobilePreviewOpen(true)
   }
 
-  if (isMobile) {
-    return mobilePreviewOpen && preview ? (
-      <>{preview(() => setMobilePreviewOpen(false))}</>
-    ) : (
-      <div className="min-h-[200px] py-[6px]">{tree(openPreview)}</div>
-    )
-  }
+  const showMobilePreview = isMobile && (previewOpen || mobilePreviewOpen) && preview !== null
 
   return (
-    <div className="grid min-h-[300px] grid-cols-[260px_1fr] items-stretch">
-      <div className="max-h-[560px] min-w-0 overflow-y-auto border-r border-(--border-subtle) py-[6px]">
+    <div className="min-h-[200px] desktop:grid desktop:min-h-[300px] desktop:grid-cols-[260px_1fr] desktop:items-stretch">
+      <div
+        className={`${
+          showMobilePreview ? 'hidden desktop:block' : 'block'
+        } min-h-[200px] py-[6px] desktop:max-h-[560px] desktop:min-h-0 desktop:min-w-0 desktop:overflow-y-auto desktop:border-r desktop:border-(--border-subtle)`}
+        data-file-browser-pane="tree"
+      >
         {tree(openPreview)}
       </div>
-      <div className="flex min-w-0 flex-col">
+      <div
+        className={`${showMobilePreview ? 'flex' : 'hidden desktop:flex'} min-w-0 flex-col`}
+        data-file-browser-pane="preview"
+      >
         {preview
-          ? preview()
+          ? preview(isMobile ? () => setMobilePreviewOpen(false) : undefined)
           : (emptyPreview ?? (
               <div className="flex flex-1 items-center justify-center px-4 py-10 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
                 Select a file to preview.
@@ -198,7 +203,7 @@ export function FileBrowserPreviewHeader({
   onBack?: () => void
 }) {
   return (
-    <div className="flex min-w-0 items-center gap-2 border-b border-(--border-subtle) px-4 py-[9px]">
+    <div className="flex h-[37px] min-w-0 flex-none items-center gap-2 border-b border-(--border-subtle) px-4">
       {onBack && (
         <button
           type="button"

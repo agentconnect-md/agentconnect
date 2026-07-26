@@ -110,11 +110,21 @@ export type IntegrationDiscordConfig = z.infer<typeof IntegrationDiscordConfig>
  * signing secret). `appId` is a semi-public identifier (`cli_…`); `appSecret` is
  * plaintext secret material — NEVER log it. `botOpenId` is the bot's own open_id
  * for @-mention routing; lazily resolved by the daemon via `bot/info` if absent.
+ *
+ * `region` selects the open-platform gateway the daemon SDK (and CP verifier)
+ * talk to — `'feishu'` = mainland China (`open.feishu.cn`, the SDK default) vs
+ * `'lark'` = international (`open.larksuite.com`). Same app model, different host;
+ * an app is registered in exactly one region. Defaults to `'feishu'` so existing
+ * installs are unaffected.
  */
+export const FeishuRegion = z.enum(['feishu', 'lark'])
+export type FeishuRegion = z.infer<typeof FeishuRegion>
+
 export const IntegrationFeishuConfig = z.object({
   appId: z.string(), // cli_… — app identifier (semi-public), needed to open the WS
   appSecret: z.string(), // app secret (plaintext — never log)
   botOpenId: z.string().optional(), // bot's own open_id; lazily resolved via bot/info
+  region: FeishuRegion.default('feishu'), // open-platform gateway: feishu.cn vs larksuite.com
   allowedUserIds: z.array(z.string()).default([]),
   bindRules: z.array(IntegrationBindRule).default([])
 })

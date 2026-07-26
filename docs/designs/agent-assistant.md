@@ -131,16 +131,18 @@ with `rd/*` frames. Content does not traverse the CP. P4 can mint delegation
 during the `rc/verify` leg, but delivery must follow relay→daemon `rd/*`.
 
 Today `rc/verify(webchat-token)` resolves `{ userId, user, orgId, agentId,
-daemonId }`. It does **not** resolve a membership role or carry the browser's
-`conversationId`; the relay parses that value separately and uses it as
-`chatId`/`sessionKey` on `rd/*`. P4 therefore needs an explicit delegation
-extension rather than treating the existing verification response as a mint
-point:
+daemonId, conversationId }`. CP persists an ownership-only binding for the
+conversation before minting, and a resume must match the same user, agent, and
+organization. The relay treats the verified `conversationId` as
+`chatId`/`sessionKey` on `rd/*`; a caller-supplied query cannot select another
+session. It still does **not** resolve a membership role. P4 therefore needs an
+explicit delegation extension rather than treating the existing verification
+response as a complete mint point:
 
 1. After token verification, ask CP to resolve the user's current membership
    role and mint `apiKeyService.mintDelegated(...)` only when the target agent
    has `kind='assistant'` (§5).
-2. Include the relay's authenticated `chatId` in that request, then carry
+2. Include the token-bound `conversationId` in that request, then carry
    `{ delegationId, secret, userId, displayName, expiresAt }` through a dedicated
    session-establishment frame or the first `rd/*` message. **The daemon holds
    the credential; the agent/model never sees it.**
@@ -291,7 +293,7 @@ console /oauth/consent page (new):
   signed in → show client name (DCR/CIMD registration), organization picker (user orgs + roles),
               scope picker (mcp:read / mcp:read+write), Approve / Deny
   approve → POST /api/v1/oauth/consent { requestId, orgId, scopes }
-            (existing user bearer, validated by humanAuth)
+            (console OIDC identity, or devAuth locally; API/OAuth keys are rejected)
   → CP creates authorization code bound to userId+orgId+scopes+PKCE challenge+resource
   → browser 302 redirect_uri?code&state
 
@@ -300,6 +302,7 @@ POST /oauth/token(code + code_verifier [+ client_id])
 ```
 
 - **Organization selection happens on the consent page** because keys bind to one organization. This matches Atlassian per-site authorization and Sentry path-constrained sessions. Switching organizations means reauthorizing; a client may add a second connector.
+- Consent context, approval, and grant list/revocation require the interactive console identity. Existing personal keys and OAuth access tokens cannot mint or manage further credentials.
 - In local devAuth, consent passes through as DEFAULT_OWNER, allowing end-to-end testing.
 
 ### 7.4 Token Model (Two New Tables + ApiKey Reuse)

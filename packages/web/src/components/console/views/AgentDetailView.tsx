@@ -43,17 +43,20 @@ import { IntegrationMarks } from '@/components/console/IntegrationMarks'
 import { AgentApiPanel } from '@/components/console/AgentApiPanel'
 import { AgentSecretsCard } from '@/components/console/AgentSecretsCard'
 import { AgentToolsCard } from '@/components/console/AgentToolsCard'
-import { AgentVisibilityCard } from '@/components/console/AgentVisibilityCard'
+import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
+import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { IntegrationChannelList } from '@/components/console/IntegrationChannelList'
 import { discordBotInviteUrl } from '@/lib/discord-invite'
-import { WorkspaceCard } from '@/components/console/WorkspaceCard'
-import { WorkspaceFiles } from '@/components/console/WorkspaceFiles'
+import { WorkspaceCard, type WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
+import { WorkspaceFiles, workspaceReadModelKey } from '@/components/console/WorkspaceFiles'
 import { WorkspaceFilesMock } from '@/components/console/WorkspaceFilesMock'
 import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { VisibilityValue } from '@/components/console/VisibilityField'
 import { AgentMark, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
+import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
+import { PLATFORMS, type Platform } from '@/components/console/modals/AddIntegrationModal'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { NotFound } from '@/components/console/NotFound'
 import { Button, Icon } from '@/components/ui'
@@ -86,8 +89,21 @@ import {
   type HookReviewPolicy
 } from '@/lib/github-review-settings'
 
-type DetailTab = 'config' | 'workspace' | 'memory' | 'api' | 'knowledge'
+type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'api' | 'knowledge'
 const HOOK_REFRESH_MS = 30_000
+
+// One-liners for the empty-integrations tiles. The tile SET is derived from the
+// owning daemon's advertised adapters (below) — never hard-coded — so a tile
+// can't promise a platform the Add-integration modal would swap out from under
+// the click. webhook/github are relay/CP-backed triggers: always offered.
+const INTEGRATION_BLURB: Record<Platform, string> = {
+  slack: 'Reply in channels & DMs',
+  telegram: 'Reply in groups & chats',
+  discord: 'Reply in servers',
+  feishu: 'Reply in groups & chats',
+  github: 'React to issues & PRs',
+  webhook: 'Trigger by posting a URL'
+}
 const HOOK_RUN_REFRESH_MS = 10_000
 
 interface GithubReviewSettingsDraft {
@@ -103,17 +119,8 @@ export default function AgentDetailView() {
   const { id } = useParams<{ id: string }>()
   const params = useSearchParams()
   const router = useRouter()
-  const {
-    agents,
-    getAgent,
-    getSessions,
-    daemons,
-    integrations,
-    agentsLoading,
-    updateAgent,
-    saveAgentCallPolicy,
-    refresh
-  } = useConsoleData()
+  const { agents, getAgent, getSessions, daemons, daemonsLoading, integrations, agentsLoading, updateAgent, refresh } =
+    useConsoleData()
   const { openPlayground } = usePlayground()
   const { openModal } = useModal()
   const approvalAgent = getAgent(id)
@@ -349,8 +356,18 @@ export default function AgentDetailView() {
   }
 
   const rawTab = params.get('tab')
+  // Integrations is the default landing tab (first, no `?tab=`); everything else
+  // is `?tab=<id>`.
   const tab: DetailTab =
-    rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'api' || rawTab === 'knowledge' ? rawTab : 'config'
+    rawTab === 'config' || rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'api' || rawTab === 'knowledge'
+      ? rawTab
+      : 'integrations'
+
+  // Effective agent-call reachability over the whole roster: an A→B edge exists
+  // only when A's outbound AND B's inbound both permit it. The read-only Access
+  // summary shows these intersected sets (not this agent's one-sided policy), so
+  // it never lists a peer as callable when the peer's own policy blocks the edge.
+  const agentReach = useMemo(() => buildAgentReachabilityGraph(agents), [agents])
 
   const da = getAgent(id)
   // Unknown id (a stale deep link, or a demo agent that's hidden outside mock mode) —
@@ -388,7 +405,17 @@ export default function AgentDetailView() {
   const modelText = agentModelDisplay(owningDaemon, da.runtime, da.model)
   const ds = status(effectiveAgentStatus(da.status, owningDaemon?.status))
   const ws = da.workspace
-  const wss = workspaceStatus(ws)
+  // Demo agents have no daemon to read git state from, so the workspace card's
+  // live half comes straight from their static mock workspace instead.
+  const mockWorkspaceHeader: WorkspaceHeaderInfo =
+    ws.mode === 'github'
+      ? {
+          branch: ws.branch,
+          status: workspaceStatus(ws),
+          ...(ws.commitMsg ? { commit: { sha: ws.commit, time: ws.commitTime, title: ws.commitMsg } } : {}),
+          repoUrl: ws.repoUrl ?? `https://github.com/${ws.repo}`
+        }
+      : { status: workspaceStatus(ws) }
   // Counts walk the whole mock tree (files are nested under folder children).
   const allFiles = flattenFiles(ws.files)
   const changedFiles = allFiles.filter((f) => f.tag).length
@@ -398,6 +425,19 @@ export default function AgentDetailView() {
   // Live integrations owned by THIS agent (the CP-managed ones; demo rows carry no
   // agentId so they never leak onto a real agent's page).
   const agentInts = integrations.filter((i) => i.agentId === da.id)
+  // Peer agents for the read-only Access card's agent-call summary (self excluded).
+  const agentPeers = agents.filter((peer) => peer.id !== da.id)
+  // The empty Integrations tab renders the SAME platform grid as the
+  // Add-integration modal — same list, order, tile size and disabled treatment.
+  // A bot platform the owning daemon doesn't advertise is greyed out rather than
+  // clickable (the modal applies this identical gate), so a tile can never open a
+  // pane other than the one it names. webhook/github are relay/CP-backed
+  // triggers: always available.
+  const integrationPlatformAvailable = (key: Platform) =>
+    key === 'webhook' || key === 'github' || daemonsLoading || !!owningDaemon?.caps.platforms.includes(key)
+  // Effective (intersection) peer sets for the read-only Access summary.
+  const inboundEffectiveIds = agentReach.incomingByAgentId.get(da.id) ?? []
+  const outboundEffectiveIds = agentReach.outgoingByAgentId.get(da.id) ?? []
   // Webhook triggers share the Integrations card (the Add modal offers both);
   // `agentHooks` is fetched per-agent above.
   const hasInt = agentInts.length > 0 || agentHooks.length > 0
@@ -451,7 +491,7 @@ export default function AgentDetailView() {
   }
 
   const tabCls = (t: DetailTab) => (tab === t ? 'tab on' : 'tab')
-  const tabHref = (t: DetailTab) => (t === 'config' ? `/agents/${da.id}` : `/agents/${da.id}?tab=${t}`)
+  const tabHref = (t: DetailTab) => (t === 'integrations' ? `/agents/${da.id}` : `/agents/${da.id}?tab=${t}`)
 
   // ── Single responsive tree. Base classes are the mobile (≤768px) push-detail
   // body (the Shell provides the top push bar there); `desktop:` variants restore
@@ -625,6 +665,7 @@ export default function AgentDetailView() {
       <div className="flex gap-6 overflow-x-auto border-b border-(--border-default) bg-(--surface-card) px-4 [-webkit-overflow-scrolling:touch] desktop:mb-[18px] desktop:gap-0 desktop:overflow-x-visible desktop:bg-transparent desktop:px-0">
         {(
           [
+            ['integrations', 'Integrations'],
             ['config', 'Configuration'],
             ['workspace', 'Workspace'],
             ['memory', 'Memory'],
@@ -649,22 +690,25 @@ export default function AgentDetailView() {
         })}
       </div>
 
-      {/* Config tab — one grid: mobile stacks General → Workspace → Description →
-          Visibility → Integrations → Env → Secrets → Approval requests (flex order).
-          Desktop puts General + Workspace + Env + Secrets in the 340px left column
-          and Approval requests at the bottom of the right column (the wrapper is
-          display:contents on mobile so all the cards sit in the same flex column). */}
+      {/* Config tab — one grid: mobile stacks Basics → Runtime → Description →
+          Access → Variables → Secrets → Approval requests (flex order). Desktop
+          puts Basics + Runtime in the 340px left column and the rest in the right
+          column (the wrapper is display:contents on mobile so all the cards sit in
+          the same flex column). Workspace is NOT here — it moved into the
+          Workspace tab, next to the files it configures. */}
       {tab === 'config' && (
         <div className="flex flex-col gap-4 p-4 desktop:grid desktop:grid-cols-[340px_1fr] desktop:items-start desktop:gap-[18px] desktop:p-0">
           <div className="contents desktop:flex desktop:min-w-0 desktop:flex-col desktop:gap-[18px]">
-            {/* General card */}
+            {/* Basics card — identity + placement facts (Name, Daemon, Runtime,
+                Model, Created, Modified). Edit opens the sectioned Edit-agent modal
+                at its Basics anchor. */}
             <div className="card order-1 overflow-hidden max-desktop:rounded-lg">
               <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
-                <span className="font-sans text-[14px] font-semibold leading-normal">General</span>
+                <span className="font-sans text-[14px] font-semibold leading-normal">Basics</span>
                 {!da.name.startsWith(MOCK_PREFIX) && (
                   <>
                     <button
-                      onClick={() => openModal('editAgent', da)}
+                      onClick={() => openModal('editAgent', da, { focusSection: 'basics' })}
                       className="flex h-7 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-0 py-0 font-sans text-[14px] font-semibold leading-normal text-(--brand-soft-text) desktop:hidden"
                     >
                       <Icon name="pencil" size={14} />
@@ -674,7 +718,7 @@ export default function AgentDetailView() {
                       variant="secondary"
                       size="xs"
                       className="hidden desktop:inline-flex"
-                      onClick={() => openModal('editAgent', da)}
+                      onClick={() => openModal('editAgent', da, { focusSection: 'basics' })}
                     >
                       <Icon name="pencil" size={14} />
                       Edit
@@ -683,6 +727,14 @@ export default function AgentDetailView() {
                 )}
               </div>
               <div className="desktop:py-[6px]">
+                <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
+                  <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
+                    Name
+                  </span>
+                  <span className="mono text-[12px] font-medium leading-normal text-(--text-primary) desktop:text-[12.5px] desktop:font-normal">
+                    {da.name}
+                  </span>
+                </div>
                 {/* Daemon row — dual-rendered: mobile is a tappable drill-in button
                     with a chevron; desktop an inline Link (or plain mono value). */}
                 {owningDaemon ? (
@@ -745,6 +797,58 @@ export default function AgentDetailView() {
                     {modelText}
                   </span>
                 </div>
+                <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
+                  <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
+                    Created
+                  </span>
+                  <span className="font-sans text-[14px] font-medium leading-normal desktop:text-[12.5px]">
+                    {creatorLabel(da.createdBy, me)}{' '}
+                    <span className="mono text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[12.5px]">
+                      · {da.createdAt}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-4 px-4 py-3">
+                  <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
+                    Modified
+                  </span>
+                  <span className="font-sans text-[14px] font-medium leading-normal desktop:text-[12.5px]">
+                    {creatorLabel(da.lastModifiedBy, me)}{' '}
+                    <span className="mono text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[12.5px]">
+                      · {da.lastModifiedAt}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            </div>
+            {/* Runtime behavior card — how the agent runs (permission / effort /
+                fast mode / output / footer / introduce / pause). Edit opens the
+                Edit-agent modal at its Runtime behavior anchor. */}
+            <div className="card order-2 overflow-hidden max-desktop:rounded-lg">
+              <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
+                <span className="font-sans text-[14px] font-semibold leading-normal">Runtime</span>
+                {!da.name.startsWith(MOCK_PREFIX) && (
+                  <>
+                    <button
+                      onClick={() => openModal('editAgent', da, { focusSection: 'runtime' })}
+                      className="flex h-7 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-0 py-0 font-sans text-[14px] font-semibold leading-normal text-(--brand-soft-text) desktop:hidden"
+                    >
+                      <Icon name="pencil" size={14} />
+                      Edit
+                    </button>
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      className="hidden desktop:inline-flex"
+                      onClick={() => openModal('editAgent', da, { focusSection: 'runtime' })}
+                    >
+                      <Icon name="pencil" size={14} />
+                      Edit
+                    </Button>
+                  </>
+                )}
+              </div>
+              <div className="desktop:py-[6px]">
                 {supportsModes(da.runtime) && (
                   <>
                     <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
@@ -793,20 +897,18 @@ export default function AgentDetailView() {
                     {da.allowRuntimeChangesInChat ? 'Allowed' : 'Off'}
                   </span>
                 </div>
-                <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
-                  <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    Pause
-                  </span>
-                  <span
-                    className={
-                      da.pause
-                        ? 'badge bg-(--status-paused-soft) text-(--amber-500) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
-                        : 'badge bg-(--surface-active) text-(--text-tertiary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
-                    }
-                  >
-                    {da.pause ? 'Paused' : 'Off'}
-                  </span>
-                </div>
+                {/* Pause is a transient runtime action, not a config default — only
+                    surface it when the agent is actually paused (hide the "Off" noise). */}
+                {da.pause && (
+                  <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
+                    <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
+                      Pause
+                    </span>
+                    <span className="badge bg-(--status-paused-soft) text-(--amber-500) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]">
+                      Paused
+                    </span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
                     Output mode
@@ -829,7 +931,7 @@ export default function AgentDetailView() {
                     {da.showFooter ? 'On' : 'Off'}
                   </span>
                 </div>
-                <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
+                <div className="flex items-center justify-between gap-4 px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
                     Introduce on join
                   </span>
@@ -843,56 +945,16 @@ export default function AgentDetailView() {
                     {da.introduceOnJoin ? 'On' : 'Off'}
                   </span>
                 </div>
-                <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
-                  <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    Created
-                  </span>
-                  <span className="font-sans text-[14px] font-medium leading-normal desktop:text-[12.5px]">
-                    {creatorLabel(da.createdBy, me)}{' '}
-                    <span className="mono text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[12.5px]">
-                      · {da.createdAt}
-                    </span>
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
-                  <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    Modified
-                  </span>
-                  <span className="font-sans text-[14px] font-medium leading-normal desktop:text-[12.5px]">
-                    {creatorLabel(da.lastModifiedBy, me)}{' '}
-                    <span className="mono text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[12.5px]">
-                      · {da.lastModifiedAt}
-                    </span>
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-4 px-4 py-3">
-                  <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    Visibility
-                  </span>
-                  <VisibilityValue visibility={da.visibility} sharedWith={da.sharedWith} createdBy={da.createdBy} />
-                </div>
               </div>
-            </div>
-            {/* Workspace card — the workspace-tab link row (both modes) plus the
-                additional authorized repos for github-app workspaces; right after
-                General on mobile, between General and Env in the desktop left column. */}
-            <WorkspaceCard agent={da} workspaceHref={tabHref('workspace')} className="order-2" />
-            {/* Environment variables + Secrets cards (shared editable cards) — just before
-                Approval requests on mobile, under Workspace in the desktop left column.
-                Secrets are the write-only sibling of env (values never leave the CP). */}
-            <div className="order-6 min-w-0">
-              <AgentEnvCard agent={da} />
-            </div>
-            <div className="order-7 min-w-0">
-              <AgentSecretsCard agent={da} />
             </div>
           </div>
 
           <div className="contents desktop:flex desktop:min-w-0 desktop:flex-col desktop:gap-[18px]">
-            {/* Description card (design): its own card at the top of the right column —
-                the General card lists placement facts only. Edited via its own modal.
-                Mobile: after the Workspace card (General 1 → Workspace 2 → Description 3
-                → Visibility 4 → Integrations 5 → Env 6 → Secrets 7 → Approval requests 8). */}
+            {/* Description card (design): its own card at the top of the right column,
+                and the ONE group edited on its own (EditDescriptionModal) rather than
+                through the sectioned Edit-agent modal. Mobile order: Basics 1 → Runtime
+                behavior 2 → Description 3 → Access 4 → Variables 5 → Secrets 6 →
+                Approval requests 7. */}
             <div className="card order-3 overflow-hidden max-desktop:rounded-lg">
               <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
                 <span className="font-sans text-[14px] font-semibold leading-normal">Description</span>
@@ -922,462 +984,88 @@ export default function AgentDetailView() {
               </div>
             </div>
 
-            <AgentVisibilityCard
-              agent={da}
-              agents={agents}
-              daemons={daemons}
-              onSave={saveAgentCallPolicy}
-              className="order-4"
-            />
-
-            {/* Integrations card */}
-            <div className="card order-5 overflow-hidden max-desktop:rounded-lg">
+            {/* Access card (design) — team visibility + agent-call visibility, read
+                only. Edit opens the sectioned Edit-agent modal at its Access anchor. */}
+            <div className="card order-4 overflow-hidden max-desktop:rounded-lg">
               <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
-                <span className="font-sans text-[14px] font-semibold leading-normal">Integrations</span>
-                <button
-                  onClick={() => openModal('integration', da)}
-                  className="flex h-7 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-0 py-0 font-sans text-[14px] font-semibold leading-normal text-(--brand-soft-text) desktop:hidden"
-                >
-                  <Icon name="plus" size={14} />
-                  Add
-                </button>
-                <Button
-                  variant="secondary"
-                  size="xs"
-                  className="hidden desktop:inline-flex"
-                  onClick={() => openModal('integration', da)}
-                >
-                  <Icon name="plus" size={14} />
-                  Add integration
-                </Button>
-              </div>
-              {hasInt ? (
-                <>
-                  {/* Dual-rendered lists: mobile flat rows (no delete, padX 16) vs
-                    desktop bordered sub-cards (delete iconbtn, padX 14). */}
-                  <div className="desktop:hidden">
-                    {agentInts.map((g, i) => (
-                      <div key={i} className={i > 0 ? 'border-t border-(--border-subtle)' : undefined}>
-                        <div className="flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3">
-                          <span className="imark h-9 w-9 flex-none rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
-                            <PlatformMark platform={g.platform} />
-                          </span>
-                          <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
-                            <span className="font-sans text-[14px] font-semibold leading-normal">{g.name}</span>
-                            {g.channels[0] && (
-                              <span className="font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                                #{g.channels[0].name}
-                              </span>
-                            )}
-                          </span>
-                          <span className="inline-flex flex-none items-center gap-[5px] rounded-full bg-(--brand-soft) px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal text-(--brand-soft-text)">
-                            <span className="h-[6px] w-[6px] rounded-full bg-(--status-online)" />
-                            connected
-                          </span>
-                          {g.platform === 'discord' && g.discordAppId && (
-                            <a
-                              href={discordBotInviteUrl(g.discordAppId)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              title="Invite this bot to a Discord server — preset scopes &amp; permissions"
-                              aria-label="Add this bot to a Discord server"
-                              className="iconbtn h-7 w-7 flex-none"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <Icon name="external-link" size={12} />
-                            </a>
-                          )}
-                        </div>
-                        <IntegrationChannelList
-                          integrationId={g.id}
-                          channels={g.channels}
-                          botId={g.botId}
-                          shareable={g.shareable}
-                          padX={16}
-                        />
-                      </div>
-                    ))}
-                    {webhookHooks.map((h, i) => (
-                      <div
-                        key={h.id}
-                        className={`flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3 ${
-                          agentInts.length + i > 0 ? 'border-t' : ''
-                        }`}
-                      >
-                        <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md bg-(--surface-inverse)">
-                          <Icon name="webhook" size={18} color="#fff" />
-                        </span>
-                        <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
-                          <span className="font-sans text-[14px] font-semibold leading-normal">{h.name}</span>
-                          <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                            {h.lastFiredAt ? `fired ${fmtHookAgo(h.lastFiredAt)}` : 'never fired'}
-                          </span>
-                        </span>
-                        <span className="inline-flex flex-none items-center gap-[5px] rounded-full bg-(--surface-active) px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal text-(--text-tertiary)">
-                          webhook
-                        </span>
-                      </div>
-                    ))}
-                    {githubHooks.map((h, i) => (
-                      <div
-                        key={h.id}
-                        className={`flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3 ${
-                          agentInts.length + webhookHooks.length + i > 0 ? 'border-t' : ''
-                        }`}
-                      >
-                        <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
-                          <span className="flex h-[18px] w-[18px] items-center justify-center">
-                            <PlatformMark platform="github" fillPct={100} />
-                          </span>
-                        </span>
-                        <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
-                          <span className="flex min-w-0 items-center gap-2">
-                            <span className="mono min-w-0 truncate text-[13px] font-semibold">
-                              {h.repoFullName ?? h.name}
-                            </span>
-                            {watchUnauthorized(h) && <UnauthorizedWatchBadge />}
-                          </span>
-                          <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                            {GH_FAMILIES.filter((f) => famCovered(h.events, f.fam))
-                              .map((f) => f.pill)
-                              .join(' · ') || 'no events'}
-                          </span>
-                          {(h.reviewPolicy !== 'off' || h.reportingMode === 'check') && (
-                            <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                              {reviewPolicyLabel(h.reviewPolicy)} review
-                              {h.reportingMode === 'check' ? ' · informational Check' : ''}
-                            </span>
-                          )}
-                        </span>
-                        <button
-                          className="iconbtn flex-none"
-                          title="PR review and Checks settings"
-                          onClick={() => openReviewSettings(h)}
-                        >
-                          <Icon name="settings-2" size={15} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="hidden flex-col gap-3 px-4 py-[14px] desktop:flex">
-                    {agentInts.map((g, i) => (
-                      <div key={i} className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
-                        <div className="flex items-center gap-3 px-[14px] py-3">
-                          <span className="imark h-[34px] w-[34px] rounded-md">
-                            <PlatformMark platform={g.platform} />
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <span className="font-sans text-[13.5px] font-semibold leading-normal">{g.name}</span>
-                              <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
-                                <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-                                connected
-                              </span>
-                              {g.shareable && (
-                                <span
-                                  className="badge bg-(--surface-app) text-(--text-tertiary)"
-                                  title="Shared bot — used by multiple agents, inbound via a relay"
-                                >
-                                  <Icon name="users" size={11} />
-                                  shared
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                          {g.platform === 'discord' && g.discordAppId && (
-                            <a
-                              href={discordBotInviteUrl(g.discordAppId)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              title="Invite this bot to a Discord server — preset scopes &amp; permissions"
-                              aria-label="Add this bot to a Discord server"
-                              className="iconbtn flex-none"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <Icon name="external-link" size={14} />
-                            </a>
-                          )}
-                          <button
-                            className="iconbtn"
-                            title="Delete integration"
-                            onClick={() => openModal('deleteIntegration', g)}
-                          >
-                            <Icon name="unplug" size={15} />
-                          </button>
-                        </div>
-                        <IntegrationChannelList
-                          integrationId={g.id}
-                          channels={g.channels}
-                          botId={g.botId}
-                          shareable={g.shareable}
-                          padX={14}
-                        />
-                      </div>
-                    ))}
-                    {webhookHooks.map((h) => (
-                      <div key={h.id} className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
-                        <div className="flex items-center gap-3 px-[14px] py-3">
-                          <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-md bg-(--surface-inverse)">
-                            <Icon name="webhook" size={17} color="#fff" />
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <span className="font-sans text-[13.5px] font-semibold leading-normal">{h.name}</span>
-                              <span className="badge bg-(--surface-active) text-(--text-tertiary)">webhook</span>
-                            </div>
-                            {h.url && (
-                              <div className="mono mt-[2px] truncate text-[11.5px] font-normal text-(--text-tertiary)">
-                                {h.url}
-                              </div>
-                            )}
-                          </div>
-                          <span className="flex-none font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                            {h.lastFiredAt ? `fired ${fmtHookAgo(h.lastFiredAt)}` : 'never fired'}
-                          </span>
-                          <button
-                            className="iconbtn"
-                            title="Recent deliveries"
-                            onClick={() => setHookRunsFor(hookRunsFor === h.id ? null : h.id)}
-                          >
-                            <Icon name={hookRunsFor === h.id ? 'chevron-up' : 'history'} size={15} />
-                          </button>
-                          <button className="iconbtn" title="Delete webhook" onClick={() => openModal('deleteHook', h)}>
-                            <Icon name="trash-2" size={15} />
-                          </button>
-                        </div>
-                        {hookRunsFor === h.id && (
-                          <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
-                        )}
-                      </div>
-                    ))}
-                    {/* GitHub group (design): one card, a row per watched repo with
-                        event toggle pills + a "when created/updated" cadence select;
-                        hooks under the hood — one per repo. */}
-                    {githubHooks.length > 0 && (
-                      <div className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
-                        <div className="flex items-center gap-3 px-[14px] py-3">
-                          <span className="flex h-[34px] w-[34px] flex-none items-center justify-center">
-                            <span className="flex h-[26px] w-[26px] items-center justify-center [&>svg]:h-full [&>svg]:w-full">
-                              <GithubMark />
-                            </span>
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <span className="font-sans text-[13.5px] font-semibold leading-normal">
-                                {githubOwner}
-                              </span>
-                              <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
-                                <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-                                connected
-                              </span>
-                            </div>
-                            <div className="mono mt-[3px] text-[11.5px] font-normal text-(--text-tertiary)">GitHub</div>
-                          </div>
-                          <button
-                            className="iconbtn"
-                            title="Disconnect GitHub"
-                            onClick={() => openModal('deleteHook', githubHooks)}
-                          >
-                            <Icon name="unplug" size={15} />
-                          </button>
-                        </div>
-                        <div className="border-t border-(--border-subtle) bg-(--surface-app)">
-                          {githubHooks.map((h) => (
-                            <div key={h.id} className="border-b border-(--border-subtle)">
-                              {/* Design row: wraps (gap 6×8) — the repo name keeps ≥90px and the
-                                  control clusters flow to the next line instead of crushing it. */}
-                              <div className="flex flex-wrap items-center gap-x-2 gap-y-[6px] px-[14px] py-[9px]">
-                                <Icon
-                                  name="folder-git-2"
-                                  size={14}
-                                  color="var(--text-tertiary)"
-                                  className="flex-none"
-                                />
-                                <span className="mono min-w-[90px] flex-1 truncate text-[12px] text-(--text-primary)">
-                                  {h.repoFullName ?? h.name}
-                                </span>
-                                {watchUnauthorized(h) && <UnauthorizedWatchBadge />}
-                                <div className="ml-auto inline-flex flex-none gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) p-[2px]">
-                                  {GH_FAMILIES.map((f) => {
-                                    const on = famCovered(h.events, f.fam)
-                                    return (
-                                      <button
-                                        key={f.fam}
-                                        onClick={() => void toggleHookFam(h, f.fam)}
-                                        disabled={hookBusy === h.id}
-                                        title={on ? `Stop listening for ${f.pill}` : `Listen for ${f.pill}`}
-                                        className={`cursor-pointer rounded-[7px] border-0 px-[9px] py-[3px] font-sans text-[11.5px] leading-normal ${
-                                          on
-                                            ? 'bg-(--surface-card) font-semibold text-(--text-primary) shadow-[0_1px_2px_rgba(0,0,0,0.08)]'
-                                            : 'bg-transparent font-normal text-(--text-tertiary)'
-                                        } ${hookBusy === h.id ? 'opacity-60' : ''}`}
-                                      >
-                                        {f.pill}
-                                      </button>
-                                    )
-                                  })}
-                                </div>
-                                <span className="inline-flex flex-none items-center gap-[5px]">
-                                  <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                                    when
-                                  </span>
-                                  <div className="relative">
-                                    <button
-                                      title={
-                                        triggerModeOf(h) === 'mention'
-                                          ? githubMentionUsage(da.name)
-                                          : `Choose when this agent runs: when created (plus later @${da.name} mentions), on updates, or only when @${da.name} is mentioned.`
-                                      }
-                                      className={`flex h-[26px] cursor-pointer items-center gap-[5px] rounded-[7px] border bg-(--surface-card) px-[9px] font-sans text-[11.5px] font-medium leading-normal text-(--text-primary) transition-[background-color,border-color] hover:bg-(--surface-hover) ${
-                                        hookCadenceFor === h.id
-                                          ? 'border-(--brand)'
-                                          : 'border-(--border-default) hover:border-(--border-strong)'
-                                      } ${hookBusy === h.id ? 'pointer-events-none opacity-60' : ''}`}
-                                      onClick={(e) => {
-                                        if (hookCadenceFor === h.id) {
-                                          setHookCadenceFor(null)
-                                          return
-                                        }
-                                        const r = e.currentTarget.getBoundingClientRect()
-                                        setCadenceAnchor({ top: r.bottom + 5, right: window.innerWidth - r.right })
-                                        setHookCadenceFor(h.id)
-                                      }}
-                                    >
-                                      {GH_TRIGGER_LABEL[triggerModeOf(h)]}
-                                      <Icon name="chevron-down" size={12} color="var(--text-tertiary)" />
-                                    </button>
-                                    {hookCadenceFor === h.id && (
-                                      <>
-                                        <div className="fscrim" onClick={() => setHookCadenceFor(null)} />
-                                        <div
-                                          className="fmenu z-40 min-w-[130px] rounded-lg p-1 shadow-(--shadow-xl)"
-                                          style={{
-                                            position: 'fixed',
-                                            left: 'auto',
-                                            top: cadenceAnchor?.top,
-                                            right: cadenceAnchor?.right
-                                          }}
-                                        >
-                                          {GH_TRIGGER_MODES.map((mode) => (
-                                            <button
-                                              key={mode}
-                                              title={mode === 'mention' ? githubMentionUsage(da.name) : undefined}
-                                              className="fopt items-center gap-2 px-2 py-[7px]"
-                                              onClick={() => void setHookCadence(h, mode)}
-                                            >
-                                              <span className="flex-1 text-left font-sans text-[12.5px] font-medium leading-normal">
-                                                {GH_TRIGGER_LABEL[mode]}
-                                              </span>
-                                              {triggerModeOf(h) === mode && (
-                                                <Icon name="check" size={14} color="var(--brand)" />
-                                              )}
-                                            </button>
-                                          ))}
-                                        </div>
-                                      </>
-                                    )}
-                                  </div>
-                                </span>
-                                <span className="inline-flex flex-none gap-[2px]">
-                                  <button
-                                    className="iconbtn h-[26px] w-[26px] flex-none"
-                                    title="PR review and Checks settings"
-                                    onClick={() => openReviewSettings(h)}
-                                  >
-                                    <Icon name="settings-2" size={13} />
-                                  </button>
-                                  <button
-                                    className="iconbtn h-[26px] w-[26px] flex-none"
-                                    title="Recent deliveries"
-                                    onClick={() => setHookRunsFor(hookRunsFor === h.id ? null : h.id)}
-                                  >
-                                    <Icon name={hookRunsFor === h.id ? 'chevron-up' : 'history'} size={13} />
-                                  </button>
-                                  <button
-                                    className="iconbtn h-[26px] w-[26px] flex-none"
-                                    title="Remove repository"
-                                    onClick={() => openModal('deleteHook', h)}
-                                  >
-                                    <Icon name="x" size={13} />
-                                  </button>
-                                </span>
-                              </div>
-                              {hookRunsFor === h.id && (
-                                <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
-                              )}
-                            </div>
-                          ))}
-                          <div className="px-[14px] py-2">
-                            {/* Straight to the GitHub pane — this button adds a repo, not a bot. */}
-                            <button
-                              className="lnk text-[12px]"
-                              onClick={() => openModal('integration', da, { platform: 'github' })}
-                            >
-                              <Icon name="plus" size={13} />
-                              Add repository
-                            </button>
-                          </div>
-                          <div className="flex items-center gap-[7px] px-[14px] pt-0 pb-2 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                            <Icon name="info" size={12} className="flex-none" />
-                            Pick which repos to watch and which events run the agent — it replies on the same PR, issue
-                            or commit thread.
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : hooksLoadError ? (
-                <div className="px-5 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
-                  Couldn’t load webhooks.
-                </div>
-              ) : hooksLoading ? (
-                <LoadingState padding={42} />
-              ) : (
-                <>
-                  {/* Dual-rendered empty states — the copy differs per width. */}
-                  <div className="flex flex-col items-center gap-2 px-5 py-7 text-center desktop:hidden">
-                    <span className="flex h-11 w-11 items-center justify-center rounded-[10px] border border-(--border-subtle) bg-(--surface-sunken)">
-                      <Icon name="plug-zap" size={20} color="var(--text-tertiary)" />
-                    </span>
-                    <div className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
-                      No integration yet
-                    </div>
-                    <div className="font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
-                      Assign a bot so this agent can read and post in a channel.
-                    </div>
+                <span className="font-sans text-[14px] font-semibold leading-normal">Access</span>
+                {!da.name.startsWith(MOCK_PREFIX) && da.canManageSharing && (
+                  <>
                     <button
-                      onClick={() => openModal('integration', da)}
-                      className="mt-[2px] flex h-10 cursor-pointer items-center justify-center gap-[6px] rounded-md border-0 bg-(--brand) px-4 py-0 font-sans text-[13px] font-semibold leading-normal text-white"
+                      onClick={() => openModal('editAgent', da, { focusSection: 'access' })}
+                      className="flex h-7 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-0 py-0 font-sans text-[14px] font-semibold leading-normal text-(--brand-soft-text) desktop:hidden"
                     >
-                      <Icon name="plus" size={14} />
-                      Add integration
+                      <Icon name="pencil" size={14} />
+                      Edit
                     </button>
-                  </div>
-                  <div className="hidden flex-col items-center gap-[6px] px-6 py-[34px] text-center desktop:flex">
-                    <span className="flex h-11 w-11 items-center justify-center rounded-[11px] border border-(--border-subtle) bg-(--surface-sunken)">
-                      <Icon name="plug-zap" size={22} color="var(--text-tertiary)" />
-                    </span>
-                    <div className="mt-[6px] font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
-                      No integration yet
-                    </div>
-                    <div className="max-w-[300px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                      Assign a bot so <span className="mono text-[11.5px]">{da.name}</span>&#32;can read and post in a
-                      channel. It can&apos;t receive messages until you do.
-                    </div>
-                    <div className="mt-[10px]">
-                      <Button size="sm" onClick={() => openModal('integration', da)}>
-                        <Icon name="plus" size={15} />
-                        Add integration
-                      </Button>
-                    </div>
-                  </div>
-                </>
-              )}
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      className="hidden desktop:inline-flex"
+                      onClick={() => openModal('editAgent', da, { focusSection: 'access' })}
+                    >
+                      <Icon name="pencil" size={14} />
+                      Edit
+                    </Button>
+                  </>
+                )}
+              </div>
+              <div className="px-4 py-[14px]">
+                <div className="font-mono text-[10.5px] font-semibold uppercase tracking-[.08em] text-(--text-tertiary)">
+                  Team visibility
+                </div>
+                <div className="mt-[10px]">
+                  <VisibilityValue visibility={da.visibility} sharedWith={da.sharedWith} createdBy={da.createdBy} />
+                </div>
+              </div>
+              <div className="border-t border-(--border-subtle) px-4 py-[14px]">
+                <div className="font-mono text-[10.5px] font-semibold uppercase tracking-[.08em] text-(--text-tertiary)">
+                  Agent visibility
+                </div>
+                {/* The SAME cards the Add/Edit modals render, in read-only mode —
+                    one component, so the two surfaces can't drift apart. Only the
+                    container differs: side by side here (the card is wide), stacked
+                    in the modals (their form pane is narrow). */}
+                <div className="mt-3 grid grid-cols-1 gap-3 desktop:grid-cols-2">
+                  <AgentCallVisibility
+                    variant="section"
+                    direction="inbound"
+                    mode={da.callPolicy}
+                    selectedIds={da.allowedCallerAgentIds}
+                    effectivePeerIds={inboundEffectiveIds}
+                    peers={agentPeers}
+                    daemons={daemons}
+                    target={<span className="font-mono text-[12.5px]">{agentLabel(da)}</span>}
+                    editable={false}
+                    onChange={() => {}}
+                  />
+                  <AgentCallVisibility
+                    variant="section"
+                    direction="outbound"
+                    mode={da.outboundPolicy}
+                    selectedIds={da.allowedTargetAgentIds}
+                    effectivePeerIds={outboundEffectiveIds}
+                    peers={agentPeers}
+                    daemons={daemons}
+                    target={<span className="font-mono text-[12.5px]">{agentLabel(da)}</span>}
+                    editable={false}
+                    onChange={() => {}}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Variables + Secrets (shared editable cards) — the design keeps these in
+                the right column; each has its own inline add/edit affordances. */}
+            <div className="order-5 min-w-0">
+              <AgentEnvCard agent={da} />
+            </div>
+            <div className="order-6 min-w-0">
+              <AgentSecretsCard agent={da} />
             </div>
 
             {da.canManageSharing && !da.name.startsWith(MOCK_PREFIX) && (
-              <div className="card order-8 overflow-hidden max-desktop:rounded-lg">
+              <div className="card order-7 overflow-hidden max-desktop:rounded-lg">
                 <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
                   <span className="font-sans text-[14px] font-semibold leading-normal">Approval requests</span>
                   {!!approvalRequests?.filter((request) => request.status === 'pending').length && (
@@ -1461,88 +1149,475 @@ export default function AgentDetailView() {
         </div>
       )}
 
-      {/* Workspace tab. Live agents get the self-contained GitHub-style browser (its
-          own repo card + tree + preview); demo (mocked-) agents keep the static
-          two-card mock. Desktop-only pieces of the mock repo card (branch chip,
-          commit line, actions footer) are CSS-gated. */}
+      {/* Integrations tab — moved out of Configuration into its own tab. */}
+      {tab === 'integrations' && (
+        <div className="flex flex-col gap-4 p-4 desktop:gap-[18px] desktop:p-0">
+          <div className="card overflow-hidden max-desktop:rounded-lg">
+            <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
+              <span className="font-sans text-[14px] font-semibold leading-normal">Integrations</span>
+              <button
+                onClick={() => openModal('integration', da)}
+                className="flex h-7 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-0 py-0 font-sans text-[14px] font-semibold leading-normal text-(--brand-soft-text) desktop:hidden"
+              >
+                <Icon name="plus" size={14} />
+                Add
+              </button>
+              <Button
+                variant="secondary"
+                size="xs"
+                className="hidden desktop:inline-flex"
+                onClick={() => openModal('integration', da)}
+              >
+                <Icon name="plus" size={14} />
+                Add integration
+              </Button>
+            </div>
+            {hasInt ? (
+              <>
+                {/* Dual-rendered lists: mobile flat rows (no delete, padX 16) vs
+                    desktop bordered sub-cards (delete iconbtn, padX 14). */}
+                <div className="desktop:hidden">
+                  {agentInts.map((g, i) => (
+                    <div key={i} className={i > 0 ? 'border-t border-(--border-subtle)' : undefined}>
+                      <div className="flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3">
+                        <span className="imark h-9 w-9 flex-none rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
+                          <PlatformMark platform={g.platform} />
+                        </span>
+                        <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                          <span className="font-sans text-[14px] font-semibold leading-normal">{g.name}</span>
+                          {g.channels[0] && (
+                            <span className="font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                              #{g.channels[0].name}
+                            </span>
+                          )}
+                        </span>
+                        <span className="inline-flex flex-none items-center gap-[5px] rounded-full bg-(--brand-soft) px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal text-(--brand-soft-text)">
+                          <span className="h-[6px] w-[6px] rounded-full bg-(--status-online)" />
+                          connected
+                        </span>
+                        {g.platform === 'discord' && g.discordAppId && (
+                          <a
+                            href={discordBotInviteUrl(g.discordAppId)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Invite this bot to a Discord server — preset scopes &amp; permissions"
+                            aria-label="Add this bot to a Discord server"
+                            className="iconbtn h-7 w-7 flex-none"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Icon name="external-link" size={12} />
+                          </a>
+                        )}
+                      </div>
+                      <IntegrationChannelList
+                        integrationId={g.id}
+                        channels={g.channels}
+                        botId={g.botId}
+                        shareable={g.shareable}
+                        padX={16}
+                      />
+                    </div>
+                  ))}
+                  {webhookHooks.map((h, i) => (
+                    <div
+                      key={h.id}
+                      className={`flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3 ${
+                        agentInts.length + i > 0 ? 'border-t' : ''
+                      }`}
+                    >
+                      <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md bg-(--surface-inverse)">
+                        <Icon name="webhook" size={18} color="#fff" />
+                      </span>
+                      <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                        <span className="font-sans text-[14px] font-semibold leading-normal">{h.name}</span>
+                        <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                          {h.lastFiredAt ? `fired ${fmtHookAgo(h.lastFiredAt)}` : 'never fired'}
+                        </span>
+                      </span>
+                      <span className="inline-flex flex-none items-center gap-[5px] rounded-full bg-(--surface-active) px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal text-(--text-tertiary)">
+                        webhook
+                      </span>
+                    </div>
+                  ))}
+                  {githubHooks.map((h, i) => (
+                    <div
+                      key={h.id}
+                      className={`flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3 ${
+                        agentInts.length + webhookHooks.length + i > 0 ? 'border-t' : ''
+                      }`}
+                    >
+                      <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
+                        <span className="flex h-[18px] w-[18px] items-center justify-center">
+                          <PlatformMark platform="github" fillPct={100} />
+                        </span>
+                      </span>
+                      <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className="mono min-w-0 truncate text-[13px] font-semibold">
+                            {h.repoFullName ?? h.name}
+                          </span>
+                          {watchUnauthorized(h) && <UnauthorizedWatchBadge />}
+                        </span>
+                        <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                          {GH_FAMILIES.filter((f) => famCovered(h.events, f.fam))
+                            .map((f) => f.pill)
+                            .join(' · ') || 'no events'}
+                        </span>
+                        {(h.reviewPolicy !== 'off' || h.reportingMode === 'check') && (
+                          <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                            {reviewPolicyLabel(h.reviewPolicy)} review
+                            {h.reportingMode === 'check' ? ' · informational Check' : ''}
+                          </span>
+                        )}
+                      </span>
+                      <button
+                        className="iconbtn flex-none"
+                        title="PR review and Checks settings"
+                        onClick={() => openReviewSettings(h)}
+                      >
+                        <Icon name="settings-2" size={15} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <div className="hidden flex-col gap-3 px-4 py-[14px] desktop:flex">
+                  {agentInts.map((g, i) => (
+                    <div key={i} className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
+                      <div className="flex items-center gap-3 px-[14px] py-3">
+                        <span className="imark h-[34px] w-[34px] rounded-md">
+                          <PlatformMark platform={g.platform} />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-sans text-[13.5px] font-semibold leading-normal">{g.name}</span>
+                            <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
+                              <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
+                              connected
+                            </span>
+                            {g.shareable && (
+                              <span
+                                className="badge bg-(--surface-app) text-(--text-tertiary)"
+                                title="Shared bot — used by multiple agents, inbound via a relay"
+                              >
+                                <Icon name="users" size={11} />
+                                shared
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        {g.platform === 'discord' && g.discordAppId && (
+                          <a
+                            href={discordBotInviteUrl(g.discordAppId)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Invite this bot to a Discord server — preset scopes &amp; permissions"
+                            aria-label="Add this bot to a Discord server"
+                            className="iconbtn flex-none"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Icon name="external-link" size={14} />
+                          </a>
+                        )}
+                        <button
+                          className="iconbtn"
+                          title="Delete integration"
+                          onClick={() => openModal('deleteIntegration', g)}
+                        >
+                          <Icon name="unplug" size={15} />
+                        </button>
+                      </div>
+                      <IntegrationChannelList
+                        integrationId={g.id}
+                        channels={g.channels}
+                        botId={g.botId}
+                        shareable={g.shareable}
+                        padX={14}
+                      />
+                    </div>
+                  ))}
+                  {webhookHooks.map((h) => (
+                    <div key={h.id} className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
+                      <div className="flex items-center gap-3 px-[14px] py-3">
+                        <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-md bg-(--surface-inverse)">
+                          <Icon name="webhook" size={17} color="#fff" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-sans text-[13.5px] font-semibold leading-normal">{h.name}</span>
+                            <span className="badge bg-(--surface-active) text-(--text-tertiary)">webhook</span>
+                          </div>
+                          {h.url && (
+                            <div className="mono mt-[2px] truncate text-[11.5px] font-normal text-(--text-tertiary)">
+                              {h.url}
+                            </div>
+                          )}
+                        </div>
+                        <span className="flex-none font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                          {h.lastFiredAt ? `fired ${fmtHookAgo(h.lastFiredAt)}` : 'never fired'}
+                        </span>
+                        <button
+                          className="iconbtn"
+                          title="Recent deliveries"
+                          onClick={() => setHookRunsFor(hookRunsFor === h.id ? null : h.id)}
+                        >
+                          <Icon name={hookRunsFor === h.id ? 'chevron-up' : 'history'} size={15} />
+                        </button>
+                        <button className="iconbtn" title="Delete webhook" onClick={() => openModal('deleteHook', h)}>
+                          <Icon name="trash-2" size={15} />
+                        </button>
+                      </div>
+                      {hookRunsFor === h.id && (
+                        <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
+                      )}
+                    </div>
+                  ))}
+                  {/* GitHub group (design): one card, a row per watched repo with
+                        event toggle pills + a "when created/updated" cadence select;
+                        hooks under the hood — one per repo. */}
+                  {githubHooks.length > 0 && (
+                    <div className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
+                      <div className="flex items-center gap-3 px-[14px] py-3">
+                        <span className="flex h-[34px] w-[34px] flex-none items-center justify-center">
+                          <span className="flex h-[26px] w-[26px] items-center justify-center [&>svg]:h-full [&>svg]:w-full">
+                            <GithubMark />
+                          </span>
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-sans text-[13.5px] font-semibold leading-normal">{githubOwner}</span>
+                            <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
+                              <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
+                              connected
+                            </span>
+                          </div>
+                          <div className="mono mt-[3px] text-[11.5px] font-normal text-(--text-tertiary)">GitHub</div>
+                        </div>
+                        <button
+                          className="iconbtn"
+                          title="Disconnect GitHub"
+                          onClick={() => openModal('deleteHook', githubHooks)}
+                        >
+                          <Icon name="unplug" size={15} />
+                        </button>
+                      </div>
+                      <div className="border-t border-(--border-subtle) bg-(--surface-app)">
+                        {githubHooks.map((h) => (
+                          <div key={h.id} className="border-b border-(--border-subtle)">
+                            {/* Design row: wraps (gap 6×8) — the repo name keeps ≥90px and the
+                                  control clusters flow to the next line instead of crushing it. */}
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-[6px] px-[14px] py-[9px]">
+                              <Icon name="folder-git-2" size={14} color="var(--text-tertiary)" className="flex-none" />
+                              <span className="mono min-w-[90px] flex-1 truncate text-[12px] text-(--text-primary)">
+                                {h.repoFullName ?? h.name}
+                              </span>
+                              {watchUnauthorized(h) && <UnauthorizedWatchBadge />}
+                              <div className="ml-auto inline-flex flex-none gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) p-[2px]">
+                                {GH_FAMILIES.map((f) => {
+                                  const on = famCovered(h.events, f.fam)
+                                  return (
+                                    <button
+                                      key={f.fam}
+                                      onClick={() => void toggleHookFam(h, f.fam)}
+                                      disabled={hookBusy === h.id}
+                                      title={on ? `Stop listening for ${f.pill}` : `Listen for ${f.pill}`}
+                                      className={`cursor-pointer rounded-[7px] border-0 px-[9px] py-[3px] font-sans text-[11.5px] leading-normal ${
+                                        on
+                                          ? 'bg-(--surface-card) font-semibold text-(--text-primary) shadow-[0_1px_2px_rgba(0,0,0,0.08)]'
+                                          : 'bg-transparent font-normal text-(--text-tertiary)'
+                                      } ${hookBusy === h.id ? 'opacity-60' : ''}`}
+                                    >
+                                      {f.pill}
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                              <span className="inline-flex flex-none items-center gap-[5px]">
+                                <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                                  when
+                                </span>
+                                <div className="relative">
+                                  <button
+                                    title={
+                                      triggerModeOf(h) === 'mention'
+                                        ? githubMentionUsage(da.name)
+                                        : `Choose when this agent runs: when created (plus later @${da.name} mentions), on updates, or only when @${da.name} is mentioned.`
+                                    }
+                                    className={`flex h-[26px] cursor-pointer items-center gap-[5px] rounded-[7px] border bg-(--surface-card) px-[9px] font-sans text-[11.5px] font-medium leading-normal text-(--text-primary) transition-[background-color,border-color] hover:bg-(--surface-hover) ${
+                                      hookCadenceFor === h.id
+                                        ? 'border-(--brand)'
+                                        : 'border-(--border-default) hover:border-(--border-strong)'
+                                    } ${hookBusy === h.id ? 'pointer-events-none opacity-60' : ''}`}
+                                    onClick={(e) => {
+                                      if (hookCadenceFor === h.id) {
+                                        setHookCadenceFor(null)
+                                        return
+                                      }
+                                      const r = e.currentTarget.getBoundingClientRect()
+                                      setCadenceAnchor({ top: r.bottom + 5, right: window.innerWidth - r.right })
+                                      setHookCadenceFor(h.id)
+                                    }}
+                                  >
+                                    {GH_TRIGGER_LABEL[triggerModeOf(h)]}
+                                    <Icon name="chevron-down" size={12} color="var(--text-tertiary)" />
+                                  </button>
+                                  {hookCadenceFor === h.id && (
+                                    <>
+                                      <div className="fscrim" onClick={() => setHookCadenceFor(null)} />
+                                      <div
+                                        className="fmenu z-40 min-w-[130px] rounded-lg p-1 shadow-(--shadow-xl)"
+                                        style={{
+                                          position: 'fixed',
+                                          left: 'auto',
+                                          top: cadenceAnchor?.top,
+                                          right: cadenceAnchor?.right
+                                        }}
+                                      >
+                                        {GH_TRIGGER_MODES.map((mode) => (
+                                          <button
+                                            key={mode}
+                                            title={mode === 'mention' ? githubMentionUsage(da.name) : undefined}
+                                            className="fopt items-center gap-2 px-2 py-[7px]"
+                                            onClick={() => void setHookCadence(h, mode)}
+                                          >
+                                            <span className="flex-1 text-left font-sans text-[12.5px] font-medium leading-normal">
+                                              {GH_TRIGGER_LABEL[mode]}
+                                            </span>
+                                            {triggerModeOf(h) === mode && (
+                                              <Icon name="check" size={14} color="var(--brand)" />
+                                            )}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+                              </span>
+                              <span className="inline-flex flex-none gap-[2px]">
+                                <button
+                                  className="iconbtn h-[26px] w-[26px] flex-none"
+                                  title="PR review and Checks settings"
+                                  onClick={() => openReviewSettings(h)}
+                                >
+                                  <Icon name="settings-2" size={13} />
+                                </button>
+                                <button
+                                  className="iconbtn h-[26px] w-[26px] flex-none"
+                                  title="Recent deliveries"
+                                  onClick={() => setHookRunsFor(hookRunsFor === h.id ? null : h.id)}
+                                >
+                                  <Icon name={hookRunsFor === h.id ? 'chevron-up' : 'history'} size={13} />
+                                </button>
+                                <button
+                                  className="iconbtn h-[26px] w-[26px] flex-none"
+                                  title="Remove repository"
+                                  onClick={() => openModal('deleteHook', h)}
+                                >
+                                  <Icon name="x" size={13} />
+                                </button>
+                              </span>
+                            </div>
+                            {hookRunsFor === h.id && (
+                              <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
+                            )}
+                          </div>
+                        ))}
+                        <div className="px-[14px] py-2">
+                          {/* Straight to the GitHub pane — this button adds a repo, not a bot. */}
+                          <button
+                            className="lnk text-[12px]"
+                            onClick={() => openModal('integration', da, { platform: 'github' })}
+                          >
+                            <Icon name="plus" size={13} />
+                            Add repository
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-[7px] px-[14px] pt-0 pb-2 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                          <Icon name="info" size={12} className="flex-none" />
+                          Pick which repos to watch and which events run the agent — it replies on the same PR, issue or
+                          commit thread.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : hooksLoadError ? (
+              <div className="px-5 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
+                Couldn’t load webhooks.
+              </div>
+            ) : hooksLoading ? (
+              <LoadingState padding={42} />
+            ) : (
+              /* Empty: instead of a dead end, offer what this agent COULD connect
+                 to — each tile opens the Add-integration modal on that platform. */
+              <div className="px-4 py-5 desktop:px-5 desktop:py-6">
+                <div className="text-center">
+                  <div className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
+                    No integration yet
+                  </div>
+                  <div className="mx-auto mt-1 max-w-[380px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+                    Connect <span className="mono text-[11.5px]">{da.name}</span>&#32;to a channel so it can read and
+                    post. It can&apos;t receive messages until you do.
+                  </div>
+                </div>
+                {/* Identical grid to the Add-integration modal's platform picker —
+                    same list, order, tile size and disabled treatment. */}
+                <div className="mt-4 grid grid-cols-2 gap-[10px] desktop:flex desktop:flex-wrap desktop:justify-center">
+                  {PLATFORMS.map((p) => {
+                    const available = integrationPlatformAvailable(p.key)
+                    return (
+                      <div
+                        key={p.key}
+                        className={`ptile desktop:w-[132px] desktop:flex-none desktop:flex-col desktop:justify-center desktop:gap-[6px] desktop:px-2 desktop:text-center ${
+                          available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
+                        }`}
+                        aria-disabled={!available}
+                        title={available ? INTEGRATION_BLURB[p.key] : 'Not supported by this daemon'}
+                        onClick={available ? () => openModal('integration', da, { platform: p.key }) : undefined}
+                      >
+                        {p.key === 'github' ? (
+                          <span className="flex h-[26px] w-[26px] flex-none items-center justify-center [&>svg]:h-full [&>svg]:w-full">
+                            <GithubMark />
+                          </span>
+                        ) : (
+                          <span className="imark h-[26px] w-[26px] border-0 bg-transparent">
+                            <PlatformMark platform={p.key} fillPct={100} />
+                          </span>
+                        )}
+                        <span className="font-sans text-[13px] font-semibold leading-normal">{p.label}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Workspace tab — the workspace card (source + authorized repos + live git
+          state) sits above the file browser, so the options and the files they
+          configure read as one surface. Live agents get the self-contained
+          GitHub-style browser, which supplies the card's live half; demo (mocked-)
+          agents fill it from their static workspace fields. */}
       {tab === 'workspace' &&
         (!da.name.startsWith(MOCK_PREFIX) ? (
           <div className="p-4 desktop:p-0">
-            <WorkspaceFiles agentId={id} workdir={da.workdir} />
+            {/* Keyed by workspace identity: the editor now lives in the card
+                this instance renders, so a replacement must remount the browser
+                instead of leaving the previous tree/preview/git state beneath a
+                refreshed source card. */}
+            <WorkspaceFiles
+              key={workspaceReadModelKey(da)}
+              agentId={id}
+              workdir={da.workdir}
+              canEdit={da.workspace.mode === 'scratch' && da.canManageSharing}
+              renderHeader={(header) => <WorkspaceCard agent={da} header={header} />}
+            />
           </div>
         ) : (
           <div className="flex flex-col gap-4 p-4 desktop:p-0">
-            <div className="card overflow-hidden max-desktop:rounded-lg">
-              <div className="flex flex-wrap items-center gap-[11px] px-4 py-[13px]">
-                <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
-                  {ws.mode === 'github' ? (
-                    <span className="imark h-4 w-4 border-0 bg-transparent">
-                      <GithubMark color="var(--text-secondary)" />
-                    </span>
-                  ) : (
-                    <Icon name="folder" size={16} color="var(--text-tertiary)" />
-                  )}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="mono text-[13.5px] font-semibold text-(--text-primary)">
-                      {ws.mode === 'github' ? ws.repo : 'Scratch workspace'}
-                    </span>
-                    {ws.mode === 'github' && (
-                      <span className="mono hidden items-center gap-1 rounded-[5px] border border-(--border-subtle) bg-(--surface-sunken) px-[7px] py-px text-[11.5px] text-(--text-secondary) desktop:inline-flex">
-                        <Icon name="git-branch" size={12} />
-                        {ws.branch}
-                      </span>
-                    )}
-                    <span className="mono text-[11.5px] text-(--text-tertiary)">{da.workdir}</span>
-                  </div>
-                  <div className="mono mt-1 hidden truncate text-[11.5px] text-(--text-tertiary) desktop:block">
-                    {ws.mode === 'github' ? (
-                      ws.commitMsg ? (
-                        <>
-                          pulled {ws.lastPull} · <span className="text-(--brand-soft-text)">{ws.commit}</span>{' '}
-                          {ws.commitMsg} · {ws.commitTime}
-                        </>
-                      ) : (
-                        <>pulled {ws.lastPull}</>
-                      )
-                    ) : (
-                      <>
-                        created {ws.created} · {ws.size} on disk
-                      </>
-                    )}
-                  </div>
-                </div>
-                <span className="badge flex-none self-start" style={{ background: wss.bg, color: wss.text }}>
-                  <span className="dot h-[6px] w-[6px]" style={{ background: wss.dot }} />
-                  {wss.label}
-                </span>
-              </div>
-              <div className="hidden items-center gap-2 border-t border-(--border-subtle) px-4 py-3 desktop:flex">
-                {ws.mode === 'github' ? (
-                  <>
-                    <Button variant="secondary" size="sm">
-                      <Icon name="refresh-cw" size={14} />
-                      Pull latest
-                    </Button>
-                    <a
-                      className="lnk text-[12px] text-(--text-tertiary)"
-                      href={ws.repoUrl ?? `https://github.com/${ws.repo}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      <Icon name="external-link" size={13} />
-                      View on GitHub
-                    </a>
-                  </>
-                ) : (
-                  <span className="inline-flex items-center gap-[7px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
-                    <Icon name="info" size={14} />
-                    Files here are created by the agent and live only on this machine — not version-controlled.
-                  </span>
-                )}
-              </div>
-            </div>
+            <WorkspaceCard agent={da} header={mockWorkspaceHeader} />
 
             <FileBrowserShell
               title="Files"
@@ -1569,6 +1644,7 @@ export default function AgentDetailView() {
           canEdit={!da.name.startsWith(MOCK_PREFIX)}
           memoryProvider={da.memoryProvider}
           autoDistill={da.memoryAutoDistill}
+          memoryDreaming={da.memoryDreaming}
           memoryConnectionId={da.memoryConnectionId}
           memoryRecall={da.memoryRecall}
           memoryCaptureMode={da.memoryCaptureMode}
@@ -1588,6 +1664,7 @@ export default function AgentDetailView() {
             daemon={owningDaemon}
             canEdit={!da.name.startsWith(MOCK_PREFIX)}
           />
+          <AgentSkillsCard agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX)} />
           <div className="card overflow-hidden max-desktop:rounded-lg desktop:max-w-[760px]">
             <div className="flex items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:py-[13px]">
               <span className="font-sans text-[14px] font-semibold leading-normal">Loaded from workspace</span>

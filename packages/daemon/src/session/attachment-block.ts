@@ -1,4 +1,8 @@
 import type { ContentBlock } from '@agentclientprotocol/sdk'
+import {
+  SessionImageAttachment as SessionImageAttachmentSchema,
+  type SessionImageAttachment
+} from '@agentconnect.md/protocol'
 import type { Attachment } from '../messages/normalized.js'
 
 /** Capability + byte-fetch surface the block builder needs (satisfied by the
@@ -29,18 +33,27 @@ export function attachmentToBlock(
 ): ContentBlock {
   const isImage = att.mimeType.startsWith('image/')
   if (bytes && isImage && supports('image')) {
-    return { type: 'image', data: bytes.toString('base64'), mimeType: att.mimeType, uri: att.sourceUrl }
+    // Keep downloaded images self-contained. Some ACP adapters prefer `uri`
+    // over `data`, breaking auth-gated URLs despite having bytes. Remove via #52.
+    return { type: 'image', data: bytes.toString('base64'), mimeType: att.mimeType }
   }
   if (bytes && supports('embeddedContext')) {
+    const uri = att.sourceUrl ?? `attachment://webchat/${encodeURIComponent(att.id)}`
     if (att.mimeType.startsWith('text/')) {
       return {
         type: 'resource',
-        resource: { text: bytes.toString('utf8'), uri: att.sourceUrl, mimeType: att.mimeType }
+        resource: { text: bytes.toString('utf8'), uri, mimeType: att.mimeType }
       }
     }
     return {
       type: 'resource',
-      resource: { blob: bytes.toString('base64'), uri: att.sourceUrl, mimeType: att.mimeType }
+      resource: { blob: bytes.toString('base64'), uri, mimeType: att.mimeType }
+    }
+  }
+  if (!att.sourceUrl) {
+    return {
+      type: 'text',
+      text: `[attached image: ${att.name} (${att.mimeType}); image input is unavailable for this agent]`
     }
   }
   // Baseline: a pointer the agent can't fetch directly (the URL is auth-gated) —
@@ -63,14 +76,28 @@ export async function buildAttachmentBlocks(attachments: Attachment[], deps: Att
   return Promise.all(
     attachments.map(async (att) => {
       const overCap = typeof att.size === 'number' && att.size > cap
-      const bytes = overCap ? null : await deps.download(att).catch(() => null)
+      const bytes = overCap ? null : (att.inlineData ?? (await deps.download(att).catch(() => null)))
       return attachmentToBlock(att, bytes, deps.supports)
     })
   )
 }
 
-/** One-line human summary of attachments for the transcript text (so §8.5
- *  catch-up replay at least notes a file was shared, since bytes aren't stored). */
+/** Keep a validated bounded inline image beside its daemon-local transcript row. */
+export function transcriptImageAttachments(attachments: Attachment[] | undefined): SessionImageAttachment[] {
+  return (attachments ?? [])
+    .flatMap((attachment) => {
+      if (!attachment.inlineData) return []
+      const parsed = SessionImageAttachmentSchema.safeParse({
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        data: attachment.inlineData.toString('base64')
+      })
+      return parsed.success ? [parsed.data] : []
+    })
+    .slice(0, 1)
+}
+
+/** One-line human summary of attachments for transcript prompt replay. */
 export function attachmentMention(attachments: Attachment[] | undefined): string {
   if (!attachments?.length) return ''
   const list = attachments.map((a) => `${a.name} (${a.mimeType})`).join(', ')

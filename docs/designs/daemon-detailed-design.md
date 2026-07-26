@@ -270,7 +270,12 @@ The layout keeps machine configuration, per-agent desired state, durable runtime
 
     // Default false. true / --require-sandbox requires every agent to run in an OS sandbox.
     // If bwrap (Linux) or sandbox-exec (macOS) is unavailable, daemon refuses to start.
-    "requireSandbox": false
+    "requireSandbox": false,
+
+    // Exact origins that daemon-managed workspace clone/pull may target.
+    // Scheme and non-default port are part of the match; no wildcards or paths.
+    // Add self-managed Git origins explicitly. [] disables remote Git workspaces.
+    "workspaceGitAllowedOrigins": ["https://github.com", "ssh://github.com"]
   },
 
   // Daemon-local config.json / agent.json are secret-bearing files: CP API keys and
@@ -285,12 +290,36 @@ The layout keeps machine configuration, per-agent desired state, durable runtime
 
   // ---------- Local capacity/limits ----------
   "limits": {
-    "maxAgents": 8,
+    "maxAgents": 32,
     "maxConcurrentSessions": 32,
     "agentIdleTimeoutMs": 900000 // Reclaim ACP adapter after 15m idle; background-aware reclaim: background-task-aware-reclaim.md.
   }
 }
 ```
+
+On POSIX hosts, AgentConnect removes group/other access from existing
+`config.json` and `agent.json` files; newly created or rewritten files use mode
+`0600`. Agent directories created by the daemon use `0700`; existing custom
+agent directories and higher custom parents are left unchanged.
+
+`security.workspaceGitAllowedOrigins` is a daemon-local remote-origin policy. Tenant
+workspace configuration cannot widen it, and the control plane intentionally
+keeps only transport/credential validation because different daemons may permit
+different self-managed Git services. A manual GitLab or self-managed workspace
+therefore requires the daemon operator to add its exact HTTPS or SSH origin and
+restart the daemon. A configured array replaces the defaults, so deployments
+that still use GitHub or GitHub App workspaces must keep the corresponding
+GitHub origins in the array.
+
+Daemon-managed workspace clone/pull does not inherit proxy variables, system or
+user Git routing config, or user SSH config. It refuses HTTPS redirects and
+secondary bundle/packfile URI downloads, disables automatic submodule and Git
+LFS fetching, and rejects checkout-local URL rewrites, includes, and proxy
+overrides before pull. Operators should use an explicit repository URL
+(including an SSH port when needed) instead of redirects, proxies, or SSH host
+aliases. This policy covers daemon-managed workspace materialization only;
+agent-initiated Git commands and configured skill-source installation have
+separate trust boundaries.
 
 #### 3.3.1 Default Runtimes Come from the ACP Registry
 
@@ -806,10 +835,11 @@ Goal: **channel contains only start / plan / problem / finish + link**, while de
 
 Thread semantics: main progress goes at the thread anchor or, for a subscribed thread, uses `thread_ts`; tool-output messages reply in the same thread. `SlackSendQueue` rate-limits API calls, including the `chat.postMessage` Tier3 limit of 50rpm. The effective output mode is the per-session override when present, otherwise `agent.output.mode`.
 
-### 9.2 Inbound: Slack Event -> ACP `session/prompt` Content
+### 9.2 Inbound Attachments -> ACP `session/prompt` Content
 
 - Extract text from `app_mention` / `message`. For a mid-thread @mention, `SlackConnection.getThreadReplies()` in `packages/daemon/src/slack/connection.ts` fetches the full thread through `conversations.replies`, and `SessionManager` uses that snapshot as prompt context.
 - Download attachment bytes from `files.url_private` with bot token and create ACP `image` / `resource` blocks.
+- Decode a relay-delivered, size-bounded webchat image locally and feed it through the same ACP attachment-block builder. Keep the bounded image only in the daemon-local transcript so an authorized console history read can display it again; the Control Plane proxies that read without persisting the bytes.
 - Normalize to `NormalizedMessage`, then `session/prompt`.
 
 ### 9.3 Telegram / Discord / Feishu Mapping (Implemented)
@@ -926,7 +956,7 @@ control channel.
     "acp": true,
     "features": [] // Capability flags
   },
-  "maxAgents": 8,
+  "maxAgents": 32,
   "localState": {
     // What the daemon currently believes it holds, used for reconciliation
     "assignments": ["slack:C0TEAM:-"], // Session keys currently being served

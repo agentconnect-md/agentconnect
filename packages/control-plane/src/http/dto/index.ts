@@ -10,12 +10,17 @@ import {
   AgentMemoryBinding,
   AgentPermissionRequestRecord,
   CanonicalMemoryRecord,
+  FeishuRegion,
   MemoryFileHistoryEvent,
   MemoryPluginHistoryEvent,
   MemoryPluginOperation,
   RESERVED_MCP_SERVER_NAME,
+  GitCloneUrlError,
   RepoSubdirError,
-  normalizeGitUrl,
+  SessionImageAttachment,
+  MAX_WORKSPACE_EDIT_BYTES,
+  normalizeGitCloneUrl,
+  redactGitUrlSecrets,
   normalizeRepoSubdir
 } from '@agentconnect.md/protocol'
 import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
@@ -233,15 +238,12 @@ export const MintedKeyDto = z.object({
 })
 
 // ── agents ────────────────────────────────────────────────────────────────
-/** `gitRepo` is STORED as a full cloneable address — user shorthand ("acme/infra",
- *  "github.com/acme/infra") is expanded at this boundary; the console shortens it
- *  back to org/repo for display. A `codec` (not `.transform()`) because the schema
- *  is reused in response DTOs and the zod serializer runs the ENCODE direction —
- *  a one-way transform would throw there. Encode also normalizes, so responses
- *  repair pre-normalization rows. */
-const GitRepo = z.codec(z.string().min(1), z.string(), {
-  decode: normalizeGitUrl,
-  encode: normalizeGitUrl
+/** Response-only git address codec. Historical rows stay readable even when
+ * they predate clone-target validation; the total sanitizer only removes URL
+ * secrets and never rejects an old value during response serialization. */
+const GitRepoOutput = z.codec(z.string(), z.string(), {
+  decode: redactGitUrlSecrets,
+  encode: redactGitUrlSecrets
 })
 
 /** Where the agent runs (inline; path is daemon-generated). Mirrors protocol AgentWorkspace.
@@ -250,7 +252,7 @@ export const AgentWorkspaceBody = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('scratch') }),
   z.object({
     mode: z.literal('github'),
-    gitRepo: GitRepo,
+    gitRepo: GitRepoOutput,
     gitBranch: z.string().optional(),
     agentDir: z.string().optional(),
     // github-app credential mode: the GithubInstallation picked in the console
@@ -275,6 +277,22 @@ function normalizeAgentDir(value: string, ctx: z.RefinementCtx): string | undefi
   }
 }
 
+function normalizeAgentGitRepo(value: string, ctx: z.RefinementCtx): string {
+  try {
+    return normalizeGitCloneUrl(value)
+  } catch (err) {
+    if (!(err instanceof GitCloneUrlError)) throw err
+    // Deliberately do not include the supplied URL or the thrown message: URL
+    // userinfo/query fields may contain a credential.
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'gitRepo must be a credential-free HTTPS or SSH repository URL, or owner/repo shorthand'
+    })
+    return z.NEVER
+  }
+}
+
+const GitRepoInput = z.string().min(1).transform(normalizeAgentGitRepo)
 const AgentDirCreateInput = z.string().transform(normalizeAgentDir)
 const AgentDirPatchInput = z
   .union([z.string(), z.null()])
@@ -285,7 +303,7 @@ const AgentWorkspaceInputBody = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('scratch') }),
   z.object({
     mode: z.literal('github'),
-    gitRepo: GitRepo,
+    gitRepo: GitRepoInput,
     gitBranch: z.string().optional(),
     agentDir: AgentDirCreateInput.optional(),
     installationId: z.string().uuid().optional(),
@@ -318,6 +336,41 @@ const McpServerNamesBody = z.array(
     .string()
     .min(1)
     .refine((n) => n !== RESERVED_MCP_SERVER_NAME, { message: `"${RESERVED_MCP_SERVER_NAME}" is reserved` })
+)
+// A skills-source name: the org-unique reference key AND the prefix of the
+// "<source>/<skill>" enable-ref, so it must be slash-free (a "/" would corrupt
+// parseSkillRef) and free of whitespace/wildcards.
+const SKILL_SOURCE_NAME = /^[A-Za-z0-9._-]+$/
+const SkillSourceName = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(SKILL_SOURCE_NAME, { message: 'name may contain only letters, digits, dot, underscore, or hyphen' })
+
+// A skill name that becomes a `-s <name>` argument to `npx skills`. It must NOT
+// start with "-" (that would be read as a flag rather than a value), so the first
+// char is constrained to letters/digits/dot/underscore.
+const SkillFilterName = z
+  .string()
+  .regex(/^[A-Za-z0-9._][A-Za-z0-9._-]*$/, { message: 'skill name may not start with "-"' })
+
+// A source string that becomes a positional argument to `npx skills add`. Reject
+// option-looking values for the same reason.
+const SkillSourceArg = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((s) => !s.startsWith('-'), { message: 'source must not start with "-"' })
+
+// Enabled shared-skills (docs/designs/shared-skills.md): each entry is
+// "<sourceName>/<skillName>", "<sourceName>/*" (the whole source), or a bare
+// "<sourceName>". The source segment mirrors SkillSourceName; the skill segment
+// forbids a leading "-" (SkillFilterName grammar) so it can't inject a CLI flag.
+const SkillEnableBody = z.array(
+  z.string().regex(/^[A-Za-z0-9._-]+(\/([A-Za-z0-9._][A-Za-z0-9._-]*|\*))?$/, {
+    message: 'must be "<source>", "<source>/<skill>", or "<source>/*" (skill may not start with "-")'
+  })
 )
 // Memory backend selection (design: docs/designs/memory-evolution.md). External
 // carries only a connection reference + product policy; credentials and plugin
@@ -364,6 +417,7 @@ export const CreateAgentBody = z.object({
   // resolves them to definitions locally. Absent/empty ⇒ none. The bridge name
   // is rejected here so a misconfiguration fails at the API, not as a daemon warn.
   mcpServers: McpServerNamesBody.optional(),
+  skills: SkillEnableBody.optional(),
   memory: MemoryConfigBody.optional(), // memory backend; absent ⇒ managed default
   daemonId: z.string().optional(), // the owning daemon, if chosen at create
   workspace: AgentWorkspaceInputBody.optional(), // absent ⇒ scratch; the cold editor can replace either mode later
@@ -377,7 +431,10 @@ export const CreateAgentBody = z.object({
   // intersected with visible same-org peers in the route (same rule as the
   // dedicated call-policy PUT). Lets a create restrict callers in one request.
   callPolicy: AgentCallPolicyEnum.optional(),
-  allowedCallerAgentIds: z.array(z.string().uuid()).optional()
+  allowedCallerAgentIds: z.array(z.string().uuid()).optional(),
+  // Outbound half of the same policy (absent ⇒ 'all'), intersected the same way.
+  outboundPolicy: AgentCallPolicyEnum.optional(),
+  allowedTargetAgentIds: z.array(z.string().uuid()).optional()
 })
 
 /** `PATCH /agents/:id` — edit the spec; pushes `agent/upsert` if the daemon is connected.
@@ -410,6 +467,7 @@ export const UpdateAgentBody = z
     // it, an omitted key is left untouched — the client never holds existing values.
     secrets: AgentSecretsPatchBody.optional(),
     mcpServers: McpServerNamesBody.nullable().optional(), // replaced wholesale; null clears
+    skills: SkillEnableBody.nullable().optional(), // enabled skills; replaced wholesale; null clears
     memory: MemoryConfigBody.nullable().optional() // memory backend; null clears (revert to managed)
   })
   .strict()
@@ -458,6 +516,7 @@ export const AgentDto = z.object({
   // returned — set/replace them via the PATCH `secrets` body; the console masks them.
   secretKeys: z.array(z.string()),
   mcpServers: z.array(z.string()), // enabled daemon-configured MCP server names ([] ⇒ none)
+  skills: z.array(z.string()), // enabled shared-skills "<source>/<skill>" / "<source>/*" ([] ⇒ none)
   memory: MemoryConfigBody.nullable(), // memory backend (null ⇒ managed default)
   status: z.string(),
   daemonId: z.string().nullable(),
@@ -550,11 +609,14 @@ export const CreateIntegrationBody = z
         applicationId: z.string().min(1).optional()
       })
       .optional(),
-    /** Register a new Feishu / Lark self-built app from its appId + appSecret pair. */
+    /** Register a new Feishu / Lark self-built app from its appId + appSecret pair.
+     *  `region` picks the open-platform gateway (feishu.cn vs larksuite.com); it
+     *  defaults to international Lark for new create requests. */
     feishu: z
       .object({
         appId: z.string().min(1),
-        appSecret: z.string().min(1)
+        appSecret: z.string().min(1),
+        region: FeishuRegion.default('lark')
       })
       .optional()
   })
@@ -613,6 +675,7 @@ export const IntegrationDto = z.object({
   agentId: z.string(),
   botId: z.string(),
   status: z.string(),
+  region: FeishuRegion.optional(), // feishu integrations only: 'feishu' | 'lark' gateway
   createdAt: z.string(), // ISO-8601
   channels: z.array(IntegrationChannelDto)
 })
@@ -701,6 +764,83 @@ export type McpProviderDtoT = z.infer<typeof McpProviderDto>
 export const McpProviderCreatedDto = McpProviderDto.extend({
   grantKey: z.string()
 })
+
+// ── shared-skills sources (docs/designs/shared-skills.md) ────────────────────
+
+/** `POST /skill-sources` — register an org-level skills source. `source` is the
+ *  string handed to `npx skills add` (owner/repo | git URL | tree/<ref>/<subdir>).
+ *  `skills` empty ⇒ install every skill the source exposes. */
+export const CreateSkillSourceBody = z
+  .object({
+    name: SkillSourceName,
+    source: SkillSourceArg,
+    githubRepoId: z.string().optional(), // numeric id as string (BigInt on the wire)
+    ref: z.string().trim().optional(),
+    subDir: z.string().trim().optional(),
+    skills: z.array(SkillFilterName).default([]),
+    visibility: ResourceVisibilityEnum.optional(),
+    sharedWith: z.array(z.string()).optional()
+  })
+  .strict()
+
+/** `PATCH /skill-sources/:id` — edit source/ref/subDir/skill filter. At least one
+ *  field. `skills` REPLACES the stored filter wholesale. Name is immutable (agents
+ *  bind by name); recreate under a new name to rename. */
+export const UpdateSkillSourceBody = z
+  .object({
+    source: SkillSourceArg.optional(),
+    githubRepoId: z.string().nullable().optional(),
+    ref: z.string().trim().nullable().optional(),
+    subDir: z.string().trim().nullable().optional(),
+    skills: z.array(SkillFilterName).optional()
+  })
+  .strict()
+  .refine((b) => Object.keys(b).length > 0, { message: 'no fields to update' })
+
+/** `POST /skill-sources/preview` — best-effort GitHub scan for the import dialog.
+ *  Takes an installation + repo (same shape as the branches picker) and returns the
+ *  ref choices + the SKILL.md manifest. Scan failure ⇒ empty skills (install all). */
+export const PreviewSkillSourceBody = z
+  .object({
+    installationId: z.string(),
+    owner: z.string().min(1),
+    repo: z.string().min(1),
+    ref: z.string().optional()
+  })
+  .strict()
+
+export const SkillSourcePreviewDto = z.object({
+  branches: z.array(z.string()),
+  tags: z.array(z.string()),
+  skills: z.array(z.object({ name: z.string(), dirPath: z.string() }))
+})
+
+/** `GET /skill-sources/:id/skills` — the source's discovered SKILL.md manifest for
+ *  the agent editor's per-skill picker. Best-effort: `resolvable:false` (empty
+ *  skills) when the source isn't a scannable GitHub repo or no installation covers
+ *  it, so the UI falls back to whole-source enablement. */
+export const SkillSourceSkillsDto = z.object({
+  resolvable: z.boolean(),
+  skills: z.array(z.object({ name: z.string(), dirPath: z.string() }))
+})
+
+/** Console view of a skills source — pure metadata (nothing secret). */
+export const SkillSourceDto = z.object({
+  id: z.string(),
+  name: z.string(),
+  source: z.string(),
+  githubRepoId: z.string().nullable(), // BigInt rendered as string
+  ref: z.string().nullable(),
+  subDir: z.string().nullable(),
+  skills: z.array(z.string()), // the source's own skill filter ([] ⇒ all)
+  visibility: z.string(), // 'org' | 'restricted'
+  sharedWith: z.array(z.string()),
+  createdBy: z.string().nullable(),
+  canManageSharing: z.boolean(),
+  createdAt: z.string() // ISO-8601
+})
+export const SkillSourceListDto = z.array(SkillSourceDto)
+export type SkillSourceDtoT = z.infer<typeof SkillSourceDto>
 
 // ── open-connector connectors (docs: connectors integration) ─────────────────
 /** Whether the open-connector integration is configured on this CP (drives the
@@ -894,11 +1034,13 @@ export const SlackAppStartBody = z.object({
 })
 
 /** `PUT /slack/config` — store (or replace) the CALLER's Slack App Configuration token.
- *  Both are needed: the access token (`xoxe.xoxp-…`) and its refresh token
- *  (`xoxe-…`, used to rotate a fresh access token once the 12h one expires). */
+ *  The access (config) token (`xoxe.xoxp-…`) is required and enough on its own for
+ *  installs while it is fresh (~12h). The refresh token (`xoxe-…`) is OPTIONAL: when
+ *  provided the pair auto-rotates so it never expires; when omitted the caller re-enters
+ *  the access token once it lapses. */
 export const SlackConfigBody = z.object({
   accessToken: z.string().min(1),
-  refreshToken: z.string().min(1)
+  refreshToken: z.string().min(1).optional()
 })
 
 /** `GET /slack/config` — whether the CALLER has stored their own config token, and
@@ -906,9 +1048,16 @@ export const SlackConfigBody = z.object({
  *  the tokens. Per-user: the status reflects the signed-in caller, not the org. */
 export const SlackConfigDto = z.object({
   configured: z.boolean(), // the caller has stored their own token
+  /** A refresh token is stored ⇒ the pair auto-rotates and never needs re-entry. When
+   *  false, the stored token is access-only and lapses at `accessExpiresAt`. */
+  durable: z.boolean(),
   funnelEnabled: z.boolean(), // deployment supports auto-install (public callback)
-  /** configured AND funnelEnabled — drives the modal's forced auto/manual mode. */
+  /** funnelEnabled AND the stored token is usable right now (durable, or the access
+   *  token is still fresh) — drives the modal's forced auto/manual mode. */
   autoAvailable: z.boolean(),
+  /** ISO-8601 expiry of the stored access token; drives the "expires / expired" copy
+   *  on the config card. Null when unconfigured. (Meaningful mainly when !durable.) */
+  accessExpiresAt: z.string().nullable(),
   /** Slack HTTP mode is offerable here: PUBLIC_RELAY_URL is set AND ≥1 relay is
    *  connected to receive the Events API POSTs (slack-http-mode). */
   relayAvailable: z.boolean(),
@@ -1733,6 +1882,7 @@ export const SessionMessageDto = z.object({
   ts: z.string(),
   kind: z.string(),
   text: z.string(),
+  attachments: z.array(SessionImageAttachment).max(1).optional(),
   // ── tool-body enrichment (mirrors protocol SessionMessage; tool rows only) ──
   toolCallId: z.string().optional(),
   toolStatus: z.string().optional(),
@@ -1749,7 +1899,6 @@ export const SessionHistoryDto = z.object({
 
 /** `GET /sessions/:id/tool-body` query — one byte slice of a tool call's full ToolBody JSON. */
 export const SessionToolBodyQueryDto = z.object({
-  agentId: z.string(), // the owning agent (resolves the daemon), mirrors the messages route
   toolCallId: z.string(),
   offset: z.coerce.number().int().nonnegative().optional() // byte offset into the full body JSON
 })
@@ -1802,6 +1951,33 @@ export const WorkspaceFileDto = z.object({
   offset: z.number().nullable(), // byte offset this slice starts at
   nextOffset: z.number().nullable(), // byte offset to request next; clients must NOT recompute from content
   truncated: z.boolean().nullable() // true ⇒ nextOffset < size (more bytes remain)
+})
+
+/** `PUT /agents/:id/workspace/file` query — one scratch-workspace file. */
+export const PutWorkspaceFileQueryDto = z.object({
+  path: z.string().min(1).max(4096)
+})
+/** Omit `ifMatchMtime` for exclusive create; provide it for optimistic replace.
+ * Byte length is rechecked because zod counts characters, not encoded bytes. */
+export const PutWorkspaceFileBody = z
+  .object({
+    content: z.string().max(MAX_WORKSPACE_EDIT_BYTES),
+    ifMatchMtime: z.string().datetime().optional()
+  })
+  .strict()
+export const WorkspaceFileWriteDto = z.object({
+  path: z.string(),
+  size: z.number().int().nonnegative(),
+  mtime: z.string()
+})
+
+/** `DELETE /agents/:id/workspace/file` query — one unchanged scratch file. */
+export const DeleteWorkspaceFileQueryDto = z.object({
+  path: z.string().min(1).max(4096),
+  ifMatchMtime: z.string().datetime()
+})
+export const WorkspaceFileDeleteDto = z.object({
+  path: z.string()
 })
 
 // ── agent memory (a directory at the agent root: MEMORY.md index + topic files; proxied daemon-local) ──
@@ -1912,6 +2088,58 @@ export const UpdateMemoryRecordBody = z
   })
   .strict()
 export const DeleteMemoryRecordBody = z.object({ version: z.string().min(1).max(512).optional() }).strict()
+
+// ── memory dreaming (docs/designs/memory-dreaming.md §10) — job metadata + staged review ──
+/** One mined skill candidate's review state (D-3; present once skill mining ships). */
+export const DreamSkillDto = z.object({
+  name: z.string(),
+  description: z.string(),
+  state: z.enum(['proposed', 'accepted', 'dismissed'])
+})
+/** A dream job's metadata (never staged bodies). Mirrors protocol `DreamInfo`. */
+export const DreamDto = z.object({
+  dreamId: z.string(),
+  agentId: z.string(),
+  status: z.enum(['pending', 'running', 'completed', 'failed', 'canceled', 'adopted', 'discarded']),
+  trigger: z.enum(['manual', 'schedule', 'auto']),
+  sessionIds: z.array(z.string()),
+  snapshotDigest: z.string(),
+  instructions: z.string().nullable(),
+  skills: z.array(DreamSkillDto).nullable(),
+  usage: z.object({ inputBytes: z.number(), outputBytes: z.number() }).nullable(),
+  error: z.object({ type: z.string(), message: z.string() }).nullable(),
+  createdAt: z.string(), // RFC3339
+  endedAt: z.string().nullable() // RFC3339
+})
+/** `GET …/dreams` — the agent's dream jobs, newest first. */
+export const DreamListDto = z.object({ dreams: z.array(DreamDto) })
+/** Body for starting a dream: per-run overrides of the agent's dreaming policy. */
+export const StartDreamBody = z
+  .object({
+    sessionWindow: z.number().int().min(1).max(100).optional(),
+    instructions: z.string().max(4096).optional()
+  })
+  .strict()
+/** Body for adopting a dream: fenced by default; `force` overrides the snapshot fence. */
+export const AdoptDreamBody = z.object({ force: z.boolean().optional() }).strict()
+/** `GET …/dreams/:dreamId/files` — the staged output store's files (index + topics). */
+export const DreamFilesDto = z.object({
+  exists: z.boolean(), // false ⇒ nothing staged (yet)
+  files: z.array(MemoryFileEntryDto)
+})
+/** `GET …/dreams/:dreamId/file` — one byte slice of a staged file (memory/read semantics). */
+export const DreamFileDto = z.object({
+  path: z.string(),
+  exists: z.boolean(),
+  size: z.number().nullable(),
+  mtime: z.string().nullable(),
+  content: z.string().nullable(),
+  offset: z.number().nullable(),
+  nextOffset: z.number().nullable(),
+  truncated: z.boolean().nullable()
+})
+export const DreamIdParam = z.object({ id: z.string().uuid(), dreamId: z.string().min(1).max(128) })
+
 export const WorkspaceGitFileDto = z.object({
   path: z.string(),
   index: z.string(), // staged (X) status char
@@ -2028,6 +2256,10 @@ export type MemoryRecordResultDtoT = z.infer<typeof MemoryRecordResultDto>
 export type MemoryRecordGetResultDtoT = z.infer<typeof MemoryRecordGetResultDto>
 export type MemoryRecordDeleteResultDtoT = z.infer<typeof MemoryRecordDeleteResultDto>
 export type MemoryRecordHistoryPageDtoT = z.infer<typeof MemoryRecordHistoryPageDto>
+export type DreamDtoT = z.infer<typeof DreamDto>
+export type DreamListDtoT = z.infer<typeof DreamListDto>
+export type DreamFilesDtoT = z.infer<typeof DreamFilesDto>
+export type DreamFileDtoT = z.infer<typeof DreamFileDto>
 export type WorkspaceGitStatusDtoT = z.infer<typeof WorkspaceGitStatusDto>
 export type WorkspaceGitPullDtoT = z.infer<typeof WorkspaceGitPullDto>
 export type ErrorDtoT = z.infer<typeof ErrorDto>

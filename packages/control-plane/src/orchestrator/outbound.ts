@@ -40,6 +40,10 @@ import type {
   WorkspaceListPage,
   WorkspaceReadReq,
   WorkspaceReadContent,
+  WorkspaceWriteReq,
+  WorkspaceWriteOk,
+  WorkspaceDeleteReq,
+  WorkspaceDeleteOk,
   WorkspaceGitStatusReq,
   WorkspaceGitStatus,
   WorkspaceGitPullReq,
@@ -68,6 +72,18 @@ import type {
   MemoryRecordDeleteResult,
   MemoryRecordHistoryReq,
   MemoryRecordHistoryPage,
+  DreamStartReq,
+  DreamCancelReq,
+  DreamListReq,
+  DreamListPage,
+  DreamGetReq,
+  DreamAdoptReq,
+  DreamDiscardReq,
+  DreamFilesReq,
+  DreamFilesPage,
+  DreamFileReadReq,
+  DreamFileReadContent,
+  DreamState,
   RelayRosterEntry,
   CollabRoutesSnapshot,
   AgentPermissionRequestList,
@@ -75,7 +91,7 @@ import type {
   AgentPermissionDecision
 } from '@agentconnect.md/protocol'
 import type { LaunchRepo } from '../persistence/ports.js'
-import type { ConnectionRegistry, DaemonConnState } from '../ws/registry.js'
+import { ConnectionClosed, type ConnectionRegistry, type DaemonConnState } from '../ws/registry.js'
 import { AgentId, DaemonId, LaunchId } from '../domain/ids.js'
 import { ProtocolError } from '../domain/errors.js'
 
@@ -84,6 +100,7 @@ import { ProtocolError } from '../domain/errors.js'
 // idempotent operation enough time to return its acknowledgement.
 const COLD_ACTIVATE_ACK_TIMEOUT_MS = 60_000
 const COLD_ACTIVATE_MAX_TRIES = 5
+const COLD_ACTIVATE_MAX_CONNECTIONS = 5
 
 /** Raised when no live/READY connection exists for a daemon. */
 export class NoConnection extends Error {
@@ -238,12 +255,33 @@ export class ControlSender {
 
   /** Activate a fully bootstrapped/restored agent after a cold daemon move (REQ → ack). */
   async agentActivate(daemonId: string, a: AgentActivate): Promise<Ack> {
-    const c = this.must(daemonId)
-    return c.conn.request<Ack>(
-      'agent/activate',
-      a,
-      { epoch: c.sessionEpoch, agentId: a.agentId },
-      { ackTimeoutMs: COLD_ACTIVATE_ACK_TIMEOUT_MS, maxTries: COLD_ACTIVATE_MAX_TRIES }
+    let c = await this.activationConnection(daemonId)
+    for (let connectionTry = 1; ; connectionTry += 1) {
+      try {
+        return await c.conn.request<Ack>(
+          'agent/activate',
+          a,
+          { epoch: c.sessionEpoch, agentId: a.agentId },
+          { ackTimeoutMs: COLD_ACTIVATE_ACK_TIMEOUT_MS, maxTries: COLD_ACTIVATE_MAX_TRIES }
+        )
+      } catch (err) {
+        if (!(err instanceof ConnectionClosed) || connectionTry >= COLD_ACTIVATE_MAX_CONNECTIONS) throw err
+        c = await this.registry.waitForReadyAfter(
+          daemonId,
+          c.sessionEpoch,
+          AbortSignal.timeout(COLD_ACTIVATE_ACK_TIMEOUT_MS)
+        )
+      }
+    }
+  }
+
+  private async activationConnection(daemonId: string): Promise<DaemonConnState> {
+    const current = this.registry.get(daemonId)
+    if (current?.state === 'READY' || current?.state === 'DRAINING') return current
+    return this.registry.waitForReadyAfter(
+      daemonId,
+      Math.max(0, (current?.sessionEpoch ?? 1) - 1),
+      AbortSignal.timeout(COLD_ACTIVATE_ACK_TIMEOUT_MS)
     )
   }
 
@@ -388,6 +426,18 @@ export class ControlSender {
     return c.conn.request<WorkspaceReadContent>('workspace/read', req, { epoch: c.sessionEpoch })
   }
 
+  /** Create or replace one scratch-workspace text file on the owning daemon. */
+  async workspaceWrite(daemonId: string, req: WorkspaceWriteReq): Promise<WorkspaceWriteOk> {
+    const c = this.must(daemonId)
+    return c.conn.request<WorkspaceWriteOk>('workspace/write', req, { epoch: c.sessionEpoch })
+  }
+
+  /** Delete one unchanged scratch-workspace file on the owning daemon. */
+  async workspaceDelete(daemonId: string, req: WorkspaceDeleteReq): Promise<WorkspaceDeleteOk> {
+    const c = this.must(daemonId)
+    return c.conn.request<WorkspaceDeleteOk>('workspace/delete', req, { epoch: c.sessionEpoch })
+  }
+
   /**
    * List the files in an agent's memory dir from the owning daemon for the console
    * (REQ → `memory/list/page`). Read-only — the CP proxies the listing live and
@@ -462,6 +512,51 @@ export class ControlSender {
   async memoryRecordHistory(daemonId: string, req: MemoryRecordHistoryReq): Promise<MemoryRecordHistoryPage> {
     const c = this.must(daemonId)
     return c.conn.request<MemoryRecordHistoryPage>('memory/record/history', req, { epoch: c.sessionEpoch })
+  }
+
+  // ── memory dreaming (docs/designs/memory-dreaming.md §10) — the CP relays the
+  //    dream lifecycle + staged-output review to the owning daemon and persists
+  //    nothing (offline metadata caching is deferred). Staged bodies ride
+  //    byte-sliced correlated replies, exactly like memory/read.
+
+  async dreamStart(daemonId: string, req: DreamStartReq): Promise<DreamState> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamState>('memory/dream/start', req, { epoch: c.sessionEpoch })
+  }
+
+  async dreamCancel(daemonId: string, req: DreamCancelReq): Promise<DreamState> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamState>('memory/dream/cancel', req, { epoch: c.sessionEpoch })
+  }
+
+  async dreamList(daemonId: string, req: DreamListReq): Promise<DreamListPage> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamListPage>('memory/dream/list', req, { epoch: c.sessionEpoch })
+  }
+
+  async dreamGet(daemonId: string, req: DreamGetReq): Promise<DreamState> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamState>('memory/dream/get', req, { epoch: c.sessionEpoch })
+  }
+
+  async dreamAdopt(daemonId: string, req: DreamAdoptReq): Promise<DreamState> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamState>('memory/dream/adopt', req, { epoch: c.sessionEpoch })
+  }
+
+  async dreamDiscard(daemonId: string, req: DreamDiscardReq): Promise<DreamState> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamState>('memory/dream/discard', req, { epoch: c.sessionEpoch })
+  }
+
+  async dreamFiles(daemonId: string, req: DreamFilesReq): Promise<DreamFilesPage> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamFilesPage>('memory/dream/files', req, { epoch: c.sessionEpoch })
+  }
+
+  async dreamFileRead(daemonId: string, req: DreamFileReadReq): Promise<DreamFileReadContent> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamFileReadContent>('memory/dream/file/read', req, { epoch: c.sessionEpoch })
   }
 
   /**

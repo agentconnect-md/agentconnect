@@ -1,17 +1,23 @@
 # syntax=docker/dockerfile:1.7
+
 #
 # Unified image build for the deployable services. The build context is the repo
 # root; pick a service with --target:
 #
 #   docker build -f docker/Dockerfile --target control-plane -t control-plane .
+#   docker build -f docker/Dockerfile --target relay         -t relay .
+#   docker build -f docker/Dockerfile --target mem0          -t mem0 .
 #   docker build -f docker/Dockerfile --target web           -t web .
 #
-# Both services share one builder pipeline (base tools → workspace manifests →
-# per-service install + build), so their common layers are built once and cached.
+# The plain Node services share one pipeline (base tools → workspace manifests →
+# per-service install + build → portable production deploy). Web uses Next's
+# standalone output; all targets still share the base and manifest layers.
 #
 # Control Plane — Fastify BFF + daemon WS gateway (packages/control-plane). The
 #   runtime carries only the schema/migration files needed by an external
 #   migration runner; it deliberately contains no Prisma CLI.
+# Relay — shared integration ingress (packages/relay).
+# Memory plugin — centralized Mem0 MCP wrapper (packages/memory-plugin-mem0).
 # Web console — Next.js (packages/web).
 
 # ───────────────────────────────── base ─────────────────────────────────────
@@ -46,14 +52,6 @@ COPY packages/relay/package.json packages/relay/
 COPY packages/memory-plugin-mem0/package.json packages/memory-plugin-mem0/
 COPY packages/web/package.json packages/web/
 
-# ─────────────────── control-plane: production dependencies ────────────────
-# This layer depends only on manifests, so normal source changes reuse it. The
-# pnpm hook removes Prisma's build-time optional peers while preserving real
-# optional runtime packages (notably Resvg's native binding).
-FROM manifests AS cp-prod-deps
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-  pnpm install --prod --frozen-lockfile --filter "@agentconnect.md/control-plane..."
-
 # ───────────────────────── control-plane: build ─────────────────────────────
 FROM manifests AS cp-builder
 # Install only the control-plane and its workspace deps (skips the daemon and
@@ -73,6 +71,14 @@ RUN pnpm --config.enable-pre-post-scripts=false \
   --filter "@agentconnect.md/control-plane" \
   -r build
 
+# Materialize the same portable production bundle used by the other plain Node
+# services. The pnpm hook removes Prisma's build-only optional peers while
+# preserving real runtime packages (notably Resvg's native binding).
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+  pnpm --config.inject-workspace-packages=true \
+  --filter "@agentconnect.md/control-plane" \
+  deploy --prod /control-plane
+
 # ──────────────────────── control-plane: runtime ────────────────────────────
 FROM node:24-bookworm-slim AS control-plane
 WORKDIR /app/packages/control-plane
@@ -85,19 +91,9 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-# Production-only dependency graph plus the two built workspace packages. Keep
-# their pnpm symlink layout: package node_modules resolve into /app/node_modules.
-COPY --from=cp-prod-deps /app/node_modules /app/node_modules
-COPY --from=cp-prod-deps /app/packages/protocol/node_modules /app/packages/protocol/node_modules
-COPY --from=cp-prod-deps /app/packages/control-plane/node_modules /app/packages/control-plane/node_modules
-COPY --from=cp-builder /app/packages/protocol/package.json /app/packages/protocol/package.json
-COPY --from=cp-builder /app/packages/protocol/dist /app/packages/protocol/dist
-COPY --from=cp-builder /app/packages/control-plane/package.json /app/packages/control-plane/package.json
-COPY --from=cp-builder /app/packages/control-plane/dist /app/packages/control-plane/dist
-# A schema-export init container uses this same image and copies these small,
-# version-matched migration inputs to a shared volume for the generic CLI image.
-COPY packages/control-plane/prisma/schema.prisma /app/packages/control-plane/prisma/schema.prisma
-COPY packages/control-plane/prisma/migrations /app/packages/control-plane/prisma/migrations
+# Production dependencies, built workspace packages, and the version-matched
+# Prisma schema/migrations used by the schema-export init container.
+COPY --from=cp-builder /control-plane ./
 
 EXPOSE 8080
 CMD ["node", "dist/index.js"]
@@ -117,6 +113,14 @@ RUN pnpm --filter "@agentconnect.md/protocol" \
   --filter "@agentconnect.md/relay" \
   -r build
 
+# Materialize a portable production-only package. Per-command workspace
+# injection includes the built protocol/connection packages without changing
+# install semantics for the rest of the monorepo.
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+  pnpm --config.inject-workspace-packages=true \
+  --filter "@agentconnect.md/relay" \
+  deploy --prod /relay
+
 # ───────────────────────────── relay: runtime ───────────────────────────────
 FROM node:24-bookworm-slim AS relay
 WORKDIR /app/packages/relay
@@ -129,8 +133,8 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-# Whole installed+built workspace (preserves pnpm symlinks to protocol/connection).
-COPY --from=relay-builder /app /app
+# Production dependencies and built relay/workspace packages only.
+COPY --from=relay-builder /relay ./
 
 EXPOSE 8080
 CMD ["node", "dist/index.js"]
@@ -179,15 +183,10 @@ COPY --from=web-builder /app/packages/web/public /app/packages/web/public
 EXPOSE 8080
 CMD ["node", "server.js"]
 
-# ───────────────── memory-plugin-mem0 (wrapper): prod deps ───────────────────
+# ───────────────── memory-plugin-mem0 (wrapper): build ───────────────────────
 # The centralized external-memory wrapper (packages/memory-plugin-mem0) served in
 # HTTP mode — an MCP server that forwards to a Mem0 backend. Depends only on
 # protocol + external libs (no Prisma, no daemon/connection).
-FROM manifests AS mem0-prod-deps
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-  pnpm install --prod --frozen-lockfile --filter "@agentconnect.md/memory-plugin-mem0..."
-
-# ───────────────── memory-plugin-mem0 (wrapper): build ───────────────────────
 FROM manifests AS mem0-builder
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   pnpm install --frozen-lockfile --filter "@agentconnect.md/memory-plugin-mem0..."
@@ -198,6 +197,11 @@ COPY . .
 RUN pnpm --filter "@agentconnect.md/protocol" \
   --filter "@agentconnect.md/memory-plugin-mem0" \
   -r build
+
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+  pnpm --config.inject-workspace-packages=true \
+  --filter "@agentconnect.md/memory-plugin-mem0" \
+  deploy --prod /memory-plugin-mem0
 
 # ───────────────── memory-plugin-mem0 (wrapper): runtime ─────────────────────
 FROM node:24-bookworm-slim AS mem0
@@ -215,15 +219,8 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-# Production-only dependency graph plus the two built workspace packages. Keep the
-# pnpm symlink layout: package node_modules resolve into /app/node_modules.
-COPY --from=mem0-prod-deps /app/node_modules /app/node_modules
-COPY --from=mem0-prod-deps /app/packages/protocol/node_modules /app/packages/protocol/node_modules
-COPY --from=mem0-prod-deps /app/packages/memory-plugin-mem0/node_modules /app/packages/memory-plugin-mem0/node_modules
-COPY --from=mem0-builder /app/packages/protocol/package.json /app/packages/protocol/package.json
-COPY --from=mem0-builder /app/packages/protocol/dist /app/packages/protocol/dist
-COPY --from=mem0-builder /app/packages/memory-plugin-mem0/package.json /app/packages/memory-plugin-mem0/package.json
-COPY --from=mem0-builder /app/packages/memory-plugin-mem0/dist /app/packages/memory-plugin-mem0/dist
+# Production dependencies and built workspace packages only.
+COPY --from=mem0-builder /memory-plugin-mem0 ./
 
 EXPOSE 8788
 CMD ["node", "dist/cli.js"]

@@ -93,6 +93,27 @@ export function cronTimezoneSelectModel(
 }
 
 /** Next fire time, or null when the expression is invalid / never fires. */
+/**
+ * Does the expression parse as the scheduler will actually run it?
+ *
+ * Must be Croner, NOT `cronHuman`/cronstrue: the two do not accept the same
+ * language, and cronstrue is the more permissive of the pair. A zero step (as in
+ * a "slash zero" minute field) reads as "Every 0 minutes" to cronstrue but makes
+ * Croner throw `illegal stepping: 0` — so a cronstrue-based check waves through
+ * expressions the daemon then silently fails to install. Mirrors the control
+ * plane's `cronerSchedule` refinement; keep `cronHuman` for display only.
+ */
+export function isValidCron(expr: string): boolean {
+  const value = expr.trim()
+  if (!value) return false
+  try {
+    new Cron(value, { paused: true }).stop()
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function cronNext(expr: string, timezone: string): Date | null {
   try {
     const job = new Cron(expr, { paused: true, timezone })

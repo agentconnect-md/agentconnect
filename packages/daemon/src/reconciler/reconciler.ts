@@ -1,3 +1,4 @@
+import { normalizeGitCloneUrl } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 
 /** Stable identity-free signature of an agent's effective config. Excludes the
@@ -49,6 +50,18 @@ function workspaceSig(a: Agent): string {
   return JSON.stringify(a.workspace)
 }
 
+function isGithubRepoLocation(input: string): boolean {
+  try {
+    const normalized = normalizeGitCloneUrl(input)
+    const scp = /^[\w.-]+@([\w.-]+):/.exec(normalized)
+    if (scp) return scp[1]!.toLowerCase() === 'github.com'
+    if (!/^(?:https|ssh):\/\//i.test(input.trim())) return false
+    return new URL(normalized).hostname.toLowerCase() === 'github.com'
+  } catch {
+    return false
+  }
+}
+
 /**
  * A GitHub App workspace keeps the same checkout when GitHub changes only the
  * repository's canonical name. Genuine workspace edits are cold-fenced by the
@@ -63,7 +76,11 @@ function isGithubAppRepoRename(before: Agent, after: Agent): boolean {
     right.mode !== 'git-repo' ||
     left.gitCredential !== 'github-app' ||
     right.gitCredential !== 'github-app' ||
-    left.gitRepo === right.gitRepo
+    !left.gitRepo ||
+    !right.gitRepo ||
+    left.gitRepo === right.gitRepo ||
+    !isGithubRepoLocation(left.gitRepo) ||
+    !isGithubRepoLocation(right.gitRepo)
   ) {
     return false
   }

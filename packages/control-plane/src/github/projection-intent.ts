@@ -1,3 +1,4 @@
+import type { HookReviewPolicy } from '@agentconnect.md/protocol'
 import type { HookProjectionIntent } from '../persistence/ports.js'
 
 const REVISION_EVENTS = new Set([
@@ -19,9 +20,14 @@ const REVISION_EVENTS = new Set([
  */
 export function githubProjectionIntent(
   event: string | undefined,
-  github: { subjectKind: string; explicitReviewRequest?: boolean } | undefined
+  github: { subjectKind: string; explicitReviewRequest?: boolean } | undefined,
+  reviewPolicy?: HookReviewPolicy
 ): HookProjectionIntent {
   if (github?.subjectKind !== 'pull_request') return 'none'
-  if (github.explicitReviewRequest || REVISION_EVENTS.has(event ?? '')) return 'revision_event'
+  if (
+    (reviewPolicy !== undefined && reviewPolicy !== 'off' && github.explicitReviewRequest) ||
+    REVISION_EVENTS.has(event ?? '')
+  )
+    return 'revision_event'
   return 'review_action_only'
 }

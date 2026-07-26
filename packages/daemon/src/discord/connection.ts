@@ -11,6 +11,7 @@ import type { Agent } from '../agents/agent-schema.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
 import { SlackSendQueue } from '../slack/send-queue.js'
+import type { InteractionActor } from '../slack/connection.js'
 import { normalizeDiscordMessage, type DiscordMessageLike } from './normalize.js'
 import { DISCORD_APP_COMMANDS } from './app-commands.js'
 import {
@@ -66,7 +67,13 @@ export interface DiscordDeps {
   /** Fired when a user taps a status-bar button (message component). `sessionKey`
    *  is resolved by the connection from the button's message (channel+message_id →
    *  session key, registered when the status bar was posted). */
-  onStatusAction?: (a: { kind: 'cancel' | 'set-fast'; sessionKey: string; fastMode?: boolean }) => void
+  onStatusAction?: (a: {
+    kind: 'cancel' | 'set-fast'
+    sessionKey: string
+    fastMode?: boolean
+    /** Who tapped it, so the daemon can record the operator behind a session change. */
+    actor?: InteractionActor
+  }) => void
   /** Fired when a user taps a select-card button (`/models` `/effort` `/permission`).
    *  Applies the choice for `sessionKey` and returns the re-rendered card so the
    *  connection edits the tapped message in place (the current option now flagged).
@@ -75,6 +82,7 @@ export interface DiscordDeps {
     kind: DiscordSelectKind
     index: number
     sessionKey: string
+    actor?: InteractionActor
   }) => { text: string; components: DiscordComponents } | undefined
   newTraceId: () => string
   log?: Logger
@@ -160,17 +168,18 @@ export class DiscordConnection {
       const channel = interaction.channelId
       const sessionKey = this.statusKeys.get(`${channel}:${interaction.message.id}`)
       if (!sessionKey) return
+      const actor: InteractionActor = { userId: interaction.user.id, isBot: interaction.user.bot }
       // Status-bar verbs (Cancel / Fast) — fire-and-forget onto the session.
       const status = parseDiscordCallback(interaction.customId)
       if (status) {
-        if (status.kind === 'cancel') this.deps.onStatusAction?.({ kind: 'cancel', sessionKey })
-        else this.deps.onStatusAction?.({ kind: 'set-fast', sessionKey, fastMode: status.fastMode })
+        if (status.kind === 'cancel') this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, actor })
+        else this.deps.onStatusAction?.({ kind: 'set-fast', sessionKey, fastMode: status.fastMode, actor })
         return
       }
       // Select-card taps (model / effort / permission): apply + re-render the card in place.
       const sel = parseDiscordSelect(interaction.customId)
       if (sel && this.deps.onSelectAction) {
-        const rendered = this.deps.onSelectAction({ kind: sel.kind, index: sel.index, sessionKey })
+        const rendered = this.deps.onSelectAction({ kind: sel.kind, index: sel.index, sessionKey, actor })
         if (rendered)
           void this.updateMessage(channel, interaction.message.id, rendered.text, { keyboard: rendered.components })
       }

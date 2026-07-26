@@ -5,10 +5,11 @@
  *   POST /orgs/:orgId/agents/:agentId/webchat/token → { token, relayUrl, conversationId }
  *
  * The console calls this (authenticated as the human, org-scoped) BEFORE dialing the
- * relay pool: the CP checks the caller can view the agent, then mints a token bound to
- * {userId, user, agentId, orgId}. The browser dials `relayUrl` with that token; the
- * relay verifies it via `rc/verify(webchat-token)` and bridges to the agent's daemon.
- * This is the ONLY authentication the relay path needs — the CP never sees the content.
+ * relay pool: the CP checks the caller can view the agent, registers or verifies the
+ * conversation's owner, then mints a token bound to
+ * {userId, user, agentId, orgId, conversationId}. The browser dials `relayUrl` with that
+ * token; the relay verifies it via `rc/verify(webchat-token)` and bridges to the agent's
+ * daemon. This is the ONLY authentication the relay path needs — the CP never sees content.
  */
 import type { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
@@ -44,7 +45,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Mint a webchat token',
           description:
-            'Mints a short-lived token the browser presents to the relay pool to start a playground webchat session with this agent. Returns the token, the relay ingress URL, and the conversation id (fresh, or echoed for resume).',
+            'Mints a short-lived token the browser presents to the relay pool to start or resume a playground webchat session with this agent. A resume is allowed only for a conversation already owned by the authenticated user.',
           operationId: 'mintWebchatToken',
           params: Params,
           body: Body,
@@ -64,13 +65,23 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         }
         const userId = req.principal!.userId
+        const conversationId = req.body.conversationId?.toLowerCase() ?? randomUUID()
+        const binding = { conversationId, userId, agentId: agent.id, orgId: agent.orgId }
+        if (req.body.conversationId) {
+          if (!(await deps.repos.webchatConversation.owns(binding))) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
+          }
+        } else {
+          await deps.repos.webchatConversation.create(binding)
+        }
         const token = await deps.webchatTokens.mint({
           userId,
           user: req.principal!.email ?? userId,
           agentId: agent.id,
-          orgId: agent.orgId
+          orgId: agent.orgId,
+          conversationId
         })
-        return reply.send({ token, relayUrl, conversationId: req.body.conversationId ?? randomUUID() })
+        return reply.send({ token, relayUrl, conversationId })
       }
     )
   }

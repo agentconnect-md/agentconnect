@@ -1,8 +1,8 @@
 import net from 'node:net'
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { Server } from '@modelcontextprotocol/server'
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { decodeFrames, encodeFrame, type IpcListToolsResult, type IpcResponse } from './ipc.js'
+import type { McpContentResult } from './ops.js'
 import { DAEMON_VERSION } from '../version.js'
 
 type IpcCall = { op: 'listTools' } | { op: 'callTool'; name: string; args: Record<string, unknown> }
@@ -81,8 +81,8 @@ export async function runBridge(): Promise<void> {
   }
 
   const server = new Server({ name: 'agentconnect', version: DAEMON_VERSION }, { capabilities: { tools: {} } })
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler('tools/list', async () => ({ tools }))
+  server.setRequestHandler('tools/call', async (req) => {
     try {
       const result = await ipc.request({
         op: 'callTool',
@@ -92,7 +92,7 @@ export async function runBridge(): Promise<void> {
       // A tool may return native MCP content (e.g. a viewable image from
       // readSlackFile) via the `mcpContent` marker — pass it through verbatim.
       if (result && typeof result === 'object' && Array.isArray((result as { mcpContent?: unknown }).mcpContent)) {
-        return { content: (result as { mcpContent: unknown[] }).mcpContent }
+        return { content: (result as McpContentResult).mcpContent }
       }
       const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2)
       return { content: [{ type: 'text', text }] }

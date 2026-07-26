@@ -291,7 +291,7 @@ HookRun additionally stores `projectionId/projectionGeneration`, `projectionEpoc
 Immediate reporter kick reduces latency; periodic scan supplies reliability. Before each claim, worker scans HookRun to repair crash windows where lifecycle mutation committed but projection convergence did not, then consumes projection outbox. Durable HookRun reconstructs any process gap around `accepted`, `hook/start`, `github/review-result`, or completion:
 
 - Every generation rechecks current repository authorization. If workspace/additional write needed for reporting or semantic cap for review event disappeared, retain HookRun and ordinary analysis but allow only canonical non-passing `blocked(repo_authorization)` cleanup—never reuse old pass or publish new informational success.
-- `rc/run-report(accepted)` with authoritative revision always transactionally creates/updates HookRun. R2a creates/increments projection generation to desired `queued` only for `projectionIntent=revision_event` on `opened|synchronize|ready_for_review|converted_to_draft`. If previous external effect remains in flight, store only `pendingIntent` until remote confirmation. Label events, unmentioned comments, and other `review_action_only` turns do not create or advance a projection at accepted/start; only a successful structured review action establishes an informational generation and terminal verdict. For a PR-conversation comment that explicitly mentions the Agent/App and passes the permission gate, relay forwards only `explicitReviewRequest=true` (the body still never enters CP), and the comment opens a generation as a `revision_event`. `check_run:rerequested`, `check_run:requested_action`, and `pull_request:review_requested` also produce `revision_event` and a new same-SHA generation. Automatic external-author PR revision events do not dispatch and converge to skipped projection `review_request_required` with requested action. PR `issue_comment` without SHA creates HookRun only; review action waits for daemon `hook/start` authoritative revision.
+- `rc/run-report(accepted)` with authoritative revision always transactionally creates/updates HookRun. R2a creates/increments projection generation to desired `queued` only for `projectionIntent=revision_event` on `opened|synchronize|ready_for_review|converted_to_draft`. If previous external effect remains in flight, store only `pendingIntent` until remote confirmation. Label events, unmentioned comments, and other `review_action_only` turns do not create or advance a projection at accepted/start; only a successful structured review action establishes an informational generation and terminal verdict. For a PR-conversation comment that explicitly mentions the Agent/App and passes the permission gate, relay forwards `explicitReviewRequest=true` only when the accepted rule enables formal reviews (the body still never enters CP), and the comment then opens a generation as a `revision_event`. With review policy `off`, the same mention still dispatches through its configured trigger but remains `review_action_only`; this policy does not select or alter the reply/output path. `check_run:rerequested`, `check_run:requested_action`, and `pull_request:review_requested` also produce `revision_event` and a new same-SHA generation. Automatic external-author PR revision events do not dispatch and converge to skipped projection `review_request_required` with requested action. PR `issue_comment` without SHA creates HookRun only; review action waits for daemon `hook/start` authoritative revision.
 - When daemon serial queue enters `dispatchOne`, it sends metadata-only `hook/start`. Only a run already bound to a `revision_event` projection marks its current generation `in_progress`.
 - Terminal `hook/report` converges only its bound generation. `review_action_only` without a successful review creates no projection.
 - Successful structured review writes review metadata/verdict transactionally into HookRun through `github/review-result` and seals generation. Later generic turn/poster success/failure can add history/link but cannot overwrite published formal verdict. Only a `revision_event` without successful action settles "no verdict" at terminal report.
@@ -374,7 +374,7 @@ Conclusion mapping:
 
 Informational generation without verdict may use `neutral`; required generation never becomes `success` merely because model finished. `COMMENT + neutral` in required maps to `action_required`/`failure` and cannot open merge gate.
 
-An ordinary, unmentioned PR conversation with `review_action_only` is not a new review generation. With no formal result or only `COMMENT + neutral`, current revision projection remains unchanged; later Q&A cannot wash existing `action_required` or `success` into neutral. An explicit Agent/App mention in a PR conversation is a human review request: it opens a generation on the same SHA and enters `in_progress` at `hook/start`. Inheritance occurs only within the same `reportSha` projection and never carries old-SHA approval to a new SHA.
+An ordinary, unmentioned PR conversation with `review_action_only` is not a new review generation. With no formal result or only `COMMENT + neutral`, current revision projection remains unchanged; later Q&A cannot wash existing `action_required` or `success` into neutral. An explicit Agent/App mention on an integration that enables formal reviews is a human review request: it opens a generation on the same SHA and enters `in_progress` at `hook/start`. With review policy `off`, the same mention is a non-review activation: it cannot publish a formal review and does not choose a different reply/output path. Inheritance occurs only within the same `reportSha` projection and never carries old-SHA approval to a new SHA.
 
 Analysis-in-progress is not a conclusion. Check stays `status=in_progress` without `conclusion`/`completed_at` and displays `Analyzing this revision`. Only terminal review result updates to `completed`; neutral never means ongoing.
 
@@ -388,14 +388,17 @@ meaning "no agent turn was attempted," not a runtime failure. The relay remains
 stateless and uses the ordinary fire-and-forget `rc/run-report`. When no HookRun
 exists, GitHub delivery reconciliation redelivers. When only some hooks have durable
 rows, the CP durably claims a one-time retry of the entire delivery only if all
-existing siblings are no-agent-effect `review_request_required`. PR lifecycle and
-comment mentions share the same trusted GitHub association determination:
-`OWNER/MEMBER/COLLABORATOR` follow the maintainer path; every other association,
-including a missing one, is treated as external. Consequently, a delivery's complete
-fan-out cannot mix the two identity conclusions. A fan-out containing anything
-already executed or any other failure fails closed. Activating the button starts a
-new queued generation and clears the action; the button actor must still pass a live
-write/admin permission check.
+existing siblings are no-agent-effect `review_request_required`. PR lifecycle uses
+`OWNER/MEMBER/COLLABORATOR` as its local maintainer fast path. For any other or
+missing association, relay asks CP for the PR author's current write/admin permission
+before dispatching. The request is body-free and carries every matching hook's
+config/dispatch fence, so CP validates the complete durable fan-out around one GitHub
+permission lookup. Denial, incomplete metadata, rate limiting, or lookup failure
+fails the complete fan-out closed into the external-author path; one delivery cannot
+mix the two identity conclusions. A fan-out containing anything already executed or
+any other failure fails closed. Activating the button starts a new queued generation
+and clears the action; the button actor must still pass a live write/admin permission
+check.
 
 ### 6. Informational Rerequest and Future R2b/R2c Boundaries
 
@@ -415,7 +418,7 @@ Installation-token reviews are authored by one deployment-level App bot, not age
 - Multiple AgentConnect agents cannot produce distinct reviewer identities; conflicting reviews share bot actor.
 - App bot cannot approve its own PR. If last push is also by bot, it cannot satisfy "last push must be approved by someone else." No CODEOWNERS promise.
 - Relay rejects all `sender.type === 'Bot'`, so App/Dependabot-authored PR does not trigger hook; bot events from formal review cannot loop.
-- On hook creation, PR review menu is collapsed by default and defaults to `Details` (`full` + informational Check); `Brief` keeps ordinary comment reply only. Expanded Details shows four side-by-side capability checkboxes projected from config: Inline comments → Request changes → Approve hierarchy, plus independent Status check.
+- On hook creation, PR review menu is collapsed by default and defaults to `Details` (`full` + informational Check). `None` maps to review/reporting `off` without changing trigger or output routing, while `Brief` permits only a formal `COMMENT` review and no Check. Expanded Details shows four side-by-side capability checkboxes projected from config: Inline comments → Request changes → Approve hierarchy, plus independent Status check.
 - Put public-repo/untrusted-input, self-review, and CODEOWNERS limits in capability hover text rather than permanent warning stack. After repository selection, show repository-access blocker immediately in red with authorization entry; App-installation permission blocker shows settings link. Scratch may authorize any covered repository; manual GitHub workspace may explicitly authorize only its own workspace repository. Show nothing before repository selection.
 
 ## Per-Installation Permissions and Rollout
@@ -449,7 +452,7 @@ GitHub-write 401/403/422 first invalidates token, refreshes exact facts, and per
 - Relay `rd/ack accepted` is **ACK-after-durable**: return accepted only after anchoring and SQLite persistence of admitted QueueEntry + trusted hook context. Durability failure returns rejected.
 - Before execution, persist local `turnStartedAt`, then send acknowledged `hook/start`. Immediately after review effect send `github/review-result`; completion repeats same review enum/ID/commit metadata for loss recovery.
 - Completion redacts inbox row into terminal-report outbox first. Unacked body never capacity-evicts; READY/reconnect and temporary-failure backoff resend. ACK clears body but retains stable-ID receipt; only acked receipts have 10k bounded GC.
-- Prompt says ordinary fallback belongs only to poster; formal review only via `submitGithubReview`; review body complete/nonempty; after attempt starts, only same current attempt explicit `not_submitted` preserves ordinary fallback; submitted/ambiguous/unresolved do not post; direct mutation forbidden.
+- Prompt says ordinary fallback belongs only to poster; formal review only via `submitGithubReview`; review body complete/nonempty; review-generation guidance requires a non-`off` review-policy snapshot and names only verdict events allowed by that exact policy; after attempt starts, only same current attempt explicit `not_submitted` preserves ordinary fallback; submitted/ambiguous/unresolved do not post; direct mutation forbidden.
 
 **control-plane**
 

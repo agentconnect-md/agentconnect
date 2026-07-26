@@ -24,7 +24,7 @@ import type {
   SessionPhase,
   ActivityState
 } from '../ports.js'
-import { AgentId, DaemonId, LaunchId, SessionId } from '../../domain/ids.js'
+import { AgentId, BotId, DaemonId, LaunchId, SessionId } from '../../domain/ids.js'
 
 function toRecord(s: SessionMeta): SessionMetaRecord {
   return {
@@ -238,27 +238,6 @@ function toFacetRecord(row: SessionFacetDbRow): SessionFacetRecord {
   }
 }
 
-function phaseRank(phase: SessionPhase): number {
-  switch (phase) {
-    case 'start':
-      return 0
-    case 'plan':
-      return 1
-    case 'problem':
-    case 'end':
-      return 2
-  }
-}
-
-function mergePhase(current: SessionPhase | null | undefined, incoming: SessionPhase): SessionPhase {
-  if (!current) return incoming
-  const currentRank = phaseRank(current)
-  const incomingRank = phaseRank(incoming)
-  if (incomingRank < currentRank) return current
-  if (incomingRank === currentRank && currentRank === 2) return current
-  return incoming
-}
-
 export class PgSessionRepo implements SessionRepo {
   constructor(private readonly db: PrismaLike) {}
 
@@ -274,74 +253,72 @@ export class PgSessionRepo implements SessionRepo {
     })
   }
 
-  async recordMilestone(ev: EventSessionInput): Promise<void> {
+  async recordMilestone(ev: EventSessionInput): Promise<boolean> {
     const endedAt = ev.phase === 'end' ? ev.at : undefined
     const lastActivityAt = ev.lastActivityAt ?? ev.at
-    const existing = await this.db.sessionMeta.findUnique({
-      where: { id: ev.sessionId },
-      select: { phase: true, parentSessionId: true }
-    })
-    const phase = mergePhase((existing?.phase as SessionPhase | undefined) ?? undefined, ev.phase)
-    await this.db.sessionMeta.upsert({
-      where: { id: ev.sessionId },
-      create: {
-        id: ev.sessionId,
-        parentSessionId: ev.parentSessionId,
-        agentId: ev.agentId,
-        launchId: ev.launchId,
-        platform: ev.platform,
-        channel: ev.channel,
-        thread: ev.thread,
-        phase,
-        link: ev.link,
-        summary: ev.summary,
-        title: ev.title,
-        status: ev.status,
-        lastActivityAt,
-        triggeredBy: ev.triggeredBy,
-        channelName: ev.channelName,
-        triggeredByName: ev.triggeredByName,
-        threadUrl: ev.threadUrl,
-        runtime: ev.runtime,
-        model: ev.model,
-        effort: ev.effort,
-        fastMode: ev.fastMode,
-        permissionMode: ev.permissionMode,
-        outputMode: ev.outputMode,
-        daemonId: ev.daemonId,
-        startedAt: ev.at,
-        endedAt
-      },
-      update: {
-        phase,
-        lastActivityAt,
-        // Like the daemon-local origin link, lineage is first-wins. Older
-        // daemons omit it, and later snapshots must never re-parent a session.
-        ...(ev.parentSessionId !== undefined && !existing?.parentSessionId
-          ? { parentSessionId: ev.parentSessionId }
-          : {}),
-        ...(ev.platform !== undefined ? { platform: ev.platform } : {}),
-        ...(ev.channel !== undefined ? { channel: ev.channel } : {}),
-        ...(ev.thread !== undefined ? { thread: ev.thread } : {}),
-        // Keep latest non-empty metadata; never overwrite with undefined.
-        ...(ev.link !== undefined ? { link: ev.link } : {}),
-        ...(ev.summary !== undefined ? { summary: ev.summary } : {}),
-        ...(ev.title !== undefined ? { title: ev.title } : {}),
-        ...(ev.status !== undefined ? { status: ev.status } : {}),
-        ...(ev.triggeredBy !== undefined ? { triggeredBy: ev.triggeredBy } : {}),
-        ...(ev.channelName !== undefined ? { channelName: ev.channelName } : {}),
-        ...(ev.triggeredByName !== undefined ? { triggeredByName: ev.triggeredByName } : {}),
-        ...(ev.threadUrl !== undefined ? { threadUrl: ev.threadUrl } : {}),
-        ...(ev.runtime !== undefined ? { runtime: ev.runtime } : {}),
-        ...(ev.model !== undefined ? { model: ev.model } : {}),
-        ...(ev.effort !== undefined ? { effort: ev.effort } : {}),
-        ...(ev.fastMode !== undefined ? { fastMode: ev.fastMode } : {}),
-        ...(ev.permissionMode !== undefined ? { permissionMode: ev.permissionMode } : {}),
-        ...(ev.outputMode !== undefined ? { outputMode: ev.outputMode } : {}),
-        ...(ev.daemonId !== undefined ? { daemonId: ev.daemonId } : {}),
-        ...(endedAt ? { endedAt } : {})
-      }
-    })
+    const rows = await this.db.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      INSERT INTO "session_meta" (
+        "id", "parentSessionId", "agentId", "launchId", "platform", "channel",
+        "thread", "phase", "link", "summary", "title", "status",
+        "lastActivityAt", "triggeredBy", "channelName", "triggeredByName",
+        "threadUrl", "runtime", "model", "effort", "fastMode",
+        "permissionMode", "outputMode", "daemonId", "startedAt", "endedAt",
+        "updatedAt"
+      ) VALUES (
+        ${ev.sessionId}, ${ev.parentSessionId ?? null}, ${ev.agentId},
+        ${ev.launchId ?? null}, ${ev.platform ?? null}, ${ev.channel ?? null},
+        ${ev.thread ?? null}, ${ev.phase}::"SessionPhase", ${ev.link ?? null},
+        ${ev.summary ?? null}, ${ev.title ?? null}, ${ev.status ?? null},
+        ${lastActivityAt}, ${ev.triggeredBy ?? null}, ${ev.channelName ?? null},
+        ${ev.triggeredByName ?? null}, ${ev.threadUrl ?? null},
+        ${ev.runtime ?? null}, ${ev.model ?? null}, ${ev.effort ?? null},
+        ${ev.fastMode ?? null}, ${ev.permissionMode ?? null},
+        ${ev.outputMode ?? null}, ${ev.daemonId ?? null}, ${ev.at},
+        ${endedAt ?? null}, CURRENT_TIMESTAMP
+      )
+      ON CONFLICT ("id") DO UPDATE SET
+        "parentSessionId" = COALESCE(
+          "session_meta"."parentSessionId",
+          EXCLUDED."parentSessionId"
+        ),
+        "phase" = CASE
+          WHEN "session_meta"."phase" IN ('problem', 'end') THEN "session_meta"."phase"
+          WHEN EXCLUDED."phase" IN ('problem', 'end') THEN EXCLUDED."phase"
+          WHEN "session_meta"."phase" = 'plan' AND EXCLUDED."phase" = 'start'
+            THEN "session_meta"."phase"
+          ELSE EXCLUDED."phase"
+        END,
+        "lastActivityAt" = EXCLUDED."lastActivityAt",
+        "platform" = COALESCE(EXCLUDED."platform", "session_meta"."platform"),
+        "channel" = COALESCE(EXCLUDED."channel", "session_meta"."channel"),
+        "thread" = COALESCE(EXCLUDED."thread", "session_meta"."thread"),
+        "link" = COALESCE(EXCLUDED."link", "session_meta"."link"),
+        "summary" = COALESCE(EXCLUDED."summary", "session_meta"."summary"),
+        "title" = COALESCE(EXCLUDED."title", "session_meta"."title"),
+        "status" = COALESCE(EXCLUDED."status", "session_meta"."status"),
+        "triggeredBy" = COALESCE(EXCLUDED."triggeredBy", "session_meta"."triggeredBy"),
+        "channelName" = COALESCE(EXCLUDED."channelName", "session_meta"."channelName"),
+        "triggeredByName" = COALESCE(
+          EXCLUDED."triggeredByName",
+          "session_meta"."triggeredByName"
+        ),
+        "threadUrl" = COALESCE(EXCLUDED."threadUrl", "session_meta"."threadUrl"),
+        "runtime" = COALESCE(EXCLUDED."runtime", "session_meta"."runtime"),
+        "model" = COALESCE(EXCLUDED."model", "session_meta"."model"),
+        "effort" = COALESCE(EXCLUDED."effort", "session_meta"."effort"),
+        "fastMode" = COALESCE(EXCLUDED."fastMode", "session_meta"."fastMode"),
+        "permissionMode" = COALESCE(
+          EXCLUDED."permissionMode",
+          "session_meta"."permissionMode"
+        ),
+        "outputMode" = COALESCE(EXCLUDED."outputMode", "session_meta"."outputMode"),
+        "daemonId" = COALESCE(EXCLUDED."daemonId", "session_meta"."daemonId"),
+        "endedAt" = COALESCE(EXCLUDED."endedAt", "session_meta"."endedAt"),
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE "session_meta"."agentId" = EXCLUDED."agentId"
+      RETURNING "id"
+    `)
+    return rows.length === 1
   }
 
   async listPage(q: SessionPageQuery): Promise<SessionPageRecord> {
@@ -481,19 +458,31 @@ export class PgSessionRepo implements SessionRepo {
     return rows.map(toRecord)
   }
 
-  async findThreadOwner(channel: string, thread: string): Promise<{ agentId: string; daemonId: string } | null> {
-    // Most-recently-active session on this (channel, thread) that has a routable daemon
-    // (`daemonId` is stamped by the CP from the authenticated WS conn — trusted).
+  async findThreadOwner(
+    botId: BotId,
+    channel: string,
+    thread: string
+  ): Promise<{ agentId: string; daemonId: string } | null> {
+    // Most-recently-active session on this bot's (channel, thread) whose agent is currently
+    // placed. The session's daemonId is provenance only and may be null after its reporting
+    // daemon is deleted; routing follows current agent placement.
     // NOTE: do NOT filter on `endedAt` — a session emits `phase:'end'` (→ `endedAt`) at the end
     // of EVERY turn, so an idle-between-turns session (the normal state of a thread's owner
     // between messages) has `endedAt` set yet is still the valid target; the daemon resumes it on
     // delivery. Filtering `endedAt: null` here made the affinity fallback miss essentially every
     // real thread (incl. a case-2a spawned session after its one headless turn).
     const row = await this.db.sessionMeta.findFirst({
-      where: { channel, thread, daemonId: { not: null } },
+      where: {
+        channel,
+        thread,
+        agent: {
+          daemonId: { not: null },
+          integrations: { some: { botId, status: 'active' } }
+        }
+      },
       orderBy: [{ lastActivityAt: 'desc' }, { startedAt: 'desc' }],
-      select: { agentId: true, daemonId: true }
+      select: { agentId: true, agent: { select: { daemonId: true } } }
     })
-    return row && row.daemonId ? { agentId: row.agentId, daemonId: row.daemonId } : null
+    return row?.agent.daemonId ? { agentId: row.agentId, daemonId: row.agent.daemonId } : null
   }
 }

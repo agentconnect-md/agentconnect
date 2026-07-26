@@ -1,5 +1,9 @@
 import { z } from 'zod'
-import { RelayRosterEntry } from '@agentconnect.md/protocol'
+import {
+  DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS,
+  normalizeWorkspaceGitOrigin,
+  RelayRosterEntry
+} from '@agentconnect.md/protocol'
 
 /** The `{name, value}[]` shape shared by runtime env, MCP env, and MCP headers. */
 const NameValueList = z.array(z.object({ name: z.string(), value: z.string() })).default([])
@@ -44,6 +48,17 @@ const ProcessValue = z
   .string()
   .max(16 * 1024)
   .refine((value) => !value.includes('\0'), 'process value contains NUL')
+const WorkspaceGitOrigin = z.string().transform((value, ctx) => {
+  try {
+    return normalizeWorkspaceGitOrigin(value)
+  } catch {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'workspace Git origins must be exact credential-free HTTPS or SSH origins without a path'
+    })
+    return z.NEVER
+  }
+})
 
 /** Operator-owned local memory-plugin allowlist. A tenant/CP sends only the map
  * key (`commandRef`); command, args, static env, and logical-secret→env mapping
@@ -116,9 +131,16 @@ export const ConfigSchema = z.object({
       // Daemon-wide sandbox policy (issue #642). When true, startup fails unless
       // bwrap / sandbox-exec is available and every agent runs sandboxed; the
       // console locks the per-agent option on. false leaves it agent-selectable.
-      requireSandbox: z.boolean().default(false)
+      requireSandbox: z.boolean().default(false),
+      // Operator-owned remote-origin policy for daemon-managed workspace clone/pull.
+      // Exact scheme + host + port only; [] disables remote Git workspaces.
+      workspaceGitAllowedOrigins: z.array(WorkspaceGitOrigin).default([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS])
     })
-    .default({ isolateAccountApps: true, requireSandbox: false }),
+    .default({
+      isolateAccountApps: true,
+      requireSandbox: false,
+      workspaceGitAllowedOrigins: [...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS]
+    }),
   // Relay roster the CP last published (shared-bot-relay.md §5). Persisted whole so
   // the daemon can re-dial its relays at boot while the CP is unreachable (graceful
   // degradation); the CP's register/ok snapshot re-converges it authoritatively once
@@ -129,7 +151,7 @@ export const ConfigSchema = z.object({
     .default({ level: 'info' }),
   limits: z
     .object({
-      maxAgents: z.number().int().default(8),
+      maxAgents: z.number().int().default(32),
       maxConcurrentSessions: z.number().int().default(32),
       // Idle window before the sweep TTL-closes a session (§7.3) AND reaps its
       // agent's ACP host back to `provisioned` (§7.2). Background work is protected
@@ -180,7 +202,7 @@ export const ConfigSchema = z.object({
         .default(8 * 1024 * 1024)
     })
     .default({
-      maxAgents: 8,
+      maxAgents: 32,
       maxConcurrentSessions: 32,
       agentIdleTimeoutMs: 900_000,
       agentMaxLifetimeMs: 21_600_000,

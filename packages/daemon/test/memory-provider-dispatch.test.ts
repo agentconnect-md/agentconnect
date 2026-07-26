@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { RuntimeDef } from '../src/config/config-schema.js'
@@ -10,7 +10,7 @@ import {
   MemoryProviderUnavailableError,
   type MemoryProviderKind
 } from '../src/agents/memory-provider.js'
-import { MEMORY_INDEX, MemoryConflictError } from '../src/agents/memory.js'
+import { MEMORY_INDEX, MemoryConflictError, MemoryPathError } from '../src/agents/memory.js'
 import { isNativeRuntimeSupported, nativeRuntimeEnv } from '../src/agents/native-memory.js'
 
 function newDir(): string {
@@ -172,6 +172,34 @@ describe('DispatchingMemoryProvider (per-agent routing)', () => {
     await expect(
       p.write({ agentId: 'bot-n' }, nativeFile.name, '# current write', nativeFile.mtime)
     ).resolves.toMatchObject({ ok: true, path: nativeFile.name })
+  })
+
+  it('native write rejects a symlinked parent that leaves the agent root', async () => {
+    const root = newDir()
+    roots['bot-n'] = root
+    const nativeParent = join(root, '.claude', 'projects', 'ws-abc')
+    const outside = newDir()
+    mkdirSync(nativeParent, { recursive: true })
+    symlinkSync(outside, join(nativeParent, 'memory'))
+
+    await expect(provider().write({ agentId: 'bot-n' }, 'ws-abc/memory/MEMORY.md', '# escaped')).rejects.toBeInstanceOf(
+      MemoryPathError
+    )
+    expect(existsSync(join(outside, 'MEMORY.md'))).toBe(false)
+  })
+
+  it('native read rejects a symlinked parent that leaves the agent root', async () => {
+    const root = newDir()
+    roots['bot-n'] = root
+    const nativeParent = join(root, '.claude', 'projects', 'ws-abc')
+    const outside = newDir()
+    mkdirSync(nativeParent, { recursive: true })
+    writeFileSync(join(outside, 'MEMORY.md'), 'PRIVATE-KEY')
+    symlinkSync(outside, join(nativeParent, 'memory'))
+
+    await expect(provider().read({ agentId: 'bot-n' }, 'ws-abc/memory/MEMORY.md')).rejects.toBeInstanceOf(
+      MemoryPathError
+    )
   })
 
   it('none: no tools, store, injection, or writes', async () => {

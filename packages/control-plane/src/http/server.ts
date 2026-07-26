@@ -26,6 +26,7 @@ import { integrationRoutes } from './routes/integrations.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './routes/slack-install.js'
 import { botRoutes } from './routes/bots.js'
 import { mcpProviderRoutes } from './routes/mcp-providers.js'
+import { skillSourceRoutes } from './routes/skill-sources.js'
 import { connectorRoutes } from './routes/connectors.js'
 import { memoryConnectionRoutes } from './routes/memory-connections.js'
 import { githubRoutes, githubCallbackRoutes } from './routes/github.js'
@@ -156,8 +157,8 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       await api.register(meKeyRoutes(deps))
       await api.register(waitlistRoutes(deps))
       await api.register(orgInviteAcceptRoutes(deps))
-      // OAuth consent BACKEND (agent-assistant.md §7.3) — version root, per-route
-      // humanAuth (the web console consent page calls it with the user's session).
+      // OAuth consent BACKEND (agent-assistant.md §7.3) — version root, guarded
+      // inside its plugin by interactive human auth for the console session.
       await api.register(oauthConsentRoutes(deps))
       // Unauthenticated GitHub setup callback (browser redirect; org rides the
       // signed state) — version root, deliberately OUTSIDE the org subtree.
@@ -195,6 +196,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(slackConfigRoutes(deps))
           await scope.register(botRoutes(deps))
           await scope.register(mcpProviderRoutes(deps))
+          await scope.register(skillSourceRoutes(deps))
           await scope.register(connectorRoutes(deps))
           await scope.register(memoryConnectionRoutes(deps))
           await scope.register(memberRoutes(deps))

@@ -170,7 +170,13 @@ function defaultFactory(token: string): TelegramBotHandle {
       bot.on('callback_query:data', (ctx) => handler(ctx.callbackQuery as unknown as TelegramCallbackQuery))
     },
     start(onStart) {
-      void bot.start(onStart ? { onStart: () => onStart() } : undefined)
+      // drop_pending_updates: on (re)connect, skip the backlog Telegram buffered while
+      // this daemon was down. grammY otherwise resumes from the last un-acked getUpdates
+      // offset and replays stale updates — and since a fresh top-level @mention keys a new
+      // session on its own message_id (canonicalizeTelegramThread), each replayed mention
+      // would mint a duplicate session. We trade at-least-once for at-most-once here:
+      // messages sent during a brief restart are dropped rather than answered late.
+      void bot.start({ drop_pending_updates: true, ...(onStart ? { onStart: () => onStart() } : {}) })
     },
     stop: () => bot.stop()
   }
@@ -253,7 +259,7 @@ export class TelegramConnection {
       log?.debug(`telegram: setMyCommands failed: ${(err as Error).message}`)
     }
 
-    log?.debug('telegram: bot.start → opening long-poll (getUpdates)…')
+    log?.debug('telegram: bot.start → opening long-poll (getUpdates), dropping pending backlog…')
     this.bot.start(() => log?.debug('telegram: long-poll established'))
   }
 

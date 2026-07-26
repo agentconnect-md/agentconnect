@@ -14,6 +14,7 @@ import type {
   RelayRepo,
   SessionRepo,
   SessionUsageRepo,
+  WebchatConversationRepo,
   UserRepo,
   OrgRepo,
   WaitlistRepo,
@@ -26,6 +27,7 @@ import type {
   McpProviderRepo,
   McpProviderSecretStore,
   McpGrantRepo,
+  SkillSourceRepo,
   MemoryPluginInstallationRepo,
   ExternalMemoryConnectionRepo,
   ExternalMemoryConnectionSecretStore,
@@ -123,6 +125,8 @@ export interface HttpDeps {
     session: SessionRepo
     /** Per-session token usage → the `/usage` dashboard aggregates. */
     sessionUsage: SessionUsageRepo
+    /** Ownership-only metadata that authorizes browser conversation resumes. */
+    webchatConversation: WebchatConversationRepo
     /** WebUI human identity — JIT-provisions the user behind a verified OIDC token. */
     user: UserRepo
     /** The caller's orgs (picker, create, owner-gated rename). */
@@ -149,6 +153,8 @@ export interface HttpDeps {
     mcpProviderSecret: McpProviderSecretStore
     /** Plaintext bearer grant keys for MCP providers (store-only, echoed once on create). */
     mcpGrant: McpGrantRepo
+    /** Org-level shared-skills sources (metadata only; content stays daemon-side). */
+    skillSource: SkillSourceRepo
     /** Owner-reviewed external-memory plugin installations (metadata only). */
     memoryPluginInstallation: MemoryPluginInstallationRepo
     /** Org external-memory connections and revision-fenced probe state. */

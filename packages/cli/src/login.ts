@@ -9,7 +9,7 @@
  * `daemonId` is omitted unless given — the first connect adopts it from the
  * token's `sub`). `runLogin` is the orchestrator, with injectable deps for tests.
  */
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
+import { chmodSync, readFileSync, existsSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { createInterface } from 'node:readline'
 import { resolveRoot, configPath } from './paths.js'
@@ -45,10 +45,32 @@ function assertValidControlPlane(raw: Record<string, unknown>): void {
   }
 }
 
+function protectCredentialsFile(file: string): void {
+  if (!existsSync(file)) return
+  try {
+    if ((statSync(file).mode & 0o777) !== 0o600) chmodSync(file, 0o600)
+  } catch (err) {
+    // A login must never put a fresh key into a broadly readable file. Windows
+    // does not provide enforceable POSIX mode semantics, so retain its existing
+    // best-effort behavior.
+    if (process.platform !== 'win32') throw err
+  }
+}
+
+function writeCredentialsFile(file: string, raw: Record<string, unknown>): void {
+  // `mode` protects a new credential file; chmod-before-write repairs an
+  // existing config before fresh secrets reach it. Leave a custom parent alone.
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+  protectCredentialsFile(file)
+  writeFileSync(file, JSON.stringify(raw, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 })
+  protectCredentialsFile(file)
+}
+
 /** Merge url/token into config.json (validated), returning the written path. */
 export function persistCredentials(opts: PersistCredsOpts): string {
   const root = resolveRoot(opts.root)
   const file = opts.configPath ?? configPath(root)
+  protectCredentialsFile(file)
   const raw: Record<string, unknown> = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { version: 1 }
 
   const cp = (raw.controlPlane as Record<string, unknown> | undefined) ?? {}
@@ -57,8 +79,7 @@ export function persistCredentials(opts: PersistCredsOpts): string {
 
   assertValidControlPlane(raw) // fail before writing if the merge is invalid
 
-  mkdirSync(dirname(file), { recursive: true })
-  writeFileSync(file, JSON.stringify(raw, null, 2) + '\n')
+  writeCredentialsFile(file, raw)
   return file
 }
 

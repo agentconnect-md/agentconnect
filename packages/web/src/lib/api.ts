@@ -4,7 +4,16 @@
 // mappers translate the lean wire DTOs into the richer UI shapes from `./data`,
 // filling fields the API does not (yet) expose with placeholders.
 
-import type { Agent, AgentCallPolicy, DaemonRow, ResourceVisibility, Session, StatusKey, Workspace } from '@/lib/data'
+import type {
+  Agent,
+  AgentCallPolicy,
+  DaemonRow,
+  ResourceVisibility,
+  Session,
+  SessionImage,
+  StatusKey,
+  Workspace
+} from '@/lib/data'
 import { isSelfSender, MOCK_MODE } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
@@ -86,10 +95,10 @@ export function mintWebchatToken(orgId: string, agentId: string, conversationId?
  * CP token, then dial `${relayUrl}/webchat?token=…&conversation_id=…`; content never
  * touches the CP. Throws `ApiError(503)` when no relay pool is configured.
  *
- * Pass `conversationId` to RESUME an existing conversation: the relay re-resolves the
- * agent's live placement and lands the socket on that same daemon session so the console
- * can continue a session opened from the list. Omit it to start fresh (the CP mints the
- * id, echoed back in the `ready` frame).
+ * Pass `conversationId` to RESUME an existing conversation owned by the current user:
+ * the CP authorizes that binding, and the relay lands the socket on the same daemon
+ * session. Omit it to start fresh (the CP allocates and binds the id, echoed back in the
+ * `ready` frame).
  */
 export async function webchatWsUrl(orgId: string, agentId: string, conversationId?: string): Promise<string> {
   const minted = await mintWebchatToken(orgId, agentId, conversationId)
@@ -124,8 +133,19 @@ export interface ExternalMemoryRecallPolicy {
   timeoutMs: number
 }
 
+/** Offline consolidation policy for the managed store (docs/designs/memory-dreaming.md). */
+export interface MemoryDreamingConfig {
+  enabled: boolean
+  sessionWindow?: number // recent sessions to mine (1–100)
+  schedule?: string // cron expression for scheduled dreams
+  timezone?: string // IANA zone the schedule is evaluated in (absent ⇒ daemon local)
+  instructions?: string // operator steering text (≤4096 chars)
+  mineSkills?: boolean // also mine reusable procedures (D-3)
+  autoAdopt?: boolean // adopt automatically on completion (trusted runtimes only)
+}
+
 export type AgentMemoryConfig =
-  | { provider: 'managed'; autoDistill?: boolean }
+  | { provider: 'managed'; autoDistill?: boolean; dreaming?: MemoryDreamingConfig }
   | { provider: 'native' | 'none'; autoDistill?: boolean }
   | {
       provider: 'external'
@@ -159,6 +179,7 @@ export interface AgentDto {
   workspaceRepoId?: string | null
   capabilities: string[]
   mcpServers: string[] // daemon-configured MCP server names attached at session/new; empty ⇒ none
+  skills: string[] // enabled shared-skills "<source>/<skill>" / "<source>/*"; empty ⇒ none
   memory: AgentMemoryConfig | null // memory backend; null ⇒ managed default
   createdAt: string // ISO-8601
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
@@ -349,6 +370,7 @@ export interface SessionMessageDto {
   ts: string
   kind: string
   text: string
+  attachments?: SessionImage[]
   toolCallId?: string // ties the row to its full body (session/tool-body key)
   toolStatus?: string // ACP ToolCallStatus — drives the console status badge
   toolKind?: string // ACP ToolKind — drives the console icon
@@ -445,7 +467,10 @@ export type CreateIntegrationInput =
     })
   | (CreateIntegrationBase & { platform: 'telegram'; telegram?: { botToken: string } })
   | (CreateIntegrationBase & { platform: 'discord'; discord?: { botToken: string } })
-  | (CreateIntegrationBase & { platform: 'feishu'; feishu?: { appId: string; appSecret: string } })
+  | (CreateIntegrationBase & {
+      platform: 'feishu'
+      feishu?: { appId: string; appSecret: string; region?: 'feishu' | 'lark' }
+    })
 
 // ── Slack config-token auto-install funnel (docs/designs/slack-install-smoothing.md §Tier B) ──
 // The CP creates the Slack app from a manifest (using the operator's App
@@ -483,17 +508,20 @@ export interface SlackInstallStatusDto {
  *  modal's forced auto/manual mode). Per-user. NEVER carries the token. */
 export interface SlackConfigDto {
   configured: boolean // the signed-in caller has stored their own token
+  durable: boolean // a refresh token is stored ⇒ the pair auto-rotates and never expires
   funnelEnabled: boolean // this deployment supports auto-install (public callback)
-  autoAvailable: boolean // configured AND funnelEnabled
+  autoAvailable: boolean // funnelEnabled AND the stored token is usable right now
+  accessExpiresAt: string | null // ISO expiry of the stored access token (drives the expires/expired copy)
   // The sole signal the console has for the "http default vs socket-only" rule:
   relayAvailable: boolean // PUBLIC_RELAY_URL set AND ≥1 relay connected
   relayPublicUrl: string | null // https(s) LB URL for the http manifest request_url; null when unavailable
   updatedAt: string | null
 }
-/** `PUT /slack/config` body — the caller's own Slack App Configuration token pair. */
+/** `PUT /slack/config` body — the caller's own Slack App Configuration token. The
+ *  access (config) token is required; the refresh token is optional (adds durability). */
 export interface SlackConfigInput {
   accessToken: string // xoxe.xoxp-…
-  refreshToken: string // xoxe-…
+  refreshToken?: string // xoxe-… — optional; omit to store an access-only (expiring) token
 }
 
 // How the bot activates in one channel: only when @-mentioned, or on any message.
@@ -516,6 +544,7 @@ export interface IntegrationDto {
   agentId: string
   botId: string
   status: string
+  region?: 'feishu' | 'lark' // feishu integrations only: which open-platform gateway
   createdAt: string // ISO-8601
   channels: IntegrationChannelDto[]
 }
@@ -587,6 +616,8 @@ export interface UpdateAgentInput {
   capabilities?: string[]
   /** Replaced wholesale when provided; [] clears all servers. */
   mcpServers?: string[]
+  /** Enabled shared-skills; replaced wholesale when provided; [] clears all. */
+  skills?: string[]
   /** Memory backend; null clears (revert to managed default). */
   memory?: AgentMemoryConfig | null
 }
@@ -730,6 +761,8 @@ export interface CreateAgentInput {
   capabilities?: string[]
   /** Daemon-configured MCP server names to attach at session/new; absent ⇒ none. */
   mcpServers?: string[]
+  /** Enabled shared-skills "<source>/<skill>" / "<source>/*"; absent ⇒ none. */
+  skills?: string[]
   /** Memory backend; absent ⇒ managed default. */
   memory?: AgentMemoryConfig
   /** Request an OS sandbox for this agent; absent ⇒ false unless daemon policy requires it. */
@@ -741,6 +774,9 @@ export interface CreateAgentInput {
    *  intersected with visible same-org peers and only bites when 'selected'. */
   callPolicy?: AgentCallPolicy
   allowedCallerAgentIds?: string[]
+  /** Outbound half (absent ⇒ 'all'); intersected with visible peers server-side. */
+  outboundPolicy?: AgentCallPolicy
+  allowedTargetAgentIds?: string[]
 }
 
 // Response of `POST /daemons/token`: a fresh daemon identity + its one-time API key
@@ -896,7 +932,10 @@ async function authHeaders(extra?: Record<string, string>): Promise<Record<strin
 
 async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${cpBase()}${path}`, { headers: await authHeaders(), cache: 'no-store' })
-  if (!res.ok) throw new ApiError(`GET ${path} → ${res.status} ${res.statusText}`, res.status)
+  // Parse the denial body like the write helpers do: reads carry machine-readable
+  // `code`s too (e.g. DAEMON_FEATURE_MISSING on a capability-gated route), and a
+  // status-only ApiError silently drops them.
+  if (!res.ok) throw await apiErrorFromResponse('GET', path, res)
   return (await res.json()) as T
 }
 
@@ -1269,6 +1308,7 @@ export function agentFromDto(d: AgentDto): Agent {
     // Memory backend (unset ⇒ managed default).
     memoryProvider: d.memory?.provider ?? 'managed',
     memoryAutoDistill: d.memory?.provider === 'managed' ? (d.memory.autoDistill ?? false) : false,
+    ...(d.memory?.provider === 'managed' && d.memory.dreaming ? { memoryDreaming: d.memory.dreaming } : {}),
     ...(d.memory?.provider === 'external'
       ? {
           memoryConnectionId: d.memory.connectionId,
@@ -1557,15 +1597,10 @@ export function fetchSessionDetail(sessionId: string, orgId?: string): Promise<S
 }
 
 // One page of a session's transcript, proxied live from the owning daemon. The
-// `agentId` (carried by the list row) resolves that daemon on the CP; 503 if it
-// is offline / the agent is unplaced.
-export async function fetchSessionMessages(
-  sessionId: string,
-  agentId: string,
-  cursor?: string,
-  limit = 50
-): Promise<SessionHistoryDto> {
-  const q = new URLSearchParams({ agentId, limit: String(limit) })
+// CP resolves the owner and daemon from its SessionMeta row; 503 if that daemon
+// is offline or the owning agent is unplaced.
+export async function fetchSessionMessages(sessionId: string, cursor?: string, limit = 50): Promise<SessionHistoryDto> {
+  const q = new URLSearchParams({ limit: String(limit) })
   if (cursor) q.set('cursor', cursor)
   return apiGet<SessionHistoryDto>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/messages?${q.toString()}`)
 }
@@ -1586,12 +1621,12 @@ export interface SessionToolBodyChunkDto {
 // `GET /sessions/:id/tool-body` by offset, concatenating the byte slices into the
 // complete JSON string (the caller JSON.parse's the result). 503 if the owning
 // daemon is offline / the agent is unplaced (same resolution as the messages route).
-export async function fetchToolBody(sessionId: string, agentId: string, toolCallId: string): Promise<string> {
+export async function fetchToolBody(sessionId: string, toolCallId: string): Promise<string> {
   let out = ''
   let offset = 0
   // Guard against a daemon that never advances `nextOffset` (defensive bound).
   for (;;) {
-    const q = new URLSearchParams({ agentId, toolCallId, offset: String(offset) })
+    const q = new URLSearchParams({ toolCallId, offset: String(offset) })
     const chunk = await apiGet<SessionToolBodyChunkDto>(
       `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/tool-body?${q.toString()}`
     )
@@ -1639,6 +1674,9 @@ export interface WorkspaceFileDto {
   truncated: boolean | null
 }
 
+/** Mirrors the daemon wire ceiling; base64 expansion still fits one control frame. */
+export const MAX_WORKSPACE_EDIT_BYTES = 180_000
+
 // One page of a workspace directory listing (GET /agents/:id/workspace/files),
 // proxied live from the agent's owning daemon — the CP never stores workspace
 // bytes (body-locality). 503 when that daemon is offline / the agent is unplaced.
@@ -1665,6 +1703,48 @@ export async function fetchWorkspaceFile(
   if (opts.offset) q.set('offset', String(opts.offset))
   if (opts.limit) q.set('limit', String(opts.limit))
   return apiGet<WorkspaceFileDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file?${q.toString()}`)
+}
+
+/** Read one workspace text file whole before editing it. Every slice must describe
+ * the same mtime so a multi-page load cannot assemble two agent revisions. */
+export async function fetchWorkspaceFileFull(agentId: string, path: string): Promise<WorkspaceFileDto> {
+  let offset = 0
+  let content = ''
+  let mtime: string | null | undefined
+  for (let page = 0; page < 16; page++) {
+    const slice = await fetchWorkspaceFile(agentId, { path, offset })
+    if (!slice.exists || slice.encoding !== 'utf8') return slice
+    if ((slice.size ?? 0) > MAX_WORKSPACE_EDIT_BYTES) {
+      throw new Error('Files larger than 180 KB cannot be edited here.')
+    }
+    if (mtime === undefined) mtime = slice.mtime
+    else if (slice.mtime !== mtime) throw new Error('The file changed while it was loading. Open it again to edit.')
+    content += slice.content ?? ''
+    if (!slice.truncated) {
+      return { ...slice, content, offset: 0, nextOffset: slice.size, truncated: false }
+    }
+    if (slice.nextOffset == null || slice.nextOffset <= offset) break
+    offset = slice.nextOffset
+  }
+  throw new Error('The workspace file is too large to load safely.')
+}
+
+export function writeWorkspaceFile(
+  agentId: string,
+  path: string,
+  body: { content: string; ifMatchMtime?: string }
+): Promise<{ path: string; size: number; mtime: string }> {
+  return apiPut<{ path: string; size: number; mtime: string }>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file?path=${encodeURIComponent(path)}`,
+    body
+  )
+}
+
+export function deleteWorkspaceFile(agentId: string, path: string, ifMatchMtime: string): Promise<{ path: string }> {
+  const q = new URLSearchParams({ path, ifMatchMtime })
+  return apiDelete<{ path: string }>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file?${q.toString()}`
+  )
 }
 
 // One slice of an agent's memory file (GET /agents/:id/memory) — a single markdown
@@ -1759,8 +1839,8 @@ export interface MemoryFileHistoryEventDto {
   before?: string
   after: string
   at: string
-  scope: string
-  source: 'tool' | 'console' | 'distill'
+  scope: 'agent'
+  source: 'tool' | 'console' | 'distill' | 'dream'
   truncated?: boolean
 }
 
@@ -1782,6 +1862,95 @@ export async function listMemoryFileHistory(
   return apiGet<MemoryFileHistoryPageDto>(
     `${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/history?${query.toString()}`
   )
+}
+
+// ── memory dreaming (docs/designs/memory-dreaming.md §10) — offline consolidation jobs ──
+
+export type DreamStatus = 'pending' | 'running' | 'completed' | 'failed' | 'canceled' | 'adopted' | 'discarded'
+
+export interface DreamDto {
+  dreamId: string
+  agentId: string
+  status: DreamStatus
+  trigger: 'manual' | 'schedule' | 'auto'
+  sessionIds: string[]
+  snapshotDigest: string
+  instructions: string | null
+  skills: { name: string; description: string; state: 'proposed' | 'accepted' | 'dismissed' }[] | null
+  usage: { inputBytes: number; outputBytes: number } | null
+  error: { type: string; message: string } | null
+  createdAt: string
+  endedAt: string | null
+}
+
+export interface DreamFilesDto {
+  exists: boolean
+  files: MemoryFileEntry[]
+}
+
+/** A dream is terminal (won't change) once it reaches one of these states. */
+export function isDreamTerminal(status: DreamStatus): boolean {
+  return status !== 'pending' && status !== 'running'
+}
+
+const dreamBase = (agentId: string) => `${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/dreams`
+
+/** Start a manual dream (per-run overrides of the agent's dreaming policy). */
+export async function startDream(
+  agentId: string,
+  opts: { sessionWindow?: number; instructions?: string } = {}
+): Promise<DreamDto> {
+  return apiPost<DreamDto>(dreamBase(agentId), opts)
+}
+
+export async function listDreams(agentId: string, limit?: number): Promise<DreamDto[]> {
+  const q = limit ? `?limit=${limit}` : ''
+  return (await apiGet<{ dreams: DreamDto[] }>(`${dreamBase(agentId)}${q}`)).dreams
+}
+
+export async function getDream(agentId: string, dreamId: string): Promise<DreamDto> {
+  return apiGet<DreamDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}`)
+}
+
+export async function cancelDream(agentId: string, dreamId: string): Promise<DreamDto> {
+  return apiPost<DreamDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/cancel`, {})
+}
+
+/** Adopt a completed dream's staged store. `force` overrides the snapshot fence. */
+export async function adoptDream(agentId: string, dreamId: string, force = false): Promise<DreamDto> {
+  return apiPost<DreamDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/adopt`, force ? { force } : {})
+}
+
+export async function discardDream(agentId: string, dreamId: string): Promise<DreamDto> {
+  return apiPost<DreamDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/discard`, {})
+}
+
+/** List a dream's staged output files (the review surface). */
+export async function listDreamFiles(agentId: string, dreamId: string): Promise<DreamFilesDto> {
+  return apiGet<DreamFilesDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/files`)
+}
+
+/** Read a staged dream file WHOLE (pages every slice, like fetchAgentMemoryFull). */
+export async function fetchDreamFileFull(
+  agentId: string,
+  dreamId: string,
+  path: string
+): Promise<{ exists: boolean; content: string }> {
+  let offset = 0
+  let content = ''
+  let exists = false
+  for (let guard = 0; guard < 4096; guard++) {
+    const q = new URLSearchParams({ path, offset: String(offset) })
+    const slice = await apiGet<AgentMemoryDto>(
+      `${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/file?${q.toString()}`
+    )
+    exists = slice.exists
+    if (!slice.exists) break
+    content += slice.content ?? ''
+    if (!slice.truncated || slice.nextOffset == null || slice.nextOffset <= offset) break
+    offset = slice.nextOffset
+  }
+  return { exists, content }
 }
 
 export type MemoryRecordCapability = 'recall' | 'capture' | 'list' | 'get' | 'create' | 'update' | 'delete' | 'history'
@@ -2757,6 +2926,94 @@ export async function deleteMcpProvider(id: string): Promise<void> {
 // from the content PATCH; gated server-side by canManageSharing (=== canEdit).
 export async function updateMcpProviderSharing(id: string, body: SharingInput): Promise<McpProviderDto> {
   return apiPut<McpProviderDto>(`${orgBase()}/mcp-providers/${encodeURIComponent(id)}/sharing`, body)
+}
+
+// ── shared-skills sources (docs/designs/shared-skills.md) ────────────────────
+// Org-level skills sources the daemon installs via `npx skills`. Pure metadata —
+// nothing secret. The daemon fetches content directly from the source.
+export interface SkillSourceDto {
+  id: string
+  name: string
+  source: string // the string fed to `npx skills add`
+  githubRepoId: string | null // BigInt rendered as string
+  ref: string | null // branch/tag/commit
+  subDir: string | null
+  skills: string[] // the source's own skill filter ([] ⇒ install all)
+  visibility: ResourceVisibility
+  sharedWith: string[]
+  createdBy: string | null
+  canManageSharing: boolean
+  createdAt: string // ISO-8601
+}
+
+export interface CreateSkillSourceInput {
+  name: string
+  source: string
+  githubRepoId?: string
+  ref?: string
+  subDir?: string
+  skills?: string[]
+  visibility?: ResourceVisibility
+  sharedWith?: string[]
+}
+
+// PATCH body — at least one field. `skills` REPLACES the stored filter wholesale.
+// Name is immutable (agents bind by name; recreate to rename).
+export interface UpdateSkillSourceInput {
+  source?: string
+  githubRepoId?: string | null
+  ref?: string | null
+  subDir?: string | null
+  skills?: string[]
+}
+
+// POST /skill-sources/preview body + response — a best-effort GitHub scan for the
+// import dialog (branch/tag choices + the SKILL.md manifest).
+export interface PreviewSkillSourceInput {
+  installationId: string
+  owner: string
+  repo: string
+  ref?: string
+}
+export interface SkillSourcePreviewDto {
+  branches: string[]
+  tags: string[]
+  skills: Array<{ name: string; dirPath: string }>
+}
+
+export async function fetchSkillSources(orgId?: string): Promise<SkillSourceDto[]> {
+  return apiGet<SkillSourceDto[]>(`${orgBase(orgId)}/skill-sources`)
+}
+
+// A source's discovered SKILL.md manifest for the agent editor's per-skill picker.
+// `resolvable:false` (empty skills) ⇒ the source isn't a scannable GitHub repo, so
+// the UI offers whole-source enablement only.
+export interface SkillSourceSkillsDto {
+  resolvable: boolean
+  skills: Array<{ name: string; dirPath: string }>
+}
+export async function fetchSkillSourceSkills(id: string): Promise<SkillSourceSkillsDto> {
+  return apiGet<SkillSourceSkillsDto>(`${orgBase()}/skill-sources/${encodeURIComponent(id)}/skills`)
+}
+
+export async function previewSkillSource(input: PreviewSkillSourceInput): Promise<SkillSourcePreviewDto> {
+  return apiPost<SkillSourcePreviewDto>(`${orgBase()}/skill-sources/preview`, input)
+}
+
+export async function createSkillSource(input: CreateSkillSourceInput): Promise<SkillSourceDto> {
+  return apiPost<SkillSourceDto>(`${orgBase()}/skill-sources`, input)
+}
+
+export async function updateSkillSource(id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceDto> {
+  return apiPatch<SkillSourceDto>(`${orgBase()}/skill-sources/${encodeURIComponent(id)}`, patch)
+}
+
+export async function deleteSkillSource(id: string): Promise<void> {
+  await apiDelete<void>(`${orgBase()}/skill-sources/${encodeURIComponent(id)}`)
+}
+
+export async function updateSkillSourceSharing(id: string, body: SharingInput): Promise<SkillSourceDto> {
+  return apiPut<SkillSourceDto>(`${orgBase()}/skill-sources/${encodeURIComponent(id)}/sharing`, body)
 }
 
 // ── open-connector connectors (docs: connectors integration) ─────────────────

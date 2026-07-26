@@ -14,13 +14,12 @@ const supportsAll = () => true
 const supportsNone = () => false
 
 describe('attachmentToBlock', () => {
-  it('builds an inline image block for image/* when the agent supports images', () => {
+  it('builds a self-contained inline image block when the agent supports images', () => {
     const bytes = Buffer.from('IMG')
     expect(attachmentToBlock(att(), bytes, supportsAll)).toEqual({
       type: 'image',
       data: bytes.toString('base64'),
-      mimeType: 'image/png',
-      uri: 'https://files/F1'
+      mimeType: 'image/png'
     })
   })
 
@@ -82,6 +81,18 @@ describe('buildAttachmentBlocks', () => {
     const blocks = await buildAttachmentBlocks([att({ size: 3 })], { download, supports: supportsAll, maxBytes: 1024 })
     expect(download).toHaveBeenCalledOnce()
     expect(blocks[0]).toMatchObject({ type: 'image', data: bytes.toString('base64') })
+  })
+
+  it('uses inline webchat bytes without calling a platform downloader', async () => {
+    const bytes = Buffer.from('IMG')
+    const download = vi.fn(async () => null)
+    const blocks = await buildAttachmentBlocks([att({ sourceUrl: undefined, inlineData: bytes, size: bytes.length })], {
+      download,
+      supports: supportsAll,
+      maxBytes: 1024
+    })
+    expect(download).not.toHaveBeenCalled()
+    expect(blocks[0]).toEqual({ type: 'image', data: bytes.toString('base64'), mimeType: 'image/png' })
   })
 
   it('degrades to resource_link (not dropped) when a download throws', async () => {

@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { frameSchema } from '../envelope.js'
 import { ErrorFrame } from './error.js'
-import { WebchatDone, WebchatOutput } from './webchat.js'
+import { WebchatDone, WebchatImageAttachment, WebchatOutput } from './webchat.js'
 import { GithubHookMetadata, HookContext, OptionalHookConfigSnapshot } from './hook.js'
 import { CronTarget } from './cron.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
@@ -62,8 +62,37 @@ export type RdHelloOk = z.infer<typeof RdHelloOk>
 // The webchat operations a browser can issue, folded into one payload union so
 // the wire stays at the four designed frames. `turn` is the user message; the
 // rest are the session controls the old daemon↔CP webchat EVTs carried.
+//
+export const WebchatRuntimeConfig = z.object({
+  model: z.string().min(1).optional(),
+  effort: z.string().min(1).optional(),
+  permissionMode: z.string().min(1).optional(),
+  fastMode: z.boolean().optional()
+})
+export type WebchatRuntimeConfig = z.infer<typeof WebchatRuntimeConfig>
+
 export const RelayWebchatOp = z.discriminatedUnion('op', [
-  z.object({ op: z.literal('turn'), text: z.string(), user: z.string().optional() }),
+  z.object({
+    op: z.literal('turn'),
+    text: z.string(),
+    user: z.string().optional(),
+    // New browsers allocate this before sending so a pre-ack reconnect can name
+    // the exact turn. Optional for older clients; the daemon allocates a fallback.
+    turnId: z.string().uuid().optional(),
+    attachments: z.array(WebchatImageAttachment).max(1).optional(),
+    // A fresh Playground has no daemon session to receive standalone `set_*`
+    // operations yet. Carry only the settings the user changed with its first turn.
+    runtime: WebchatRuntimeConfig.optional()
+  }),
+  // Rebind an in-flight/recent turn to this relay connection and replay every
+  // output after the browser's contiguous cursor. The generation monotonically
+  // fences delayed resume requests from older browser connections.
+  z.object({
+    op: z.literal('resume'),
+    turnId: z.string().uuid(),
+    generation: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    afterIndex: z.number().int().min(-1)
+  }),
   z.object({ op: z.literal('set_model'), model: z.string() }),
   z.object({ op: z.literal('set_effort'), effort: z.string() }),
   z.object({ op: z.literal('set_permission_mode'), permissionMode: z.string() }),
@@ -170,6 +199,10 @@ export const RdMsgSlackAction = z.object({
   msgId: z.string().min(1),
   botId: z.string().uuid(),
   integrationId: z.string().uuid(),
+  // The platform user who tapped it, so a shared-bot session change is attributable
+  // the way a direct connection's already is. Optional for rolling compatibility with
+  // an older relay: absent records as an unknown actor, never a fabricated one.
+  userId: z.string().min(1).optional(),
   payload: RdSlackAction
 })
 export type RdMsgSlackAction = z.infer<typeof RdMsgSlackAction>

@@ -64,6 +64,22 @@ describe('AgentSpecAssembler', () => {
     expect(b!.secrets).toEqual({ B: '2' })
   })
 
+  it('assembleAll quarantines only unsafe historical clone targets', async () => {
+    const unsafe = {
+      ...AGENT,
+      id: AgentId('88888888-8888-4888-8888-888888888888'),
+      name: 'unsafe',
+      workspace: { mode: 'github' as const, gitRepo: 'file:///var/lib/agentconnect/other-workspace' }
+    }
+    const quarantined: string[] = []
+    const specs = new AgentSpecAssembler(storeWith({}))
+
+    const assembled = await specs.assembleAll([AGENT, unsafe], (agent) => quarantined.push(agent.id))
+
+    expect(assembled.map((spec) => spec.agentId)).toEqual([AGENT.id])
+    expect(quarantined).toEqual([unsafe.id])
+  })
+
   it('project trusts the caller-snapshotted secrets (never re-fetches)', async () => {
     let reads = 0
     const store = storeWith({ [AGENT.id]: { LIVE: 'now' } })
@@ -77,8 +93,66 @@ describe('AgentSpecAssembler', () => {
     const specs = new AgentSpecAssembler(counting)
     const pinned = await specs.secretsOf(AGENT) // the move snapshot's one read
     expect(reads).toBe(1)
-    expect(specs.project(AGENT, pinned).secrets).toEqual({ LIVE: 'now' })
+    expect(specs.project(AGENT, pinned, []).secrets).toEqual({ LIVE: 'now' })
     expect(reads).toBe(1) // project() added none
+  })
+
+  it('redacts legacy URL secrets before projecting an anonymous workspace onto the daemon wire', () => {
+    const specs = new AgentSpecAssembler(storeWith({}))
+    const spec = specs.project(
+      {
+        ...AGENT,
+        workspace: {
+          mode: 'github',
+          gitRepo: 'https://legacy-user:legacy-password@github.com/acme/legacy.git?token=query-secret#fragment'
+        }
+      },
+      {},
+      []
+    )
+
+    expect(spec.workspace).toMatchObject({
+      mode: 'github',
+      gitRepo: 'https://github.com/acme/legacy.git'
+    })
+    expect(JSON.stringify(spec.workspace)).not.toContain('legacy-password')
+    expect(JSON.stringify(spec.workspace)).not.toContain('query-secret')
+  })
+
+  it('binds a legacy App-backed workspace to its canonical GitHub repository', () => {
+    const specs = new AgentSpecAssembler(storeWith({}))
+    const spec = specs.project(
+      {
+        ...AGENT,
+        workspace: {
+          mode: 'github',
+          gitRepo: 'https://legacy-user:legacy-password@other-host.example/acme/legacy.git?token=query-secret',
+          installationId: 'installation-id'
+        }
+      },
+      {},
+      []
+    )
+
+    expect(spec.workspace).toMatchObject({
+      mode: 'github',
+      gitRepo: 'https://github.com/acme/legacy.git',
+      gitCredential: 'github-app'
+    })
+    expect(JSON.stringify(spec.workspace)).not.toContain('legacy-password')
+    expect(JSON.stringify(spec.workspace)).not.toContain('query-secret')
+    expect(JSON.stringify(spec.workspace)).not.toContain('other-host.example')
+  })
+
+  it('refuses to project an unsafe historical clone transport', () => {
+    const specs = new AgentSpecAssembler(storeWith({}))
+    expect(() =>
+      specs.project(
+        { ...AGENT, workspace: { mode: 'github', gitRepo: 'file:///var/lib/agentconnect/other-workspace' } },
+        {},
+        []
+      )
+    ).toThrow('git clone url must use https or ssh')
   })
 
   it('applies the instance-owned icon bases to the spec iconUrl', async () => {

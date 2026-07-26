@@ -4,11 +4,10 @@ name: Build & Push Images
 # and pushes them to GHCR tagged with the semantic-release version (the git tag:
 # `v1.2.3` stable, `v1.2.3-rc.4` prerelease). Stable releases also move `:latest`.
 #
-# Subscribes to the v* tags semantic-release pushes (rc from `main`, stable
-# from `release`) — release.yaml pushes them with a GitHub App token because the
-# built-in GITHUB_TOKEN's pushes never trigger workflows. Plain pushes to `main`
-# that don't produce a release don't build images. Manual rebuild:
-# workflow_dispatch, picking a vX.Y.Z(-rc.N) tag as the ref.
+# Called by release.yaml after semantic-release publishes a version, so image
+# publication appears in the same Release run. Plain pushes that don't produce
+# a release don't call this workflow. Manual rebuild: workflow_dispatch, picking
+# a vX.Y.Z(-rc.N) tag as the ref.
 #
 # Per-component effective versions: most releases don't touch every component,
 # and a component whose build inputs are unchanged since the previous release
@@ -16,10 +15,13 @@ name: Build & Push Images
 # creating redundant downstream workflow work. scripts/component-versions.sh
 # computes, per component, the most recent same-channel tag (rc walks rc tags,
 # stable walks stable tags) that actually changed it. Changed components build
-# concurrently in one Buildx Bake invocation; unchanged components skip the
-# build and instead get this release's tag as an ALIAS of their effective image
-# (same manifest digest), so `<comp>:<version>` exists for every component at
-# every release regardless.
+# concurrently on separate GitHub-hosted runners. `docker-bake.hcl` remains the
+# source of truth for each target's Dockerfile, args, labels, contexts, tags, and
+# platform; the prepare job renders it into the dynamic matrix consumed by
+# Docker's official build-push action. Unchanged components skip the build and
+# instead get this release's tag as an ALIAS of their effective image (same
+# manifest digest), so `<comp>:<version>` exists for every component at every
+# release regardless.
 #
 # After pushing, mints a short-lived GitHub App token for the configured
 # workflow repository and fires an `images-pushed` repository_dispatch
@@ -30,50 +32,61 @@ name: Build & Push Images
 # repository's concern and is documented there.
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_call:
+    inputs:
+      version:
+        description: 'Release tag produced by semantic-release'
+        required: true
+        type: string
   workflow_dispatch:
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ inputs.version || github.ref }}
   cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
 
 jobs:
-  build-push:
-    runs-on: self-hosted
+  prepare:
+    name: Prepare image builds
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
     outputs:
       version: ${{ steps.meta.outputs.version }}
+      latest: ${{ steps.meta.outputs.latest }}
+      matrix: ${{ steps.build-matrix.outputs.matrix }}
+      has_builds: ${{ steps.build-matrix.outputs.has_builds }}
       controlPlane: ${{ steps.components.outputs.controlPlane }}
       web: ${{ steps.components.outputs.web }}
       relay: ${{ steps.components.outputs.relay }}
       mem0: ${{ steps.components.outputs.mem0 }}
       mem0Backend: ${{ steps.components.outputs.mem0Backend }}
     steps:
-      # Image tags come from the release tag this run fired on. The guard only
-      # bites manual workflow_dispatch runs: refuse anything that isn't a v*
-      # tag ref — a branch ref would mint a mutable image tag like `main` and
-      # break version→commit provenance.
+      # Reusable calls receive the tag semantic-release just published. Manual
+      # runs still derive it from the selected ref and reject branch refs, which
+      # would otherwise mint a mutable image tag such as `main`.
       - name: Resolve release version
         id: meta
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
-            echo "::error::Must run at a release tag ref, got ${GITHUB_REF}. Re-run picking a vX.Y.Z(-rc.N) tag."
-            exit 1
+          version="$RELEASE_VERSION"
+          if [ -z "$version" ]; then
+            if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+              echo "::error::Must run at a release tag ref, got ${GITHUB_REF}. Re-run picking a vX.Y.Z(-rc.N) tag."
+              exit 1
+            fi
+            version="$GITHUB_REF_NAME"
           fi
-          case "$GITHUB_REF_NAME" in
+          case "$version" in
             v[0-9]*) ;;
-            *) echo "::error::'${GITHUB_REF_NAME}' is not a vX.Y.Z(-rc.N) release tag."; exit 1 ;;
+            *) echo "::error::'${version}' is not a vX.Y.Z(-rc.N) release tag."; exit 1 ;;
           esac
-          echo "version=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           # Only stable releases (no prerelease suffix) move `:latest`.
-          case "$GITHUB_REF_NAME" in
+          case "$version" in
             *-*) echo "latest=false" >> "$GITHUB_OUTPUT" ;;
             *)   echo "latest=true"  >> "$GITHUB_OUTPUT" ;;
           esac
@@ -85,6 +98,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ inputs.version || github.ref }}
 
       # Per-component effective versions on this tag's channel (see the
       # header): a component whose inputs didn't change since the channel's
@@ -95,11 +109,27 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
         run: bash scripts/component-versions.sh "$VERSION" | tee -a "$GITHUB_OUTPUT"
 
-      - name: Select changed image targets
-        id: build-targets
+      - name: Set up Buildx
+        id: buildx
+        continue-on-error: true
+        uses: docker/setup-buildx-action@v4
+
+      - name: Retry Buildx setup
+        if: steps.buildx.outcome == 'failure'
+        uses: docker/setup-buildx-action@v4
+
+      # Render the existing Bake definition so image-specific configuration
+      # stays centralized there even though each target builds in its own job.
+      # The non-empty fallback keeps strategy.matrix valid when all components
+      # are unchanged; has_builds prevents that sentinel from allocating a runner.
+      - name: Select changed image matrix
+        id: build-matrix
         shell: bash
         env:
+          OWNER: ${{ github.repository_owner }}
           VERSION: ${{ steps.meta.outputs.version }}
+          LATEST: ${{ steps.meta.outputs.latest }}
+          GIT_SHA: ${{ github.sha }}
           CP_EFFECTIVE: ${{ steps.components.outputs.controlPlane }}
           WEB_EFFECTIVE: ${{ steps.components.outputs.web }}
           RELAY_EFFECTIVE: ${{ steps.components.outputs.relay }}
@@ -107,13 +137,90 @@ jobs:
           MEM0_BACKEND_EFFECTIVE: ${{ steps.components.outputs.mem0Backend }}
         run: |
           set -euo pipefail
-          targets=()
-          [ "$CP_EFFECTIVE" = "$VERSION" ] && targets+=(control-plane)
-          [ "$RELAY_EFFECTIVE" = "$VERSION" ] && targets+=(relay)
-          [ "$WEB_EFFECTIVE" = "$VERSION" ] && targets+=(web)
-          [ "$MEM0_EFFECTIVE" = "$VERSION" ] && targets+=(mem0)
-          [ "$MEM0_BACKEND_EFFECTIVE" = "$VERSION" ] && targets+=(mem0-backend)
-          (IFS=,; echo "targets=${targets[*]}" >> "$GITHUB_OUTPUT")
+          changed='[]'
+          add_changed() {
+            changed="$(jq -cn \
+              --argjson current "$changed" \
+              --arg target "$1" \
+              '$current + [$target]')"
+          }
+
+          [ "$CP_EFFECTIVE" = "$VERSION" ] && add_changed control-plane
+          [ "$RELAY_EFFECTIVE" = "$VERSION" ] && add_changed relay
+          [ "$WEB_EFFECTIVE" = "$VERSION" ] && add_changed web
+          [ "$MEM0_EFFECTIVE" = "$VERSION" ] && add_changed mem0
+          [ "$MEM0_BACKEND_EFFECTIVE" = "$VERSION" ] && add_changed mem0-backend
+
+          bake_config="${RUNNER_TEMP}/agentconnect-image-bake.json"
+          docker buildx bake --print > "$bake_config"
+          matrix="$(jq -c --argjson targets "$changed" '
+            [
+              $targets[] as $name
+              | .target[$name] as $config
+              | {
+                  target: $name,
+                  context: ($config.context // "."),
+                  dockerfile: ($config.dockerfile // "Dockerfile"),
+                  build_target: ($config.target // ""),
+                  platforms: (($config.platforms // []) | join(",")),
+                  tags: (($config.tags // []) | join("\n")),
+                  build_args: (
+                    ($config.args // {})
+                    | to_entries
+                    | map("\(.key)=\(.value)")
+                    | join("\n")
+                  ),
+                  build_contexts: (
+                    ($config.contexts // {})
+                    | to_entries
+                    | map("\(.key)=\(.value)")
+                    | join("\n")
+                  ),
+                  labels: (
+                    ($config.labels // {})
+                    | to_entries
+                    | map("\(.key)=\(.value)")
+                    | join("\n")
+                  ),
+                  cache_ref: (
+                    $config.tags[0]
+                    | sub(":[^/]+$"; ":buildcache")
+                  )
+                }
+            ]
+          ' "$bake_config")"
+
+          if [ "$matrix" = '[]' ]; then
+            echo "has_builds=false" >> "$GITHUB_OUTPUT"
+            matrix='[{"target":"none","context":".","dockerfile":"docker/Dockerfile","build_target":"","platforms":"linux/amd64","tags":"","build_args":"","build_contexts":"","labels":"","cache_ref":""}]'
+          else
+            echo "has_builds=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "matrix=$(jq -cn --argjson include "$matrix" '{include: $include}')" >> "$GITHUB_OUTPUT"
+
+  build-images:
+    name: Build & push ${{ matrix.target }}
+    needs: prepare
+    if: ${{ needs.prepare.outputs.has_builds == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    # Registry cache refs are mutable performance hints. Serialize each target
+    # across release runs so two channels cannot overwrite one simultaneously.
+    concurrency:
+      group: image-build-${{ matrix.target }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.version }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -123,31 +230,69 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Buildx
+        id: buildx
+        continue-on-error: true
         uses: docker/setup-buildx-action@v4
-        with:
-          name: agentconnect-images
-          keep-state: true
-          cleanup: false
 
-      # One Bake invocation gives BuildKit all changed targets at once, so it
-      # schedules them concurrently while deduplicating their shared base and
-      # manifest stages. If no component changed, Bake is skipped and the
-      # release tags are aliased below.
-      - name: Build & push changed images in parallel
-        if: steps.build-targets.outputs.targets != ''
-        uses: docker/bake-action@v7
-        # Bake reads declared variables from the environment. Keep them out of
-        # the action's `vars` input because older Buildx releases do not support
-        # `buildx bake --var`.
-        env:
-          OWNER: ${{ github.repository_owner }}
-          VERSION: ${{ steps.meta.outputs.version }}
-          LATEST: ${{ steps.meta.outputs.latest }}
-          GIT_SHA: ${{ github.sha }}
+      - name: Retry Buildx setup
+        if: steps.buildx.outcome == 'failure'
+        uses: docker/setup-buildx-action@v4
+
+      # A target-specific registry cache keeps all intermediate builder layers
+      # (`mode=max`) without consuming the GitHub Actions cache quota.
+      - name: Build and push
+        uses: docker/build-push-action@v7
         with:
-          source: .
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.build_target }}
+          platforms: ${{ matrix.platforms }}
           push: true
-          targets: ${{ steps.build-targets.outputs.targets }}
+          tags: ${{ matrix.tags }}
+          build-args: ${{ matrix.build_args }}
+          build-contexts: ${{ matrix.build_contexts }}
+          labels: ${{ matrix.labels }}
+          cache-from: type=registry,ref=${{ matrix.cache_ref }}
+          cache-to: type=registry,ref=${{ matrix.cache_ref }},mode=max
+
+  finalize:
+    name: Finalize image tags
+    needs:
+      - prepare
+      - build-images
+    if: >-
+      ${{
+        always() &&
+        needs.prepare.result == 'success' &&
+        (needs.build-images.result == 'success' || needs.build-images.result == 'skipped')
+      }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ needs.prepare.outputs.version }}
+      controlPlane: ${{ needs.prepare.outputs.controlPlane }}
+      web: ${{ needs.prepare.outputs.web }}
+      relay: ${{ needs.prepare.outputs.relay }}
+      mem0: ${{ needs.prepare.outputs.mem0 }}
+      mem0Backend: ${{ needs.prepare.outputs.mem0Backend }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        id: buildx
+        continue-on-error: true
+        uses: docker/setup-buildx-action@v4
+
+      - name: Retry Buildx setup
+        if: steps.buildx.outcome == 'failure'
+        uses: docker/setup-buildx-action@v4
 
       # Components skipped above still get this release's tag: an alias of the
       # effective image (imagetools create adds tags to the SAME manifest
@@ -168,13 +313,13 @@ jobs:
       # avoid.
       - name: Alias unchanged components to this release tag
         env:
-          VERSION: ${{ steps.meta.outputs.version }}
-          LATEST: ${{ steps.meta.outputs.latest }}
-          CP_EFFECTIVE: ${{ steps.components.outputs.controlPlane }}
-          WEB_EFFECTIVE: ${{ steps.components.outputs.web }}
-          RELAY_EFFECTIVE: ${{ steps.components.outputs.relay }}
-          MEM0_EFFECTIVE: ${{ steps.components.outputs.mem0 }}
-          MEM0_BACKEND_EFFECTIVE: ${{ steps.components.outputs.mem0Backend }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          LATEST: ${{ needs.prepare.outputs.latest }}
+          CP_EFFECTIVE: ${{ needs.prepare.outputs.controlPlane }}
+          WEB_EFFECTIVE: ${{ needs.prepare.outputs.web }}
+          RELAY_EFFECTIVE: ${{ needs.prepare.outputs.relay }}
+          MEM0_EFFECTIVE: ${{ needs.prepare.outputs.mem0 }}
+          MEM0_BACKEND_EFFECTIVE: ${{ needs.prepare.outputs.mem0Backend }}
           OWNER: ${{ github.repository_owner }}
         run: |
           set -eu
@@ -197,8 +342,9 @@ jobs:
           alias_unchanged mem0-server "$MEM0_BACKEND_EFFECTIVE"
 
   notify-workflow:
-    needs: build-push
-    runs-on: self-hosted
+    name: Notify workflow
+    needs: finalize
+    runs-on: ubuntu-latest
     steps:
       - name: Resolve workflow repository
         id: workflow-repository
@@ -235,13 +381,13 @@ jobs:
         env:
           DISPATCH_TOKEN: ${{ steps.workflow-app-token.outputs.token }}
           WORKFLOW_REPOSITORY: ${{ secrets.WORKFLOW_REPOSITORY }}
-          VERSION: ${{ needs.build-push.outputs.version }}
+          VERSION: ${{ needs.finalize.outputs.version }}
           SHA: ${{ github.sha }}
-          CP: ${{ needs.build-push.outputs.controlPlane }}
-          WEB: ${{ needs.build-push.outputs.web }}
-          RELAY: ${{ needs.build-push.outputs.relay }}
-          MEM0: ${{ needs.build-push.outputs.mem0 }}
-          MEM0_BACKEND: ${{ needs.build-push.outputs.mem0Backend }}
+          CP: ${{ needs.finalize.outputs.controlPlane }}
+          WEB: ${{ needs.finalize.outputs.web }}
+          RELAY: ${{ needs.finalize.outputs.relay }}
+          MEM0: ${{ needs.finalize.outputs.mem0 }}
+          MEM0_BACKEND: ${{ needs.finalize.outputs.mem0Backend }}
         run: |
           curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer ${DISPATCH_TOKEN}" \

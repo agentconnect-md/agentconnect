@@ -10,7 +10,7 @@
  * preview and assembles a page under the per-frame budget (newest rows that fit);
  * the FULL body is pulled on demand via `toolBody`, chunked by offset.
  */
-import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
+import { MAX_FRAME_BYTES, SessionImageAttachment as SessionImageAttachmentSchema } from '@agentconnect.md/protocol'
 import type {
   SessionListReq,
   SessionListPage,
@@ -60,6 +60,26 @@ function encodedBytes(payload: unknown): number {
   return Buffer.byteLength(JSON.stringify(payload))
 }
 
+function transcriptAttachments(raw: string | null | undefined): NonNullable<SessionMessage['attachments']> {
+  if (!raw) return []
+  try {
+    const parsed = SessionImageAttachmentSchema.array().max(1).safeParse(JSON.parse(raw))
+    return parsed.success ? parsed.data : []
+  } catch {
+    return []
+  }
+}
+
+/** The persisted text keeps this synthetic suffix for prompt replay; the console
+ * receives the real image instead, matching the live turn. */
+function withoutAttachmentMention(text: string, attachments: NonNullable<SessionMessage['attachments']>): string {
+  if (attachments.length === 0) return text
+  const mention = `[attached: ${attachments.map((attachment) => `${attachment.name} (${attachment.mimeType})`).join(', ')}]`
+  if (text === mention) return ''
+  const suffix = `\n${mention}`
+  return text.endsWith(suffix) ? text.slice(0, -suffix.length) : text
+}
+
 /** Largest index ≤ `len` that lands on a UTF-8 character boundary — never cuts a
  *  multi-byte sequence (mirrors workspace-reader's slicer). */
 function utf8Boundary(buf: Buffer, len: number): number {
@@ -101,6 +121,12 @@ function parseUsage(raw: string | null): SessionUsage | undefined {
   } catch {
     return undefined
   }
+}
+
+/** Current CPs send the authorized owner. The unscoped branch preserves rolling
+ * compatibility only while a newly upgraded daemon is still connected to an old CP. */
+function sessionForRead(store: LocalStore, agentId: string | undefined, sessionId: string) {
+  return agentId ? store.getSessionByAcpIdForAgent(agentId, sessionId) : store.getSessionByAcpId(sessionId)
 }
 
 /** Rough character budget to trim a free-form value to when shrinking a preview. A
@@ -203,7 +229,7 @@ export function createSessionReader(
       return { sessions }
     },
     history(req) {
-      const rec = store.getSessionByAcpId(req.sessionId)
+      const rec = sessionForRead(store, req.agentId, req.sessionId)
       if (!rec) return { sessionId: req.sessionId, messages: [] }
       // Slack can append an older platform row during warm-thread backfill, so its
       // authoritative history pages by normalized event time + seq tie-breaker. A
@@ -228,13 +254,15 @@ export function createSessionReader(
       const names = store.getDisplayNames(ordered.flatMap((r) => [r.sender, ...mentionedUserIds(r.text)]))
       const built = ordered.map<SessionMessage>((r) => {
         const senderName = names.get(r.sender)
+        const attachments = transcriptAttachments(r.attachmentsJson)
         const base: SessionMessage = {
           seq: r.seq,
           sender: r.sender,
           ...(senderName ? { senderName } : {}),
           ts: r.ts,
           kind: r.kind,
-          text: substituteUserMentions(r.text, names)
+          text: substituteUserMentions(withoutAttachmentMention(r.text, attachments), names),
+          ...(attachments.length ? { attachments } : {})
         }
         if (r.kind !== 'tool' || !r.body) return base
         // Enrich a tool row: surface toolCallId/status/kind + an inline body (verbatim
@@ -297,7 +325,7 @@ export function createSessionReader(
       }
     },
     toolBody(req) {
-      const rec = store.getSessionByAcpId(req.sessionId)
+      const rec = sessionForRead(store, req.agentId, req.sessionId)
       const empty: SessionToolBodyChunk = {
         sessionId: req.sessionId,
         toolCallId: req.toolCallId,
@@ -305,7 +333,7 @@ export function createSessionReader(
         totalBytes: 0
       }
       if (!rec) return empty
-      const body = store.getToolBody(rec.channel, rec.thread, req.toolCallId)
+      const body = store.getToolBodyForAgent(rec.channel, rec.thread, rec.agentId, req.toolCallId)
       if (body === undefined) return empty
       const buf = Buffer.from(body, 'utf8')
       const totalBytes = buf.length

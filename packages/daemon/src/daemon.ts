@@ -44,11 +44,14 @@ import { cleanupConfigFiles, materializeConfigFiles } from './agents/config-file
 import { writeGhShim } from './cp/gh-shim.js'
 import { GitCredServer, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
 import { gitCredentialEnv, initGitInjection, probeGitVersion, sessionGitEnv } from './workspace/git-injection.js'
+import { configureWorkspaceGitOrigins } from './workspace/git-origin-policy.js'
 import { buildMcpServers } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
 import { toolsForIntegrations, MEMORY_TOOL_NAMES, ALL_TOOL_NAMES, GITHUB_REVIEW_TOOLS } from './mcp/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, trustedExtractionMode } from './agents/memory-distiller.js'
+import { DreamRunner, DreamStateError } from './agents/dream-runner.js'
+import { createDreamReader } from './cp/dream-reader.js'
 import { routeRules, type RouteVia } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
 import { rulesFromAgent, resolveCpRule, resolveAgentIntegration, type RoutingRule } from './router/routing-rule.js'
@@ -57,6 +60,7 @@ import {
   consolidate,
   consolidateShared,
   SlackConnection,
+  type InteractionActor,
   type SlackPostOptions,
   type SlackStatusOptions
 } from './slack/connection.js'
@@ -105,6 +109,7 @@ import {
 } from './discord/render.js'
 import { FeishuConverger, renderStatusReply as renderFeishuStatusReply, type FeishuAction } from './feishu/render.js'
 import { Scheduler, buildSyntheticMessage } from './scheduler/scheduler.js'
+import { DreamScheduler } from './scheduler/dream-scheduler.js'
 import { planChannelIntros, buildIntroMessage } from './agents/channel-intro.js'
 import { buildHookMessage, hookAnchorText } from './messages/hook-message.js'
 import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './github/poster.js'
@@ -136,6 +141,7 @@ import { RelayManager } from './cp/relay-manager.js'
 import { CpCollabRoutes } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import {
+  AgentActivate as AgentActivateSchema,
   encodeSharedSlackStatusTarget,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HookReport,
@@ -145,7 +151,7 @@ import {
   gitRepoLabel
 } from '@agentconnect.md/protocol'
 import { createSessionReader } from './cp/session-reader.js'
-import { createWorkspaceReader } from './cp/workspace-reader.js'
+import { createWorkspaceReader, WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createMemoryReader } from './cp/memory-reader.js'
 import {
   createMemoryProvider,
@@ -225,8 +231,10 @@ import type {
   WebchatEvent,
   WebchatOutput,
   WebchatDone,
+  WebchatRuntimeConfig,
   RdMsg,
   RdMsgWebchat,
+  WebchatImageAttachment,
   RdMsgIm,
   RdMsgSlackAction,
   RdMsgHook,
@@ -238,12 +246,22 @@ import type {
   GithubHookMetadata,
   GitCommitIdentity,
   GithubReviewAuthorized,
-  HookReviewResult
+  HookReviewResult,
+  FeishuRegion,
+  MemoryDreamingPolicy
 } from '@agentconnect.md/protocol'
 
 /** Format an error for logs, surfacing a JSON-RPC/ACP RequestError's `code` and
  *  `data` — for an agent-side `Internal error` the actionable detail (the adapter's
  *  underlying exception) lives in `data`, which a bare `.stack` discards. */
+/** Identity of a desired Feishu connection: appId + gateway region. A region change on
+ *  the same appId yields a different key, so it is treated as a distinct connection for
+ *  reuse-matching, mapping-eviction, and the in-flight guard (`|` can't collide — an
+ *  appId `cli_…` and the region literals `feishu`/`lark` contain none). */
+function feishuConnKey(appId: string, region: string): string {
+  return `${appId}|${region}`
+}
+
 function formatErr(err: unknown): string {
   const e = err as { name?: string; message?: string; code?: number; data?: unknown; stack?: string }
   if (e && typeof e.code === 'number') {
@@ -407,7 +425,21 @@ function reviewResultForWire(effect: GithubReviewEffect): HookReviewResult {
 
 // Cap per-session `!queue` depth so a hung turn or a user spamming `!queue` can't
 // grow `queued` without bound. Past the cap we reject with a clear message.
+/** An agent's dreaming policy, or undefined when it has none. An absent memory
+ *  binding means the managed default, but dreaming itself is always opt-in — and
+ *  it is only valid on the managed provider (the protocol enforces that too). */
+function dreamingPolicyOf(agent: { memory?: Agent['memory'] } | undefined): MemoryDreamingPolicy | undefined {
+  const memory = agent?.memory
+  return memory?.provider === 'managed' ? memory.dreaming : undefined
+}
+
 const MAX_QUEUED_PER_SESSION = 10
+
+/** Bounded hard-stop for a dream extraction whose runtime ignores `session/cancel`:
+ *  how long after the abort the daemon stops awaiting `host.prompt` and discards
+ *  the isolated ACP session, rather than wedging forever. The runner's own grace
+ *  window (DreamRunnerDeps.cancelGraceMs) releases the reservation independently. */
+const DREAM_CANCEL_FORCE_MS = 15_000
 
 // Last-resort feedback-loop protection. The lower automatic threshold catches
 // agent/system/platform-echo chains; the higher all-turn threshold still stops a
@@ -456,6 +488,13 @@ const SELECT_CODE_KIND = { m: 'model', e: 'effort', p: 'permission' } as const s
 // kind + JSON escaping of control chars, up to a 6× blowup) can never push a chunk
 // over the wire limit. Long agent output is split across several chunks at this size.
 const WEBCHAT_CHUNK_BYTES = 32 * 1024
+// A reconnectable turn keeps a bounded in-memory output window on the daemon,
+// where the stream originates. This survives a browser moving between relay
+// instances without putting message bodies on the Control Plane or disk.
+const WEBCHAT_REPLAY_MAX_EVENTS = 256
+const WEBCHAT_REPLAY_MAX_BYTES = 1024 * 1024
+const WEBCHAT_REPLAY_MAX_STREAMS = 64
+const WEBCHAT_REPLAY_TTL_MS = 5 * 60_000
 
 /** Split `text` into pieces whose UTF-8 byte length each stays under WEBCHAT_CHUNK_BYTES
  *  so no single relay `rd/chat` payload exceeds the 256 KiB cap. Splits on byte budget
@@ -739,7 +778,7 @@ interface QueueEntry {
    *  host-stop backstop, including non-host awaits such as workspace/history I/O. */
   initAbort: AbortController
   integrationId?: string
-  webchat?: { conversationId: string; turnId: string; sink: WebchatSink; doneSent?: boolean }
+  webchat?: WebchatTurnContext
   callMeta?: CallMeta
   hookContext?: HookDispatchContext
   /** Best-effort lifecycle notification after ACP session initialization but
@@ -928,14 +967,7 @@ interface Pending {
    * accumulates the agent's message chunks so the finished reply is recorded to the
    * transcript once (webchat has no Slack post boundary where text is otherwise saved).
    */
-  webchat?: {
-    conversationId: string
-    turnId: string
-    index: number
-    replyText: string
-    sink: WebchatSink
-    doneSent?: boolean
-  }
+  webchat?: WebchatTurnContext & { index: number; replyText: string }
 }
 
 /** Visible Slack thread messages that establish a new chronological boundary. Any live
@@ -961,6 +993,34 @@ interface SessionDeliveryBinding {
 export interface WebchatSink {
   output(o: WebchatOutput): void
   done(d: WebchatDone): void
+}
+
+interface BufferedWebchatEvent {
+  event: RdChatEvent
+  bytes: number
+}
+
+interface WebchatTurnContext {
+  conversationId: string
+  turnId: string
+  sink: WebchatSink
+  runtime?: WebchatRuntimeConfig
+  doneSent?: boolean
+}
+
+/** One daemon-owned turn stream. `sink` is stable for the turn engine; `transport`
+ * is rebound when a browser resumes through any relay. The replay window is
+ * ephemeral, bounded, and never written to disk. */
+interface WebchatTurnStream extends WebchatTurnContext {
+  agentId: string
+  transport: WebchatSink
+  resumeGeneration: number
+  replay: BufferedWebchatEvent[]
+  replayBytes: number
+  replayFloor: number
+  replayDisabled: boolean
+  lastOutputIndex: number
+  completedAt?: number
 }
 
 export interface DaemonEvaluationOptions {
@@ -1067,6 +1127,8 @@ export class Daemon {
   private memoryExtractionDirs = new Map<string, string>()
   /** Host instances that failed the trusted/read-only preflight; retry only after host replacement. */
   private memoryExtractionUnavailable = new WeakSet<AcpHost>()
+  /** Lazily-built dream-job engine (docs/designs/memory-dreaming.md §4). */
+  private dreamRunnerInstance?: DreamRunner
   private gitCreds!: GitCredentialCache
   /** Public commit attribution selected by the CP deployment's GitHub App. */
   private gitCommitIdentity?: GitCommitIdentity
@@ -1146,6 +1208,7 @@ export class Daemon {
   // from its membership snapshot instead — see refreshChannels). Created in start().
   private channelNameResolver?: ChannelNameResolver
   private scheduler!: Scheduler
+  private dreamScheduler!: DreamScheduler
   private sessions!: SessionManager
   // integrationId -> the SlackConnection that owns it (for replies). Holds BOTH
   // socket-mode (direct) and send-only (shared-bot) connections — a shared bot's
@@ -1299,6 +1362,7 @@ export class Daemon {
   // Agent detach waits these leases before archiving/closing the last connection.
   private activeDispatchesByAgent = new Map<string, Set<Promise<void>>>()
   private activeDispatchDoneByKey = new Map<string, Promise<void>>()
+  private workspaceFileWrites = new Map<string, Promise<void>>()
   // Connection-specific half of the same lease. Unlike `pending[].conn`, this is
   // acquired immediately when dispatchOne captures replyConn, before its first
   // await, so ordinary config reconciliation cannot close that pre-pending use.
@@ -1345,6 +1409,7 @@ export class Daemon {
   constructor(
     private opts: {
       root?: string
+      configPath?: string
       overrides?: FlatOverrides
       agentName?: string
       hostFactory?: (agent: Agent, onUpdate: (sid: string, u: any) => void) => AcpHost
@@ -1489,8 +1554,15 @@ export class Daemon {
 
   async start(): Promise<void> {
     const root = resolveRoot(this.opts.root)
-    const cfg = loadConfig({ root, overrides: this.opts.overrides, optional: !!this.opts.agentName, autoCreate: true })
+    const cfg = loadConfig({
+      root,
+      configPath: this.opts.configPath,
+      overrides: this.opts.overrides,
+      optional: !!this.opts.agentName,
+      autoCreate: true
+    })
     this.cfg = cfg
+    configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
     if (cfg.security.requireSandbox && !this.sandboxMechanism) {
       throw new Error('daemon startup refused: security.requireSandbox is true but this host has no bwrap/sandbox-exec')
     }
@@ -1546,7 +1618,7 @@ export class Daemon {
     probeGitVersion((m) => this.log.warn(m))
     if (!cfg.daemonId && !cpKeyOnboarding) {
       cfg.daemonId = randomUUID()
-      persistDaemonId(root, cfg.daemonId)
+      persistDaemonId(root, cfg.daemonId, this.opts.configPath)
     }
     this.log = makeLogger(cfg.logging.level)
     this.log.info(`starting daemon (root=${root})`)
@@ -1808,6 +1880,9 @@ export class Daemon {
       // Must hand back a *started* host: handle() calls host.newSession() immediately,
       // which needs the ACP connection that start() establishes.
       hostFor: (agentId) => this.ensureHostAsync(agentId),
+      // Whether the runtime process is already up. When it isn't, hostFor cold-starts
+      // it, so the workspace (and skills) must be prepared first — see SessionManager.
+      isHostRunning: (agentId) => this.hosts.has(agentId),
       agentById: (id) => this.agents.get(id),
       memory: this.memory,
       onMemoryRecallError: (agentId, error) =>
@@ -1891,8 +1966,10 @@ export class Daemon {
       // §9.2: download inbound attachment bytes via the agent's Slack connection
       // (bot-token auth). Returns null (→ baseline resource_link) if no connection.
       downloadAttachment: (agentId, att) =>
-        this.replyConnFor(agentId)?.downloadFile?.(att.sourceUrl, this.cfg.limits.maxAttachmentBytes) ??
-        Promise.resolve(null),
+        att.sourceUrl
+          ? (this.replyConnFor(agentId)?.downloadFile?.(att.sourceUrl, this.cfg.limits.maxAttachmentBytes) ??
+            Promise.resolve(null))
+          : Promise.resolve(null),
       attachmentMaxBytes: cfg.limits.maxAttachmentBytes,
       // §8.4/§8.5/§9.2: snapshot real Slack thread history for cold backfill and
       // warm-turn unread reconciliation (#649).
@@ -1905,6 +1982,11 @@ export class Daemon {
           this.log.error(`cron dispatch failed for agent "${agentId}": ${formatErr(err)}`)
         ),
       newTraceId: () => randomUUID(),
+      warn: (m) => this.log.warn(m)
+    })
+    // Scheduled dreams ride their own trigger, never a synthetic turn (§9).
+    this.dreamScheduler = new DreamScheduler({
+      onFire: (agentId) => this.onDreamScheduleFire(agentId),
       warn: (m) => this.log.warn(m)
     })
 
@@ -1978,6 +2060,7 @@ export class Daemon {
 
     // register crons (sync per agent — the same converge reconcile re-runs on change)
     for (const a of agents) this.scheduler.sync(a.id, a.crons)
+    for (const a of agents) this.dreamScheduler.sync(a.id, dreamingPolicyOf(a))
     const cronCount = agents.reduce((n, a) => n + this.scheduler.count(a.id), 0)
     if (cronCount) this.log.info(`registered ${cronCount} cron(s)`)
 
@@ -2090,6 +2173,7 @@ export class Daemon {
       this.interruptAgentTurns(id, 'stop')
       this.agents.delete(id)
       this.scheduler.unregister(id)
+      this.dreamScheduler.unregister(id)
       this.gitCreds.remove(id)
       this.gitCredServer?.revoke(id)
       // Use the one generation-safe teardown path: it evicts the host synchronously,
@@ -2117,14 +2201,21 @@ export class Daemon {
       if (previous?.allowRuntimeChangesInChat === true && !a.allowRuntimeChangesInChat) {
         this.restoreConfiguredRuntimeSettings(a as LoadedAgent)
       }
+      let workspaceNeedsColdRecovery = change.workspace
       // A GitHub rename changes only the canonical remote URL for the same
-      // App-backed repository. Keep active/queued turns and the cached host
-      // intact; update origin in place so subsequent git commands use the new
-      // address without waiting for another session to prepare the workspace.
+      // App-backed repository. Keep active/queued turns and the cached host only
+      // after origin convergence succeeds. Otherwise fall back to the ordinary
+      // cold workspace path so a live host cannot keep serving an untrusted or
+      // stale checkout.
       if (change.workspaceRepoRename) {
-        await convergeGithubAppWorkspaceRename(a as LoadedAgent).catch((err) =>
-          this.log.warn(`workspace: canonical rename convergence for "${a.id}" failed: ${formatErr(err)}`)
-        )
+        try {
+          await convergeGithubAppWorkspaceRename(a as LoadedAgent)
+        } catch (err) {
+          workspaceNeedsColdRecovery = true
+          this.log.warn(
+            `workspace: canonical rename convergence for "${a.id}" failed; evicting its host: ${formatErr(err)}`
+          )
+        }
       }
       // Pause is an operator stop, not merely a gate for the next message. Publish the
       // gate first so no new turn can enter, then interrupt every active logical session
@@ -2133,17 +2224,18 @@ export class Daemon {
       // crons live in the whole-agent signature, so any change re-syncs the agent's
       // job set (design §5.2: crons change → Scheduler upsert/remove). Idempotent.
       this.scheduler.sync(a.id, a.crons)
+      this.dreamScheduler.sync(a.id, dreamingPolicyOf(a))
       // host-spawn or workspace change → evict the cached host (once) so the next
       // session lazily re-spawns it with fresh env and/or re-materializes cwd via
       // prepareWorkspace. Soft-only and integration-only changes never touch the host.
-      if (change.hostRespawn || change.workspace) {
+      if (change.hostRespawn || workspaceNeedsColdRecovery) {
         // A config-triggered respawn keeps the agent in the roster, so install a
         // temporary admission gate around the generation-safe teardown, preserving any
         // older lifecycle gate intact.
         const wasDraining = this.drainingAgents.has(a.id)
         this.drainingAgents.add(a.id)
         this.interruptAgentTurns(a.id, 'stop')
-        if (change.workspace) {
+        if (workspaceNeedsColdRecovery) {
           this.gitCreds.remove(a.id)
           this.gitCredServer?.revoke(a.id)
         }
@@ -2168,7 +2260,7 @@ export class Daemon {
       // workspace change → eagerly (re-)materialize the checkout in the background so
       // a re-pointed git-repo is warm before the next message, instead of paying the
       // clone latency on that first session.
-      if (change.workspace) this.prefetchClone(a as LoadedAgent)
+      if (workspaceNeedsColdRecovery) this.prefetchClone(a as LoadedAgent)
       // Defer platform convergence until EVERY agent delta has been installed.
       // This preserves a token handed from one agent to another in the same batch:
       // reconciling midway through the diff would briefly see zero references and
@@ -2185,6 +2277,7 @@ export class Daemon {
       // start every agent is a toStart), so the repo is cloned ahead of the first message.
       this.prefetchClone(a as LoadedAgent)
       this.scheduler.sync(a.id, a.crons)
+      this.dreamScheduler.sync(a.id, dreamingPolicyOf(a))
     }
     // Reconcile exactly once from the final live roster. The close phase is strict:
     // detach ACKs only after last-reference connections have actually stopped.
@@ -2244,10 +2337,12 @@ export class Daemon {
     const discordByIntegration = new Map<string, string>()
     for (const group of discord.values())
       for (const { integrationId } of group.integrations) discordByIntegration.set(integrationId, group.botToken)
-    // Feishu keys on appId (one WSClient per self-built app), not a bot token.
+    // Feishu keys on appId (one WSClient per self-built app), not a bot token — plus the
+    // region, so a gateway change on the same appId is treated as a different desired conn.
     const feishuByIntegration = new Map<string, string>()
     for (const group of feishu.values())
-      for (const { integrationId } of group.integrations) feishuByIntegration.set(integrationId, group.appId)
+      for (const { integrationId } of group.integrations)
+        feishuByIntegration.set(integrationId, feishuConnKey(group.appId, group.region))
 
     const allDesiredIds = new Set([
       ...directByIntegration.keys(),
@@ -2291,7 +2386,10 @@ export class Daemon {
       }
     }
     for (const [integrationId, conn] of this.fsConnByIntegration) {
-      if (conn.appId !== feishuByIntegration.get(integrationId)) {
+      // Compare appId AND region: a region flip on the same appId must evict the stale
+      // mapping here (not only when a replacement start succeeds), so a failed replacement
+      // never leaves an integration routed at the stopped old-domain client.
+      if (feishuConnKey(conn.appId, conn.region) !== feishuByIntegration.get(integrationId)) {
         this.fsConnByIntegration.delete(integrationId)
         dropIdentity(integrationId)
       }
@@ -2338,7 +2436,11 @@ export class Daemon {
       this.discordConns = this.discordConns.filter((candidate) => candidate !== conn)
     }
     for (const conn of [...this.feishuConns]) {
-      if (feishu.has(conn.appId)) continue
+      // Keep only a conn whose appId is still desired AND whose region is unchanged —
+      // a region flip on the same appId must drop the old-domain client so the open
+      // loop dials the new gateway (feishu.cn ↔ larksuite.com).
+      const want = feishu.get(conn.appId)
+      if (want && want.region === conn.region) continue
       await this.waitForConnectionUses(conn)
       await conn.stop()
       this.feishuConns = this.feishuConns.filter((candidate) => candidate !== conn)
@@ -2611,6 +2713,16 @@ export class Daemon {
     this.backfillChannelNames()
   }
 
+  /** The live desired gateway region for a Feishu appId, or undefined if no agent
+   *  currently has a feishu integration on that appId. Lets an in-flight connect detect a
+   *  region change (or removal) that landed during its handshake and self-discard instead
+   *  of publishing an old-domain mapping. */
+  private desiredFeishuRegion(appId: string): FeishuRegion | undefined {
+    for (const group of consolidateFeishu([...this.agents.values()]).values())
+      if (group.appId === appId) return group.region
+    return undefined
+  }
+
   /**
    * Reconcile the connection-derived Feishu state (`botUserIds`, `fsConnByIntegration`,
    * open WSClient long-connections) against the live `agents`. Parallel to
@@ -2622,7 +2734,9 @@ export class Daemon {
   private async reconcileFeishuConnections(): Promise<void> {
     const groups = consolidateFeishu([...this.agents.values()])
     for (const group of groups.values()) {
-      const existing = this.feishuConns.find((c) => c.appId === group.appId)
+      // Match on appId AND region: a region change on the same appId must NOT reuse the
+      // old-domain client (the prune pass drops it; this guards a same-pass race too).
+      const existing = this.feishuConns.find((c) => c.appId === group.appId && c.region === group.region)
       if (existing) {
         for (const { integrationId } of group.integrations) {
           if (this.fsConnByIntegration.get(integrationId) !== existing) {
@@ -2633,10 +2747,12 @@ export class Daemon {
         }
         continue
       }
-      // Another connect for this appId is already in flight (not yet pushed onto
+      // A connect for this appId+region is already in flight (not yet pushed onto
       // feishuConns, so `find()` above can't see it). Skip to avoid opening a duplicate;
-      // that connect binds this group's integrations when it resolves.
-      if (this.feishuConnecting.has(group.appId)) continue
+      // that connect binds this group's integrations when it resolves. Keyed on region
+      // too, so a NEW-region reconcile is NOT blocked by an in-flight OLD-region connect.
+      const connectKey = feishuConnKey(group.appId, group.region)
+      if (this.feishuConnecting.has(connectKey)) continue
       const conn: FeishuConnection = new FeishuConnection({
         group,
         newTraceId: () => randomUUID(),
@@ -2646,7 +2762,7 @@ export class Daemon {
         },
         log: this.log
       })
-      this.feishuConnecting.add(group.appId)
+      this.feishuConnecting.add(connectKey)
       try {
         this.log.info(
           `feishu: connecting (${group.integrations.length} integration(s): ${group.integrations
@@ -2654,6 +2770,18 @@ export class Daemon {
             .join(', ')})…`
         )
         await conn.start()
+        // The handshake can take seconds; a region change for this appId may have landed
+        // meanwhile. Re-check the live desired region before publishing — otherwise this
+        // now-stale (old-domain) connect would bind its mapping over the newer region.
+        const desired = this.desiredFeishuRegion(group.appId)
+        if (desired !== group.region) {
+          await conn.stop().catch(() => {})
+          this.log.info(
+            `feishu: discarding connect for app ${conn.appId} (${group.region}) — desired region is now ` +
+              `${desired ?? 'none'} (superseded mid-handshake)`
+          )
+          continue
+        }
         this.log.info(`feishu: WSClient connected for app ${conn.appId} (bot ${conn.botOpenId || '?'})`)
         for (const { integrationId } of group.integrations) {
           // Mention-routing matches the bot's own open_id (normalize's mentionedBots are open_ids).
@@ -2665,7 +2793,7 @@ export class Daemon {
         await conn.stop().catch(() => {})
         this.log.error(`feishu: failed to open WSClient for an appId — leaving others intact: ${formatErr(err)}`)
       } finally {
-        this.feishuConnecting.delete(group.appId)
+        this.feishuConnecting.delete(connectKey)
       }
     }
     // Label existing sessions' channels now that connections are up (per-message
@@ -3176,6 +3304,132 @@ export class Daemon {
     }
   }
 
+  /**
+   * Run one isolated dream-extraction session (docs/designs/memory-dreaming.md §5).
+   * Unlike the long-lived distillation session, every dream gets a FRESH session
+   * and discards it — dreams are rare and their huge prompts should not linger in
+   * a cached context.
+   *
+   * Two independent trust dimensions, deliberately gated differently:
+   *
+   * - **Side effects during the run — HARD GATE (fail closed).** The mined
+   *   transcript is attacker-controlled; a prompt injection could drive the
+   *   runtime's native shell/file/network tools before it ever returns JSON, and
+   *   staged-output review only contains the *memory result*, not tool side
+   *   effects. So we REQUIRE a verified non-mutating (read-only/plan) permission
+   *   mode and throw if the runtime has none or the switch doesn't take — the
+   *   dream then fails rather than running with write access. (Passing `[]`
+   *   mcpServers only drops our MCP tools, not the runtime's built-ins.)
+   * - **Trusted system-prompt channel — SOFT.** When the runtime carries the
+   *   system prompt via `_meta.systemPrompt` the dream policy rides it; otherwise
+   *   the policy is prepended to the user prompt. That fallback is acceptable
+   *   because the output is staged and reviewed — bad *content* can't reach the
+   *   live store. `autoAdopt` (D-2) is what stays gated on the trusted channel.
+   */
+  private async runDreamExtraction(
+    agentId: string,
+    systemPrompt: string,
+    prompt: string,
+    signal: AbortSignal
+  ): Promise<{ output: string; trustedChannel: boolean }> {
+    const agent = this.agents.get(agentId)
+    if (!agent) throw new Error(`unknown agent ${agentId}`)
+    const host = await this.ensureHostAsync(agentId)
+    // Captured from THIS host, and returned with the output — the runner binds
+    // auto-adopt's gate to the extraction that actually produced the proposal,
+    // so a later host replacement can't retro-authorize an untrusted one.
+    const trusted = host.usesMetaSystemPrompt()
+    let cwd = this.memoryExtractionDirs.get(agentId)
+    if (!cwd) {
+      cwd = await mkdtemp(join(tmpdir(), 'agentconnect-memory-distill-'))
+      this.memoryExtractionDirs.set(agentId, cwd)
+    }
+    // Abort can land during the awaited setup below, before any prompt exists —
+    // then `session/cancel` has nothing to cancel. Guard on the signal after each
+    // await and immediately before dispatch so a canceled dream bails instead of
+    // launching an uncancellable prompt.
+    if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
+    const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
+    // On cancel, drive the ACP turn-cancel path so a hung/long prompt actually
+    // stops instead of pinning the dream's one-in-flight reservation.
+    const onAbort = () => void host.cancel(sessionId).catch(() => {})
+    if (signal.aborted) onAbort()
+    else signal.addEventListener('abort', onAbort, { once: true })
+    try {
+      if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
+      // HARD GATE: require a verified non-mutating mode. Fail closed if the
+      // runtime advertises none or the switch is rejected — never run an
+      // injection-exposed extraction with write access.
+      const modes = host.permissionModeOptions()?.modes ?? []
+      const readOnlyMode = modes.find((mode) => mode === 'read-only') ?? modes.find((mode) => mode === 'plan')
+      if (!readOnlyMode || !(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
+        throw new Error('runtime lacks a verified read-only/plan mode; dream extraction cannot run safely')
+      }
+      // Final guard immediately before dispatch — abort during permission setup.
+      if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
+
+      const key = pendingTurnKey(agentId, sessionId)
+      const chunks: string[] = []
+      this.memoryExtractionCollectors.set(key, chunks)
+      try {
+        this.rematerializeConfigFiles(agentId)
+        const text = trusted ? prompt : `${systemPrompt}\n\n${prompt}`
+        // Bounded backstop: if the runtime ignores `session/cancel` and never
+        // yields, stop awaiting after DREAM_CANCEL_FORCE_MS from the abort so the
+        // `finally` discards the ACP session instead of leaking it. The runner's
+        // own grace window already releases the reservation independently.
+        await this.promptWithCancelBackstop(host, sessionId, text, signal)
+        return { output: chunks.join(''), trustedChannel: trusted }
+      } finally {
+        this.memoryExtractionCollectors.delete(key)
+      }
+    } finally {
+      signal.removeEventListener('abort', onAbort)
+      host.discardSession(sessionId)
+    }
+  }
+
+  /** Await `host.prompt`, but stop waiting `DREAM_CANCEL_FORCE_MS` after an abort
+   *  if the runtime never yields — so a runtime that ignores `session/cancel`
+   *  can't wedge this call (and its ACP session) forever. */
+  private async promptWithCancelBackstop(
+    host: AcpHost,
+    sessionId: string,
+    text: string,
+    signal: AbortSignal
+  ): Promise<void> {
+    const done = host.prompt(sessionId, [{ type: 'text', text }])
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const backstop = new Promise<never>((_resolve, reject) => {
+      const arm = () =>
+        (timer = setTimeout(
+          () => reject(new Error('dream extraction ignored session/cancel; detached after backstop')),
+          DREAM_CANCEL_FORCE_MS
+        ))
+      if (signal.aborted) arm()
+      else signal.addEventListener('abort', arm, { once: true })
+    })
+    try {
+      await Promise.race([done, backstop])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  /** The daemon's single dream-job engine, built on first use (the local store
+   *  must exist for the boot-time crash-recovery sweep). */
+  private dreamRunner(): DreamRunner {
+    this.dreamRunnerInstance ??= new DreamRunner({
+      agentDirByAgent: (id) => this.agents.get(id)?.dir,
+      dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
+      store: this.store,
+      extract: (agentId, systemPrompt, prompt, signal) =>
+        this.runDreamExtraction(agentId, systemPrompt, prompt, signal),
+      log: this.log
+    })
+    return this.dreamRunnerInstance
+  }
+
   /** Whether this agent is backed by Codex ACP. Registry ids are canonical, while
    *  command/args matching keeps user-defined runtime aliases working. */
   private isCodexRuntime(agentId: string): boolean {
@@ -3399,9 +3653,12 @@ export class Daemon {
     chatId: string,
     text: string,
     user: string,
-    sink: WebchatSink
+    sink: WebchatSink,
+    requestedTurnId?: string,
+    inlineImages?: WebchatImageAttachment[],
+    requestedRuntime?: WebchatRuntimeConfig
   ): WebchatAck {
-    const turnId = randomUUID()
+    const turnId = requestedTurnId ?? randomUUID()
     // Route directly to the named agent (bypasses arbitration); null when it isn't a
     // servable agent on this daemon.
     const result = routeRules(
@@ -3447,6 +3704,20 @@ export class Daemon {
       sender: { id: user, isBot: false },
       text,
       mentionedBots: [],
+      ...(inlineImages?.length
+        ? {
+            attachments: inlineImages.map((image, index) => {
+              const inlineData = Buffer.from(image.data, 'base64')
+              return {
+                id: `webchat:${turnId}:${index}`,
+                name: image.name,
+                mimeType: image.mimeType,
+                size: inlineData.byteLength,
+                inlineData
+              }
+            })
+          }
+        : {}),
       isDm: true,
       trigger: 'dm'
     }
@@ -3459,7 +3730,14 @@ export class Daemon {
       this.log.warn(`webchat: queue full for session ${key} — rejecting turn`)
       return { accepted: false, turnId, reason: 'busy' }
     }
-    void this.dispatch(result.agentId, msg, undefined, { conversationId: chatId, turnId, sink }).catch((err) =>
+    this.pruneWebchatStreams()
+    if (this.webchatStreams.has(turnId)) {
+      return { accepted: false, turnId, reason: 'busy' }
+    }
+    const initialRuntime =
+      this.agents.get(result.agentId)?.allowRuntimeChangesInChat === true ? requestedRuntime : undefined
+    const stream = this.createWebchatTurnStream(result.agentId, chatId, turnId, sink, initialRuntime)
+    void this.dispatch(result.agentId, msg, undefined, stream).catch((err) =>
       this.log.error(`webchat dispatch failed for agent "${result.agentId}": ${formatErr(err)}`)
     )
     return { accepted: true, turnId }
@@ -3476,6 +3754,153 @@ export class Daemon {
    *  (channel = conversationId, statusThread = the stable `webchat:<id>` msgId, no thread). */
   private webchatSessionKey(conversationId: string, agentId: string): string {
     return sessionKey('webchat', conversationId, `webchat:${conversationId}`, agentId)
+  }
+
+  /** Wrap the turn's relay-bound transport with daemon-owned bounded replay. The
+   * turn engine keeps calling the stable wrapper while resume swaps only the raw
+   * transport underneath it. */
+  private createWebchatTurnStream(
+    agentId: string,
+    conversationId: string,
+    turnId: string,
+    transport: WebchatSink,
+    runtime?: WebchatRuntimeConfig
+  ): WebchatTurnStream {
+    this.pruneWebchatStreams()
+    const stream: WebchatTurnStream = {
+      agentId,
+      conversationId,
+      turnId,
+      transport,
+      ...(runtime ? { runtime } : {}),
+      resumeGeneration: 0,
+      sink: {
+        output: (output) => this.publishWebchatStreamEvent(stream, { kind: 'output', output }),
+        done: (done) => this.publishWebchatStreamEvent(stream, { kind: 'done', done })
+      },
+      replay: [],
+      replayBytes: 0,
+      replayFloor: 0,
+      replayDisabled: false,
+      lastOutputIndex: -1
+    }
+    this.webchatStreams.set(turnId, stream)
+    this.pruneWebchatStreams()
+    return stream
+  }
+
+  /** Buffer before sending so a transport gap is recoverable even when the live
+   * write is lost. The terminal frame carries the final output index for browser
+   * gap detection. */
+  private publishWebchatStreamEvent(stream: WebchatTurnStream, event: RdChatEvent): void {
+    const normalized: RdChatEvent =
+      event.kind === 'output' ? event : { kind: 'done', done: { ...event.done, lastIndex: stream.lastOutputIndex } }
+    if (normalized.kind === 'output') {
+      stream.lastOutputIndex = Math.max(stream.lastOutputIndex, normalized.output.index)
+    }
+    if (!stream.replayDisabled) this.bufferWebchatStreamEvent(stream, normalized)
+    this.deliverWebchatStreamEvent(stream.transport, normalized)
+    if (normalized.kind === 'done') {
+      stream.completedAt = this.clock.now()
+      this.pruneWebchatStreams()
+    }
+  }
+
+  private bufferWebchatStreamEvent(stream: WebchatTurnStream, event: RdChatEvent): void {
+    const bytes = Buffer.byteLength(JSON.stringify(event))
+    stream.replay.push({ event, bytes })
+    stream.replayBytes += bytes
+    while (stream.replay.length > WEBCHAT_REPLAY_MAX_EVENTS || stream.replayBytes > WEBCHAT_REPLAY_MAX_BYTES) {
+      const dropped = stream.replay.shift()
+      if (!dropped) break
+      stream.replayBytes -= dropped.bytes
+      if (dropped.event.kind === 'output') {
+        stream.replayFloor = Math.max(stream.replayFloor, dropped.event.output.index + 1)
+      } else {
+        // A terminal frame is tiny and should never be the overflow victim. Fail
+        // closed if a future payload shape violates that assumption.
+        stream.replayDisabled = true
+        stream.replay = []
+        stream.replayBytes = 0
+        break
+      }
+    }
+  }
+
+  private deliverWebchatStreamEvent(sink: WebchatSink, event: RdChatEvent): void {
+    if (event.kind === 'output') sink.output(event.output)
+    else sink.done(event.done)
+  }
+
+  private resumeWebchatStream(
+    agentId: string,
+    conversationId: string,
+    turnId: string,
+    generation: number,
+    afterIndex: number,
+    transport: WebchatSink
+  ): { accepted: boolean; turnId?: string; reason?: string } {
+    this.pruneWebchatStreams()
+    const stream = this.webchatStreams.get(turnId)
+    if (!stream || stream.agentId !== agentId || stream.conversationId !== conversationId) {
+      return { accepted: false, reason: 'stream_not_found' }
+    }
+    if (generation <= stream.resumeGeneration) {
+      return { accepted: false, turnId: stream.turnId, reason: 'stream_stale' }
+    }
+    // Claim the newer connection generation before validating its cursor. Even a
+    // failed newer resume must fence an older request that is still in flight.
+    stream.resumeGeneration = generation
+    if (stream.replayDisabled || afterIndex < stream.replayFloor - 1) {
+      return { accepted: false, turnId: stream.turnId, reason: 'stream_gap' }
+    }
+    if (afterIndex > stream.lastOutputIndex) {
+      return { accepted: false, turnId: stream.turnId, reason: 'stream_cursor_invalid' }
+    }
+
+    // Rebind first: outputs produced after this synchronous replay leave through
+    // the same new relay connection. Replay bypasses the stable buffering wrapper
+    // so retained frames are not inserted twice.
+    stream.transport = transport
+    for (const buffered of stream.replay) {
+      if (buffered.event.kind === 'output' && buffered.event.output.index <= afterIndex) continue
+      this.deliverWebchatStreamEvent(transport, buffered.event)
+    }
+    return { accepted: true, turnId: stream.turnId }
+  }
+
+  private removeWebchatStream(turnId: string, stream: WebchatTurnStream): void {
+    this.webchatStreams.delete(turnId)
+    stream.replayDisabled = true
+    stream.replay = []
+    stream.replayBytes = 0
+  }
+
+  private pruneWebchatStreams(): void {
+    const now = this.clock.now()
+    for (const [turnId, stream] of this.webchatStreams) {
+      if (stream.completedAt !== undefined && now - stream.completedAt > WEBCHAT_REPLAY_TTL_MS) {
+        this.removeWebchatStream(turnId, stream)
+      }
+    }
+    while (this.webchatStreams.size > WEBCHAT_REPLAY_MAX_STREAMS) {
+      const completed =
+        [...this.webchatStreams].find(([, stream]) => stream.completedAt !== undefined) ??
+        this.webchatStreams.entries().next().value
+      if (!completed) break
+      this.removeWebchatStream(completed[0], completed[1])
+    }
+  }
+
+  /**
+   * Record who drove one chat-side session action. The platform interaction is the only
+   * place the acting user exists — the session key alone says what changed, never by whom —
+   * so it is logged at every funnel point. `unknown` when an ingress could not report an
+   * actor (today: relay-forwarded Slack actions, whose frame carries no user).
+   */
+  private logSessionAction(verb: string, sessionKey: string, actor?: InteractionActor): void {
+    const who = actor ? `${actor.userId}${actor.isBot ? ' (bot)' : ''}` : 'unknown'
+    this.log.info(`session ${sessionKey}: "${verb}" by ${who}`)
   }
 
   /** Resolve a session only while its Agent explicitly permits chat-side runtime changes. */
@@ -3508,14 +3933,15 @@ export class Daemon {
 
   /** Cancel the in-flight turn for a local session key — the `!cancel` core (interrupt,
    *  NO mute) shared by the Slack status-bar Cancel button. No-op if nothing is running. */
-  private cancelSessionByKey(key: string): void {
+  private cancelSessionByKey(key: string): boolean {
     const rec = this.store.getSession(key)
     // Cancel a gate-owned/queued session even if it has no live ACP turn yet (§6.9 #390):
     // interruptTurn drains the queue by key and cancels the ACP turn only if one exists.
-    if (!this.inflight.has(key)) return
+    if (!this.inflight.has(key)) return false
     const agentId = rec?.agentId ?? this.serialQueue.get(key)?.[0]?.agentId
-    if (!agentId) return
+    if (!agentId) return false
     this.interruptTurn(agentId, key, 'cancel', rec?.acpSessionId ?? undefined)
+    return true // reports whether a turn was actually interrupted (nothing else reads it)
   }
 
   /** Switch a session's reasoning effort by its local key — the effort counterpart of
@@ -3561,10 +3987,9 @@ export class Daemon {
     return true
   }
 
-  /** Removing chat authority also removes its effect from every live session. This
-   *  closes the window where a previously selected full-access mode could otherwise
-   *  survive until the next message restores the Agent-level policy. */
-  private restoreConfiguredRuntimeSettings(agent: LoadedAgent): void {
+  /** Apply the Agent's configured runtime policy to one live session. Callers that
+   *  fence a pending prompt await this; reconciliation fans it out in the background. */
+  private async applyConfiguredRuntimeSettings(agent: LoadedAgent, host: AcpHost, sessionId: string): Promise<void> {
     const catalog = this.runtimeCatalogs.get(agent.runtime)
     // A fresh ACP session may advertise its baseline as the literal `default`.
     // Catalog metadata intentionally keeps defaultModel concrete, so fall back to
@@ -3580,19 +4005,25 @@ export class Daemon {
     // The console treats an unset fast-mode default as off. Explicitly restore
     // that value so disabling chat authority also revokes a live `fast on`.
     const fastMode = agent.fastMode ?? false
+    if (model) await host.setSessionModel(sessionId, model)
+    if (effort) await host.setSessionEffort(sessionId, effort)
+    if (permissionMode && typeof host.setSessionPermissionMode === 'function') {
+      await host.setSessionPermissionMode(sessionId, permissionMode)
+    }
+    await host.setSessionFastMode(sessionId, fastMode)
+  }
+
+  /** Removing chat authority also removes its effect from every live session. This
+   *  closes the window where a previously selected full-access mode could otherwise
+   *  survive until the next message restores the Agent-level policy. */
+  private restoreConfiguredRuntimeSettings(agent: LoadedAgent): void {
     const host = this.hosts.get(agent.id)
     if (!host) return
     for (const session of this.store.listSessions(agent.id)) {
       if (!session.acpSessionId || host.hasSession?.(session.acpSessionId) !== true) continue
       const sessionId = session.acpSessionId
-      void Promise.resolve()
-        .then(async () => {
-          if (model) await host.setSessionModel(sessionId, model)
-          if (effort) await host.setSessionEffort(sessionId, effort)
-          if (permissionMode && typeof host.setSessionPermissionMode === 'function') {
-            await host.setSessionPermissionMode(sessionId, permissionMode)
-          }
-          await host.setSessionFastMode(sessionId, fastMode)
+      void this.applyConfiguredRuntimeSettings(agent, host, sessionId)
+        .then(() => {
           this.refreshStatusBarForKey(session.key)
         })
         .catch((err) =>
@@ -3633,11 +4064,12 @@ export class Daemon {
   /** Set a session's Slack output verbosity by its local key. Purely daemon-side (no ACP):
    *  the next turn's OutputConverger reads this override, so an in-flight turn keeps its
    *  current verbosity and the change takes effect from the next turn. */
-  private setOutputModeByKey(key: string, mode: 'none' | 'minimal' | 'low' | 'medium' | 'high'): void {
-    if (!this.store.getSession(key)) return
+  private setOutputModeByKey(key: string, mode: 'none' | 'minimal' | 'low' | 'medium' | 'high'): boolean {
+    if (!this.store.getSession(key)) return false
     this.store.setOutputModeOverride(key, mode)
     this.log.info(`session ${key} output-mode override → "${mode}"`)
     this.refreshStatusBarForKey(key)
+    return true // reports whether the override was recorded (nothing else reads it)
   }
 
   /** Handle a webchat cancel (the relay `cancel` op / status-bar "Cancel"). Interrupts
@@ -3669,6 +4101,8 @@ export class Daemon {
     this.log.debug(`webchat cancel: no in-flight turn for conversation ${conversationId}`)
   }
 
+  // Bounded, ephemeral reconnect state keyed by the browser-known turn id.
+  private readonly webchatStreams = new Map<string, WebchatTurnStream>()
   // Idempotency cache for the at-least-once rd/* wire: (sessionKey:msgId) → the ack we
   // already returned. Bounded like `seenMsgIds`. A relay retransmit replays this instead
   // of re-dispatching. (design §7.2 RdMsgWebchat: "the daemon drops an already-seen
@@ -3848,6 +4282,9 @@ export class Daemon {
     }
 
     const payload = msg.payload
+    // The relay forwards the tapping user when it knows one; an older relay omits it
+    // and the action records as an unknown actor rather than a guessed one.
+    const actor = msg.userId ? { userId: msg.userId } : undefined
     if (payload.kind === 'open-config') {
       const privateMetadata = encodeSharedSlackStatusTarget({
         agentId: msg.agentId,
@@ -3858,25 +4295,26 @@ export class Daemon {
       // connection catches/logs Web API failures; rd/ack is only the relay receipt.
       void conn.openStatusModal(payload.triggerId, msg.sessionKey, privateMetadata)
     } else if (payload.kind === 'set-model') {
-      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, model: payload.model })
+      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, model: payload.model, actor })
     } else if (payload.kind === 'set-effort') {
-      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, effort: payload.effort })
+      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, effort: payload.effort, actor })
     } else if (payload.kind === 'set-permission-mode') {
       this.handleStatusAction({
         kind: payload.kind,
         sessionKey: msg.sessionKey,
-        permissionMode: payload.permissionMode
+        permissionMode: payload.permissionMode,
+        actor
       })
     } else if (payload.kind === 'set-fast') {
-      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, fastMode: payload.fastMode })
+      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, fastMode: payload.fastMode, actor })
     } else if (payload.kind === 'set-output') {
-      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, outputMode: payload.outputMode })
+      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, outputMode: payload.outputMode, actor })
     } else if (payload.kind === 'permission-choice') {
-      this.handlePermissionChoice(payload)
+      this.handlePermissionChoice({ ...payload, actor })
     } else if (payload.kind === 'elicitation-choice') {
       this.handleElicitChoice({ requestId: payload.requestId, value: payload.value })
     } else {
-      this.handleStatusAction({ kind: 'cancel', sessionKey: msg.sessionKey })
+      this.handleStatusAction({ kind: 'cancel', sessionKey: msg.sessionKey, actor })
     }
     return { msgId: msg.msgId, accepted: true }
   }
@@ -5332,12 +5770,30 @@ export class Daemon {
     const key = (): string => this.webchatSessionKey(msg.chatId, msg.agentId)
     switch (op.op) {
       case 'turn': {
-        const ack = this.dispatchWebchatTurn(msg.agentId, msg.chatId, op.text, op.user ?? 'webchat', sink)
+        const ack = this.dispatchWebchatTurn(
+          msg.agentId,
+          msg.chatId,
+          op.text,
+          op.user ?? 'webchat',
+          sink,
+          op.turnId,
+          op.attachments,
+          op.runtime
+        )
         return {
           msgId: msg.msgId,
           accepted: ack.accepted,
           turnId: ack.turnId,
           ...(ack.reason ? { reason: ack.reason } : {})
+        }
+      }
+      case 'resume': {
+        const resumed = this.resumeWebchatStream(msg.agentId, msg.chatId, op.turnId, op.generation, op.afterIndex, sink)
+        return {
+          msgId: msg.msgId,
+          accepted: resumed.accepted,
+          ...(resumed.turnId ? { turnId: resumed.turnId } : {}),
+          ...(resumed.reason ? { reason: resumed.reason } : {})
         }
       }
       case 'set_model':
@@ -5371,24 +5827,31 @@ export class Daemon {
   private handleStatusAction(a: {
     kind: 'set-model' | 'set-effort' | 'set-permission-mode' | 'set-fast' | 'set-output' | 'cancel'
     sessionKey: string
+    actor?: InteractionActor
     model?: string
     effort?: string
     permissionMode?: string
     fastMode?: boolean
     outputMode?: 'none' | 'minimal' | 'low' | 'medium' | 'high'
   }): void {
-    if (a.kind === 'cancel') this.cancelSessionByKey(a.sessionKey)
+    // A status-bar tap carries no author in the transcript, so the operator behind a
+    // cancelled turn or a switched model is otherwise unrecoverable. Record it here,
+    // at the one point every ingress funnels through — but only when the verb actually
+    // applied, so a refused or no-op click never reads as a change someone made.
+    let applied = false
+    if (a.kind === 'cancel') applied = this.cancelSessionByKey(a.sessionKey)
     else if (a.kind === 'set-model') {
-      if (a.model) this.setModelByKey(a.sessionKey, a.model)
+      if (a.model) applied = this.setModelByKey(a.sessionKey, a.model)
     } else if (a.kind === 'set-effort') {
-      if (a.effort) this.setEffortByKey(a.sessionKey, a.effort)
+      if (a.effort) applied = this.setEffortByKey(a.sessionKey, a.effort)
     } else if (a.kind === 'set-permission-mode') {
-      if (a.permissionMode) this.setPermissionModeByKey(a.sessionKey, a.permissionMode)
+      if (a.permissionMode) applied = this.setPermissionModeByKey(a.sessionKey, a.permissionMode)
     } else if (a.kind === 'set-fast') {
-      if (a.fastMode !== undefined) this.setFastByKey(a.sessionKey, a.fastMode)
+      if (a.fastMode !== undefined) applied = this.setFastByKey(a.sessionKey, a.fastMode)
     } else if (a.kind === 'set-output') {
-      if (a.outputMode) this.setOutputModeByKey(a.sessionKey, a.outputMode)
+      if (a.outputMode) applied = this.setOutputModeByKey(a.sessionKey, a.outputMode)
     }
+    if (applied) this.logSessionAction(a.kind, a.sessionKey, a.actor)
   }
 
   /**
@@ -5402,6 +5865,7 @@ export class Daemon {
     kind: SelectKind
     index: number
     sessionKey: string
+    actor?: InteractionActor
   }): { text: string; components: DiscordComponents } | undefined {
     const rec = this.store.getSession(a.sessionKey)
     if (!rec) return undefined
@@ -5409,7 +5873,10 @@ export class Daemon {
     const { options } = this.selectOptions(a.kind, info)
     const value = options[a.index]
     if (value === undefined) return undefined
-    this.applySelect(a.kind, a.sessionKey, value)
+    // Recorded only once the choice actually applied — a refused or stale select
+    // changes nothing and must not read as though someone had changed it. The card is
+    // still re-rendered either way, as before.
+    if (this.applySelect(a.kind, a.sessionKey, value)) this.logSessionAction(`select:${a.kind}`, a.sessionKey, a.actor)
     const components = buildDiscordSelectComponents(a.kind, value, options)
     if (!components) return undefined
     return { text: this.selectCardText(a.kind, value), components }
@@ -6052,6 +6519,9 @@ export class Daemon {
       return
     }
     if (!this.applySelect(kind, session.key, value)) return
+    // Telegram names the tapping user on the callback itself; record only the applied
+    // change, matching the other funnels.
+    this.logSessionAction(`select:${kind}`, session.key, { userId: cb.userId })
     void conn.answerCallback(cb.id, `${this.selectLabel(kind)} → ${value}`)
     const { text, buttons } = this.buildSelectCard(kind, value, options)
     void conn.editCard(cb.channel, cb.messageId, text, buttons)
@@ -6121,7 +6591,7 @@ export class Daemon {
       iconUrl?: string
       platform: string
       isDm: boolean
-      webchat?: { conversationId: string; turnId: string; sink: WebchatSink }
+      webchat?: WebchatTurnContext
       replyConn?: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
       channel: string
       thread?: string
@@ -6578,7 +7048,7 @@ export class Daemon {
     agentId: string,
     msg: NormalizedMessage,
     integrationId?: string,
-    webchat?: { conversationId: string; turnId: string; sink: WebchatSink },
+    webchat?: WebchatTurnContext,
     callMeta?: CallMeta,
     opts?: {
       isQueueCmd?: boolean
@@ -6895,6 +7365,34 @@ export class Daemon {
     }
   }
 
+  private async admitActiveDispatch(agentId: string, key: string): Promise<() => void> {
+    while (this.workspaceFileWrites.has(agentId)) await this.workspaceFileWrites.get(agentId)
+    return this.beginActiveDispatch(agentId, key)
+  }
+
+  private async withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T> {
+    while (this.workspaceFileWrites.has(agentId)) await this.workspaceFileWrites.get(agentId)
+    let release!: () => void
+    const done = new Promise<void>((resolve) => (release = resolve))
+    this.workspaceFileWrites.set(agentId, done)
+    try {
+      if (
+        this.draining ||
+        this.drainingAgents.has(agentId) ||
+        this.safetyDrainingAgents.has(agentId) ||
+        (this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0 ||
+        this.agentHasLiveSdkWork(agentId)
+      ) {
+        throw new WorkspaceConflictError('the agent is working in this workspace; retry when it is idle')
+      }
+      await this.stopHost(agentId)
+      return await write()
+    } finally {
+      if (this.workspaceFileWrites.get(agentId) === done) this.workspaceFileWrites.delete(agentId)
+      release()
+    }
+  }
+
   private holdReplyConnection(
     conn: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | undefined
   ): () => void {
@@ -6968,7 +7466,7 @@ export class Daemon {
           return
         }
         try {
-          const releaseDispatch = this.beginActiveDispatch(entry.agentId, key)
+          const releaseDispatch = await this.admitActiveDispatch(entry.agentId, key)
           let sessionId: string | null
           try {
             sessionId = await this.dispatchOne(entry, key)
@@ -7176,7 +7674,8 @@ export class Daemon {
         msg,
         entry.initAbort.signal,
         integrationId,
-        callMeta?.originSessionId
+        callMeta?.originSessionId,
+        agent.allowRuntimeChangesInChat ? webchat?.runtime?.effort : undefined
       )
     } catch (err) {
       this.finishSessionInitialization(agentId)
@@ -7263,6 +7762,18 @@ export class Daemon {
       this.log.info(`dispatch: skipped initialized turn ${msg.msgId} (${initializedGate})`)
       return null
     }
+    // A cold session can await workspace/host/session initialization while the Agent is
+    // reconciled. Persist staged first-turn choices only against the current authority,
+    // never the Agent snapshot captured before sessions.handle().
+    const initializedAgent = this.agents.get(agentId)
+    const stagedRuntime =
+      initializedAgent?.allowRuntimeChangesInChat === true && webchat?.runtime ? webchat.runtime : undefined
+    if (stagedRuntime?.model !== undefined) this.store.setModelOverride(key, stagedRuntime.model)
+    if (stagedRuntime?.effort !== undefined) this.store.setEffortOverride(key, stagedRuntime.effort)
+    if (stagedRuntime?.permissionMode !== undefined) {
+      this.store.setPermissionModeOverride(key, stagedRuntime.permissionMode)
+    }
+    if (stagedRuntime?.fastMode !== undefined) this.store.setFastModeOverride(key, stagedRuntime.fastMode)
     // sessions.handle() booted the host — surface any spawn-time config warnings
     // (config-file secret conflicts / write failures) into this session.
     this.flushSpawnNotices(agentId, { replyConn, channel: msg.channel, thread: msg.thread, statusThread })
@@ -7348,7 +7859,8 @@ export class Daemon {
     let finalPhase: EventSession['phase'] = 'end'
     try {
       const host = await this.ensureHostAsync(agentId)
-      const allowRuntimeChangesInChat = agent.allowRuntimeChangesInChat
+      const runtimeAgent = this.agents.get(agentId)
+      const allowRuntimeChangesInChat = runtimeAgent?.allowRuntimeChangesInChat === true
       // Re-apply a sticky session model override (set via the console's in-session model
       // switch) before the turn runs — the agent's default model was applied at
       // session/new, so this layers the per-session choice on top each turn. Best-effort.
@@ -7369,7 +7881,9 @@ export class Daemon {
       }
       const permissionModeOverride = allowRuntimeChangesInChat ? this.store.getPermissionModeOverride(key) : undefined
       const effectivePermissionMode =
-        permissionModeOverride ?? agent.permissionMode ?? this.runtimeCatalogs.get(agent.runtime)?.defaultPermissionMode
+        permissionModeOverride ??
+        runtimeAgent?.permissionMode ??
+        this.runtimeCatalogs.get(runtimeAgent?.runtime ?? agent.runtime)?.defaultPermissionMode
       // AcpHost provides this method; older injected/embedded hosts may not.
       // Treat the selector as an advertised capability, matching the other
       // optional runtime controls, while real hosts still restore the Agent policy.
@@ -7385,6 +7899,14 @@ export class Daemon {
         await host
           .setSessionFastMode(sessionId, fastOverride)
           .catch((err) => this.log.debug(`fast-mode override ${fastOverride} not applied: ${(err as Error).message}`))
+      }
+      // Runtime setters above await the adapter and can race another reconciliation.
+      // Fence immediately before prompt; a revoked permission must be restored
+      // synchronously here, not by reconcile's fire-and-forget live-session sweep.
+      const promptAgent = this.agents.get(agentId)
+      if (webchat?.runtime && promptAgent?.allowRuntimeChangesInChat !== true) {
+        this.store.clearRuntimeConfigOverrides(agentId)
+        await this.applyConfiguredRuntimeSettings(promptAgent ?? agent, host, sessionId)
       }
       // Pause/loop protection may land while a slow host is starting or sticky
       // overrides are being restored. At this point Pending exists but no prompt has
@@ -9369,10 +9891,12 @@ export class Daemon {
     return { ok: true }
   }
 
-  private handlePermissionChoice(input: { requestId: string; optionId: string }): void {
+  private handlePermissionChoice(input: { requestId: string; optionId: string; actor?: InteractionActor }): void {
     const pending = this.pendingChatPermissions.get(input.requestId)
     if (!pending) return
     if (this.agents.get(pending.agentId)?.allowRuntimeChangesInChat !== true) {
+      // Refused, so it decided nothing — recorded as an attempt, never as the decision.
+      this.logSessionAction(`permission:${input.optionId} (refused)`, pending.sessionId, input.actor)
       if (pending.ts) {
         void pending.conn
           .updateBlocks(
@@ -9390,6 +9914,10 @@ export class Daemon {
     if (!option) return
     const allowed = option.kind === 'allow_once' || option.kind === 'allow_always'
     if (!this.resolveStoredPermissionRequest(pending.agentId, input.requestId, allowed ? 'allowed' : 'denied')) return
+    // Only now is this click the decision: the guard passed, the option was real, and
+    // the request resolved. Logging any earlier would attribute a tool call to someone
+    // whose click changed nothing.
+    this.logSessionAction(`permission:${allowed ? 'allowed' : 'denied'}`, pending.sessionId, input.actor)
     this.pendingChatPermissions.delete(input.requestId)
     this.permissionEvaluationDetails.set(pending.evaluationParams, { reason: 'chat_user' })
     if (pending.ts) {
@@ -10103,7 +10631,7 @@ export class Daemon {
           body: ev.body
         })
       } else {
-        this.store.updateToolCall(channel, thread, ev.toolCallId, { title: ev.text, body: ev.body })
+        this.store.updateToolCall(channel, thread, agentId, ev.toolCallId, { title: ev.text, body: ev.body })
       }
       return
     }
@@ -10127,6 +10655,9 @@ export class Daemon {
   private async ensureHostAsync(agentId: string, opts: { allowAgentDrain?: boolean } = {}): Promise<AcpHost> {
     const assertStartAllowed = (): void => {
       if (this.draining) throw new Error(`host start blocked while daemon is draining (${agentId})`)
+      if (this.workspaceFileWrites.has(agentId)) {
+        throw new Error(`host start blocked while a workspace file is being written (${agentId})`)
+      }
       // Already-admitted work in another logical session may keep using the warm
       // host while a conversation-scoped interrupt drains. It may not allocate a
       // replacement after that host/start generation has been evicted.
@@ -10286,7 +10817,16 @@ export class Daemon {
           integrationId: integration.id,
           origin: integration.origin === 'cp' ? 'cp' : 'unknown'
         }))
-      )
+      ),
+      stagedAgents: this.opts.agentName
+        ? []
+        : [...this.moveStageMetadata]
+            .filter(([, stage]) => stage.state === 'staging')
+            .map(([agentId, stage]) => ({
+              agentId,
+              ...(AgentActivateSchema.shape.moveId.safeParse(stage.moveId).success ? { moveId: stage.moveId } : {})
+            }))
+            .sort((left, right) => left.agentId.localeCompare(right.agentId))
     }
   }
 
@@ -11520,7 +12060,7 @@ export class Daemon {
       cur.length === next.length && next.every((r) => cur.some((c) => c.relayId === r.relayId && c.url === r.url))
     if (!same) {
       this.cfg.relays = next
-      persistRelays(this.root, next)
+      persistRelays(this.root, next, this.opts.configPath)
     }
   }
 
@@ -11649,6 +12189,46 @@ export class Daemon {
   }
 
   /**
+   * A dream schedule fired for `agentId` (docs/designs/memory-dreaming.md §9).
+   * Deliberately NOT a turn: no synthetic message, no transcript row, no inbox
+   * entry — just the background job, exactly as a manual `dream/start` would.
+   *
+   * Refusals here are ordinary operating states, not errors: a tick that lands
+   * while the previous dream is still running is SKIPPED (dreams are not queued
+   * — a backlog of stale consolidations helps nobody), and a policy switched off
+   * between the reconcile and the tick simply does nothing.
+   */
+  private onDreamScheduleFire(agentId: string): void {
+    // Lifecycle gates first — a scheduled dream is background work that spawns a
+    // runtime host and burns model tokens, so it obeys the same operator stops as
+    // any other scheduled trigger. The cron stays REGISTERED throughout: these are
+    // skips, not deregistrations, so the schedule resumes by itself on unpause.
+    if (this.paused(agentId)) {
+      this.log.info(`scheduled dream skipped for agent "${agentId}": agent is paused`)
+      return
+    }
+    if (this.safetyDrainingAgents.has(agentId)) {
+      this.log.info(`scheduled dream skipped for agent "${agentId}": interrupted turns are still stopping`)
+      return
+    }
+    if (this.draining || this.drainingAgents.has(agentId)) {
+      this.log.info(`scheduled dream skipped for agent "${agentId}": draining`)
+      return
+    }
+    void this.dreamRunner()
+      .start(agentId, { trigger: 'schedule' })
+      .then((dream) => this.log.info(`dream ${dream.dreamId} started on schedule for agent "${agentId}"`))
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err)
+        if (err instanceof DreamStateError) {
+          this.log.info(`scheduled dream skipped for agent "${agentId}": ${message}`)
+          return
+        }
+        this.log.error(`scheduled dream failed to start for agent "${agentId}": ${message}`)
+      })
+  }
+
+  /**
    * A cron fired for `agentId` (§8.6 bypass). The fire is stamped into D11
    * first (the daemon owns last-run, protocol §5.4); the anchor+dispatch ride
    * the shared {@link fireTrigger} path.
@@ -11765,7 +12345,7 @@ export class Daemon {
       ...(echoDaemonId ? { daemonId: echoDaemonId } : {}),
       onDaemonId: (id) => {
         this.cfg.daemonId = id
-        persistDaemonId(root, id)
+        persistDaemonId(root, id, this.opts.configPath)
         this.log.info(`cp: adopted daemonId ${id} from auth/ok`)
       },
       onWebAppUrl: (url) => {
@@ -11789,11 +12369,19 @@ export class Daemon {
         acp: true,
         features: [
           ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
+          'workspace-file-edit-v1',
+          'workspace-file-delete-v1',
           // Host can confine agent processes (issue #642) — the console uses this to
           // enable/disable the per-agent Run in sandbox toggle.
           ...(this.sandboxMechanism ? ['sandbox'] : []),
           // Daemon policy forces every agent into the sandbox and locks the toggle.
-          ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : [])
+          ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
+          // Memory dreaming (docs/designs/memory-dreaming.md). Version-skew gate:
+          // an older daemon simply omits this, so the CP refuses the dream routes
+          // with a clear "not supported by this agent's version" instead of
+          // sending a frame that daemon would silently drop (and hanging until
+          // the request times out), and the console hides the panel.
+          'memory-dreaming-v1'
         ]
       }),
       // Observed runtime profiles, sent as one `facts/daemon-runtimes` snapshot on
@@ -11839,15 +12427,32 @@ export class Daemon {
       degradedScopes: () => this.cpDegradedScopes(),
       configApply: this.cpConfigApply(),
       sessionRead: createSessionReader(this.store, (agentId) => this.replyConnFor(agentId)?.workspaceUrl),
-      workspaceRead: createWorkspaceReader((id) => this.agents.get(id)?.workspace.path),
+      workspaceRead: createWorkspaceReader(
+        (id) => {
+          const workspace = this.agents.get(id)?.workspace
+          return workspace ? { root: workspace.path, scratch: workspace.mode === 'from-scratch' } : undefined
+        },
+        (id, write) => this.withWorkspaceFileWrite(id, write)
+      ),
       workspaceGit: createWorkspaceGit(
         (id) => this.agents.get(id)?.workspace.path,
         (id) => {
           const workspace = this.agents.get(id)?.workspace
           return workspace?.mode === 'git-repo' && workspace.gitCredential === 'github-app' ? gitCredentialEnv(id) : {}
+        },
+        (id) => {
+          const workspace = this.agents.get(id)?.workspace
+          return workspace?.mode === 'git-repo' && workspace.gitRepo
+            ? {
+                repo: workspace.gitRepo,
+                branch: workspace.gitBranch,
+                githubApp: workspace.gitCredential === 'github-app'
+              }
+            : undefined
         }
       ),
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),
+      dreamReader: createDreamReader(this.dreamRunner()),
       // webchat is no longer a CP control-WS integration (milestone A4) — it rides the
       // relay's rd/* wire, wired through RelayManager.onRelayMsg below.
       clock: systemClock,
@@ -12273,6 +12878,7 @@ export class Daemon {
     await this.drainForShutdown()
     const errors: unknown[] = []
     this.scheduler?.stop()
+    this.dreamScheduler?.stop()
     await Promise.resolve(this.cpClient?.stop()).catch((e) => errors.push(e))
     // Stop the body-bearing capture pump before closing its verified clients or
     // SQLite store. Unfinished operations remain durable for restart recovery.

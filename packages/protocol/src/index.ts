@@ -66,7 +66,18 @@ export { decodeEnvelopeWith, buildEnvelopeRaw } from './wire.js'
 export type { DecodeResultOf } from './wire.js'
 
 // ── git repo address helpers (normalize on write, shorten for display) ──
-export { normalizeGitUrl, gitRepoLabel } from './git-url.js'
+export {
+  DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS,
+  GitCloneUrlError,
+  normalizeAllowedWorkspaceGitUrl,
+  normalizeGitCloneUrl,
+  normalizeGithubRepoUrl,
+  normalizeGitUrl,
+  normalizeWorkspaceGitOrigin,
+  redactGitUrlSecrets,
+  gitRepoLabel,
+  workspaceGitOriginOf
+} from './git-url.js'
 
 // ── Slack message visible-text extraction (shared by daemon + relay) ──
 export { extractSlackMessageText } from './slack-message-text.js'

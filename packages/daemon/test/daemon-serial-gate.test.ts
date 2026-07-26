@@ -199,6 +199,59 @@ describe('P4 serial gate', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('evicts a cached host when App-backed rename convergence fails closed', async () => {
+    const root = scaffold()
+    const workspace = join(root, 'agents', 'bot-a', 'workspace')
+    mkdirSync(workspace, { recursive: true })
+    execFileSync('git', ['init', workspace], { stdio: 'ignore' })
+    execFileSync('git', ['-C', workspace, 'remote', 'add', 'origin', 'https://github.com/acme/old-name'])
+    writeFileSync(
+      join(root, 'agents', 'bot-a', 'agent.json'),
+      JSON.stringify({
+        id: 'bot-a',
+        name: 'bot-a',
+        status: 'active',
+        runtime: 'claude',
+        workspace: {
+          mode: 'git-repo',
+          path: workspace,
+          gitRepo: 'https://github.com/acme/old-name',
+          gitBranch: 'main',
+          gitCredential: 'github-app',
+          pullOnNewSession: false
+        },
+        integrations: [],
+        output: { mode: 'low' }
+      })
+    )
+
+    const g = gatedHost()
+    const daemon = new Daemon({ root, hostFactory: () => g.host as any })
+    await daemon.start()
+    await (daemon as any).ensureHostAsync('bot-a')
+    expect((daemon as any).hosts.has('bot-a')).toBe(true)
+
+    // Simulate a historical checkout whose actual origin does not match the
+    // App-authorized GitHub repository, then deliver a canonical rename update.
+    execFileSync('git', ['-C', workspace, 'remote', 'set-url', 'origin', 'https://other-host.example/acme/old-name'])
+    await seam(daemon).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: {
+        name: 'bot-a',
+        workspace: {
+          mode: 'github',
+          gitRepo: 'https://github.com/acme/new-name',
+          branch: 'main',
+          gitCredential: 'github-app'
+        }
+      }
+    })
+
+    expect(g.host.stop).toHaveBeenCalledTimes(1)
+    expect((daemon as any).hosts.has('bot-a')).toBe(false)
+    await daemon.stop()
+  }, 15_000)
+
   it('uses a stale Slack event only as a wake-up and suppresses later delivery of messages already covered by the snapshot watermark', async () => {
     const g = gatedHost()
     const daemon = await boot(g.host)

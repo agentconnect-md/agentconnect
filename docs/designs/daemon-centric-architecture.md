@@ -8,9 +8,13 @@
 
 ## 1. Background and Motivation
 
-The system connects user requests from messaging platforms such as Slack and Telegram to AI agents such as Claude and Codex running across multiple machines, then returns the results.
+The system connects user requests from messaging platforms such as Slack and Telegram to AI agents such as Claude and Codex running across multiple daemon instances, then returns the results.
 
-The central design question is: **should message ingestion and processing live centrally, or on the execution nodes?** This design chooses the latter: **platform integration logic runs locally on each execution node (daemon)**, while the center (Control Plane) is responsible only for orchestration.
+The central design question is: **should message ingestion and processing live
+centrally, or on the execution nodes?** This design keeps routing and execution on
+the daemon. Direct integrations terminate there; callbacks that require a stable
+public endpoint terminate at an optional relay and are forwarded straight to the
+owning daemon. The Control Plane remains responsible only for orchestration.
 
 The direct consequences are:
 
@@ -28,7 +32,9 @@ The direct consequences are:
   carries orchestration and telemetry plus bounded, authorized, on-demand reads
   of daemon-local data for the Web UI; those reads are not persisted by the
   Control Plane.
-- Close the platform-integration (Slack/Telegram) and agent-execution loop locally within the daemon to reduce message latency.
+- Keep direct platform integrations and agent execution local to the daemon, using
+  the relay only for ingress that requires a stable public callback or browser
+  endpoint.
 - Allow daemons to scale horizontally and independently, so one daemon failure does not affect other daemons.
 - Run multiple agents on one daemon, with a separate ACP adapter for each agent type.
 - Allow established sessions to continue sending, receiving, and executing locally on the daemon while the Control Plane is temporarily unavailable (degraded availability).
@@ -43,45 +49,41 @@ The direct consequences are:
 
 ## 3. Architecture Overview
 
-![Daemon-centric architecture](daemon-centric-architecture.png)
+![Daemon-centric architecture with optional relay ingress](daemon-centric-architecture.svg)
 
 The equivalent ASCII representation below makes the same design easier to diff
 and search.
 
 ```
-                 ┌──────────────────────────────┐
-                 │ Control Plane (orchestration) │
-                 │  ┌────────────┐ ┌──────────┐  │
-                 │  │Orchestrator│ │  Web UI  │  │
-                 │  └────────────┘ └──────────┘  │
-                 └───────┬───────────────┬───────┘
-              WebSocket  │ control + BFF  │  WebSocket
-                         │ bounded reads  │
-        ┌────────────────▼───┐      ┌────▼───────────────┐
- Slack ─┤ Computer A · daemon │      │ Computer B · daemon │── Slack/Telegram
- Tg   ──┤  slack-adapter      │      │  (same topology)    │
-        │  telegram-adapter   │      │                     │
-        │      │ local ACP    │      │                     │
-        │  ┌───▼────────────┐ │      │                     │
-        │  │ claude-agent-acp│ │      │   claude-agent-acp  │
-        │  │ codex-acp       │ │      │   codex-acp         │
-        │  └───┬────────────┘ │      │                     │
-        │   ┌──▼───┐ ┌──────┐ │      │   Claude / Codex     │
-        │   │Claude│ │Codex │ │      │                     │
-        │   └──────┘ └──────┘ │      └─────────────────────┘
-        └─────────────────────┘
+ Public callbacks and browsers               Control Plane + Web UI
+ Slack HTTP · GitHub · generic hooks · webchat   (control only)
+                 │ HTTPS / WSS                         │
+                 ▼                                     │ routes + config
+        ┌─────────────────────┐                        │
+        │ optional relay pool │◀───────────────────────┘
+        └──────────┬──────────┘
+                   │ rd/* content; webchat output returns
+                   ▼
+ Direct platforms ┌──────────────────────────────────────────┐
+ Slack Socket  ◀─▶│ daemon instances                         │◀── CP WebSocket
+ Telegram          │ platform + hook routing                  │    control,
+ Discord / Feishu  │              │ local ACP                 │    telemetry,
+                   │              ▼                           │    bounded reads
+                   │       Claude / Codex / ACP agents        │
+                   └──────────────────────────────────────────┘
+                      └─ direct Slack/GitHub/provider API egress
 ```
 
 ### Components
 
-| Component             | Role                                                                                                                                                                                                           |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Control Plane**     | Orchestration, scheduling, scaling, Web UI, and registry; does not handle live platform message traffic or integrate with platforms                                                                            |
-| **daemon (Computer)** | Platform integration + agent runtime; a self-contained message-processing and execution unit                                                                                                                   |
-| **relay**             | Unified ingress plane: inbound shared-bot, webhook, and webchat traffic passes through the relay pool to daemons; daemons still send outbound traffic directly. See [shared-bot-relay.md](shared-bot-relay.md) |
-| **Platform adapters** | `slack-adapter`, `telegram-adapter`, Discord, Feishu, and others; handle platform I/O and message normalization                                                                                                |
-| **ACP adapters**      | `claude-agent-acp` and `codex-acp`; implement ACP and drive models locally                                                                                                                                     |
-| **Agent instances**   | Claude and Codex model processes                                                                                                                                                                               |
+| Component             | Role                                                                                                                                                                                                                                            |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Control Plane**     | Orchestration, scheduling, scaling, Web UI, and registry; does not handle live platform message traffic or integrate with platforms                                                                                                             |
+| **daemon**            | Direct platform integration, relay-delivered routing, and agent runtime; a self-contained message-processing and execution unit                                                                                                                 |
+| **relay**             | Optional public ingress plane: Slack HTTP callbacks, GitHub and generic webhooks, and webchat pass through the relay pool to daemons; daemons still send ordinary provider API traffic directly. See [shared-bot-relay.md](shared-bot-relay.md) |
+| **Platform adapters** | `slack-adapter`, `telegram-adapter`, Discord, Feishu, and others; handle platform I/O and message normalization                                                                                                                                 |
+| **ACP adapters**      | `claude-agent-acp` and `codex-acp`; implement ACP and drive models locally                                                                                                                                                                      |
+| **Agent instances**   | Claude and Codex model processes                                                                                                                                                                                                                |
 
 ---
 
@@ -97,12 +99,14 @@ Its responsibilities are deliberately narrow:
 
 **Explicitly excluded**: it does not connect to Slack or Telegram, receive platform messages, or participate in the message loop. Even when the Control Plane is temporarily unavailable, **established sessions continue sending, receiving, and executing locally on their daemons** (degraded availability).
 
-### 4.2 daemon (Computer)
+### 4.2 daemon
 
 A daemon is a **self-contained message-processing + agent-execution unit**:
 
-- It includes `slack-adapter` and `telegram-adapter` and connects directly to each platform's bot API.
-- It normalizes platform messages locally, then drives the agent through **local ACP**.
+- It owns direct platform connections such as Slack Socket Mode and Telegram, and
+  receives pre-addressed Slack HTTP, hook, and webchat items from the relay.
+- It routes and dispatches messages locally, then drives the agent through **local
+  ACP**.
 - It maintains one WebSocket to the Control Plane for control/telemetry and
   correlated, bounded read-back requests made by authorized Web UI callers.
   Those reads are transient and do not put live platform traffic or ACP output
@@ -127,7 +131,7 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
 ### 5.1 Platform ↔ daemon: Direct or Relay-Assisted Ingress
 
 - Dedicated-bot ingress connects directly to the daemon.
-- Shared-bot, webhook, and webchat ingress enters through the relay pool, which forwards the normalized request to the owning daemon.
+- Slack HTTP callbacks, GitHub and generic webhooks, and webchat ingress enter through the relay pool, which forwards the normalized request to the owning daemon.
 - Outbound platform traffic is sent directly by the daemon.
 - Neither ingress model puts the Control Plane on the message hot path. See [shared-bot-relay.md](shared-bot-relay.md).
 
@@ -153,17 +157,21 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
 ### 6.1 Inbound Message Lifecycle
 
 ```
-User (Slack)
-  → dedicated bot or shared-bot relay (receive and normalize)
-  → daemon local ingress
-  → daemon local routing (select an agent by session/routing table)
-  → [local ACP] → claude-agent-acp
-  → Claude executes
-  → [local ACP] response → daemon.slack-adapter
-  → User (Slack)
+Direct:
+  Slack Socket Mode / Telegram / Discord / Feishu
+    ↔ daemon direct adapter
+    → daemon local routing → [local ACP] → agent
+
+Relay-assisted:
+  Slack HTTP / GitHub / generic webhook / webchat
+    → optional relay → rd/* → owning daemon
+    → daemon local routing → [local ACP] → agent
+    → direct Slack/GitHub/provider API egress, or webchat output via the relay
 ```
 
-The Control Plane is not involved at any point.
+The Control Plane is not part of either live content path. It supplies control-plane
+configuration and authorization metadata, but platform messages and ACP output do not
+traverse it.
 
 ### 6.2 Orchestration Flow (Decoupled from Messages)
 

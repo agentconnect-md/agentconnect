@@ -438,7 +438,10 @@ const EventSession = z.object({
 The exact schema in `packages/protocol/src/frames/telemetry.ts` also carries
 the dashboard metadata and effective execution configuration. It remains
 metadata-only. The reporting daemon is not echoed; CP stamps `daemonId` from
-the authenticated WebSocket connection.
+the authenticated WebSocket connection. CP accepts `event/session` and
+`usage/report` only when the reported agent is currently placed on that daemon,
+with placement moves excluded while the write runs. A `sessionId` is bound to
+the first accepted `agentId` and can never be reassigned by a later report.
 
 Phase state machine: `start → (plan ↔ problem)* → end`. The daemon collapses
 ACP `session/update` streams into these milestones; CP persists the metadata,
@@ -542,6 +545,7 @@ const SessionListPage = z.object({ sessions: z.array(SessionListItem) }) // D→
 // ── history: one cursor page of a session's transcript ──
 const SessionHistoryReq = z.object({
   // C→D REQ
+  agentId: z.string().uuid().optional(), // current CP sends the authorized owner; optional only for rolling upgrades
   sessionId: z.string(), // ACP session id — opaque string, NOT a UUID
   cursor: z.string().optional(), // opaque; omit ⇒ newest page
   limit: z.number().int().positive().max(200).default(50)
@@ -571,7 +575,19 @@ separately.
 scoped to the caller's visible agents; `agentId`/`platform`/`channel` filters
 narrow the set. No daemon is contacted.
 
-**History** (`GET /sessions/:id/messages?agentId=&cursor=&limit=`): the owning daemon is resolved via the row's `agentId`, then `session/history` pulls the page. Cursor-based, newest-first. If the agent is unplaced or its daemon is offline → 503 (the list still works; only that transcript is unavailable). This is an explicit, bounded content-read path: the Control Plane proxies the reply without persisting it. The memory and workspace read families follow the same locality rule.
+**History** (`GET /sessions/:id/messages?cursor=&limit=`): the CP loads the
+`session_meta` row, authorizes its owning agent, and resolves that agent's
+daemon; `session/history` carries the owner `agentId` so the daemon can verify
+the `(agentId, sessionId)` binding before returning content. Cursor-based,
+newest-first. If the agent is unplaced or its daemon is offline → 503 (the list
+still works; only that transcript is unavailable). This is an explicit, bounded
+content-read path: the Control Plane proxies the reply without persisting it.
+The memory and workspace read families follow the same locality rule.
+
+`agentId` remains optional on these two wire requests only so a new daemon can
+still serve an older CP during a rolling upgrade. The daemon logs that legacy
+path and uses the pre-binding lookup. Current CPs always send the owner; once
+present, the daemon fails closed on an `(agentId, sessionId)` mismatch.
 
 ### 7.7 `channel/agents` (D→C, REQ → REP) — agent collaboration directory
 

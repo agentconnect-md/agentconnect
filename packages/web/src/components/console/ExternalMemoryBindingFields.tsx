@@ -161,22 +161,25 @@ export function ExternalMemoryBindingFields({
             <span className="mono">{selectedInstallation?.pluginId ?? 'unknown'}</span>{' '}
             <span className="badge ml-1 bg-(--surface-active) text-(--text-secondary)">{selected.status}</span>
           </div>
-          <div className="mt-1 break-all">
-            <span className="font-semibold">{endpointDisplay.label}:</span>{' '}
-            <span className="mono">{endpointDisplay.value}</span>
-          </div>
-          <div className="mt-1">
-            <span className="font-semibold">Declared downstream egress:</span>{' '}
-            {selected.declaredEgressHosts.length
-              ? selected.declaredEgressHosts.join(', ')
-              : selected.status === 'ready'
-                ? 'none declared'
-                : 'not reported yet'}
-          </div>
-          <div className="mt-1 text-(--text-tertiary)">
-            AgentConnect enforces the plugin endpoint. Downstream hosts are declarations made by the plugin.
-          </div>
           {statusNotice && <div className={`mt-1 ${STATUS_NOTICE_CLASS[statusNotice.tone]}`}>{statusNotice.text}</div>}
+          <details className="mt-1">
+            <summary className="cursor-pointer font-semibold text-(--text-tertiary)">Endpoint &amp; egress</summary>
+            <div className="mt-1 break-all">
+              <span className="font-semibold">{endpointDisplay.label}:</span>{' '}
+              <span className="mono">{endpointDisplay.value}</span>
+            </div>
+            <div className="mt-1">
+              <span className="font-semibold">Declared downstream egress:</span>{' '}
+              {selected.declaredEgressHosts.length
+                ? selected.declaredEgressHosts.join(', ')
+                : selected.status === 'ready'
+                  ? 'none declared'
+                  : 'not reported yet'}
+            </div>
+            <div className="mt-1 text-(--text-tertiary)">
+              AgentConnect enforces the plugin endpoint. Downstream hosts are declarations made by the plugin.
+            </div>
+          </details>
         </div>
       )}
 

@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.4
 
+#
 # AgentConnect's pinned build of the upstream Mem0 OSS REST server.
 #
 # `mem0_source` is a BuildKit named context supplied by docker-bake.hcl. It is

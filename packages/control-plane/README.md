@@ -68,15 +68,14 @@ docker run -d --name acp-pg -e POSTGRES_PASSWORD=pw -e POSTGRES_DB=agentconnect 
 
 pnpm install
 pnpm --filter @agentconnect.md/control-plane exec prisma migrate deploy # create schema
-pnpm --filter @agentconnect.md/control-plane exec prisma db seed        # default org/user
 pnpm --filter @agentconnect.md/control-plane run db:seed:example        # (optional) demo rows
-pnpm --filter @agentconnect.md/control-plane dev                        # tsx watch → :8080
+pnpm --filter @agentconnect.md/control-plane dev                        # no-auth bootstraps default org/user
 ```
 
 **Option B — operator-provided remote development Postgres.** Point
 `DATABASE_URL` in your local `.env` at the endpoint supplied by its operator.
-Never commit the connection string. The schema and seed need to be applied only
-by whoever owns migrations; other developers can run `dev`:
+Never commit the connection string. The schema needs to be applied only by
+whoever owns migrations; other developers can run `dev`:
 
 ```bash
 # .env: DATABASE_URL=postgresql://app:<password>@db.example.test:5432/agentconnect?schema=public
@@ -117,8 +116,9 @@ pnpm --filter @agentconnect.md/control-plane build \
 
 Prisma schema: `prisma/schema.prisma`. The `threadKey` generated column, the
 partial-unique routing index, and the array GIN indexes are hand-edited into the
-migration SQL (§3.13). Seed (`prisma/seed.ts`) creates the default single-tenant
-Org + owner User.
+migration SQL (§3.13). When OIDC is disabled, Control Plane startup idempotently
+ensures the default single-tenant Org + owner User. The explicit Prisma seed
+reuses that same operation for tests and maintenance.
 
 The v1 baseline targets an empty PostgreSQL database. Databases created from a
 pre-v1 release candidate must be reset rather than upgraded in place. Starting
@@ -127,7 +127,7 @@ with v1, committed migrations are append-only and must not rewrite the baseline.
 ```bash
 pnpm --filter @agentconnect.md/control-plane exec prisma migrate dev    # dev: create/apply
 pnpm --filter @agentconnect.md/control-plane exec prisma migrate deploy # CI/prod: apply
-pnpm --filter @agentconnect.md/control-plane exec prisma db seed        # seed defaults
+pnpm --filter @agentconnect.md/control-plane exec prisma db seed        # ensure no-auth defaults explicitly
 ```
 
 ### Example data

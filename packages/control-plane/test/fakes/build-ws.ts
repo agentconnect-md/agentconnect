@@ -170,6 +170,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     integration: repos.integration,
     integrationChannel: repos.integrationChannel,
     agentMutations: new AgentMutationGate(),
+    recoverStagedAgent: async () => {},
     collabRoutes,
     cron: repos.cron,
     hook: repos.hook,

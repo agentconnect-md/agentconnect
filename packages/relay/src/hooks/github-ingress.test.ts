@@ -19,6 +19,7 @@ import { HookRateLimiter } from './rate-limit.js'
 import {
   registerGithubIngress,
   githubRuleMatches,
+  githubRuleVerdict,
   buildGithubContext,
   buildTrustedGithubMetadata,
   GITHUB_BODY_EXCERPT_MAX
@@ -660,6 +661,12 @@ describe('github ingress', () => {
         await post('pull_request', pullPayload({ action }))
         await flush()
 
+        expect(h.authzRequests).toEqual([
+          expect.objectContaining({
+            repoId: String(REPO_ID),
+            senderLogin: 'alice'
+          })
+        ])
         expect(h.sent).toHaveLength(0)
         expect(h.reports).toEqual([
           expect.objectContaining({
@@ -734,6 +741,45 @@ describe('github ingress', () => {
       expect(h.reports.every((report) => report.status === 'accepted')).toBe(true)
     })
 
+    it('resolves a stale NONE association once before dispatching the complete PR fan-out', async () => {
+      h.table.upsert(rule({}, { events: ['pull_request:*'] }))
+      h.table.upsert(
+        rule(
+          {
+            hookId: HOOK_B,
+            agentId: AGENT_B,
+            daemonId: DAEMON_B,
+            dispatchDaemonId: DAEMON_B
+          },
+          { events: ['pull_request:*'] }
+        )
+      )
+      h.onlineDaemons.add(DAEMON_B)
+      h.authzResult = true
+      const pullRequest = pullPayload().pull_request as Record<string, unknown>
+
+      await post(
+        'pull_request',
+        pullPayload({
+          sender: { login: 'release-manager', type: 'User' },
+          pull_request: { ...pullRequest, user: { login: 'pr-author' } }
+        })
+      )
+      await flush()
+
+      expect(h.authzRequests).toEqual([
+        expect.objectContaining({
+          hookId: HOOK,
+          repoId: String(REPO_ID),
+          senderLogin: 'pr-author',
+          siblingFences: [{ hookId: HOOK_B, configRevision: '3', dispatchRevision: '5' }]
+        })
+      ])
+      expect(h.sent).toHaveLength(2)
+      expect(h.reports).toHaveLength(2)
+      expect(h.reports.every((report) => report.status === 'accepted')).toBe(true)
+    })
+
     it('does not trust a PR-body mention from an external author, while the existing maintainer mention still fires', async () => {
       h.table.upsert(
         rule(
@@ -774,6 +820,42 @@ describe('github ingress', () => {
         sessionKey: 'acme/infra#77',
         github: { explicitReviewRequest: true }
       })
+    })
+
+    it('keeps the PR mention trigger while formal reviews are off', async () => {
+      h.table.upsert(
+        rule(
+          { reviewPolicy: 'off', reportingMode: 'off' },
+          {
+            events: ['issue_comment:created'],
+            commentFamilies: ['pull_request'],
+            mentionOnly: true,
+            appSlug: 'example-review-app'
+          }
+        )
+      )
+
+      await post(
+        'issue_comment',
+        issuesPayload({
+          action: 'created',
+          issue: { number: 77, pull_request: { url: 'https://api.github.com/repos/acme/infra/pulls/77' } },
+          comment: { body: '@example-review-app fix the failing test', author_association: 'MEMBER' }
+        })
+      )
+      await flush()
+
+      expect(h.sent).toHaveLength(1)
+      expect(h.sent[0]).toMatchObject({
+        event: 'issue_comment:created',
+        sessionKey: 'acme/infra#77',
+        reviewPolicy: 'off',
+        reportingMode: 'off'
+      })
+      const msg = h.sent[0]!
+      if (msg.source !== 'hook') throw new Error('expected hook member')
+      expect(msg.github?.explicitReviewRequest).toBeUndefined()
+      expect(h.reports).toEqual([expect.objectContaining({ status: 'accepted', reviewPolicy: 'off' })])
     })
 
     it('treats a native App reviewer request as an explicit maintainer trigger', async () => {
@@ -1867,7 +1949,14 @@ describe('githubRuleMatches (pure predicate)', () => {
   it('keeps PR synchronize while vetoing every edited action', () => {
     const r = rule({}, { events: ['pull_request:*'] })
     const pr = { ...ctx, event: 'pull_request' }
-    expect(githubRuleMatches(r, { ...pr, eventAction: 'pull_request:synchronize' })).toBe(true)
+    expect(githubRuleVerdict(r, { ...pr, eventAction: 'pull_request:synchronize' })).toBe('needs-authz')
+    expect(
+      githubRuleMatches(r, {
+        ...pr,
+        eventAction: 'pull_request:synchronize',
+        pullAuthorAssociation: 'MEMBER'
+      })
+    ).toBe(true)
     expect(githubRuleMatches(r, { ...pr, eventAction: 'pull_request:edited' })).toBe(false)
   })
 

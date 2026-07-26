@@ -9,7 +9,7 @@
  *
  * Runs over the `InMemoryDaemonStub` against real Testcontainers Postgres.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { isFrame } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
@@ -25,6 +25,7 @@ const LEASE = '11ea5e00-0000-4000-8000-000000000001'
 const AUTH_ID = '11111111-1111-4111-8111-111111111111'
 const REG_ID = '22222222-2222-4222-8222-222222222222'
 const REG_ID2 = '33333333-3333-4333-8333-333333333333'
+const MOVE_ID = '44444444-4444-4444-8444-444444444444'
 
 /**
  * Seed a daemon + agent + workspace, one ACTIVE assignment for the daemon, one
@@ -106,7 +107,8 @@ function registerPayload() {
       crons: [CRON, 'deadcron-0000-4000-8000-000000000000'], // second is stale → drop
       leases: [LEASE],
       agents: [],
-      integrations: []
+      integrations: [],
+      stagedAgents: [] as Array<{ agentId: string; moveId?: string }>
     }
   }
 }
@@ -120,6 +122,23 @@ async function authThenAwaitOk(h: ReturnType<typeof buildWsHarness>) {
 }
 
 describe('register handler — authoritative reconcile snapshot + idempotency + state gate', () => {
+  it('replies READY before handing durable staged moves to reconnect recovery', async () => {
+    await seedReconcileState()
+    const h = buildWsHarness(prisma)
+    const { stub } = await authThenAwaitOk(h)
+    const recover = vi.fn(async () => {
+      expect(stub.lastSent('register/ok')).toBeDefined()
+      expect(h.deps.connReg.get(DAEMON)?.state).toBe('READY')
+    })
+    h.deps.recoverStagedAgent = recover
+
+    const payload = registerPayload()
+    payload.localState.stagedAgents = [{ agentId: AGENT, moveId: MOVE_ID }]
+    stub.inject('register', payload, { id: REG_ID })
+    await stub.expectFrame('register/ok')
+    await vi.waitFor(() => expect(recover).toHaveBeenCalledWith(AGENT, DAEMON, MOVE_ID))
+  })
+
   it('after auth/ok, register → register/ok with the seeded reconcile snapshot', async () => {
     await seedReconcileState()
     const h = buildWsHarness(prisma)
@@ -194,6 +213,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       env: {}, // always shipped — an absent env would read as "leave alone" on the daemon
       secrets: {}, // write-only secrets ride the same wire as env; always shipped (even {})
       mcpServers: [], // likewise always shipped (disabling the last server must replicate)
+      skills: [], // resolved skill entries; always shipped (disabling the last skill must replicate)
       // Agent→agent call policy (§2.5), always shipped so a policy/allow-list change replicates.
       callPolicy: 'all',
       allowedCallerAgentIds: [],
@@ -211,6 +231,46 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
     expect(snap.drop.crons).toEqual(['deadcron-0000-4000-8000-000000000000'])
     expect(snap.drop.agents).toEqual([])
     expect(snap.drop.integrations).toEqual([])
+  })
+
+  it('quarantines one historical unsafe workspace without stranding the rest of the daemon roster', async () => {
+    await seedReconcileState()
+    const SAFE_AGENT = 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2'
+    await prisma.agent.update({
+      where: { id: AGENT },
+      data: { workspaceMode: 'github', gitRepo: 'file:///var/lib/agentconnect/other-workspace' }
+    })
+    await prisma.agent.create({
+      data: {
+        id: SAFE_AGENT,
+        orgId: DEFAULT_ORG_ID,
+        name: 'safe-agent',
+        runtime: 'claude',
+        daemonId: DAEMON
+      }
+    })
+
+    const base = registerPayload()
+    const payload = {
+      ...base,
+      localState: {
+        ...base.localState,
+        agents: [{ agentId: AGENT, origin: 'cp' as const }]
+      }
+    }
+    const h = buildWsHarness(prisma)
+    const { stub } = await authThenAwaitOk(h)
+
+    stub.inject('register', payload, { id: REG_ID })
+    const ok = await stub.expectFrame('register/ok')
+    if (!isFrame('register/ok')(ok)) throw new Error('expected register/ok')
+
+    expect(ok.payload.agents.map((agent) => agent.agentId)).toEqual([SAFE_AGENT])
+    expect(ok.payload.assignments).toEqual([])
+    expect(ok.payload.crons).toEqual([])
+    expect(ok.payload.drop.assignments).toContain('slack:C123:T9')
+    expect(ok.payload.drop.crons).toContain(CRON)
+    expect(ok.payload.drop.agents).toEqual([{ agentId: AGENT, action: 'detach' }])
   })
 
   it('drops legacy moved and unplaced replicas, but preserves unknown local-only config', async () => {
