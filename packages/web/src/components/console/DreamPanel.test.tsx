@@ -105,6 +105,14 @@ describe('DreamPanel', () => {
     expect(history?.querySelector('summary')?.textContent).toContain('History')
     expect(history?.querySelector('summary')?.textContent).toContain('2')
     expect(history?.textContent).toContain('Superseded')
+    expect(history?.querySelector('summary')?.classList.contains('border-t')).toBe(false)
+  })
+
+  it('uses one divider when history follows a ready result', async () => {
+    api.listDreams.mockResolvedValue([dream(), dream({ dreamId: 'drm-2', status: 'adopted' })])
+    const host = await render()
+    const history = host.querySelector('details')
+    expect(history?.querySelector('summary')?.classList.contains('border-t')).toBe(true)
   })
 
   it('uses the shared card shell with the action in its header', async () => {

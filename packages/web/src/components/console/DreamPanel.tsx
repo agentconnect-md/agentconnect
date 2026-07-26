@@ -192,6 +192,9 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
     dream.status === 'completed' ? true : !isDreamTerminal(dream.status)
   )
   const pastDreams = (dreams ?? []).filter((dream) => dream.status !== 'completed' && isDreamTerminal(dream.status))
+  const hasContentBeforeHistory = Boolean(
+    (startBlocker && !inFlight) || actionError || actionNotice || listError || activeDreams.length || reviewing
+  )
 
   const discard = (dreamId: string) =>
     void run(async () => {
@@ -303,7 +306,11 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
 
         {pastDreams.length ? (
           <details className="group">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-2 border-t border-(--border-subtle) pt-3 font-sans text-[12px] font-semibold leading-normal text-(--text-secondary) transition-colors hover:text-(--text-primary) [&::-webkit-details-marker]:hidden">
+            <summary
+              className={`flex cursor-pointer list-none items-center justify-between gap-2 font-sans text-[12px] font-semibold leading-normal text-(--text-secondary) transition-colors hover:text-(--text-primary) [&::-webkit-details-marker]:hidden ${
+                hasContentBeforeHistory ? 'border-t border-(--border-subtle) pt-3' : ''
+              }`}
+            >
               <span className="inline-flex items-center gap-1">
                 <Icon name="chevron-right" size={13} className="transition-transform group-open:rotate-90" />
                 History

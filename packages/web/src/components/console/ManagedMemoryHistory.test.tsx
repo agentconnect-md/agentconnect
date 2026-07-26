@@ -94,6 +94,7 @@ describe('ManagedMemoryHistory', () => {
     expect(mocks.listMemoryFileHistory).not.toHaveBeenCalled()
     const disclosure = button('Change history')
     expect(disclosure?.getAttribute('aria-expanded')).toBe('false')
+    expect(disclosure?.closest('section')?.classList.contains('mt-auto')).toBe(true)
 
     await act(async () => disclosure?.click())
 
