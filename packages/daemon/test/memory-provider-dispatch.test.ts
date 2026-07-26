@@ -20,7 +20,7 @@ const claude: RuntimeDef = { command: 'npx', args: ['@zed/claude-code-acp'], env
 const codex: RuntimeDef = { command: 'npx', args: ['codex-acp'], env: [] } as unknown as RuntimeDef
 const grok: RuntimeDef = {
   command: 'npx',
-  args: ['-y', '@xai-official/grok@0.2.101', 'agent', 'stdio'],
+  args: ['-y', '@xai-official/grok@0.2.112', 'agent', 'stdio'],
   env: []
 } as unknown as RuntimeDef
 const other: RuntimeDef = { command: 'npx', args: ['gemini-acp'], env: [] } as unknown as RuntimeDef

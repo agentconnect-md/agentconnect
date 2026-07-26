@@ -6,15 +6,15 @@ const runtime = (command: string, args: string[] = []): RuntimeDef => ({ command
 
 // Registry-default distributions, keyed by ACP runtime id (July 2026).
 const REG: Record<string, RuntimeDef> = {
-  'codex-acp': runtime('npx', ['-y', '@agentclientprotocol/codex-acp@1.1.4']),
-  'claude-acp': runtime('npx', ['-y', '@agentclientprotocol/claude-agent-acp@0.59.0']),
-  'grok-build': runtime('npx', ['-y', '@xai-official/grok@0.2.101', 'agent', 'stdio']),
-  'github-copilot-cli': runtime('npx', ['-y', '@github/copilot@1.0.70', '--acp']),
+  'codex-acp': runtime('npx', ['-y', '@agentclientprotocol/codex-acp@1.1.7']),
+  'claude-acp': runtime('npx', ['-y', '@agentclientprotocol/claude-agent-acp@0.62.0']),
+  'grok-build': runtime('npx', ['-y', '@xai-official/grok@0.2.112', 'agent', 'stdio']),
+  'github-copilot-cli': runtime('npx', ['-y', '@github/copilot@1.0.75', '--acp']),
   'open-interpreter': runtime('interpreter', ['acp']),
-  gemini: runtime('npx', ['-y', '@google/gemini-cli@0.50.0', '--acp']),
-  'qwen-code': runtime('npx', ['-y', '@qwen-code/qwen-code@0.19.9', '--acp']),
+  gemini: runtime('npx', ['-y', '@google/gemini-cli@0.52.0', '--acp']),
+  'qwen-code': runtime('npx', ['-y', '@qwen-code/qwen-code@0.21.0', '--acp']),
   cursor: runtime('./dist-package/cursor-agent', ['acp']),
-  auggie: runtime('npx', ['-y', '@augmentcode/auggie@0.32.0', '--acp']),
+  auggie: runtime('npx', ['-y', '@augmentcode/auggie@0.33.0', '--acp']),
   opencode: runtime('./opencode', ['acp'])
 }
 

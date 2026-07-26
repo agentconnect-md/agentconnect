@@ -95,7 +95,7 @@ export const PROFILES: Profile[] = [
     registryId: 'claude-acp',
     claudeRuntime: true,
     memory: {
-      runtime: runtime('npx', ['-y', '@agentclientprotocol/claude-agent-acp@0.59.0']),
+      runtime: runtime('npx', ['-y', '@agentclientprotocol/claude-agent-acp@0.62.0']),
       expected: { managed: true, none: true, native: true }
     },
     scenario: {
@@ -126,7 +126,7 @@ export const PROFILES: Profile[] = [
     id: 'codex',
     registryId: 'codex-acp',
     memory: {
-      runtime: runtime('npx', ['-y', '@agentclientprotocol/codex-acp@1.1.4']),
+      runtime: runtime('npx', ['-y', '@agentclientprotocol/codex-acp@1.1.7']),
       expected: { managed: true, none: true, native: true }
     },
     scenario: {
@@ -151,7 +151,7 @@ export const PROFILES: Profile[] = [
     id: 'pi',
     registryId: 'pi-acp',
     memory: {
-      runtime: runtime('npx', ['-y', 'pi-acp@0.0.31']),
+      runtime: runtime('npx', ['-y', 'pi-acp@0.0.32']),
       expected: { managed: true, none: false, native: false }
     },
     scenario: { agentCapabilities: {}, prompt: {} },
@@ -215,7 +215,7 @@ export const PROFILES: Profile[] = [
     id: 'cline',
     registryId: 'cline',
     memory: {
-      runtime: runtime('npx', ['-y', 'cline@3.0.40']),
+      runtime: runtime('npx', ['-y', 'cline@3.0.46']),
       expected: { managed: true, none: false, native: false }
     },
     scenario: {
@@ -263,7 +263,7 @@ export const PROFILES: Profile[] = [
     id: 'grok',
     registryId: 'grok-build',
     memory: {
-      runtime: runtime('npx', ['-y', '@xai-official/grok@0.2.101', 'agent', 'stdio']),
+      runtime: runtime('npx', ['-y', '@xai-official/grok@0.2.112', 'agent', 'stdio']),
       expected: { managed: true, none: true, native: false }
     },
     scenario: {
