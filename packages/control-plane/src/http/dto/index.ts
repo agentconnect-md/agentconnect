@@ -19,6 +19,7 @@ import {
   RepoSubdirError,
   SessionImageAttachment,
   MAX_WORKSPACE_EDIT_BYTES,
+  MAX_GIT_REPO_LENGTH,
   normalizeGitCloneUrl,
   redactGitUrlSecrets,
   normalizeRepoSubdir
@@ -292,7 +293,9 @@ function normalizeAgentGitRepo(value: string, ctx: z.RefinementCtx): string {
   }
 }
 
-const GitRepoInput = z.string().min(1).transform(normalizeAgentGitRepo)
+// `.max` before the transform: zod runs checks in order, so an oversized value is
+// rejected without normalization ever scanning it.
+const GitRepoInput = z.string().min(1).max(MAX_GIT_REPO_LENGTH).transform(normalizeAgentGitRepo)
 const AgentDirCreateInput = z.string().transform(normalizeAgentDir)
 const AgentDirPatchInput = z
   .union([z.string(), z.null()])
