@@ -181,17 +181,23 @@ model OrgInviteRedemption {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// WaitlistEntry — closed-beta admission
-//   One row per verified email. TWO write sides share this table (§7):
-//     • the EXTERNAL admin app writes approval/mint fields (status, note, source,
-//       tokenHash, displayTail, joinExpiresAt, revokedAt, approved*) — enforced by
-//       a column-level least-privilege DB role granted in the migration;
-//     • the CP writes ONLY the redemption fields (redeemed*), in the same
+// WaitlistEntry / ActivationLink — closed-beta admission
+//   Two tables with ONE job each:
+//     • WaitlistEntry  = the APPLICATION. One row per verified email: did this
+//       person ask in, and did an admin approve. Carries no link material.
+//     • ActivationLink = the CREDENTIAL. Every link that can activate an account
+//       lives here, in one list, whether or not it was born attached to an email.
+//   Splitting them is what lets a link exist with no applicant behind it (see the
+//   ActivationLink comment) and lets one applicant be reissued a link without
+//   mutating the approval record.
+//
+//   TWO write sides share both tables (§7), enforced by a column-level
+//   least-privilege DB role granted in the migration — never by field selection:
+//     • the EXTERNAL admin app writes approval + mint/revoke columns;
+//     • the CP writes ONLY the binding + redemption columns, in the same
 //       transaction that sets User.activatedAt.
-//   The join link reuses OrgInviteLink's peppered-hash + tail + expiry/revoke
-//   shape, but the token is minted by the admin app and only VERIFIED (hashed &
-//   compared) by the CP on redeem. Minting/approval/admin-auth are out of this
-//   repo's scope; the CP owns the schema + migrations for its application DB.
+//   Minting/approval/admin-auth are out of this repo's scope; the CP owns the
+//   schema + migrations for its application DB.
 // ───────────────────────────────────────────────────────────────────────────
 
 enum WaitlistStatus {
@@ -207,17 +213,9 @@ model WaitlistEntry {
   note   String? // applicant message / admin note
   source String? // 'self' | 'admin' | …
 
-  // ── join link (one per email; minted by the admin app on approve) ──
-  tokenHash     String?   @unique // peppered hash; plaintext only ever in the mint response
-  displayTail   String? // display-only tail for reconciliation
-  joinExpiresAt DateTime? @db.Timestamptz(6)
-  revokedAt     DateTime? @db.Timestamptz(6)
-
-  // ── approval / redemption audit ──
+  // ── approval audit ──
   approvedByUserId String?
   approvedAt       DateTime? @db.Timestamptz(6)
-  redeemedByUserId String? // written ONLY by the CP redeem path
-  redeemedAt       DateTime? @db.Timestamptz(6) // written ONLY by the CP redeem path
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
@@ -225,22 +223,34 @@ model WaitlistEntry {
   @@map("waitlist_entry")
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// OpenActivationLink — email-agnostic, single-use activation link (§6a)
-//   The second flavor of activation link. Unlike WaitlistEntry's join link it is
-//   NOT keyed by email and needs no waitlist entry: whoever is signed in with ANY
-//   verified email may redeem it, which is how someone who never applied gets
-//   admitted. It is consumed by the FIRST account that redeems it (a repeat by
-//   that same account is idempotent); everyone else sees the opaque "unavailable".
-//   Same two-writer split as WaitlistEntry (§7): the EXTERNAL admin app mints
-//   (insert) and revokes; the CP writes ONLY the redemption columns, in the same
-//   transaction that sets User.activatedAt. Enforced by column-level GRANTs in the
-//   migration, not by field selection.
-// ───────────────────────────────────────────────────────────────────────────
+// One list of activation links, with ONE redemption rule: a link may only be
+// redeemed by the email it is bound to, and an UNBOUND link binds itself to its
+// first redeemer. The two ways a link comes into being are just the two states of
+// `email` at mint time:
+//   • BOUND at mint (`email` set, `boundAt` = mint time) — the admin approved a
+//     specific applicant, so only that person's verified email can redeem it;
+//   • UNBOUND at mint (`email` null) — a link conjured out of nothing, for someone
+//     who never applied. ANY verified email may claim it; the FIRST redeemer's
+//     email is written into `email` (with `boundAt`), after which the row is
+//     indistinguishable from a born-bound one.
+// Binding on first use is what makes an unbound link single-use — no separate
+// "consumed" flag and no second code path: once bound, everyone else fails the
+// same email check a born-bound link would have applied from the start.
+// `email` is deliberately NOT unique: reissuing after an expiry inserts a new row
+// rather than mutating the old one, so the audit trail is append-only.
+model ActivationLink {
+  id String @id @default(cuid())
 
-model OpenActivationLink {
-  id          String  @id @default(cuid())
-  tokenHash   String  @unique // peppered hash (oa1_ domain); plaintext only in the mint response
+  // The bound email (normalized lowercase), or null while still unbound.
+  email   String?
+  // When `email` was fixed: mint time for a born-bound link, first-redeem time for
+  // an unbound one. Non-null iff `email` is non-null.
+  //
+  // The CP may write email/boundAt ONLY on the null→value transition (a bound link
+  // is immutable); the admin app cannot write them at all after insert.
+  boundAt DateTime? @db.Timestamptz(6)
+
+  tokenHash   String  @unique // peppered hash; plaintext only ever in the mint response
   displayTail String // display-only tail for reconciliation
   note        String? // who/what the link was issued for — admin bookkeeping
 
@@ -251,12 +261,12 @@ model OpenActivationLink {
   createdByUserId String? // admin-app user id; plain column, no FK (cross-app writer)
   createdAt       DateTime @default(now()) @db.Timestamptz(6)
 
-  // ── redemption (single-use) — written ONLY by the CP redeem path ──
+  // ── redemption — written ONLY by the CP redeem path ──
   redeemedByUserId String?
-  redeemedEmail    String? // the verified email that consumed it, for audit
   redeemedAt       DateTime? @db.Timestamptz(6)
 
-  @@map("open_activation_link")
+  @@index([email])
+  @@map("activation_link")
 }
 
 // ───────────────────────────────────────────────────────────────────────────

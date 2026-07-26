@@ -5,8 +5,8 @@
  *   GET  /me/access      → the caller's admission state + status (drives login routing)
  *   POST /waitlist        → add the caller's OWN verified email as a pending entry
  *   POST /waitlist/redeem → redeem an admin-minted activation link ⇒ become a formal
- *                           user (either the per-email join link or an open,
- *                           email-agnostic single-use link — see WaitlistService.redeem)
+ *                           user. One list of links: bound to an email at mint time,
+ *                           or bound to whoever redeems it first (WaitlistService.redeem)
  *
  * Auth split (§8):
  *  - `/me/access` uses `humanAuth` (identity only). Its email is read from TRUSTED
@@ -109,7 +109,7 @@ export function waitlistRoutes(deps: HttpDeps) {
           tags: [Tag.Profile],
           summary: 'Redeem an activation link',
           description:
-            'Redeem an activation link, making the signed-in user a formal (activated) user with a personal org. Two link flavors share this endpoint, distinguished by the token itself: a per-email waitlist join link, whose email must match the caller’s verified email; or an open single-use link, which admits ANY verified email (no waitlist entry required) and is consumed by the first account that redeems it. Idempotent on repeat by the same user. Requires OIDC sign-in with a verified email.',
+            'Redeem an activation link, making the signed-in user a formal (activated) user with a personal org. A link is either bound to an email when it is minted — in which case only that verified email may redeem it — or minted unbound, in which case ANY verified email may claim it (no waitlist entry required) and the first redemption binds the link to that email, making it single-use from then on. Idempotent on repeat by the same user. Requires OIDC sign-in with a verified email.',
           operationId: 'redeemWaitlistLink',
           body: WaitlistRedeemBody,
           response: {

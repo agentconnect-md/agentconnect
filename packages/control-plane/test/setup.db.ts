@@ -57,6 +57,11 @@ const TABLES = [
   'oauth_client',
   'oauth_code',
   'oauth_grant',
+  // FK-less closed-beta admission state, keyed by email / token hash rather than by a
+  // relation — CASCADE from app_user never reaches either, so an approval or a live
+  // activation link would leak into the next test file.
+  'waitlist_entry',
+  'activation_link',
   'membership',
   'app_user',
   'org'

@@ -2529,9 +2529,10 @@ export type OrgInviteAcceptResult =
 // ───────────────────────────────────────────────────────────────────────────
 // WaitlistRepo — closed-beta admission
 //   The CP-side surface only: read a user's admission state, let a signed-in user
-//   add THEMSELVES (pending), and redeem an admin-minted join link (the ONLY writer
-//   of the redemption columns + User.activatedAt). Approval / minting / admin auth
-//   live in the external admin app and are NOT represented here.
+//   add THEMSELVES (pending), and redeem an admin-minted activation link (the ONLY
+//   writer of the link's binding + redemption columns and of User.activatedAt).
+//   Approval / minting / admin auth live in the external admin app and are NOT
+//   represented here.
 // ───────────────────────────────────────────────────────────────────────────
 
 export type WaitlistEntryStatus = 'pending' | 'approved' | 'rejected'
@@ -2552,9 +2553,12 @@ export interface WaitlistAccessState {
 }
 
 export type WaitlistRedeemResult =
-  | { status: 'activated' } // the user is now formal (idempotent on repeat)
-  | { status: 'invalid' } // unknown / not-approved / revoked / expired token, or redeemed by another
-  | { status: 'email_mismatch'; expectedEmail: string } // link was minted for a different email
+  // The user is now formal (idempotent on repeat). `boundNow` is true when THIS call
+  // bound a previously unbound link to the caller's email — audit/telemetry only; the
+  // API response is identical either way, so a caller learns nothing about the link.
+  | { status: 'activated'; boundNow: boolean }
+  | { status: 'invalid' } // unknown / revoked / expired token, or bound-and-redeemed by another
+  | { status: 'email_mismatch'; expectedEmail: string } // link is bound to a different email
 
 export interface WaitlistRepo {
   /** Read the caller's admission state by their (trusted) user id. */
@@ -2568,24 +2572,24 @@ export interface WaitlistRepo {
    */
   addSelf(email: string, note?: string): Promise<WaitlistEntryStatus>
   /**
-   * Redeem an admin-minted join link for a signed-in user (single transaction,
+   * Redeem an admin-minted activation link for a signed-in user (single transaction,
    * row-level `FOR UPDATE`, waitlist-and-login.md §6). On success sets
-   * `User.activatedAt`, creates the personal org, and stamps `redeemed*`. The
-   * `verifiedEmail` (already normalized) must equal the entry's email or the redeem
-   * fails `email_mismatch`. Idempotent: a repeat by the SAME user returns `activated`.
+   * `User.activatedAt`, creates the personal org, and stamps `redeemed*` on the link.
+   * Idempotent: a repeat by the SAME user returns `activated`.
+   *
+   * ONE rule covers both kinds of link in the list, because they differ only in
+   * whether `activation_link.email` was set at mint time:
+   *  - the link is BOUND to an email ⇒ `verifiedEmail` (already normalized) must equal
+   *    it, or the redeem fails `email_mismatch`;
+   *  - the link is UNBOUND ⇒ any verified email may claim it, and this call BINDS it
+   *    to `verifiedEmail` (recording `email` + `boundAt`) before activating. That
+   *    binding is what makes an unbound link single-use: from here on it is
+   *    indistinguishable from a born-bound one, so the next person hits the email
+   *    check above.
+   * No `waitlist_entry` row is required or created — that is how someone who never
+   * applied gets admitted — but a bound email whose entry was `rejected` is refused.
    */
   redeem(tokenHash: string, userId: string, verifiedEmail: string, now: Date): Promise<WaitlistRedeemResult>
-  /**
-   * Redeem an OPEN activation link (§6a): email-agnostic and single-use. No
-   * `waitlist_entry` row is involved or created — any signed-in user with a verified
-   * email may consume it, which is how someone who never applied gets admitted. On
-   * success this does exactly what {@link redeem} does (set `User.activatedAt`,
-   * create the personal org) and stamps `redeemed*` on the link. Never returns
-   * `email_mismatch` — there is no email to mismatch. Consumed by the FIRST
-   * redeemer: a repeat by the SAME user returns `activated`, anyone else gets
-   * `invalid`, indistinguishable from expired/revoked/unknown.
-   */
-  redeemOpen(tokenHash: string, userId: string, verifiedEmail: string, now: Date): Promise<WaitlistRedeemResult>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

@@ -1,15 +1,18 @@
 /**
  * PgWaitlistRepo — the CP side of closed-beta admission (waitlist-and-login.md §4-§6).
  *
- * The CP writes ONLY the redemption columns (`redeemedAt` / `redeemedByUserId`) plus
- * `User.activatedAt`; the external admin app owns approval/mint columns (§7). Redeem
- * serializes with the admin's revoke/rotate via `SELECT … FOR UPDATE` on the entry
- * row and re-checks every condition inside the transaction before committing —
- * field-level ownership alone does not remove the race (§4).
+ * The CP writes ONLY the link's binding (`email` / `boundAt`, on the null→value
+ * transition) and redemption (`redeemedAt` / `redeemedByUserId`) columns, plus
+ * `User.activatedAt`; the external admin app owns the approval + mint/revoke columns
+ * (§7). Redeem serializes with the admin's revoke — and with a second person racing to
+ * claim the same unbound link — via `SELECT … FOR UPDATE` on the link row, re-checking
+ * every condition inside the transaction before committing: field-level ownership
+ * alone does not remove the race (§4).
  *
- * `redeemOpen` applies the same rules to the second link flavor — the open,
- * email-agnostic, single-use `open_activation_link` (§6a) — which carries no email
- * binding and no waitlist entry.
+ * There is a SINGLE redeem path for the whole `activation_link` list. A link bound to
+ * an email admits only that email; an unbound one admits anybody and binds itself to
+ * its first redeemer, which collapses "single-use" into the same email check rather
+ * than a second flavor of code.
  */
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
@@ -72,61 +75,27 @@ export class PgWaitlistRepo implements WaitlistRepo {
   async redeem(tokenHash: string, userId: string, verifiedEmail: string, now: Date): Promise<WaitlistRedeemResult> {
     const normalizedEmail = verifiedEmail.trim().toLowerCase()
     return this.inTransaction(async (tx) => {
-      // Serialize against the admin app's approve/revoke/rotate on this row: if a
-      // revoke/rotate wins, this read resumes and observes the new state; if redeem
-      // wins, the admin's UPDATE waits until we commit.
-      await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "waitlist_entry" WHERE "tokenHash" = ${tokenHash} FOR UPDATE`)
+      // Serialize against the admin app's revoke and against another person racing to
+      // claim the SAME unbound link: if a revoke wins, this read resumes and observes
+      // it; if we win, the other transaction waits and then sees our binding.
+      await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "activation_link" WHERE "tokenHash" = ${tokenHash} FOR UPDATE`)
 
-      const entry = await tx.waitlistEntry.findUnique({ where: { tokenHash } })
-      // Unknown / not-approved / revoked / expired → indistinguishable "invalid" to
-      // avoid leaking which condition failed.
-      if (!entry || entry.status !== 'approved' || entry.revokedAt) return { status: 'invalid' }
-      if (entry.joinExpiresAt && entry.joinExpiresAt.getTime() < now.getTime()) return { status: 'invalid' }
-      // Already redeemed by a DIFFERENT user — the link is one-email/one-user.
-      if (entry.redeemedByUserId && entry.redeemedByUserId !== userId) return { status: 'invalid' }
-
-      // Strong email binding: the signed-in user's verified email must match the
-      // email the link was minted for (§6 step 3). Surfaced so the UI can tell the
-      // user which account to sign in with.
-      if (entry.email !== normalizedEmail) return { status: 'email_mismatch', expectedEmail: entry.email }
-
-      const user = await tx.user.findUnique({
-        where: { id: userId },
-        select: { displayName: true, email: true, activatedAt: true }
-      })
-      if (!user) return { status: 'invalid' }
-
-      // Activate (idempotent) + create the personal org (idempotent) + stamp the
-      // redemption. All within this locked transaction.
-      if (!user.activatedAt) await tx.user.update({ where: { id: userId }, data: { activatedAt: now } })
-      const realEmail = isSyntheticEmail(user.email) ? normalizedEmail : user.email
-      await ensurePersonalOrg(tx, userId, user.displayName, realEmail)
-      if (!entry.redeemedByUserId) {
-        await tx.waitlistEntry.update({
-          where: { tokenHash },
-          data: { redeemedByUserId: userId, redeemedAt: now }
-        })
-      }
-      return { status: 'activated' }
-    })
-  }
-
-  /** Open (email-agnostic) single-use link — §6a. Same locked-transaction shape as
-   *  {@link redeem}: `FOR UPDATE` on the link row serializes two people racing to
-   *  consume it, so exactly one wins and the loser sees the opaque `invalid`. */
-  async redeemOpen(tokenHash: string, userId: string, verifiedEmail: string, now: Date): Promise<WaitlistRedeemResult> {
-    const normalizedEmail = verifiedEmail.trim().toLowerCase()
-    return this.inTransaction(async (tx) => {
-      await tx.$queryRaw(
-        Prisma.sql`SELECT "id" FROM "open_activation_link" WHERE "tokenHash" = ${tokenHash} FOR UPDATE`
-      )
-
-      const link = await tx.openActivationLink.findUnique({ where: { tokenHash } })
-      // Unknown / revoked / expired / already consumed by someone else → one
-      // indistinguishable "invalid", so a probe learns nothing about the link.
+      const link = await tx.activationLink.findUnique({ where: { tokenHash } })
+      // Unknown / revoked / expired → indistinguishable "invalid" to avoid leaking
+      // which condition failed.
       if (!link || link.revokedAt) return { status: 'invalid' }
       if (link.expiresAt.getTime() < now.getTime()) return { status: 'invalid' }
+      // Already redeemed by a DIFFERENT user — one link, one account. Checked BEFORE
+      // the email comparison so a consumed link never discloses whom it belongs to.
       if (link.redeemedByUserId && link.redeemedByUserId !== userId) return { status: 'invalid' }
+
+      // The one rule. A BOUND link (minted for an approved applicant, or bound by
+      // whoever redeemed it first) admits only that email — surfaced as a mismatch so
+      // the UI can name the account to sign in with. An UNBOUND link admits anyone and
+      // becomes bound below, which is exactly what makes it single-use.
+      if (link.email !== null && link.email !== normalizedEmail) {
+        return { status: 'email_mismatch', expectedEmail: link.email }
+      }
 
       const user = await tx.user.findUnique({
         where: { id: userId },
@@ -134,18 +103,34 @@ export class PgWaitlistRepo implements WaitlistRepo {
       })
       if (!user) return { status: 'invalid' }
 
-      if (!user.activatedAt) await tx.user.update({ where: { id: userId }, data: { activatedAt: now } })
       const realEmail = isSyntheticEmail(user.email) ? normalizedEmail : user.email
+      // A link never overrides an explicit rejection. The waitlist entry is only an
+      // application record now, so this is the one place the two tables still meet:
+      // without it, a link minted before a rejection (or an unbound link handed to a
+      // rejected applicant) would quietly let them in. No entry at all is fine — that
+      // is the whole point of an unbound link.
+      const entry = await tx.waitlistEntry.findUnique({ where: { email: realEmail }, select: { status: true } })
+      if (entry?.status === 'rejected') return { status: 'invalid' }
+
+      // Activate (idempotent) + create the personal org (idempotent) + bind & stamp
+      // the redemption. All within this locked transaction.
+      if (!user.activatedAt) await tx.user.update({ where: { id: userId }, data: { activatedAt: now } })
       await ensurePersonalOrg(tx, userId, user.displayName, realEmail)
-      // Consume it. Only on the first redemption, so a repeat by the same user keeps
-      // the original audit stamp instead of sliding it forward.
+      const boundNow = link.email === null
       if (!link.redeemedByUserId) {
-        await tx.openActivationLink.update({
+        await tx.activationLink.update({
           where: { tokenHash },
-          data: { redeemedByUserId: userId, redeemedEmail: realEmail, redeemedAt: now }
+          data: {
+            // Record the binding on the null→value transition only; a bound link's
+            // email is immutable, and a repeat by the same user keeps the original
+            // stamps instead of sliding them forward.
+            ...(boundNow ? { email: realEmail, boundAt: now } : {}),
+            redeemedByUserId: userId,
+            redeemedAt: now
+          }
         })
       }
-      return { status: 'activated' }
+      return { status: 'activated', boundNow }
     })
   }
 }

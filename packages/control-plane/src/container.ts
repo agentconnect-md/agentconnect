@@ -266,10 +266,9 @@ export function buildContainer(
     repos.orgInviteLink,
     clock
   )
-  // Closed-beta admission (waitlist-and-login.md). Both activation-link codecs (the
-  // per-email join link and the open single-use link) share the API_KEY_PEPPER, each
-  // under its own domain-separated HMAC — the external admin app injects the SAME
-  // pepper to mint links the CP can verify (§6/§6a).
+  // Closed-beta admission (waitlist-and-login.md). The activation-link codec shares the
+  // API_KEY_PEPPER (its own domain-separated HMAC) — the external admin app injects
+  // the SAME pepper to mint links the CP can verify (§6).
   const waitlist = new WaitlistService(config.API_KEY_PEPPER, repos.waitlist, clock)
 
   // Relay↔CP `rc/auth` dual-mode verifier (§8): shared RELAY_TOKEN and/or per-relay
