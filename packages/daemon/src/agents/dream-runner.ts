@@ -823,38 +823,25 @@ export class DreamRunner {
   }
 
   /**
-   * Accept ONE mined skill candidate: copy its staged directory into the agent's
-   * own skills tree and mark it accepted. This is the only path that installs a
-   * mined skill — there is deliberately no auto-adopt, because a skill is
-   * executable instruction content that steers every later session (design §7).
+   * Accepting a mined skill is NOT AVAILABLE in this phase.
    *
-   * Copying (rather than referencing the staging) means a later `discard` of the
-   * dream cannot remove a skill the user already accepted.
+   * "Accepted" must mean the skill can steer future sessions, and that requires
+   * materializing it where the runtime looks — under the agent-writable ACP cwd.
+   * Every daemon-authority write there is escapable (see skills/dream-skills.ts:
+   * the parent can be swapped for a symlink mid-operation and Node has no
+   * `openat` family), so the containment-safe registration step is deliberately
+   * deferred rather than shipped subtly unsafe.
+   *
+   * Failing loudly is the point: a terminal `accepted` whose effect does not
+   * exist would be a worse outcome than an explicit refusal. Mining, staging,
+   * review metadata, and dismissal all work; only acceptance waits.
    */
   async skillAccept(agentId: string, dreamId: string, name: string): Promise<DreamInfo> {
-    const dir = this.dirFor(agentId)
-    return this.withLock(agentId, async () => {
-      const { dream, skill } = this.skillCandidate(agentId, dreamId, name)
-      if (skill.state === 'accepted') return dream // idempotent
-      if (skill.state === 'dismissed') throw new DreamStateError('this skill candidate was dismissed')
-
-      const staged = join(this.dreamDir(agentId, dreamId), 'skills', name)
-      try {
-        await fsp.stat(staged)
-      } catch {
-        throw new DreamStateError('this skill candidate is no longer staged; rerun the dream')
-      }
-      const destination = join(dir, AGENT_SKILLS_DIRNAME, name)
-      await fsp.mkdir(join(dir, AGENT_SKILLS_DIRNAME), { recursive: true })
-      // Replace any same-named skill wholesale rather than merging trees, so an
-      // accepted skill is exactly what the reviewer read.
-      await fsp.rm(destination, { recursive: true, force: true })
-      await fsp.cp(staged, destination, { recursive: true })
-      this.deps.log.info(`dream ${dreamId}: accepted skill "${name}" for agent ${agentId}`)
-      const next = this.setSkillState(agentId, dreamId, name, 'accepted')
-      await this.sweepReviewedStaging(agentId, next)
-      return next
-    })
+    this.dirFor(agentId)
+    this.skillCandidate(agentId, dreamId, name) // 404 an unknown candidate first
+    throw new DreamStateError(
+      'accepting a mined skill is not available yet — it needs containment-safe runtime registration'
+    )
   }
 
   /** Dismiss one candidate: drop its staging and record the decision, so later

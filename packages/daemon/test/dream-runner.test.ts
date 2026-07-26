@@ -6,7 +6,6 @@ import { describe, expect, it } from 'vitest'
 import type { DreamInfo, MemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { parse as parseYaml } from 'yaml'
 import { DreamRunner, DreamStateError, type DreamStorePort } from '../src/agents/dream-runner.js'
-import { acceptedDreamSkillNames } from '../src/skills/dream-skills.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { appendDistilledMemories } from '../src/agents/memory-distiller.js'
 import {
@@ -782,16 +781,15 @@ describe('DreamRunner skill mining (D-3)', () => {
     expect(done.skills).toBeUndefined()
   })
 
-  it('accept installs the skill under the agent root and survives a later discard', async () => {
-    const { dir, runner, dreamId } = await mining(grounded)
-    const after = await runner.skillAccept('a1', dreamId, 'deploy-staging')
-    expect(after.skills?.[0]).toMatchObject({ name: 'deploy-staging', state: 'accepted' })
-    expect(await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')).toContain('# Deploy')
-    expect(await readFile(join(dir, 'skills', 'deploy-staging', 'scripts', 'deploy.sh'), 'utf8')).toBe('echo deploy')
-
-    // Discarding the dream must not uninstall what the user already accepted.
-    await runner.discard('a1', dreamId)
-    expect(await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')).toContain('# Deploy')
+  it('refuses to accept — a terminal success without its effect would be a lie', async () => {
+    // Accepting must mean the skill can steer later sessions, which needs a
+    // containment-safe write under the agent-writable cwd. Until that exists,
+    // refuse loudly rather than record `accepted` with no effect.
+    const { runner, dreamId, done } = await mining(grounded)
+    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).rejects.toThrow(/not available yet/)
+    // The candidate stays reviewable rather than being consumed.
+    expect(done.skills?.[0]).toMatchObject({ state: 'proposed' })
+    expect(await runner.stagedSkill('a1', dreamId, 'deploy-staging')).not.toBeNull()
   })
 
   it('dismiss drops the staging and blocks a later accept; both are idempotent', async () => {
@@ -802,7 +800,6 @@ describe('DreamRunner skill mining (D-3)', () => {
     // Idempotent, and a dismissed candidate can't be resurrected into an install.
     await expect(runner.skillDismiss('a1', dreamId, 'deploy-staging')).resolves.toMatchObject({})
     await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).rejects.toThrow(DreamStateError)
-    await expect(readdir(join(dir, 'skills'))).rejects.toThrow() // nothing installed
   })
 
   it('rejects an unknown candidate name', async () => {
@@ -880,16 +877,13 @@ describe('DreamRunner skill mining — review findings', () => {
     expect(prompts[0]).not.toContain('Bash(')
   })
 
-  it('installs an accepted skill where the runtime will actually look for it', async () => {
-    const { dir, runner, dreamId } = await mine()
-    await runner.skillAccept('a1', dreamId, 'deploy-staging')
-
-    // Canonical copy under the agent root (survives a workspace reset)…
-    expect(await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')).toContain('# Deploy')
-    // …and it is listed as accepted. Making it visible to the runtime needs a
-    // containment-safe materialization step (see dream-skills.ts) and is
-    // deliberately NOT done here.
-    expect(await acceptedDreamSkillNames({ dir })).toEqual(['deploy-staging'])
+  it('keeps the candidate reviewable rather than half-accepting it', async () => {
+    // Acceptance is deferred (see skillAccept), so the daemon must not leave a
+    // half-applied state behind: the candidate stays `proposed` and staged.
+    const { runner, dreamId } = await mine()
+    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).rejects.toThrow(/not available yet/)
+    const staged = await runner.stagedSkill('a1', dreamId, 'deploy-staging')
+    expect(staged?.skill).toContain('name: deploy-staging')
   })
 
   it('keeps a still-proposed candidate reviewable after the store proposal is discarded', async () => {
@@ -898,8 +892,10 @@ describe('DreamRunner skill mining — review findings', () => {
     // The store staging is gone, but the unreviewed recommendation is not.
     expect(await runner.stagedFiles('a1', dreamId)).toBeNull()
     expect(await runner.stagedSkill('a1', dreamId, 'deploy-staging')).not.toBeNull()
-    const after = await runner.skillAccept('a1', dreamId, 'deploy-staging')
-    expect(after.skills?.[0]).toMatchObject({ state: 'accepted' })
+    // It remains reviewable (dismissable) rather than being destroyed with the
+    // store proposal — the independent lifecycle §7 requires.
+    const after = await runner.skillDismiss('a1', dreamId, 'deploy-staging')
+    expect(after.skills?.[0]).toMatchObject({ state: 'dismissed' })
     // Once nothing is left to review, the staging is finally swept.
     expect(await runner.stagedSkill('a1', dreamId, 'deploy-staging')).toBeNull()
   })
