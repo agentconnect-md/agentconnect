@@ -321,6 +321,39 @@ describe('DreamRunner adoption', () => {
     expect(history).toContain('"source":"tool"') // pre-adoption rows preserved
   })
 
+  it.each([
+    ['a valid final row without a newline', false],
+    ['a torn partial tail', true]
+  ])('repairs %s before adding every dream history row', async (_description, torn) => {
+    const { dir, store, runner } = await setup({})
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+    const legacy = {
+      path: 'prefs.md',
+      event: 'add',
+      after: '- legacy preference',
+      at: '2026-01-01T00:00:00.000Z',
+      scope: 'agent',
+      source: 'tool'
+    }
+    const historyPath = join(memoryDir(dir), MEMORY_HISTORY_FILENAME)
+    await writeFile(historyPath, `${JSON.stringify(legacy)}${torn ? '\n{"path":' : ''}`, 'utf8')
+
+    await runner.adopt('a1', started.dreamId, false)
+
+    const history = (await readFile(historyPath, 'utf8'))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { path: string; source: string; after: string })
+    expect(
+      history
+        .filter((event) => event.source === 'dream')
+        .map((event) => event.path)
+        .sort()
+    ).toEqual([MEMORY_INDEX, 'prefs.md'])
+    expect(history).toContainEqual(expect.objectContaining({ source: 'tool', after: '- legacy preference' }))
+  })
+
   it('never loses a write racing adoption (shared memory-dir lock)', async () => {
     const { dir, store, runner } = await setup({})
     const started = await runner.start('a1', { trigger: 'manual' })

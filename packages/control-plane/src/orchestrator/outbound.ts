@@ -54,6 +54,8 @@ import type {
   MemoryReadContent,
   MemoryWriteReq,
   MemoryWriteOk,
+  MemoryHistoryReq,
+  MemoryHistoryPage,
   MemorySurfaceReq,
   MemorySurfaceInfo,
   MemoryRecordSearchReq,
@@ -463,6 +465,12 @@ export class ControlSender {
   async memoryWrite(daemonId: string, req: MemoryWriteReq): Promise<MemoryWriteOk> {
     const c = this.must(daemonId)
     return c.conn.request<MemoryWriteOk>('memory/write', req, { epoch: c.sessionEpoch })
+  }
+
+  /** Page a managed memory file's provenance log without persisting its bodies. */
+  async memoryHistory(daemonId: string, req: MemoryHistoryReq): Promise<MemoryHistoryPage> {
+    const c = this.must(daemonId)
+    return c.conn.request<MemoryHistoryPage>('memory/history', req, { epoch: c.sessionEpoch })
   }
 
   /** Discover the provider-neutral memory administration shape/capabilities. */

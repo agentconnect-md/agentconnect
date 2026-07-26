@@ -45,9 +45,11 @@ import {
   readMemoryFile,
   writeMemoryFile,
   listMemory,
+  listMemoryHistory,
   MemoryConflictError,
   MemoryTooLargeError,
-  type MemoryWriteSource
+  type MemoryWriteSource,
+  type ManagedMemoryHistoryPage
 } from './memory.js'
 import {
   nativeMemoryList,
@@ -127,6 +129,8 @@ export interface FileMemoryAdmin {
     ifMatch?: string,
     source?: MemoryWriteSource
   ): Promise<MemoryWriteResult>
+  /** Present only when this file provider owns a provenance sidecar. */
+  history?(scope: MemoryScope, req: { path: string; cursor?: string; limit: number }): Promise<ManagedMemoryHistoryPage>
 }
 
 export interface MemoryRecordPage {
@@ -335,7 +339,8 @@ export class ManagedMemoryProvider implements MemoryProvider {
       shape: 'files',
       list: (scope) => this.list(scope),
       read: (scope, path) => this.read(scope, path),
-      write: (scope, path, content, ifMatch, source) => this.write(scope, path, content, ifMatch, source)
+      write: (scope, path, content, ifMatch, source) => this.write(scope, path, content, ifMatch, source),
+      history: (scope, req) => listMemoryHistory(this.dirFor(scope.agentId), req.path, req.cursor, req.limit)
     }
   }
 

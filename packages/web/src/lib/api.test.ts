@@ -11,6 +11,7 @@ import {
   fetchMemoryAdminSurface,
   fmtCountCompact,
   listMemoryRecordHistory,
+  listMemoryFileHistory,
   listMemoryRecords,
   mintWebchatToken,
   searchMemoryRecords,
@@ -424,6 +425,32 @@ describe('external-memory record API', () => {
     expect(calls[5]?.path).toContain('/record-1')
     expect(JSON.parse(String(calls[5]?.init?.body))).toEqual({ version: 'v2' })
     expect(calls[6]?.path).toContain('/record-1/history?limit=5')
+  })
+})
+
+describe('managed-memory history API', () => {
+  afterEach(() => {
+    setApiOrgId(null)
+    vi.unstubAllGlobals()
+  })
+
+  it('encodes the selected file and opaque pagination cursor', async () => {
+    const cursor = '11111111-1111-4111-8111-111111111111'
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL) =>
+        new Response(JSON.stringify({ events: [], nextCursor: null }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    setApiOrgId('org-1')
+
+    await listMemoryFileHistory('agent-1', 'release notes.md', { cursor, limit: 5 })
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      `/orgs/org-1/agents/agent-1/memory/history?path=release+notes.md&cursor=${cursor}&limit=5`
+    )
   })
 })
 

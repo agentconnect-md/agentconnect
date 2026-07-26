@@ -1832,6 +1832,38 @@ export async function updateAgentMemory(
   )
 }
 
+export interface MemoryFileHistoryEventDto {
+  id?: string
+  path: string
+  event: 'add' | 'update' | 'delete'
+  before?: string
+  after: string
+  at: string
+  scope: 'agent'
+  source: 'tool' | 'console' | 'distill' | 'dream'
+  truncated?: boolean
+}
+
+export interface MemoryFileHistoryPageDto {
+  events: MemoryFileHistoryEventDto[]
+  nextCursor: string | null
+}
+
+// Page one managed memory file's provenance, newest first. The hidden sidecar
+// remains daemon-owned; only these bounded rows transit the API.
+export async function listMemoryFileHistory(
+  agentId: string,
+  path: string,
+  opts: { cursor?: string; limit?: number } = {}
+): Promise<MemoryFileHistoryPageDto> {
+  const query = new URLSearchParams({ path })
+  if (opts.cursor) query.set('cursor', opts.cursor)
+  if (opts.limit) query.set('limit', String(opts.limit))
+  return apiGet<MemoryFileHistoryPageDto>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/history?${query.toString()}`
+  )
+}
+
 // ── memory dreaming (docs/designs/memory-dreaming.md §10) — offline consolidation jobs ──
 
 export type DreamStatus = 'pending' | 'running' | 'completed' | 'failed' | 'canceled' | 'adopted' | 'discarded'

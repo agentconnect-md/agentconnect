@@ -19,6 +19,8 @@ import type {
   MemoryReadContent,
   MemoryWriteReq,
   MemoryWriteOk,
+  MemoryHistoryReq,
+  MemoryHistoryPage,
   MemorySurfaceReq,
   MemorySurfaceInfo,
   MemoryRecordSearchReq,
@@ -40,6 +42,7 @@ import type {
 import { fitToBudget, utf8Boundary } from './wire-slice.js'
 import {
   listMemory,
+  listMemoryHistory,
   readMemoryFile,
   writeMemoryFile,
   MemoryPathError,
@@ -63,6 +66,7 @@ export interface MemoryReader {
   list(req: MemoryListReq): Promise<MemoryListPage>
   read(req: MemoryReadReq): Promise<MemoryReadContent>
   write(req: MemoryWriteReq): Promise<MemoryWriteOk>
+  history(req: MemoryHistoryReq): Promise<MemoryHistoryPage>
   surface(req: MemorySurfaceReq): Promise<MemorySurfaceInfo>
   search(req: MemoryRecordSearchReq): Promise<MemoryRecordSearchPage>
   recordList(req: MemoryRecordListReq): Promise<MemoryRecordListPage>
@@ -105,7 +109,8 @@ export function createMemoryReader(
         write: async (scope, path, content, ifMatch, source) => {
           const result = await writeMemoryFile(dirFor(scope.agentId), path, content, ifMatch, source)
           return { ok: true, path, ...result }
-        }
+        },
+        history: async (scope, req) => listMemoryHistory(dirFor(scope.agentId), req.path, req.cursor, req.limit)
       }
     )
   }
@@ -191,6 +196,24 @@ export function createMemoryReader(
         'console'
       )
       return { agentId: req.agentId, path: req.path, size, mtime }
+    },
+
+    async history(req) {
+      const surface = requireFileSurface(req.agentId)
+      if (!surface.history) {
+        throw new MemoryViolationError('this memory provider does not expose file history')
+      }
+      const page = await surface.history(scopeFor(req.agentId), {
+        path: req.path,
+        ...(req.cursor ? { cursor: req.cursor } : {}),
+        limit: req.limit
+      })
+      return {
+        agentId: req.agentId,
+        path: req.path,
+        events: page.events,
+        ...(page.nextCursor ? { nextCursor: page.nextCursor } : {})
+      }
     },
 
     async surface(req) {

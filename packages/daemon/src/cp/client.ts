@@ -44,6 +44,7 @@ import type {
   MemoryListReq,
   MemoryReadReq,
   MemoryWriteReq,
+  MemoryHistoryReq,
   MemorySurfaceReq,
   MemoryRecordSearchReq,
   MemoryRecordListReq,
@@ -878,6 +879,15 @@ export class CpClient {
           .write(frame.payload as MemoryWriteReq)
           .then((ok) => this.reply(frame, 'memory/write/ok', ok))
           .catch((err) => this.memoryError(frame.id, 'memory/write', err))
+        return
+      }
+      case 'memory/history': {
+        // Managed provenance is paged separately so `.history` stays hidden from
+        // ordinary file listing/reads and only bounded rows cross the wire.
+        this.deps.memoryReader
+          .history(frame.payload as MemoryHistoryReq)
+          .then((page) => this.reply(frame, 'memory/history/page', page))
+          .catch((err) => this.memoryError(frame.id, 'memory/history', err))
         return
       }
       case 'memory/surface': {

@@ -51,6 +51,7 @@ import { RecordMemoryPanel } from '@/components/console/RecordMemoryPanel'
 import { DreamPanel } from '@/components/console/DreamPanel'
 import { DreamScheduleFields } from '@/components/console/DreamScheduleFields'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
+import { ManagedMemoryHistory } from '@/components/console/ManagedMemoryHistory'
 
 const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), {
   ssr: false,
@@ -566,6 +567,13 @@ export function MemoryPanel({
               }${canEdit ? ', or you can edit it here.' : '.'}`}
         </div>
       )}
+      {persistedProvider === 'managed' && !editing && !loading && !error && fileExists === true ? (
+        <ManagedMemoryHistory
+          key={`${agentId}:${selected}:${loadedMtime ?? 'unknown'}`}
+          agentId={agentId}
+          path={selected}
+        />
+      ) : null}
     </>
   )
 

@@ -4,7 +4,8 @@
  * plus topic files.
  *
  * - `GET /agents/:id/memory` proxies the index; `GET …/memory/files` lists the dir;
- *   `GET …/memory/file?path=` reads a named file; `PUT …/memory/file?path=` writes.
+ *   `GET …/memory/file?path=` reads a named file; `PUT …/memory/file?path=` writes;
+ *   `GET …/memory/history?path=` pages managed provenance.
  * - A not-yet-created file/dir is data (`exists:false`). 404 unknown agent, 503
  *   unplaced/offline; PUT is edit-gated.
  *
@@ -25,6 +26,8 @@ import type {
   MemoryReadContent,
   MemoryWriteReq,
   MemoryWriteOk,
+  MemoryHistoryReq,
+  MemoryHistoryPage,
   MemorySurfaceReq,
   MemorySurfaceInfo,
   MemoryRecordSearchReq,
@@ -65,10 +68,12 @@ class SpyControl {
   listCalls: Array<{ daemonId: string; req: MemoryListReq }> = []
   readCalls: Array<{ daemonId: string; req: MemoryReadReq }> = []
   writeCalls: Array<{ daemonId: string; req: MemoryWriteReq }> = []
+  historyCalls: Array<{ daemonId: string; req: MemoryHistoryReq }> = []
   constructor(
     private readonly list: MemoryListPage,
     private readonly read: MemoryReadContent,
-    private readonly write: MemoryWriteOk
+    private readonly write: MemoryWriteOk,
+    private readonly history: MemoryHistoryPage
   ) {}
   async memoryList(daemonId: string, req: MemoryListReq): Promise<MemoryListPage> {
     this.listCalls.push({ daemonId, req })
@@ -82,13 +87,25 @@ class SpyControl {
     this.writeCalls.push({ daemonId, req })
     return this.write
   }
+  async memoryHistory(daemonId: string, req: MemoryHistoryReq): Promise<MemoryHistoryPage> {
+    this.historyCalls.push({ daemonId, req })
+    return this.history
+  }
 }
 
-const spy = (over: Partial<{ list: MemoryListPage; read: MemoryReadContent; write: MemoryWriteOk }> = {}) =>
+const spy = (
+  over: Partial<{
+    list: MemoryListPage
+    read: MemoryReadContent
+    write: MemoryWriteOk
+    history: MemoryHistoryPage
+  }> = {}
+) =>
   new SpyControl(
     over.list ?? { agentId: AGENT, exists: false, entries: [] },
     over.read ?? { agentId: AGENT, path: 'MEMORY.md', exists: false },
-    over.write ?? { agentId: AGENT, path: 'MEMORY.md', size: 0, mtime: '2026-07-07T00:00:00.000Z' }
+    over.write ?? { agentId: AGENT, path: 'MEMORY.md', size: 0, mtime: '2026-07-07T00:00:00.000Z' },
+    over.history ?? { agentId: AGENT, path: 'MEMORY.md', events: [] }
   )
 
 describe('GET /agents/:id/memory (index) + /memory/files (list) + /memory/file', () => {
@@ -175,6 +192,46 @@ describe('GET /agents/:id/memory (index) + /memory/files (list) + /memory/file',
     running = buildHttpApp(prisma, undefined, LIVE)
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/memory` })
     expect(res.statusCode).toBe(503)
+  })
+
+  it('pages one managed file history newest first', async () => {
+    const cursor = randomUUID()
+    const nextCursor = randomUUID()
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const s = spy({
+      history: {
+        agentId: AGENT,
+        path: 'deploys.md',
+        events: [
+          {
+            path: 'deploys.md',
+            event: 'update',
+            before: 'v1',
+            after: 'v2',
+            at: '2026-07-07T01:02:03.000Z',
+            scope: 'agent',
+            source: 'console'
+          }
+        ],
+        nextCursor
+      }
+    })
+    running = buildHttpApp(prisma, undefined, LIVE, s as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${AGENT}/memory/history?path=deploys.md&cursor=${cursor}&limit=3`
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({
+      events: [{ event: 'update', before: 'v1', after: 'v2', source: 'console' }],
+      nextCursor
+    })
+    expect(s.historyCalls[0]).toEqual({
+      daemonId: DAEMON,
+      req: { agentId: AGENT, path: 'deploys.md', cursor, limit: 3 }
+    })
   })
 })
 
@@ -369,6 +426,12 @@ describe('provider-aware external record routes', () => {
     const files = await running.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/memory/files` })
     expect(files.statusCode).toBe(400)
     expect(files.json()).toMatchObject({ message: 'external memory does not expose files' })
+
+    const managedHistory = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${AGENT}/memory/history?path=MEMORY.md`
+    })
+    expect(managedHistory.statusCode).toBe(400)
   })
 
   it('generates operation ids and preserves record version across create/update/delete/history', async () => {

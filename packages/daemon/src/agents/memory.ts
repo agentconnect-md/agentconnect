@@ -20,7 +20,11 @@
 import { randomUUID } from 'node:crypto'
 import { constants, promises as fsp, lstatSync, mkdirSync, realpathSync, writeFileSync, type Stats } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { MEMORY_INDEX } from '@agentconnect.md/protocol'
+import {
+  MEMORY_INDEX,
+  MemoryFileHistoryEvent as MemoryFileHistoryEventSchema,
+  type MemoryFileHistoryEvent
+} from '@agentconnect.md/protocol'
 
 export const MEMORY_DIRNAME = 'memory'
 export { MEMORY_INDEX }
@@ -33,7 +37,7 @@ export const MAX_INDEX_INJECT_BYTES = 25_000
  *  file would swell the prompt and the wire; writes over this are rejected. */
 export const MAX_MEMORY_FILE_BYTES = 256_000
 
-/** The append-only change log for an agent's memory, a sidecar beside the memory
+/** The retained change log for an agent's memory, a sidecar beside the memory
  *  files (`<agent-root>/memory/.history`). One JSON line per write, for provenance
  *  (who/what/when changed a file). Dotfile so it never surfaces as a topic. */
 export const MEMORY_HISTORY_FILENAME = '.history'
@@ -43,6 +47,12 @@ export const MEMORY_HISTORY_FILENAME = '.history'
  *  `…` marker) rather than omitted, so the line stays small but still human-readable. */
 export const MAX_HISTORY_VALUE_BYTES = 4_000
 
+/** System-default retention for the shared managed-memory history sidecar.
+ *  Retention is intentionally not user-configurable: preserve the newest rows,
+ *  cap each memory file at 100 versions, then cap the whole JSONL file at 2 MiB. */
+export const MAX_HISTORY_VERSIONS_PER_FILE = 100
+export const MAX_HISTORY_FILE_BYTES = 2 * 1024 * 1024
+
 /** Where a memory write originated — for change-log provenance. */
 export type MemoryWriteSource = 'tool' | 'console' | 'distill' | 'dream'
 
@@ -50,15 +60,21 @@ export type MemoryWriteSource = 'tool' | 'console' | 'distill' | 'dream'
  *  `update` on an overwrite; `delete` is reserved (no delete op exists today — a
  *  "clear" is an empty write, recorded as an `update`). `before`/`after` are the
  *  file's text, truncated to {@link MAX_HISTORY_VALUE_BYTES}. */
-export interface MemoryHistoryRecord {
-  path: string
-  event: 'add' | 'update' | 'delete'
-  before?: string
-  after: string
-  at: string
-  scope: string
-  source: MemoryWriteSource
-  truncated?: boolean
+export type MemoryHistoryRecord = MemoryFileHistoryEvent
+
+export interface ManagedMemoryHistoryPage {
+  events: MemoryHistoryRecord[]
+  nextCursor?: string
+}
+
+export interface MemoryHistoryRetentionLimits {
+  maxBytes: number
+  maxVersionsPerFile: number
+}
+
+const DEFAULT_HISTORY_RETENTION: MemoryHistoryRetentionLimits = {
+  maxBytes: MAX_HISTORY_FILE_BYTES,
+  maxVersionsPerFile: MAX_HISTORY_VERSIONS_PER_FILE
 }
 
 /** Raised when a memory path escapes the memory dir. Surfaces as `BAD_PAYLOAD`. */
@@ -126,6 +142,7 @@ export function resolveInMemoryDir(agentDir: string, relPath: string): string {
   const rel = abs.slice(dir.length + 1)
   if (rel.includes(sep)) throw new MemoryPathError('memory is a flat directory (no subdirectories)')
   if (rel.length === 0) throw new MemoryPathError('a file name is required')
+  if (rel === MEMORY_HISTORY_FILENAME) throw new MemoryPathError('memory history is a reserved internal file')
   return abs
 }
 
@@ -276,7 +293,8 @@ export async function atomicWriteContainedMemoryFile(
   root: string,
   destination: string,
   content: string,
-  ifMatchMtime?: string
+  ifMatchMtime?: string,
+  mode?: number
 ): Promise<{ before: string; existed: boolean; stat: Stats }> {
   const target = await containedWriteTarget(agentDir, root, destination)
   const current = await readCurrentMemoryFile(target)
@@ -290,7 +308,11 @@ export async function atomicWriteContainedMemoryFile(
     if ((await fsp.realpath(parent)) !== parent) {
       throw new MemoryPathError('path resolves outside the memory dir')
     }
-    await fsp.writeFile(temp, content, { encoding: 'utf8', flag: 'wx' })
+    await fsp.writeFile(temp, content, {
+      encoding: 'utf8',
+      flag: 'wx',
+      ...(mode === undefined ? {} : { mode })
+    })
 
     if (ifMatchMtime && current.stat) {
       let latest: Stats
@@ -374,27 +396,199 @@ function clampHistoryValue(text: string): { value: string; truncated: boolean } 
   return { value: buf.toString('utf8') + '…', truncated: true }
 }
 
-/** Append one line to the memory change log (`<agent-root>/memory/.history`). A single
- *  `O_APPEND` write, so concurrent appends never interleave a partial line. Best-effort:
- *  a logging failure must never fail the write it describes, so errors are swallowed. */
-export async function appendHistory(agentDir: string, record: MemoryHistoryRecord): Promise<void> {
-  try {
+function historyLine(record: MemoryHistoryRecord): string {
+  return JSON.stringify(record) + '\n'
+}
+
+function historyLineBytes(record: MemoryHistoryRecord): number {
+  return Buffer.byteLength(historyLine(record))
+}
+
+function parseHistory(raw: string): { records: MemoryHistoryRecord[]; nonEmptyLines: number } {
+  const records: MemoryHistoryRecord[] = []
+  let nonEmptyLines = 0
+  for (const line of raw.split('\n')) {
+    if (!line) continue
+    nonEmptyLines += 1
+    let candidate: unknown
+    try {
+      candidate = JSON.parse(line)
+    } catch {
+      continue
+    }
+    const parsed = MemoryFileHistoryEventSchema.safeParse(candidate)
+    if (parsed.success) records.push(parsed.data)
+  }
+  return { records, nonEmptyLines }
+}
+
+/** Apply the fixed retention order to already-validated rows: first retain the
+ * newest N versions of each file, then evict globally oldest rows until their
+ * encoded JSONL representation fits the byte cap. Input/output stay chronological. */
+export function retainMemoryHistoryRecords(
+  records: MemoryHistoryRecord[],
+  limits: MemoryHistoryRetentionLimits = DEFAULT_HISTORY_RETENTION
+): MemoryHistoryRecord[] {
+  const versionsByPath = new Map<string, number>()
+  const perFile: MemoryHistoryRecord[] = []
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const record = records[index]!
+    const versions = versionsByPath.get(record.path) ?? 0
+    if (versions >= limits.maxVersionsPerFile) continue
+    versionsByPath.set(record.path, versions + 1)
+    perFile.push(record)
+  }
+  perFile.reverse()
+
+  let encodedBytes = perFile.reduce((total, record) => total + historyLineBytes(record), 0)
+  let first = 0
+  while (first < perFile.length && encodedBytes > limits.maxBytes) {
+    encodedBytes -= historyLineBytes(perFile[first]!)
+    first += 1
+  }
+  return perFile.slice(first)
+}
+
+/** Turn a possibly legacy/torn sidecar into canonical retained JSONL. This is
+ * pure so dream adoption can repair the copied sidecar before adding its rows;
+ * callers that touch the live store must still hold the memory-dir lock. */
+export function canonicalizeMemoryHistory(raw: string): string {
+  const withIds = parseHistory(raw).records.map((record) => (record.id ? record : { ...record, id: randomUUID() }))
+  return retainMemoryHistoryRecords(withIds).map(historyLine).join('')
+}
+
+/** Take a contained/no-follow canonical snapshot for a replacement store. The
+ * brief shared lock makes the copied sidecar line up with ordinary appends. */
+export function snapshotMemoryHistory(agentDir: string): Promise<string> {
+  return withMemoryDirLock(agentDir, async () => {
     const dir = memoryDir(agentDir)
-    const target = await containedWriteTarget(agentDir, dir, join(dir, MEMORY_HISTORY_FILENAME))
-    const handle = await fsp.open(
-      target,
+    const path = await containedReadTarget(agentDir, dir, join(dir, MEMORY_HISTORY_FILENAME))
+    if (path === null) return ''
+    const current = await readCurrentMemoryFile(path)
+    return current.existed ? canonicalizeMemoryHistory(current.before) : ''
+  })
+}
+
+/** Compact one sidecar atomically. Invalid legacy/torn rows are discarded and
+ * rows written before stable event IDs existed are upgraded during the rewrite. */
+async function compactHistoryFile(agentDir: string): Promise<void> {
+  const dir = memoryDir(agentDir)
+  const lexicalPath = join(dir, MEMORY_HISTORY_FILENAME)
+  const path = await containedReadTarget(agentDir, dir, lexicalPath)
+  if (path === null) return
+  const current = await readCurrentMemoryFile(path)
+  if (!current.existed) return
+  const raw = current.before
+
+  const canonical = canonicalizeMemoryHistory(raw)
+  if (canonical === raw) return
+
+  await atomicWriteContainedMemoryFile(agentDir, dir, lexicalPath, canonical, undefined, 0o600)
+}
+
+/** Apply system retention while the caller already holds the memory-dir lock.
+ * Exported for dream adoption, whose directory swap is one larger critical
+ * section. Calling this without the shared lock would race ordinary writes. */
+export async function enforceMemoryHistoryRetentionHoldingLock(agentDir: string): Promise<void> {
+  await compactHistoryFile(agentDir)
+}
+
+/** Apply system retention to an existing sidecar (including legacy files).
+ * Callers decide whether failure is best-effort. */
+export function enforceMemoryHistoryRetention(agentDir: string): Promise<void> {
+  return withMemoryDirLock(agentDir, () => enforceMemoryHistoryRetentionHoldingLock(agentDir))
+}
+
+/** Append one line to the memory change log and enforce fixed retention. The
+ * shared memory-dir lock prevents compaction from dropping a concurrent append.
+ * Best-effort: provenance/retention failure must never fail the memory write. */
+async function appendHistoryHoldingLock(agentDir: string, record: MemoryHistoryRecord): Promise<void> {
+  const dir = memoryDir(agentDir)
+  const path = await containedWriteTarget(agentDir, dir, join(dir, MEMORY_HISTORY_FILENAME))
+  // Canonicalize first: a valid legacy row without its final newline, or a torn
+  // JSON tail, would otherwise absorb this append into one invalid combined row.
+  await compactHistoryFile(agentDir)
+  let handle
+  try {
+    handle = await fsp.open(
+      path,
       constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
       0o600
     )
-    try {
-      if (!(await handle.stat()).isFile()) throw new MemoryPathError('memory history is not a regular file')
-      await handle.write(JSON.stringify(record) + '\n')
-    } finally {
-      await handle.close()
-    }
-  } catch {
-    // provenance is best-effort — never let it break the actual memory write.
+    const stat = await handle.stat()
+    if (!stat.isFile()) throw new MemoryPathError('memory target is not a regular file')
+    await handle.writeFile(historyLine({ ...record, id: record.id ?? randomUUID() }), 'utf8')
+  } finally {
+    await handle?.close()
   }
+  await compactHistoryFile(agentDir)
+}
+
+export async function appendHistory(agentDir: string, record: MemoryHistoryRecord): Promise<void> {
+  try {
+    await withMemoryDirLock(agentDir, () => appendHistoryHoldingLock(agentDir, record))
+  } catch {
+    // Provenance is best-effort — retry compaction on the next append/read.
+  }
+}
+
+/**
+ * Page one file's managed-memory history newest first. The cursor is the stable ID
+ * of the next event, so appends and retention cannot shift or duplicate older pages.
+ *
+ * Invalid/corrupt lines are skipped. History is provenance rather than the source
+ * of truth, so one torn or legacy row must not make every valid row unreadable.
+ */
+export async function listMemoryHistory(
+  agentDir: string,
+  relPath: string,
+  cursor: string | undefined,
+  limit: number
+): Promise<ManagedMemoryHistoryPage> {
+  // Apply the same containment/flat-path validation as ordinary memory reads,
+  // even though `relPath` is used only as a filter below.
+  resolveInMemoryDir(agentDir, relPath)
+
+  return withMemoryDirLock(agentDir, async () => {
+    // Enforce retention on first access too, so a legacy oversized file is
+    // tightened even before the next managed memory write.
+    try {
+      await enforceMemoryHistoryRetentionHoldingLock(agentDir)
+    } catch {
+      // History remains readable when best-effort compaction cannot run.
+    }
+
+    const dir = memoryDir(agentDir)
+    const path = await containedReadTarget(agentDir, dir, join(dir, MEMORY_HISTORY_FILENAME))
+    if (path === null) return { events: [] }
+    const current = await readCurrentMemoryFile(path)
+    if (!current.existed) return { events: [] }
+
+    const records = parseHistory(current.before).records
+    let start = records.length - 1
+    if (cursor) {
+      start = records.findIndex((record) => record.id === cursor && record.path === relPath)
+      // A retention pass may have evicted this cursor. Because eviction is always
+      // oldest-first, no older retained rows can remain for this file.
+      if (start < 0) return { events: [] }
+    }
+
+    const events: MemoryHistoryRecord[] = []
+    let nextCursor: string | undefined
+    for (let index = start; index >= 0; index -= 1) {
+      const record = records[index]!
+      if (record.path !== relPath) continue
+      if (events.length === limit) {
+        // Point at the next not-yet-returned row. IDs remain stable when older
+        // rows are pruned or newer rows are appended between requests.
+        nextCursor = record.id
+        break
+      }
+      events.push(record)
+    }
+
+    return { events, ...(nextCursor ? { nextCursor } : {}) }
+  })
 }
 
 /**
@@ -510,16 +704,20 @@ export async function writeMemoryFileHoldingLock(
 
   const beforeClamped = existed ? clampHistoryValue(before) : undefined
   const afterClamped = clampHistoryValue(content)
-  await appendHistory(agentDir, {
-    path: relPath,
-    event: existed ? 'update' : 'add',
-    ...(beforeClamped ? { before: beforeClamped.value } : {}),
-    after: afterClamped.value,
-    at: st.mtime.toISOString(),
-    scope: 'agent',
-    source,
-    ...(afterClamped.truncated || beforeClamped?.truncated ? { truncated: true } : {})
-  })
+  try {
+    await appendHistoryHoldingLock(agentDir, {
+      path: relPath,
+      event: existed ? 'update' : 'add',
+      ...(beforeClamped ? { before: beforeClamped.value } : {}),
+      after: afterClamped.value,
+      at: st.mtime.toISOString(),
+      scope: 'agent',
+      source,
+      ...(afterClamped.truncated || beforeClamped?.truncated ? { truncated: true } : {})
+    })
+  } catch {
+    // Provenance is best-effort — retry compaction on the next append/read.
+  }
   return { size: st.size, mtime: st.mtime.toISOString() }
 }
 

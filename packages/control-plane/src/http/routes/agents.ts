@@ -14,6 +14,7 @@ import type {
   WorkspaceGitPullResult,
   MemoryReadContent,
   MemoryListPage,
+  MemoryHistoryPage,
   MemorySurfaceInfo,
   MemoryRecordListPage,
   MemoryRecordSearchPage,
@@ -74,6 +75,8 @@ import {
   PutMemoryFileQueryDto,
   PutAgentMemoryBody,
   AgentMemoryWriteDto,
+  MemoryHistoryQueryDto,
+  MemoryHistoryPageDto,
   MemorySurfaceDto,
   MemoryRecordPageDto,
   MemoryRecordResultDto,
@@ -100,6 +103,7 @@ import {
   type WorkspaceGitPullDtoT,
   type AgentMemoryDtoT,
   type MemoryFilesDtoT,
+  type MemoryHistoryPageDtoT,
   type MemorySurfaceDtoT,
   type MemoryRecordPageDtoT,
   type MemoryRecordResultDtoT,
@@ -275,6 +279,11 @@ export function toAgentMemoryDto(rep: MemoryReadContent): AgentMemoryDtoT {
 /** Wire REP → HTTP body for a memory-dir listing. */
 export function toMemoryFilesDto(rep: MemoryListPage): MemoryFilesDtoT {
   return { exists: rep.exists, files: rep.entries }
+}
+
+/** Wire REP → bounded HTTP page for managed file provenance. */
+export function toMemoryHistoryPageDto(rep: MemoryHistoryPage): MemoryHistoryPageDtoT {
+  return { events: rep.events, nextCursor: rep.nextCursor ?? null }
 }
 
 /** Wire REP → HTTP body for one dream job's metadata (never staged bodies). */
@@ -2254,6 +2263,64 @@ export function agentRoutes(deps: HttpDeps) {
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
+          }
+          throw err
+        }
+      }
+    )
+
+    // Page the managed provider's hidden provenance sidecar for one selected
+    // file. The CP forwards bounded rows live and never persists their bodies.
+    r.get(
+      '/agents/:id/memory/history',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'List memory file history',
+          description:
+            'Return one newest-first page of add/update/delete provenance for a managed memory file. History bodies are proxied live from the owning daemon and are not persisted here.',
+          operationId: 'listAgentMemoryFileHistory',
+          params: IdParam,
+          querystring: MemoryHistoryQueryDto,
+          response: {
+            200: MemoryHistoryPageDto,
+            400: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if ((agent.memory?.provider ?? 'managed') !== 'managed') {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: 'file change history is available only for managed memory'
+          })
+        }
+        if (!agent.daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+        try {
+          return toMemoryHistoryPageDto(
+            await deps.control.memoryHistory(agent.daemonId, {
+              agentId: agent.id,
+              path: req.query.path,
+              ...(req.query.cursor ? { cursor: req.query.cursor } : {}),
+              limit: req.query.limit ?? 5
+            })
+          )
+        } catch (err) {
+          const failure = memoryAdminFailure(err)
+          if (failure) {
+            return reply
+              .code(failure.status)
+              .send({ error: failure.error, statusCode: failure.status, message: failure.message })
           }
           throw err
         }
