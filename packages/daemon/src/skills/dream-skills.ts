@@ -15,7 +15,7 @@
  * state, not org config.
  */
 import { promises as fsp } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, sep } from 'node:path'
 import { skillsAgentId } from './runtime-agent-map.js'
 
 /** Where an accepted mined skill is kept, under the agent root. */
@@ -59,18 +59,60 @@ export async function installAcceptedDreamSkills(
     return []
   }
 
+  // SECURITY: the workspace is AGENT-WRITABLE and the daemon runs OUTSIDE the
+  // agent's sandbox, so a planted `.claude/skills` symlink would otherwise make
+  // these recursive rm/cp calls act on a path outside the workspace entirely.
+  // Create and canonicalise each component ourselves, refusing existing symlinks.
+  let skillRoot: string
+  try {
+    skillRoot = await containedSkillRoot(acpCwd, root)
+  } catch (err) {
+    warn?.(`skills: refusing to install accepted dream skills — ${(err as Error).message}`)
+    return []
+  }
+
   const installed: string[] = []
   for (const name of names) {
-    const destination = join(acpCwd, root, name)
+    const destination = join(skillRoot, name)
     try {
+      // The destination itself may be a planted link too; never follow it.
+      const existing = await fsp.lstat(destination).catch(() => null)
+      if (existing?.isSymbolicLink()) {
+        warn?.(`skills: skipping accepted dream skill "${name}" — its target is a symlink`)
+        continue
+      }
       // Replace rather than merge, so what loads is exactly what was accepted.
       await fsp.rm(destination, { recursive: true, force: true })
-      await fsp.mkdir(join(acpCwd, root), { recursive: true })
-      await fsp.cp(join(source, name), destination, { recursive: true })
+      await fsp.cp(join(source, name), destination, { recursive: true, dereference: false })
       installed.push(name)
     } catch (err) {
       warn?.(`skills: could not install accepted dream skill "${name}": ${(err as Error).message}`)
     }
   }
   return installed
+}
+
+/** Walk `root` under `acpCwd` one component at a time, creating what is missing
+ *  and REJECTING any existing component that is a symlink, then verify the real
+ *  path is still inside the real workspace. Throws with a path-free reason. */
+async function containedSkillRoot(acpCwd: string, root: string): Promise<string> {
+  const realCwd = await fsp.realpath(acpCwd)
+  let current = realCwd
+  for (const part of root.split('/').filter(Boolean)) {
+    const candidate = join(current, part)
+    const stat = await fsp.lstat(candidate).catch(() => null)
+    if (stat === null) {
+      await fsp.mkdir(candidate)
+    } else if (stat.isSymbolicLink()) {
+      throw new Error(`"${root}" contains a symlink`)
+    } else if (!stat.isDirectory()) {
+      throw new Error(`"${root}" is not a directory`)
+    }
+    current = await fsp.realpath(candidate)
+    const rel = relative(realCwd, current)
+    if (rel !== '' && (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel))) {
+      throw new Error(`"${root}" resolves outside the workspace`)
+    }
+  }
+  return current
 }

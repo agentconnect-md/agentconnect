@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -927,5 +928,77 @@ describe('DreamRunner skill mining — review findings', () => {
     await settle(store, second.dreamId)
     expect(first.prompts.at(-1)).toContain('Previously declined skills')
     expect(first.prompts.at(-1)).toContain('deploy-staging')
+  })
+})
+
+describe('dreamTranscriptText tool rows (real LocalStore)', () => {
+  const CH = 'C1'
+  const TH = 'T1'
+  const TS = '2026-07-26T00:00:00.000Z'
+
+  function storeWithPeerToolRow() {
+    const store = new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-tt-')), 'local.sqlite'))
+    // A shared-thread message DELIVERED to our agent…
+    store.appendTranscript({
+      channel: CH,
+      thread: TH,
+      ts: TS,
+      sender: 'user-1',
+      kind: 'text',
+      text: 'ship it',
+      recipient: 'me'
+    })
+    // …and a PEER's private tool row that happens to share the same ts. Internal
+    // rows are not deduped by ts, so this collision is ordinary, not contrived.
+    store.insertToolCall({
+      channel: CH,
+      thread: TH,
+      ts: TS,
+      sender: 'peer-agent',
+      toolCallId: 'tc-peer',
+      title: 'Bash(peer-secret-command)',
+      body: JSON.stringify({ rawInput: 'peer-secret-command --token hunter2', rawOutput: 'peer output' })
+    })
+    // Our own tool row.
+    store.insertToolCall({
+      channel: CH,
+      thread: TH,
+      ts: '2026-07-26T00:00:01.000Z',
+      sender: 'me',
+      toolCallId: 'tc-mine',
+      title: 'Bash',
+      body: JSON.stringify({ rawInput: 'npm run deploy --prod', rawOutput: 'lots of build output' })
+    })
+    return store
+  }
+
+  it('never returns a peer-private tool row via the shared delivery table', () => {
+    const store = storeWithPeerToolRow()
+    const rows = store.dreamTranscriptText(CH, TH, 'me', 100, true)
+    const text = rows.map((r) => `${r.text} ${r.input ?? ''}`).join('\n')
+    expect(text).not.toContain('peer-secret-command')
+    expect(text).not.toContain('hunter2')
+    // Our own rows are still there — the guard must not over-filter.
+    expect(text).toContain('ship it')
+    expect(text).toContain('npm run deploy --prod')
+    store.close()
+  })
+
+  it('carries a bounded rawInput so a generic title still identifies the command', () => {
+    const store = storeWithPeerToolRow()
+    const mine = store.dreamTranscriptText(CH, TH, 'me', 100, true).find((r) => r.kind === 'tool')
+    expect(mine?.text).toBe('Bash') // the title alone says nothing
+    expect(mine?.input).toBe('npm run deploy --prod')
+    // rawOutput is the bulk/secret-bearing half and never leaves the store.
+    expect(JSON.stringify(mine)).not.toContain('build output')
+    store.close()
+  })
+
+  it('omits tool rows entirely when mining is off', () => {
+    const store = storeWithPeerToolRow()
+    const rows = store.dreamTranscriptText(CH, TH, 'me', 100)
+    expect(rows.every((r) => r.kind !== 'tool')).toBe(true)
+    expect(rows.map((r) => r.text)).toContain('ship it')
+    store.close()
   })
 })

@@ -44,7 +44,7 @@ export interface DreamTranscriptSource {
   /** Chronological rows. `kind: 'tool'` entries are tool TITLES (the command or
    *  path the agent ran) — never tool bodies, so raw output never reaches the
    *  prompt. Present only when the agent enabled skill mining. */
-  rows: { sender: string; text: string; kind?: string }[]
+  rows: { sender: string; text: string; kind?: string; input?: string }[]
 }
 
 export interface DreamPromptInput {
@@ -169,7 +169,7 @@ export function buildDreamPrompt(input: DreamPromptInput): string {
     const rows = transcript.rows
       .map((row) =>
         row.kind === 'tool'
-          ? `[tool] ${clamp(row.text, MAX_ROW_BYTES)}`
+          ? `[tool] ${clamp(row.input ? `${row.text} ${row.input}` : row.text, MAX_ROW_BYTES)}`
           : `${row.sender}: ${clamp(row.text, MAX_ROW_BYTES)}`
       )
       .join('\n')

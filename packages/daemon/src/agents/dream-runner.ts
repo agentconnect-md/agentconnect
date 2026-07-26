@@ -73,7 +73,7 @@ export interface DreamStorePort {
     limit: number,
     /** Include tool TITLES too — the trajectory skill mining reads (never bodies). */
     includeTools?: boolean
-  ): { sender: string; text: string; kind?: string }[]
+  ): { sender: string; text: string; kind?: string; input?: string }[]
 }
 
 export interface DreamRunnerDeps {
