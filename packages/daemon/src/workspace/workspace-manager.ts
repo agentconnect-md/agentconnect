@@ -21,7 +21,7 @@ import {
 import type { Agent } from '../agents/agent-schema.js'
 import { makeLogger } from '../log.js'
 import { installSkills } from '../skills/install-skills.js'
-import { installAcceptedDreamSkills } from '../skills/dream-skills.js'
+import { acceptedDreamSkillSources } from '../skills/dream-skills.js'
 import {
   assertSafeWorkspaceGitConfig,
   cloneGitEnv,
@@ -47,7 +47,16 @@ const skillsLog = makeLogger('info')
  * scratch and git-repo branches funnel through one install point.
  */
 async function withSkills(agent: Agent, acpCwd: string): Promise<string> {
-  await installSkills(agent, acpCwd, {
+  // Skills the user ACCEPTED from a dream live under the agent root (outside the
+  // workspace, so they survive a reset). They ride the SAME installer as
+  // configured sources — the daemon never writes into the agent-writable
+  // workspace itself (see dream-skills.ts). Synthesized per prep, never
+  // persisted into the CP-owned `agent.skills`. `dir` is present on every
+  // discovered agent (LoadedAgent); guard for callers with a bare spec.
+  const agentRoot = (agent as { dir?: string }).dir
+  const dreamSkills = agentRoot ? await acceptedDreamSkillSources({ dir: agentRoot }) : []
+  const effective = dreamSkills.length ? { ...agent, skills: [...(agent.skills ?? []), ...dreamSkills] } : agent
+  await installSkills(effective, acpCwd, {
     env: {
       ...gitEnvBase(),
       GIT_TERMINAL_PROMPT: '0',
@@ -55,14 +64,6 @@ async function withSkills(agent: Agent, acpCwd: string): Promise<string> {
     },
     warn: (msg) => skillsLog.warn(msg)
   })
-  // Skills the user ACCEPTED from a dream live under the agent root (outside the
-  // workspace, so they survive a reset). Materialize them into the same runtime
-  // skill root, or the runtime would never see them (design §7). `dir` is present
-  // on every discovered agent (LoadedAgent); guard for callers with a bare spec.
-  const agentRoot = (agent as { dir?: string }).dir
-  if (agentRoot) {
-    await installAcceptedDreamSkills({ dir: agentRoot, runtime: agent.runtime }, acpCwd, (msg) => skillsLog.warn(msg))
-  }
   return acpCwd
 }
 
