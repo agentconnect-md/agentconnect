@@ -2670,11 +2670,12 @@ export function agentRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List memory dreams',
-          description: "List the agent's memory dream jobs (newest first), proxied from the owning daemon.",
+          description:
+            "List the agent's memory dream jobs (newest first), proxied from the owning daemon. 409 when the owning daemon is too old to support dreaming (code DAEMON_FEATURE_MISSING).",
           operationId: 'listAgentMemoryDreams',
           params: IdParam,
           querystring: z.object({ limit: z.coerce.number().int().positive().max(50).optional() }),
-          response: { 200: DreamListDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+          response: { 200: DreamListDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -2698,10 +2699,11 @@ export function agentRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'Get a memory dream',
-          description: "Fetch one dream job's metadata (never staged bodies), proxied from the owning daemon.",
+          description:
+            "Fetch one dream job's metadata (never staged bodies), proxied from the owning daemon. 409 when the owning daemon is too old to support dreaming (code DAEMON_FEATURE_MISSING).",
           operationId: 'getAgentMemoryDream',
           params: DreamIdParam,
-          response: { 200: DreamDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+          response: { 200: DreamDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -2823,7 +2825,7 @@ export function agentRoutes(deps: HttpDeps) {
             "List the files in this dream's staged output store (index + topics). Nothing staged yet is data (exists:false), not an error.",
           operationId: 'listAgentMemoryDreamFiles',
           params: DreamIdParam,
-          response: { 200: DreamFilesDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+          response: { 200: DreamFilesDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -2852,7 +2854,7 @@ export function agentRoutes(deps: HttpDeps) {
           operationId: 'readAgentMemoryDreamFile',
           params: DreamIdParam,
           querystring: MemoryFileQueryDto,
-          response: { 200: DreamFileDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+          response: { 200: DreamFileDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
