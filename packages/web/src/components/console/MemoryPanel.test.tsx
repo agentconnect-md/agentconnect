@@ -286,6 +286,7 @@ describe('MemoryPanel settings draft', () => {
     expect(dreaming).not.toBeNull()
     if (!memory || !dreaming) throw new Error('Expected memory and dreaming panels')
     expect(memory.compareDocumentPosition(dreaming) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(dreaming.parentElement?.className).toContain('mt-4')
   })
 
   it('resyncs on a timezone-only refresh, so a later save cannot restore the stale zone', async () => {
