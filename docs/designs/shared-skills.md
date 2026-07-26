@@ -53,8 +53,8 @@ for simplicity.
 ## 1. Current state and gap
 
 - **Web:** the "Skills library" on the Tools & Skills page at
-  `packages/web/src/app/(app)/[slug]/knowledge/page.tsx` is entirely mocked.
-  `KnowledgeHubView.tsx:17` uses
+  `packages/web/src/app/(app)/[slug]/tools/page.tsx` is entirely mocked.
+  `ToolsHubView.tsx:17` uses
   `const skills = MOCK_MODE ? SKILLS : []`, and `AddSkillModal` is a placeholder.
 - **Control Plane:** there is no skill-related Prisma model, REST route, or
   protocol frame.
@@ -411,4 +411,4 @@ Replace mock data with the real surface, following `McpServersCard`:
 | protocol      | `frames/agent.ts`, where `AgentSpec.skills` is an inline entry array; new `frames/skill-entry.ts` with the `AgentSkillEntry` schema                                                                                                                                                                                                       | **No** `skillsource/*` frame and **no** `RegisterOk.skillSources`; sources are inline in `AgentSpec.skills`. |
 | control-plane | `prisma/schema.prisma` for the `SkillSource` registry and `Agent.skills`; new `http/routes/skill-sources.ts`; `orchestrator/` to resolve sources into `AgentSpec` and fan out `agent/upsert` after a source change; `github/` for Trees API preview scanning                                                                              | Section 4                                                                                                    |
 | daemon        | New `src/skills/install-skills.ts` and `src/skills/runtime-agent-map.ts`; top-level `skills` in `agents/agent-schema.ts`; `raw.skills=spec.skills` plus `workspace.skills` migration in `agents/write-agent.ts`; trigger in `workspace/workspace-manager.ts` or `session/session-manager.ts`; fingerprint table in `store/local-store.ts` | Section 6                                                                                                    |
-| web           | `KnowledgeHubView.tsx` without mocks; new `modals/ImportSkillSourceModal.tsx` replacing `AddSkillModal`; `lib/api.ts`; `lib/data-context.tsx`; agent editor                                                                                                                                                                               | Section 7                                                                                                    |
+| web           | `ToolsHubView.tsx` without mocks; new `modals/ImportSkillSourceModal.tsx` replacing `AddSkillModal`; `lib/api.ts`; `lib/data-context.tsx`; agent editor                                                                                                                                                                                   | Section 7                                                                                                    |

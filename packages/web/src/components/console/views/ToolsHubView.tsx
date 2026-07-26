@@ -10,7 +10,7 @@ import { McpServersCard } from '@/components/console/McpServersCard'
 import { SkillSourcesCard } from '@/components/console/SkillSourcesCard'
 import { MemoryConnectionsCard } from '@/components/console/MemoryConnectionsCard'
 
-export default function KnowledgeHubView() {
+export default function ToolsHubView() {
   const { mcpProviders, skillSources } = useConsoleData()
   const { activeOrg, myRole } = useOrgs()
   const memoryConnectionKey = consoleKeys.externalMemoryConnections(activeOrg?.id)

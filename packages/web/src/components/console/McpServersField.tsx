@@ -1,5 +1,5 @@
 // MCP-server helper functions (no component — MCP is agent-scoped and enabled
-// from the agent's Knowledge & Tools card, the sole enablement surface).
+// from the agent's Tools & Skills card, the sole enablement surface).
 
 import type { McpServerInfo } from '@/lib/data'
 
@@ -31,7 +31,7 @@ export function mcpCapsFor(
 
 // ── Shared MCP definition source ────────────────────────────────────────────
 // The "what servers, and what each one is" lives here, once — consumed by the
-// agent's Knowledge & Tools card (the enablement surface), never restated at a
+// agent's Tools & Skills card (the enablement surface), never restated at a
 // call site.
 
 /** The daemon-configured MCP servers a given runtime can actually attach: the

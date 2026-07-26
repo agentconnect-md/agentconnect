@@ -38,7 +38,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
   { href: '/crons', label: 'Schedules', icon: 'calendar-clock' },
   { href: '/daemons', label: 'Daemons', icon: 'server' },
-  { href: '/knowledge', label: 'Tools & Skills', icon: 'book-open' },
+  { href: '/tools', label: 'Tools & Skills', icon: 'book-open' },
   { href: '/usage', label: 'Usage', icon: 'circle-gauge' }
 ]
 
@@ -58,7 +58,7 @@ const MOBILE_NAV: NavItem[] = [
 // prepended separately, in the sheet itself.
 const MORE_ROWS: NavItem[] = [
   { href: '/usage', label: 'Usage', icon: 'circle-gauge' },
-  { href: '/knowledge', label: 'Tools & Skills', icon: 'book-open' },
+  { href: '/tools', label: 'Tools & Skills', icon: 'book-open' },
   { href: '/settings', label: 'Settings', icon: 'settings' }
 ]
 
@@ -85,7 +85,7 @@ const SECTIONS: { prefix: string; label: string }[] = [
   { prefix: '/sessions', label: 'Sessions' },
   { prefix: '/crons', label: 'Schedules' },
   { prefix: '/daemons', label: 'Daemons' },
-  { prefix: '/knowledge', label: 'Tools & Skills' },
+  { prefix: '/tools', label: 'Tools & Skills' },
   { prefix: '/usage', label: 'Usage' },
   { prefix: '/settings', label: 'Settings' },
   { prefix: '/profile', label: 'Profile' }

@@ -15,7 +15,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 //     org and replaces it in one step.
 // A stale cookie (renamed/removed org) is fine: the org context's
 // reconciliation replaces an unknown slug with the caller's real org.
-const CONSOLE_ROOTS = ['agents', 'sessions', 'daemons', 'crons', 'knowledge', 'usage', 'settings', 'profile']
+const CONSOLE_ROOTS = ['agents', 'sessions', 'daemons', 'crons', 'tools', 'usage', 'settings', 'profile']
 
 // A real slug or the reserved `-` — anything else in the cookie is ignored
 // (it goes straight into a redirect path, so validate strictly).

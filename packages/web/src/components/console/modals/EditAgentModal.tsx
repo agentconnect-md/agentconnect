@@ -354,7 +354,7 @@ export default function EditAgentModal({
 
   // Switching runtime invalidates the model and the effort level (both vocabularies
   // are per-runtime), so reset both to the runtime default. (MCP enablement is edited
-  // on the agent's Knowledge & Tools card, not here.)
+  // on the agent's Tools & Skills card, not here.)
   const onRuntimeChange = (nextRuntime: string) => {
     setRuntime(nextRuntime)
     setModel('')
