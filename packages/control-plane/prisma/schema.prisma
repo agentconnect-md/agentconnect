@@ -226,6 +226,40 @@ model WaitlistEntry {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// OpenActivationLink — email-agnostic, single-use activation link (§6a)
+//   The second flavor of activation link. Unlike WaitlistEntry's join link it is
+//   NOT keyed by email and needs no waitlist entry: whoever is signed in with ANY
+//   verified email may redeem it, which is how someone who never applied gets
+//   admitted. It is consumed by the FIRST account that redeems it (a repeat by
+//   that same account is idempotent); everyone else sees the opaque "unavailable".
+//   Same two-writer split as WaitlistEntry (§7): the EXTERNAL admin app mints
+//   (insert) and revokes; the CP writes ONLY the redemption columns, in the same
+//   transaction that sets User.activatedAt. Enforced by column-level GRANTs in the
+//   migration, not by field selection.
+// ───────────────────────────────────────────────────────────────────────────
+
+model OpenActivationLink {
+  id          String  @id @default(cuid())
+  tokenHash   String  @unique // peppered hash (oa1_ domain); plaintext only in the mint response
+  displayTail String // display-only tail for reconciliation
+  note        String? // who/what the link was issued for — admin bookkeeping
+
+  // Always set by the minter (no open-ended links); the admin app defaults it to +7d.
+  expiresAt DateTime  @db.Timestamptz(6)
+  revokedAt DateTime? @db.Timestamptz(6)
+
+  createdByUserId String? // admin-app user id; plain column, no FK (cross-app writer)
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+
+  // ── redemption (single-use) — written ONLY by the CP redeem path ──
+  redeemedByUserId String?
+  redeemedEmail    String? // the verified email that consumed it, for audit
+  redeemedAt       DateTime? @db.Timestamptz(6)
+
+  @@map("open_activation_link")
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // §3.3 Daemon — fleet registry & fencing root (C4)
 // ───────────────────────────────────────────────────────────────────────────
 

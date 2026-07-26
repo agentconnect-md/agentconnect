@@ -2575,6 +2575,17 @@ export interface WaitlistRepo {
    * fails `email_mismatch`. Idempotent: a repeat by the SAME user returns `activated`.
    */
   redeem(tokenHash: string, userId: string, verifiedEmail: string, now: Date): Promise<WaitlistRedeemResult>
+  /**
+   * Redeem an OPEN activation link (§6a): email-agnostic and single-use. No
+   * `waitlist_entry` row is involved or created — any signed-in user with a verified
+   * email may consume it, which is how someone who never applied gets admitted. On
+   * success this does exactly what {@link redeem} does (set `User.activatedAt`,
+   * create the personal org) and stamps `redeemed*` on the link. Never returns
+   * `email_mismatch` — there is no email to mismatch. Consumed by the FIRST
+   * redeemer: a repeat by the SAME user returns `activated`, anyone else gets
+   * `invalid`, indistinguishable from expired/revoked/unknown.
+   */
+  redeemOpen(tokenHash: string, userId: string, verifiedEmail: string, now: Date): Promise<WaitlistRedeemResult>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

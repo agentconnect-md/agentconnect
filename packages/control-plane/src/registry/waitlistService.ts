@@ -1,5 +1,6 @@
-/** Closed-beta admission service (waitlist-and-login.md §5-§6) — the CP-side surface.
- *  Thin: owns the join-token codec and stamps the clock; all state lives in the repo. */
+/** Closed-beta admission service (waitlist-and-login.md §5-§6a) — the CP-side surface.
+ *  Thin: owns the two activation-link codecs (per-email join link + open single-use
+ *  link) and stamps the clock; all state lives in the repo. */
 import type { Clock } from '../domain/clock.js'
 import type {
   WaitlistAccessState,
@@ -7,6 +8,7 @@ import type {
   WaitlistRedeemResult,
   WaitlistRepo
 } from '../persistence/ports.js'
+import { OpenActivationTokenCodec } from './openActivationToken.js'
 import { WaitlistJoinTokenCodec } from './waitlistJoinToken.js'
 
 /** The derived admission status surfaced by `GET /me/access` (§5). `active` = may
@@ -39,6 +41,7 @@ export function deriveAccessStatus(s: WaitlistAccessState): WaitlistAccessStatus
 
 export class WaitlistService {
   private readonly codec: WaitlistJoinTokenCodec
+  private readonly openCodec: OpenActivationTokenCodec
 
   constructor(
     pepper: string,
@@ -46,6 +49,7 @@ export class WaitlistService {
     private readonly clock: Clock
   ) {
     this.codec = new WaitlistJoinTokenCodec(pepper)
+    this.openCodec = new OpenActivationTokenCodec(pepper)
   }
 
   /** Full admission state + derived status for the signed-in user. */
@@ -62,11 +66,21 @@ export class WaitlistService {
     return this.repo.addSelf(email, JSON.stringify(intake))
   }
 
-  /** Redeem a join link for the signed-in user. A token failing codec validation
-   *  (malformed / wrong version) is `invalid` without touching the DB. */
+  /**
+   * Redeem an activation link for the signed-in user. The token's version prefix
+   * selects the flavor — `w1_` = the per-email waitlist join link (§6, must match the
+   * caller's verified email), `oa1_` = an open, email-agnostic single-use link (§6a,
+   * admits ANY verified email and needs no waitlist entry). One route serves both so
+   * the activation URL is uniform and a caller cannot probe which kind it holds. A
+   * token matching neither codec (malformed / wrong version) is `invalid` without
+   * touching the DB.
+   */
   redeem(token: string, userId: string, verifiedEmail: string): Promise<WaitlistRedeemResult> {
+    const now = new Date(this.clock.now())
+    const openHash = this.openCodec.hash(token)
+    if (openHash) return this.repo.redeemOpen(openHash, userId, verifiedEmail, now)
     const hash = this.codec.hash(token)
     if (!hash) return Promise.resolve({ status: 'invalid' })
-    return this.repo.redeem(hash, userId, verifiedEmail, new Date(this.clock.now()))
+    return this.repo.redeem(hash, userId, verifiedEmail, now)
   }
 }

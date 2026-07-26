@@ -6,6 +6,10 @@
  * serializes with the admin's revoke/rotate via `SELECT … FOR UPDATE` on the entry
  * row and re-checks every condition inside the transaction before committing —
  * field-level ownership alone does not remove the race (§4).
+ *
+ * `redeemOpen` applies the same rules to the second link flavor — the open,
+ * email-agnostic, single-use `open_activation_link` (§6a) — which carries no email
+ * binding and no waitlist entry.
  */
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
@@ -101,6 +105,44 @@ export class PgWaitlistRepo implements WaitlistRepo {
         await tx.waitlistEntry.update({
           where: { tokenHash },
           data: { redeemedByUserId: userId, redeemedAt: now }
+        })
+      }
+      return { status: 'activated' }
+    })
+  }
+
+  /** Open (email-agnostic) single-use link — §6a. Same locked-transaction shape as
+   *  {@link redeem}: `FOR UPDATE` on the link row serializes two people racing to
+   *  consume it, so exactly one wins and the loser sees the opaque `invalid`. */
+  async redeemOpen(tokenHash: string, userId: string, verifiedEmail: string, now: Date): Promise<WaitlistRedeemResult> {
+    const normalizedEmail = verifiedEmail.trim().toLowerCase()
+    return this.inTransaction(async (tx) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "open_activation_link" WHERE "tokenHash" = ${tokenHash} FOR UPDATE`
+      )
+
+      const link = await tx.openActivationLink.findUnique({ where: { tokenHash } })
+      // Unknown / revoked / expired / already consumed by someone else → one
+      // indistinguishable "invalid", so a probe learns nothing about the link.
+      if (!link || link.revokedAt) return { status: 'invalid' }
+      if (link.expiresAt.getTime() < now.getTime()) return { status: 'invalid' }
+      if (link.redeemedByUserId && link.redeemedByUserId !== userId) return { status: 'invalid' }
+
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { displayName: true, email: true, activatedAt: true }
+      })
+      if (!user) return { status: 'invalid' }
+
+      if (!user.activatedAt) await tx.user.update({ where: { id: userId }, data: { activatedAt: now } })
+      const realEmail = isSyntheticEmail(user.email) ? normalizedEmail : user.email
+      await ensurePersonalOrg(tx, userId, user.displayName, realEmail)
+      // Consume it. Only on the first redemption, so a repeat by the same user keeps
+      // the original audit stamp instead of sliding it forward.
+      if (!link.redeemedByUserId) {
+        await tx.openActivationLink.update({
+          where: { tokenHash },
+          data: { redeemedByUserId: userId, redeemedEmail: realEmail, redeemedAt: now }
         })
       }
       return { status: 'activated' }

@@ -6,10 +6,12 @@ import { prisma } from '../setup.db.js'
 import { buildHttpApp, TEST_API_KEY_PEPPER } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { WaitlistJoinTokenCodec } from '../../src/registry/waitlistJoinToken.js'
+import { OpenActivationTokenCodec } from '../../src/registry/openActivationToken.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const OIDC_AUDIENCE = 'waitlist-test'
 const codec = new WaitlistJoinTokenCodec(TEST_API_KEY_PEPPER)
+const openCodec = new OpenActivationTokenCodec(TEST_API_KEY_PEPPER)
 
 let oidcServer: Server
 let oidcIssuer = ''
@@ -84,6 +86,22 @@ async function approveAndMint(email: string, opts: { expiresInMs?: number; revok
       tokenHash: minted.hash,
       displayTail: minted.displayTail,
       joinExpiresAt: new Date(now + (opts.expiresInMs ?? 30 * 24 * 3600 * 1000)),
+      revokedAt: opts.revoked ? new Date(now - 1) : null
+    }
+  })
+  return minted.token
+}
+
+/** Simulate the external admin app minting an OPEN (email-agnostic) single-use link. */
+async function mintOpenLink(opts: { expiresInMs?: number; revoked?: boolean; note?: string } = {}) {
+  const minted = openCodec.mint()
+  const now = Date.now()
+  await prisma.openActivationLink.create({
+    data: {
+      tokenHash: minted.hash,
+      displayTail: minted.displayTail,
+      note: opts.note ?? null,
+      expiresAt: new Date(now + (opts.expiresInMs ?? 7 * 24 * 3600 * 1000)),
       revokedAt: opts.revoked ? new Date(now - 1) : null
     }
   })
@@ -316,6 +334,139 @@ describe('waitlist admission — POST /waitlist/redeem', () => {
         payload: { token: 'not-a-real-token' }
       })
       expect(malformed.statusCode).toBe(410)
+    } finally {
+      await close()
+    }
+  })
+})
+
+describe('waitlist admission — open single-use activation links', () => {
+  it('activates ANY verified email with no waitlist entry at all', async () => {
+    const token = await mintOpenLink({ note: 'for a conference demo' })
+    const { app, close } = buildApp()
+    try {
+      const h = await headers('oa-any', 'oa-any@acme.dev')
+      // A total stranger: never applied, so there is no entry and status is `none`.
+      expect((await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })).json()).toMatchObject({
+        status: 'none'
+      })
+
+      const redeem = await app.inject({
+        method: 'POST',
+        url: '/api/v1/waitlist/redeem',
+        headers: h,
+        payload: { token }
+      })
+      expect(redeem.statusCode).toBe(200)
+      expect(redeem.json()).toEqual({ activated: true })
+
+      expect((await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })).json()).toMatchObject({
+        status: 'active',
+        activated: true,
+        orgCount: 1
+      })
+      // The link never touches the waitlist table — that's the whole point.
+      expect(await prisma.waitlistEntry.findUnique({ where: { email: 'oa-any@acme.dev' } })).toBeNull()
+
+      const user = await prisma.user.findUnique({ where: { oidcSubject: 'oa-any' } })
+      const link = await prisma.openActivationLink.findUnique({ where: { tokenHash: openCodec.hash(token)! } })
+      expect(link!.redeemedByUserId).toBe(user!.id)
+      expect(link!.redeemedEmail).toBe('oa-any@acme.dev')
+      expect(link!.redeemedAt).not.toBeNull()
+
+      // Org creation is unlocked, and a repeat by the same user is idempotent.
+      const create = await app.inject({
+        method: 'POST',
+        url: '/api/v1/orgs',
+        headers: h,
+        payload: { slug: 'oa-any-second' }
+      })
+      expect(create.statusCode).toBe(201)
+      const again = await app.inject({ method: 'POST', url: '/api/v1/waitlist/redeem', headers: h, payload: { token } })
+      expect(again.statusCode).toBe(200)
+      // The audit stamp is the FIRST redemption's, not slid forward by the repeat.
+      const after = await prisma.openActivationLink.findUnique({ where: { tokenHash: openCodec.hash(token)! } })
+      expect(after!.redeemedAt!.getTime()).toBe(link!.redeemedAt!.getTime())
+    } finally {
+      await close()
+    }
+  })
+
+  it('is single-use — a second account gets 410, indistinguishable from revoked/expired', async () => {
+    const token = await mintOpenLink()
+    const { app, close } = buildApp()
+    try {
+      const first = await headers('oa-first', 'oa-first@acme.dev')
+      expect(
+        (await app.inject({ method: 'POST', url: '/api/v1/waitlist/redeem', headers: first, payload: { token } }))
+          .statusCode
+      ).toBe(200)
+
+      const second = await headers('oa-second', 'oa-second@acme.dev')
+      const reused = await app.inject({
+        method: 'POST',
+        url: '/api/v1/waitlist/redeem',
+        headers: second,
+        payload: { token }
+      })
+      expect(reused.statusCode).toBe(410)
+      expect(reused.json()).toMatchObject({ code: 'WAITLIST_LINK_UNAVAILABLE' })
+
+      // The loser is left unactivated and org-less.
+      expect((await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: second })).json()).toMatchObject({
+        status: 'none',
+        activated: false,
+        orgCount: 0
+      })
+      // …and the link still records only the first redeemer.
+      const link = await prisma.openActivationLink.findUnique({ where: { tokenHash: openCodec.hash(token)! } })
+      expect(link!.redeemedEmail).toBe('oa-first@acme.dev')
+    } finally {
+      await close()
+    }
+  })
+
+  it('rejects revoked and expired open links with 410 and activates nobody', async () => {
+    const { app, close } = buildApp()
+    try {
+      const revokedToken = await mintOpenLink({ revoked: true })
+      const hRevoked = await headers('oa-revoked', 'oa-revoked@acme.dev')
+      const revoked = await app.inject({
+        method: 'POST',
+        url: '/api/v1/waitlist/redeem',
+        headers: hRevoked,
+        payload: { token: revokedToken }
+      })
+      expect(revoked.statusCode).toBe(410)
+
+      const expiredToken = await mintOpenLink({ expiresInMs: -1000 })
+      const hExpired = await headers('oa-expired', 'oa-expired@acme.dev')
+      const expired = await app.inject({
+        method: 'POST',
+        url: '/api/v1/waitlist/redeem',
+        headers: hExpired,
+        payload: { token: expiredToken }
+      })
+      expect(expired.statusCode).toBe(410)
+
+      const user = await prisma.user.findUnique({ where: { oidcSubject: 'oa-expired' } })
+      expect(user!.activatedAt).toBeNull()
+    } finally {
+      await close()
+    }
+  })
+
+  it('an unminted but well-formed open token is 410 (no row ⇒ unavailable)', async () => {
+    const { app, close } = buildApp()
+    try {
+      const h = await headers('oa-forged', 'oa-forged@acme.dev')
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/waitlist/redeem',
+        headers: h,
+        payload: { token: openCodec.mint().token } // never persisted
+      })
+      expect(res.statusCode).toBe(410)
     } finally {
       await close()
     }
