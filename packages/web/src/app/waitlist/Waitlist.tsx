@@ -497,7 +497,7 @@ function Timeline({ status, email }: { status: 'pending' | 'approved'; email: st
       body: (
         <>
           Your link arrives at {mail} from{' '}
-          <span className="wl-mono text-(--text-primary)">invites@agentconnect.dev</span>.
+          <span className="wl-mono text-(--text-primary)">no-reply@agentconnect.md</span>.
         </>
       ),
       done: false,
