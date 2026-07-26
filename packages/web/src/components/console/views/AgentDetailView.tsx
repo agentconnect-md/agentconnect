@@ -624,7 +624,7 @@ export default function AgentDetailView() {
             ['workspace', 'Workspace'],
             ['memory', 'Memory'],
             ['api', 'API'],
-            ['knowledge', 'Knowledge & Tools']
+            ['knowledge', 'Tools & Skills']
           ] as [DetailTab, string][]
         ).map(([t, label]) => {
           const on = tab === t
@@ -1530,7 +1530,7 @@ export default function AgentDetailView() {
       {/* API tab */}
       {tab === 'api' && <AgentApiPanel agentId={da.id} agentName={da.name} />}
 
-      {/* Knowledge & Tools tab — leads with the daemon runtime's MCP servers (Tools),
+      {/* Tools & Skills tab — leads with the daemon runtime's MCP servers (Tools),
           then the workspace-indexed knowledge below it. */}
       {tab === 'knowledge' && (
         <div className="flex flex-col gap-4 p-4 desktop:gap-[18px] desktop:p-0">

@@ -8,7 +8,7 @@ import { mcpCandidates, mcpCapsFor, mcpServerMeta, mcpServersForRuntime } from '
 import { Icon, Toggle } from '@/components/ui'
 
 /**
- * Leads the agent's Knowledge & Tools tab: the MCP servers the owning daemon's
+ * Leads the agent's Tools & Skills tab: the MCP servers the owning daemon's
  * runtime can attach (via `mcpServersForRuntime`/`mcpServerMeta`), each with an
  * enable/disable toggle. MCP is agent-scoped — this is the surface where it's
  * picked; the daemon detail view no longer lists MCP servers.
