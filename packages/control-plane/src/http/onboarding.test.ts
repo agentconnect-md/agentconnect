@@ -78,7 +78,7 @@ describe('daemonStartCommand', () => {
   it('renders a copy-pasteable npx command with url + key (no --daemon-id)', () => {
     const cmd = daemonStartCommand('wss://cp.example.com/cp/daemon/ws', 'test-api-key')
     expect(cmd).toBe(
-      'npx -y @agentconnect.md/daemon run --cp-url wss://cp.example.com/cp/daemon/ws --cp-key test-api-key'
+      'npx -y @agentconnect.md/daemon run --api-url wss://cp.example.com/cp/daemon/ws --api-key test-api-key'
     )
     expect(cmd).not.toContain('--daemon-id')
   })
@@ -86,7 +86,7 @@ describe('daemonStartCommand', () => {
   it('pins the configured dist-tag on the package (e.g. @rc on the test CP)', () => {
     const cmd = daemonStartCommand('wss://cp.example.com/cp/daemon/ws', 'test-api-key', 'rc')
     expect(cmd).toBe(
-      'npx -y @agentconnect.md/daemon@rc run --cp-url wss://cp.example.com/cp/daemon/ws --cp-key test-api-key'
+      'npx -y @agentconnect.md/daemon@rc run --api-url wss://cp.example.com/cp/daemon/ws --api-key test-api-key'
     )
   })
 })

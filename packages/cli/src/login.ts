@@ -19,8 +19,8 @@ import { resolveController, type InstallOpts } from './service/index.js'
 import { runShell } from './run-shell.js'
 
 export interface PersistCredsOpts {
-  cpUrl: string
-  cpKey: string
+  apiUrl: string
+  apiKey: string
   daemonId?: string
   root?: string
   configPath?: string
@@ -74,7 +74,7 @@ export function persistCredentials(opts: PersistCredsOpts): string {
   const raw: Record<string, unknown> = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { version: 1 }
 
   const cp = (raw.controlPlane as Record<string, unknown> | undefined) ?? {}
-  raw.controlPlane = { ...cp, url: opts.cpUrl, key: opts.cpKey, enabled: true }
+  raw.controlPlane = { ...cp, url: opts.apiUrl, key: opts.apiKey, enabled: true }
   if (opts.daemonId) raw.daemonId = opts.daemonId
 
   assertValidControlPlane(raw) // fail before writing if the merge is invalid
@@ -84,8 +84,8 @@ export function persistCredentials(opts: PersistCredsOpts): string {
 }
 
 export interface RunLoginOpts {
-  cpUrl?: string
-  cpKey?: string
+  apiUrl?: string
+  apiKey?: string
   daemonId?: string
   root?: string
   configPath?: string
@@ -105,12 +105,12 @@ export function buildInstallOpts(opts: { root?: string }): InstallOpts {
 }
 
 /** Foreground args for the daemon `run`, threading through the resolved root and
- *  any CP overrides so the spawned daemon matches what login just configured. */
+ *  any API overrides so the spawned daemon matches what login just configured. */
 function foregroundArgv(opts: RunLoginOpts): string[] {
   const argv = ['run']
   if (opts.root) argv.push('--root', opts.root)
-  if (opts.cpUrl) argv.push('--cp-url', opts.cpUrl)
-  if (opts.cpKey) argv.push('--cp-key', opts.cpKey)
+  if (opts.apiUrl) argv.push('--api-url', opts.apiUrl)
+  if (opts.apiKey) argv.push('--api-key', opts.apiKey)
   if (opts.daemonId) argv.push('--daemon-id', opts.daemonId)
   return argv
 }
@@ -161,11 +161,11 @@ export async function runLogin(opts: RunLoginOpts, partial: Partial<LoginDeps> =
 
   // ── Non-interactive: flags required; probe; persist. No prompts, no handoff. ──
   if (!deps.isTTY) {
-    if (!opts.cpUrl) throw new Error('login requires --cp-url <url>')
-    if (!opts.cpKey) throw new Error('login requires --cp-key <key>')
-    const r = await deps.probe({ url: opts.cpUrl, token: opts.cpKey })
+    if (!opts.apiUrl) throw new Error('login requires --api-url <url>')
+    if (!opts.apiKey) throw new Error('login requires --api-key <key>')
+    const r = await deps.probe({ url: opts.apiUrl, token: opts.apiKey })
     if (!r.ok) throw new Error(`authentication failed: ${r.reason}`)
-    persistCredentials({ ...opts, cpUrl: opts.cpUrl, cpKey: opts.cpKey })
+    persistCredentials({ ...opts, apiUrl: opts.apiUrl, apiKey: opts.apiKey })
     out.write(`✓ authenticated${r.daemonId ? ` (daemon ${r.daemonId})` : ''} — credentials saved\n`)
     return
   }
@@ -184,10 +184,10 @@ export async function runLogin(opts: RunLoginOpts, partial: Partial<LoginDeps> =
   // ── Interactive ──
   const rl = createInterface({ input: deps.input, output: out })
   const iter = rl[Symbol.asyncIterator]()
-  let url = opts.cpUrl
-  let token = opts.cpKey
+  let url = opts.apiUrl
+  let token = opts.apiKey
   try {
-    if (!url) url = await nextLine(iter, 'Control Plane URL: ', out)
+    if (!url) url = await nextLine(iter, 'AgentConnect API URL: ', out)
 
     for (let attempt = 0; ; attempt++) {
       if (!token) token = await nextLine(iter, 'Daemon API key: ', out)
@@ -202,7 +202,7 @@ export async function runLogin(opts: RunLoginOpts, partial: Partial<LoginDeps> =
       token = undefined // re-prompt on retry
     }
 
-    persistCredentials({ ...opts, cpUrl: url!, cpKey: token! })
+    persistCredentials({ ...opts, apiUrl: url!, apiKey: token! })
 
     const ans = (await nextLine(iter, 'Install AgentConnect as a background service? (y/N) ', out)).toLowerCase()
     if (ans === 'y' || ans === 'yes') {

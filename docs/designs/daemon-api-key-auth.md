@@ -137,10 +137,10 @@ key is valid:
 The generated command uses:
 
 ```text
-npx -y @agentconnect.md/daemon run --cp-url <control-plane-websocket-url> --cp-key <generated-key>
+npx -y @agentconnect.md/daemon run --api-url <control-plane-websocket-url> --api-key <generated-key>
 ```
 
-The daemon stores the key in `controlPlane.key`; `--cp-key` is the connect
+The daemon stores the key in `controlPlane.key`; `--api-key` is the connect
 override. `AuthReq.apiKey` is the only daemon credential field.
 
 Daemon keys currently have no fixed expiry or idle reaper. They remain valid

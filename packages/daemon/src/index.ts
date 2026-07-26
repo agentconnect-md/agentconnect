@@ -32,8 +32,8 @@ program
 program
   .option('--config <path>', 'path to config.json (default ~/.agentconnect/config.json)')
   .option('--root <dir>', 'override ~/.agentconnect root directory')
-  .option('--cp-url <url>', 'override controlPlane.url')
-  .option('--cp-key <key>', 'override controlPlane.key (the CP API key)')
+  .option('--api-url <url>', 'override AgentConnect API WebSocket URL')
+  .option('--api-key <key>', 'override daemon API key')
   .option('--no-cp', 'run fully local, do not connect to the Control Plane')
   .option('--daemon-id <id>', 'override daemon identity')
   .option('--log-level <level>', 'trace|debug|info|warn|error')
@@ -79,8 +79,8 @@ program
         // that the service layer lives in the CLI (cli-daemon-split.md §7.1).
         supervisor: process.env.AGENTCONNECT_SUPERVISOR,
         overrides: {
-          cpUrl: opts.cpUrl,
-          cpKey: opts.cpKey,
+          apiUrl: opts.apiUrl,
+          apiKey: opts.apiKey,
           noCp: opts.cp === false,
           daemonId: opts.daemonId,
           logLevel: opts.logLevel,

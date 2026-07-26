@@ -126,8 +126,8 @@ The daemon does not implement these, but interacts with them through the section
 | ----------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--config <path>`       | Locates the file itself        | Specify config.json, default `~/.agentconnect/config.json`.                                                                                        |
 | `--root <dir>`          | Locates the root               | Override `~/.agentconnect`; maps to `AGENTCONNECT_ROOT`.                                                                                           |
-| `--cp-url <wss://...>`  | `controlPlane.url`             | Override the CP endpoint; this is the most common override.                                                                                        |
-| `--cp-key <key>`        | `controlPlane.key`             | Override the opaque, long-lived, revocable CP **API key**; see [daemon-api-key-auth.md](daemon-api-key-auth.md).                                   |
+| `--api-url <wss://...>` | `controlPlane.url`             | Override the API endpoint; this is the most common override.                                                                                       |
+| `--api-key <key>`       | `controlPlane.key`             | Override the opaque, long-lived, revocable daemon **API key**; see [daemon-api-key-auth.md](daemon-api-key-auth.md).                               |
 | `--no-cp` / `--offline` | `controlPlane.enabled=false`   | Force local-only mode with no CP connection.                                                                                                       |
 | `--daemon-id <id>`      | `daemonId`                     | Override/specify daemon identity.                                                                                                                  |
 | `--log-level <lvl>`     | `logging.level`                | trace/debug/info/warn/error.                                                                                                                       |
@@ -159,7 +159,7 @@ isInstalled()   Whether the unit file exists.
 - **macOS (launchd):** `~/Library/LaunchAgents/md.agentconnect.daemon.plist`, label `md.agentconnect.daemon`, reference `packages/cli/src/service/launchd.ts`. `ProgramArguments = [execPath, cliEntry, "run"]`; `RunAtLoad=true`; `KeepAlive.SuccessfulExit=false`; `StandardOutPath` / `StandardErrorPath` point to `~/.agentconnect/logs/daemon.log`. `up` uses `launchctl bootstrap gui/$UID <plist>` with `load -w` fallback; `down` uses `launchctl bootout gui/$UID/<label>` with `unload -w` fallback; status uses `launchctl print` / `list`.
 - **Linux (systemd `--user`):** `~/.config/systemd/user/agentconnect.service`, with `[Service] ExecStart=execPath cliEntry run`, `Restart=always`, `Environment=AGENTCONNECT_ROOT=<root>`, and `[Install] WantedBy=default.target`. Run `systemctl --user daemon-reload` after writing. `up = enable --now`; `down = disable --now`; status uses `is-active`, `is-enabled`, and `show -p MainPID`.
 - **Testability:** Pure builders `buildPlist` / `buildSystemdUnit` generate unit contents for direct assertions. Every `launchctl` / `systemctl` call uses an injectable `exec(cmd,args)` dependency, replaced by test stubs with no real side effects.
-- **Credentials:** Unit files include only nonsensitive `AGENTCONNECT_ROOT`, and only when nondefault. The opaque CP API key and platform tokens currently live directly in `config.json` / `agent.json`, never the plist/unit. The key has no prefix and cannot be redacted by a content pattern; logs, telemetry, and error frames must structurally redact values of `--cp-key`, `apiKey`, and `Bearer ...` before leaving the edge.
+- **Credentials:** Unit files include only nonsensitive `AGENTCONNECT_ROOT`, and only when nondefault. The opaque CP API key and platform tokens currently live directly in `config.json` / `agent.json`, never the plist/unit. The key has no prefix and cannot be redacted by a content pattern; logs, telemetry, and error frames must structurally redact values of `--api-key`, `apiKey`, and `Bearer ...` before leaving the edge.
 - The `run` process handles `SIGTERM` / `SIGINT`: stop accepting new messages, drain active turns to a deadline, close platform connections, close ACP adapter children, then exit.
 
 > The service-install branch of `login` invokes this controller. After successful auth probing and persistence, yes -> `install()` + `up()` and exit; no -> start foreground `run` using the same Daemon construction and signal handling.
@@ -337,7 +337,7 @@ separate trust boundaries.
 
 ### 3.4 Field Precedence and Merge
 
-Apply, later overriding earlier: built-in defaults including **ACP-registry runtime defaults** -> `config.json` -> `AGENTCONNECT_*` environment -> CLI flags. `controlPlane.url` is overridden most often through `--cp-url` because one image connects to different CP environments.
+Apply, later overriding earlier: built-in defaults including **ACP-registry runtime defaults** -> `config.json` -> `AGENTCONNECT_*` environment -> CLI flags. `controlPlane.url` is overridden most often through `--api-url` because one image connects to different CP environments.
 
 ### 3.5 Validation and Live Reload
 

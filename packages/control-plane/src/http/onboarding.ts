@@ -65,12 +65,12 @@ export function daemonWsUrl(config: HttpServerConfig): string {
 
 /** Render the copy-paste daemon start command for a freshly-minted API key.
  *  The key's row carries the daemonId, so no `--daemon-id` is needed — the daemon
- *  adopts its identity from `auth/ok` (a minimal `--server-url --api-key` shape).
+ *  adopts its identity from `auth/ok` (a minimal `--api-url --api-key` shape).
  *  `distTag` pins the npm dist-tag/version `npx` installs (see `daemonPkgSpec`). */
 export function daemonStartCommand(wsUrl: string, apiKey: string, distTag?: string): string {
   // `-y` so npx installs the package non-interactively (a copy-pasted command
   // shouldn't stall on the "Ok to proceed?" prompt on a fresh host).
-  return `npx -y ${daemonPkgSpec(distTag)} run --cp-url ${wsUrl} --cp-key ${apiKey}`
+  return `npx -y ${daemonPkgSpec(distTag)} run --api-url ${wsUrl} --api-key ${apiKey}`
 }
 
 /**

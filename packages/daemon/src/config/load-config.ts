@@ -5,8 +5,8 @@ import { ConfigSchema, type Config } from './config-schema.js'
 import { resolveRoot, configPath, defaultAgentsDir } from '../paths.js'
 
 export interface FlatOverrides {
-  cpUrl?: string
-  cpKey?: string
+  apiUrl?: string
+  apiKey?: string
   noCp?: boolean
   daemonId?: string
   logLevel?: Config['logging']['level']
@@ -67,11 +67,11 @@ export function loadConfig(
   if (o.logLevel) cfg.logging.level = o.logLevel
   if (o.maxAgents !== undefined) cfg.limits.maxAgents = o.maxAgents
   if (o.requireSandbox) cfg.security.requireSandbox = true
-  if (o.cpUrl) cfg.controlPlane.url = o.cpUrl
-  if (o.cpKey) cfg.controlPlane.key = o.cpKey
-  // Passing --cp-url/--cp-key implies "connect to the CP" (it defaults off),
+  if (o.apiUrl) cfg.controlPlane.url = o.apiUrl
+  if (o.apiKey) cfg.controlPlane.key = o.apiKey
+  // Passing --api-url/--api-key implies "connect to the CP" (it defaults off),
   // so the one-line onboarding command works without a config edit. --no-cp wins.
-  if (o.cpUrl || o.cpKey) cfg.controlPlane.enabled = true
+  if (o.apiUrl || o.apiKey) cfg.controlPlane.enabled = true
   if (o.noCp) cfg.controlPlane.enabled = false
 
   cfg.agentsDir = o.agentsDir ?? cfg.agentsDir ?? defaultAgentsDir(root)

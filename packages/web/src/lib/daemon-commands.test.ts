@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { daemonCommands } from './daemon-commands'
 
-const RUN = 'run --cp-url wss://cp.example.com/cp/daemon/ws --cp-key test-api-key'
+const RUN = 'run --api-url wss://cp.example.com/cp/daemon/ws --api-key test-api-key'
 const LOGIN = RUN.replace(/^run\b/, 'login')
 
 describe('daemonCommands', () => {

@@ -2,7 +2,7 @@
  * Translate the Control-Plane-minted onboarding command into the unified-CLI
  * (`@agentconnect.md/cli`) commands the console shows.
  *
- * The CP mints `npx -y @agentconnect.md/daemon[@<tag>] run --cp-url … --cp-key …`
+ * The CP mints `npx -y @agentconnect.md/daemon[@<tag>] run --api-url … --api-key …`
  * (`onboarding.ts`), where `<tag>` is the pinned daemon dist-tag/version
  * (`DAEMON_DIST_TAG`, e.g. `rc` on a test CP). The CLI is a version manager that
  * ships WITHOUT a daemon bundle, so onboarding is two steps: install a daemon
@@ -24,7 +24,7 @@ const DAEMON_PKG = '@agentconnect.md/daemon'
 const CLI_PKG = '@agentconnect.md/cli'
 
 /** Parse `npx -y @agentconnect.md/daemon[@<tag>] <rest…>` into its pinned daemon
- *  tag (if any) and the remainder (`run --cp-url … --cp-key …`). Returns null if
+ *  tag (if any) and the remainder (`run --api-url … --api-key …`). Returns null if
  *  the command isn't in the expected shape (defensive — callers fall back). */
 function parse(command: string): { tag?: string; rest: string } | null {
   const esc = DAEMON_PKG.replace(/[.]/g, '\\.')

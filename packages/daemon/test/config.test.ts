@@ -77,7 +77,7 @@ describe('loadConfig', () => {
     })
     const cfg = loadConfig({
       root,
-      overrides: { cpUrl: 'wss://override.example/daemon', logLevel: 'debug', requireSandbox: true }
+      overrides: { apiUrl: 'wss://override.example/daemon', logLevel: 'debug', requireSandbox: true }
     })
     expect(cfg.controlPlane?.url).toBe('wss://override.example/daemon')
     expect(cfg.logging.level).toBe('debug')
@@ -113,17 +113,17 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ root })).toThrow(/workspace Git origins/)
   })
 
-  it('passing --cp-url/--cp-key enables the control plane (defaults off)', () => {
+  it('passing --api-url/--api-key enables the control plane (defaults off)', () => {
     const root = tmpRoot({ version: 1 }) // no controlPlane block → enabled defaults false
-    const cfg = loadConfig({ root, overrides: { cpUrl: 'ws://cp/daemon/ws', cpKey: 'tok' } })
+    const cfg = loadConfig({ root, overrides: { apiUrl: 'ws://cp/daemon/ws', apiKey: 'tok' } })
     expect(cfg.controlPlane.enabled).toBe(true)
     expect(cfg.controlPlane.url).toBe('ws://cp/daemon/ws')
     expect(cfg.controlPlane.key).toBe('tok')
   })
 
-  it('--no-cp wins even when --cp-url is also passed', () => {
+  it('--no-cp wins even when --api-url is also passed', () => {
     const root = tmpRoot({ version: 1 })
-    const cfg = loadConfig({ root, overrides: { cpUrl: 'ws://cp/daemon/ws', noCp: true } })
+    const cfg = loadConfig({ root, overrides: { apiUrl: 'ws://cp/daemon/ws', noCp: true } })
     expect(cfg.controlPlane.enabled).toBe(false)
   })
 
