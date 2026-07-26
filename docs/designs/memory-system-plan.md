@@ -50,6 +50,7 @@ Daemon root (`--root`, default `~/.agentconnect`):
     memory/
       MEMORY.md
       <topic>.md
+      .history
     workspace/
 ```
 
@@ -57,6 +58,14 @@ Daemon root (`--root`, default `~/.agentconnect`):
 The daemon creates the index when absent and injects only that index into a
 fresh ACP session, with a bounded size. The agent reads topic files on demand,
 so a large memory collection does not inflate every prompt.
+
+Every managed write also appends a bounded provenance row to the hidden
+`.history` JSONL sidecar. Rows retain the file, change kind, before/after
+snapshots, timestamp, scope, and source. The sidecar is not a topic and is never
+injected into an agent prompt. Retention is a fixed system policy rather than a
+user setting: keep the newest 100 changes per memory file and cap the complete
+sidecar at 2 MiB, pruning oldest rows first. The daemon compacts after writes and
+on history reads so legacy oversized sidecars are tightened automatically.
 
 File operations accept only safe relative Markdown paths within the memory
 directory. They reject traversal, subdirectories, symlink escapes, unsupported
@@ -92,6 +101,7 @@ File-oriented providers use the daemon-control protocol:
 - `memory/list` → `memory/list/page`
 - `memory/read` → `memory/read/content`
 - `memory/write` → `memory/write/ok`
+- `memory/history` → `memory/history/page` (managed files only)
 
 The Control Plane exposes agent-scoped memory routes and forwards requests to
 the owning daemon. Authorization uses the same organization and agent
@@ -100,7 +110,8 @@ reported as unavailable; content is never copied into Control Plane storage.
 
 The console selects the admin surface from the provider:
 
-- `files`: index/topic list with read and edit operations;
+- `files`: index/topic list with read and edit operations; managed files also
+  expose lazy, newest-first change history with expandable before/after snapshots;
 - `records`: search, inspect, create, update, delete, and history operations;
 - `none`: no memory administration surface.
 

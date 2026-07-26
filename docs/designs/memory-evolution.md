@@ -642,7 +642,9 @@ to retrofit later, even if implementation begins with L2 only.
 For every ADD/UPDATE/DELETE, append a row to
 `<agent-root>/memory/.history`, backed by sidecar SQLite or JSONL:
 `{path, event, before?, after, at, scope, source: tool|distill|console}`.
-This provides provenance and undo at negligible cost.
+This provides provenance and undo at negligible cost. Managed JSONL history uses
+system defaults rather than per-user configuration: retain the newest 100 changes
+per file, cap the whole sidecar at 2 MiB, and prune oldest rows first.
 
 ## 5. Shared / Cross-Agent Memory (Shared Scope)
 

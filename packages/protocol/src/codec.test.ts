@@ -1152,6 +1152,41 @@ describe('memory frames (CP↔daemon agent memory dir)', () => {
     expect(decodeEnvelope(raw).ok).toBe(false)
   })
 
+  it('round-trips newest-first managed memory history pages', () => {
+    const cursor = '11111111-1111-4111-8111-111111111111'
+    const nextCursor = '22222222-2222-4222-8222-222222222222'
+    const req = decodeEnvelope(
+      encode(buildEnvelope('memory/history', { agentId: 'bot-a', path: 'deploys.md', cursor }))
+    )
+    if (!req.ok || !isFrame('memory/history')(req.frame)) throw new Error('expected memory/history')
+    expect(req.frame.payload).toMatchObject({ agentId: 'bot-a', path: 'deploys.md', cursor, limit: 5 })
+
+    const rep = decodeEnvelope(
+      encode(
+        buildEnvelope('memory/history/page', {
+          agentId: 'bot-a',
+          path: 'deploys.md',
+          events: [
+            {
+              id: '33333333-3333-4333-8333-333333333333',
+              path: 'deploys.md',
+              event: 'update',
+              before: 'v1',
+              after: 'v2',
+              at: TS,
+              scope: 'agent',
+              source: 'console'
+            }
+          ],
+          nextCursor
+        })
+      )
+    )
+    if (!rep.ok || !isFrame('memory/history/page')(rep.frame)) throw new Error('expected memory/history/page')
+    expect(rep.frame.payload.events[0]).toMatchObject({ before: 'v1', after: 'v2', source: 'console' })
+    expect(rep.frame.payload.nextCursor).toBe(nextCursor)
+  })
+
   it('round-trips the provider-neutral memory surface without backend identity', () => {
     const req = decodeEnvelope(encode(buildEnvelope('memory/surface', { agentId: 'bot-a' })))
     if (!req.ok || !isFrame('memory/surface')(req.frame)) throw new Error('expected memory/surface')

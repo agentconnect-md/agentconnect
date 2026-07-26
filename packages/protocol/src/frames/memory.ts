@@ -25,6 +25,8 @@ import { CanonicalMemoryRecord, MemoryPluginHistoryEvent, MemoryPluginOperation 
  *   bytes to keep the JSON-escaped REP under the 256 KiB frame cap and always ends
  *   on a UTF-8 boundary. `nextOffset` is authoritative — do NOT recompute it.
  * - `memory/write`: replace the whole named memory file with `content`.
+ * - `memory/history`: page the managed provider's hidden `.history` change log
+ *   for one file, newest first. The sidecar itself never appears in `memory/list`.
  */
 
 /** The default file name of the memory index (loaded into the prompt each session). */
@@ -95,6 +97,48 @@ export const MemoryWriteOk = z.object({
   mtime: z.string() // RFC3339 of the write
 })
 export type MemoryWriteOk = z.infer<typeof MemoryWriteOk>
+
+/** One provenance entry from managed memory's retained `.history` sidecar. */
+export const MemoryFileHistoryEvent = z
+  .object({
+    // Optional while legacy JSONL rows are upgraded on their next read/write.
+    id: z.string().uuid().optional(),
+    path: z.string().min(1).max(255),
+    event: z.enum(['add', 'update', 'delete']),
+    before: z.string().max(4001).optional(),
+    after: z.string().max(4001),
+    at: z.string().datetime(),
+    scope: z.string().min(1),
+    source: z.enum(['tool', 'console', 'distill']),
+    truncated: z.boolean().optional()
+  })
+  .strict()
+export type MemoryFileHistoryEvent = z.infer<typeof MemoryFileHistoryEvent>
+
+/** C→D REQ: page the history of one managed memory file, newest first. */
+export const MemoryHistoryReq = z
+  .object({
+    agentId: z.string().min(1),
+    path: z.string().min(1).max(255),
+    // Opaque to callers. This is a stable event ID, so appends and retention
+    // cannot shift older pages.
+    cursor: z.string().uuid().optional(),
+    // Five worst-case escaped before/after snapshots still fit one wire frame.
+    limit: z.number().int().positive().max(5).default(5)
+  })
+  .strict()
+export type MemoryHistoryReq = z.infer<typeof MemoryHistoryReq>
+
+/** D→C REP: one newest-first page from managed memory's change log. */
+export const MemoryHistoryPage = z
+  .object({
+    agentId: z.string().min(1),
+    path: z.string().min(1).max(255),
+    events: z.array(MemoryFileHistoryEvent).max(5),
+    nextCursor: z.string().uuid().optional()
+  })
+  .strict()
+export type MemoryHistoryPage = z.infer<typeof MemoryHistoryPage>
 
 /**
  * Provider-aware memory administration (M-5C).

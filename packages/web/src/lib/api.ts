@@ -1752,6 +1752,38 @@ export async function updateAgentMemory(
   )
 }
 
+export interface MemoryFileHistoryEventDto {
+  id?: string
+  path: string
+  event: 'add' | 'update' | 'delete'
+  before?: string
+  after: string
+  at: string
+  scope: string
+  source: 'tool' | 'console' | 'distill'
+  truncated?: boolean
+}
+
+export interface MemoryFileHistoryPageDto {
+  events: MemoryFileHistoryEventDto[]
+  nextCursor: string | null
+}
+
+// Page one managed memory file's provenance, newest first. The hidden sidecar
+// remains daemon-owned; only these bounded rows transit the API.
+export async function listMemoryFileHistory(
+  agentId: string,
+  path: string,
+  opts: { cursor?: string; limit?: number } = {}
+): Promise<MemoryFileHistoryPageDto> {
+  const query = new URLSearchParams({ path })
+  if (opts.cursor) query.set('cursor', opts.cursor)
+  if (opts.limit) query.set('limit', String(opts.limit))
+  return apiGet<MemoryFileHistoryPageDto>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/history?${query.toString()}`
+  )
+}
+
 export type MemoryRecordCapability = 'recall' | 'capture' | 'list' | 'get' | 'create' | 'update' | 'delete' | 'history'
 
 export interface MemoryAdminSurfaceDto {

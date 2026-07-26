@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -7,7 +8,9 @@ import {
   readIndex,
   readMemoryFile,
   writeMemoryFile,
+  appendHistory,
   listMemory,
+  listMemoryHistory,
   memoryDir,
   resolveInMemoryDir,
   MemoryPathError,
@@ -17,7 +20,9 @@ import {
   MAX_INDEX_INJECT_BYTES,
   MAX_MEMORY_FILE_BYTES,
   MEMORY_HISTORY_FILENAME,
+  MAX_HISTORY_FILE_BYTES,
   MAX_HISTORY_VALUE_BYTES,
+  MAX_HISTORY_VERSIONS_PER_FILE,
   type MemoryHistoryRecord
 } from '../src/agents/memory.js'
 import { createMemoryReader, MemoryViolationError } from '../src/cp/memory-reader.js'
@@ -149,6 +154,84 @@ describe('agents/memory (.history change log)', () => {
     expect(names).toEqual([MEMORY_INDEX, 'topic.md']) // .history excluded
     expect(existsSync(join(memoryDir(dir), MEMORY_HISTORY_FILENAME))).toBe(true) // but it exists
   })
+
+  it('pages one file newest first without interleaved topic changes', async () => {
+    const dir = newDir()
+    await writeMemoryFile(dir, 'notes.md', 'v1')
+    await writeMemoryFile(dir, 'other.md', 'unrelated')
+    for (let version = 2; version <= 7; version += 1) {
+      await writeMemoryFile(dir, 'notes.md', `v${version}`)
+    }
+
+    const newest = await listMemoryHistory(dir, 'notes.md', undefined, 5)
+    expect(newest.events.map((event) => event.after)).toEqual(['v7', 'v6', 'v5', 'v4', 'v3'])
+    expect(newest.nextCursor).toBeDefined()
+    expect(newest.events.every((event) => event.path === 'notes.md')).toBe(true)
+
+    const older = await listMemoryHistory(dir, 'notes.md', newest.nextCursor, 5)
+    expect(older.events.map((event) => event.after)).toEqual(['v2', 'v1'])
+    expect(older.nextCursor).toBeUndefined()
+  })
+
+  it('retains the newest 100 changes for each memory file by default', async () => {
+    const dir = newDir()
+    for (let version = 0; version < MAX_HISTORY_VERSIONS_PER_FILE + 3; version += 1) {
+      await writeMemoryFile(dir, 'notes.md', `v${version}`)
+    }
+
+    const log = readHistory(dir)
+    expect(log).toHaveLength(MAX_HISTORY_VERSIONS_PER_FILE)
+    expect(log[0]?.after).toBe('v3')
+    expect(log.at(-1)?.after).toBe(`v${MAX_HISTORY_VERSIONS_PER_FILE + 2}`)
+    expect(log.every((event) => typeof event.id === 'string')).toBe(true)
+  })
+
+  it('tightens a legacy sidecar over 2 MiB when history is read', async () => {
+    const dir = newDir()
+    mkdirSync(memoryDir(dir), { recursive: true })
+    const legacy = Array.from({ length: 550 }, (_, index): MemoryHistoryRecord => ({
+      id: randomUUID(),
+      path: `topic-${index}.md`,
+      event: 'add',
+      after: `${index}:` + 'x'.repeat(MAX_HISTORY_VALUE_BYTES - String(index).length - 1),
+      at: new Date(Date.UTC(2026, 0, 1, 0, 0, 0, index)).toISOString(),
+      scope: 'agent',
+      source: 'tool'
+    }))
+    const historyPath = join(memoryDir(dir), MEMORY_HISTORY_FILENAME)
+    const oversized = legacy.map((event) => JSON.stringify(event)).join('\n') + '\n'
+    expect(Buffer.byteLength(oversized)).toBeGreaterThan(MAX_HISTORY_FILE_BYTES)
+    writeFileSync(historyPath, oversized)
+
+    const page = await listMemoryHistory(dir, 'topic-549.md', undefined, 5)
+    const compacted = readFileSync(historyPath, 'utf8')
+    const retained = readHistory(dir)
+    expect(page.events).toHaveLength(1)
+    expect(Buffer.byteLength(compacted)).toBeLessThanOrEqual(MAX_HISTORY_FILE_BYTES)
+    expect(retained[0]?.path).not.toBe('topic-0.md')
+    expect(retained.at(-1)?.path).toBe('topic-549.md')
+  })
+
+  it('serializes concurrent appends so compaction does not drop changes', async () => {
+    const dir = newDir()
+    await Promise.all(
+      Array.from({ length: 24 }, (_, index) =>
+        appendHistory(dir, {
+          path: 'concurrent.md',
+          event: 'update',
+          after: String(index),
+          at: new Date(Date.UTC(2026, 0, 1, 0, 0, 0, index)).toISOString(),
+          scope: 'agent',
+          source: 'tool'
+        })
+      )
+    )
+
+    const log = readHistory(dir)
+    expect(log).toHaveLength(24)
+    expect(new Set(log.map((event) => event.after)).size).toBe(24)
+    expect(new Set(log.map((event) => event.id)).size).toBe(24)
+  })
 })
 
 describe('cp/memory-reader', () => {
@@ -189,6 +272,22 @@ describe('cp/memory-reader', () => {
     expect(ok.path).toBe('deploys.md')
     expect(ok.size).toBe(Buffer.byteLength('brand new'))
     expect(readFileSync(join(memoryDir(dir), 'deploys.md'), 'utf8')).toBe('brand new')
+  })
+
+  it('returns bounded managed history pages through the dedicated reader method', async () => {
+    const dir = newDir()
+    await writeMemoryFile(dir, 'deploys.md', 'v1')
+    await writeMemoryFile(dir, 'deploys.md', 'v2', undefined, 'console')
+
+    const page = await reader(dir).history({ agentId: 'bot-a', path: 'deploys.md', limit: 5 })
+    expect(page).toMatchObject({
+      agentId: 'bot-a',
+      path: 'deploys.md',
+      events: [
+        { event: 'update', before: 'v1', after: 'v2', source: 'console' },
+        { event: 'add', after: 'v1', source: 'tool' }
+      ]
+    })
   })
 
   it('rejects an unknown agent with MemoryViolationError', async () => {
@@ -243,6 +342,9 @@ describe('cp/memory-reader', () => {
         ifMatchMtime: '2026-07-16T00:00:00.000Z'
       })
     ).resolves.toMatchObject({ size: 14, mtime: '2026-07-16T00:01:00.000Z' })
+    await expect(
+      files.history({ agentId: 'bot-a', path: 'projects/workspace/memory/MEMORY.md', limit: 5 })
+    ).rejects.toBeInstanceOf(MemoryViolationError)
     expect(writes).toEqual([
       {
         path: 'projects/workspace/memory/MEMORY.md',

@@ -10,6 +10,7 @@ import {
   AgentMemoryBinding,
   AgentPermissionRequestRecord,
   CanonicalMemoryRecord,
+  MemoryFileHistoryEvent,
   MemoryPluginHistoryEvent,
   MemoryPluginOperation,
   RESERVED_MCP_SERVER_NAME,
@@ -1846,6 +1847,17 @@ export const AgentMemoryWriteDto = z.object({
   mtime: z.string() // RFC3339
 })
 
+/** `GET /agents/:id/memory/history` — newest-first provenance for one managed file. */
+export const MemoryHistoryQueryDto = z.object({
+  path: z.string().min(1).max(255),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().positive().max(5).optional()
+})
+export const MemoryHistoryPageDto = z.object({
+  events: z.array(MemoryFileHistoryEvent).max(5),
+  nextCursor: z.string().uuid().nullable()
+})
+
 /** Provider-neutral external-memory administration. Surface discovery carries
  * no plugin/backend identity or connection detail; record responses retain only
  * the canonical profile's bounded provenance. */
@@ -2009,6 +2021,7 @@ export type WorkspaceFileDtoT = z.infer<typeof WorkspaceFileDto>
 export type AgentMemoryDtoT = z.infer<typeof AgentMemoryDto>
 export type AgentMemoryWriteDtoT = z.infer<typeof AgentMemoryWriteDto>
 export type MemoryFilesDtoT = z.infer<typeof MemoryFilesDto>
+export type MemoryHistoryPageDtoT = z.infer<typeof MemoryHistoryPageDto>
 export type MemorySurfaceDtoT = z.infer<typeof MemorySurfaceDto>
 export type MemoryRecordPageDtoT = z.infer<typeof MemoryRecordPageDto>
 export type MemoryRecordResultDtoT = z.infer<typeof MemoryRecordResultDto>
