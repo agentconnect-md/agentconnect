@@ -39,6 +39,7 @@ import type {
 import { RESERVED_MCP_SERVER_NAME } from '@agentconnect.md/protocol'
 import type {
   AgentRepo,
+  AgentRecord,
   AssignmentRepo,
   AssignmentRecord,
   CronRepo,
@@ -171,6 +172,29 @@ function leaseToGrant(l: LeaseRecord): SecretsGrant {
  */
 const DEFAULT_BIND_RULES: IntegrationBindRule[] = [{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }]
 
+/** Conversation gating (resource-visibility.md §14): derived from restricted
+ *  visibility at spec-assembly time — no stored toggle, no identities on the wire. */
+export const isGatedAgent = (a: { visibility: AgentRecord['visibility'] }): boolean => a.visibility === 'restricted'
+
+/**
+ * Conversation-scoped bind rules for a GATED integration (resource-visibility.md
+ * §14.3): only explicitly enabled conversations produce rules — a Mention channel
+ * gets a channel-scoped mention rule, an "All messages" channel a channel-scoped
+ * auto rule, an enabled DM conversation a conversation-scoped dm rule. An
+ * unknown/Off conversation matches no rule, so nothing routes (fail-closed,
+ * including the window before a fresh channel is reported).
+ */
+function gatedBindRules(channels: IntegrationChannelRecord[]): IntegrationBindRule[] {
+  const out: IntegrationBindRule[] = []
+  for (const c of channels) {
+    if (c.trigger === 'off') continue
+    if (c.kind === 'im') out.push({ channel: c.channelId, match: { kind: 'dm' } })
+    else if (c.trigger === 'any') out.push({ channel: c.channelId, match: { kind: 'auto' } })
+    else out.push({ channel: c.channelId, match: { kind: 'mention' } })
+  }
+  return out
+}
+
 /**
  * Assemble the wire {@link IntegrationSpec} the daemon opens its socket from —
  * metadata from the `integration` row + tokens from the {@link BotSecretStore}
@@ -178,25 +202,28 @@ const DEFAULT_BIND_RULES: IntegrationBindRule[] = [{ match: { kind: 'mention' } 
  * `bindRules`. Shared by the reconcile roster (`register/ok.integrations`) and
  * the live `integration/upsert` REST emit. Token-bearing: NEVER log the result.
  *
- * bindRules = the defaults (@-mention anywhere + DMs) ∪ one channel-scoped `auto`
- * rule per channel the operator switched to "any message". A 'mention' channel
- * needs no extra rule — the unscoped mention default already covers it.
+ * Non-gated: bindRules = the defaults (@-mention anywhere + DMs) ∪ one
+ * channel-scoped `auto` rule per channel the operator switched to "any message".
+ * A 'mention' channel needs no extra rule — the unscoped mention default already
+ * covers it. Gated (`gated`, derived from the owning agent's restricted
+ * visibility): NO unscoped defaults — only {@link gatedBindRules}.
  */
 export function integrationToSpec(
   i: IntegrationRecord,
   secret: BotSecretMaterial,
-  channels: IntegrationChannelRecord[] = []
+  channels: IntegrationChannelRecord[] = [],
+  gated = false
 ): IntegrationSpec {
   const channelRules: IntegrationBindRule[] = channels
-    .filter((c) => c.trigger === 'any')
+    .filter((c) => c.trigger === 'any' && c.kind !== 'im')
     .map((c) => ({ channel: c.channelId, match: { kind: 'auto' as const } }))
-  const bindRules = [...DEFAULT_BIND_RULES, ...channelRules]
+  const bindRules = gated ? gatedBindRules(channels) : [...DEFAULT_BIND_RULES, ...channelRules]
   if (i.platform === 'telegram') {
     return {
       integrationId: i.id,
       agentId: i.agentId,
       platform: 'telegram',
-      telegram: { botToken: secret.botToken, allowedUserIds: [], bindRules }
+      telegram: { botToken: secret.botToken, allowedUserIds: [], bindRules, gated }
     }
   }
   if (i.platform === 'discord') {
@@ -205,7 +232,7 @@ export function integrationToSpec(
       agentId: i.agentId,
       platform: 'discord',
       // Discord authenticates the Gateway with the single bot token (no appToken).
-      discord: { botToken: secret.botToken, allowedUserIds: [], bindRules }
+      discord: { botToken: secret.botToken, allowedUserIds: [], bindRules, gated }
     }
   }
   if (i.platform === 'feishu') {
@@ -221,7 +248,8 @@ export function integrationToSpec(
         appSecret: secret.botToken,
         region: i.feishuRegion ?? 'feishu',
         allowedUserIds: [],
-        bindRules
+        bindRules,
+        gated
       }
     }
   }
@@ -240,7 +268,8 @@ export function integrationToSpec(
       botToken: secret.botToken,
       appToken: secret.appToken ?? '',
       allowedUserIds: [],
-      bindRules
+      bindRules,
+      gated
     }
   }
 }
@@ -251,11 +280,19 @@ export function integrationToSpec(
  * appToken (the relay owns the event stream) and no bindRules (the relay
  * arbitrates inbound and delivers it pre-addressed). Slack-only for now; a
  * shareable Telegram/Discord bot lands in milestone C. Token-bearing — NEVER log.
+ *
+ * GATED exception (resource-visibility.md §14.3): a restricted agent's install
+ * ships its conversation-scoped rules + `gated: true` even in shared mode — the
+ * relay is still the arbiter, but the daemon uses these for its last-hop
+ * admission backstop in `handleRelayIm` (it must not trust a stale relay route
+ * snapshot to keep a private agent fail-closed).
  */
 export function sharedIntegrationToSpec(
   i: IntegrationRecord,
   secret: BotSecretMaterial,
-  shareable: boolean
+  shareable: boolean,
+  channels: IntegrationChannelRecord[] = [],
+  gated = false
 ): IntegrationSpec {
   return {
     integrationId: i.id,
@@ -264,7 +301,14 @@ export function sharedIntegrationToSpec(
     // `shareable` gates the daemon's in-thread "Switch agent" control: a shared bot
     // routes through the relay either way, but only a multi-agent (shareable) bot has
     // something to switch to.
-    slack: { mode: 'shared', shareable, botToken: secret.botToken, allowedUserIds: [], bindRules: [] }
+    slack: {
+      mode: 'shared',
+      shareable,
+      botToken: secret.botToken,
+      allowedUserIds: [],
+      bindRules: gated ? gatedBindRules(channels) : [],
+      gated
+    }
   }
 }
 
@@ -317,6 +361,10 @@ export class Placement implements ReconcileService {
     ])
 
     const quarantinedAgentIds = new Set<string>()
+    // Conversation gating (§14): derived per-agent from restricted visibility. This
+    // is a data-plane read of the DERIVED boolean only — identities never ride the
+    // wire, and the roster itself stays unfiltered (§9 graceful degradation).
+    const gatedAgentIds = new Set(ownedAgents.filter((a) => a.visibility === 'restricted').map((a) => a.id))
     const [desiredAgents, assembledIntegrations] = await Promise.all([
       this.specs.assembleAll(ownedAgents, (agent) => {
         quarantinedAgentIds.add(agent.id)
@@ -332,9 +380,10 @@ export class Placement implements ReconcileService {
           if (!secret) return null
           // An http-transport bot's ingest is on the relay pool — the daemon
           // reconciles it send-only (no Socket Mode). Socket bots reconcile as direct.
+          const gated = gatedAgentIds.has(i.agentId)
           return bot?.transport === 'http'
-            ? sharedIntegrationToSpec(i, secret, bot.shareable)
-            : integrationToSpec(i, secret, channels)
+            ? sharedIntegrationToSpec(i, secret, bot.shareable, channels, gated)
+            : integrationToSpec(i, secret, channels, gated)
         })
       )
     ])

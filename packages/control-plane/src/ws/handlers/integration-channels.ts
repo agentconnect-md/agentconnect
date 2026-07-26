@@ -14,7 +14,8 @@
  * can never write channel rows for another daemon's integration.
  */
 import { isFrame } from '@agentconnect.md/protocol'
-import { DaemonId } from '../../domain/ids.js'
+import { AgentId, DaemonId } from '../../domain/ids.js'
+import { isGatedAgent } from '../../orchestrator/placement.js'
 import type { Handler } from './index.js'
 
 export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
@@ -34,7 +35,16 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     if (!current.some((candidate) => candidate.id === integration.id && candidate.agentId === integration.agentId)) {
       return
     }
-    await deps.integrationChannel.replaceSnapshot(integration.id, p.channels)
+    // Conversation gating (resource-visibility.md §14): a gated (restricted-agent)
+    // integration's fresh conversations start Off — an editor must enable them in
+    // the console. Known rows keep their operator-chosen trigger either way.
+    const owner = await deps.agent.get(AgentId(integration.agentId))
+    const defaultTrigger = owner && isGatedAgent(owner) ? ('off' as const) : undefined
+    await deps.integrationChannel.replaceSnapshot(
+      integration.id,
+      p.channels,
+      defaultTrigger ? { defaultTrigger } : undefined
+    )
   } finally {
     release()
   }

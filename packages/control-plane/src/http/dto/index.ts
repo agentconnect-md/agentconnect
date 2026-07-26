@@ -671,12 +671,16 @@ export const CreateIntegrationBody = z
     }
   })
 
-/** One channel the integration's bot is in + how it activates there. */
+/** One conversation the integration's bot is in + how it activates there.
+ *  `off` = conversation gating (resource-visibility.md §14): the agent does not
+ *  activate there — the default for every conversation of a restricted agent.
+ *  `kind: 'im'` rows are DM conversations (gated integrations only). */
 export const IntegrationChannelDto = z.object({
   channelId: z.string(),
-  name: z.string().nullable(), // "#deploys" without the hash; null if lookup failed
+  name: z.string().nullable(), // "#deploys" without the hash (or DM counterpart); null if lookup failed
   isPrivate: z.boolean(),
-  trigger: z.enum(['mention', 'any']),
+  kind: z.enum(['channel', 'im']),
+  trigger: z.enum(['off', 'mention', 'any']),
   /** Per-channel default/owning agent for a shared bot (§10.1); null ⇒ unset. */
   agentId: z.string().nullable()
 })
@@ -1111,11 +1115,12 @@ export const SlackAppFinalizeBody = z.object({
   shareable: z.boolean().optional() // http multi-agent opt-in; coerced off for socket
 })
 
-/** `PATCH /integrations/:id/channels/:channelId` — per-channel trigger and/or the
- *  shared-bot default agent. At least one field; `agentId:null` clears the owner. */
+/** `PATCH /integrations/:id/channels/:channelId` — per-conversation trigger
+ *  ('off' disables the conversation, §14) and/or the shared-bot default agent.
+ *  At least one field; `agentId:null` clears the owner. */
 export const UpdateIntegrationChannelBody = z
   .object({
-    trigger: z.enum(['mention', 'any']).optional(),
+    trigger: z.enum(['off', 'mention', 'any']).optional(),
     agentId: z.string().min(1).nullable().optional()
   })
   .refine((b) => b.trigger !== undefined || b.agentId !== undefined, {

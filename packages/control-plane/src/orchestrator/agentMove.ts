@@ -33,7 +33,7 @@ import type {
 } from '../persistence/ports.js'
 import { AgentWorkspaceIntegrationConflict } from '../persistence/errors.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
-import { cronToUpsert, integrationToSpec, sharedIntegrationToSpec } from './placement.js'
+import { cronToUpsert, integrationToSpec, isGatedAgent, sharedIntegrationToSpec } from './placement.js'
 import type { AgentSpecAssembler } from './agentSpecAssembler.js'
 import type { ControlSender } from './outbound.js'
 import type { HookService } from '../hooks/hook.service.js'
@@ -549,12 +549,13 @@ export class AgentMoveService {
         if (!bot) throw new AgentMoveConflict(`integration ${integration.id} has no bot`)
         if (!secret) throw new AgentMoveConflict(`integration ${integration.id} has no credentials`)
         const isHttp = bot.transport === 'http'
+        const gated = isGatedAgent(agent)
         return {
           botId: String(bot.id),
           shared: isHttp,
           spec: isHttp
-            ? sharedIntegrationToSpec(integration, secret, bot.shareable)
-            : integrationToSpec(integration, secret, channels)
+            ? sharedIntegrationToSpec(integration, secret, bot.shareable, channels, gated)
+            : integrationToSpec(integration, secret, channels, gated)
         }
       })
     )

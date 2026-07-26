@@ -508,7 +508,12 @@ export const RcBotAssign = z.object({
   agents: z.array(RcAgentDirEntry).default([]), // member directory (id→name) for the config modal
   routes: z.array(AttributedRoute),
   defaultAgentId: z.string().uuid().optional(), // bare @bot / DM fallback within the group (§10.3)
-  defaultDaemonId: z.string().uuid().optional()
+  defaultDaemonId: z.string().uuid().optional(),
+  // Conversation gating (resource-visibility.md §14): member agents whose ingress is
+  // fail-closed. The relay's thread-affinity rung honours a binding to a gated agent
+  // only while that agent still has a channel-scoped route in the conversation —
+  // otherwise a thread bound before the gate was applied would keep routing forever.
+  gatedAgentIds: z.array(z.string().uuid()).default([])
 })
 export type RcBotAssign = z.infer<typeof RcBotAssign>
 
@@ -527,7 +532,8 @@ export const RcRoutes = z.object({
   agents: z.array(RcAgentDirEntry).default([]),
   routes: z.array(AttributedRoute),
   defaultAgentId: z.string().uuid().optional(),
-  defaultDaemonId: z.string().uuid().optional()
+  defaultDaemonId: z.string().uuid().optional(),
+  gatedAgentIds: z.array(z.string().uuid()).default([]) // §14 — see RcBotAssign.gatedAgentIds
 })
 export type RcRoutes = z.infer<typeof RcRoutes>
 

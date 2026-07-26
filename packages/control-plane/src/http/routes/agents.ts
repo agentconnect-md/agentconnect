@@ -42,6 +42,7 @@ import { resolveShareSet } from '../sharing.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { AgentMoveConflict, AgentMoveFailed, AgentMoveService } from '../../orchestrator/agentMove.js'
+import { convergeIntegrationGating } from '../../orchestrator/integrationPush.js'
 import { ProtocolError } from '../../domain/errors.js'
 import { AGENT_WORKSPACE_INTEGRATION_CONFLICT_MESSAGE } from '../../persistence/errors.js'
 import {
@@ -1672,8 +1673,11 @@ export function agentRoutes(deps: HttpDeps) {
 
     // Set who can see this agent (visibility + share set). Gated exactly like a
     // content edit (canManageSharing === canEdit, §13.3): viewers can't, and a
-    // collaborator who can't even view a restricted agent 404s. Visibility never
-    // rides the wire, so there's nothing to replicate to the daemon.
+    // collaborator who can't even view a restricted agent 404s. Identities never
+    // ride the wire, but the DERIVED conversation-gating flag does (§14/§9): a
+    // visibility flip re-converges every integration of the agent — direct installs
+    // get a fresh spec push, shared bots a route recompile — best-effort, with the
+    // reconcile roster as the durable backstop.
     r.put(
       '/agents/:id/sharing',
       {
@@ -1713,6 +1717,9 @@ export function agentRoutes(deps: HttpDeps) {
             { visibility: req.body.visibility, sharedWith },
             req.principal?.userId
           )
+          if (agent.visibility !== existing.visibility) {
+            await convergeIntegrationGating(deps, agent, req.log)
+          }
           return toDto(
             agent,
             ctxOf(req),
