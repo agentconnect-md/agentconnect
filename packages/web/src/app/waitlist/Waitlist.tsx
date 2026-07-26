@@ -28,6 +28,10 @@ type Platform = 'slack' | 'telegram' | 'discord'
 type Provider = 'github' | 'google'
 
 const DOCS_URL = 'https://docs.agentconnect.md'
+// Verified sender of the activation email. Deploy-time config, so it comes from the
+// runtime env (window.__AC_ENV, see lib/public-env) rather than being baked in —
+// a fork or tenant mailing from its own domain sets WAITLIST_FROM_EMAIL.
+const FROM_EMAIL_DEFAULT = 'no-reply@agentconnect.md'
 const INTAKE_KEY = 'ac.wl.intake'
 const PROVIDER_KEY = 'ac.wl.provider'
 const TEAM_SIZES = ['Just me', '2–10', '11–50', '51–200', '200+']
@@ -483,6 +487,15 @@ function OnListColumn({
   )
 }
 
+// Resolve at render (not module load) so it reads the runtime config: window.__AC_ENV
+// in the browser, plain env during SSR. The SSR branch honours the NEXT_PUBLIC_ form
+// too, because public-env's resolve() folds it into __AC_ENV — reading only the plain
+// name here would render the default on the server and the override on the client.
+function fromEmail(): string {
+  if (typeof window !== 'undefined') return window.__AC_ENV?.WAITLIST_FROM_EMAIL || FROM_EMAIL_DEFAULT
+  return process.env.WAITLIST_FROM_EMAIL || process.env.NEXT_PUBLIC_WAITLIST_FROM_EMAIL || FROM_EMAIL_DEFAULT
+}
+
 function Timeline({ status, email }: { status: 'pending' | 'approved'; email: string | null }) {
   const mail = email ? <span className="wl-mono text-(--text-primary)">{email}</span> : 'your inbox'
   const steps: { title: string; body: ReactNode; done: boolean; active: boolean }[] = [
@@ -496,8 +509,7 @@ function Timeline({ status, email }: { status: 'pending' | 'approved'; email: st
       title: 'Activation link emailed',
       body: (
         <>
-          Your link arrives at {mail} from{' '}
-          <span className="wl-mono text-(--text-primary)">invites@agentconnect.dev</span>.
+          Your link arrives at {mail} from <span className="wl-mono text-(--text-primary)">{fromEmail()}</span>.
         </>
       ),
       done: false,
