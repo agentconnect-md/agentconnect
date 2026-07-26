@@ -26,7 +26,6 @@ import { getUser, isAuthConfigured, logout } from '@/lib/auth'
 import { useProfile } from '@/lib/profile'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { applyTheme, clearThemeAttr, getStoredTheme, type Theme } from '@/lib/theme'
-import { CHANGELOG, type ChangeKind } from '@/lib/changelog'
 
 interface NavItem {
   href: string
@@ -98,11 +97,12 @@ const isActive = (pathname: string, href: string) => pathname === href || pathna
 // wire Claude — or any MCP client — to AgentConnect), reached as the "More" link of
 // the Connect-your-AI dialog. Each is overridable at deploy time via runtime env
 // (window.__AC_ENV / NEXT_PUBLIC_*), so an OSS fork can point them at its own docs /
-// support without rebuilding; unset ⇒ these agentconnect.md defaults. See
+// releases / support without rebuilding; unset ⇒ these agentconnect.md defaults. See
 // lib/public-env.tsx (HELP_* keys) + resolveHelpLinks().
 const HELP_LINK_DEFAULTS = {
   mcp: 'https://docs.agentconnect.md/docs/mcp-connector',
   docs: 'https://docs.agentconnect.md',
+  releases: 'https://github.com/agentconnect-md/agentconnect/releases',
   support: 'mailto:support@agentconnect.md'
 }
 
@@ -114,6 +114,7 @@ function resolveHelpLinks(): typeof HELP_LINK_DEFAULTS {
   return {
     mcp: src.HELP_MCP_URL || process.env.NEXT_PUBLIC_HELP_MCP_URL || HELP_LINK_DEFAULTS.mcp,
     docs: src.HELP_DOCS_URL || process.env.NEXT_PUBLIC_HELP_DOCS_URL || HELP_LINK_DEFAULTS.docs,
+    releases: src.HELP_RELEASES_URL || process.env.NEXT_PUBLIC_HELP_RELEASES_URL || HELP_LINK_DEFAULTS.releases,
     support: src.HELP_SUPPORT_URL || process.env.NEXT_PUBLIC_HELP_SUPPORT_URL || HELP_LINK_DEFAULTS.support
   }
 }
@@ -267,7 +268,6 @@ function ShellChrome({ children }: { children: ReactNode }) {
   // Rail-footer help popover + the shortcuts modal it can open.
   const [helpMenu, setHelpMenu] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
-  const [whatsNewOpen, setWhatsNewOpen] = useState(false)
   const [connectAiOpen, setConnectAiOpen] = useState(false)
   const help = resolveHelpLinks()
   // Push-screen share action: the session detail app bar surfaces a top-right link
@@ -575,16 +575,16 @@ function ShellChrome({ children }: { children: ReactNode }) {
                       <Icon name="command" size={15} color="var(--text-tertiary)" />
                       Keyboard shortcuts
                     </button>
-                    <button
-                      className="dmi"
-                      onClick={() => {
-                        setHelpMenu(false)
-                        setWhatsNewOpen(true)
-                      }}
+                    <a
+                      className="dmi no-underline"
+                      href={help.releases}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => setHelpMenu(false)}
                     >
                       <Icon name="gift" size={15} color="var(--text-tertiary)" />
                       What&rsquo;s new
-                    </button>
+                    </a>
                     <a className="dmi no-underline" href={help.support} onClick={() => setHelpMenu(false)}>
                       <Icon name="life-buoy" size={15} color="var(--text-tertiary)" />
                       Help &amp; support
@@ -785,81 +785,12 @@ function ShellChrome({ children }: { children: ReactNode }) {
         )}
         {mobileSearch && <GlobalSearch mobile autoFocus onClose={() => setMobileSearch(false)} />}
         {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
-        {whatsNewOpen && <WhatsNewModal onClose={() => setWhatsNewOpen(false)} />}
         {connectAiOpen && <ConnectAiModal onClose={() => setConnectAiOpen(false)} moreUrl={help.mcp} />}
         {/* Renders every `title` in the console on the design system's timing
           instead of the browser's ~1s native tooltip. Portals to <body>. */}
         <TooltipLayer />
       </div>
     </MobileFilterContext.Provider>
-  )
-}
-
-// Small colored tag per change kind — theme-aware token pairs so it reads in both
-// light and dark. Editors set `kind` per item in lib/changelog.ts (optional).
-const CHANGE_TAG: Record<ChangeKind, { label: string; cls: string }> = {
-  new: { label: 'New', cls: 'bg-(--brand-soft) text-(--brand-soft-text)' },
-  improved: { label: 'Improved', cls: 'bg-(--status-online-soft) text-[#0f7a48]' },
-  fixed: { label: 'Fixed', cls: 'bg-(--status-paused-soft) text-(--amber-500)' }
-}
-
-// The "What's new" changelog, opened from the rail-footer help menu. Content lives
-// in lib/changelog.ts (edited by hand); this just renders it. Esc closes.
-function WhatsNewModal({ onClose }: { onClose: () => void }) {
-  // The newest notes describe this deployed build. APP_VERSION contains a
-  // `+<git hash>` build suffix, which should not be shown in release notes.
-  const currentReleaseVersion = process.env.NEXT_PUBLIC_APP_VERSION?.split('+', 1)[0]
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
-  return (
-    <div className="scrim" onClick={onClose}>
-      <div className="modal max-w-[460px]" onClick={(e) => e.stopPropagation()}>
-        <div className="modalhead">
-          <Icon name="gift" size={18} color="var(--text-tertiary)" />
-          <span className="font-sans text-[15px] font-semibold leading-normal">What&rsquo;s new</span>
-        </div>
-        <div className="modalbody flex flex-col gap-5">
-          {CHANGELOG.length === 0 && (
-            <div className="py-6 text-center font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-              Nothing new to report yet — check back soon.
-            </div>
-          )}
-          {CHANGELOG.map((entry, index) => (
-            <div key={`${entry.version}-${entry.date}`} className="flex flex-col gap-[10px]">
-              <div className="flex items-baseline gap-2">
-                <span className="font-sans text-[13.5px] font-semibold leading-normal">
-                  {index === 0 ? currentReleaseVersion || entry.version : entry.version}
-                </span>
-                <span className="mono text-[11.5px] text-(--text-tertiary)">{entry.date}</span>
-              </div>
-              <ul className="flex flex-col gap-[9px]">
-                {entry.items.map((item, i) => (
-                  <li key={i} className="flex items-start gap-[9px]">
-                    {item.kind ? (
-                      <span
-                        className={`mt-[1px] inline-flex flex-none items-center rounded-full px-[7px] py-[1px] font-sans text-[10.5px] font-semibold leading-normal ${CHANGE_TAG[item.kind].cls}`}
-                      >
-                        {CHANGE_TAG[item.kind].label}
-                      </span>
-                    ) : (
-                      <span className="mt-[7px] h-[3px] w-[3px] flex-none rounded-full bg-(--text-tertiary)" />
-                    )}
-                    <span className="font-sans text-[13px] font-normal leading-[1.5] text-(--text-secondary)">
-                      {item.text}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
   )
 }
 
