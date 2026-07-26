@@ -1,8 +1,10 @@
 import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { DreamInfo, MemoryDreamingPolicy } from '@agentconnect.md/protocol'
+import { parse as parseYaml } from 'yaml'
 import { DreamRunner, DreamStateError, type DreamStorePort } from '../src/agents/dream-runner.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { appendDistilledMemories } from '../src/agents/memory-distiller.js'
@@ -43,8 +45,15 @@ class FakeStore implements DreamStorePort {
   dreamSessionSources(): { sessionId: string; channel: string; thread: string }[] {
     return this.sources
   }
-  dreamTranscriptText(): { sender: string; text: string }[] {
-    return this.rows
+  toolRows: { sender: string; text: string; kind?: string }[] = []
+  dreamTranscriptText(
+    _c: string,
+    _t: string,
+    _a: string,
+    _l: number,
+    includeTools?: boolean
+  ): { sender: string; text: string; kind?: string }[] {
+    return includeTools ? [...this.rows, ...this.toolRows] : this.rows
   }
 }
 
@@ -707,5 +716,317 @@ describe('capture/adoption serialization', () => {
     }
     // Whichever order, the store is never left with a torn index.
     expect(index.trim().length).toBeGreaterThan(0)
+  })
+})
+
+describe('DreamRunner skill mining (D-3)', () => {
+  const SKILL_PROPOSAL = JSON.stringify({
+    index: '# Memory\n- [prefs](prefs.md)',
+    files: [{ path: 'prefs.md', content: '- Uses tabs.' }],
+    skills: [
+      {
+        name: 'deploy-staging',
+        description: 'Deploy to staging',
+        skill: '# Deploy\n1. build\n2. push',
+        scripts: [{ path: 'deploy.sh', content: 'echo deploy' }],
+        // FakeStore mines exactly one session, so a second citation is invented.
+        sessionIds: ['sess-1', 'sess-1']
+      }
+    ]
+  })
+
+  /** A store that mines two sessions, so a candidate can actually be grounded. */
+  class TwoSessionStore extends FakeStore {
+    override sources = [
+      { sessionId: 'sess-1', channel: 'C1', thread: 'T1' },
+      { sessionId: 'sess-2', channel: 'C2', thread: 'T2' }
+    ]
+  }
+
+  const grounded = JSON.stringify({
+    index: '# Memory',
+    files: [],
+    skills: [
+      {
+        name: 'deploy-staging',
+        description: 'Deploy to staging',
+        skill: '# Deploy\n1. build\n2. push',
+        scripts: [{ path: 'deploy.sh', content: 'echo deploy' }],
+        sessionIds: ['sess-1', 'sess-2']
+      }
+    ]
+  })
+
+  async function mining(proposal: string, store = new TwoSessionStore()) {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    ensureMemory(dir, 'bot')
+    const runner = new DreamRunner({
+      agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
+      dreamingPolicyFor: () => ({ enabled: true, mineSkills: true }),
+      store,
+      extract: async () => ({ output: proposal, trustedChannel: false }),
+      log: silent
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    const done = await settle(store, started.dreamId)
+    return { dir, runner, store, dreamId: started.dreamId, done }
+  }
+
+  it('stages a grounded candidate as a real skill directory and lists it as proposed', async () => {
+    const { dir, runner, dreamId, done } = await mining(grounded)
+    expect(done.status).toBe('completed')
+    expect(done.skills).toEqual([{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }])
+
+    // Staged as a standard skill dir, so accepting needs no conversion.
+    const staged = await runner.stagedSkill('a1', dreamId, 'deploy-staging')
+    expect(staged?.skill).toContain('name: deploy-staging')
+    expect(staged?.skill).toContain('# Deploy')
+    expect(staged?.scripts).toEqual([{ path: 'deploy.sh', content: 'echo deploy' }])
+    // NOT installed — staging is not acceptance.
+    await expect(readdir(join(dir, 'skills'))).rejects.toThrow()
+  })
+
+  it('does not mine when the agent did not ask for it', async () => {
+    const store = new TwoSessionStore()
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    ensureMemory(dir, 'bot')
+    const prompts: string[] = []
+    const runner = new DreamRunner({
+      agentDirByAgent: () => dir,
+      dreamingPolicyFor: () => ({ enabled: true }), // mineSkills off
+      store,
+      extract: async (_a, systemPrompt) => {
+        prompts.push(systemPrompt)
+        return { output: grounded, trustedChannel: false }
+      },
+      log: silent
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    const done = await settle(store, started.dreamId)
+    expect(prompts[0]).not.toContain('extract procedures')
+    // Even though the model volunteered skills, none are grounded or recorded.
+    expect(done.skills).toBeUndefined()
+  })
+
+  it('drops an ungrounded candidate: one real session is not a recurring procedure', async () => {
+    const { done } = await mining(SKILL_PROPOSAL, new FakeStore()) // mines only sess-1
+    expect(done.status).toBe('completed')
+    expect(done.skills).toBeUndefined()
+  })
+
+  it('refuses to accept — a terminal success without its effect would be a lie', async () => {
+    // Accepting must mean the skill can steer later sessions, which needs a
+    // containment-safe write under the agent-writable cwd. Until that exists,
+    // refuse loudly rather than record `accepted` with no effect.
+    const { runner, dreamId, done } = await mining(grounded)
+    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).rejects.toThrow(/not available yet/)
+    // The candidate stays reviewable rather than being consumed.
+    expect(done.skills?.[0]).toMatchObject({ state: 'proposed' })
+    expect(await runner.stagedSkill('a1', dreamId, 'deploy-staging')).not.toBeNull()
+  })
+
+  it('dismiss drops the staging and blocks a later accept; both are idempotent', async () => {
+    const { dir, runner, dreamId } = await mining(grounded)
+    const after = await runner.skillDismiss('a1', dreamId, 'deploy-staging')
+    expect(after.skills?.[0]).toMatchObject({ state: 'dismissed' })
+    expect(await runner.stagedSkill('a1', dreamId, 'deploy-staging')).toBeNull()
+    // Idempotent, and a dismissed candidate can't be resurrected into an install.
+    await expect(runner.skillDismiss('a1', dreamId, 'deploy-staging')).resolves.toMatchObject({})
+    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).rejects.toThrow(DreamStateError)
+  })
+
+  it('rejects an unknown candidate name', async () => {
+    const { runner, dreamId } = await mining(grounded)
+    await expect(runner.skillAccept('a1', dreamId, 'no-such-skill')).rejects.toThrow(/unknown skill candidate/)
+  })
+})
+
+describe('DreamRunner skill mining — review findings', () => {
+  class TwoSession extends FakeStore {
+    override sources = [
+      { sessionId: 'sess-1', channel: 'C1', thread: 'T1' },
+      { sessionId: 'sess-2', channel: 'C2', thread: 'T2' }
+    ]
+  }
+  const candidate = (over: Record<string, unknown> = {}) => ({
+    name: 'deploy-staging',
+    description: 'Deploy to staging',
+    skill: '# Deploy',
+    scripts: [],
+    sessionIds: ['sess-1', 'sess-2'],
+    ...over
+  })
+  const proposalWith = (skills: unknown[]) => JSON.stringify({ index: '# Memory', files: [], skills })
+
+  async function mine(opts: { store?: FakeStore; proposal?: string } = {}) {
+    const store = opts.store ?? new TwoSession()
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    ensureMemory(dir, 'bot')
+    const prompts: string[] = []
+    const runner = new DreamRunner({
+      agentDirByAgent: () => dir,
+      dreamingPolicyFor: () => ({ enabled: true, mineSkills: true }),
+      store,
+      extract: async (_a, _s, prompt) => {
+        prompts.push(prompt)
+        return { output: opts.proposal ?? proposalWith([candidate()]), trustedChannel: false }
+      },
+      log: silent
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    const done = await settle(store, started.dreamId)
+    return { dir, runner, store, prompts, dreamId: started.dreamId, done }
+  }
+
+  it('feeds tool titles into the mining prompt, and never tool bodies', async () => {
+    // A procedure expressed only through repeated commands is invisible in
+    // conversational text — the miner must see the trajectory.
+    const store = new TwoSession()
+    store.rows = [{ sender: 'user-1', text: 'ship it' }]
+    store.toolRows = [{ sender: 'agent', text: 'Bash(npm run deploy)', kind: 'tool' }]
+    const { prompts } = await mine({ store })
+    expect(prompts[0]).toContain('[tool] Bash(npm run deploy)')
+    expect(prompts[0]).toContain('ship it')
+  })
+
+  it('does not read tool rows at all when mining is off', async () => {
+    const store = new TwoSession()
+    store.toolRows = [{ sender: 'agent', text: 'Bash(secret-y thing)', kind: 'tool' }]
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    ensureMemory(dir, 'bot')
+    const prompts: string[] = []
+    const runner = new DreamRunner({
+      agentDirByAgent: () => dir,
+      dreamingPolicyFor: () => ({ enabled: true }), // mining off
+      store,
+      extract: async (_a, _s, prompt) => {
+        prompts.push(prompt)
+        return { output: PROPOSAL, trustedChannel: false }
+      },
+      log: silent
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+    expect(prompts[0]).not.toContain('Bash(')
+  })
+
+  it('keeps the candidate reviewable rather than half-accepting it', async () => {
+    // Acceptance is deferred (see skillAccept), so the daemon must not leave a
+    // half-applied state behind: the candidate stays `proposed` and staged.
+    const { runner, dreamId } = await mine()
+    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).rejects.toThrow(/not available yet/)
+    const staged = await runner.stagedSkill('a1', dreamId, 'deploy-staging')
+    expect(staged?.skill).toContain('name: deploy-staging')
+  })
+
+  it('keeps a still-proposed candidate reviewable after the store proposal is discarded', async () => {
+    const { runner, dreamId } = await mine()
+    await runner.discard('a1', dreamId)
+    // The store staging is gone, but the unreviewed recommendation is not.
+    expect(await runner.stagedFiles('a1', dreamId)).toBeNull()
+    expect(await runner.stagedSkill('a1', dreamId, 'deploy-staging')).not.toBeNull()
+    // It remains reviewable (dismissable) rather than being destroyed with the
+    // store proposal — the independent lifecycle §7 requires.
+    const after = await runner.skillDismiss('a1', dreamId, 'deploy-staging')
+    expect(after.skills?.[0]).toMatchObject({ state: 'dismissed' })
+    // Once nothing is left to review, the staging is finally swept.
+    expect(await runner.stagedSkill('a1', dreamId, 'deploy-staging')).toBeNull()
+  })
+
+  it('encodes a punctuation-heavy description as a YAML scalar, not raw text', async () => {
+    // `Deploy: staging` interpolated raw is invalid YAML; `[a]`/`{x: y}` would
+    // parse as a different TYPE than the description the reviewer approved.
+    const { runner, dreamId } = await mine({
+      proposal: proposalWith([candidate({ description: 'Deploy: staging [fast] {mode: x} # note\nsecond line' })])
+    })
+    const staged = await runner.stagedSkill('a1', dreamId, 'deploy-staging')
+    const frontmatter = staged!.skill.split('---')[1]!
+    const parsed = parseYaml(frontmatter) as { name: string; description: string }
+    expect(parsed.name).toBe('deploy-staging')
+    expect(typeof parsed.description).toBe('string')
+    expect(parsed.description).toBe('Deploy: staging [fast] {mode: x} # note second line')
+  })
+
+  it('tells the next dream not to re-propose a dismissed candidate', async () => {
+    const store = new TwoSession()
+    const first = await mine({ store })
+    await first.runner.skillDismiss('a1', first.dreamId, 'deploy-staging')
+
+    const second = await first.runner.start('a1', { trigger: 'manual' })
+    await settle(store, second.dreamId)
+    expect(first.prompts.at(-1)).toContain('Previously declined skills')
+    expect(first.prompts.at(-1)).toContain('deploy-staging')
+  })
+})
+
+describe('dreamTranscriptText tool rows (real LocalStore)', () => {
+  const CH = 'C1'
+  const TH = 'T1'
+  const TS = '2026-07-26T00:00:00.000Z'
+
+  function storeWithPeerToolRow() {
+    const store = new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-tt-')), 'local.sqlite'))
+    // A shared-thread message DELIVERED to our agent…
+    store.appendTranscript({
+      channel: CH,
+      thread: TH,
+      ts: TS,
+      sender: 'user-1',
+      kind: 'text',
+      text: 'ship it',
+      recipient: 'me'
+    })
+    // …and a PEER's private tool row that happens to share the same ts. Internal
+    // rows are not deduped by ts, so this collision is ordinary, not contrived.
+    store.insertToolCall({
+      channel: CH,
+      thread: TH,
+      ts: TS,
+      sender: 'peer-agent',
+      toolCallId: 'tc-peer',
+      title: 'Bash(peer-secret-command)',
+      body: JSON.stringify({ rawInput: 'peer-secret-command --token hunter2', rawOutput: 'peer output' })
+    })
+    // Our own tool row.
+    store.insertToolCall({
+      channel: CH,
+      thread: TH,
+      ts: '2026-07-26T00:00:01.000Z',
+      sender: 'me',
+      toolCallId: 'tc-mine',
+      title: 'Bash',
+      body: JSON.stringify({ rawInput: 'npm run deploy --prod', rawOutput: 'lots of build output' })
+    })
+    return store
+  }
+
+  it('never returns a peer-private tool row via the shared delivery table', () => {
+    const store = storeWithPeerToolRow()
+    const rows = store.dreamTranscriptText(CH, TH, 'me', 100, true)
+    const text = rows.map((r) => `${r.text} ${r.input ?? ''}`).join('\n')
+    expect(text).not.toContain('peer-secret-command')
+    expect(text).not.toContain('hunter2')
+    // Our own rows are still there — the guard must not over-filter.
+    expect(text).toContain('ship it')
+    expect(text).toContain('npm run deploy --prod')
+    store.close()
+  })
+
+  it('carries a bounded rawInput so a generic title still identifies the command', () => {
+    const store = storeWithPeerToolRow()
+    const mine = store.dreamTranscriptText(CH, TH, 'me', 100, true).find((r) => r.kind === 'tool')
+    expect(mine?.text).toBe('Bash') // the title alone says nothing
+    expect(mine?.input).toBe('npm run deploy --prod')
+    // rawOutput is the bulk/secret-bearing half and never leaves the store.
+    expect(JSON.stringify(mine)).not.toContain('build output')
+    store.close()
+  })
+
+  it('omits tool rows entirely when mining is off', () => {
+    const store = storeWithPeerToolRow()
+    const rows = store.dreamTranscriptText(CH, TH, 'me', 100)
+    expect(rows.every((r) => r.kind !== 'tool')).toBe(true)
+    expect(rows.map((r) => r.text)).toContain('ship it')
+    store.close()
   })
 })

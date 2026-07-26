@@ -4,6 +4,10 @@ import { dirname } from 'node:path'
 import type { DreamInfo, SessionImageAttachment } from '@agentconnect.md/protocol'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 
+/** Per-tool-row rawInput budget in the mining prompt — enough for a command
+ *  line or path, short enough that N tool rows can't crowd out the store. */
+const DREAM_TOOL_INPUT_CHARS = 300
+
 // node:sqlite binds named params as a generic Record and returns rows as
 // Record<string, SQLOutputValue>; our row interfaces map by column name but have
 // no index signature, so we widen at the DB boundary.
@@ -1497,24 +1501,71 @@ export class LocalStore {
 
   /** Chronological conversational text of one session thread, scoped like
    *  `transcriptPageForAgent` (a peer's private rows never enter a dream). */
+  /**
+   * Rows for one session thread. `includeTools` additionally returns tool
+   * TITLES — the ACP `title` (e.g. `Bash(npm run deploy)`), which carries the
+   * command or path. It never returns the tool `body`: that holds rawOutput as
+   * well as rawInput, and raw output is where secrets and bulk noise live
+   * (design §4). Skill mining needs the trajectory, not the payloads.
+   */
+  /**
+   * A bounded, single-line summary of a tool row's `rawInput` — the command or
+   * path the agent ran. Reads ONLY `rawInput`: `rawOutput` and `content` are the
+   * bulk/secret-bearing halves of the body and never reach a prompt.
+   */
+  private static toolRawInput(body: string | null | undefined): string | undefined {
+    if (!body) return undefined
+    let parsed: { rawInput?: unknown }
+    try {
+      parsed = JSON.parse(body) as { rawInput?: unknown }
+    } catch {
+      return undefined
+    }
+    const raw = parsed.rawInput
+    if (raw === undefined || raw === null) return undefined
+    const text = typeof raw === 'string' ? raw : JSON.stringify(raw)
+    if (!text) return undefined
+    const flat = text.replace(/[\r\n]+/g, ' ').trim()
+    return flat.length > DREAM_TOOL_INPUT_CHARS ? `${flat.slice(0, DREAM_TOOL_INPUT_CHARS)}…` : flat
+  }
+
   dreamTranscriptText(
     channel: string,
     thread: string,
     agentId: string,
-    limit: number
-  ): { sender: string; text: string }[] {
+    limit: number,
+    includeTools = false
+  ): { sender: string; text: string; kind?: string }[] {
     const rows = this.db
       .prepare(
-        `SELECT sender, text FROM transcript
-         WHERE channel = ? AND thread = ? AND kind = 'text'
-           AND (sender = ? OR recipient = ? OR EXISTS (
+        // SECURITY: gate the delivery-table match on `kind = 'text'`, exactly as
+        // the session-history query does. Internal rows (tool/reasoning) are NOT
+        // deduped by ts and can share a ts with a delivered text row, so an
+        // ungated EXISTS would pull a PEER's private tool title into this agent's
+        // mining prompt. Deliveries only ever concern conversational messages;
+        // this agent's own tool rows still surface through `sender`.
+        `SELECT sender, text, kind, body FROM transcript
+         WHERE channel = ? AND thread = ? AND kind ${includeTools ? "IN ('text','tool')" : "= 'text'"}
+           AND (sender = ? OR recipient = ? OR (transcript.kind = 'text' AND EXISTS (
              SELECT 1 FROM transcript_recipient tr
              WHERE tr.channel = transcript.channel AND tr.thread = transcript.thread
-               AND tr.ts = transcript.ts AND tr.agentId = ?))
+               AND tr.ts = transcript.ts AND tr.agentId = ?)))
+           AND NOT (kind = 'tool' AND text IN (?, ?))
          ORDER BY seq DESC LIMIT ?`
       )
-      .all(channel, thread, agentId, agentId, agentId, limit) as { sender: string; text: string }[]
-    return rows.reverse()
+      .all(channel, thread, agentId, agentId, agentId, ...SESSION_TITLE_TOOL_TITLES, limit) as {
+      sender: string
+      text: string
+      kind?: string
+      body?: string | null
+    }[]
+    // Tool rows carry the title plus a BOUNDED rawInput (the command or path),
+    // which a generic title like "Bash" would otherwise lose. rawOutput is never
+    // read: it is the bulk/secret-bearing half of the body (design §4).
+    return rows.reverse().map((row) => {
+      if (row.kind !== 'tool') return { sender: row.sender, text: row.text, kind: row.kind }
+      return { sender: row.sender, text: row.text, kind: row.kind, input: LocalStore.toolRawInput(row.body) }
+    })
   }
 
   appendTranscript(e: TranscriptEntry): void {
