@@ -105,9 +105,8 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
 
   return (
     <div className="card overflow-hidden max-desktop:rounded-lg desktop:max-w-[760px]">
-      <div className="flex items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:py-[13px]">
-        <span className="font-sans text-[14px] font-semibold leading-normal">Skills</span>
-        <span className="mono text-[11px] text-(--text-tertiary)">installed via npx skills · before session start</span>
+      <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal desktop:py-[13px]">
+        Skills
       </div>
 
       {skillSources.length === 0 && orphaned.length === 0 ? (

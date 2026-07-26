@@ -117,9 +117,8 @@ export function AgentToolsCard({
 
   return (
     <div className="card overflow-hidden max-desktop:rounded-lg desktop:max-w-[760px]">
-      <div className="flex items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:py-[13px]">
-        <span className="font-sans text-[14px] font-semibold leading-normal">Tools</span>
-        <span className="mono text-[11px] text-(--text-tertiary)">MCP servers · attached at session start</span>
+      <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal desktop:py-[13px]">
+        Tools
       </div>
       {servers.length > 0 || unknown.length > 0 ? (
         <div>
