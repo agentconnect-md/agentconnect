@@ -2162,6 +2162,7 @@ export async function updateAgent(agentId: string, patch: UpdateAgentInput): Pro
 export interface AgentPermissionRequestDto {
   id: string
   agentId: string
+  sessionId?: string
   createdAt: string
   requesterId: string | null
   requesterName: string | null

@@ -1069,6 +1069,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         {
           id: requestId,
           agentId,
+          sessionId: 'session-1',
           createdAt: new Date(100).toISOString(),
           requesterId: 'user-1',
           requesterName: 'Ada',
@@ -1091,6 +1092,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       requests: [
         expect.objectContaining({
           id: requestId,
+          sessionId: 'session-1',
           requesterName: 'Ada',
           command: 'Bash: pnpm test',
           status: 'pending'

@@ -21,16 +21,13 @@ import {
 } from '@/lib/data'
 import {
   creatorLabel,
-  decideAgentPermissionRequest,
   fetchAgentHooks,
-  fetchAgentPermissionRequests,
   fetchAgentRepos,
   fetchGithubInstallations,
   fetchHookRuns,
   updateGithubHook,
   uploadAgentIcon,
   type GithubInstallationDto,
-  type AgentPermissionRequestDto,
   type HookDto,
   type HookRunDto
 } from '@/lib/api'
@@ -45,6 +42,7 @@ import { AgentSecretsCard } from '@/components/console/AgentSecretsCard'
 import { AgentToolsCard } from '@/components/console/AgentToolsCard'
 import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
+import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { IntegrationChannelList } from '@/components/console/IntegrationChannelList'
 import { discordBotInviteUrl } from '@/lib/discord-invite'
 import { WorkspaceCard, type WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
@@ -123,50 +121,6 @@ export default function AgentDetailView() {
     useConsoleData()
   const { openPlayground } = usePlayground()
   const { openModal } = useModal()
-  const approvalAgent = getAgent(id)
-  const approvalRequestsKey =
-    !MOCK_MODE && approvalAgent?.canManageSharing && !approvalAgent.name.startsWith(MOCK_PREFIX)
-      ? consoleKeys.agentPermissionRequests(activeOrg?.id, id)
-      : null
-  const {
-    data: approvalRequests,
-    error: approvalRequestsError,
-    isLoading: approvalRequestsLoading,
-    mutate: mutateApprovalRequests
-  } = useSWR<AgentPermissionRequestDto[]>(
-    approvalRequestsKey,
-    ([, , , agentId]) => fetchAgentPermissionRequests(agentId as string),
-    { refreshInterval: 3_000, shouldRetryOnError: false }
-  )
-  const [approvalBusy, setApprovalBusy] = useState<string | null>(null)
-  const [approvalError, setApprovalError] = useState<string | null>(null)
-
-  const decideApproval = async (request: AgentPermissionRequestDto, decision: 'allow' | 'deny') => {
-    if (approvalBusy || request.status !== 'pending') return
-    setApprovalBusy(`${request.id}:${decision}`)
-    setApprovalError(null)
-    try {
-      await decideAgentPermissionRequest(id, request.id, decision)
-      void mutateApprovalRequests(
-        (rows) =>
-          rows?.map((row) =>
-            row.id === request.id
-              ? {
-                  ...row,
-                  status: decision === 'allow' ? ('allowed' as const) : ('denied' as const),
-                  resolvedAt: new Date().toISOString()
-                }
-              : row
-          ),
-        { revalidate: false }
-      )
-    } catch {
-      setApprovalError('This approval request could not be updated. Try again.')
-      void mutateApprovalRequests()
-    } finally {
-      setApprovalBusy(null)
-    }
-  }
   // Which webhook row has its recent-deliveries panel expanded (one at a time).
   const [hookRunsFor, setHookRunsFor] = useState<string | null>(null)
   // Hooks are agent-scoped (no org-wide list). Keep a stable resource key so a
@@ -1065,85 +1019,7 @@ export default function AgentDetailView() {
             </div>
 
             {da.canManageSharing && !da.name.startsWith(MOCK_PREFIX) && (
-              <div className="card order-7 overflow-hidden max-desktop:rounded-lg">
-                <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
-                  <span className="font-sans text-[14px] font-semibold leading-normal">Approval requests</span>
-                  {!!approvalRequests?.filter((request) => request.status === 'pending').length && (
-                    <span className="badge bg-(--amber-50) text-(--amber-600)">
-                      {approvalRequests.filter((request) => request.status === 'pending').length} pending
-                    </span>
-                  )}
-                </div>
-                {approvalRequestsLoading ? (
-                  <div className="px-4 py-5 font-sans text-[13px] text-(--text-tertiary)">Loading requests…</div>
-                ) : approvalRequestsError && approvalRequests === undefined ? (
-                  <div className="px-4 py-5 font-sans text-[13px] text-(--text-tertiary)">
-                    Approval requests are temporarily unavailable.
-                  </div>
-                ) : approvalRequests?.length ? (
-                  <div>
-                    {approvalRequests.map((request, index) => {
-                      const allowBusy = approvalBusy === `${request.id}:allow`
-                      const denyBusy = approvalBusy === `${request.id}:deny`
-                      return (
-                        <div
-                          key={request.id}
-                          className={`flex flex-col gap-3 px-4 py-3 desktop:flex-row desktop:items-center ${
-                            index > 0 ? 'border-t border-(--border-subtle)' : ''
-                          }`}
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                              <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                                {request.requesterName ?? request.requesterId ?? 'Unknown user'}
-                              </span>
-                              <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                                {formatApprovalTime(request.createdAt)}
-                              </span>
-                              {request.status !== 'pending' && (
-                                <span className="badge bg-(--surface-active) text-(--text-tertiary)">
-                                  {request.status}
-                                </span>
-                              )}
-                            </div>
-                            <div className="mt-1 break-words font-mono text-[12px] leading-[1.5] text-(--text-secondary)">
-                              {request.command}
-                            </div>
-                          </div>
-                          {request.status === 'pending' && (
-                            <div className="flex flex-none items-center gap-2">
-                              <Button
-                                variant="secondary"
-                                size="xs"
-                                disabled={approvalBusy !== null}
-                                onClick={() => void decideApproval(request, 'deny')}
-                              >
-                                {denyBusy ? 'Denying…' : 'Deny'}
-                              </Button>
-                              <Button
-                                size="xs"
-                                disabled={approvalBusy !== null}
-                                onClick={() => void decideApproval(request, 'allow')}
-                              >
-                                {allowBusy ? 'Allowing…' : 'Allow'}
-                              </Button>
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
-                ) : (
-                  <div className="px-4 py-5 font-sans text-[13px] text-(--text-tertiary)">
-                    No approval requests yet.
-                  </div>
-                )}
-                {approvalError && (
-                  <div className="border-t border-(--border-subtle) px-4 py-3 font-sans text-[12px] text-(--red-600)">
-                    {approvalError}
-                  </div>
-                )}
-              </div>
+              <ApprovalRequestsCard agentId={da.id} className="order-7 max-desktop:rounded-lg" />
             )}
           </div>
         </div>
@@ -1846,17 +1722,6 @@ function UnauthorizedWatchBadge() {
       write-back unauthorized
     </span>
   )
-}
-
-function formatApprovalTime(iso: string): string {
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return iso
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  }).format(date)
 }
 
 // "3m ago" for a hook's last-fired stamp and its delivery rows.

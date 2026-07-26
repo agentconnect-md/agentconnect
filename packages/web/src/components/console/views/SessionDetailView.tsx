@@ -15,6 +15,7 @@ import {
   lane,
   modelCapability,
   modelLabel,
+  MOCK_PREFIX,
   permissionModeLabel,
   pgPrompts,
   platName,
@@ -53,6 +54,7 @@ import { sessionSenderLabel } from '@/lib/session-trigger'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
+import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import {
   sessionEffortAfterModelChange,
   sessionEffortChoicesForSelection,
@@ -1299,6 +1301,15 @@ export default function SessionDetailView() {
             </span>
           ))}
         </div>
+      )}
+
+      {owner?.canManageSharing && !owner.name.startsWith(MOCK_PREFIX) && session.agentId && (
+        <ApprovalRequestsCard
+          agentId={session.agentId}
+          sessionId={session.realSessionId ?? session.id}
+          hideWhenEmpty
+          className="mx-4 mt-4 max-desktop:rounded-lg desktop:mx-0 desktop:mt-0 desktop:mb-4"
+        />
       )}
 
       {wantTranscript && msgLoading && (

@@ -9658,7 +9658,7 @@ export class Daemon {
     })
 
     if (!notifyChat) return
-    const text = '🔒 Permission requested. Ask an Agent editor to allow it from the Agent page.'
+    const text = '🔒 Permission requested. Ask an Agent editor to allow it from the Agent or Session page.'
     try {
       if (p.webchat) {
         p.webchat.sink.output({
@@ -11965,6 +11965,7 @@ export class Daemon {
         requests: this.store.listPermissionRequests(agentId, limit).map((request) => ({
           id: request.id,
           agentId: request.agentId,
+          sessionId: request.sessionId,
           createdAt: new Date(request.createdAt).toISOString(),
           requesterId: request.requesterId,
           requesterName: request.requesterName,
