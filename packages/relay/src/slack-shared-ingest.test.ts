@@ -58,6 +58,37 @@ describe('parseSharedSlackSessionAction', () => {
     })
   })
 
+  it('carries the tapping user through, and leaves it absent when the payload has none', () => {
+    const withUser = parseSharedSlackSessionAction(
+      body(SLACK_STATUS_ACTION.setModel, {
+        user: { id: 'U-ALICE' },
+        actions: [
+          {
+            action_id: SLACK_STATUS_ACTION.setModel,
+            action_ts: '1720000000.000200',
+            selected_option: { value: 'opus' }
+          }
+        ]
+      })
+    )
+    expect(withUser).toMatchObject({ kind: 'set-model', model: 'opus', userId: 'U-ALICE' })
+
+    // A payload without `user` yields no key at all — never an empty or invented id.
+    const withoutUser = parseSharedSlackSessionAction(
+      body(SLACK_STATUS_ACTION.setModel, {
+        actions: [
+          {
+            action_id: SLACK_STATUS_ACTION.setModel,
+            action_ts: '1720000000.000200',
+            selected_option: { value: 'opus' }
+          }
+        ]
+      })
+    )
+    expect(withoutUser).toMatchObject({ kind: 'set-model', model: 'opus' })
+    expect(withoutUser).not.toHaveProperty('userId')
+  })
+
   it('parses Session options and Cancel from the compact overflow', () => {
     const manage = parseSharedSlackSessionAction(
       body(SLACK_STATUS_ACTION.more, {

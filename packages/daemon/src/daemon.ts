@@ -60,6 +60,7 @@ import {
   consolidate,
   consolidateShared,
   SlackConnection,
+  type InteractionActor,
   type SlackPostOptions,
   type SlackStatusOptions
 } from './slack/connection.js'
@@ -3891,6 +3892,17 @@ export class Daemon {
     }
   }
 
+  /**
+   * Record who drove one chat-side session action. The platform interaction is the only
+   * place the acting user exists — the session key alone says what changed, never by whom —
+   * so it is logged at every funnel point. `unknown` when an ingress could not report an
+   * actor (today: relay-forwarded Slack actions, whose frame carries no user).
+   */
+  private logSessionAction(verb: string, sessionKey: string, actor?: InteractionActor): void {
+    const who = actor ? `${actor.userId}${actor.isBot ? ' (bot)' : ''}` : 'unknown'
+    this.log.info(`session ${sessionKey}: "${verb}" by ${who}`)
+  }
+
   /** Resolve a session only while its Agent explicitly permits chat-side runtime changes. */
   private chatRuntimeSession(key: string) {
     const rec = this.store.getSession(key)
@@ -3921,14 +3933,15 @@ export class Daemon {
 
   /** Cancel the in-flight turn for a local session key — the `!cancel` core (interrupt,
    *  NO mute) shared by the Slack status-bar Cancel button. No-op if nothing is running. */
-  private cancelSessionByKey(key: string): void {
+  private cancelSessionByKey(key: string): boolean {
     const rec = this.store.getSession(key)
     // Cancel a gate-owned/queued session even if it has no live ACP turn yet (§6.9 #390):
     // interruptTurn drains the queue by key and cancels the ACP turn only if one exists.
-    if (!this.inflight.has(key)) return
+    if (!this.inflight.has(key)) return false
     const agentId = rec?.agentId ?? this.serialQueue.get(key)?.[0]?.agentId
-    if (!agentId) return
+    if (!agentId) return false
     this.interruptTurn(agentId, key, 'cancel', rec?.acpSessionId ?? undefined)
+    return true // reports whether a turn was actually interrupted (nothing else reads it)
   }
 
   /** Switch a session's reasoning effort by its local key — the effort counterpart of
@@ -4051,11 +4064,12 @@ export class Daemon {
   /** Set a session's Slack output verbosity by its local key. Purely daemon-side (no ACP):
    *  the next turn's OutputConverger reads this override, so an in-flight turn keeps its
    *  current verbosity and the change takes effect from the next turn. */
-  private setOutputModeByKey(key: string, mode: 'none' | 'minimal' | 'low' | 'medium' | 'high'): void {
-    if (!this.store.getSession(key)) return
+  private setOutputModeByKey(key: string, mode: 'none' | 'minimal' | 'low' | 'medium' | 'high'): boolean {
+    if (!this.store.getSession(key)) return false
     this.store.setOutputModeOverride(key, mode)
     this.log.info(`session ${key} output-mode override → "${mode}"`)
     this.refreshStatusBarForKey(key)
+    return true // reports whether the override was recorded (nothing else reads it)
   }
 
   /** Handle a webchat cancel (the relay `cancel` op / status-bar "Cancel"). Interrupts
@@ -4268,6 +4282,9 @@ export class Daemon {
     }
 
     const payload = msg.payload
+    // The relay forwards the tapping user when it knows one; an older relay omits it
+    // and the action records as an unknown actor rather than a guessed one.
+    const actor = msg.userId ? { userId: msg.userId } : undefined
     if (payload.kind === 'open-config') {
       const privateMetadata = encodeSharedSlackStatusTarget({
         agentId: msg.agentId,
@@ -4278,25 +4295,26 @@ export class Daemon {
       // connection catches/logs Web API failures; rd/ack is only the relay receipt.
       void conn.openStatusModal(payload.triggerId, msg.sessionKey, privateMetadata)
     } else if (payload.kind === 'set-model') {
-      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, model: payload.model })
+      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, model: payload.model, actor })
     } else if (payload.kind === 'set-effort') {
-      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, effort: payload.effort })
+      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, effort: payload.effort, actor })
     } else if (payload.kind === 'set-permission-mode') {
       this.handleStatusAction({
         kind: payload.kind,
         sessionKey: msg.sessionKey,
-        permissionMode: payload.permissionMode
+        permissionMode: payload.permissionMode,
+        actor
       })
     } else if (payload.kind === 'set-fast') {
-      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, fastMode: payload.fastMode })
+      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, fastMode: payload.fastMode, actor })
     } else if (payload.kind === 'set-output') {
-      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, outputMode: payload.outputMode })
+      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, outputMode: payload.outputMode, actor })
     } else if (payload.kind === 'permission-choice') {
-      this.handlePermissionChoice(payload)
+      this.handlePermissionChoice({ ...payload, actor })
     } else if (payload.kind === 'elicitation-choice') {
       this.handleElicitChoice({ requestId: payload.requestId, value: payload.value })
     } else {
-      this.handleStatusAction({ kind: 'cancel', sessionKey: msg.sessionKey })
+      this.handleStatusAction({ kind: 'cancel', sessionKey: msg.sessionKey, actor })
     }
     return { msgId: msg.msgId, accepted: true }
   }
@@ -5809,24 +5827,31 @@ export class Daemon {
   private handleStatusAction(a: {
     kind: 'set-model' | 'set-effort' | 'set-permission-mode' | 'set-fast' | 'set-output' | 'cancel'
     sessionKey: string
+    actor?: InteractionActor
     model?: string
     effort?: string
     permissionMode?: string
     fastMode?: boolean
     outputMode?: 'none' | 'minimal' | 'low' | 'medium' | 'high'
   }): void {
-    if (a.kind === 'cancel') this.cancelSessionByKey(a.sessionKey)
+    // A status-bar tap carries no author in the transcript, so the operator behind a
+    // cancelled turn or a switched model is otherwise unrecoverable. Record it here,
+    // at the one point every ingress funnels through — but only when the verb actually
+    // applied, so a refused or no-op click never reads as a change someone made.
+    let applied = false
+    if (a.kind === 'cancel') applied = this.cancelSessionByKey(a.sessionKey)
     else if (a.kind === 'set-model') {
-      if (a.model) this.setModelByKey(a.sessionKey, a.model)
+      if (a.model) applied = this.setModelByKey(a.sessionKey, a.model)
     } else if (a.kind === 'set-effort') {
-      if (a.effort) this.setEffortByKey(a.sessionKey, a.effort)
+      if (a.effort) applied = this.setEffortByKey(a.sessionKey, a.effort)
     } else if (a.kind === 'set-permission-mode') {
-      if (a.permissionMode) this.setPermissionModeByKey(a.sessionKey, a.permissionMode)
+      if (a.permissionMode) applied = this.setPermissionModeByKey(a.sessionKey, a.permissionMode)
     } else if (a.kind === 'set-fast') {
-      if (a.fastMode !== undefined) this.setFastByKey(a.sessionKey, a.fastMode)
+      if (a.fastMode !== undefined) applied = this.setFastByKey(a.sessionKey, a.fastMode)
     } else if (a.kind === 'set-output') {
-      if (a.outputMode) this.setOutputModeByKey(a.sessionKey, a.outputMode)
+      if (a.outputMode) applied = this.setOutputModeByKey(a.sessionKey, a.outputMode)
     }
+    if (applied) this.logSessionAction(a.kind, a.sessionKey, a.actor)
   }
 
   /**
@@ -5840,6 +5865,7 @@ export class Daemon {
     kind: SelectKind
     index: number
     sessionKey: string
+    actor?: InteractionActor
   }): { text: string; components: DiscordComponents } | undefined {
     const rec = this.store.getSession(a.sessionKey)
     if (!rec) return undefined
@@ -5847,7 +5873,10 @@ export class Daemon {
     const { options } = this.selectOptions(a.kind, info)
     const value = options[a.index]
     if (value === undefined) return undefined
-    this.applySelect(a.kind, a.sessionKey, value)
+    // Recorded only once the choice actually applied — a refused or stale select
+    // changes nothing and must not read as though someone had changed it. The card is
+    // still re-rendered either way, as before.
+    if (this.applySelect(a.kind, a.sessionKey, value)) this.logSessionAction(`select:${a.kind}`, a.sessionKey, a.actor)
     const components = buildDiscordSelectComponents(a.kind, value, options)
     if (!components) return undefined
     return { text: this.selectCardText(a.kind, value), components }
@@ -6490,6 +6519,9 @@ export class Daemon {
       return
     }
     if (!this.applySelect(kind, session.key, value)) return
+    // Telegram names the tapping user on the callback itself; record only the applied
+    // change, matching the other funnels.
+    this.logSessionAction(`select:${kind}`, session.key, { userId: cb.userId })
     void conn.answerCallback(cb.id, `${this.selectLabel(kind)} → ${value}`)
     const { text, buttons } = this.buildSelectCard(kind, value, options)
     void conn.editCard(cb.channel, cb.messageId, text, buttons)
@@ -9859,10 +9891,12 @@ export class Daemon {
     return { ok: true }
   }
 
-  private handlePermissionChoice(input: { requestId: string; optionId: string }): void {
+  private handlePermissionChoice(input: { requestId: string; optionId: string; actor?: InteractionActor }): void {
     const pending = this.pendingChatPermissions.get(input.requestId)
     if (!pending) return
     if (this.agents.get(pending.agentId)?.allowRuntimeChangesInChat !== true) {
+      // Refused, so it decided nothing — recorded as an attempt, never as the decision.
+      this.logSessionAction(`permission:${input.optionId} (refused)`, pending.sessionId, input.actor)
       if (pending.ts) {
         void pending.conn
           .updateBlocks(
@@ -9880,6 +9914,10 @@ export class Daemon {
     if (!option) return
     const allowed = option.kind === 'allow_once' || option.kind === 'allow_always'
     if (!this.resolveStoredPermissionRequest(pending.agentId, input.requestId, allowed ? 'allowed' : 'denied')) return
+    // Only now is this click the decision: the guard passed, the option was real, and
+    // the request resolved. Logging any earlier would attribute a tool call to someone
+    // whose click changed nothing.
+    this.logSessionAction(`permission:${allowed ? 'allowed' : 'denied'}`, pending.sessionId, input.actor)
     this.pendingChatPermissions.delete(input.requestId)
     this.permissionEvaluationDetails.set(pending.evaluationParams, { reason: 'chat_user' })
     if (pending.ts) {

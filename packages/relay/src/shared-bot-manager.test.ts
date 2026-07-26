@@ -151,6 +151,29 @@ describe('SharedBotManager shared Slack session actions', () => {
     expect(first.msgId).toMatch(/^slack-action:[a-f0-9]{64}$/)
   })
 
+  it('forwards the tapping user, and omits it entirely when the interaction named none', () => {
+    const sendMsg = vi.fn(async (msg: RdMsgSlackAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
+    const daemon = { sendMsg } as unknown as RelayDaemonConnection
+    const manager = new SharedBotManager(
+      deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
+    )
+    const internals = manager as unknown as ManagerInternals
+    internals.router.upsert(assignment())
+
+    const attributed = action({ userId: 'U-ALICE' })
+    internals.forwardSessionAction(BOT_ID, attributed)
+    internals.forwardSessionAction(BOT_ID, action())
+
+    const [withUser, withoutUser] = sendMsg.mock.calls.map((c) => c[0])
+    expect(withUser!.userId).toBe('U-ALICE')
+    // The frame must carry no key at all rather than an empty/guessed actor.
+    expect(withoutUser).not.toHaveProperty('userId')
+    // The actor is not part of the interaction's identity, so dedup is unchanged.
+    expect(withUser!.msgId).toBe(withoutUser!.msgId)
+    // …and it never leaks into the verb payload.
+    expect(withUser!.payload).toEqual({ kind: 'set-model', model: 'opus-4.8' })
+  })
+
   it('uses distinct ids for distinct selected values even if receipt metadata is reused', () => {
     expect(sharedSlackActionMsgId(BOT_ID, action({ model: 'opus-4.8' }))).not.toBe(
       sharedSlackActionMsgId(BOT_ID, action({ model: 'sonnet-5' }))

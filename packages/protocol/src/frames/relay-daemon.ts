@@ -199,6 +199,10 @@ export const RdMsgSlackAction = z.object({
   msgId: z.string().min(1),
   botId: z.string().uuid(),
   integrationId: z.string().uuid(),
+  // The platform user who tapped it, so a shared-bot session change is attributable
+  // the way a direct connection's already is. Optional for rolling compatibility with
+  // an older relay: absent records as an unknown actor, never a fabricated one.
+  userId: z.string().min(1).optional(),
   payload: RdSlackAction
 })
 export type RdMsgSlackAction = z.infer<typeof RdMsgSlackAction>
