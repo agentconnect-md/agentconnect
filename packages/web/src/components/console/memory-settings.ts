@@ -1,4 +1,5 @@
 import type { AgentMemoryConfig, MemoryDreamingConfig } from '@/lib/api'
+import { cronHuman, isIanaTimezone } from '@/lib/cron'
 import {
   DEFAULT_EXTERNAL_MEMORY_BINDING,
   type ExternalMemoryBindingDraft
@@ -129,10 +130,32 @@ export function memoryBackendChanged(persisted: MemorySettingsDraft, draft: Memo
   return draft.provider === 'external' && persisted.external.connectionId !== draft.external.connectionId
 }
 
+/**
+ * Why a managed dreaming schedule can't be saved, or null.
+ *
+ * The wire schema only bounds these as strings, and the daemon's DreamScheduler
+ * CATCHES the Croner error and skips installing the job — so an invalid cron or
+ * timezone saves "successfully" and then silently never fires. The console is
+ * the only place that can tell the user, so it has to refuse the save.
+ */
+export function dreamingScheduleBlocker(draft: DreamingDraft): string | null {
+  const schedule = draft.schedule?.trim() ?? ''
+  if (!draft.enabled || !schedule) return null // manual-only: nothing to validate
+  if (!cronHuman(schedule)) return 'That dreaming schedule is not a valid cron expression.'
+  const timezone = draft.timezone?.trim() ?? ''
+  // Empty is legitimate — it means "the daemon host's zone".
+  if (timezone && !isIanaTimezone(timezone)) {
+    return 'That dreaming timezone is not a known IANA timezone (for example America/New_York).'
+  }
+  return null
+}
+
 export function memorySettingsBlocker(draft: MemorySettingsDraft): string | null {
-  return draft.provider === 'external' && !draft.external.connectionId
-    ? 'Choose an external-memory connection before saving.'
-    : null
+  if (draft.provider === 'external' && !draft.external.connectionId) {
+    return 'Choose an external-memory connection before saving.'
+  }
+  if (draft.provider === 'managed') return dreamingScheduleBlocker(draft.dreaming)
+  return null
 }
 
 export function memoryConfigForDraft(draft: MemorySettingsDraft): AgentMemoryConfig {
