@@ -22,4 +22,29 @@ describe('diffLines', () => {
       { kind: 'delete', text: 'two', oldLine: 2 }
     ])
   })
+
+  it('preserves EOF-newline-only changes with Git-style markers', () => {
+    expect(diffLines('alpha', 'alpha\n')).toEqual([
+      { kind: 'delete', text: 'alpha', oldLine: 1 },
+      { kind: 'meta', text: 'No newline at end of file', eofSide: 'old' },
+      { kind: 'add', text: 'alpha', newLine: 1 }
+    ])
+    expect(diffLines('alpha\n', 'alpha')).toEqual([
+      { kind: 'delete', text: 'alpha', oldLine: 1 },
+      { kind: 'add', text: 'alpha', newLine: 1 },
+      { kind: 'meta', text: 'No newline at end of file', eofSide: 'new' }
+    ])
+  })
+
+  it('handles a newline-heavy 4 KB snapshot without a quadratic matrix', () => {
+    const before = `a${'\n'.repeat(3_998)}x`
+    const after = `b${'\n'.repeat(3_998)}y`
+
+    const rows = diffLines(before, after)
+
+    expect(rows.filter((row) => row.kind === 'context')).toHaveLength(3_997)
+    expect(rows.filter((row) => row.kind === 'delete').map((row) => row.text)).toEqual(['a', 'x'])
+    expect(rows.filter((row) => row.kind === 'add').map((row) => row.text)).toEqual(['b', 'y'])
+    expect(rows.filter((row) => row.kind === 'meta')).toHaveLength(2)
+  })
 })

@@ -50,9 +50,13 @@ function Snapshot({ label, value, tone }: { label: string; value: string; tone: 
 function HistoryEvent({ event }: { event: MemoryFileHistoryEventDto }) {
   const hasBefore = event.before !== undefined
   const canDiff = hasBefore || event.event === 'add'
+  const [expanded, setExpanded] = useState(false)
 
   return (
-    <details className="group rounded-md border border-(--border-subtle) bg-(--surface-card)">
+    <details
+      className="group rounded-md border border-(--border-subtle) bg-(--surface-card)"
+      onToggle={(toggleEvent) => setExpanded(toggleEvent.currentTarget.open)}
+    >
       <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-3 py-[10px] font-sans [&::-webkit-details-marker]:hidden">
         <Icon
           name="chevron-right"
@@ -72,25 +76,27 @@ function HistoryEvent({ event }: { event: MemoryFileHistoryEventDto }) {
           {formatHistoryTime(event.at)}
         </time>
       </summary>
-      <div className="border-t border-(--border-subtle) p-3">
-        {canDiff ? (
-          <LineDiff before={event.before ?? ''} after={event.after} />
-        ) : (
-          <>
-            <Snapshot label="After" value={event.after} tone="after" />
+      {expanded ? (
+        <div className="border-t border-(--border-subtle) p-3">
+          {canDiff ? (
+            <LineDiff before={event.before ?? ''} after={event.after} />
+          ) : (
+            <>
+              <Snapshot label="After" value={event.after} tone="after" />
+              <div className="mt-2 flex items-start gap-1.5 text-[10.5px] leading-[1.45] text-(--text-tertiary)">
+                <Icon name="info" size={12} className="mt-px flex-none" />
+                The before snapshot was not recorded for this older change.
+              </div>
+            </>
+          )}
+          {event.truncated ? (
             <div className="mt-2 flex items-start gap-1.5 text-[10.5px] leading-[1.45] text-(--text-tertiary)">
               <Icon name="info" size={12} className="mt-px flex-none" />
-              The before snapshot was not recorded for this older change.
+              Long snapshots were shortened when this change was recorded.
             </div>
-          </>
-        )}
-        {event.truncated ? (
-          <div className="mt-2 flex items-start gap-1.5 text-[10.5px] leading-[1.45] text-(--text-tertiary)">
-            <Icon name="info" size={12} className="mt-px flex-none" />
-            Long snapshots were shortened when this change was recorded.
-          </div>
-        ) : null}
-      </div>
+          ) : null}
+        </div>
+      ) : null}
     </details>
   )
 }

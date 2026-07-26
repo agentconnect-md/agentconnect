@@ -100,9 +100,13 @@ describe('ManagedMemoryHistory', () => {
     expect(disclosure?.getAttribute('aria-expanded')).toBe('true')
     expect(mocks.listMemoryFileHistory).toHaveBeenNthCalledWith(1, 'agent-1', 'notes.md', { limit: 5 })
     expect(container.querySelectorAll('details')).toHaveLength(2)
-    expect(container.textContent).toContain('Line changes')
     expect(container.textContent).toContain('Dream adoption')
-    const firstEvent = container.querySelector('details')
+    const firstEvent = container.querySelector('details') as HTMLDetailsElement
+    expect(firstEvent.querySelector('[data-diff-kind]')).toBeNull()
+
+    await act(async () => firstEvent.querySelector('summary')?.click())
+
+    expect(container.textContent).toContain('Line changes')
     expect(
       Array.from(firstEvent?.querySelectorAll('[data-diff-kind]') ?? []).map((row) =>
         row.getAttribute('data-diff-kind')
@@ -119,6 +123,8 @@ describe('ManagedMemoryHistory', () => {
     })
     expect(container.querySelectorAll('details')).toHaveLength(3)
     expect(container.textContent).toContain('Automatic distillation')
+    const oldestEvent = container.querySelectorAll('details')[2]
+    await act(async () => oldestEvent?.querySelector('summary')?.click())
     expect(container.textContent).toContain('Long snapshots were shortened')
   })
 
@@ -161,6 +167,7 @@ describe('ManagedMemoryHistory', () => {
     })
 
     await act(async () => button('Change history')?.click())
+    await act(async () => container?.querySelector<HTMLElement>('details summary')?.click())
 
     expect(container.textContent).toContain('The before snapshot was not recorded for this older change.')
     expect(container.textContent).toContain('# Adopted memory')
