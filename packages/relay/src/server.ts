@@ -44,20 +44,28 @@ function redactingReqSerializer(req: FastifyRequest) {
   }
 }
 
-/** Attach the redacting serializer to whatever logger config the caller passed.
- *  `logger: true` has to be widened to an object to carry serializers at all;
- *  logging switched off stays off (nothing is serialized, nothing to redact). */
+/**
+ * Attach the redacting serializer to whatever logging the caller configured, so no
+ * supported Fastify option can route around it. `logger: true` has to be widened to
+ * an object to carry serializers at all; `loggerInstance` is a pre-built pino whose
+ * serializers were fixed at construction, so it is replaced by a child that redacts
+ * (children inherit into Fastify's own per-request children). Logging switched off
+ * stays off — nothing is serialized, so there is nothing to redact.
+ */
 function withRedactedRequestLog(opts?: FastifyServerOptions): FastifyServerOptions {
   const base = opts ?? { logger: true }
-  if (!base.logger) return base
-  const logger = base.logger === true ? {} : base.logger
-  return {
-    ...base,
-    logger: {
+  const out: FastifyServerOptions = { ...base }
+  if (base.loggerInstance) {
+    out.loggerInstance = base.loggerInstance.child({}, { serializers: { req: redactingReqSerializer } })
+  }
+  if (base.logger) {
+    const logger = base.logger === true ? {} : base.logger
+    out.logger = {
       ...logger,
       serializers: { ...(typeof logger === 'object' ? logger.serializers : {}), req: redactingReqSerializer }
     }
   }
+  return out
 }
 
 export function buildRelayServer(deps: RelayServerDeps, opts?: FastifyServerOptions): FastifyInstance {

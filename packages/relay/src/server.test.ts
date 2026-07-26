@@ -4,6 +4,7 @@
  * trust boundary than the hook's owning org, and a leaked token fires the hook.
  */
 import { describe, it, expect } from 'vitest'
+import Fastify from 'fastify'
 import { buildRelayServer, redactUrl } from './server.js'
 
 const deps = { isReady: () => true, relayId: () => 'relay-1' }
@@ -38,6 +39,23 @@ describe('request-log redaction', () => {
     expect(urls.every((u) => u.startsWith('/webhooks/in/<redacted>'))).toBe(true)
     // The decisive assertion: the raw token is nowhere in the emitted log records.
     expect(JSON.stringify(lines)).not.toContain('whk_secret_value')
+  })
+
+  it('redacts through a caller-supplied logger instance too', async () => {
+    // `loggerInstance` is a SEPARATE Fastify option from `logger`, carrying a pino
+    // whose serializers were fixed at construction — so merging into `logger` alone
+    // would leave this path printing the raw url. Borrowing another Fastify's `log`
+    // gives a realistic instance (default serializers already installed) with no
+    // extra dependency.
+    const lines: unknown[] = []
+    const carrier = Fastify({ logger: { level: 'info', stream: { write: (s: string) => lines.push(JSON.parse(s)) } } })
+    const app = buildRelayServer(deps, { loggerInstance: carrier.log })
+    await app.inject({ method: 'POST', url: '/webhooks/in/whk_secret_value' })
+    await app.close()
+
+    expect(lines.length).toBeGreaterThan(0)
+    expect(JSON.stringify(lines)).not.toContain('whk_secret_value')
+    expect(JSON.stringify(lines)).toContain('/webhooks/in/<redacted>')
   })
 
   it('still serves its probes with logging switched off', async () => {
