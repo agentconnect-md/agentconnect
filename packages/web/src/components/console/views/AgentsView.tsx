@@ -50,15 +50,16 @@ export default function AgentsView() {
   const { agents, daemons, integrations, members, getSessions, usage24h, agentsLoading } = useConsoleData()
   const { me } = useProfile()
   const { openModal } = useModal()
-  // Agent/Daemon/Creator/Repo/Integrations are flex tracks that absorb spare width;
-  // minmax() floors stop the chips and headers from squeezing on narrow windows, and
-  // status / the three usage columns / chevron are fixed px so they never grow past
-  // their content. The usage columns are left-aligned like the rest of the table, so
-  // they get just enough px to seat "Sessions 24h" + its sort caret. (Daemon and Repo
-  // are separate columns so each aligns and ellipsizes on its own — a combined
-  // "daemon · repo" cell truncated the repo whenever the daemon name ran long.)
+  // Agent/Daemon/Repo/Integrations are flex tracks that absorb spare width; Creator is
+  // fixed for its avatar-only rows. minmax() floors stop the chips and headers from
+  // squeezing on narrow windows, and status / the three usage columns / chevron are
+  // fixed px so they never grow past their content. The usage columns are left-aligned
+  // like the rest of the table, so they get just enough px to seat "Sessions 24h" + its
+  // sort caret. (Daemon and Repo are separate columns so each aligns and ellipsizes on
+  // its own — a combined "daemon · repo" cell truncated the repo whenever the daemon
+  // name ran long.)
   const cols =
-    'grid-cols-[minmax(148px,1.6fr)_72px_minmax(80px,.85fr)_minmax(88px,.7fr)_minmax(90px,1.2fr)_minmax(140px,.95fr)_108px_88px_80px_28px]'
+    'grid-cols-[minmax(148px,1.6fr)_72px_minmax(80px,.85fr)_72px_minmax(90px,1.2fr)_minmax(140px,.95fr)_108px_88px_80px_28px]'
   // Resolve an agent's owning daemonId to the daemon's display name (never the raw
   // UUID/host); short id if it's not in the fleet, '—' if unplaced.
   const daemonName = (id: string) =>
@@ -83,8 +84,7 @@ export default function AgentsView() {
     const u = usageByAgent.get(a.id)
     return u ? u.costAmount : parseCompact(a.cost)
   }
-  // Creator name (resolved uniformly with session senders: "You" / member name / '—')
-  // and the owning member for the avatar photo.
+  // Creator names remain available to sorting and assistive text; rows show only avatars.
   const memberById = useMemo(() => new Map(members.map((m) => [m.userId, m])), [members])
   const creatorText = (a: Agent) => creatorLabel(a.createdBy || null, me)
   const repoText = (a: Agent) => (a.workspace.mode === 'github' ? a.repo : 'scratch')
@@ -517,7 +517,7 @@ export default function AgentsView() {
             const runtimeMeta = acpRuntime(acpRegistry, a.runtime)
             const s = status(effectiveAgentStatus(a.status, owning?.status))
             const sessionCount = sessions24h(a.id)
-            // Creator: resolved name ("You" / member / '—') + the member's avatar photo.
+            // Keep the resolved name for sorting, assistive text, and the avatar's hint.
             const creatorName = creatorText(a)
             const creatorMember = a.createdBy ? memberById.get(a.createdBy) : undefined
             // Live integrations owned by this agent (demo rows carry no agentId),
@@ -591,9 +591,7 @@ export default function AgentsView() {
                   {daemonName(a.daemon)}
                 </div>
                 {a.createdBy ? (
-                  // Narrow track (~49px of text): the name truncates here too, so the
-                  // full value is a hint, not a repeat. The column header says CREATOR.
-                  <div className="flex min-w-0 items-center gap-[7px] pr-3" title={creatorName}>
+                  <div className="flex items-center pr-3" title={creatorName}>
                     <Avatar
                       src={creatorMember?.picture}
                       initials={initialsOf(creatorMember ? memberDisplayName(creatorMember) : creatorName)}
@@ -603,9 +601,7 @@ export default function AgentsView() {
                       fg="var(--text-secondary)"
                       style={{ border: '1px solid var(--border-subtle)' }}
                     />
-                    <span className="truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-                      {creatorName}
-                    </span>
+                    <span className="sr-only">Creator: {creatorName}</span>
                   </div>
                 ) : (
                   <div className="mono min-w-0 truncate pr-3 text-[12px] text-(--text-tertiary)">—</div>
