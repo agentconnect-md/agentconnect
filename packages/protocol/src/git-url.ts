@@ -21,11 +21,33 @@ const CONTROL_RE = /[\u0000-\u001f\u007f]/
  * for GitLab, Bitbucket, or self-managed Git services. */
 export const DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS = ['https://github.com', 'ssh://github.com'] as const
 
+/**
+ * Hard cap on an untrusted repo reference. Real clone addresses are far under
+ * this; the bound exists so no amount of caller-supplied text can turn
+ * normalization into a long synchronous scan on the CP's single event loop.
+ */
+export const MAX_GIT_REPO_LENGTH = 512
+
 export class GitCloneUrlError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'GitCloneUrlError'
   }
+}
+
+/**
+ * Strip trailing `/` without a backtracking regex.
+ *
+ * `s.replace(/\/+$/, '')` looks anchored but is not: the engine retries the
+ * greedy `+` from every offset, so a long run of slashes that does NOT end the
+ * string costs O(n²). These helpers run inside request validation on the
+ * control plane's single-threaded event loop, where that is a stall for every
+ * tenant, not just the caller.
+ */
+function trimTrailingSlashes(s: string): string {
+  let end = s.length
+  while (end > 0 && s.charCodeAt(end - 1) === 0x2f /* '/' */) end--
+  return end === s.length ? s : s.slice(0, end)
 }
 
 /**
@@ -38,7 +60,7 @@ export class GitCloneUrlError extends Error {
  * - anything else (e.g. a local path) → as-is
  */
 export function normalizeGitUrl(input: string): string {
-  const s = input.trim().replace(/\/+$/, '')
+  const s = trimTrailingSlashes(input.trim())
   if (!s || SCHEME_RE.test(s) || SCP_RE.test(s)) return s
   const segments = s.split('/')
   // host-prefixed shorthand: first segment looks like a hostname (has a dot)
@@ -72,9 +94,12 @@ function hasLocalPathPrefix(value: string): boolean {
  * the execution boundary.
  */
 export function normalizeGitCloneUrl(input: string): string {
+  // Bound FIRST: every check below scans the value, and this is the one entry
+  // point untrusted repo text reaches. A real address is nowhere near the cap.
+  if (input.length > MAX_GIT_REPO_LENGTH) invalidCloneUrl('git clone url is too long')
   if (CONTROL_RE.test(input)) invalidCloneUrl('git clone url must not contain control characters')
 
-  const s = input.trim().replace(/\/+$/, '')
+  const s = trimTrailingSlashes(input.trim())
   if (!s) invalidCloneUrl('git clone url must not be empty')
   if (s.startsWith('-')) invalidCloneUrl('git clone url must not start with "-"')
   if (/\s/.test(s)) invalidCloneUrl('git clone url must not contain whitespace')
@@ -289,10 +314,7 @@ export function normalizeGithubRepoUrl(input: string): string {
  * Unrecognized inputs come back unchanged (minus a trailing `.git`).
  */
 export function gitRepoLabel(gitRepo: string): string {
-  const s = gitRepo
-    .trim()
-    .replace(/\/+$/, '')
-    .replace(/\.git$/, '')
+  const s = trimTrailingSlashes(gitRepo.trim()).replace(/\.git$/, '')
   const scp = SCP_RE.exec(s)
   if (scp) return scp[1]!.replace(/^\/+/, '')
   const url = /^[a-z][a-z0-9+.-]*:\/\/[^/]+\/(.+)$/i.exec(s)

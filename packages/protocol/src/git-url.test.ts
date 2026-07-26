@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS,
+  MAX_GIT_REPO_LENGTH,
   GitCloneUrlError,
   normalizeAllowedWorkspaceGitUrl,
   normalizeGitCloneUrl,
@@ -223,5 +224,36 @@ describe('gitRepoLabel', () => {
 
   it('round-trips normalize → label back to the short form', () => {
     expect(gitRepoLabel(normalizeGitUrl('acme/infra'))).toBe('acme/infra')
+  })
+})
+
+describe('bounded normalization (no quadratic scan on untrusted text)', () => {
+  // A run of slashes NOT at end-of-string is the shape that made `/\/+$/` retry
+  // from every offset. These run inside CP request validation, on the single
+  // event loop shared by every tenant — so the cost has to stay linear.
+  const slashRun = (n: number) => '/'.repeat(n) + 'x'
+
+  it('rejects an oversized clone url before scanning it', () => {
+    expect(() => normalizeGitCloneUrl(slashRun(MAX_GIT_REPO_LENGTH))).toThrow(GitCloneUrlError)
+    expect(() => normalizeGitCloneUrl('a'.repeat(MAX_GIT_REPO_LENGTH + 1))).toThrow(/too long/)
+    // At the cap it is still processed normally (rejected on its own merits here).
+    expect(() => normalizeGitCloneUrl('/'.repeat(MAX_GIT_REPO_LENGTH))).toThrow(GitCloneUrlError)
+  })
+
+  it('normalizes a huge slash run in linear time', () => {
+    // gitRepoLabel and normalizeGitUrl take unbounded text from stored values, so
+    // they cannot lean on the clone-url cap. 1e6 chars is ~10^12 steps quadratic.
+    const huge = slashRun(1_000_000)
+    const started = process.hrtime.bigint()
+    expect(normalizeGitUrl(huge)).toBe(huge)
+    expect(gitRepoLabel(huge)).toBe(huge)
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6
+    expect(elapsedMs).toBeLessThan(1000)
+  })
+
+  it('still strips real trailing slashes', () => {
+    expect(normalizeGitUrl('acme/infra///')).toBe('https://github.com/acme/infra')
+    expect(normalizeGitCloneUrl('https://github.com/acme/infra/')).toBe('https://github.com/acme/infra')
+    expect(gitRepoLabel('https://github.com/acme/infra//')).toBe('acme/infra')
   })
 })
