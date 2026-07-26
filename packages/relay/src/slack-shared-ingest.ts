@@ -45,6 +45,7 @@ export interface SlackInteractiveBody {
   type: string
   api_app_id?: string
   team?: { id?: string }
+  user?: { id?: string }
   trigger_id?: string
   action_id?: string
   block_id?: string
@@ -75,6 +76,9 @@ interface SharedSlackInteractionReceipt {
 
 export type SharedSlackSessionAction = SharedSlackInteractionReceipt & {
   target: SharedSlackStatusTarget
+  /** Who tapped it (Slack `body.user`), forwarded so the daemon can attribute the
+   *  session change. Absent when the payload names no user. */
+  userId?: string
 } & RdSlackAction
 
 type SharedSlackAgent = { agentId: string; name: string }
@@ -154,6 +158,13 @@ function decodeAgentModalContext(value: string): SharedSlackAgentModalContext | 
  *  The target is opaque user-interface state at this edge; SharedBotManager validates
  *  its agent against the current bot assignment before choosing a daemon/integration. */
 export function parseSharedSlackSessionAction(body: SlackInteractiveBody): SharedSlackSessionAction | null {
+  const parsed = decodeSharedSlackSessionAction(body)
+  if (!parsed) return null
+  // Attach the actor at the single exit so every decoded verb carries it.
+  return body.user?.id ? { ...parsed, userId: body.user.id } : parsed
+}
+
+function decodeSharedSlackSessionAction(body: SlackInteractiveBody): SharedSlackSessionAction | null {
   if (body.type !== 'block_actions') return null
   const action = body.actions?.[0]
   if (!action?.action_id) return null

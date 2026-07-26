@@ -354,7 +354,7 @@ export class SharedBotManager {
    *  the button. This intentionally does not use channel ownership: the operator may
    *  click an older Bob session after switching the channel default to Alice. */
   private forwardSessionAction(botId: string, action: SharedSlackSessionAction): void {
-    const { target, interactionId: _interactionId, ...payload } = action
+    const { target, interactionId: _interactionId, userId, ...payload } = action
     const route = this.router.targetForAgent(botId, target.agentId, target.integrationId)
     if (!route) {
       this.deps.log.warn(`shared-bot(${botId}): ignored stale session action for agent ${target.agentId}`)
@@ -372,6 +372,7 @@ export class SharedBotManager {
       sessionKey: target.sessionKey,
       msgId: sharedSlackActionMsgId(botId, action),
       botId,
+      ...(userId ? { userId } : {}),
       payload
     }
     void daemon
