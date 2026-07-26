@@ -5,14 +5,27 @@ export interface LineDiffRow {
   text: string
   oldLine?: number
   newLine?: number
-  eofSide?: 'old' | 'new'
+  eofSide?: 'old' | 'new' | 'both'
 }
 
-function splitLines(value: string): string[] {
+interface LineToken {
+  text: string
+  terminated: boolean
+}
+
+function splitLines(value: string): LineToken[] {
   if (!value) return []
   const lines = value.split('\n')
-  if (value.endsWith('\n')) lines.pop()
-  return lines
+  const endsWithNewline = value.endsWith('\n')
+  if (endsWithNewline) lines.pop()
+  return lines.map((text, index) => ({
+    text,
+    terminated: index < lines.length - 1 || endsWithNewline
+  }))
+}
+
+function sameLine(left: LineToken | undefined, right: LineToken | undefined): boolean {
+  return left?.text === right?.text && left?.terminated === right?.terminated
 }
 
 interface LineMatch {
@@ -21,10 +34,10 @@ interface LineMatch {
 }
 
 function prefixLcsLengths(
-  oldLines: string[],
+  oldLines: LineToken[],
   oldStart: number,
   oldEnd: number,
-  newLines: string[],
+  newLines: LineToken[],
   newStart: number,
   newEnd: number
 ): Uint16Array {
@@ -34,10 +47,9 @@ function prefixLcsLengths(
   for (let oldIndex = oldStart; oldIndex < oldEnd; oldIndex += 1) {
     current[0] = 0
     for (let offset = 1; offset <= width; offset += 1) {
-      current[offset] =
-        oldLines[oldIndex] === newLines[newStart + offset - 1]
-          ? previous[offset - 1]! + 1
-          : Math.max(previous[offset]!, current[offset - 1]!)
+      current[offset] = sameLine(oldLines[oldIndex], newLines[newStart + offset - 1])
+        ? previous[offset - 1]! + 1
+        : Math.max(previous[offset]!, current[offset - 1]!)
     }
     ;[previous, current] = [current, previous]
   }
@@ -45,10 +57,10 @@ function prefixLcsLengths(
 }
 
 function suffixLcsLengths(
-  oldLines: string[],
+  oldLines: LineToken[],
   oldStart: number,
   oldEnd: number,
-  newLines: string[],
+  newLines: LineToken[],
   newStart: number,
   newEnd: number
 ): Uint16Array {
@@ -58,10 +70,9 @@ function suffixLcsLengths(
   for (let oldIndex = oldEnd - 1; oldIndex >= oldStart; oldIndex -= 1) {
     current[width] = 0
     for (let offset = width - 1; offset >= 0; offset -= 1) {
-      current[offset] =
-        oldLines[oldIndex] === newLines[newStart + offset]
-          ? previous[offset + 1]! + 1
-          : Math.max(previous[offset]!, current[offset + 1]!)
+      current[offset] = sameLine(oldLines[oldIndex], newLines[newStart + offset])
+        ? previous[offset + 1]! + 1
+        : Math.max(previous[offset]!, current[offset + 1]!)
     }
     ;[previous, current] = [current, previous]
   }
@@ -70,10 +81,10 @@ function suffixLcsLengths(
 
 /** Hirschberg LCS: exact matches with linear working memory. */
 function collectLcsMatches(
-  oldLines: string[],
+  oldLines: LineToken[],
   oldStart: number,
   oldEnd: number,
-  newLines: string[],
+  newLines: LineToken[],
   newStart: number,
   newEnd: number,
   matches: LineMatch[]
@@ -81,7 +92,7 @@ function collectLcsMatches(
   if (oldStart === oldEnd || newStart === newEnd) return
   if (oldEnd - oldStart === 1) {
     for (let newIndex = newStart; newIndex < newEnd; newIndex += 1) {
-      if (oldLines[oldStart] === newLines[newIndex]) {
+      if (sameLine(oldLines[oldStart], newLines[newIndex])) {
         matches.push({ oldIndex: oldStart, newIndex })
         return
       }
@@ -90,7 +101,7 @@ function collectLcsMatches(
   }
   if (newEnd - newStart === 1) {
     for (let oldIndex = oldStart; oldIndex < oldEnd; oldIndex += 1) {
-      if (oldLines[oldIndex] === newLines[newStart]) {
+      if (sameLine(oldLines[oldIndex], newLines[newStart])) {
         matches.push({ oldIndex, newIndex: newStart })
         return
       }
@@ -116,27 +127,12 @@ function collectLcsMatches(
   collectLcsMatches(oldLines, oldMiddle, oldEnd, newLines, newSplit, newEnd, matches)
 }
 
-function addEofMarkers(rows: LineDiffRow[], before: string, after: string, oldCount: number, newCount: number) {
-  const oldMissingNewline = before.length > 0 && !before.endsWith('\n')
-  const newMissingNewline = after.length > 0 && !after.endsWith('\n')
-
-  // A terminal-newline-only change initially appears as one matched content
-  // line. Turn that last context line into the same delete/add pair Git shows.
-  if (oldMissingNewline !== newMissingNewline && oldCount > 0 && newCount > 0) {
-    const lastContext = rows.findIndex(
-      (row) => row.kind === 'context' && row.oldLine === oldCount && row.newLine === newCount
-    )
-    if (lastContext >= 0) {
-      const row = rows[lastContext]!
-      rows.splice(
-        lastContext,
-        1,
-        { kind: 'delete', text: row.text, oldLine: row.oldLine },
-        { kind: 'add', text: row.text, newLine: row.newLine }
-      )
-    }
-  }
-
+function addEofMarkers(rows: LineDiffRow[], oldLines: LineToken[], newLines: LineToken[]) {
+  const oldCount = oldLines.length
+  const newCount = newLines.length
+  const oldMissingNewline = oldLines.at(-1)?.terminated === false
+  const newMissingNewline = newLines.at(-1)?.terminated === false
+  const hasChanges = rows.some((row) => row.kind !== 'context')
   const withMarkers: LineDiffRow[] = []
   for (const row of rows) {
     withMarkers.push(row)
@@ -145,6 +141,16 @@ function addEofMarkers(rows: LineDiffRow[], before: string, after: string, oldCo
     }
     if (row.kind === 'add' && row.newLine === newCount && newMissingNewline) {
       withMarkers.push({ kind: 'meta', text: 'No newline at end of file', eofSide: 'new' })
+    }
+    if (
+      hasChanges &&
+      row.kind === 'context' &&
+      row.oldLine === oldCount &&
+      row.newLine === newCount &&
+      oldMissingNewline &&
+      newMissingNewline
+    ) {
+      withMarkers.push({ kind: 'meta', text: 'No newline at end of file', eofSide: 'both' })
     }
   }
   return withMarkers
@@ -158,14 +164,14 @@ export function diffLines(before: string, after: string): LineDiffRow[] {
   const oldLines = splitLines(before)
   const newLines = splitLines(after)
   let prefix = 0
-  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) {
+  while (prefix < oldLines.length && prefix < newLines.length && sameLine(oldLines[prefix], newLines[prefix])) {
     prefix += 1
   }
   let suffix = 0
   while (
     suffix < oldLines.length - prefix &&
     suffix < newLines.length - prefix &&
-    oldLines[oldLines.length - suffix - 1] === newLines[newLines.length - suffix - 1]
+    sameLine(oldLines[oldLines.length - suffix - 1], newLines[newLines.length - suffix - 1])
   ) {
     suffix += 1
   }
@@ -184,16 +190,16 @@ export function diffLines(before: string, after: string): LineDiffRow[] {
   let newIndex = 0
   for (const match of matches) {
     while (oldIndex < match.oldIndex) {
-      rows.push({ kind: 'delete', text: oldLines[oldIndex]!, oldLine: oldIndex + 1 })
+      rows.push({ kind: 'delete', text: oldLines[oldIndex]!.text, oldLine: oldIndex + 1 })
       oldIndex += 1
     }
     while (newIndex < match.newIndex) {
-      rows.push({ kind: 'add', text: newLines[newIndex]!, newLine: newIndex + 1 })
+      rows.push({ kind: 'add', text: newLines[newIndex]!.text, newLine: newIndex + 1 })
       newIndex += 1
     }
     rows.push({
       kind: 'context',
-      text: oldLines[match.oldIndex]!,
+      text: oldLines[match.oldIndex]!.text,
       oldLine: match.oldIndex + 1,
       newLine: match.newIndex + 1
     })
@@ -201,14 +207,14 @@ export function diffLines(before: string, after: string): LineDiffRow[] {
     newIndex = match.newIndex + 1
   }
   while (oldIndex < oldLines.length) {
-    rows.push({ kind: 'delete', text: oldLines[oldIndex]!, oldLine: oldIndex + 1 })
+    rows.push({ kind: 'delete', text: oldLines[oldIndex]!.text, oldLine: oldIndex + 1 })
     oldIndex += 1
   }
   while (newIndex < newLines.length) {
-    rows.push({ kind: 'add', text: newLines[newIndex]!, newLine: newIndex + 1 })
+    rows.push({ kind: 'add', text: newLines[newIndex]!.text, newLine: newIndex + 1 })
     newIndex += 1
   }
-  return addEofMarkers(rows, before, after, oldLines.length, newLines.length)
+  return addEofMarkers(rows, oldLines, newLines)
 }
 
 const ROW_STYLE: Record<LineDiffKind, string> = {
