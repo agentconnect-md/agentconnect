@@ -116,7 +116,7 @@ where work already happens.
 
 ## Architecture
 
-![Daemon-centric architecture with optional relay ingress](docs/designs/daemon-centric-architecture.svg)
+![AgentConnect daemon-centric message paths](docs/designs/daemon-centric-message-paths.png)
 
 | Component                  | Responsibility                                                                                                               |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
