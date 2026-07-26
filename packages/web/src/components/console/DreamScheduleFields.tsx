@@ -16,7 +16,16 @@
 //     schedule read from Berlin advertises a fire time that never happens.
 
 import { useState } from 'react'
-import { buildCron, cronHuman, cronNext, fmtNextRun, isIanaTimezone, parseCron, type CronMode } from '@/lib/cron'
+import {
+  buildCron,
+  cronHuman,
+  cronNext,
+  fmtNextRun,
+  isIanaTimezone,
+  isValidCron,
+  parseCron,
+  type CronMode
+} from '@/lib/cron'
 
 const MODES: ReadonlyArray<{ value: CronMode; label: string }> = [
   { value: 'hourly', label: 'Hourly' },
@@ -64,8 +73,12 @@ export function DreamScheduleFields({
   // Empty timezone = the daemon decides (its own local zone). We cannot know
   // that zone here, so the preview is only honest once a zone is explicit.
   const zoneKnown = isIanaTimezone(timezone)
-  const human = enabled ? cronHuman(value.trim()) : null
-  const next = enabled && zoneKnown ? fmtNextRun(cronNext(value.trim(), timezone)) : null
+  // Validity is Croner's verdict (what the daemon will actually install) — the
+  // cronstrue reading is only ever the label. They disagree on edge cases like a
+  // zero step, and the permissive one must not be what gates the form.
+  const valid = enabled && isValidCron(value)
+  const human = valid ? cronHuman(value.trim()) : null
+  const next = valid && zoneKnown ? fmtNextRun(cronNext(value.trim(), timezone)) : null
 
   const emit = (nextMode: CronMode, hour: number, minute: number, weekday: number) => {
     setModeOverride(nextMode)

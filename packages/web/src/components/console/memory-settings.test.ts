@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { cronHuman, isValidCron } from '@/lib/cron'
 import {
   MEMORY_PROVIDER_OPTIONS,
   dreamingScheduleBlocker,
@@ -171,6 +172,17 @@ describe('dreaming schedule validation gates the save', () => {
     const draft = managed({ schedule: 'not a cron' })
     expect(dreamingScheduleBlocker(draft.dreaming)).toMatch(/not a valid cron/)
     expect(memorySettingsBlocker(draft)).toMatch(/not a valid cron/)
+  })
+
+  it('refuses an expression the two cron parsers disagree about', () => {
+    // The daemon installs with Croner; cronstrue is more permissive. A zero step
+    // reads as "Every 0 minutes" to cronstrue but Croner throws
+    // `illegal stepping: 0`, so validating with the display parser would let
+    // through exactly the never-fires config this blocker exists to stop.
+    const zeroStep = '*/0 * * * *'
+    expect(cronHuman(zeroStep)).not.toBeNull() // cronstrue happily reads it
+    expect(isValidCron(zeroStep)).toBe(false) // Croner — the one that matters
+    expect(memorySettingsBlocker(managed({ schedule: zeroStep }))).toMatch(/not a valid cron/)
   })
 
   it('refuses a timezone that is not a real IANA zone', () => {

@@ -1,5 +1,5 @@
 import type { AgentMemoryConfig, MemoryDreamingConfig } from '@/lib/api'
-import { cronHuman, isIanaTimezone } from '@/lib/cron'
+import { isIanaTimezone, isValidCron } from '@/lib/cron'
 import {
   DEFAULT_EXTERNAL_MEMORY_BINDING,
   type ExternalMemoryBindingDraft
@@ -141,7 +141,9 @@ export function memoryBackendChanged(persisted: MemorySettingsDraft, draft: Memo
 export function dreamingScheduleBlocker(draft: DreamingDraft): string | null {
   const schedule = draft.schedule?.trim() ?? ''
   if (!draft.enabled || !schedule) return null // manual-only: nothing to validate
-  if (!cronHuman(schedule)) return 'That dreaming schedule is not a valid cron expression.'
+  // Croner, not cronstrue — the daemon installs the job with Croner, and the
+  // two parsers disagree (cronstrue accepts e.g. `*/0 * * * *`, Croner throws).
+  if (!isValidCron(schedule)) return 'That dreaming schedule is not a valid cron expression.'
   const timezone = draft.timezone?.trim() ?? ''
   // Empty is legitimate — it means "the daemon host's zone".
   if (timezone && !isIanaTimezone(timezone)) {
