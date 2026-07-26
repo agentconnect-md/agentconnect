@@ -155,7 +155,7 @@ export function ManagedMemoryHistory({ agentId, path }: { agentId: string; path:
   const loadedCount = events?.length ?? 0
 
   return (
-    <section className="border-t border-(--border-subtle)" aria-label={`Change history for ${path}`}>
+    <section className="mt-auto border-t border-(--border-subtle)" aria-label={`Change history for ${path}`}>
       <button
         type="button"
         className="flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-4 py-3 text-left font-sans transition-colors hover:bg-(--surface-hover) focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-(--brand)"
