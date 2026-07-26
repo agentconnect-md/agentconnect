@@ -15,6 +15,7 @@
  * state, not org config.
  */
 import { promises as fsp } from 'node:fs'
+import type { FileHandle } from 'node:fs/promises'
 import { isAbsolute, join, relative, sep } from 'node:path'
 import { skillsAgentId } from './runtime-agent-map.js'
 
@@ -62,40 +63,71 @@ export async function installAcceptedDreamSkills(
   // SECURITY: the workspace is AGENT-WRITABLE and the daemon runs OUTSIDE the
   // agent's sandbox, so a planted `.claude/skills` symlink would otherwise make
   // these recursive rm/cp calls act on a path outside the workspace entirely.
-  // Create and canonicalise each component ourselves, refusing existing symlinks.
-  let skillRoot: string
+  let verified: VerifiedDir
   try {
-    skillRoot = await containedSkillRoot(acpCwd, root)
+    verified = await containedSkillRoot(acpCwd, root)
   } catch (err) {
     warn?.(`skills: refusing to install accepted dream skills — ${(err as Error).message}`)
     return []
   }
 
   const installed: string[] = []
-  for (const name of names) {
-    const destination = join(skillRoot, name)
-    try {
-      // The destination itself may be a planted link too; never follow it.
-      const existing = await fsp.lstat(destination).catch(() => null)
-      if (existing?.isSymbolicLink()) {
-        warn?.(`skills: skipping accepted dream skill "${name}" — its target is a symlink`)
-        continue
+  try {
+    for (const name of names) {
+      const destination = join(verified.path, name)
+      try {
+        // Re-assert the parent's IDENTITY (not just its name) before every
+        // mutating step: validating once and then writing by path is a
+        // check/use gap — a concurrent process can swap the directory out from
+        // under the verified path in between. `verified.handle` pins the inode
+        // we approved, so a swap is detected rather than followed.
+        await assertStillVerified(verified)
+        // The destination itself may be a planted link too; never follow it.
+        const existing = await fsp.lstat(destination).catch(() => null)
+        if (existing?.isSymbolicLink()) {
+          warn?.(`skills: skipping accepted dream skill "${name}" — its target is a symlink`)
+          continue
+        }
+        // Replace rather than merge, so what loads is exactly what was accepted.
+        await fsp.rm(destination, { recursive: true, force: true })
+        await assertStillVerified(verified)
+        await fsp.cp(join(source, name), destination, { recursive: true, dereference: false })
+        // …and once more after, so a swap DURING the copy is still reported
+        // rather than silently counted as installed.
+        await assertStillVerified(verified)
+        installed.push(name)
+      } catch (err) {
+        warn?.(`skills: could not install accepted dream skill "${name}": ${(err as Error).message}`)
       }
-      // Replace rather than merge, so what loads is exactly what was accepted.
-      await fsp.rm(destination, { recursive: true, force: true })
-      await fsp.cp(join(source, name), destination, { recursive: true, dereference: false })
-      installed.push(name)
-    } catch (err) {
-      warn?.(`skills: could not install accepted dream skill "${name}": ${(err as Error).message}`)
     }
+  } finally {
+    await verified.handle.close().catch(() => {})
   }
   return installed
+}
+
+/** The approved skill root: its path plus an OPEN HANDLE pinning the exact inode
+ *  we validated, so the identity behind that path can be re-checked later. */
+interface VerifiedDir {
+  path: string
+  handle: FileHandle
+  dev: number
+  ino: number
+}
+
+/** Throw if `path` no longer resolves to the directory we verified — i.e. it was
+ *  renamed/replaced (symlink or otherwise) after the check. */
+async function assertStillVerified(dir: VerifiedDir): Promise<void> {
+  const current = await fsp.lstat(dir.path).catch(() => null)
+  if (!current || !current.isDirectory() || current.dev !== dir.dev || current.ino !== dir.ino) {
+    throw new Error('the skill root changed while installing; refusing to continue')
+  }
 }
 
 /** Walk `root` under `acpCwd` one component at a time, creating what is missing
  *  and REJECTING any existing component that is a symlink, then verify the real
  *  path is still inside the real workspace. Throws with a path-free reason. */
-async function containedSkillRoot(acpCwd: string, root: string): Promise<string> {
+async function containedSkillRoot(acpCwd: string, root: string): Promise<VerifiedDir> {
   const realCwd = await fsp.realpath(acpCwd)
   let current = realCwd
   for (const part of root.split('/').filter(Boolean)) {
@@ -114,5 +146,10 @@ async function containedSkillRoot(acpCwd: string, root: string): Promise<string>
       throw new Error(`"${root}" resolves outside the workspace`)
     }
   }
-  return current
+  // Hold the directory open for the caller's lifetime: on POSIX an open fd pins
+  // the inode, so `assertStillVerified` can tell "same directory" from "same
+  // path, different directory".
+  const handle = await fsp.open(current)
+  const stat = await handle.stat()
+  return { path: current, handle, dev: stat.dev, ino: stat.ino }
 }

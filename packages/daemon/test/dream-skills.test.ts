@@ -1,7 +1,8 @@
-import { mkdtemp, mkdir, readFile, symlink, writeFile, readdir } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rename, symlink, writeFile, readdir } from 'node:fs/promises'
+import { promises as fsp } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { installAcceptedDreamSkills } from '../src/skills/dream-skills.js'
 
 /** An agent root holding one accepted dream skill. */
@@ -60,5 +61,64 @@ describe('accepted dream skills — workspace containment', () => {
 
     const dir = await agentWithAcceptedSkill()
     expect(await installAcceptedDreamSkills({ dir, runtime: 'no-such-runtime' }, cwd)).toEqual([])
+  })
+})
+
+describe('accepted dream skills — concurrent swap (check/use)', () => {
+  it('detects the skill root being replaced AFTER validation and writes nothing outside', async () => {
+    // Validating once and then writing by path is a check/use gap: the workspace
+    // is agent-writable, so a concurrent process can swap `.claude/skills` for a
+    // symlink between the check and the copy. Swap in the window right after the
+    // destination `rm` — the real window an attacker races for.
+    const dir = await agentWithAcceptedSkill()
+    const cwd = await mkdtemp(join(tmpdir(), 'ac-ws-'))
+    const outside = await mkdtemp(join(tmpdir(), 'ac-outside-'))
+    await writeFile(join(outside, 'precious.txt'), 'do not delete', 'utf8')
+    const root = join(cwd, '.claude', 'skills')
+
+    const realRm = fsp.rm.bind(fsp)
+    let swapped = false
+    const spy = vi.spyOn(fsp, 'rm').mockImplementation(async (...args: Parameters<typeof realRm>) => {
+      const out = await realRm(...args)
+      if (!swapped) {
+        swapped = true
+        await realRm(root, { recursive: true, force: true })
+        await symlink(outside, root, 'dir')
+      }
+      return out
+    })
+
+    const warnings: string[] = []
+    const installed = await installAcceptedDreamSkills({ dir, runtime: 'claude-acp' }, cwd, (m) => warnings.push(m))
+    spy.mockRestore()
+
+    expect(swapped).toBe(true) // the race actually happened
+    expect(installed).toEqual([]) // …and was detected, not followed
+    expect(warnings.join(' ')).toMatch(/changed while installing/)
+    // The attacker-controlled target is untouched: nothing written, nothing deleted.
+    expect(await readdir(outside)).toEqual(['precious.txt'])
+  })
+
+  it('reports a swap that lands mid-copy instead of counting it as installed', async () => {
+    const dir = await agentWithAcceptedSkill()
+    const cwd = await mkdtemp(join(tmpdir(), 'ac-ws-'))
+    const cwd2 = await mkdtemp(join(tmpdir(), 'ac-ws2-'))
+    // Validate against cwd, then rename the whole verified dir away mid-run.
+    const root = join(cwd, '.claude', 'skills')
+    await mkdir(root, { recursive: true })
+
+    const realCp = fsp.cp.bind(fsp)
+    const spy = vi.spyOn(fsp, 'cp').mockImplementation(async (...args: Parameters<typeof realCp>) => {
+      const out = await realCp(...args)
+      await rename(root, join(cwd2, 'moved-away')) // identity behind the path is gone
+      return out
+    })
+
+    const warnings: string[] = []
+    const installed = await installAcceptedDreamSkills({ dir, runtime: 'claude-acp' }, cwd, (m) => warnings.push(m))
+    spy.mockRestore()
+
+    expect(installed).toEqual([])
+    expect(warnings.join(' ')).toMatch(/changed while installing/)
   })
 })
