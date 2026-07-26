@@ -488,10 +488,12 @@ function OnListColumn({
 }
 
 // Resolve at render (not module load) so it reads the runtime config: window.__AC_ENV
-// in the browser, plain env during SSR.
+// in the browser, plain env during SSR. The SSR branch honours the NEXT_PUBLIC_ form
+// too, because public-env's resolve() folds it into __AC_ENV — reading only the plain
+// name here would render the default on the server and the override on the client.
 function fromEmail(): string {
-  const src = typeof window === 'undefined' ? process.env : (window.__AC_ENV ?? {})
-  return src.WAITLIST_FROM_EMAIL || FROM_EMAIL_DEFAULT
+  if (typeof window !== 'undefined') return window.__AC_ENV?.WAITLIST_FROM_EMAIL || FROM_EMAIL_DEFAULT
+  return process.env.WAITLIST_FROM_EMAIL || process.env.NEXT_PUBLIC_WAITLIST_FROM_EMAIL || FROM_EMAIL_DEFAULT
 }
 
 function Timeline({ status, email }: { status: 'pending' | 'approved'; email: string | null }) {
