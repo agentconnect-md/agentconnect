@@ -103,6 +103,15 @@ describe('DreamPanel', () => {
     expect(explanation?.querySelector('summary')?.textContent).toContain('How dreaming works')
   })
 
+  it('uses the shared card shell with the action in its header', async () => {
+    const host = await render()
+    const card = host.querySelector('.card')
+    const header = card?.querySelector(':scope > .cardhead')
+    expect(card).not.toBeNull()
+    expect(header?.querySelector('.cardtitle')?.textContent).toBe('Dreams')
+    expect(button(header as HTMLElement, 'Dream now')).toBeTruthy()
+  })
+
   it('blocks the trigger for a viewer, with the reason', async () => {
     // (Dreaming-off is no longer this component's concern — MemoryPanel does not
     // mount the panel at all in that case.)
