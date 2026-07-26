@@ -22,14 +22,15 @@ const KEYS = [
   // renders the MCP endpoint as CP_URL + /mcp (ConnectAiCard).
   'MCP_URL',
   // Help-menu link targets — let an OSS fork point the rail-footer help menu at its
-  // own docs / connector guide / support channel without rebuilding. Unset ⇒ the
-  // agentconnect.md defaults (see Shell.tsx HELP_LINK_DEFAULTS).
+  // own docs / connector guide / releases / support channel without rebuilding.
+  // Unset ⇒ the agentconnect.md defaults (see Shell.tsx HELP_LINK_DEFAULTS).
   // Sender address the waitlist page tells approved users to expect the activation
   // link from. Must match the admin mailer's verified sender. Unset ⇒ the
   // agentconnect.md default (see Waitlist.tsx FROM_EMAIL_DEFAULT).
   'WAITLIST_FROM_EMAIL',
   'HELP_MCP_URL',
   'HELP_DOCS_URL',
+  'HELP_RELEASES_URL',
   'HELP_SUPPORT_URL',
   'OTEL_WEB_ENABLED',
   'OTEL_WEB_TRACES_ENDPOINT',
