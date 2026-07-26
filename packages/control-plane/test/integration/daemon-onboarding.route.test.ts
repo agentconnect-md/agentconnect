@@ -55,10 +55,10 @@ describe('Daemon onboarding — POST /daemons/token', () => {
 
     // The command is copy-pasteable and carries just url + key —
     // the daemon derives its id from `auth/ok`, so NO --daemon-id is needed.
-    expect(body.command).toContain('--cp-url wss://cp.example.com/daemon/ws')
-    expect(body.command).toContain(`--cp-key ${body.apiKey}`)
+    expect(body.command).toContain('--api-url wss://cp.example.com/daemon/ws')
+    expect(body.command).toContain(`--api-key ${body.apiKey}`)
     expect(body.command).not.toContain('--daemon-id')
-    expect(body.command).not.toContain('--cp-token')
+    expect(body.command).not.toContain('--api-token')
 
     // Onboarding WROTE rows: a provisioned daemon (epoch 0) + a hash-only api_key.
     const daemon = await prisma.daemon.findUnique({ where: { id: body.daemonId } })
@@ -97,7 +97,7 @@ describe('Daemon onboarding — POST /daemons/token', () => {
     const app = build() // no PUBLIC_CP_URL
     const body = (await app.app.inject({ method: 'POST', url: `${ORG}/daemons/token` })).json() as { command: string }
     // Falls back to a host:port ws URL (default 0.0.0.0:8080 unless configured).
-    expect(body.command).toMatch(/--cp-url wss?:\/\/[^ ]+\/daemon\/ws/)
+    expect(body.command).toMatch(/--api-url wss?:\/\/[^ ]+\/daemon\/ws/)
   })
 })
 
@@ -118,7 +118,7 @@ describe('Agent create — connect block tie-in', () => {
     expect(body.name).toBe('router-bot')
     expect(body.connect).toBeDefined()
     expect(body.connect!.apiKey).toMatch(/^[0-9A-Za-z]+$/)
-    expect(body.connect!.command).toContain('--cp-key ')
+    expect(body.connect!.command).toContain('--api-key ')
     expect(body.connect!.command).not.toContain('--daemon-id')
   })
 

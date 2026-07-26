@@ -31,8 +31,8 @@ export const CLI_OWNED_COMMANDS = new Set([
 const VALUE_OPTS = new Set([
   '--config',
   '--root',
-  '--cp-url',
-  '--cp-key',
+  '--api-url',
+  '--api-key',
   '--daemon-id',
   '--log-level',
   '--agents-dir',

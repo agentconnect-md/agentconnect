@@ -41,7 +41,7 @@ describe('buildInstallOpts', () => {
 describe('persistCredentials', () => {
   it('writes controlPlane url/token and enables the control plane', () => {
     const root = emptyRoot()
-    persistCredentials({ root, cpUrl: 'wss://cp.example/daemon/ws', cpKey: 'tok-123' })
+    persistCredentials({ root, apiUrl: 'wss://cp.example/daemon/ws', apiKey: 'tok-123' })
     const raw = readConfig(root)
     expect(raw.controlPlane.url).toBe('wss://cp.example/daemon/ws')
     expect(raw.controlPlane.key).toBe('tok-123')
@@ -51,10 +51,10 @@ describe('persistCredentials', () => {
 
   it('persists daemonId only when explicitly provided', () => {
     const root = emptyRoot()
-    persistCredentials({ root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' })
+    persistCredentials({ root, apiUrl: 'wss://cp/daemon/ws', apiKey: 'tok' })
     expect(readConfig(root).daemonId).toBeUndefined()
     const root2 = emptyRoot()
-    persistCredentials({ root: root2, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok', daemonId: 'fixed-id' })
+    persistCredentials({ root: root2, apiUrl: 'wss://cp/daemon/ws', apiKey: 'tok', daemonId: 'fixed-id' })
     expect(readConfig(root2).daemonId).toBe('fixed-id')
   })
 
@@ -65,7 +65,7 @@ describe('persistCredentials', () => {
       join(root, 'config.json'),
       JSON.stringify({ version: 1, logging: { level: 'debug' }, runtimes: { claude: { command: 'npx', args: [] } } })
     )
-    persistCredentials({ root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' })
+    persistCredentials({ root, apiUrl: 'wss://cp/daemon/ws', apiKey: 'tok' })
     const raw = readConfig(root)
     expect(raw.logging.level).toBe('debug')
     expect(raw.runtimes.claude.command).toBe('npx')
@@ -78,26 +78,26 @@ describe('persistCredentials', () => {
     writeFileSync(file, JSON.stringify({ version: 1 }), { mode: 0o644 })
     chmodSync(file, 0o644)
 
-    persistCredentials({ root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' })
+    persistCredentials({ root, apiUrl: 'wss://cp/daemon/ws', apiKey: 'tok' })
 
     expect(statSync(file).mode & 0o777).toBe(0o600)
   })
 })
 
 describe('runLogin — non-interactive (no TTY)', () => {
-  it('throws a clear error when the cp-url is missing', async () => {
+  it('throws a clear error when the api-url is missing', async () => {
     const { out } = sink()
-    await expect(runLogin({ cpKey: 'tok' }, { isTTY: false, out })).rejects.toThrow(/--cp-url/)
+    await expect(runLogin({ apiKey: 'tok' }, { isTTY: false, out })).rejects.toThrow(/--api-url/)
   })
-  it('throws a clear error when the cp-key is missing', async () => {
+  it('throws a clear error when the api-key is missing', async () => {
     const { out } = sink()
-    await expect(runLogin({ cpUrl: 'wss://cp/daemon/ws' }, { isTTY: false, out })).rejects.toThrow(/--cp-key/)
+    await expect(runLogin({ apiUrl: 'wss://cp/daemon/ws' }, { isTTY: false, out })).rejects.toThrow(/--api-key/)
   })
   it('probes then persists on success', async () => {
     const root = emptyRoot()
     const { out } = sink()
     const probe = vi.fn(async () => ({ ok: true, daemonId: 'd1' }))
-    await runLogin({ root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' }, { isTTY: false, out, probe })
+    await runLogin({ root, apiUrl: 'wss://cp/daemon/ws', apiKey: 'tok' }, { isTTY: false, out, probe })
     expect(probe).toHaveBeenCalledOnce()
     expect(readConfig(root).controlPlane.key).toBe('tok')
   })
@@ -106,7 +106,7 @@ describe('runLogin — non-interactive (no TTY)', () => {
     const { out } = sink()
     const probe = vi.fn(async () => ({ ok: false, reason: 'bad token' }))
     await expect(
-      runLogin({ root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'bad' }, { isTTY: false, out, probe })
+      runLogin({ root, apiUrl: 'wss://cp/daemon/ws', apiKey: 'bad' }, { isTTY: false, out, probe })
     ).rejects.toThrow(/bad token/)
     expect(existsSync(join(root, 'config.json'))).toBe(false)
   })
@@ -119,7 +119,7 @@ describe('runLogin — interactive', () => {
     const installService = vi.fn(async () => {})
     const runForeground = vi.fn(async () => {})
     await runLogin(
-      { root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' },
+      { root, apiUrl: 'wss://cp/daemon/ws', apiKey: 'tok' },
       {
         isTTY: true,
         out,
@@ -140,7 +140,7 @@ describe('runLogin — interactive', () => {
     const installService = vi.fn(async () => {})
     const runForeground = vi.fn(async () => {})
     await runLogin(
-      { root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' },
+      { root, apiUrl: 'wss://cp/daemon/ws', apiKey: 'tok' },
       {
         isTTY: true,
         out,
@@ -162,7 +162,7 @@ describe('runLogin — interactive', () => {
     const runForeground = vi.fn(async () => {})
     await expect(
       runLogin(
-        { root, configPath: join(root, 'custom.json'), cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' },
+        { root, configPath: join(root, 'custom.json'), apiUrl: 'wss://cp/daemon/ws', apiKey: 'tok' },
         { isTTY: true, out, input: tty(['y']), probe, installService, runForeground }
       )
     ).rejects.toThrow(/--config/)
@@ -179,7 +179,7 @@ describe('runLogin — interactive', () => {
     const installService = vi.fn(async () => {})
     const runForeground = vi.fn(async () => {})
     await runLogin(
-      { root, cpUrl: 'wss://cp/daemon/ws', cpKey: 'tok' },
+      { root, apiUrl: 'wss://cp/daemon/ws', apiKey: 'tok' },
       {
         isTTY: true,
         out,
@@ -210,7 +210,7 @@ describe('runLogin — interactive', () => {
     )
     expect(probe).toHaveBeenCalledWith({ url: 'wss://typed/daemon/ws', token: 'typed-tok' })
     expect(readConfig(root).controlPlane.url).toBe('wss://typed/daemon/ws')
-    expect(lines.join('')).toContain('Control Plane URL:')
+    expect(lines.join('')).toContain('AgentConnect API URL:')
     expect(lines.join('')).toContain('Daemon API key:')
   })
 
@@ -222,7 +222,7 @@ describe('runLogin — interactive', () => {
       .mockResolvedValueOnce({ ok: false, reason: 'bad token' })
       .mockResolvedValueOnce({ ok: true, daemonId: 'd1' })
     await runLogin(
-      { root, cpUrl: 'wss://cp/daemon/ws' },
+      { root, apiUrl: 'wss://cp/daemon/ws' },
       {
         isTTY: true,
         out,
@@ -242,7 +242,7 @@ describe('runLogin — interactive', () => {
     const probe = vi.fn(async () => ({ ok: false, reason: 'bad token' }))
     await expect(
       runLogin(
-        { root, cpUrl: 'wss://cp/daemon/ws' },
+        { root, apiUrl: 'wss://cp/daemon/ws' },
         {
           isTTY: true,
           out,

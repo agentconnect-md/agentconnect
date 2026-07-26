@@ -7,6 +7,7 @@ describe('firstPositional', () => {
   })
   it('skips a value-taking global option and its value', () => {
     expect(firstPositional(['--root', '/tmp/ac', 'chat'])).toBe('chat')
+    expect(firstPositional(['--api-url', 'wss://api.example/daemon/ws', 'run'])).toBe('run')
   })
   it('handles the --opt=value form (no separate value token)', () => {
     expect(firstPositional(['--root=/tmp/ac', 'chat'])).toBe('chat')

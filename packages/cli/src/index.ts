@@ -34,14 +34,14 @@ async function main(): Promise<void> {
     .description('AgentConnect CLI — daemon lifecycle, version management, upgrade')
     .version(CLI_VERSION)
 
-  // Global options. The CLI itself only reads --root/--config/--cp-*/--daemon-id;
+  // Global options. The CLI itself only reads --root/--config/--api-*/--daemon-id;
   // the rest are declared so they pass validation on CLI-owned commands and are
   // forwarded verbatim to the daemon on delegated ones.
   program
     .option('--config <path>', 'path to config.json (default ~/.agentconnect/config.json)')
     .option('--root <dir>', 'override ~/.agentconnect root directory')
-    .option('--cp-url <url>', 'override controlPlane.url')
-    .option('--cp-key <key>', 'override controlPlane.key (the CP API key)')
+    .option('--api-url <url>', 'override AgentConnect API WebSocket URL')
+    .option('--api-key <key>', 'override daemon API key')
     .option('--no-cp', 'run fully local, do not connect to the Control Plane')
     .option('--daemon-id <id>', 'override daemon identity')
     .option('--log-level <level>', 'trace|debug|info|warn|error')
@@ -159,14 +159,14 @@ async function main(): Promise<void> {
   program
     .command('login')
     .description(
-      'Interactive onboarding: test the Control Plane auth, save credentials, then install+start the service or run in the foreground'
+      'Interactive onboarding: test API credentials, save them, then install+start the service or run in the foreground'
     )
     .action(async () => {
       const opts = program.opts()
       try {
         await runLogin({
-          cpUrl: opts.cpUrl,
-          cpKey: opts.cpKey,
+          apiUrl: opts.apiUrl,
+          apiKey: opts.apiKey,
           daemonId: opts.daemonId,
           root: opts.root,
           configPath: opts.config
@@ -224,9 +224,9 @@ async function main(): Promise<void> {
         fail('version prune', err)
       }
     })
-  // Top-level `install` — the onboarding-friendly alias of `version install`.
-  // First install on a fresh root also activates it (versionInstall), so the
-  // onboarding two-step (`install` → `run`/`login`) works without `version use`.
+  // Top-level `install` — the convenient alias of `version install`. First
+  // install on a fresh root also activates it (versionInstall), so manual
+  // installs do not need a follow-up `version use`.
   program
     .command('install [version]')
     .description('Download, unpack, and (on a fresh host) activate a daemon version')

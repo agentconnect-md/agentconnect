@@ -135,25 +135,10 @@ export default function AddDaemonModal({ onClose }: { onClose: () => void }) {
       </div>
       <div className="modalbody">
         <p className="mb-[14px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-          Run these on the machine where agents should run — first install the daemon, then connect it to the control
-          plane.
+          Run one of these commands on the machine where agents should run. AgentConnect installs the daemon
+          automatically before connecting it.
         </p>
-        <p className="mb-[8px] font-sans text-[12px] font-semibold leading-normal text-(--text-tertiary)">
-          1 · Install the daemon
-        </p>
-        <CommandBox
-          tabs={[{ key: 'install', label: 'install', command: cmds?.install ?? null }]}
-          placeholder={
-            err ? (
-              <div className="text-(--status-error)">Could not provision a key — {err}</div>
-            ) : (
-              <div className="text-(--text-inverse-dim)">Minting key…</div>
-            )
-          }
-        />
-        <p className="mb-[8px] mt-[16px] font-sans text-[12px] font-semibold leading-normal text-(--text-tertiary)">
-          2 · Connect
-        </p>
+        <p className="mb-[8px] font-sans text-[12px] font-semibold leading-normal text-(--text-tertiary)">Connect</p>
         <CommandBox
           tabs={[
             { key: 'run', label: 'Run', command: cmds?.run ?? null },
