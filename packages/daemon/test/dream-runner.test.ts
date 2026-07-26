@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 import type { DreamInfo, MemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { parse as parseYaml } from 'yaml'
 import { DreamRunner, DreamStateError, type DreamStorePort } from '../src/agents/dream-runner.js'
-import { acceptedDreamSkillSources } from '../src/skills/dream-skills.js'
+import { acceptedDreamSkillNames } from '../src/skills/dream-skills.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { appendDistilledMemories } from '../src/agents/memory-distiller.js'
 import {
@@ -886,11 +886,10 @@ describe('DreamRunner skill mining — review findings', () => {
 
     // Canonical copy under the agent root (survives a workspace reset)…
     expect(await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')).toContain('# Deploy')
-    // …and session prep hands it to the skills installer as a local source, so
-    // the runtime discovers it without the daemon writing into the workspace.
-    expect(await acceptedDreamSkillSources({ dir })).toEqual([
-      { name: 'dream:deploy-staging', source: join(dir, 'skills', 'deploy-staging'), skills: [] }
-    ])
+    // …and it is listed as accepted. Making it visible to the runtime needs a
+    // containment-safe materialization step (see dream-skills.ts) and is
+    // deliberately NOT done here.
+    expect(await acceptedDreamSkillNames({ dir })).toEqual(['deploy-staging'])
   })
 
   it('keeps a still-proposed candidate reviewable after the store proposal is discarded', async () => {

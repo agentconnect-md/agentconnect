@@ -1,59 +1,56 @@
 /**
- * Accepted dream skills — making mined-and-accepted skills reachable by the
- * runtime (docs/designs/memory-dreaming.md §7).
+ * Accepted dream skills (docs/designs/memory-dreaming.md §7).
  *
- * The canonical copy lives at `<agent-root>/skills/<name>/`, OUTSIDE the
- * workspace, for the same reason memory does: it must survive a workspace reset
- * or re-clone, and it must never be committed into a github-mode repo. Nothing
- * reads that path directly — runtimes discover skills under the ACP cwd.
+ * Accepting a mined skill stores it at `<agent-root>/skills/<name>/` — a
+ * DAEMON-OWNED path outside the workspace, so it survives a workspace reset or
+ * re-clone and is never committed into a github-mode repo, exactly like memory.
  *
- * SECURITY: the daemon does NOT copy these into the workspace itself. The
- * workspace is agent-writable and the daemon runs OUTSIDE the agent's sandbox,
- * so any daemon-side recursive rm/cp resolving a path under the ACP cwd is
- * racing an adversary who can swap a parent directory for a symlink between the
- * check and the write — a check/use gap Node cannot close portably (there is no
- * `openat` family). Instead each accepted skill is presented to the EXISTING
- * `npx skills` installer as an ordinary local source, so the established,
- * already-hardened installation path does the materialization and this module
- * performs no destructive filesystem work at all.
+ * ─── Why nothing here installs it into the workspace ────────────────────────
  *
- * Deliberately NOT persisted into `agent.skills`: that array is CP-owned config
- * the next snapshot would overwrite. These entries are synthesized per session
- * prep, so they are daemon state rather than org config.
+ * Runtimes discover skills in project-scope directories under the ACP cwd
+ * (`.claude/skills` / `.agents/skills`). That cwd is AGENT-WRITABLE, and both
+ * the daemon and the `npx skills` installer run OUTSIDE the agent's sandbox
+ * with daemon authority. Any materialization there resolves a pathname whose
+ * parent the agent can replace with a symlink, so a daemon-authority recursive
+ * copy/remove can be redirected to an arbitrary host path. Node exposes no
+ * `openat` family, so re-validating the path cannot close that race portably:
+ * checking again only makes an escape *detectable* after the write.
+ *
+ * Delegating to the existing installer does not help either — process
+ * indirection changes who performs the write, not its authority or its
+ * pathname containment, and that installer does its own path-based
+ * reconciliation removal.
+ *
+ * So acceptance deliberately stops at the daemon-owned copy. Making an accepted
+ * skill visible to the runtime needs a containment-safe materialization step
+ * (a hardened installer, or execution under a filesystem sandbox that cannot
+ * follow workspace links to host paths) and is tracked as follow-up alongside
+ * the CP/console wiring this feature still needs.
  */
 import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'
-import type { AgentSkillEntry } from '@agentconnect.md/protocol'
 
-/** Where an accepted mined skill is kept, under the agent root. */
+/** Where an accepted mined skill is stored, under the agent root. */
 export const ACCEPTED_SKILLS_DIRNAME = 'skills'
 
-/** Same name discipline as the miner — these become filesystem paths. */
+/** Same name discipline as the miner — these are filesystem paths. */
 const SKILL_DIR_RE = /^[a-z0-9][a-z0-9-]{0,62}$/
 
-/** Label prefix so these are distinguishable from configured sources in logs. */
-const SOURCE_LABEL_PREFIX = 'dream:'
-
 /**
- * The agent's accepted dream skills, as local `AgentSkillEntry` sources for
- * `installSkills`. Empty (the overwhelmingly common case) when the agent has
- * accepted none. Never throws: a session must still start if this fails.
+ * Names of the skills this agent has accepted. Read-only: the console shows
+ * these so acceptance is never a silent no-op, and no caller writes anywhere
+ * the agent can influence. Never throws.
  */
-export async function acceptedDreamSkillSources(agent: { dir: string }): Promise<AgentSkillEntry[]> {
-  const root = join(agent.dir, ACCEPTED_SKILLS_DIRNAME)
-  let names: string[]
+export async function acceptedDreamSkillNames(agent: { dir: string }): Promise<string[]> {
   try {
-    names = (await fsp.readdir(root, { withFileTypes: true }))
-      // Only real directories: a symlink planted under the agent root would be
-      // handed to the installer as a source, so it never becomes one.
-      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && SKILL_DIR_RE.test(entry.name))
-      .map((entry) => entry.name)
+    return (
+      (await fsp.readdir(join(agent.dir, ACCEPTED_SKILLS_DIRNAME), { withFileTypes: true }))
+        // A symlink here would be a path we hand onward, so it is never listed.
+        .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && SKILL_DIR_RE.test(entry.name))
+        .map((entry) => entry.name)
+        .sort()
+    )
   } catch {
     return []
   }
-  return names.map((name) => ({
-    name: `${SOURCE_LABEL_PREFIX}${name}`,
-    source: join(root, name),
-    skills: []
-  }))
 }
