@@ -1,9 +1,8 @@
 #!/usr/bin/env node
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Command } from 'commander'
-import { cliEntryPath, resolveRoot } from './paths.js'
+import { resolveRoot } from './paths.js'
+import { selfHealCliEntry } from './self-heal.js'
 import { delegate } from './delegate.js'
 import { runShell } from './run-shell.js'
 import { classifyInvocation, parseRootFlag } from './route.js'
@@ -11,18 +10,6 @@ import { runLogin } from './login.js'
 import { resolveController } from './service/index.js'
 import { runUpgrade, versionInstall, versionList, versionPrune, versionUse } from './version-commands.js'
 import { CLI_VERSION } from './version.js'
-
-/** Write <root>/cli-entry so a service/foreground daemon can locate this CLI to
- *  run an upgrade even when its PATH omits npm's global bin (§3). Best-effort. */
-function selfHealCliEntry(root: string): void {
-  try {
-    const p = cliEntryPath(root)
-    mkdirSync(dirname(p), { recursive: true })
-    writeFileSync(p, fileURLToPath(import.meta.url) + '\n')
-  } catch {
-    // non-fatal: the pointer is a convenience for daemon→CLI handoff
-  }
-}
 
 const fail = (cmd: string, err: unknown): never => {
   console.error(`agentconnect ${cmd}: ${(err as Error).message}`)
@@ -32,7 +19,7 @@ const fail = (cmd: string, err: unknown): never => {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2)
   const root = resolveRoot(parseRootFlag(argv))
-  selfHealCliEntry(root)
+  selfHealCliEntry(root, fileURLToPath(import.meta.url))
 
   // ── Route by the first positional command (honoring global options before it),
   //    reserving only CLI-owned commands; everything else delegates verbatim (§4.2).

@@ -1,5 +1,5 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
-import { mkdirSync } from 'node:fs'
+import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { DreamInfo, SessionImageAttachment } from '@agentconnect.md/protocol'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
@@ -358,13 +358,41 @@ export interface RuntimeModelCapRecord {
   observedAt: number
 }
 
+/**
+ * Narrow an existing path's mode, mirroring `cli/login.ts:protectCredentialsFile`.
+ * Best-effort by design: Windows has no enforceable POSIX mode semantics, and a
+ * path that vanished (WAL siblings appear lazily) is not an error worth failing a
+ * daemon boot over.
+ */
+function restrictPath(path: string, mode: number): void {
+  try {
+    if ((statSync(path).mode & 0o777) !== mode) chmodSync(path, mode)
+  } catch {
+    // absent, or a platform without POSIX modes — nothing to narrow
+  }
+}
+
 export class LocalStore {
   private db: DatabaseSync
 
   constructor(dbPath: string) {
-    mkdirSync(dirname(dbPath), { recursive: true })
+    // This database holds every platform message body, agent reply, tool payload and
+    // durable inbox blob the daemon has seen — the same material the console serves
+    // behind authorization. Every other secret-bearing artifact the daemon writes is
+    // explicitly 0600/0700 (config.json, agent.json, materialized config-file secrets,
+    // runtime homes, evaluation artifacts); this one inherited the umask, so on a host
+    // where the root pre-exists group/other-readable — a container image `mkdir -p`, a
+    // systemd `StateDirectory=` (0755), an operator-created path — a second local
+    // account could read the lot. Restrict the directory and the database explicitly,
+    // and chmod after creation so a loose umask cannot widen either.
+    const dir = dirname(dbPath)
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    restrictPath(dir, 0o700)
     this.db = new DatabaseSync(dbPath)
     this.db.exec('PRAGMA journal_mode = WAL')
+    // WAL mode publishes two siblings alongside the database; they carry the same
+    // rows, so restricting only the main file would leave the content readable.
+    for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) restrictPath(p, 0o600)
     this.migrateTranscript()
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
