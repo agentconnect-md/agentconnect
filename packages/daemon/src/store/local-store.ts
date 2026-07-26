@@ -590,7 +590,7 @@ export class LocalStore {
         dreamId TEXT PRIMARY KEY,
         agentId TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status IN
-          ('pending', 'running', 'completed', 'failed', 'canceled', 'adopted', 'discarded')),
+          ('pending', 'running', 'completed', 'failed', 'canceled', 'adopted', 'discarded', 'superseded')),
         triggerKind TEXT NOT NULL,
         sessionIds TEXT NOT NULL,         -- JSON string[]
         snapshotDigest TEXT NOT NULL,
@@ -605,6 +605,7 @@ export class LocalStore {
       CREATE INDEX IF NOT EXISTS dreams_agent_created ON dreams (agentId, createdAt DESC);
     `)
     this.migrateDreamSnapshotWrites()
+    this.migrateDreamSupersededStatus()
     this.migrateSessionUsage()
     this.migrateSessionMutes()
     this.migrateInboxLoopGuardCounted()
@@ -689,6 +690,71 @@ export class LocalStore {
     const cols = this.db.prepare('PRAGMA table_info(dreams)').all() as { name: string }[]
     if (!cols.some((c) => c.name === 'snapshotWrites'))
       this.db.exec('ALTER TABLE dreams ADD COLUMN snapshotWrites TEXT')
+  }
+
+  /** Extend the dream lifecycle without stranding proposals created before the
+   *  state existed. SQLite cannot alter a CHECK constraint in place, so rebuild
+   *  this metadata-only table and reconcile every completed proposal that
+   *  predates a successful adoption for the same agent. */
+  private migrateDreamSupersededStatus(): void {
+    const table = this.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'dreams'").get() as
+      { sql: string } | undefined
+    if (!table || table.sql.includes("'superseded'")) return
+
+    this.db.exec('BEGIN')
+    try {
+      this.db.exec(`
+        ALTER TABLE dreams RENAME TO dreams_before_superseded;
+        CREATE TABLE dreams (
+          dreamId TEXT PRIMARY KEY,
+          agentId TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN
+            ('pending', 'running', 'completed', 'failed', 'canceled', 'adopted', 'discarded', 'superseded')),
+          triggerKind TEXT NOT NULL,
+          sessionIds TEXT NOT NULL,
+          snapshotDigest TEXT NOT NULL,
+          snapshotWrites TEXT,
+          instructions TEXT,
+          skills TEXT,
+          usage TEXT,
+          error TEXT,
+          createdAt TEXT NOT NULL,
+          endedAt TEXT
+        );
+        INSERT INTO dreams (
+          dreamId, agentId, status, triggerKind, sessionIds, snapshotDigest,
+          snapshotWrites, instructions, skills, usage, error, createdAt, endedAt
+        ) SELECT
+          dreamId, agentId, status, triggerKind, sessionIds, snapshotDigest,
+          snapshotWrites, instructions, skills, usage, error, createdAt, endedAt
+        FROM dreams_before_superseded;
+        DROP TABLE dreams_before_superseded;
+        CREATE INDEX dreams_agent_created ON dreams (agentId, createdAt DESC);
+
+        UPDATE dreams AS candidate
+        SET status = 'superseded', endedAt = (
+          SELECT MIN(adopted.endedAt)
+          FROM dreams AS adopted
+          WHERE adopted.agentId = candidate.agentId
+            AND adopted.status = 'adopted'
+            AND adopted.endedAt IS NOT NULL
+            AND adopted.endedAt > candidate.createdAt
+        )
+        WHERE candidate.status = 'completed'
+          AND EXISTS (
+            SELECT 1
+            FROM dreams AS adopted
+            WHERE adopted.agentId = candidate.agentId
+              AND adopted.status = 'adopted'
+              AND adopted.endedAt IS NOT NULL
+              AND adopted.endedAt > candidate.createdAt
+          );
+      `)
+      this.db.exec('COMMIT')
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
   }
 
   private migrateSessionMutes(): void {
@@ -1486,6 +1552,23 @@ export class LocalStore {
     return (
       this.db.prepare("SELECT * FROM dreams WHERE status IN ('pending', 'running')").all() as Record<string, unknown>[]
     ).map((row) => this.dreamFromRow(row))
+  }
+
+  completedDreams(agentId: string): DreamInfo[] {
+    return (
+      this.db.prepare("SELECT * FROM dreams WHERE agentId = ? AND status = 'completed'").all(agentId) as Record<
+        string,
+        unknown
+      >[]
+    ).map((row) => this.dreamFromRow(row))
+  }
+
+  /** Store proposals reconciled as stale during upgrade. The runner removes
+   *  their daemon-local staging once agent directories are available. */
+  supersededDreams(): DreamInfo[] {
+    return (this.db.prepare("SELECT * FROM dreams WHERE status = 'superseded'").all() as Record<string, unknown>[]).map(
+      (row) => this.dreamFromRow(row)
+    )
   }
 
   /** Newest-first addressable sessions to mine as dream transcript sources. */

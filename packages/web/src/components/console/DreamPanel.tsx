@@ -49,7 +49,8 @@ const STATUS_LABEL: Record<DreamDto['status'], string> = {
   failed: 'Failed',
   canceled: 'Canceled',
   adopted: 'Adopted',
-  discarded: 'Discarded'
+  discarded: 'Discarded',
+  superseded: 'Superseded'
 }
 
 /** Status dot colour per lifecycle state — the same visual language the
@@ -62,7 +63,8 @@ const STATUS_DOT: Record<DreamDto['status'], string> = {
   failed: 'var(--status-error)',
   canceled: 'var(--text-disabled)',
   adopted: 'var(--status-online)',
-  discarded: 'var(--text-disabled)'
+  discarded: 'var(--text-disabled)',
+  superseded: 'var(--text-disabled)'
 }
 
 function statusTone(status: DreamDto['status']): string {
@@ -84,6 +86,7 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
   const [unsupported, setUnsupported] = useState(false)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [actionNotice, setActionNotice] = useState<string | null>(null)
   const [reviewing, setReviewing] = useState<string | null>(null)
   const [confirmStart, setConfirmStart] = useState(false)
   const [confirmAdopt, setConfirmAdopt] = useState<string | null>(null)
@@ -133,6 +136,7 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
   const run = async (fn: () => Promise<unknown>, action: 'start' | 'other' = 'other') => {
     setBusy(true)
     setActionError(null)
+    setActionNotice(null)
     try {
       await fn()
       await refresh()
@@ -189,6 +193,13 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
   )
   const pastDreams = (dreams ?? []).filter((dream) => dream.status !== 'completed' && isDreamTerminal(dream.status))
 
+  const discard = (dreamId: string) =>
+    void run(async () => {
+      await discardDream(agentId, dreamId)
+      setReviewing((current) => (current === dreamId ? null : current))
+      setActionNotice('Dream discarded.')
+    })
+
   const renderDreamRows = (rows: DreamDto[]) => (
     <ul className="flex list-none flex-col gap-0 p-0">
       {rows.map((dream) => (
@@ -219,6 +230,11 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
                 onClick={() => setReviewing(reviewing === dream.dreamId ? null : dream.dreamId)}
               >
                 {reviewing === dream.dreamId ? 'Hide' : 'Review'}
+              </Button>
+            ) : null}
+            {dream.status === 'completed' && canEdit ? (
+              <Button variant="secondary" size="xs" disabled={busy} onClick={() => discard(dream.dreamId)}>
+                Discard
               </Button>
             ) : null}
             {!isDreamTerminal(dream.status) && canEdit ? (
@@ -257,6 +273,9 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
         {actionError ? (
           <div className="font-sans text-[12px] font-normal leading-normal text-(--status-error)">{actionError}</div>
         ) : null}
+        {actionNotice ? (
+          <div className="font-sans text-[12px] font-normal leading-normal text-(--status-online)">{actionNotice}</div>
+        ) : null}
         {listError ? (
           <div className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">{listError}</div>
         ) : null}
@@ -278,12 +297,7 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
             canEdit={canEdit}
             busy={busy}
             onAdopt={() => setConfirmAdopt(reviewing)}
-            onDiscard={() =>
-              void run(async () => {
-                await discardDream(agentId, reviewing)
-                setReviewing(null)
-              })
-            }
+            onDiscard={() => discard(reviewing)}
           />
         ) : null}
 
@@ -328,6 +342,7 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
               void run(async () => {
                 await adoptDream(agentId, dreamId)
                 setReviewing(null)
+                setActionNotice('Memory adopted. Outdated proposals were moved to History.')
               })
             }}
           >

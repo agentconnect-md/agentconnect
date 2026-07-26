@@ -1866,7 +1866,8 @@ export async function listMemoryFileHistory(
 
 // ── memory dreaming (docs/designs/memory-dreaming.md §10) — offline consolidation jobs ──
 
-export type DreamStatus = 'pending' | 'running' | 'completed' | 'failed' | 'canceled' | 'adopted' | 'discarded'
+export type DreamStatus =
+  'pending' | 'running' | 'completed' | 'failed' | 'canceled' | 'adopted' | 'discarded' | 'superseded'
 
 export interface DreamDto {
   dreamId: string

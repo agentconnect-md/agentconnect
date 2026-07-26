@@ -2114,7 +2114,7 @@ export const DreamSkillDto = z.object({
 export const DreamDto = z.object({
   dreamId: z.string(),
   agentId: z.string(),
-  status: z.enum(['pending', 'running', 'completed', 'failed', 'canceled', 'adopted', 'discarded']),
+  status: z.enum(['pending', 'running', 'completed', 'failed', 'canceled', 'adopted', 'discarded', 'superseded']),
   trigger: z.enum(['manual', 'schedule', 'auto']),
   sessionIds: z.array(z.string()),
   snapshotDigest: z.string(),
