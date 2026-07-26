@@ -57,8 +57,9 @@ service or foreground startup. It:
 
 1. performs an auth-only daemon WebSocket exchange;
 2. writes the accepted Control Plane URL and key to local config;
-3. in interactive mode, either installs and starts the OS service or enters the
-   foreground `run` shell.
+3. in interactive mode, ensures the selected daemon channel is installed when
+   the root has no active version, then either installs and starts the OS service
+   or enters the foreground `run` shell.
 
 The login probe uses `@agentconnect.md/protocol`,
 `@agentconnect.md/connection`, and `ws`. It does not import daemon config or
@@ -205,6 +206,10 @@ versions does not require rewriting the service definition.
 `agentconnect up` starts it. `uninstall-service` stops and removes it. The
 service definition retains the Node executable used during installation, so a
 Node runtime change requires reinstalling the service.
+
+Interactive `agentconnect login` ensures an active daemon version exists before
+installing and starting the service, so first-time onboarding does not require a
+separate `agentconnect install`.
 
 ## 5. Stable helper entry
 

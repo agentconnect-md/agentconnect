@@ -224,9 +224,9 @@ async function main(): Promise<void> {
         fail('version prune', err)
       }
     })
-  // Top-level `install` — the onboarding-friendly alias of `version install`.
-  // First install on a fresh root also activates it (versionInstall), so the
-  // onboarding two-step (`install` → `run`/`login`) works without `version use`.
+  // Top-level `install` — the convenient alias of `version install`. First
+  // install on a fresh root also activates it (versionInstall), so manual
+  // installs do not need a follow-up `version use`.
   program
     .command('install [version]')
     .description('Download, unpack, and (on a fresh host) activate a daemon version')

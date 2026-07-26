@@ -16,7 +16,7 @@ import { resolveRoot, configPath } from './paths.js'
 import { CLI_VERSION } from './version.js'
 import { probeAuth, type ProbeResult } from './cp/auth-probe.js'
 import { resolveController, type InstallOpts } from './service/index.js'
-import { runShell } from './run-shell.js'
+import { ensureDaemonInstalled, runShell } from './run-shell.js'
 
 export interface PersistCredsOpts {
   apiUrl: string
@@ -128,14 +128,16 @@ function realDeps(opts: RunLoginOpts): LoginDeps {
   return {
     probe: (o) => probeAuth({ url: o.url, token: o.token, agentVersion: CLI_VERSION }),
     installService: async () => {
-      const controller = resolveController({ root: opts.root })
+      const root = resolveRoot(opts.root)
+      await ensureDaemonInstalled(root)
+      const controller = resolveController({ root })
       await controller.install(buildInstallOpts(opts))
       await controller.up()
     },
     // Foreground onboarding runs the daemon via the same respawn shell as
     // `agentconnect run` (§6.1) — it delegates to <root>/current and never
-    // returns. Requires an installed daemon version (P2), or a manually seeded
-    // `current` in P1.
+    // returns. The shell bootstraps the selected daemon channel when `current`
+    // does not exist yet.
     runForeground: () => runShell(resolveRoot(opts.root), foregroundArgv(opts)),
     out: process.stdout,
     input: process.stdin,
