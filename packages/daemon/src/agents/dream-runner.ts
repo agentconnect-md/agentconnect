@@ -14,6 +14,7 @@ import {
   memoryWriteMarks,
   recordExternalMemoryMutation,
   readMemoryFile,
+  snapshotMemoryHistory,
   withMemoryDirLock
 } from './memory.js'
 import {
@@ -474,17 +475,15 @@ export class DreamRunner {
       const at = this.nowIso()
 
       // 1) Build the complete replacement in a temp sibling dir. `memory/` is
-      //    untouched, so this needs no lock and any failure here leaves the live
-      //    store intact.
+      //    untouched; only its contained history snapshot briefly takes the
+      //    shared lock. Any failure here leaves the live store intact.
       const replacement = join(dir, `.memory.adopting-${dreamId}`)
       await fsp.rm(replacement, { recursive: true, force: true })
       await fsp.mkdir(replacement, { recursive: true })
-      let history = ''
-      try {
-        history = await fsp.readFile(join(live, MEMORY_HISTORY_FILENAME), 'utf8')
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
-      }
+      // Canonicalize BEFORE concatenating dream rows. Otherwise a legacy row
+      // without its final newline (or a torn tail) absorbs the first dream row
+      // into one invalid line that post-swap compaction must discard.
+      let history = await snapshotMemoryHistory(dir)
       for (const name of staged) {
         const content = await fsp.readFile(join(out, name), 'utf8')
         await fsp.writeFile(join(replacement, name), content, 'utf8')

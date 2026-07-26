@@ -449,6 +449,26 @@ export function retainMemoryHistoryRecords(
   return perFile.slice(first)
 }
 
+/** Turn a possibly legacy/torn sidecar into canonical retained JSONL. This is
+ * pure so dream adoption can repair the copied sidecar before adding its rows;
+ * callers that touch the live store must still hold the memory-dir lock. */
+export function canonicalizeMemoryHistory(raw: string): string {
+  const withIds = parseHistory(raw).records.map((record) => (record.id ? record : { ...record, id: randomUUID() }))
+  return retainMemoryHistoryRecords(withIds).map(historyLine).join('')
+}
+
+/** Take a contained/no-follow canonical snapshot for a replacement store. The
+ * brief shared lock makes the copied sidecar line up with ordinary appends. */
+export function snapshotMemoryHistory(agentDir: string): Promise<string> {
+  return withMemoryDirLock(agentDir, async () => {
+    const dir = memoryDir(agentDir)
+    const path = await containedReadTarget(agentDir, dir, join(dir, MEMORY_HISTORY_FILENAME))
+    if (path === null) return ''
+    const current = await readCurrentMemoryFile(path)
+    return current.existed ? canonicalizeMemoryHistory(current.before) : ''
+  })
+}
+
 /** Compact one sidecar atomically. Invalid legacy/torn rows are discarded and
  * rows written before stable event IDs existed are upgraded during the rewrite. */
 async function compactHistoryFile(agentDir: string): Promise<void> {
@@ -460,23 +480,10 @@ async function compactHistoryFile(agentDir: string): Promise<void> {
   if (!current.existed) return
   const raw = current.before
 
-  const parsed = parseHistory(raw)
-  let upgraded = false
-  const withIds = parsed.records.map((record) => {
-    if (record.id) return record
-    upgraded = true
-    return { ...record, id: randomUUID() }
-  })
-  const retained = retainMemoryHistoryRecords(withIds)
-  const needsRewrite =
-    upgraded ||
-    retained.length !== withIds.length ||
-    parsed.records.length !== parsed.nonEmptyLines ||
-    (raw.length > 0 && !raw.endsWith('\n')) ||
-    Buffer.byteLength(raw) > MAX_HISTORY_FILE_BYTES
-  if (!needsRewrite) return
+  const canonical = canonicalizeMemoryHistory(raw)
+  if (canonical === raw) return
 
-  await atomicWriteContainedMemoryFile(agentDir, dir, lexicalPath, retained.map(historyLine).join(''), undefined, 0o600)
+  await atomicWriteContainedMemoryFile(agentDir, dir, lexicalPath, canonical, undefined, 0o600)
 }
 
 /** Apply system retention while the caller already holds the memory-dir lock.
