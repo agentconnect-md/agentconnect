@@ -1497,23 +1497,35 @@ export class LocalStore {
 
   /** Chronological conversational text of one session thread, scoped like
    *  `transcriptPageForAgent` (a peer's private rows never enter a dream). */
+  /**
+   * Rows for one session thread. `includeTools` additionally returns tool
+   * TITLES — the ACP `title` (e.g. `Bash(npm run deploy)`), which carries the
+   * command or path. It never returns the tool `body`: that holds rawOutput as
+   * well as rawInput, and raw output is where secrets and bulk noise live
+   * (design §4). Skill mining needs the trajectory, not the payloads.
+   */
   dreamTranscriptText(
     channel: string,
     thread: string,
     agentId: string,
-    limit: number
-  ): { sender: string; text: string }[] {
+    limit: number,
+    includeTools = false
+  ): { sender: string; text: string; kind?: string }[] {
     const rows = this.db
       .prepare(
-        `SELECT sender, text FROM transcript
-         WHERE channel = ? AND thread = ? AND kind = 'text'
+        `SELECT sender, text, kind FROM transcript
+         WHERE channel = ? AND thread = ? AND kind ${includeTools ? "IN ('text','tool')" : "= 'text'"}
            AND (sender = ? OR recipient = ? OR EXISTS (
              SELECT 1 FROM transcript_recipient tr
              WHERE tr.channel = transcript.channel AND tr.thread = transcript.thread
                AND tr.ts = transcript.ts AND tr.agentId = ?))
          ORDER BY seq DESC LIMIT ?`
       )
-      .all(channel, thread, agentId, agentId, agentId, limit) as { sender: string; text: string }[]
+      .all(channel, thread, agentId, agentId, agentId, limit) as {
+      sender: string
+      text: string
+      kind?: string
+    }[]
     return rows.reverse()
   }
 

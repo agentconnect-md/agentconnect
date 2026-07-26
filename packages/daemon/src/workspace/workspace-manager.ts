@@ -21,6 +21,7 @@ import {
 import type { Agent } from '../agents/agent-schema.js'
 import { makeLogger } from '../log.js'
 import { installSkills } from '../skills/install-skills.js'
+import { installAcceptedDreamSkills } from '../skills/dream-skills.js'
 import {
   assertSafeWorkspaceGitConfig,
   cloneGitEnv,
@@ -54,6 +55,14 @@ async function withSkills(agent: Agent, acpCwd: string): Promise<string> {
     },
     warn: (msg) => skillsLog.warn(msg)
   })
+  // Skills the user ACCEPTED from a dream live under the agent root (outside the
+  // workspace, so they survive a reset). Materialize them into the same runtime
+  // skill root, or the runtime would never see them (design §7). `dir` is present
+  // on every discovered agent (LoadedAgent); guard for callers with a bare spec.
+  const agentRoot = (agent as { dir?: string }).dir
+  if (agentRoot) {
+    await installAcceptedDreamSkills({ dir: agentRoot, runtime: agent.runtime }, acpCwd, (msg) => skillsLog.warn(msg))
+  }
   return acpCwd
 }
 

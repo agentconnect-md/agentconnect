@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'
+import { stringify as stringifyYaml } from 'yaml'
 import type { DreamInfo, DreamTrigger, MemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import {
   MEMORY_INDEX,
@@ -69,8 +70,10 @@ export interface DreamStorePort {
     channel: string,
     thread: string,
     agentId: string,
-    limit: number
-  ): { sender: string; text: string }[]
+    limit: number,
+    /** Include tool TITLES too — the trajectory skill mining reads (never bodies). */
+    includeTools?: boolean
+  ): { sender: string; text: string; kind?: string }[]
 }
 
 export interface DreamRunnerDeps {
@@ -279,9 +282,19 @@ export class DreamRunner {
   ): Promise<void> {
     const { agentId, dreamId } = dream
     try {
+      // Skill mining reads the TRAJECTORY (which commands and files, in order),
+      // which conversational text alone does not contain — a procedure the agent
+      // repeated via tool calls is invisible without this (design §4).
+      const mineSkills = this.deps.dreamingPolicyFor(agentId)?.mineSkills === true
       const transcripts: DreamTranscriptSource[] = sources.map((source) => ({
         sessionId: source.sessionId,
-        rows: this.deps.store.dreamTranscriptText(source.channel, source.thread, agentId, TRANSCRIPT_ROWS_PER_SESSION)
+        rows: this.deps.store.dreamTranscriptText(
+          source.channel,
+          source.thread,
+          agentId,
+          TRANSCRIPT_ROWS_PER_SESSION,
+          mineSkills
+        )
       }))
 
       // Snapshot copy for inspection (input/ is never read back by the pipeline).
@@ -291,11 +304,11 @@ export class DreamRunner {
         await fsp.writeFile(join(base, 'input', file.name), file.content, 'utf8')
       }
 
-      const mineSkills = this.deps.dreamingPolicyFor(agentId)?.mineSkills === true
       const prompt = buildDreamPrompt({
         files,
         transcripts,
         mineSkills,
+        ...(mineSkills ? { dismissedSkills: this.dismissedSkillNames(agentId) } : {}),
         ...(dream.instructions ? { instructions: dream.instructions } : {})
       })
       this.transition(agentId, dreamId, 'pending', { status: 'running' })
@@ -442,7 +455,14 @@ export class DreamRunner {
       // Frontmatter is generated HERE, not taken from the model: name and
       // description are the fields the skill loader keys on, and they must match
       // the validated values the console shows in the recommendation.
-      const frontmatter = `---\nname: ${skill.name}\ndescription: ${skill.description.replace(/\r?\n/g, ' ')}\n---\n\n`
+      //
+      // The description is model-controlled text, so it is SERIALIZED, never
+      // interpolated: a bare `Deploy: staging` is invalid YAML, and `[a]` /
+      // `{x: y}` / `a # b` would silently parse as a different type or value than
+      // the string the reviewer approved. Newlines are folded first so one
+      // description can never become two frontmatter lines.
+      const description = skill.description.replace(/[\r\n]+/g, ' ').trim()
+      const frontmatter = `---\n${stringifyYaml({ name: skill.name, description })}---\n\n`
       await fsp.writeFile(join(dir, 'SKILL.md'), frontmatter + skill.skill.trimEnd() + '\n', 'utf8')
       if (skill.scripts.length === 0) continue
       const scriptsDir = join(dir, 'scripts')
@@ -782,7 +802,20 @@ export class DreamRunner {
       if (dream.status !== 'completed' && dream.status !== 'failed' && dream.status !== 'canceled') {
         throw new DreamStateError(`cannot discard a ${dream.status} dream`)
       }
-      await fsp.rm(this.dreamDir(agentId, dreamId), { recursive: true, force: true })
+      // Skills have an INDEPENDENT review lifecycle (design §7): discarding the
+      // consolidated store must not destroy a candidate the user hasn't ruled on,
+      // or its metadata would say `proposed` while accepting it fails. Drop the
+      // store staging and the input snapshot; keep `skills/` when any candidate
+      // is still proposed.
+      const base = this.dreamDir(agentId, dreamId)
+      const pending = (dream.skills ?? []).some((skill) => skill.state === 'proposed')
+      if (pending) {
+        for (const part of ['input', 'output']) {
+          await fsp.rm(join(base, part), { recursive: true, force: true })
+        }
+      } else {
+        await fsp.rm(base, { recursive: true, force: true })
+      }
       const discarded: DreamInfo = { ...dream, status: 'discarded', endedAt: this.nowIso() }
       this.deps.store.updateDream(discarded)
       return discarded
@@ -818,7 +851,9 @@ export class DreamRunner {
       await fsp.rm(destination, { recursive: true, force: true })
       await fsp.cp(staged, destination, { recursive: true })
       this.deps.log.info(`dream ${dreamId}: accepted skill "${name}" for agent ${agentId}`)
-      return this.setSkillState(agentId, dreamId, name, 'accepted')
+      const next = this.setSkillState(agentId, dreamId, name, 'accepted')
+      await this.sweepReviewedStaging(agentId, next)
+      return next
     })
   }
 
@@ -831,8 +866,30 @@ export class DreamRunner {
       if (skill.state === 'dismissed') return dream // idempotent
       if (skill.state === 'accepted') throw new DreamStateError('this skill candidate was already accepted')
       await fsp.rm(join(this.dreamDir(agentId, dreamId), 'skills', name), { recursive: true, force: true })
-      return this.setSkillState(agentId, dreamId, name, 'dismissed')
+      const next = this.setSkillState(agentId, dreamId, name, 'dismissed')
+      await this.sweepReviewedStaging(agentId, next)
+      return next
     })
+  }
+
+  /** Names the user has already declined across this agent's past dreams, so the
+   *  next mining prompt can be told not to re-propose them (design §7). */
+  private dismissedSkillNames(agentId: string): string[] {
+    const names = new Set<string>()
+    for (const dream of this.deps.store.listDreams(agentId, 50)) {
+      for (const skill of dream.skills ?? []) {
+        if (skill.state === 'dismissed') names.add(skill.name)
+      }
+    }
+    return [...names]
+  }
+
+  /** A discarded dream keeps its `skills/` only while a candidate is unreviewed;
+   *  once the last one is decided there is nothing left to review. */
+  private async sweepReviewedStaging(agentId: string, dream: DreamInfo): Promise<void> {
+    if (dream.status !== 'discarded') return
+    if ((dream.skills ?? []).some((skill) => skill.state === 'proposed')) return
+    await fsp.rm(this.dreamDir(agentId, dream.dreamId), { recursive: true, force: true }).catch(() => {})
   }
 
   private skillCandidate(
