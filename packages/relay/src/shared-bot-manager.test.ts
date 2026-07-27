@@ -495,6 +495,30 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
     expect(ingest.postText).toHaveBeenCalledTimes(1)
   })
 
+  it('a first gated DM on a NON-authority pod still posts (single event copy, receiving pod owns it)', async () => {
+    const manager = new SharedBotManager(deps({ selfRelayId: () => PEER_RELAY }))
+    const internals = manager as unknown as ManagerInternals
+    internals.router.upsert(gatedAssignment()) // noticeAuthority = SELF_RELAY, not this pod
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+
+    await internals.forward(BOT_ID, dm())
+    expect(ingest.postText).toHaveBeenCalledTimes(1)
+  })
+
+  it('a DM already in the durable gatedDmConversations set is latched on EVERY pod', async () => {
+    const manager = new SharedBotManager(deps())
+    const internals = manager as unknown as ManagerInternals
+    const a = gatedAssignment()
+    a.gatedDmConversations = ['D42'] // CP rows exist — stamped on (re)assign
+    internals.router.upsert(a)
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+
+    await internals.forward(BOT_ID, dm())
+    expect(ingest.postText).not.toHaveBeenCalled()
+  })
+
   it('reports a gated DM even when a non-gated default agent WINS the routing (mixed bot)', async () => {
     const reportBotConversation = vi.fn(() => true)
     const manager = new SharedBotManager(deps({ reportBotConversation }))

@@ -729,6 +729,8 @@ export function buildContainer(
     // to whoever is connected), so no shared-bot re-placement is needed here.
     async () => {
       await relayRoster.broadcast()
+      // §14.3: a reaped relay may have held notice authorities — re-stamp survivors.
+      await sharedBot.reconcileAll().catch((err) => http.log.error({ err }, 'relay sweep: shared-bot reconcile failed'))
       const selected = (await relayRoster.entries())[0]
       if (selected) {
         await syncMemoryConnectionsToDaemons(relayHttpOrigin(selected.url), {
@@ -846,9 +848,17 @@ export function buildContainer(
         relayRoster.broadcast().catch((err) => http.log.error({ err }, 'relay: roster sync on register failed'))
       )
       // Seed ONLY the fresh relay with every http bot's assign + persisted thread
-      // affinity (per-relay replay — no re-broadcast to the whole pool).
+      // affinity (per-relay replay — no re-broadcast to the whole pool)…
       trackRelayRegistrationTask(
         sharedBot.replayTo(ch).catch((err) => http.log.error({ err }, 'relay: shared-bot replay on register failed'))
+      )
+      // …then converge the WHOLE pool: a joined relay changes the connected roster,
+      // which moves §14.3 notice authorities — existing relays must learn the new
+      // assignment or two pods could both (or neither) believe they hold it.
+      trackRelayRegistrationTask(
+        sharedBot
+          .reconcileAll()
+          .catch((err) => http.log.error({ err }, 'relay: shared-bot reconcile on register failed'))
       )
       trackRelayRegistrationTask(
         hookService.replayTo(ch).catch((err) => http.log.error({ err }, 'relay: hook-rule replay on register failed'))
@@ -1002,6 +1012,13 @@ export function buildContainer(
       } catch (err) {
         http.log.error({ err, botId: m.botId }, 'relay: bot-channels snapshot failed')
       }
+    },
+    // A closed relay socket shrinks the connected roster — re-stamp §14.3 notice
+    // authorities on the survivors (fire-and-forget; errors logged).
+    onRelayGone: () => {
+      void sharedBot
+        .reconcileAll()
+        .catch((err) => http.log.error({ err }, 'relay: shared-bot reconcile on disconnect failed'))
     },
     // Incremental DM-conversation report (§14.3): surface a kind:'im' row (Off) on
     // the bot's gated installs so console editors can enable the DM. Swallow+log.

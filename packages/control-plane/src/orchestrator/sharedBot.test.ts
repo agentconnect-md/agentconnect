@@ -371,6 +371,12 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       aliceRow!.trigger = 'any'
       await orch.reportConversation(BOT, { id: 'D42', name: '@Alice Smith' })
       expect(aliceRow).toMatchObject({ trigger: 'any', name: '@Alice Smith' })
+
+      // The report re-stamps the pool: rc/routes now carries the DM in the durable
+      // gatedDmConversations set (the pool-wide one-time DM-notice latch, §14.3).
+      const routes = ch.sends.filter((s) => s.type === 'rc/routes')
+      expect(routes.length).toBeGreaterThan(0)
+      expect((routes.at(-1)!.payload as { gatedDmConversations: string[] }).gatedDmConversations).toContain('D42')
     })
 
     it('an enabled gated DM row compiles a scoped auto route PLUS a scoped slug keyword (§14.3)', async () => {

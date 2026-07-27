@@ -543,12 +543,19 @@ export const RcBotAssign = z.object({
   // only while that agent still has a channel-scoped route in the conversation —
   // otherwise a thread bound before the gate was applied would keep routing forever.
   gatedAgentIds: z.array(z.string().uuid()).default([]),
-  // §14.3 one-time gating notice: the relayId DETERMINISTICALLY responsible for
-  // posting it for this bot's conversations. Stamped at (re)assign time from the
-  // connected roster — pure data-plane arbitration at message time (a channel
-  // mention's two event copies may land on different pods; only the authority
-  // posts, with a local per-conversation latch). Absent ⇒ no relay posts.
-  noticeAuthority: z.string().uuid().optional()
+  // §14.3 one-time gating notice, CHANNEL conversations: the relayId
+  // DETERMINISTICALLY responsible for posting it for this bot. A channel mention
+  // arrives as two event copies that may land on different pods — only the
+  // authority posts (local per-conversation latch). Stamped from the connected
+  // roster at (re)assign/replay time and re-converged on relay join/leave/sweep.
+  // Absent ⇒ no relay posts.
+  noticeAuthority: z.string().uuid().optional(),
+  // §14.3 one-time gating notice, DM conversations: the DURABLE set of DM
+  // conversation ids already surfaced as CP rows (kind:'im' on gated installs).
+  // A DM has a SINGLE event copy, so the RECEIVING pod posts — but only for a
+  // conversation not yet in this set; the first DM's `rc/bot-conversation`
+  // report creates the rows and re-stamps the pool, latching it durably.
+  gatedDmConversations: z.array(z.string()).default([])
 })
 export type RcBotAssign = z.infer<typeof RcBotAssign>
 
@@ -569,7 +576,8 @@ export const RcRoutes = z.object({
   defaultAgentId: z.string().uuid().optional(),
   defaultDaemonId: z.string().uuid().optional(),
   gatedAgentIds: z.array(z.string().uuid()).default([]), // §14 — see RcBotAssign.gatedAgentIds
-  noticeAuthority: z.string().uuid().optional() // §14.3 — see RcBotAssign.noticeAuthority
+  noticeAuthority: z.string().uuid().optional(), // §14.3 — see RcBotAssign.noticeAuthority
+  gatedDmConversations: z.array(z.string()).default([]) // §14.3 — see RcBotAssign.gatedDmConversations
 })
 export type RcRoutes = z.infer<typeof RcRoutes>
 

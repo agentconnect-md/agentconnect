@@ -49,6 +49,7 @@ function toBotAssignment(a: import('@agentconnect.md/protocol').RcBotAssign): Bo
     ...(a.defaultAgentId ? { defaultAgentId: a.defaultAgentId } : {}),
     ...(a.defaultDaemonId ? { defaultDaemonId: a.defaultDaemonId } : {}),
     gatedAgentIds: a.gatedAgentIds,
+    gatedDmConversations: a.gatedDmConversations,
     ...(a.noticeAuthority ? { noticeAuthority: a.noticeAuthority } : {})
   }
 }
@@ -149,7 +150,8 @@ async function main(): Promise<void> {
         ...(r.defaultAgentId ? { defaultAgentId: r.defaultAgentId } : {}),
         ...(r.defaultDaemonId ? { defaultDaemonId: r.defaultDaemonId } : {}),
         gatedAgentIds: r.gatedAgentIds,
-        noticeAuthority: r.noticeAuthority
+        noticeAuthority: r.noticeAuthority,
+        gatedDmConversations: r.gatedDmConversations
       }),
     onAssign: (a) =>
       held.sharedBot?.setAffinity(a.botId, a.sessionKey, {

@@ -59,6 +59,9 @@ interface Compiled {
   defaultDaemonId?: string
   /** Members whose ingress is conversation-gated (resource-visibility.md §14). */
   gatedAgentIds: string[]
+  /** DM conversation ids already surfaced as rows on gated installs (§14.3) — the
+   *  pool-wide DURABLE notice latch for single-copy DM messages. */
+  gatedDmConversations: string[]
   /** Placed member integrations (spec push targets: daemonId + integration). */
   placed: { integration: IntegrationRecord; daemonId: string; gated: boolean }[]
 }
@@ -144,6 +147,7 @@ export class SharedBotOrchestrator {
         ...(compiled.defaultAgentId ? { defaultAgentId: compiled.defaultAgentId } : {}),
         ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {}),
         gatedAgentIds: compiled.gatedAgentIds,
+        gatedDmConversations: compiled.gatedDmConversations,
         ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
       })
     )
@@ -333,6 +337,7 @@ export class SharedBotOrchestrator {
       return
     }
     const installs = await this.integrations.listForBot(bot.id)
+    let fanned = false
     for (const install of installs) {
       const agent = await this.agents.get(install.agentId)
       if (!agent || !isGatedAgent(agent)) continue
@@ -341,7 +346,13 @@ export class SharedBotOrchestrator {
         { ...conversation, kind: 'im' },
         { agentId: AgentId(install.agentId), defaultTrigger: 'off' }
       )
+      fanned = true
     }
+    // Re-stamp the pool (§14.3): the rows just written put this conversation in
+    // `gatedDmConversations`, durably latching its one-time notice everywhere.
+    // (A second DM inside this propagation window may double-notice — KNOWN,
+    // low-severity, self-healing, same class as the replayTo interleave note.)
+    if (fanned) await this.syncRoutes(botId)
   }
 
   /**
@@ -500,6 +511,13 @@ export class SharedBotOrchestrator {
         daemonId: p.daemonId
       }
     })
+    const gatedDmConversations = [
+      ...new Set(
+        chans
+          .filter((c) => c.kind === 'im' && !!c.agentId && (byAgent.get(c.agentId)?.gated ?? false))
+          .map((c) => c.channelId)
+      )
+    ]
     return {
       platform: bot.platform === 'slack' ? 'slack' : bot.platform === 'telegram' ? 'telegram' : 'discord',
       members,
@@ -507,6 +525,7 @@ export class SharedBotOrchestrator {
       routes,
       ...(first ? { defaultAgentId: first.integration.agentId, defaultDaemonId: first.daemonId } : {}),
       gatedAgentIds: placed.filter((p) => p.gated).map((p) => p.integration.agentId),
+      gatedDmConversations,
       placed: placed.map((p) => ({ integration: p.integration, daemonId: p.daemonId, gated: p.gated }))
     }
   }
@@ -550,6 +569,7 @@ export class SharedBotOrchestrator {
       ...(compiled.defaultAgentId ? { defaultAgentId: compiled.defaultAgentId } : {}),
       ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {}),
       gatedAgentIds: compiled.gatedAgentIds,
+      gatedDmConversations: compiled.gatedDmConversations,
       ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
     }
   }

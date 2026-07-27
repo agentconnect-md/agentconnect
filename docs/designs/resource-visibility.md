@@ -868,11 +868,14 @@ installs** as pending Off rows; the relay also posts the one-time
 per-conversation notice (chrome-marked; the unrouted @-mention case included)
 since no daemon is involved before arbitration. Because a channel mention
 arrives as two independent Events API POSTs that the pool LB may hand to
-different relay pods, the notice is posted only by the bot's
+different relay pods, the CHANNEL notice is posted only by the bot's
 **`noticeAuthority`** — a relayId the CP stamps deterministically from the
-connected roster at (re)assign time (config-time orchestration; the CP is
-never a per-message round-trip) — with a local per-conversation latch on that
-pod. Enabling the row compiles a
+connected roster at (re)assign time and re-converges on relay join, disconnect,
+and sweep (config-time orchestration; the CP is never a per-message
+round-trip) — with a local per-conversation latch on that pod. A DM has a
+SINGLE event copy, so the RECEIVING pod posts its notice, latched pool-wide and
+durably by the **`gatedDmConversations`** set (derived from the CP's `im` rows
+and re-stamped by the first DM's own `rc/bot-conversation` report). Enabling the row compiles a
 conversation-scoped `auto` route plus a conversation-scoped **slug keyword**
 route — arbitration ranks scoped mention → keyword → auto — so a DM enabled
 for several gated agents can be addressed by slug while an unslugged DM falls

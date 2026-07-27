@@ -215,7 +215,14 @@ export class SharedBotManager {
     botId: string,
     patch: Pick<
       BotAssignment,
-      'members' | 'agents' | 'routes' | 'defaultAgentId' | 'defaultDaemonId' | 'gatedAgentIds' | 'noticeAuthority'
+      | 'members'
+      | 'agents'
+      | 'routes'
+      | 'defaultAgentId'
+      | 'defaultDaemonId'
+      | 'gatedAgentIds'
+      | 'noticeAuthority'
+      | 'gatedDmConversations'
     >
   ): void {
     // A changed gated member set may require a fresh DM fan-out (§14.3) — e.g. a
@@ -424,16 +431,26 @@ export class SharedBotManager {
    *  unroutable message on a bot with gated members — the bot must never look
    *  silently broken. */
   private async noticeGatedUnrouted(botId: string, msg: WireNormalizedMessage): Promise<void> {
-    // A channel mention arrives as TWO event copies that the pool LB may hand to
-    // different pods, so once-per-conversation cannot rest on replica-local
-    // state — and the CP must never be a per-message round-trip (daemon-centric
-    // boundary). Arbitration is therefore DETERMINISTIC data-plane state stamped
-    // at assign time: only the bot's noticeAuthority pod posts (whichever copy
-    // reaches it first; the local latch collapses siblings), every other pod
-    // stays silent. A mention whose copies all miss the authority pod is caught
-    // by the next one; no authority stamped ⇒ no pod posts.
-    const authority = this.router.get(botId)?.noticeAuthority
-    if (!authority || authority !== this.deps.selfRelayId()) return
+    // Once-per-conversation cannot rest on replica-local state, and the CP must
+    // never be a per-message round-trip (daemon-centric boundary) — so both
+    // arbitration inputs are data-plane state stamped on the assignment:
+    //  • CHANNEL mentions arrive as TWO event copies that may land on different
+    //    pods → only the deterministic noticeAuthority pod posts (whichever copy
+    //    reaches it first; the local latch collapses siblings). A mention whose
+    //    copies miss the authority is caught by the next one; no authority ⇒ no
+    //    pod posts.
+    //  • DMs have a SINGLE event copy → the RECEIVING pod posts, gated by the
+    //    DURABLE gatedDmConversations set (CP rows): the first DM is unknown
+    //    pool-wide (post; its rc/bot-conversation report re-stamps every pod),
+    //    later DMs are latched everywhere, across restarts too. (A second DM
+    //    inside the re-stamp window may double — KNOWN, low-severity.)
+    const a = this.router.get(botId)
+    if (msg.isDm) {
+      if (a?.gatedDmConversations?.includes(msg.channel)) return
+    } else {
+      const authority = a?.noticeAuthority
+      if (!authority || authority !== this.deps.selfRelayId()) return
+    }
     const key = `${botId}:${msg.channel}`
     if (this.gatedNoticesSent.has(key)) return
     this.gatedNoticesSent.add(key)
