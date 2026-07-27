@@ -88,7 +88,7 @@ import {
   type HookReviewPolicy
 } from '@/lib/github-review-settings'
 
-type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'api' | 'knowledge'
+type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'api' | 'tools'
 const HOOK_REFRESH_MS = 30_000
 
 // One-liners for the empty-integrations tiles. The tile SET is derived from the
@@ -310,7 +310,7 @@ export default function AgentDetailView() {
   // Integrations is the default landing tab (first, no `?tab=`); everything else
   // is `?tab=<id>`.
   const tab: DetailTab =
-    rawTab === 'config' || rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'api' || rawTab === 'knowledge'
+    rawTab === 'config' || rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'api' || rawTab === 'tools'
       ? rawTab
       : 'integrations'
 
@@ -442,7 +442,7 @@ export default function AgentDetailView() {
   }
 
   const tabCls = (t: DetailTab) => (tab === t ? 'tab on' : 'tab')
-  const tabHref = (t: DetailTab) => (t === 'integrations' ? `/agents/${da.id}` : `/agents/${da.id}?tab=${t}`)
+  const tabHref = (t: DetailTab) => orgPath(t === 'integrations' ? `/agents/${da.id}` : `/agents/${da.id}?tab=${t}`)
 
   // ── Single responsive tree. Base classes are the mobile (≤768px) push-detail
   // body (the Shell provides the top push bar there); `desktop:` variants restore
@@ -621,7 +621,7 @@ export default function AgentDetailView() {
             ['workspace', 'Workspace'],
             ['memory', 'Memory'],
             ['api', 'API'],
-            ['knowledge', 'Tools & Skills']
+            ['tools', 'Tools & Skills']
           ] as [DetailTab, string][]
         ).map(([t, label]) => {
           const on = tab === t
@@ -1500,7 +1500,7 @@ export default function AgentDetailView() {
 
       {/* Tools & Skills tab — leads with the daemon runtime's MCP servers (Tools),
           then the workspace-indexed knowledge below it. */}
-      {tab === 'knowledge' && (
+      {tab === 'tools' && (
         <div className="flex flex-col gap-4 p-4 desktop:gap-[18px] desktop:p-0">
           <AgentToolsCard
             agentId={da.id}
