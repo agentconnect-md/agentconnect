@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -161,6 +161,36 @@ describe('materializeAcceptedDreamSkills', () => {
 
     expect(existsSync(join(cwd, '.claude/skills', nameA))).toBe(false)
     expect(existsSync(join(cwd, '.claude/skills', nameB))).toBe(false)
+  })
+
+  it('REFUSES a symlinked marker FILE rather than reading through it', async () => {
+    // containedTarget validates parents but returns the final name — so an
+    // outside marker was still read, and drove deletion of a peer skill.
+    const { dir, cwd, name } = await fixture()
+    await materializeAcceptedDreamSkills({ dir, runtime: 'claude' }, cwd)
+
+    const outside = await mkdtemp(join(tmpdir(), 'ac-outside-'))
+    await writeFile(join(outside, 'marker.json'), JSON.stringify({ installed: [`.claude/skills/${name}`] }), 'utf8')
+    await rm(join(cwd, '.agentconnect', 'dream-skills-install.json'))
+    await symlink(join(outside, 'marker.json'), join(cwd, '.agentconnect', 'dream-skills-install.json'), 'file')
+
+    // A second agent with nothing accepted must NOT act on that outside marker.
+    const dirB = await mkdtemp(join(tmpdir(), 'ac-agent-b-'))
+    const result = await materializeAcceptedDreamSkills({ dir: dirB, runtime: 'claude' }, cwd)
+    expect(result.removed).toEqual([]) // the planted marker was not obeyed
+  })
+
+  it('fails closed when ownership cannot be recorded, rather than installing untracked', async () => {
+    // Marker refused (.agentconnect symlinked out) + skill installed anyway =
+    // an untracked skill no later pass can reconcile away. Install nothing.
+    const { dir, cwd, name } = await fixture()
+    const outside = await mkdtemp(join(tmpdir(), 'ac-outside-'))
+    await symlink(outside, join(cwd, '.agentconnect'), 'dir')
+
+    const result = await materializeAcceptedDreamSkills({ dir, runtime: 'claude' }, cwd)
+    expect(result.installed).toEqual([])
+    expect(existsSync(join(cwd, '.claude/skills', name))).toBe(false)
+    expect(result.errors.some((e) => /ownership could not be recorded/.test(e.error))).toBe(true)
   })
 
   it('skips a malformed accepted skill without failing the others', async () => {

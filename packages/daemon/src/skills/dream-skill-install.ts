@@ -47,6 +47,8 @@ const MAX_FILE_BYTES = 64 * 1024
  *  those `installSkills` owns (it keeps its own separate marker). */
 const MARKER_DIR = '.agentconnect'
 const MARKER_FILE = 'dream-skills-install.json'
+/** The marker is a short list of short paths; anything larger is not ours. */
+const MAX_MARKER_BYTES = 64 * 1024
 
 interface Marker {
   installed: string[]
@@ -69,6 +71,13 @@ async function readMarker(cwd: string): Promise<Marker> {
       label: 'skill marker'
     })
     if (!target) return { installed: [] }
+    // containedTarget validates the PARENTS and hands back the final name for
+    // the caller to judge — so judge it. A symlink here would still be followed
+    // outside the workspace, and an unbounded read of an agent-chosen target is
+    // a denial-of-service path (a huge or non-terminating file).
+    const stat = await fsp.lstat(target)
+    if (!stat.isFile()) throw new ContainedPathError('skill marker is not a regular file')
+    if (stat.size > MAX_MARKER_BYTES) throw new ContainedPathError('skill marker exceeds its size cap')
     const parsed = JSON.parse(await fsp.readFile(target, 'utf8')) as Marker
     return { installed: Array.isArray(parsed.installed) ? parsed.installed.filter(isOwnedSkillDir) : [] }
   } catch {
@@ -78,9 +87,10 @@ async function readMarker(cwd: string): Promise<Marker> {
   }
 }
 
-async function writeMarker(cwd: string, marker: Marker, warn?: (msg: string) => void): Promise<void> {
+async function writeMarker(cwd: string, marker: Marker, warn?: (msg: string) => void): Promise<boolean> {
   try {
     await publish(cwd, join(cwd, MARKER_DIR), join(cwd, MARKER_DIR, MARKER_FILE), Buffer.from(JSON.stringify(marker)))
+    return true
   } catch (err) {
     // A containment refusal here is a security event, like a refused skill path.
     warn?.(
@@ -88,6 +98,7 @@ async function writeMarker(cwd: string, marker: Marker, warn?: (msg: string) => 
         ? `skills: refused to write the dream-skill marker — ${err.message}`
         : `skills: could not write the dream-skill marker — ${err instanceof Error ? err.message : ''}`
     )
+    return false
   }
 }
 
@@ -188,6 +199,18 @@ async function materialize(
   }
   if (names.length === 0) {
     await writeMarker(acpCwd, { installed: [] }, opts.warn)
+    return result
+  }
+
+  // JOURNAL BEFORE MUTATING. If ownership cannot be recorded, installing anyway
+  // would leave an untracked skill that no later pass could reconcile away — so
+  // fail closed to "no accepted skill" rather than to an untracked one. The
+  // journal is a conservative SUPERSET (what may exist after this pass), then
+  // narrowed to what actually landed; a crash in between leaves extras
+  // recorded, which a later pass simply removes.
+  const journal = [...new Set([...prior.installed.filter((rel) => desired.has(rel)), ...desired])]
+  if (!(await writeMarker(acpCwd, { installed: journal }, opts.warn))) {
+    result.errors.push({ skill: '*', error: 'ownership could not be recorded; skills were not installed' })
     return result
   }
 
