@@ -88,6 +88,18 @@ export function serializeByProvider<T>(providerId: string, run: () => Promise<T>
   return result
 }
 
+/**
+ * Serialize one operation across SEVERAL provider chains — how an agent enable-list
+ * write (routes/agents.ts) joins the chains of every provider it is adding, so it
+ * cannot interleave with a DELETE between that delete's reference check and its row
+ * drop. Chains are entered in sorted id order so two multi-provider writers can't
+ * deadlock waiting on each other's tails.
+ */
+export function serializeByProviders<T>(providerIds: readonly string[], run: () => Promise<T>): Promise<T> {
+  const sorted = [...new Set(providerIds)].sort()
+  return sorted.reduceRight<() => Promise<T>>((inner, id) => () => serializeByProvider(id, inner), run)()
+}
+
 async function rotateOnce(
   provider: McpProviderRecord,
   headers: McpHeader[],
@@ -361,24 +373,30 @@ export function mcpProviderRoutes(deps: HttpDeps) {
         if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
         }
-        // Agents bind a provider by NAME (runtimeOverrides.mcpServers), so deleting while
-        // referenced would leave dangling selectors that silently re-bind to any future
-        // provider recreated under the same name. Same rule as skill-source delete.
-        const agents = await deps.repos.agent.list(orgOf(req))
-        const referenced = agents.some((a) => a.mcpServers.includes(existing.name))
-        if (referenced) {
+        // Serialized with rotation/patch: unbind + delete must not interleave with a rotation
+        // that would re-bind a torn-down provider (or mint against a cascade-deleted row).
+        const outcome = await serializeByProvider(existing.id, async () => {
+          // Agents bind a provider by NAME (runtimeOverrides.mcpServers), so deleting while
+          // referenced would leave dangling selectors that silently re-bind to any future
+          // provider recreated under the same name. Same rule as skill-source delete. The
+          // check lives INSIDE the chain because agent enable-list writes join it too
+          // (serializeByProviders in routes/agents.ts): a concurrent create/patch cannot
+          // slip a reference in between this read and the row drop — it either commits
+          // first (we 409) or waits until the provider is gone (its name resolves as a
+          // daemon-local server, never a registry binding).
+          const agents = await deps.repos.agent.list(orgOf(req))
+          if (agents.some((a) => a.mcpServers.includes(existing.name))) return 'referenced' as const
+          await pushUnassign(existing, orgOf(req)) // unbind relays + affected daemons (before the row is gone)
+          await deps.repos.mcpProvider.delete(existing.id) // FK cascade drops secret + grants
+          return 'deleted' as const
+        })
+        if (outcome === 'referenced') {
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,
             message: 'mcp provider is still enabled by one or more agents; unselect it there first'
           })
         }
-        // Serialized with rotation/patch: unbind + delete must not interleave with a rotation
-        // that would re-bind a torn-down provider (or mint against a cascade-deleted row).
-        await serializeByProvider(existing.id, async () => {
-          await pushUnassign(existing, orgOf(req)) // unbind relays + affected daemons (before the row is gone)
-          await deps.repos.mcpProvider.delete(existing.id) // FK cascade drops secret + grants
-        })
         return reply.code(204).send(null)
       }
     )

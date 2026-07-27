@@ -35,6 +35,7 @@ import { type AgentRecord, type AgentWorkspace, isSyntheticEmail } from '../../p
 import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, type OrgId } from '../../domain/ids.js'
 import { mcpProxyDef, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
+import { serializeByProviders } from './mcp-providers.js'
 import { parseSkillRef, redactSourceCredentials } from '../../orchestrator/skillSource.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from '../../orchestrator/memoryConnection.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
@@ -565,6 +566,26 @@ export function agentRoutes(deps: HttpDeps) {
       return blocked.length ? `cannot enable MCP provider you don't have access to: ${blocked.join(', ')}` : null
     }
 
+    // Run an agent write inside the per-provider chains of every registry provider its
+    // enable-list is ADDING (serializeByProviders — sorted, deadlock-free), so the write
+    // cannot land between a provider DELETE's reference check and its row drop (see
+    // routes/mcp-providers.ts). Removal-only changes don't join any chain: a stale 409
+    // on the delete side is benign, a missed reference is not. Non-registry (daemon-
+    // local) names carry no provider row to serialize on.
+    const withAddedMcpProviderChains = async <T>(
+      orgId: OrgId,
+      before: readonly string[],
+      after: readonly string[] | null | undefined,
+      run: () => Promise<T>
+    ): Promise<T> => {
+      const added = (after ?? []).filter((n) => !before.includes(n))
+      if (added.length === 0) return run()
+      const ids = (await deps.repos.mcpProvider.listForOrg(orgId))
+        .filter((p) => added.includes(p.name))
+        .map((p) => p.id)
+      return ids.length ? serializeByProviders(ids, run) : run()
+    }
+
     // Skills enablement authorization (shared-skills.md §9). A skill-ref is
     // "<source>/<skill>" / "<source>/*" / "<source>"; its self-contained definition
     // is pushed to the daemon, so a caller may only ADD refs to sources they can see.
@@ -877,47 +898,51 @@ export function agentRoutes(deps: HttpDeps) {
               : undefined
           // One transaction for the agent row + its initial secret rows (sealing
           // happens before it opens) — a failure can't leave a partial definition.
-          const agent = await deps.repos.agentConfig.create(
-            {
-              id: agentId,
-              orgId: orgOf(req),
-              name: req.body.name,
-              ...(req.body.displayName !== undefined ? { displayName: req.body.displayName } : {}),
-              // Absent ⇒ the repo assigns a random glyph+color combo (product default).
-              ...(req.body.icon !== undefined ? { icon: req.body.icon } : {}),
-              ...(req.body.description !== undefined ? { description: req.body.description } : {}),
-              runtime: req.body.runtime,
-              ...(req.body.model !== undefined ? { model: req.body.model } : {}),
-              ...(req.body.reasoningEffort !== undefined ? { reasoningEffort: req.body.reasoningEffort } : {}),
-              ...(req.body.outputMode !== undefined ? { outputMode: req.body.outputMode } : {}),
-              ...(req.body.showFooter !== undefined ? { showFooter: req.body.showFooter } : {}),
-              ...(req.body.fastMode !== undefined ? { fastMode: req.body.fastMode } : {}),
-              ...(req.body.permissionMode !== undefined ? { permissionMode: req.body.permissionMode } : {}),
-              ...(req.body.allowRuntimeChangesInChat !== undefined
-                ? { allowRuntimeChangesInChat: req.body.allowRuntimeChangesInChat }
-                : {}),
-              ...(req.body.pause !== undefined ? { pause: req.body.pause } : {}),
-              ...(req.body.introduceOnJoin !== undefined ? { introduceOnJoin: req.body.introduceOnJoin } : {}),
-              restrictFileAccess,
-              ...(req.body.env !== undefined ? { env: req.body.env } : {}),
-              ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
-              ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
-              ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
-              ...(req.body.daemonId !== undefined ? { daemonId: DaemonId(req.body.daemonId) } : {}),
-              ...(workspace !== undefined ? { workspace } : {}),
-              ...(workspaceRepoId !== undefined ? { workspaceRepoId } : {}),
-              ...(req.principal ? { createdByUserId: req.principal.userId } : {}),
-              ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
-              ...(initialSharedWith ? { sharedWith: initialSharedWith } : {}),
-              ...(req.body.callPolicy ? { callPolicy: req.body.callPolicy } : {}),
-              ...(initialAllowedCallers ? { allowedCallerAgentIds: initialAllowedCallers } : {}),
-              ...(req.body.outboundPolicy ? { outboundPolicy: req.body.outboundPolicy } : {}),
-              ...(initialAllowedTargets ? { allowedTargetAgentIds: initialAllowedTargets } : {}),
-              capabilities: req.body.capabilities
-            },
-            // Initial write-only secrets — same transaction, so the first
-            // replicateUpsert below always sees the complete definition.
-            req.body.secrets
+          // Chained per added MCP provider so the row can't commit inside a concurrent
+          // provider-delete's check→drop window.
+          const agent = await withAddedMcpProviderChains(orgOf(req), [], req.body.mcpServers, () =>
+            deps.repos.agentConfig.create(
+              {
+                id: agentId,
+                orgId: orgOf(req),
+                name: req.body.name,
+                ...(req.body.displayName !== undefined ? { displayName: req.body.displayName } : {}),
+                // Absent ⇒ the repo assigns a random glyph+color combo (product default).
+                ...(req.body.icon !== undefined ? { icon: req.body.icon } : {}),
+                ...(req.body.description !== undefined ? { description: req.body.description } : {}),
+                runtime: req.body.runtime,
+                ...(req.body.model !== undefined ? { model: req.body.model } : {}),
+                ...(req.body.reasoningEffort !== undefined ? { reasoningEffort: req.body.reasoningEffort } : {}),
+                ...(req.body.outputMode !== undefined ? { outputMode: req.body.outputMode } : {}),
+                ...(req.body.showFooter !== undefined ? { showFooter: req.body.showFooter } : {}),
+                ...(req.body.fastMode !== undefined ? { fastMode: req.body.fastMode } : {}),
+                ...(req.body.permissionMode !== undefined ? { permissionMode: req.body.permissionMode } : {}),
+                ...(req.body.allowRuntimeChangesInChat !== undefined
+                  ? { allowRuntimeChangesInChat: req.body.allowRuntimeChangesInChat }
+                  : {}),
+                ...(req.body.pause !== undefined ? { pause: req.body.pause } : {}),
+                ...(req.body.introduceOnJoin !== undefined ? { introduceOnJoin: req.body.introduceOnJoin } : {}),
+                restrictFileAccess,
+                ...(req.body.env !== undefined ? { env: req.body.env } : {}),
+                ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
+                ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
+                ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
+                ...(req.body.daemonId !== undefined ? { daemonId: DaemonId(req.body.daemonId) } : {}),
+                ...(workspace !== undefined ? { workspace } : {}),
+                ...(workspaceRepoId !== undefined ? { workspaceRepoId } : {}),
+                ...(req.principal ? { createdByUserId: req.principal.userId } : {}),
+                ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
+                ...(initialSharedWith ? { sharedWith: initialSharedWith } : {}),
+                ...(req.body.callPolicy ? { callPolicy: req.body.callPolicy } : {}),
+                ...(initialAllowedCallers ? { allowedCallerAgentIds: initialAllowedCallers } : {}),
+                ...(req.body.outboundPolicy ? { outboundPolicy: req.body.outboundPolicy } : {}),
+                ...(initialAllowedTargets ? { allowedTargetAgentIds: initialAllowedTargets } : {}),
+                capabilities: req.body.capabilities
+              },
+              // Initial write-only secrets — same transaction, so the first
+              // replicateUpsert below always sees the complete definition.
+              req.body.secrets
+            )
           )
           // `?connect=true` also provisions a daemon connect token + start command
           // so the onboarding screen can show "run this to connect a daemon".
@@ -1292,15 +1317,19 @@ export function agentRoutes(deps: HttpDeps) {
           }
           // The row patch and the secret merge commit as ONE transaction (sealing
           // outside it), so the replicateUpsert below can only ever ship a
-          // definition that fully applied — never a half-updated one.
+          // definition that fully applied — never a half-updated one. Chained per
+          // added MCP provider so the row can't commit inside a concurrent
+          // provider-delete's check→drop window.
           const { secrets: secretsPatch, ...bodyPatch } = req.body
-          const agent = await deps.repos.agentConfig.update(
-            AgentId(req.params.id),
-            {
-              ...bodyPatch,
-              ...(req.principal ? { lastModifiedByUserId: req.principal.userId } : {})
-            },
-            secretsPatch
+          const agent = await withAddedMcpProviderChains(orgOf(req), existing.mcpServers, req.body.mcpServers, () =>
+            deps.repos.agentConfig.update(
+              AgentId(req.params.id),
+              {
+                ...bodyPatch,
+                ...(req.principal ? { lastModifiedByUserId: req.principal.userId } : {})
+              },
+              secretsPatch
+            )
           )
           await pushExternalMemoryBeforeAgent(agent)
           await replicateUpsert(agent)

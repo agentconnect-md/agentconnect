@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { rotateProviderGrant, serializeByProvider } from './mcp-providers.js'
+import { rotateProviderGrant, serializeByProvider, serializeByProviders } from './mcp-providers.js'
 import { grantKeyHash } from '../../orchestrator/mcpProvider.js'
 import type { McpProviderRecord, McpGrantRecord, McpGrantRepo, McpHeader } from '../../persistence/ports.js'
 import type { OrgId } from '../../domain/ids.js'
@@ -177,5 +177,46 @@ describe('rotateProviderGrant', () => {
 
     expect(published).toBe('oct_fresh') // never left pointing at the revoked 'oct_old'
     expect([...active.values()].map((g) => g.id)).toEqual(['new-1'])
+  })
+})
+
+describe('serializeByProviders', () => {
+  it('two multi-provider writers naming the chains in opposite order both complete, mutually excluded', async () => {
+    // Unsorted entry would deadlock here: A holds p1 waiting on p2's tail while B
+    // holds p2 waiting on p1's. Sorted entry means both join p1 first — strict
+    // serialization, no cycle.
+    const order: string[] = []
+    const critical = (label: string) => async () => {
+      order.push(`start:${label}`)
+      await new Promise((r) => setTimeout(r, 10))
+      order.push(`end:${label}`)
+      return label
+    }
+    const [a, b] = await Promise.all([
+      serializeByProviders(['p1', 'p2'], critical('A')),
+      serializeByProviders(['p2', 'p1'], critical('B'))
+    ])
+    expect(a).toBe('A')
+    expect(b).toBe('B')
+    expect(order).toEqual(['start:A', 'end:A', 'start:B', 'end:B'])
+  })
+
+  it('a single-name writer queues behind a held serializeByProvider section (the DELETE↔agent-write fence)', async () => {
+    const order: string[] = []
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const del = serializeByProvider('p1', async () => {
+      order.push('delete:checked')
+      await gate // parked mid-critical-section (the reference check just read its snapshot)
+      order.push('delete:dropped')
+    })
+    const write = serializeByProviders(['p1'], async () => {
+      order.push('agent:written')
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(order).toEqual(['delete:checked']) // the write cannot land inside the window
+    release()
+    await Promise.all([del, write])
+    expect(order).toEqual(['delete:checked', 'delete:dropped', 'agent:written'])
   })
 })
