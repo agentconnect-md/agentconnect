@@ -10805,7 +10805,7 @@ export class Daemon {
   /** The integration config backing `integrationId`, across all local agents. */
   private integrationConfigById(integrationId: string): Integration | undefined {
     for (const a of this.agents.values()) {
-      const int = a.integrations.find((i) => i.id === integrationId)
+      const int = a.integrations?.find((i) => i.id === integrationId)
       if (int) return int
     }
     return undefined

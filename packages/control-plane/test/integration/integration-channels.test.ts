@@ -16,7 +16,7 @@ import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
-import { PgDaemonRepo, PgIntegrationRepo, PgIntegrationChannelRepo } from '../../src/persistence/index.js'
+import { PgAgentRepo, PgDaemonRepo, PgIntegrationRepo, PgIntegrationChannelRepo } from '../../src/persistence/index.js'
 import { handleIntegrationChannels } from '../../src/ws/handlers/index.js'
 import { IntegrationId } from '../../src/domain/ids.js'
 import type { DaemonConnection } from '../../src/ws/connection.js'
@@ -85,6 +85,7 @@ async function report(
   const deps = {
     integration: new PgIntegrationRepo(prisma),
     integrationChannel: new PgIntegrationChannelRepo(prisma),
+    agent: new PgAgentRepo(prisma),
     agentMutations,
     collabRoutes
   } as unknown as DaemonWsDeps
@@ -106,9 +107,109 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     const [dto] = res.json() as { channels: unknown[] }[]
     expect(dto!.channels).toEqual([
-      { channelId: 'C1', name: 'deploys', isPrivate: false, trigger: 'mention', agentId: null },
-      { channelId: 'C2', name: 'releases', isPrivate: true, trigger: 'mention', agentId: null }
+      { channelId: 'C1', name: 'deploys', isPrivate: false, kind: 'channel', trigger: 'mention', agentId: null },
+      { channelId: 'C2', name: 'releases', isPrivate: true, kind: 'channel', trigger: 'mention', agentId: null }
     ])
+  })
+
+  it("a restricted agent's fresh conversations default to OFF, and DM rows survive a membership re-report (§14)", async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
+    await prisma.agent.update({ where: { id: integration.agentId }, data: { visibility: 'restricted' } })
+
+    await report(DAEMON, id, [
+      { id: 'C1', name: 'deploys' },
+      { id: 'D1', name: '@alice', kind: 'im' }
+    ])
+    let res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    let [dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
+    const byId = new Map(dto!.channels.map((c) => [c.channelId, c]))
+    expect(byId.get('C1')).toMatchObject({ kind: 'channel', trigger: 'off' })
+    expect(byId.get('D1')).toMatchObject({ kind: 'im', trigger: 'off', name: '@alice' })
+
+    // A later membership-only snapshot (bot left C1; D1 not re-reported) must drop
+    // C1 but KEEP the DM row — the snapshot governs kind='channel' rows only.
+    await report(DAEMON, id, [{ id: 'C2', name: 'ops' }])
+    res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    ;[dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
+    expect(dto!.channels.map((c) => c.channelId).sort()).toEqual(['C2', 'D1'])
+  })
+
+  it('enabling conversations on a GATED integration pushes conversation-scoped rules ONLY (§14)', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
+    await prisma.agent.update({ where: { id: integration.agentId }, data: { visibility: 'restricted' } })
+    await report(DAEMON, id, [
+      { id: 'C1', name: 'deploys' },
+      { id: 'D1', name: '@alice', kind: 'im' }
+    ])
+    spy.upserts.length = 0
+
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${id}/channels/C1`,
+      payload: { trigger: 'mention' }
+    })
+    expect(res.statusCode).toBe(200)
+    const u0 = spy.upserts[0]!.u
+    if (u0.platform !== 'slack') throw new Error('expected slack integration')
+    expect(u0.slack.gated).toBe(true)
+    expect(u0.slack.bindRules).toEqual([{ channel: 'C1', match: { kind: 'mention' } }])
+
+    await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${id}/channels/D1`,
+      payload: { trigger: 'any' }
+    })
+    const u1 = spy.upserts[1]!.u
+    if (u1.platform !== 'slack') throw new Error('expected slack integration')
+    expect(u1.slack.bindRules).toHaveLength(2)
+    expect(u1.slack.bindRules).toEqual(
+      expect.arrayContaining([
+        { channel: 'C1', match: { kind: 'mention' } },
+        { channel: 'D1', match: { kind: 'dm' } }
+      ])
+    )
+  })
+
+  it('flipping agent visibility re-pushes the integration spec with the derived gate (§14.4)', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }]) // org agent ⇒ default mention
+    spy.upserts.length = 0
+
+    const put = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${integration.agentId}/sharing`,
+      payload: { visibility: 'restricted', sharedWith: [] }
+    })
+    expect(put.statusCode).toBe(200)
+    expect(spy.upserts).toHaveLength(1)
+    const u0 = spy.upserts[0]!.u
+    if (u0.platform !== 'slack') throw new Error('expected slack integration')
+    expect(u0.slack.gated).toBe(true)
+    // The pre-flip channel row keeps its 'mention' trigger — grandfathered enabled.
+    expect(u0.slack.bindRules).toEqual([{ channel: 'C1', match: { kind: 'mention' } }])
+
+    const back = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${integration.agentId}/sharing`,
+      payload: { visibility: 'org', sharedWith: [] }
+    })
+    expect(back.statusCode).toBe(200)
+    const u1 = spy.upserts[1]!.u
+    if (u1.platform !== 'slack') throw new Error('expected slack integration')
+    expect(u1.slack.gated).toBe(false)
+    expect(u1.slack.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
   })
 
   it('a re-report preserves the trigger, refreshes names, and drops left channels', async () => {
@@ -269,7 +370,14 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
       payload: { trigger: 'any' }
     })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ channelId: 'C2', name: 'releases', isPrivate: false, trigger: 'any', agentId: null })
+    expect(res.json()).toEqual({
+      channelId: 'C2',
+      name: 'releases',
+      isPrivate: false,
+      kind: 'channel',
+      trigger: 'any',
+      agentId: null
+    })
 
     // The daemon got the recomputed rule set: defaults + ONE auto rule for C2.
     expect(spy.upserts).toHaveLength(1)

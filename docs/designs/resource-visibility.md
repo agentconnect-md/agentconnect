@@ -790,10 +790,33 @@ editor-configured and keep working regardless of the conversation's state.
 
 ### 14.3 Mechanism
 
-**Enforcement point: the daemon router.** All ingress (direct socket-mode, and
-relay-forwarded shared-bot/http traffic) terminates in the daemon's
-`routeRules` arbitration over the merged rule set. That is the single
-enforcement point; the Console is only a configuration surface.
+**Enforcement points.** The Console is only a configuration surface; where the
+gate executes depends on the transport:
+
+- **Direct (socket) integrations** terminate in the daemon's `routeRules`
+  arbitration over the merged rule set — the scoped-rules mechanism below is the
+  complete gate.
+- **Shared (http) integrations do NOT pass through `routeRules`**: the relay
+  arbitrates from the CP-compiled attributed route table and forwards
+  pre-addressed (`handleRelayIm` dispatches without local routing). The gate is
+  therefore two-layered: (1) **primary — CP route compilation + relay
+  arbitration**: an Off conversation compiles no route, a gated agent is
+  excluded from the unscoped keyword rule and from `defaultAgentId` (the two
+  rungs that make a shared bot fail-open for a bare `@bot` and DMs), the relay's
+  thread-continuity rung honours a binding to a gated agent only while it still
+  has a channel-scoped route in the conversation (`gatedAgentIds` rides
+  `rc/bot-assign`/`rc/routes`), and the CP's `rc/thread-lookup` backstop applies
+  the same check; (2) **backstop — the daemon's `handleRelayIm` admission
+  check**: the shared spec carries the gated install's conversation-scoped
+  bindRules + `gated`, and the last hop refuses (with the one-time notice) any
+  conversation those rules don't cover, so a stale relay route snapshot cannot
+  activate a private agent. The in-Slack config modal (`rc/set-channel-agent`)
+  is reachable by any workspace user, so assigning a channel to a gated agent
+  creates its row **Off** — only a Console editor can enable it.
+
+Control commands (`!stop`, `/status`, …) resolve their target outside
+`routeRules`' scope filter (latest-session fallbacks), so the daemon repeats the
+conversation-admission check in its command authorization.
 
 **Scoped rules instead of unscoped defaults.** Today the CP ships every
 integration `DEFAULT_BIND_RULES` — an **unscoped** `mention` rule and an
@@ -831,10 +854,17 @@ identities.
 **Conversation reporting.** The `integration/channels` D→C EVT and
 `IntegrationChannel` protocol shape gain `kind: 'channel' | 'im'` (absent =
 `'channel'` for wire compatibility). Channel rows keep coming from membership
-events as today. DM rows are reported on first inbound DM to a gated
+events as today; the membership snapshot must never delete `im` rows (they are
+reported incrementally). DM rows are reported on first inbound DM to a gated
 integration, carrying the counterpart's display name; an optional boot-time
 sweep (`conversations.list types=im`) can backfill DMs opened while the daemon
 was down.
+
+_v1 limitation — shared bots:_ the relay's membership snapshot drops IMs and no
+relay-side DM reporting exists yet, so a gated agent behind a **shared** bot has
+no DM rows and thus no DM enablement path — its DMs are simply always off
+(fail-closed). Direct integrations support DM rows fully. Relay-side DM
+reporting is a follow-up.
 
 **Control-plane and web.**
 

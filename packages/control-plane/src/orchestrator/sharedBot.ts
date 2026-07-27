@@ -248,8 +248,8 @@ export class SharedBotOrchestrator {
     const installs = await this.integrations.listForBot(BotId(botId))
     const install = installs.find((i) => i.agentId === agentId)
     if (!install) return false
-    const rows = await this.channels.listForIntegration(install.id)
-    const row = rows.find((c) => c.channelId === channel)
+    const rows = await this.channels.listForBot(BotId(botId))
+    const row = rows.find((c) => c.integrationId === install.id && c.channelId === channel)
     return !!row && row.trigger !== 'off'
   }
 
@@ -449,11 +449,15 @@ export class SharedBotOrchestrator {
   /** Deliver the shared (send-only) spec to each member agent's daemon (best-effort).
    *  `shareable` rides each spec so the daemon knows whether to expose "Switch agent". */
   private async pushSpecs(compiled: Compiled, secret: BotSecretMaterial, shareable: boolean): Promise<void> {
+    // A gated install's spec carries its conversation-scoped rules for the daemon's
+    // last-hop admission backstop (§14.3). One listForBot covers every install; rows
+    // are keyed per install, so filter by integrationId.
+    const anyGated = compiled.placed.some((p) => p.gated)
+    const botChannels =
+      anyGated && compiled.placed[0] ? await this.channels.listForBot(BotId(compiled.placed[0].integration.botId)) : []
     for (const { integration, daemonId, gated } of compiled.placed) {
       try {
-        // A gated install's spec carries its conversation-scoped rules for the
-        // daemon's last-hop admission backstop (§14.3); channels are per-install.
-        const channels = gated ? await this.channels.listForIntegration(integration.id) : []
+        const channels = gated ? botChannels.filter((c) => c.integrationId === integration.id) : []
         await this.control.integrationUpsert(
           daemonId,
           sharedIntegrationToSpec(integration, secret, shareable, channels, gated)

@@ -116,6 +116,30 @@ describe('shared-bot arbitration (§10)', () => {
     const t = arbitrate(assignment(), msg({ channel: 'CX', thread: 'ts1', text: 'more' }), aff)
     expect(t).toEqual({ agentId: BOB, daemonId: D2, integrationId: 'iB' })
   })
+
+  describe('conversation gating (resource-visibility §14)', () => {
+    it('thread continuity to a GATED agent is refused when it has no scoped route in the conversation', () => {
+      const a = { ...assignment(), gatedAgentIds: [BOB] }
+      // BOB's only scoped route is C2; a pre-gate binding in CX must not keep routing.
+      const aff = new Map<string, RouteTarget>([['CX/ts1', { agentId: BOB, daemonId: D2, integrationId: 'iB' }]])
+      const t = arbitrate(a, msg({ channel: 'CX', thread: 'ts1', text: 'and then?' }), aff)
+      expect(t).toBeNull()
+    })
+
+    it('thread continuity to a GATED agent is honoured inside its enabled conversation', () => {
+      const a = { ...assignment(), gatedAgentIds: [BOB] }
+      const aff = new Map<string, RouteTarget>([['C2/ts1', { agentId: BOB, daemonId: D2, integrationId: 'iB' }]])
+      const t = arbitrate(a, msg({ channel: 'C2', thread: 'ts1', text: 'and then?' }), aff)
+      expect(t).toEqual({ agentId: BOB, daemonId: D2, integrationId: 'iB' })
+    })
+
+    it('thread continuity to a NON-gated agent is unaffected by gatedAgentIds on others', () => {
+      const a = { ...assignment(), gatedAgentIds: [ALICE] }
+      const aff = new Map<string, RouteTarget>([['CX/ts1', { agentId: BOB, daemonId: D2, integrationId: 'iB' }]])
+      const t = arbitrate(a, msg({ channel: 'CX', thread: 'ts1', text: 'and then?' }), aff)
+      expect(t).toEqual({ agentId: BOB, daemonId: D2, integrationId: 'iB' })
+    })
+  })
 })
 
 describe('SharedBotRouter — table + live affinity', () => {

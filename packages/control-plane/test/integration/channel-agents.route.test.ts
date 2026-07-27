@@ -81,6 +81,7 @@ async function reportChannels(daemonId: string, integrationId: string, channels:
   const deps = {
     integration: new PgIntegrationRepo(prisma),
     integrationChannel: new PgIntegrationChannelRepo(prisma),
+    agent: new PgAgentRepo(prisma),
     agentMutations: new AgentMutationGate()
   } as unknown as DaemonWsDeps
   await handleIntegrationChannels(frame, { daemonId } as DaemonConnection, deps)

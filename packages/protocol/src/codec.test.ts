@@ -566,6 +566,19 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     expect(r.frame.payload.channels[2]).toEqual({ id: 'C789' }) // name optional (lookup may fail)
   })
 
+  it('integration/channels round-trips a DM (kind im) row; kind is optional for wire compat (§14)', () => {
+    const r = decodeEnvelope(
+      envelope('integration/channels', {
+        integrationId: INTEGRATION_ID,
+        channels: [{ id: 'D111', name: '@alice', kind: 'im' }, { id: 'C123' }]
+      })
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || !isFrame('integration/channels')(r.frame)) throw new Error('expected integration/channels')
+    expect(r.frame.payload.channels[0]).toEqual({ id: 'D111', name: '@alice', kind: 'im' })
+    expect(r.frame.payload.channels[1]).toEqual({ id: 'C123' }) // absent kind = channel
+  })
+
   it('register/ok defaults integrations[] to [] and round-trips a delivered integration', () => {
     const empty = decodeEnvelope(
       envelope('register/ok', {

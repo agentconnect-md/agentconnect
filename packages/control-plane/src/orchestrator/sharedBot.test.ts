@@ -83,6 +83,7 @@ function channel(over: Partial<IntegrationChannelRecord>): IntegrationChannelRec
     channelId: 'C1',
     name: '#deploys',
     isPrivate: false,
+    kind: 'channel',
     trigger: 'mention',
     agentId: null,
     ...over
@@ -99,6 +100,10 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
   // Drives the SessionRepo.findThreadOwner fallback in lookupThread (null = no daemon session).
   let threadOwner: { agentId: string; daemonId: string } | null
   let threadOwnerLookup: { botId: BotId; channel: string; thread: string } | null
+  // §14: agents whose AgentRepo.get returns visibility 'restricted' (⇒ gated).
+  let gatedAgents: Set<string>
+  // Drives ThreadAffinityStore.get (null = affinity miss → SessionMeta fallback).
+  let threadBinding: { agentId: AgentId; daemonId: string } | null
 
   function makeOrch(): SharedBotOrchestrator {
     const agents: Record<string, AgentRecord> = {
@@ -114,20 +119,23 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     }
     const threads: ThreadAffinityStore = {
       upsert: async () => {},
-      get: async () => null,
+      get: async () =>
+        threadBinding
+          ? ({ sessionKey: '', ...threadBinding } as Awaited<ReturnType<ThreadAffinityStore['get']>>)
+          : null,
       listForBot: async () => []
     }
     const intRepo: Pick<IntegrationRepo, 'listForBot'> = { listForBot: async () => integrations }
     const chRepo: Pick<IntegrationChannelRepo, 'listForBot' | 'replaceSnapshot' | 'setAgent' | 'upsertAgent'> = {
       listForBot: async () => channels,
-      replaceSnapshot: async (integrationId, reported) => {
+      replaceSnapshot: async (integrationId, reported, opts) => {
         channels = channels.filter(
           (row) => row.integrationId !== integrationId || reported.some((candidate) => candidate.id === row.channelId)
         )
         for (const candidate of reported) {
           let row = channels.find((item) => item.integrationId === integrationId && item.channelId === candidate.id)
           if (!row) {
-            row = channel({ integrationId, channelId: candidate.id })
+            row = channel({ integrationId, channelId: candidate.id, trigger: opts?.defaultTrigger ?? 'mention' })
             channels.push(row)
           }
           row.name = candidate.name ?? null
@@ -140,16 +148,22 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
         row.agentId = agentId
         return row
       },
-      upsertAgent: async (integrationId, channelId, agentId) => {
+      upsertAgent: async (integrationId, channelId, agentId, opts) => {
         let row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
         if (!row) {
-          row = channel({ integrationId, channelId, agentId })
+          row = channel({ integrationId, channelId, agentId, trigger: opts?.defaultTrigger ?? 'mention' })
           channels.push(row)
         } else row.agentId = agentId
         return row
       }
     }
-    const agentRepo: Pick<AgentRepo, 'get'> = { get: async (id) => agents[id] ?? null }
+    const agentRepo: Pick<AgentRepo, 'get'> = {
+      get: async (id) => {
+        const a = agents[id]
+        if (!a) return null
+        return { ...a, visibility: gatedAgents.has(id) ? 'restricted' : 'org' } as AgentRecord
+      }
+    }
     const control = {
       integrationUpsert: async (daemonId: string, spec: unknown) => void upserts.push({ daemonId, spec: spec as never })
     }
@@ -183,6 +197,8 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     upserts = []
     threadOwner = null
     threadOwnerLookup = null
+    gatedAgents = new Set()
+    threadBinding = null
   })
 
   describe('lookupThread — SessionMeta fallback on affinity miss (§7.2 case 2a)', () => {
@@ -254,6 +270,80 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     await makeOrch().syncBot(BOT)
     const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
     expect(assign.routes[0]).toMatchObject({ agentId: ALICE, scope: { channel: 'C9' }, match: { kind: 'auto' } })
+  })
+
+  describe('conversation gating (resource-visibility §14)', () => {
+    it("an 'off' channel compiles no route (fail-closed until an editor enables it)", async () => {
+      channels = [channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'off' })]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.routes.filter((r) => r.scope?.channel === 'C9')).toEqual([])
+    })
+
+    it('a gated member loses its keyword rung, never becomes the default, and rides gatedAgentIds', async () => {
+      gatedAgents = new Set([ALICE])
+      channels = []
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.routes.some((r) => r.match.kind === 'keyword' && r.agentId === ALICE)).toBe(false)
+      expect(assign.routes.some((r) => r.match.kind === 'keyword' && r.agentId === BOB)).toBe(true)
+      // ALICE's install is the earliest, but a gated agent must not catch bare @bot/DMs.
+      expect(assign.defaultAgentId).toBe(BOB)
+      expect(assign.gatedAgentIds).toEqual([ALICE])
+    })
+
+    it('a group of only gated agents has NO default agent', async () => {
+      gatedAgents = new Set([ALICE, BOB])
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.defaultAgentId).toBeUndefined()
+      expect(assign.gatedAgentIds).toEqual([ALICE, BOB])
+    })
+
+    it("a gated install's shared spec carries its scoped bindRules + gated for the daemon backstop", async () => {
+      gatedAgents = new Set([ALICE])
+      channels = [
+        channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'mention' }),
+        channel({ integrationId: INT_A, channelId: 'C0', agentId: ALICE, trigger: 'off' })
+      ]
+      await makeOrch().syncBot(BOT)
+      const alice = upserts.find((u) => u.daemonId === D1)!.spec as never as {
+        slack: { gated: boolean; bindRules: unknown[] }
+      }
+      expect(alice.slack.gated).toBe(true)
+      expect(alice.slack.bindRules).toEqual([{ channel: 'C9', match: { kind: 'mention' } }])
+      const bob = upserts.find((u) => u.daemonId === D2)!.spec as never as {
+        slack: { gated: boolean; bindRules: unknown[] }
+      }
+      expect(bob.slack.gated).toBe(false)
+      expect(bob.slack.bindRules).toEqual([])
+    })
+
+    it("replaceChannels defaults a gated install's fresh channels to off (others to mention)", async () => {
+      gatedAgents = new Set([ALICE])
+      channels = []
+      await makeOrch().replaceChannels(BOT, [{ id: 'C7', name: 'deploys' }])
+      const aliceRow = channels.find((c) => c.integrationId === INT_A && c.channelId === 'C7')
+      const bobRow = channels.find((c) => c.integrationId === INT_B && c.channelId === 'C7')
+      expect(aliceRow?.trigger).toBe('off')
+      expect(bobRow?.trigger).toBe('mention')
+    })
+
+    it('lookupThread refuses a binding to a gated agent whose conversation is off', async () => {
+      gatedAgents = new Set([ALICE])
+      threadBinding = { agentId: ALICE, daemonId: D1 }
+      channels = [] // no enabled row for ALICE in C1 ⇒ off
+      const res = await makeOrch().lookupThread({ botId: BOT, sessionKey: 'C1/123.456' })
+      expect(res.target).toBeNull()
+    })
+
+    it('lookupThread honours a binding to a gated agent whose conversation is enabled', async () => {
+      gatedAgents = new Set([ALICE])
+      threadBinding = { agentId: ALICE, daemonId: D1 }
+      channels = [channel({ integrationId: INT_A, channelId: 'C1', agentId: ALICE, trigger: 'mention' })]
+      const res = await makeOrch().lookupThread({ botId: BOT, sessionKey: 'C1/123.456' })
+      expect(res.target).toEqual({ agentId: ALICE, daemonId: D1 })
+    })
   })
 
   it('releases the bot (rc/bot-unassign) when transport is socket (no relay ingress)', async () => {
