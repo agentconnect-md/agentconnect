@@ -1692,6 +1692,22 @@ describe('buildHookMessage', () => {
       expect(revisionReview).toContain(
         'An approval or rejection from an earlier revision does not complete this revision'
       )
+      const suiteRerequest = buildHookText(
+        ghFire(
+          { event: 'check_suite', action: 'rerequested' },
+          {
+            reviewPolicy: 'full',
+            github: {
+              repoId: '123',
+              repoFullName: 'acme/infra',
+              sourceInstallationId: '456',
+              subjectKind: 'pull_request',
+              pullNumber: 42
+            }
+          }
+        )
+      )
+      expect(suiteRerequest).toContain('opens a review generation for the current PR revision')
       // An inline-review follow-up already belongs to an existing review
       // thread. Its final is posted there; a second formal review is neither
       // advertised nor authorized for this turn.

@@ -2461,6 +2461,26 @@ export class PgHookRepo implements HookRepo {
     return row ? toProjectionRecord(row) : null
   }
 
+  async listReviewProjectionsForSuiteRerequest(
+    repoId: bigint,
+    headSha: string,
+    installationId: bigint
+  ): Promise<HookReviewProjectionRecord[]> {
+    return (
+      await this.db.hookReviewProjection.findMany({
+        where: {
+          repoId,
+          headSha,
+          reportSha: headSha,
+          lastResolvedInstallationId: installationId,
+          checkRunId: { not: null },
+          tombstonedAt: null
+        },
+        orderBy: { hookId: 'asc' }
+      })
+    ).map(toProjectionRecord)
+  }
+
   async listReviewProjectionsForAgentRepo(agentId: AgentId, repoId: bigint): Promise<HookReviewProjectionRecord[]> {
     return (await this.db.hookReviewProjection.findMany({ where: { agentId, repoId } })).map(toProjectionRecord)
   }

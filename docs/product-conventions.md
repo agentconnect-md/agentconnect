@@ -190,6 +190,11 @@ informational Check as non-blocking `skipped`; a runtime failure may still say
 authoritative (`REQUEST_CHANGES` stays `action_required`), and an ambiguous formal-review
 write remains a visible failure until it is reconciled.
 
+GitHub's suite-level `Re-run all checks` action starts a new generation for every current
+AgentConnect informational review Check in that App suite, with the same live maintainer
+authorization and revision fences as a single-Check rerun. It does not depend on the
+integration's ordinary event cadence.
+
 ## GitHub review mention routing
 
 An explicit `@<agent-name>` in GitHub targets only that AgentConnect agent's

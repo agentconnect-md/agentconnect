@@ -11,6 +11,8 @@ const HEAD_SHA = 'a'.repeat(40)
 const BASE_SHA = 'b'.repeat(40)
 const CHECK_RUN_ID = '86617583005'
 const REPO_ID = 987654321n
+const APP_ID = 4157507
+const INSTALLATION_ID = 1234567n
 
 const request: RcGithubRerequest = {
   checkRunId: CHECK_RUN_ID,
@@ -18,6 +20,14 @@ const request: RcGithubRerequest = {
   headSha: HEAD_SHA,
   deliveryKey: 'delivery-rerun-1',
   includeBaseSha: true
+}
+const suiteRequest: RcGithubRerequest = {
+  scope: 'suite',
+  appId: String(APP_ID),
+  installationId: String(INSTALLATION_ID),
+  repoId: REPO_ID.toString(),
+  headSha: HEAD_SHA,
+  deliveryKey: 'delivery-suite-rerun-1'
 }
 
 function projection(overrides: Partial<HookReviewProjectionRecord> = {}): HookReviewProjectionRecord {
@@ -27,7 +37,7 @@ function projection(overrides: Partial<HookReviewProjectionRecord> = {}): HookRe
     orgId: OrgId('org-a'),
     agentId: AGENT_ID,
     agentName: 'review-bot',
-    lastResolvedInstallationId: 1234567n,
+    lastResolvedInstallationId: INSTALLATION_ID,
     repoId: REPO_ID,
     repoFullName: 'acme/infra',
     headSha: HEAD_SHA,
@@ -93,7 +103,7 @@ function run(overrides: Partial<HookRunRecord> = {}): HookRunRecord {
     projectionIntent: 'revision_event',
     repoId: REPO_ID,
     repoFullName: 'acme/infra',
-    sourceInstallationId: 1234567n,
+    sourceInstallationId: INSTALLATION_ID,
     subjectKind: 'pull_request',
     pullNumber: 585,
     headSha: HEAD_SHA,
@@ -118,15 +128,37 @@ function make(
   const findReviewProjectionByCheckRunId = vi.fn(async () =>
     opts.projection === undefined ? projection() : opts.projection
   )
+  const listReviewProjectionsForSuiteRerequest = vi.fn(async () => {
+    const candidate = opts.projection === undefined ? projection() : opts.projection
+    return candidate ? [candidate] : []
+  })
   const get = vi.fn(async () => (opts.hook === undefined ? hook() : opts.hook))
+  const getMany = vi.fn(async () => {
+    const candidate = opts.hook === undefined ? hook() : opts.hook
+    return candidate ? [candidate] : []
+  })
   const getRunById = vi.fn(async () => (opts.run === undefined ? run() : opts.run))
   const service = new GithubRerequestService({
-    hooks: { findReviewProjectionByCheckRunId, get, getRunById } as Pick<
+    hooks: {
+      findReviewProjectionByCheckRunId,
+      listReviewProjectionsForSuiteRerequest,
+      get,
+      getMany,
+      getRunById
+    } as Pick<
       HookRepo,
-      'findReviewProjectionByCheckRunId' | 'get' | 'getRunById'
-    >
+      'findReviewProjectionByCheckRunId' | 'listReviewProjectionsForSuiteRerequest' | 'get' | 'getMany' | 'getRunById'
+    >,
+    appId: APP_ID
   })
-  return { service, findReviewProjectionByCheckRunId, get, getRunById }
+  return {
+    service,
+    findReviewProjectionByCheckRunId,
+    listReviewProjectionsForSuiteRerequest,
+    get,
+    getMany,
+    getRunById
+  }
 }
 
 describe('GithubRerequestService', () => {
@@ -150,6 +182,30 @@ describe('GithubRerequestService', () => {
       configRevision: '7',
       dispatchRevision: '9'
     })
+  })
+
+  it('resolves an App-owned Check Suite to its current projection targets', async () => {
+    const h = make()
+    await expect(h.service.resolve(suiteRequest)).resolves.toEqual({
+      allowed: true,
+      targets: [
+        {
+          hookId: HOOK_ID,
+          pullNumber: 585,
+          baseSha: BASE_SHA,
+          configRevision: '7',
+          dispatchRevision: '9'
+        }
+      ]
+    })
+    expect(h.listReviewProjectionsForSuiteRerequest).toHaveBeenCalledWith(REPO_ID, HEAD_SHA, INSTALLATION_ID)
+    expect(h.findReviewProjectionByCheckRunId).not.toHaveBeenCalled()
+  })
+
+  it('denies a Check Suite from a different GitHub App before reading projections', async () => {
+    const h = make()
+    await expect(h.service.resolve({ ...suiteRequest, appId: String(APP_ID + 1) })).resolves.toEqual({ allowed: false })
+    expect(h.listReviewProjectionsForSuiteRerequest).not.toHaveBeenCalled()
   })
 
   it.each([

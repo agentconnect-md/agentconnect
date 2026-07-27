@@ -9,6 +9,7 @@ const REVISION_EVENTS = new Set([
   // A user rerequest is a new review generation on the same revision. It must
   // reopen queued/in_progress before the terminal result replaces the old one.
   'check_run:rerequested',
+  'check_suite:rerequested',
   'check_run:requested_action',
   'pull_request:review_requested'
 ])

@@ -111,6 +111,11 @@ interface GithubPayload {
       base?: { sha?: string; repo?: { id?: number } | null }
     }>
   }
+  check_suite?: {
+    id?: number
+    head_sha?: string
+    app?: { id?: number }
+  }
 }
 
 interface GithubSubject {
@@ -438,29 +443,71 @@ function positiveSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
+type GithubRerequestTarget = {
+  hookId: string
+  pullNumber: number
+  baseSha: string
+  configRevision: string
+  dispatchRevision: string
+}
+
+type GithubRerequestRule = RcHookAssign & { github: NonNullable<RcHookAssign['github']> }
+
+function currentGithubRerequestRule(
+  table: HookTable,
+  target: GithubRerequestTarget,
+  repoId: number,
+  installationId: number,
+  expected?: Pick<RcHookAssign, 'agentId' | 'daemonId' | 'dispatchDaemonId'>
+): GithubRerequestRule | undefined {
+  const rule = table.getByHookId(target.hookId)
+  if (
+    !rule ||
+    rule.kind !== 'github' ||
+    !rule.github ||
+    rule.github.repoId !== String(repoId) ||
+    !rule.github.installationIds.includes(String(installationId)) ||
+    rule.configRevision !== target.configRevision ||
+    rule.dispatchRevision !== target.dispatchRevision ||
+    rule.reportingMode !== 'check' ||
+    rule.gateMode !== 'informational' ||
+    (expected !== undefined &&
+      (rule.agentId !== expected.agentId ||
+        rule.daemonId !== expected.daemonId ||
+        rule.dispatchDaemonId !== expected.dispatchDaemonId))
+  ) {
+    return undefined
+  }
+  return rule as GithubRerequestRule
+}
+
 async function dispatchGithubRerequest(
   deps: GithubIngressDeps,
   payload: GithubPayload,
   deliveryKey: string,
+  event: 'check_run' | 'check_suite',
   action: 'rerequested' | 'requested_action'
 ): Promise<void> {
   const checkRunId = payload.check_run?.id
+  const checkSuiteId = payload.check_suite?.id
+  const appId = payload.check_suite?.app?.id
   const repoId = payload.repository?.id
   const repoFullName = payload.repository?.full_name
   const installationId = payload.installation?.id
-  const headSha = payload.check_run?.head_sha
+  const headSha = event === 'check_run' ? payload.check_run?.head_sha : payload.check_suite?.head_sha
   if (
-    !positiveSafeInteger(checkRunId) ||
     !positiveSafeInteger(repoId) ||
     !positiveSafeInteger(installationId) ||
     !repoFullName ||
-    !headSha
+    !headSha ||
+    (event === 'check_run' && !positiveSafeInteger(checkRunId)) ||
+    (event === 'check_suite' && (!positiveSafeInteger(checkSuiteId) || !positiveSafeInteger(appId)))
   ) {
-    deps.log.info(`github ingress: ignored malformed check_run rerequest ${deliveryKey}`)
+    deps.log.info(`github ingress: ignored malformed ${event} rerequest ${deliveryKey}`)
     return
   }
   // Projection reverse-lookups have the same dedicated upstream budget as
-  // comment authorization. Unknown Check ids must not buy unbounded CP/DB work.
+  // comment authorization. Unknown Check identities must not buy unbounded CP/DB work.
   if (!deps.authzLimiter.allow(`${installationId}:${repoId}`)) {
     deps.log.info(`github ingress: rerequest authz rate-limited ${deliveryKey}`)
     return
@@ -468,13 +515,24 @@ async function dispatchGithubRerequest(
 
   let result: RcGithubRerequestResult
   try {
-    result = await deps.authorizeRerequest({
-      checkRunId: String(checkRunId),
-      repoId: String(repoId),
-      headSha,
-      deliveryKey,
-      ...(action === 'requested_action' ? { includeBaseSha: true as const } : {})
-    })
+    const request: RcGithubRerequest =
+      event === 'check_run'
+        ? {
+            checkRunId: String(checkRunId),
+            repoId: String(repoId),
+            headSha,
+            deliveryKey,
+            ...(action === 'requested_action' ? { includeBaseSha: true as const } : {})
+          }
+        : {
+            scope: 'suite',
+            appId: String(appId),
+            installationId: String(installationId),
+            repoId: String(repoId),
+            headSha,
+            deliveryKey
+          }
+    result = await deps.authorizeRerequest(request)
   } catch {
     // This explicit control action requires the CP. The ordinary GitHub event
     // data path remains available from the relay's local rule table.
@@ -482,122 +540,145 @@ async function dispatchGithubRerequest(
     return
   }
   if (!result.allowed) {
-    deps.log.info(`github ingress: ignored unowned check_run rerequest ${deliveryKey}`)
+    deps.log.info(`github ingress: ignored unowned ${event} rerequest ${deliveryKey}`)
     return
   }
 
-  const pull = payload.check_run?.pull_requests?.find(
-    (candidate) => candidate.number === result.pullNumber && candidate.head?.sha === headSha
-  )
-  const payloadBaseSha = pull?.head?.repo?.id === repoId && pull.base?.repo?.id === repoId ? pull.base?.sha : undefined
-  const baseSha = result.baseSha ?? payloadBaseSha
-  if (!baseSha) {
-    deps.log.info(`github ingress: ignored check_run request without an authoritative base ${deliveryKey}`)
+  let targets: GithubRerequestTarget[]
+  if (event === 'check_suite') {
+    if (!('targets' in result)) {
+      deps.log.info(`github ingress: ignored mismatched check_suite rerequest result ${deliveryKey}`)
+      return
+    }
+    targets = result.targets
+  } else {
+    if ('targets' in result) {
+      deps.log.info(`github ingress: ignored mismatched check_run rerequest result ${deliveryKey}`)
+      return
+    }
+    const pull = payload.check_run?.pull_requests?.find(
+      (candidate) => candidate.number === result.pullNumber && candidate.head?.sha === headSha
+    )
+    const payloadBaseSha =
+      pull?.head?.repo?.id === repoId && pull.base?.repo?.id === repoId ? pull.base?.sha : undefined
+    const baseSha = result.baseSha ?? payloadBaseSha
+    if (!baseSha) {
+      deps.log.info(`github ingress: ignored check_run request without an authoritative base ${deliveryKey}`)
+      return
+    }
+    targets = [{ ...result, baseSha }]
+  }
+  if (new Set(targets.map((target) => target.hookId)).size !== targets.length) {
+    deps.log.info(`github ingress: ignored duplicate ${event} rerequest targets ${deliveryKey}`)
     return
   }
 
   // Re-read after the CP boundary and fence its verdict to this relay's current
-  // compiled rule. A disable, retarget, reassign, or mode transition fails closed.
-  const rule = deps.table.getByHookId(result.hookId)
-  if (
-    !rule ||
-    rule.kind !== 'github' ||
-    !rule.github ||
-    rule.github.repoId !== String(repoId) ||
-    !rule.github.installationIds.includes(String(installationId)) ||
-    rule.configRevision !== result.configRevision ||
-    rule.dispatchRevision !== result.dispatchRevision ||
-    rule.reportingMode !== 'check' ||
-    rule.gateMode !== 'informational'
-  ) {
-    deps.log.info(`github ingress: ignored stale check_run rerequest ${deliveryKey}`)
+  // compiled rules. A disable, retarget, reassign, or mode transition fails the
+  // complete suite fan-out closed.
+  const candidates = targets.map((target) => {
+    const rule = currentGithubRerequestRule(deps.table, target, repoId, installationId)
+    return { rule, target }
+  })
+  if (candidates.some(({ rule }) => rule === undefined)) {
+    deps.log.info(`github ingress: ignored stale ${event} rerequest ${deliveryKey}`)
     return
   }
+  const resolved = candidates as Array<{ rule: GithubRerequestRule; target: GithubRerequestTarget }>
+  const representative = resolved[0]
+  if (!representative) return
 
   const senderLogin = payload.sender?.login
-  if (!senderLogin || rule.configRevision === undefined || rule.dispatchRevision === undefined) {
+  if (!senderLogin) {
     deps.log.info(`github ingress: rerequest authz metadata incomplete ${deliveryKey}`)
     return
   }
+  const authzRequest: RcGithubCommentAuthz = {
+    hookId: representative.rule.hookId,
+    installationId: String(installationId),
+    repoId: String(repoId),
+    repoFullName,
+    senderLogin,
+    configRevision: representative.target.configRevision,
+    dispatchRevision: representative.target.dispatchRevision,
+    ...(resolved.length > 1
+      ? {
+          siblingFences: resolved.slice(1).map(({ target }) => ({
+            hookId: target.hookId,
+            configRevision: target.configRevision,
+            dispatchRevision: target.dispatchRevision
+          }))
+        }
+      : {})
+  }
   try {
-    const allowed = await deps.authorizeComment({
-      hookId: rule.hookId,
-      installationId: String(installationId),
-      repoId: String(repoId),
-      repoFullName,
-      senderLogin,
-      configRevision: rule.configRevision,
-      dispatchRevision: rule.dispatchRevision
-    })
+    const allowed = await deps.authorizeComment(authzRequest)
     if (!allowed) return
   } catch {
     deps.log.warn(`github ingress: rerequest actor authorization unavailable ${deliveryKey}`)
     return
   }
 
-  const current = deps.table.getByHookId(rule.hookId)
-  if (
-    !current ||
-    current.kind !== 'github' ||
-    !current.github ||
-    current.github.repoId !== String(repoId) ||
-    !current.github.installationIds.includes(String(installationId)) ||
-    current.configRevision !== result.configRevision ||
-    current.dispatchRevision !== result.dispatchRevision ||
-    current.agentId !== rule.agentId ||
-    current.daemonId !== rule.daemonId ||
-    current.dispatchDaemonId !== rule.dispatchDaemonId ||
-    current.reportingMode !== 'check' ||
-    current.gateMode !== 'informational'
-  ) {
-    deps.log.info(`github ingress: rerequest rule changed ${deliveryKey}`)
+  const current = resolved.map(({ rule, target }) => {
+    const refreshed = currentGithubRerequestRule(deps.table, target, repoId, installationId, rule)
+    return { rule: refreshed, target }
+  })
+  if (current.some(({ rule }) => rule === undefined)) {
+    deps.log.info(`github ingress: ${event} rerequest rule changed ${deliveryKey}`)
     return
   }
-  if (!deps.limiter.allow(current.hookId)) {
-    deps.log.info(`github ingress: rate-limited ${current.hookId}:${deliveryKey} (check_run:${action})`)
-    return
-  }
+  const refreshed = current as Array<{ rule: GithubRerequestRule; target: GithubRerequestTarget }>
 
   const firedAt = new Date(deps.clock.now()).toISOString()
-  const github: GithubHookMetadata = {
-    repoId: String(repoId),
-    repoFullName,
-    sourceInstallationId: String(installationId),
-    subjectKind: 'pull_request',
-    pullNumber: result.pullNumber,
-    headSha,
-    baseSha,
-    reportSha: headSha
-  }
-  const msg: RdMsgHook = {
-    source: 'hook',
-    agentId: current.agentId,
-    sessionKey: `${current.github.sessionKeyPrefix ?? repoFullName}#${result.pullNumber}`,
-    msgId: `${current.hookId}:${deliveryKey}`,
-    hookId: current.hookId,
-    deliveryKey,
-    firedAt,
-    ...hookSnapshotForDelivery(current),
-    event: `check_run:${action}`,
-    github,
-    context: {
-      source: 'github',
-      event: 'check_run',
-      action,
-      repo: repoFullName,
-      number: result.pullNumber,
-      ...(payload.sender?.login ? { senderLogin: payload.sender.login } : {}),
-      truncated: false
-    },
-    ...(current.target ? { target: current.target } : {})
-  }
+  const dispatches: Promise<void>[] = []
+  for (const { rule, target } of refreshed) {
+    if (!deps.limiter.allow(rule.hookId)) {
+      deps.log.info(`github ingress: rate-limited ${rule.hookId}:${deliveryKey} (${event}:${action})`)
+      continue
+    }
+    const github: GithubHookMetadata = {
+      repoId: String(repoId),
+      repoFullName,
+      sourceInstallationId: String(installationId),
+      subjectKind: 'pull_request',
+      pullNumber: target.pullNumber,
+      headSha,
+      baseSha: target.baseSha,
+      reportSha: headSha
+    }
+    const msg: RdMsgHook = {
+      source: 'hook',
+      agentId: rule.agentId,
+      sessionKey: `${rule.github.sessionKeyPrefix ?? repoFullName}#${target.pullNumber}`,
+      msgId: `${rule.hookId}:${deliveryKey}`,
+      hookId: rule.hookId,
+      deliveryKey,
+      firedAt,
+      ...hookSnapshotForDelivery(rule),
+      event: `${event}:${action}`,
+      github,
+      context: {
+        source: 'github',
+        event,
+        action,
+        repo: repoFullName,
+        number: target.pullNumber,
+        senderLogin,
+        truncated: false
+      },
+      ...(rule.target ? { target: rule.target } : {})
+    }
 
-  await dispatchHookFire(
-    { table: deps.table, daemons: deps.daemons, report: deps.report, clock: deps.clock, log: deps.log },
-    current,
-    msg
-  )
-  deps.log.info(`github ingress: queued ${current.hookId}:${deliveryKey} (check_run:${action})`)
+    dispatches.push(
+      dispatchHookFire(
+        { table: deps.table, daemons: deps.daemons, report: deps.report, clock: deps.clock, log: deps.log },
+        rule,
+        msg
+      )
+    )
+    deps.log.info(`github ingress: queued ${rule.hookId}:${deliveryKey} (${event}:${action})`)
+  }
+  await Promise.all(dispatches)
 }
 
 function pullRequestNeedsMaintainer(ctx: GithubMatchCtx, prAuthorCanWrite: boolean): boolean {
@@ -655,7 +736,11 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       }
 
       if (event === 'check_run' && payload.action === 'rerequested') {
-        void dispatchGithubRerequest(deps, payload, deliveryKey, 'rerequested')
+        void dispatchGithubRerequest(deps, payload, deliveryKey, 'check_run', 'rerequested')
+        return reply.code(202).send({ deliveryKey })
+      }
+      if (event === 'check_suite' && payload.action === 'rerequested') {
+        void dispatchGithubRerequest(deps, payload, deliveryKey, 'check_suite', 'rerequested')
         return reply.code(202).send({ deliveryKey })
       }
       if (
@@ -663,7 +748,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         payload.action === 'requested_action' &&
         payload.requested_action?.identifier === GITHUB_REQUEST_REVIEW_ACTION
       ) {
-        void dispatchGithubRerequest(deps, payload, deliveryKey, 'requested_action')
+        void dispatchGithubRerequest(deps, payload, deliveryKey, 'check_run', 'requested_action')
         return reply.code(202).send({ deliveryKey })
       }
 

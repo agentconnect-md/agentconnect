@@ -499,7 +499,9 @@ export function buildContainer(
         github
       })
     : undefined
-  const githubRerequest = github ? new GithubRerequestService({ hooks: repos.hook }) : undefined
+  const githubRerequest = githubAppCfg
+    ? new GithubRerequestService({ hooks: repos.hook, appId: githubAppCfg.appId })
+    : undefined
   const githubRunReporterRef: { current?: GithubRunReporter } = {}
   const githubRunCoordinator = github
     ? new GithubRunCoordinator({

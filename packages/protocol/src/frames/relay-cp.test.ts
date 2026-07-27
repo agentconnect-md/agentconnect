@@ -193,10 +193,54 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(RcGithubRerequestResult.safeParse({ allowed: false }).success).toBe(true)
   })
 
+  it('round-trips an App-owned Check Suite rerequest and its resolved targets', () => {
+    const request = {
+      scope: 'suite' as const,
+      appId: '4157507',
+      installationId: '12345',
+      repoId: '987654321',
+      headSha: 'a'.repeat(40),
+      deliveryKey: 'delivery-suite-rerun-1'
+    }
+    const req = buildRelayCpFrame('rc/github-rerequest', request)
+    const decodedReq = decodeRelayCpFrame(JSON.stringify(req))
+    expect(decodedReq.ok).toBe(true)
+    if (!decodedReq.ok || decodedReq.frame.type !== 'rc/github-rerequest') throw new Error('expected rerequest req')
+    expect(decodedReq.frame.payload).toEqual(request)
+
+    const result = {
+      allowed: true as const,
+      targets: [
+        {
+          hookId: HOOK_ID,
+          pullNumber: 585,
+          baseSha: 'b'.repeat(40),
+          configRevision: '7',
+          dispatchRevision: '9'
+        }
+      ]
+    }
+    const rep = buildRelayCpFrame('rc/github-rerequest/ok', result, { corr: req.id })
+    const decodedRep = decodeRelayCpFrame(JSON.stringify(rep))
+    expect(decodedRep.ok).toBe(true)
+    if (!decodedRep.ok || decodedRep.frame.type !== 'rc/github-rerequest/ok') throw new Error('expected rerequest rep')
+    expect(decodedRep.frame.payload).toEqual(result)
+  })
+
   it('rejects malformed rc/github-rerequest identities and incomplete allow results', () => {
     expect(RcGithubRerequest.safeParse({ checkRunId: '0', repoId: '1', headSha: 'a', deliveryKey: 'd' }).success).toBe(
       false
     )
+    expect(
+      RcGithubRerequest.safeParse({
+        scope: 'suite',
+        appId: '0',
+        installationId: '1',
+        repoId: '1',
+        headSha: 'a',
+        deliveryKey: 'd'
+      }).success
+    ).toBe(false)
     expect(
       RcGithubRerequestResult.safeParse({
         allowed: true,
@@ -205,6 +249,7 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
         baseSha: 'b'.repeat(40)
       }).success
     ).toBe(false)
+    expect(RcGithubRerequestResult.safeParse({ allowed: true, targets: [] }).success).toBe(false)
   })
 
   it('rc/daemon-revoke requires a UUID daemonId', () => {

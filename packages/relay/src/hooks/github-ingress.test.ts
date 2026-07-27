@@ -34,6 +34,7 @@ const DAEMON_B = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
 const SECRET = 'ghw_sekret'
 const REPO_ID = 987654321
 const INSTALLATION = 1234567
+const APP_ID = 4157507
 
 const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
 
@@ -124,6 +125,21 @@ function rerequestPayload(overrides: Record<string, unknown> = {}): Record<strin
           base: { sha: 'b'.repeat(40), repo: { id: REPO_ID } }
         }
       ]
+    },
+    ...overrides
+  }
+}
+
+function suiteRerequestPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    action: 'rerequested',
+    installation: { id: INSTALLATION },
+    repository: { id: REPO_ID, full_name: 'acme/infra' },
+    sender: { login: 'alice', type: 'User' },
+    check_suite: {
+      id: 81913432144,
+      head_sha: 'a'.repeat(40),
+      app: { id: APP_ID }
     },
     ...overrides
   }
@@ -477,6 +493,97 @@ describe('github ingress', () => {
         'rerun-budget-1',
         'rerun-budget-2'
       ])
+      expect(h.sent).toHaveLength(0)
+    })
+  })
+
+  describe('check_suite rerequest', () => {
+    it('resolves the App suite once, authorizes the complete fan-out, and dispatches every target', async () => {
+      h.table.upsert(rule())
+      h.table.upsert(
+        rule({
+          hookId: HOOK_B,
+          agentId: AGENT_B,
+          daemonId: DAEMON_B,
+          dispatchDaemonId: DAEMON_B,
+          configRevision: '4',
+          dispatchRevision: '6'
+        })
+      )
+      h.onlineDaemons.add(DAEMON_B)
+      h.rerequestResult = {
+        allowed: true,
+        targets: [
+          {
+            hookId: HOOK,
+            pullNumber: 585,
+            baseSha: 'b'.repeat(40),
+            configRevision: '3',
+            dispatchRevision: '5'
+          },
+          {
+            hookId: HOOK_B,
+            pullNumber: 586,
+            baseSha: 'c'.repeat(40),
+            configRevision: '4',
+            dispatchRevision: '6'
+          }
+        ]
+      }
+      h.authzResult = true
+
+      const res = await post('check_suite', suiteRerequestPayload())
+      expect(res.statusCode).toBe(202)
+      await flush()
+
+      expect(h.rerequestRequests).toEqual([
+        {
+          scope: 'suite',
+          appId: String(APP_ID),
+          installationId: String(INSTALLATION),
+          repoId: String(REPO_ID),
+          headSha: 'a'.repeat(40),
+          deliveryKey: 'gh-delivery-1'
+        }
+      ])
+      expect(h.authzRequests).toEqual([
+        {
+          hookId: HOOK,
+          installationId: String(INSTALLATION),
+          repoId: String(REPO_ID),
+          repoFullName: 'acme/infra',
+          senderLogin: 'alice',
+          configRevision: '3',
+          dispatchRevision: '5',
+          siblingFences: [{ hookId: HOOK_B, configRevision: '4', dispatchRevision: '6' }]
+        }
+      ])
+      expect(h.sent).toHaveLength(2)
+      expect(h.sent).toEqual([
+        expect.objectContaining({
+          hookId: HOOK,
+          agentId: AGENT,
+          sessionKey: 'acme/infra#585',
+          event: 'check_suite:rerequested',
+          context: expect.objectContaining({ event: 'check_suite', action: 'rerequested', number: 585 }),
+          github: expect.objectContaining({ pullNumber: 585, baseSha: 'b'.repeat(40) })
+        }),
+        expect.objectContaining({
+          hookId: HOOK_B,
+          agentId: AGENT_B,
+          sessionKey: 'acme/infra#586',
+          event: 'check_suite:rerequested',
+          context: expect.objectContaining({ event: 'check_suite', action: 'rerequested', number: 586 }),
+          github: expect.objectContaining({ pullNumber: 586, baseSha: 'c'.repeat(40) })
+        })
+      ])
+      expect(h.reports.map((report) => report.event)).toEqual(['check_suite:rerequested', 'check_suite:rerequested'])
+    })
+
+    it('fails closed before the CP lookup when suite identity is malformed', async () => {
+      await post('check_suite', suiteRerequestPayload({ check_suite: { id: 0, app: { id: APP_ID } } }))
+      await flush()
+      expect(h.rerequestRequests).toHaveLength(0)
       expect(h.sent).toHaveLength(0)
     })
   })

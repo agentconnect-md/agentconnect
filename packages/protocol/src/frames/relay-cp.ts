@@ -147,26 +147,49 @@ export type RcGithubCommentAuthz = z.infer<typeof RcGithubCommentAuthz>
 export const RcGithubCommentAuthzResult = z.object({ allowed: z.boolean() }).strict()
 export type RcGithubCommentAuthzResult = z.infer<typeof RcGithubCommentAuthzResult>
 
-// R→C REQ — a signature-verified `check_run:rerequested` control action. The
-// relay forwards only the opaque Check identity and revision fence; the CP
-// resolves the owning durable projection before authorizing a fresh delivery.
-export const RcGithubRerequest = z
-  .object({
-    checkRunId: z.string().regex(/^[1-9]\d*$/),
-    repoId: z.string().regex(/^[1-9]\d*$/),
-    headSha: z.string().min(1),
-    deliveryKey: z.string().min(1).max(200),
-    // Rolling opt-in: a new CP includes baseSha only when a new relay asks.
-    // This keeps replies to older strict-schema relays byte-compatible.
-    includeBaseSha: z.literal(true).optional()
-  })
-  .strict()
+// R→C REQ — a signature-verified Check rerequest control action. A run action
+// carries its opaque Check identity; a suite action carries the App +
+// installation identity needed to infer that App's existing projections for
+// the revision. The CP resolves durable ownership before authorizing delivery.
+const GithubNumericId = z.string().regex(/^[1-9]\d*$/)
+export const RcGithubRerequest = z.union([
+  z
+    .object({
+      checkRunId: GithubNumericId,
+      repoId: GithubNumericId,
+      headSha: z.string().min(1),
+      deliveryKey: z.string().min(1).max(200),
+      // Rolling opt-in: a new CP includes baseSha only when a new relay asks.
+      // This keeps replies to older strict-schema relays byte-compatible.
+      includeBaseSha: z.literal(true).optional()
+    })
+    .strict(),
+  z
+    .object({
+      scope: z.literal('suite'),
+      appId: GithubNumericId,
+      installationId: GithubNumericId,
+      repoId: GithubNumericId,
+      headSha: z.string().min(1),
+      deliveryKey: z.string().min(1).max(200)
+    })
+    .strict()
+])
 export type RcGithubRerequest = z.infer<typeof RcGithubRerequest>
 
 // C→R REP (corr = rc/github-rerequest id). A denial is intentionally bare. On
 // success the CP returns only metadata already bound to the projection's
 // current HookRun; the relay re-fences it against its current compiled rule.
-export const RcGithubRerequestResult = z.discriminatedUnion('allowed', [
+const RcGithubRerequestTarget = z
+  .object({
+    hookId: z.string().uuid(),
+    pullNumber: z.number().int().positive(),
+    baseSha: z.string().min(1),
+    configRevision: HookBigIntString,
+    dispatchRevision: HookBigIntString
+  })
+  .strict()
+export const RcGithubRerequestResult = z.union([
   z.object({ allowed: z.literal(false) }).strict(),
   z
     .object({
@@ -176,6 +199,12 @@ export const RcGithubRerequestResult = z.discriminatedUnion('allowed', [
       baseSha: z.string().min(1).optional(),
       configRevision: HookBigIntString,
       dispatchRevision: HookBigIntString
+    })
+    .strict(),
+  z
+    .object({
+      allowed: z.literal(true),
+      targets: z.array(RcGithubRerequestTarget).min(1)
     })
     .strict()
 ])
