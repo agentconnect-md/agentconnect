@@ -1317,12 +1317,15 @@ export function getSessions(agentId: string): Session[] {
   return SESSIONS_BY_AGENT[agentId] ?? []
 }
 
-/** One channel the integration's bot is in + how it activates there. */
+/** One conversation the integration's bot is in + how it activates there. */
 export interface IntegrationChannelRow {
   channelId: string
-  /** Bare channel name, no hash (e.g. "deploys"); the UI renders the leading "#". Falls back to the raw id. */
+  /** Bare channel name, no hash (e.g. "deploys"); the UI renders the leading "#".
+   *  For a DM row (kind 'im') the counterpart's name. Falls back to the raw id. */
   name: string
-  trigger: 'mention' | 'any'
+  /** 'im' = a DM conversation row (gated/restricted agents only); absent = channel. */
+  kind?: 'channel' | 'im'
+  trigger: 'off' | 'mention' | 'any'
   /** Per-channel default agent for a shared bot (agentId); null/absent ⇒ unset. */
   agentId?: string | null
 }

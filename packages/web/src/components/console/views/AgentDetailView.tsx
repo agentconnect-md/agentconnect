@@ -1090,6 +1090,7 @@ export default function AgentDetailView() {
                         channels={g.channels}
                         botId={g.botId}
                         shareable={g.shareable}
+                        gated={da.visibility === 'restricted'}
                         padX={16}
                       />
                     </div>
@@ -1207,6 +1208,7 @@ export default function AgentDetailView() {
                         channels={g.channels}
                         botId={g.botId}
                         shareable={g.shareable}
+                        gated={da.visibility === 'restricted'}
                         padX={14}
                       />
                     </div>
