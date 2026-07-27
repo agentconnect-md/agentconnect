@@ -8,6 +8,8 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
+import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
+import type { OrgMemberRole } from '../../src/persistence/ports.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -18,6 +20,22 @@ afterEach(async () => {
 
 function makeApp(): HttpApp {
   const app = buildHttpApp(prisma)
+  opened.push(app)
+  return app
+}
+
+/** Provision a user + add them to the default org with a role; returns their id. */
+async function makeUser(sub: string, role: OrgMemberRole): Promise<string> {
+  const email = `${sub}@acme.dev`
+  const { userId } = await new PgUserRepo(prisma).provisionOidcUser({ oidcSubject: sub, email, emailVerified: true })
+  await new PgUserRepo(prisma).addMemberByEmail(DEFAULT_ORG_ID, email, role)
+  return userId
+}
+
+/** An app whose devAuth principal is `userId` — i.e. "act as this user". The
+ *  provider-name chains are module-global, so they serialize across app instances. */
+function appAs(userId: string): HttpApp {
+  const app = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId })
   opened.push(app)
   return app
 }
@@ -308,6 +326,101 @@ describe('DELETE /mcp-providers/:id — serialized against agent enable-list wri
     releaseWriter()
     expect((await create).statusCode).toBe(201)
     expect((await recreate).statusCode).toBe(409) // …and is then refused: the agent holds the name
+  })
+
+  it('a restricted same-name replacement is not grandfathered by a stale full-replace PATCH (identity-keyed exemption)', async () => {
+    // The keep-exemption must attach to the provider ROW the caller held, not the
+    // name: org-visible A is enabled; A's delete parks; a RESTRICTED replacement B
+    // and a stale full-replace PATCH queue behind it; a concurrent removal frees the
+    // delete. B then commits — and the stale PATCH must NOT ride its old "kept name"
+    // exemption onto B (a provider the collaborator cannot even see): the in-fence
+    // check re-resolves the name, sees B ≠ its snapshot A, and refuses with 403.
+    const owner = await makeUser('mcpp-owner', 'owner')
+    const collab = await makeUser('mcpp-collab', 'collaborator')
+    const ownerApp = appAs(owner)
+    const collabApp = appAs(collab)
+
+    const providerA = await createProvider(ownerApp, 'linear')
+    const agentId = await createAgent(collabApp, 'identity-racer', ['linear'])
+
+    const { release, parked } = parkDeleteAtReferenceCheck(ownerApp)
+    const del = ownerApp.app.inject({ method: 'DELETE', url: `${ORG}/mcp-providers/${providerA}` })
+    await parked
+
+    const bCreate = ownerApp.app.inject({
+      method: 'POST',
+      url: `${ORG}/mcp-providers`,
+      payload: { name: 'linear', url: 'https://mcp.example.com/mcp', visibility: 'restricted', sharedWith: [] }
+    })
+    await settleTick(150)
+    const stalePatch = collabApp.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { mcpServers: ['linear'] } // full replace — "unchanged" from its stale view of A
+    })
+    await settleTick(150)
+    // A concurrent removal (submits no registry name → joins no chain) frees the delete.
+    const removal = await collabApp.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { mcpServers: [] }
+    })
+    expect(removal.statusCode).toBe(200)
+
+    release()
+    expect((await del).statusCode).toBe(204)
+    expect((await bCreate).statusCode).toBe(201) // replacement B exists, restricted
+    expect((await stalePatch).statusCode).toBe(403) // the exemption died with A; B is invisible
+
+    const agent = (await collabApp.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })).json()
+    expect(agent.mcpServers).toEqual([]) // never bound to the invisible replacement
+  })
+
+  it('a sharing flip queues behind an in-flight enable (no check-to-commit visibility race)', async () => {
+    // PUT /mcp-providers/:id/sharing joins the name chain: an agent write authorizes
+    // visibility INSIDE that chain, so a restrict must not land between its check
+    // and its commit. Park the enable at its persist step (in-fence, post-check) and
+    // assert the sharing flip waits for it.
+    const app = makeApp()
+    const providerId = await createProvider(app, 'linear')
+    const agentId = await createAgent(app, 'share-racer', [])
+
+    const writer = app.deps.repos.agentConfig
+    const realUpdate = writer.update.bind(writer)
+    let releaseWriter!: () => void
+    const gate = new Promise<void>((r) => (releaseWriter = r))
+    let notifyParked!: () => void
+    const parked = new Promise<void>((r) => (notifyParked = r))
+    let intercepted = false
+    writer.update = async (...args: Parameters<typeof realUpdate>) => {
+      if (!intercepted) {
+        intercepted = true
+        notifyParked()
+        await gate
+      }
+      return realUpdate(...args)
+    }
+    const enable = app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { mcpServers: ['linear'] }
+    })
+    await parked
+
+    const share = app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/mcp-providers/${providerId}/sharing`,
+      payload: { visibility: 'restricted', sharedWith: [] }
+    })
+    const winner = await Promise.race([
+      share.then(() => 'shared' as const),
+      settleTick(300).then(() => 'blocked' as const)
+    ])
+    expect(winner).toBe('blocked') // the flip waits behind the in-flight enable
+
+    releaseWriter()
+    expect((await enable).statusCode).toBe(200)
+    expect((await share).statusCode).toBe(200)
   })
 
   it('a sibling-field PATCH omitting mcpServers cannot restore a concurrently-removed name (atomic bag merge)', async () => {

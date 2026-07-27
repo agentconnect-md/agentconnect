@@ -583,10 +583,15 @@ export function agentRoutes(deps: HttpDeps) {
     // untouched) don't join any chain: a stale 409 on the delete side is benign, a
     // missed reference is not.
     //
-    // The visibility gate re-runs INSIDE the fence: the route's earlier check may
-    // have validated against a provider row that a serialized delete+create has since
-    // replaced — authorization must hold for whatever the names resolve to at commit
-    // time. A refusal surfaces as McpEnableDenied (the route maps it to 403).
+    // The visibility gate re-runs INSIDE the fence, and its keep-exemption is keyed
+    // by provider IDENTITY, not name: a kept name is only grandfathered while it
+    // still resolves to the same provider ROW it resolved to when the request was
+    // snapshotted. A same-name replacement created before this write commits is a
+    // DIFFERENT provider the caller never held — it must pass the visibility gate
+    // like any fresh enable (the stale `before` name list alone would wrongly exempt
+    // it). Sharing changes join the same name chain (routes/mcp-providers.ts), so
+    // visibility cannot flip between this check and run()'s commit. A refusal
+    // surfaces as McpEnableDenied (the route maps it to 403).
     const withSubmittedMcpProviderChains = async <T>(
       orgId: OrgId,
       ctx: ViewCtx,
@@ -595,9 +600,20 @@ export function agentRoutes(deps: HttpDeps) {
       run: () => Promise<T>
     ): Promise<T> => {
       if (!submitted || submitted.length === 0) return run()
+      // Which provider row each name meant at request time — the grandfather baseline.
+      const snapshot = new Map((await deps.repos.mcpProvider.listForOrg(orgId)).map((p) => [p.name, p.id]))
       return serializeByProviderNames(orgId, submitted, async () => {
-        const denied = await enablingUnseenDenied(orgId, ctx, before, submitted)
-        if (denied) throw new McpEnableDenied(denied)
+        const current = new Map((await deps.repos.mcpProvider.listForOrg(orgId)).map((p) => [p.name, p.id]))
+        const visible = new Set((await deps.repos.mcpProvider.listForOrg(orgId, ctx)).map((p) => p.name))
+        const blocked = submitted.filter((n) => {
+          const cur = current.get(n)
+          if (cur === undefined) return false // non-registry (daemon-local) — nothing to authorize
+          const kept = before.includes(n) && snapshot.get(n) === cur
+          return !kept && !visible.has(n)
+        })
+        if (blocked.length) {
+          throw new McpEnableDenied(`cannot enable MCP provider you don't have access to: ${blocked.join(', ')}`)
+        }
         return run()
       })
     }
