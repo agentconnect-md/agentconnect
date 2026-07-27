@@ -75,9 +75,13 @@ Every active channel served by a shared bot has exactly one default agent. A new
 observed or ownerless channel converges to the bot's earliest active agent, and removing
 the current owner immediately transfers ownership to the earliest remaining agent.
 Console surfaces must show the same effective owner and trigger from every member
-agent's integration; they must not expose a `No default` state.
+agent's integration; they must not expose a `No default` state. The trigger is
+replicated across the channel's membership rows so removing the owner does not
+discard it.
 
-Changing the owner preserves the channel's trigger. Direct messages remain separate:
+A Console owner change preserves the channel's trigger. An in-Slack owner change or
+automatic fallback to a restricted agent instead leaves the channel Off, because only
+an authorized Console editor may enable it. Direct messages remain separate:
 restricted agents may independently enable or disable their own DM conversation rows.
 
 ## No-response control marker

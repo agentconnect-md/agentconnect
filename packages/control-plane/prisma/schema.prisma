@@ -1409,6 +1409,9 @@ model IntegrationChannel {
   name          String? // "#deploys" without the hash (or DM counterpart); null if lookup failed
   isPrivate     Boolean          @default(false)
   kind          ConversationKind @default(channel)
+  // Relay-backed channel rows repeat the effective trigger across each active
+  // integration so deleting the canonical owner does not discard channel state.
+  // DM rows remain independently gated per integration.
   trigger       ChannelTrigger   @default(mention)
   // Per-channel default/owning agent for a SHARED bot (shared-bot-relay.md §10.1
   // channel ownership — the primary disambiguation path). Exactly one active

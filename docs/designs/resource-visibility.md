@@ -892,9 +892,11 @@ agents.
   membership report derives the default trigger from gating: `off` when gated,
   `mention` otherwise (today's default).
 - The existing per-channel trigger PATCH route accepts `off` and reuses the
-  existing recompute-bindRules-and-push flow. Authorization is unchanged — the
-  route already requires edit rights on the agent, which for a restricted agent
-  means the private group.
+  existing recompute-bindRules-and-push flow. A direct integration requires edit
+  rights on its parent agent. A shared bot's channel state is bot-scoped, so the
+  route additionally requires edit rights on the effective owner and on a newly
+  selected owner; changing a visible sibling cannot enable a hidden restricted
+  owner.
 - `gated` is **derived** from `agent.visibility === 'restricted'` at spec
   assembly; there is no separate stored toggle (see §14.7).
 - Web `IntegrationChannelList`: tri-state segmented control per channel row

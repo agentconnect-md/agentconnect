@@ -2199,6 +2199,7 @@ export interface IntegrationChannelRecord {
   name: string | null
   isPrivate: boolean
   kind: ConversationKind
+  /** Repeated across shared-channel sibling rows; integration-scoped for DMs. */
   trigger: ChannelTrigger
   /** Per-channel owner for a shared bot (§10.1); null on sibling non-owner rows. */
   agentId: AgentId | null

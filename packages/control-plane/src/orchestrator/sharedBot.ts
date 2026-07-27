@@ -69,6 +69,16 @@ interface Compiled {
   placed: { integration: IntegrationRecord; daemonId: string; gated: boolean }[]
 }
 
+/** Resolve a persisted owner marker to its active integration, falling back to
+ * the earliest active install for new or legacy ownerless channels. */
+export function pickChannelOwner(
+  installs: IntegrationRecord[],
+  rows: IntegrationChannelRecord[]
+): IntegrationRecord | undefined {
+  const assigned = new Set(rows.flatMap((row) => (row.agentId ? [row.agentId] : [])))
+  return installs.find((integration) => assigned.has(integration.agentId)) ?? installs[0]
+}
+
 export class SharedBotOrchestrator {
   constructor(
     private readonly bots: BotRepo,
@@ -374,7 +384,7 @@ export class SharedBotOrchestrator {
     const rows = (await this.channels.listForBot(bot.id)).filter(
       (row) => row.kind === 'channel' && row.channelId === channelId
     )
-    const currentOwner = this.pickChannelOwner(installs, rows)
+    const currentOwner = pickChannelOwner(installs, rows)
     const owner = patch.agentId ? installs.find((i) => i.agentId === patch.agentId) : currentOwner
     if (!owner) {
       this.log.warn({ botId, agentId: patch.agentId }, 'shared-bot: update-channel for a non-member agent — ignored')
@@ -387,26 +397,33 @@ export class SharedBotOrchestrator {
       : undefined
     const trigger = patch.trigger ?? currentRow?.trigger ?? rows[0]?.trigger
     let updated = await this.persistChannelOwner(installs, channelId, owner)
-    if (trigger !== undefined) updated = (await this.channels.setTrigger(owner.id, channelId, trigger)) ?? updated
+    if (trigger !== undefined) {
+      await this.syncChannelTrigger(installs, channelId, trigger, rows)
+      updated = { ...updated, trigger }
+    }
     await this.syncRoutes(botId)
     return updated
   }
 
-  /** The in-Slack config modal changes only the owner. */
+  /** The in-Slack config modal changes only the owner. A workspace user must
+   * never enable a restricted agent, so that target always starts Off. */
   async setChannelAgent(botId: string, channelId: string, agentId: string): Promise<void> {
-    await this.updateChannel(botId, channelId, { agentId })
+    const target = await this.agents.get(AgentId(agentId))
+    await this.updateChannel(botId, channelId, {
+      agentId,
+      ...(target && isGatedAgent(target) ? { trigger: 'off' as const } : {})
+    })
+  }
+
+  /** Preserve bot-scoped channel state before an owner integration is deleted. */
+  async prepareIntegrationRemoval(botId: string): Promise<void> {
+    const bot = await this.bots.get(BotId(botId))
+    if (bot?.transport !== 'http') return
+    const installs = await this.integrations.listForBot(bot.id)
+    await this.ensureChannelOwners(bot.id, installs)
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
-
-  /** Pick the earliest installed valid owner represented by the channel rows. */
-  private pickChannelOwner(
-    installs: IntegrationRecord[],
-    rows: IntegrationChannelRecord[]
-  ): IntegrationRecord | undefined {
-    const assigned = new Set(rows.flatMap((row) => (row.agentId ? [row.agentId] : [])))
-    return installs.find((integration) => assigned.has(integration.agentId)) ?? installs[0]
-  }
 
   /** Store one canonical owner row and clear every sibling install's copy. */
   private async persistChannelOwner(
@@ -431,6 +448,21 @@ export class SharedBotOrchestrator {
     return updated
   }
 
+  /** Keep the effective trigger on every surviving membership row. Ownership is
+   * canonical, but the repeated trigger lets owner deletion preserve channel state. */
+  private async syncChannelTrigger(
+    installs: IntegrationRecord[],
+    channelId: string,
+    trigger: ChannelTrigger,
+    knownRows: IntegrationChannelRecord[]
+  ): Promise<void> {
+    const known = new Map(knownRows.map((row) => [row.integrationId, row]))
+    for (const integration of installs) {
+      if (known.get(integration.id)?.trigger === trigger) continue
+      await this.channels.setTrigger(integration.id, channelId, trigger)
+    }
+  }
+
   /**
    * Converge every channel to one canonical owner. This repairs owner deletion,
    * legacy ownerless rows, and older Web writes that stored an owner on the wrong
@@ -443,20 +475,23 @@ export class SharedBotOrchestrator {
     const channelIds = [...new Set(rows.map((row) => row.channelId))]
     for (const channelId of channelIds) {
       const channelRows = rows.filter((row) => row.channelId === channelId)
-      const owner = this.pickChannelOwner(installs, channelRows)
+      const owner = pickChannelOwner(installs, channelRows)
       if (!owner) continue
+      const persistedOwner = channelRows.some((row) => row.agentId === owner.agentId)
+      let trigger =
+        channelRows.find((row) => row.agentId === owner.agentId)?.trigger ??
+        channelRows.find((row) => row.integrationId === owner.id)?.trigger ??
+        channelRows[0]?.trigger
+      if (!persistedOwner) {
+        const ownerAgent = await this.agents.get(owner.agentId)
+        if (ownerAgent && isGatedAgent(ownerAgent)) trigger = 'off'
+      }
       const canonical = channelRows.some((row) => row.integrationId === owner.id && row.agentId === owner.agentId)
       const conflicting = channelRows.some(
         (row) => row.agentId !== null && (row.integrationId !== owner.id || row.agentId !== owner.agentId)
       )
-      if (!canonical || conflicting) {
-        const trigger =
-          channelRows.find((row) => row.agentId === owner.agentId)?.trigger ??
-          channelRows.find((row) => row.integrationId === owner.id)?.trigger ??
-          channelRows[0]?.trigger
-        await this.persistChannelOwner(installs, channelId, owner)
-        if (trigger !== undefined) await this.channels.setTrigger(owner.id, channelId, trigger)
-      }
+      if (!canonical || conflicting) await this.persistChannelOwner(installs, channelId, owner)
+      if (trigger !== undefined) await this.syncChannelTrigger(installs, channelId, trigger, channelRows)
     }
   }
 

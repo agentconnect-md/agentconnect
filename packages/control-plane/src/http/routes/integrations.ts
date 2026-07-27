@@ -26,6 +26,7 @@ import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView, canEdit } from '../visibility.js'
 import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
+import { pickChannelOwner } from '../../orchestrator/sharedBot.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewSlackBot, slackAppIdFromAppToken } from '../install-slack.js'
 import { discordAppIdFromBotToken } from '../discord-identity.js'
@@ -534,15 +535,46 @@ export function integrationRoutes(deps: HttpDeps) {
           }))
         )
         // Membership is repeated per shared-bot integration, while only the
-        // canonical owner row persists agentId. Project that bot-level owner and
-        // trigger onto every visible copy so all agent details agree.
+        // canonical owner row persists agentId. Read effective state from every
+        // active install of each visible bot — not only viewer-visible integrations
+        // — so a sibling never disagrees with the relay's route table.
         const effective = new Map<string, IntegrationChannelRecord>()
-        for (const { integration, channels } of hydrated) {
-          if (integration.status !== 'active') continue
-          for (const channel of channels) {
-            if (channel.kind !== 'channel' || !channel.agentId) continue
-            const key = `${integration.botId}\u0000${channel.channelId}`
-            if (!effective.has(key)) effective.set(key, channel)
+        const bots = new Map((await deps.repos.bot.listForOrg(orgIdOf(req))).map((bot) => [bot.id, bot]))
+        const botStates = await Promise.all(
+          [...new Set(hydrated.map(({ integration }) => integration.botId))].map(async (botId) => {
+            const bot = bots.get(botId)
+            if (bot?.transport !== 'http') return null
+            const [installs, channels] = await Promise.all([
+              deps.repos.integration.listForBot(botId),
+              deps.repos.integrationChannel.listForBot(botId)
+            ])
+            return { botId, installs, channels: channels.filter((channel) => channel.kind === 'channel') }
+          })
+        )
+        for (const state of botStates) {
+          if (!state) continue
+          const byChannel = new Map<string, IntegrationChannelRecord[]>()
+          for (const channel of state.channels) {
+            const channels = byChannel.get(channel.channelId) ?? []
+            channels.push(channel)
+            byChannel.set(channel.channelId, channels)
+          }
+          for (const [channelId, channels] of byChannel) {
+            const owner = pickChannelOwner(state.installs, channels)
+            if (!owner) continue
+            const channel =
+              channels.find((row) => row.agentId === owner.agentId) ??
+              channels.find((row) => row.integrationId === owner.id) ??
+              channels[0]
+            if (channel) {
+              const persistedOwner = channels.some((row) => row.agentId === owner.agentId)
+              const ownerAgent = persistedOwner ? null : await deps.repos.agent.get(owner.agentId)
+              effective.set(`${state.botId}\u0000${channelId}`, {
+                ...channel,
+                agentId: owner.agentId,
+                ...(ownerAgent && isGatedAgent(ownerAgent) ? { trigger: 'off' as const } : {})
+              })
+            }
           }
         }
         return hydrated.map(({ integration, channels }) =>
@@ -600,11 +632,51 @@ export function integrationRoutes(deps: HttpDeps) {
         if (!bot) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
-        const observedOwner = req.body.agentId ? await deps.repos.agent.get(AgentId(req.body.agentId)) : null
-        const release = deps.agentMutations.tryBeginMutation([
-          agent.id,
-          ...(req.body.agentId ? [req.body.agentId] : [])
-        ])
+        const botScopedChannel = bot.transport === 'http' && existingChannel.kind === 'channel'
+        let effectiveOwner: AgentRecord | null = null
+        let selectedOwner: AgentRecord | null = null
+        if (botScopedChannel) {
+          if (req.body.agentId !== undefined && !bot.agentIds.includes(AgentId(req.body.agentId))) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: 'default agent must be an agent that uses this bot'
+            })
+          }
+          const [installs, channelRows] = await Promise.all([
+            deps.repos.integration.listForBot(bot.id),
+            deps.repos.integrationChannel.listForBot(bot.id)
+          ])
+          const owner = pickChannelOwner(
+            installs,
+            channelRows.filter((channel) => channel.kind === 'channel' && channel.channelId === req.params.channelId)
+          )
+          effectiveOwner = owner ? await deps.repos.agent.get(owner.agentId) : null
+          selectedOwner =
+            req.body.agentId !== undefined ? await deps.repos.agent.get(AgentId(req.body.agentId)) : effectiveOwner
+          if (!effectiveOwner || !selectedOwner) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: 'channel owner changed; refresh and retry the integration change'
+            })
+          }
+          if (!canEdit(effectiveOwner, ctxOf(req)) || !canEdit(selectedOwner, ctxOf(req))) {
+            return reply.code(403).send({
+              error: 'Forbidden',
+              statusCode: 403,
+              message: 'cannot edit the current or selected channel owner'
+            })
+          }
+        }
+        const mutationAgents = [
+          ...new Map(
+            [agent, effectiveOwner, selectedOwner]
+              .filter((candidate): candidate is AgentRecord => candidate !== null)
+              .map((candidate) => [candidate.id, candidate])
+          ).values()
+        ]
+        const release = deps.agentMutations.tryBeginMutation(mutationAgents.map((candidate) => candidate.id))
         if (!release) {
           return reply.code(409).send({
             error: 'Conflict',
@@ -613,36 +685,26 @@ export function integrationRoutes(deps: HttpDeps) {
           })
         }
         try {
-          const current = await refreshMutationAgent(agent)
-          if (!current) {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: 'agent placement changed; refresh and retry the integration change'
-            })
+          const refreshed = new Map<string, AgentRecord>()
+          for (const observed of mutationAgents) {
+            const current = await refreshMutationAgent(observed)
+            if (!current) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: 'agent placement changed; refresh and retry the integration change'
+              })
+            }
+            refreshed.set(current.id, current)
           }
-          agent = current
-          if (observedOwner && !(await refreshMutationAgent(observedOwner))) {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: 'default agent placement changed; refresh and retry the integration change'
-            })
-          }
+          agent = refreshed.get(agent.id)!
           // HTTP channel ownership is bot-scoped even though membership rows are
           // stored per integration. Route the whole patch through the orchestrator
           // so every agent detail shows the same owner/trigger and exactly one row
           // remains authoritative.
           let updated: IntegrationChannelRecord | null = null
           let routesSynced = false
-          if (bot.transport === 'http' && existingChannel.kind === 'channel') {
-            if (req.body.agentId !== undefined && !bot.agentIds.includes(AgentId(req.body.agentId))) {
-              return reply.code(409).send({
-                error: 'Conflict',
-                statusCode: 409,
-                message: 'default agent must be an agent that uses this bot'
-              })
-            }
+          if (botScopedChannel) {
             updated = await deps.sharedBot.updateChannel(bot.id, req.params.channelId, {
               ...(req.body.agentId !== undefined ? { agentId: req.body.agentId } : {}),
               ...(req.body.trigger !== undefined ? { trigger: req.body.trigger } : {})
@@ -728,6 +790,9 @@ export function integrationRoutes(deps: HttpDeps) {
           }
           agent = current
           const botBefore = await deps.repos.bot.get(existing.botId)
+          if (botBefore?.transport === 'http') {
+            await deps.sharedBot.prepareIntegrationRemoval(existing.botId)
+          }
           await deps.repos.integration.delete(existing.id)
           // "Freed" now means NO active integration remains (a shared bot may still
           // serve other agents — don't stamp it freed while it does, §6).
