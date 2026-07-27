@@ -341,6 +341,109 @@ describe('waitlist admission — POST /waitlist/redeem', () => {
     }
   })
 
+  it('an already-activated account does NOT consume a bearer link — it stays available', async () => {
+    const boundToken = await approveAndMint('wl-already@acme.dev')
+    const { token: bearerToken, tokenHash } = await mintOpenLink()
+    const { app, close } = buildApp()
+    try {
+      const redeem = (token: string, hdrs: Record<string, string>) =>
+        app.inject({ method: 'POST', url: '/api/v1/waitlist/redeem', headers: hdrs, payload: { token } })
+
+      // Activate this user through their OWN bound link first.
+      const h = await headers('wl-already', 'wl-already@acme.dev')
+      await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      expect((await redeem(boundToken, h)).statusCode).toBe(200)
+
+      // They now open someone else's bearer link: admitted (already in), link untouched.
+      expect((await redeem(bearerToken, h)).statusCode).toBe(200)
+      const untouched = await prisma.waitlistEntry.findUnique({ where: { tokenHash } })
+      expect(untouched!.redeemedByUserId).toBeNull()
+      expect(untouched!.redeemedAt).toBeNull()
+      expect(untouched!.redeemedEmail).toBeNull()
+
+      // So a user who actually needs it can still redeem it.
+      const fresh = await headers('wl-already-fresh', 'fresh@acme.dev')
+      await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: fresh })
+      expect((await redeem(bearerToken, fresh)).statusCode).toBe(200)
+      const freshUser = await prisma.user.findUnique({ where: { oidcSubject: 'wl-already-fresh' } })
+      const consumed = await prisma.waitlistEntry.findUnique({ where: { tokenHash } })
+      expect(consumed!.redeemedByUserId).toBe(freshUser!.id)
+      expect(consumed!.redeemedEmail).toBe('fresh@acme.dev')
+    } finally {
+      await close()
+    }
+  })
+
+  it('activates even when every preferred personal-org slug is taken', async () => {
+    // Regression: the redeem transaction allocated the slug by INSERTing and catching
+    // the unique violation. In Postgres a failed statement aborts the WHOLE
+    // transaction, so the retry died with 25P02 and the redeem answered 500.
+    for (const slug of ['taken', 'taken-2', 'taken-3']) await prisma.org.create({ data: { slug } })
+    const { token } = await mintOpenLink()
+    const { app, close } = buildApp()
+    try {
+      const h = await headers('wl-slug-clash', 'taken@acme.dev') // base label → 'taken'
+      await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      const redeem = await app.inject({
+        method: 'POST',
+        url: '/api/v1/waitlist/redeem',
+        headers: h,
+        payload: { token }
+      })
+      expect(redeem.statusCode).toBe(200)
+      const access = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      expect(access.json()).toMatchObject({ status: 'active', activated: true, orgCount: 1 })
+    } finally {
+      await close()
+    }
+  })
+
+  it('activates concurrent redeemers competing for the SAME personal-org slug', async () => {
+    // Regression: allocating the slug by INSERT-and-catch (or by read-then-insert)
+    // loses this race — the loser's failed statement aborts its redeem transaction and
+    // the route answers 500. All three share the email local-part, so they derive the
+    // same base slug and must be handed distinct ones.
+    const links = await Promise.all([mintOpenLink(), mintOpenLink(), mintOpenLink()])
+    const identities = [
+      ['wl-race-a', 'dup@a.example'],
+      ['wl-race-b', 'dup@b.example'],
+      ['wl-race-c', 'dup@c.example']
+    ] as const
+    const { app, close } = buildApp()
+    try {
+      const hdrs = await Promise.all(identities.map(([sub, email]) => headers(sub, email)))
+      for (const h of hdrs) await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+
+      const results = await Promise.all(
+        hdrs.map((h, i) =>
+          app.inject({
+            method: 'POST',
+            url: '/api/v1/waitlist/redeem',
+            headers: h,
+            payload: { token: links[i]!.token }
+          })
+        )
+      )
+      expect(results.map((r) => r.statusCode)).toEqual([200, 200, 200])
+
+      // Each ends up owning exactly one org, and the slugs are distinct.
+      const slugs: string[] = []
+      for (const [sub] of identities) {
+        const user = await prisma.user.findUnique({ where: { oidcSubject: sub } })
+        const owned = await prisma.membership.findMany({
+          where: { userId: user!.id, role: 'owner' },
+          select: { org: { select: { slug: true } } }
+        })
+        expect(owned).toHaveLength(1)
+        slugs.push(owned[0]!.org.slug)
+      }
+      expect(new Set(slugs).size).toBe(3)
+      expect([...slugs].sort()).toEqual(['dup', 'dup-2', 'dup-3'])
+    } finally {
+      await close()
+    }
+  })
+
   it('same-user retry stays 200 even after the link later expires or is revoked (bound + bearer)', async () => {
     const boundToken = await approveAndMint('wl-retry@acme.dev')
     const { app, close } = buildApp()
