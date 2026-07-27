@@ -35,7 +35,7 @@ import { type AgentRecord, type AgentWorkspace, isSyntheticEmail } from '../../p
 import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, type OrgId } from '../../domain/ids.js'
 import { mcpProxyDef, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
-import { parseSkillRef } from '../../orchestrator/skillSource.js'
+import { parseSkillRef, redactSourceCredentials } from '../../orchestrator/skillSource.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from '../../orchestrator/memoryConnection.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView, canEdit, canManageSharing, type ViewCtx } from '../visibility.js'
@@ -1027,7 +1027,21 @@ export function agentRoutes(deps: HttpDeps) {
         const names = [...new Set(agent.skills.map((ref) => parseSkillRef(ref).source))]
         const rows = await Promise.all(names.map((name) => deps.repos.skillSource.getByName(agent.orgId, name)))
         return rows.flatMap((s) =>
-          s ? [{ id: s.id, name: s.name, source: s.source, ref: s.ref, subDir: s.subDir, skills: s.skills }] : []
+          s
+            ? [
+                {
+                  id: s.id,
+                  name: s.name,
+                  // This response crosses the source's OWN visibility, so the string
+                  // is redacted even though `SkillSourceArg` now rejects credentials
+                  // on write — rows predating that guard must not leak one here.
+                  source: redactSourceCredentials(s.source),
+                  ref: s.ref,
+                  subDir: s.subDir,
+                  skills: s.skills
+                }
+              ]
+            : []
         )
       }
     )

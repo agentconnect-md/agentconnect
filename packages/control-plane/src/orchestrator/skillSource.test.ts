@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseSkillRef, resolveAgentSkillEntries } from './skillSource.js'
+import { parseSkillRef, redactSourceCredentials, resolveAgentSkillEntries } from './skillSource.js'
 import type { SkillSourceRecord, SkillSourceRepo } from '../persistence/ports.js'
 import { OrgId } from '../domain/ids.js'
 
@@ -101,5 +101,36 @@ describe('resolveAgentSkillEntries', () => {
     const repo = repoWith([source({ name: 'platform' })])
     const out = await resolveAgentSkillEntries({ orgId: ORG, skills: ['gone/x', 'platform/*'] }, repo)
     expect(out.map((e) => e.name)).toEqual(['platform'])
+  })
+})
+
+describe('redactSourceCredentials', () => {
+  // The agent-scoped resolution shows a source to callers the source itself is
+  // shared away from, so anything that could be a secret must not survive.
+  it('strips userinfo from a scheme URL, whether it looks like a password or a token', () => {
+    expect(redactSourceCredentials('https://user:pw@git.example.test/ops/skills.git')).toBe(
+      'https://git.example.test/ops/skills.git'
+    )
+    expect(redactSourceCredentials('https://ghp_TOKEN@github.com/example-org/kit')).toBe(
+      'https://github.com/example-org/kit'
+    )
+    expect(redactSourceCredentials('ssh://git@git.example.test/ops/skills.git')).toBe(
+      'ssh://git.example.test/ops/skills.git'
+    )
+  })
+
+  it('leaves credential-free forms untouched', () => {
+    for (const s of [
+      'example-org/example-ai-kit',
+      'https://github.com/example-org/example-kit/tree/main/skills',
+      'git@github.com:example-org/example-kit.git' // scp-like: no scheme, so no userinfo
+    ]) {
+      expect(redactSourceCredentials(s)).toBe(s)
+    }
+  })
+
+  it('does not treat an @ later in the path as userinfo', () => {
+    const s = 'https://git.example.test/ops/skills.git?ref=v1@2'
+    expect(redactSourceCredentials(s)).toBe(s)
   })
 })

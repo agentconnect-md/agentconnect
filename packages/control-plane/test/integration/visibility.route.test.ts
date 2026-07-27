@@ -229,17 +229,24 @@ describe('mcp provider visibility — list, get, sharing, enable-gate', () => {
 })
 
 describe('skill source visibility — the agent that enables it resolves it anyway', () => {
-  /** Seed a skill_source row directly (no GitHub scan, no fan-out). */
+  /** Seed a skill_source row directly (no GitHub scan, no fan-out). `source`
+   *  bypasses `SkillSourceArg`, which is how a pre-guard row is simulated. */
   async function seedSource(
     id: string,
-    opts: { name: string; visibility?: 'org' | 'restricted'; sharedWith?: string[]; createdByUserId?: string }
+    opts: {
+      name: string
+      source?: string
+      visibility?: 'org' | 'restricted'
+      sharedWith?: string[]
+      createdByUserId?: string
+    }
   ): Promise<void> {
     await prisma.skillSource.create({
       data: {
         id,
         orgId: DEFAULT_ORG_ID,
         name: opts.name,
-        source: 'example-org/example-ai-kit',
+        source: opts.source ?? 'example-org/example-ai-kit',
         ...(opts.visibility ? { visibility: opts.visibility } : {}),
         ...(opts.sharedWith ? { sharedWith: opts.sharedWith } : {}),
         ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {})
@@ -284,6 +291,36 @@ describe('skill source visibility — the agent that enables it resolves it anyw
     const res = await appAs(other).app.inject({ method: 'GET', url: `${ORG}/agents/${A}/skill-sources` })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual([])
+  })
+
+  it('a credential in a pre-guard source never crosses the boundary, and can no longer be stored', async () => {
+    const other = await makeUser('sk-cred', 'collaborator')
+    const owner = await makeUser('sk-cred-owner', 'owner')
+    const S = randomUUID()
+    // A row from before SkillSourceArg rejected credentials: restricted away from
+    // `other`, but reachable through an agent they can see.
+    await seedSource(S, {
+      name: 'sk-cred-kit',
+      source: 'https://ghp_notarealtoken@git.example.test/ops/skills.git',
+      visibility: 'restricted',
+      sharedWith: []
+    })
+    const A = randomUUID()
+    await seedAgent(prisma, A, { visibility: 'org' })
+    await prisma.agent.update({ where: { id: A }, data: { runtimeOverrides: { skills: ['sk-cred-kit/*'] } } })
+
+    const res = await appAs(other).app.inject({ method: 'GET', url: `${ORG}/agents/${A}/skill-sources` })
+    expect(res.statusCode).toBe(200)
+    const [row] = res.json() as Array<{ source: string }>
+    expect(row!.source).toBe('https://git.example.test/ops/skills.git')
+    expect(res.payload).not.toContain('ghp_notarealtoken')
+
+    // ...and the write path no longer accepts one, even from an owner.
+    const create = (source: string) =>
+      appAs(owner).app.inject({ method: 'POST', url: `${ORG}/skill-sources`, payload: { name: 'sk-cred-new', source } })
+    expect((await create('https://user:pw@git.example.test/ops/skills.git')).statusCode).toBe(400)
+    expect((await create('https://ghp_notarealtoken@github.com/example-org/kit')).statusCode).toBe(400)
+    expect((await create('git@github.com:example-org/example-kit.git')).statusCode).toBe(201) // scp-like form still fine
   })
 
   it('an invisible agent is not a back door onto its sources', async () => {

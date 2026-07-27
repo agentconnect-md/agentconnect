@@ -80,6 +80,20 @@ export async function resolveAgentSkillEntries(
   return entries
 }
 
+/**
+ * Strip URL userinfo from a source string for display outside the source's own
+ * visibility (`GET /agents/:id/skill-sources`).
+ *
+ * `SkillSourceArg` now rejects credential-bearing sources on write, but rows
+ * stored before that guard can still hold `https://<token>@host/repo` — and a
+ * token is just as often the USERNAME as the password, so the whole userinfo
+ * segment goes. Applies only to scheme URLs: the scp-like `git@github.com:o/r`
+ * form has no userinfo to strip and must survive intact.
+ */
+export function redactSourceCredentials(source: string): string {
+  return source.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/@]*@/, '$1')
+}
+
 /** If the source itself restricts to a subset (`row.skills`), keep only picks
  *  inside it; otherwise pass the picks through unchanged. */
 function scopeSkills(picks: string[], sourceFilter: string[]): string[] {

@@ -133,9 +133,11 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
   // installs and to let it be turned off, like the MCP card's ineligible names.
   const tiles = useMemo(() => {
     const known = new Set(skillSources.map((s) => s.name))
+    // `registry` is a literal so it discriminates the union: only the registry arm
+    // carries the sharing fields the footer reads.
     return [
-      ...skillSources.map((s) => ({ ...s, registry: true })),
-      ...(own ?? []).filter((s) => !known.has(s.name)).map((s) => ({ ...s, registry: false }))
+      ...skillSources.map((s) => ({ ...s, registry: true as const })),
+      ...(own ?? []).filter((s) => !known.has(s.name)).map((s) => ({ ...s, registry: false as const }))
     ]
   }, [skillSources, own])
 

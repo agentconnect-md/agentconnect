@@ -371,11 +371,28 @@ const SkillFilterName = z
 
 // A source string that becomes a positional argument to `npx skills add`. Reject
 // option-looking values for the same reason.
+//
+// Also reject embedded credentials (`https://<token>@host/repo`,
+// `https://user:pw@host/repo`). A skill source is org metadata that travels inline
+// on every referring AgentSpec and is shown next to the agents that install it, so
+// it must never be a secret carrier — a private repo needs a real grant, which this
+// release does not have (see shared-skills.md; create already rejects a confirmed
+// private repo). The scp-like `git@github.com:owner/repo` form has no `://` and is
+// unaffected; `ssh://git@host/repo` names a ROLE, not a credential, so a
+// colon-free userinfo stays allowed there.
 const SkillSourceArg = z
   .string()
   .trim()
   .min(1)
   .refine((s) => !s.startsWith('-'), { message: 'source must not start with "-"' })
+  .refine(
+    (s) => {
+      const m = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/]*)@/.exec(s)
+      if (!m) return true
+      return !s.toLowerCase().startsWith('http') && !m[1]!.includes(':')
+    },
+    { message: 'source must not embed credentials; use a public repository' }
+  )
 
 // Enabled shared-skills (docs/designs/shared-skills.md): each entry is
 // "<sourceName>/<skillName>", "<sourceName>/*" (the whole source), or a bare
