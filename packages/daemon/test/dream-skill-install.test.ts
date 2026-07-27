@@ -193,6 +193,38 @@ describe('materializeAcceptedDreamSkills', () => {
     expect(result.errors.some((e) => /ownership could not be recorded/.test(e.error))).toBe(true)
   })
 
+  it('keeps owning a stale skill whose removal was REFUSED, even when another succeeds', async () => {
+    // Mixed pass: A's removal is refused (planted symlink), B's succeeds.
+    // Deriving ownership only from successes forgets A — and once A's real
+    // directory is restored nothing ever reconciles it away again.
+    const { dir: dirA, cwd } = await fixture('skill-a')
+    await materializeAcceptedDreamSkills({ dir: dirA, runtime: 'claude' }, cwd)
+    const { dir: dirB } = await fixture('skill-b')
+    // Install B alongside A by pointing one agent root at both.
+    await mkdir(join(dirA, 'skills', 'skill-b'), { recursive: true })
+    await writeFile(join(dirA, 'skills', 'skill-b', 'SKILL.md'), '# B\n', 'utf8')
+    await materializeAcceptedDreamSkills({ dir: dirA, runtime: 'claude' }, cwd)
+    expect(existsSync(join(cwd, '.claude/skills/skill-a'))).toBe(true)
+    expect(existsSync(join(cwd, '.claude/skills/skill-b'))).toBe(true)
+
+    // Make skill-a's removal refuse, then prepare an agent that wants neither.
+    const outside = await mkdtemp(join(tmpdir(), 'ac-outside-'))
+    await rm(join(cwd, '.claude/skills/skill-a'), { recursive: true })
+    await symlink(outside, join(cwd, '.claude/skills/skill-a'), 'dir')
+    const empty = await mkdtemp(join(tmpdir(), 'ac-agent-e-'))
+    const mixed = await materializeAcceptedDreamSkills({ dir: empty, runtime: 'claude' }, cwd)
+    expect(mixed.removed).toEqual(['.claude/skills/skill-b']) // only B went
+
+    // Restore skill-a as a real directory; a later pass must still reconcile it.
+    await rm(join(cwd, '.claude/skills/skill-a'))
+    await mkdir(join(cwd, '.claude/skills/skill-a'), { recursive: true })
+    await writeFile(join(cwd, '.claude/skills/skill-a', 'SKILL.md'), '# A\n', 'utf8')
+    const after = await materializeAcceptedDreamSkills({ dir: empty, runtime: 'claude' }, cwd)
+    expect(after.removed).toEqual(['.claude/skills/skill-a'])
+    expect(existsSync(join(cwd, '.claude/skills/skill-a'))).toBe(false)
+    void dirB
+  })
+
   it('skips a malformed accepted skill without failing the others', async () => {
     const { dir, cwd } = await fixture()
     await mkdir(join(dir, 'skills', 'broken'), { recursive: true })

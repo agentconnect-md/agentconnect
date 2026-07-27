@@ -188,12 +188,19 @@ async function materialize(
   // would hand B executable instruction content it never reviewed.
   const desired = new Set(names.map((name) => `${rootRel}/${name}`))
   const prior = await readMarker(acpCwd)
+  // Ownership must survive a FAILED removal. If A's removal is refused (its
+  // path was replaced by a symlink) while B's succeeds, dropping A from the
+  // marker forgets it forever: once A's real directory is restored, no later
+  // pass knows to reconcile it, and it stays discoverable to agents that never
+  // accepted it. So carry forward every entry we did not actually remove.
+  const retained: string[] = []
   for (const rel of prior.installed) {
     if (desired.has(rel)) continue
     try {
       await containedRemoveDir(acpCwd, join(acpCwd, ...rel.split('/').slice(0, -1)), join(acpCwd, ...rel.split('/')))
       result.removed.push(rel)
     } catch (err) {
+      retained.push(rel)
       opts.warn?.(`skills: could not remove stale dream skill "${rel}" — ${err instanceof Error ? err.message : ''}`)
     }
   }
@@ -202,7 +209,7 @@ async function materialize(
     // marker unconditionally would create a file in EVERY workspace on every
     // prep — pointless for the overwhelmingly common no-accepted-skills case,
     // and a spurious workspace mutation the reconcile watcher can react to.
-    if (result.removed.length > 0) await writeMarker(acpCwd, { installed: [] }, opts.warn)
+    if (result.removed.length > 0) await writeMarker(acpCwd, { installed: retained }, opts.warn)
     return result
   }
 
@@ -212,7 +219,7 @@ async function materialize(
   // journal is a conservative SUPERSET (what may exist after this pass), then
   // narrowed to what actually landed; a crash in between leaves extras
   // recorded, which a later pass simply removes.
-  const journal = [...new Set([...prior.installed.filter((rel) => desired.has(rel)), ...desired])]
+  const journal = [...new Set([...retained, ...prior.installed.filter((rel) => desired.has(rel)), ...desired])]
   if (!(await writeMarker(acpCwd, { installed: journal }, opts.warn))) {
     result.errors.push({ skill: '*', error: 'ownership could not be recorded; skills were not installed' })
     return result
@@ -266,6 +273,6 @@ async function materialize(
       )
     }
   }
-  await writeMarker(acpCwd, { installed: result.installed }, opts.warn)
+  await writeMarker(acpCwd, { installed: [...new Set([...retained, ...result.installed])] }, opts.warn)
   return result
 }
