@@ -128,7 +128,7 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     const intRepo: Pick<IntegrationRepo, 'listForBot'> = { listForBot: async () => integrations }
     const chRepo: Pick<
       IntegrationChannelRepo,
-      'listForBot' | 'replaceSnapshot' | 'setAgent' | 'upsertAgent' | 'upsertConversation'
+      'listForBot' | 'replaceSnapshot' | 'setAgent' | 'setTrigger' | 'upsertAgent' | 'upsertConversation'
     > = {
       listForBot: async () => channels,
       replaceSnapshot: async (integrationId, reported, opts) => {
@@ -149,6 +149,12 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
         const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
         if (!row) return null
         row.agentId = agentId
+        return row
+      },
+      setTrigger: async (integrationId, channelId, trigger) => {
+        const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
+        if (!row) return null
+        row.trigger = trigger
         return row
       },
       upsertConversation: async (integrationId, conversation, opts) => {
@@ -445,7 +451,7 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
   it('setChannelAgent makes the pick the sole owner of the channel + pushes rc/routes', async () => {
     botRow = bot()
     // Start with C7 owned by alice (on alice's install); no row on bob's install.
-    channels = [channel({ integrationId: INT_A, channelId: 'C7', agentId: ALICE, trigger: 'mention' })]
+    channels = [channel({ integrationId: INT_A, channelId: 'C7', agentId: ALICE, trigger: 'any' })]
     const orch = makeOrch()
     // Operator picks BOB as C7's default in the modal.
     await orch.setChannelAgent(BOT, 'C7', BOB)
@@ -454,7 +460,7 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     const aliceRow = channels.find((c) => c.integrationId === INT_A && c.channelId === 'C7')
     const bobRow = channels.find((c) => c.integrationId === INT_B && c.channelId === 'C7')
     expect(aliceRow?.agentId).toBeNull()
-    expect(bobRow?.agentId).toBe(BOB)
+    expect(bobRow).toMatchObject({ agentId: BOB, trigger: 'any' })
 
     // and the relay got a hot rc/routes with C7 scoped to bob.
     const routes = ch.sends.filter((s) => s.type === 'rc/routes')
@@ -506,16 +512,29 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     expect(channels.find((c) => c.integrationId === INT_B && c.channelId === 'C1')?.agentId).toBe(BOB)
   })
 
-  it('does not re-seed a known channel the operator cleared to "No default"', async () => {
-    // C1 exists on both installs, un-owned (operator cleared it). A re-reported snapshot
-    // must NOT re-seed it — only genuinely new channels get the creating-agent default.
+  it('repairs a known ownerless channel to the earliest active agent', async () => {
     channels = [
       channel({ integrationId: INT_A, channelId: 'C1', agentId: null }),
       channel({ integrationId: INT_B, channelId: 'C1', agentId: null })
     ]
     await makeOrch().replaceChannels(BOT, [{ id: 'C1', name: 'deploys' }])
-    expect(channels.find((c) => c.integrationId === INT_A && c.channelId === 'C1')?.agentId).toBeNull()
+    expect(channels.find((c) => c.integrationId === INT_A && c.channelId === 'C1')?.agentId).toBe(ALICE)
     expect(channels.find((c) => c.integrationId === INT_B && c.channelId === 'C1')?.agentId).toBeNull()
+  })
+
+  it('transfers an ownerless channel to the earliest remaining integration', async () => {
+    integrations = [integration(INT_B, BOB)]
+    botRow = bot({ agentIds: [BOB] })
+    channels = [channel({ integrationId: INT_B, channelId: 'C1', agentId: null })]
+
+    await makeOrch().syncBot(BOT)
+
+    expect(channels).toEqual([expect.objectContaining({ integrationId: INT_B, channelId: 'C1', agentId: BOB })])
+    const assign = ch.sends.find((send) => send.type === 'rc/bot-assign')?.payload as RcBotAssign
+    expect(assign.routes).toEqual([
+      expect.objectContaining({ agentId: BOB, scope: { channel: 'C1' }, match: { kind: 'mention' } }),
+      expect.objectContaining({ agentId: BOB, match: { kind: 'keyword', value: 'bob' } })
+    ])
   })
 
   it('defers placement when no relay is connected', async () => {

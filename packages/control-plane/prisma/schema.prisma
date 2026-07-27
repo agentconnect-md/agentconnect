@@ -1411,13 +1411,12 @@ model IntegrationChannel {
   kind          ConversationKind @default(channel)
   trigger       ChannelTrigger   @default(mention)
   // Per-channel default/owning agent for a SHARED bot (shared-bot-relay.md §10.1
-  // channel ownership — the primary disambiguation path). When set, the relay
-  // routes this channel's traffic to this agent (and forwards to its daemon).
-  // Null ⇒ fall through to keyword / the bot's default agent. Irrelevant for a
-  // classic (non-shared) integration, where the owning agent is the only target.
-  agentId       String?        @db.Uuid
-  firstSeenAt   DateTime       @default(now()) @db.Timestamptz(6)
-  updatedAt     DateTime       @updatedAt @db.Timestamptz(6)
+  // channel ownership — the primary disambiguation path). Exactly one active
+  // integration row per shared channel carries the owner; sibling rows are null.
+  // Irrelevant for a classic integration, where its agent is the only target.
+  agentId       String?          @db.Uuid
+  firstSeenAt   DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime         @updatedAt @db.Timestamptz(6)
 
   integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
 

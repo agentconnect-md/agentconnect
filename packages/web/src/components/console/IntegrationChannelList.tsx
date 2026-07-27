@@ -95,9 +95,8 @@ function TriggerToggle({
   )
 }
 
-/** Per-channel default-agent picker for a SHARED bot (§10.1): which agent this
- *  channel's traffic routes to. "No default" clears it (falls through to keyword /
- *  the bot's group default). */
+/** Per-channel default-agent picker for a SHARED bot (§10.1). Every active
+ *  shared channel has exactly one owner. */
 function DefaultAgentSelect({
   channel,
   options,
@@ -107,22 +106,21 @@ function DefaultAgentSelect({
   channel: IntegrationChannelRow
   options: { id: string; label: string }[]
   disabled: boolean
-  onChange: (agentId: string | null) => void
+  onChange: (agentId: string) => void
 }) {
   const [saving, setSaving] = useState(false)
   return (
     <select
-      value={channel.agentId ?? ''}
+      value={channel.agentId ?? options[0]?.id ?? ''}
       disabled={disabled || saving}
       onChange={(e) => {
         setSaving(true)
-        Promise.resolve(onChange(e.target.value || null)).finally(() => setSaving(false))
+        Promise.resolve(onChange(e.target.value)).finally(() => setSaving(false))
       }}
       className={`rounded-[7px] border border-(--border-subtle) bg-(--surface-card) px-2 py-[5px] font-sans text-[12.5px] leading-normal text-(--text-primary) max-desktop:w-full ${
         disabled ? 'cursor-default opacity-60' : 'cursor-pointer'
       } ${saving ? 'opacity-60' : ''}`}
     >
-      <option value="">No default</option>
       {options.map((o) => (
         <option key={o.id} value={o.id}>
           {o.label}

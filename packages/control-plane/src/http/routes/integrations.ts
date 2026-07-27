@@ -527,8 +527,33 @@ export function integrationRoutes(deps: HttpDeps) {
         // Derived visibility: only integrations whose parent agent the caller can
         // see (owner ⇒ all). A restricted agent's integration never leaks here.
         const rows = await deps.repos.integration.listForOrg(orgIdOf(req), ctxOf(req))
-        return Promise.all(
-          rows.map(async (i) => toDto(i, await deps.repos.integrationChannel.listForIntegration(i.id)))
+        const hydrated = await Promise.all(
+          rows.map(async (integration) => ({
+            integration,
+            channels: await deps.repos.integrationChannel.listForIntegration(integration.id)
+          }))
+        )
+        // Membership is repeated per shared-bot integration, while only the
+        // canonical owner row persists agentId. Project that bot-level owner and
+        // trigger onto every visible copy so all agent details agree.
+        const effective = new Map<string, IntegrationChannelRecord>()
+        for (const { integration, channels } of hydrated) {
+          if (integration.status !== 'active') continue
+          for (const channel of channels) {
+            if (channel.kind !== 'channel' || !channel.agentId) continue
+            const key = `${integration.botId}\u0000${channel.channelId}`
+            if (!effective.has(key)) effective.set(key, channel)
+          }
+        }
+        return hydrated.map(({ integration, channels }) =>
+          toDto(
+            integration,
+            channels.map((channel) => {
+              if (channel.kind !== 'channel') return channel
+              const state = effective.get(`${integration.botId}\u0000${channel.channelId}`)
+              return state ? { ...channel, agentId: state.agentId, trigger: state.trigger } : channel
+            })
+          )
         )
       }
     )
@@ -542,12 +567,11 @@ export function integrationRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Integrations],
           summary: 'Update a channel',
-          description:
-            "Set a channel's trigger (@-mention vs any message), then push the integration's recomputed bindRules to the owning daemon.",
+          description: "Set a channel's trigger or default agent, then push the updated routing configuration.",
           operationId: 'updateIntegrationChannel',
           params: IdParam.extend({ channelId: z.string().min(1) }),
           body: UpdateIntegrationChannelBody,
-          response: { 200: IntegrationChannelDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+          response: { 200: IntegrationChannelDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -565,6 +589,16 @@ export function integrationRoutes(deps: HttpDeps) {
         }
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        }
+        const existingChannel = (await deps.repos.integrationChannel.listForIntegration(integration.id)).find(
+          (channel) => channel.channelId === req.params.channelId
+        )
+        if (!existingChannel) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'channel not found' })
+        }
+        const bot = await deps.repos.bot.get(integration.botId)
+        if (!bot) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
         const observedOwner = req.body.agentId ? await deps.repos.agent.get(AgentId(req.body.agentId)) : null
         const release = deps.agentMutations.tryBeginMutation([
@@ -595,43 +629,48 @@ export function integrationRoutes(deps: HttpDeps) {
               message: 'default agent placement changed; refresh and retry the integration change'
             })
           }
-          // Apply whichever of {trigger, agentId} the body carries (DTO refine
-          // guarantees ≥1). `agentId:null` clears the per-channel owner.
+          // HTTP channel ownership is bot-scoped even though membership rows are
+          // stored per integration. Route the whole patch through the orchestrator
+          // so every agent detail shows the same owner/trigger and exactly one row
+          // remains authoritative.
           let updated: IntegrationChannelRecord | null = null
-          if (req.body.trigger !== undefined) {
+          let routesSynced = false
+          if (bot.transport === 'http' && existingChannel.kind === 'channel') {
+            if (req.body.agentId !== undefined && !bot.agentIds.includes(AgentId(req.body.agentId))) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: 'default agent must be an agent that uses this bot'
+              })
+            }
+            updated = await deps.sharedBot.updateChannel(bot.id, req.params.channelId, {
+              ...(req.body.agentId !== undefined ? { agentId: req.body.agentId } : {}),
+              ...(req.body.trigger !== undefined ? { trigger: req.body.trigger } : {})
+            })
+            routesSynced = true
+          } else {
+            if (req.body.agentId !== undefined) {
+              return reply.code(400).send({
+                error: 'Bad Request',
+                statusCode: 400,
+                message: 'default agent applies only to shared channels'
+              })
+            }
             updated = await deps.repos.integrationChannel.setTrigger(
               integration.id,
               req.params.channelId,
-              req.body.trigger
+              req.body.trigger!
             )
-            if (!updated)
-              return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'channel not found' })
           }
-          if (req.body.agentId !== undefined) {
-            // A named owner must be a placed agent that actually shares this bot.
-            if (req.body.agentId !== null) {
-              const bot = await deps.repos.bot.get(integration.botId)
-              if (!bot || !bot.agentIds.includes(AgentId(req.body.agentId))) {
-                return reply.code(409).send({
-                  error: 'Conflict',
-                  statusCode: 409,
-                  message: 'default agent must be an agent that uses this bot'
-                })
-              }
-            }
-            updated = await deps.repos.integrationChannel.setAgent(
-              integration.id,
-              req.params.channelId,
-              req.body.agentId === null ? null : AgentId(req.body.agentId)
-            )
-            if (!updated)
-              return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'channel not found' })
-          }
+          if (!updated)
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'channel not found' })
           // Push the change: a shared bot's routes hot-update on the relay; a classic
           // bot re-pushes its recomputed bindRules to the owning daemon.
-          const bot = await deps.repos.bot.get(integration.botId)
-          if (bot?.transport === 'http') await deps.sharedBot.syncRoutes(bot.id)
-          else if (agent.daemonId) await replicateUpsert(integration, agent.daemonId)
+          if (bot.transport === 'http') {
+            if (!routesSynced) await deps.sharedBot.syncRoutes(bot.id)
+          } else if (agent.daemonId) {
+            await replicateUpsert(integration, agent.daemonId)
+          }
           return toChannelDto(updated!)
         } finally {
           release()

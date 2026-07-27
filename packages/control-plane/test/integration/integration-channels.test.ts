@@ -360,6 +360,105 @@ describe('integration/channels EVT → integration_channel convergence', () => {
 })
 
 describe('PATCH /integrations/:id/channels/:channelId', () => {
+  it('projects and updates one shared-channel owner consistently across member integrations', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const alice = randomUUID()
+    const bob = randomUUID()
+    const botId = randomUUID()
+    const aliceIntegration = randomUUID()
+    const bobIntegration = randomUUID()
+    await seedAgent(prisma, alice, { daemonId: DAEMON })
+    await seedAgent(prisma, bob, { daemonId: DAEMON })
+    await prisma.bot.create({
+      data: {
+        id: botId,
+        orgId: DEFAULT_ORG_ID,
+        platform: 'slack',
+        name: 'shared-bot',
+        shareable: true,
+        transport: 'http'
+      }
+    })
+    await prisma.integration.createMany({
+      data: [
+        {
+          id: aliceIntegration,
+          orgId: DEFAULT_ORG_ID,
+          agentId: alice,
+          botId,
+          platform: 'slack',
+          name: 'shared-bot'
+        },
+        {
+          id: bobIntegration,
+          orgId: DEFAULT_ORG_ID,
+          agentId: bob,
+          botId,
+          platform: 'slack',
+          name: 'shared-bot'
+        }
+      ]
+    })
+    await prisma.integrationChannel.createMany({
+      data: [
+        {
+          integrationId: aliceIntegration,
+          channelId: 'C1',
+          name: 'deploys',
+          trigger: 'any',
+          agentId: alice
+        },
+        {
+          integrationId: bobIntegration,
+          channelId: 'C1',
+          name: 'deploys',
+          trigger: 'mention',
+          agentId: null
+        }
+      ]
+    })
+    running = buildHttpApp(prisma)
+
+    let listed = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    let shared = (
+      listed.json() as Array<{ botId: string; channels: Array<{ agentId: string; trigger: string }> }>
+    ).filter((integration) => integration.botId === botId)
+    expect(shared).toHaveLength(2)
+    expect(shared.every((integration) => integration.channels[0]?.agentId === alice)).toBe(true)
+    expect(shared.every((integration) => integration.channels[0]?.trigger === 'any')).toBe(true)
+
+    const changed = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${aliceIntegration}/channels/C1`,
+      payload: { agentId: bob }
+    })
+    expect(changed.statusCode).toBe(200)
+    expect(changed.json()).toMatchObject({ agentId: bob, trigger: 'any' })
+
+    const stored = await prisma.integrationChannel.findMany({
+      where: { integration: { botId }, channelId: 'C1' }
+    })
+    expect(stored.find((channel) => channel.integrationId === aliceIntegration)?.agentId).toBeNull()
+    expect(stored.find((channel) => channel.integrationId === bobIntegration)).toMatchObject({
+      agentId: bob,
+      trigger: 'any'
+    })
+
+    listed = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    shared = (listed.json() as Array<{ botId: string; channels: Array<{ agentId: string; trigger: string }> }>).filter(
+      (integration) => integration.botId === botId
+    )
+    expect(shared.every((integration) => integration.channels[0]?.agentId === bob)).toBe(true)
+    expect(shared.every((integration) => integration.channels[0]?.trigger === 'any')).toBe(true)
+
+    const cleared = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${aliceIntegration}/channels/C1`,
+      payload: { agentId: null }
+    })
+    expect(cleared.statusCode).toBe(400)
+  })
+
   it("persists the trigger and pushes integration/upsert with the channel-scoped 'auto' rule", async () => {
     await seedDaemon(prisma, DAEMON)
     const spy = new SpyControl()

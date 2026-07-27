@@ -69,6 +69,17 @@ best-effort edge: a target on another daemon whose call policy terminally reject
 caller can still leave a visible post, because that policy verdict is only known on the
 target's daemon after the post is made.
 
+## Shared-bot channel ownership
+
+Every active channel served by a shared bot has exactly one default agent. A newly
+observed or ownerless channel converges to the bot's earliest active agent, and removing
+the current owner immediately transfers ownership to the earliest remaining agent.
+Console surfaces must show the same effective owner and trigger from every member
+agent's integration; they must not expose a `No default` state.
+
+Changing the owner preserves the channel's trigger. Direct messages remain separate:
+restricted agents may independently enable or disable their own DM conversation rows.
+
 ## No-response control marker
 
 Every agent session receives the same standing response-choice instruction, independent

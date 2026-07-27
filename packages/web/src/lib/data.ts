@@ -1326,7 +1326,7 @@ export interface IntegrationChannelRow {
   /** 'im' = a DM conversation row (gated/restricted agents only); absent = channel. */
   kind?: 'channel' | 'im'
   trigger: 'off' | 'mention' | 'any'
-  /** Per-channel default agent for a shared bot (agentId); null/absent ⇒ unset. */
+  /** Effective per-channel owner for a shared bot. */
   agentId?: string | null
 }
 

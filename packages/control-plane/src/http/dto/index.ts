@@ -681,7 +681,8 @@ export const IntegrationChannelDto = z.object({
   isPrivate: z.boolean(),
   kind: z.enum(['channel', 'im']),
   trigger: z.enum(['off', 'mention', 'any']),
-  /** Per-channel default/owning agent for a shared bot (§10.1); null ⇒ unset. */
+  /** Effective per-channel owner for a shared bot (§10.1); null before convergence
+   *  or when ownership does not apply. */
   agentId: z.string().nullable()
 })
 
@@ -1117,11 +1118,11 @@ export const SlackAppFinalizeBody = z.object({
 
 /** `PATCH /integrations/:id/channels/:channelId` — per-conversation trigger
  *  ('off' disables the conversation, §14) and/or the shared-bot default agent.
- *  At least one field; `agentId:null` clears the owner. */
+ *  At least one field; an active shared channel always has an owner. */
 export const UpdateIntegrationChannelBody = z
   .object({
     trigger: z.enum(['off', 'mention', 'any']).optional(),
-    agentId: z.string().min(1).nullable().optional()
+    agentId: z.string().min(1).optional()
   })
   .refine((b) => b.trigger !== undefined || b.agentId !== undefined, {
     message: 'provide trigger and/or agentId'

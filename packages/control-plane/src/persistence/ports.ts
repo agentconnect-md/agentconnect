@@ -2200,7 +2200,7 @@ export interface IntegrationChannelRecord {
   isPrivate: boolean
   kind: ConversationKind
   trigger: ChannelTrigger
-  /** Per-channel default/owning agent for a shared bot (§10.1); null ⇒ unset. */
+  /** Per-channel owner for a shared bot (§10.1); null on sibling non-owner rows. */
   agentId: AgentId | null
 }
 
@@ -2246,8 +2246,8 @@ export interface IntegrationChannelRepo {
     channelId: string,
     trigger: ChannelTrigger
   ): Promise<IntegrationChannelRecord | null>
-  /** Per-channel default/owning agent (shared bot, §10.1); null clears it. Returns
-   *  null when the channel row doesn't exist. */
+  /** Set or clear this integration row's owner marker. The orchestrator keeps
+   *  exactly one row marked per shared channel. Returns null when missing. */
   setAgent(
     integrationId: IntegrationId,
     channelId: string,

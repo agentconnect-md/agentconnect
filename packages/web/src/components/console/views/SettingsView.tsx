@@ -110,17 +110,15 @@ type BotPlatform = (typeof BOT_PLATFORMS)[number]['platform']
 interface BotChannelView {
   channelId: string
   name: string
-  /** Explicit per-channel assignment; null ⇒ the bot's default agent (earliest
-   *  install = agentIds[0], same ordering the route compiler uses, §10.3). */
+  /** Effective per-channel owner; null only before legacy state converges. */
   agentId: string | null
-  /** Integration whose snapshot row backs this channel — the PATCH target when
-   *  the picker switches the active agent. */
+  /** Any integration whose snapshot row backs this channel; ownership PATCHes
+   *  are bot-scoped. */
   integrationId: string | null
 }
 
 // The bot's channel roster, merged across its installs (a shared bot fans out to
-// one integration per agent, each reporting its own membership snapshot). An
-// explicit per-channel assignment wins over rows that carry none.
+// one integration per agent, each reporting its own membership snapshot).
 function botChannels(bot: BotDto, integrations: IntegrationRow[]): BotChannelView[] {
   const merged = new Map<string, BotChannelView>()
   for (const i of integrations) {
