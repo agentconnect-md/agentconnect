@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, listMemoryFileHistory, type MemoryFileHistoryEventDto } from '@/lib/api'
 import { Spinner } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -101,123 +101,94 @@ function HistoryEvent({ event }: { event: MemoryFileHistoryEventDto }) {
   )
 }
 
-/** Lazy, read-only view over managed memory's hidden `.history` sidecar. */
+/** Read-only panel over managed memory's hidden `.history` sidecar; its summary action mounts this lazily. */
 export function ManagedMemoryHistory({ agentId, path }: { agentId: string; path: string }) {
-  const regionId = useId()
   const request = useRef(0)
-  const [open, setOpen] = useState(false)
   const [events, setEvents] = useState<MemoryFileHistoryEventDto[] | null>(null)
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const load = useCallback(
+    async (cursor?: string, append = false) => {
+      const id = ++request.current
+      setLoading(true)
+      setError(null)
+      try {
+        const page = await listMemoryFileHistory(agentId, path, { ...(cursor ? { cursor } : {}), limit: PAGE_SIZE })
+        if (id !== request.current) return
+        setEvents((current) => (append ? [...(current ?? []), ...page.events] : page.events))
+        setNextCursor(page.nextCursor)
+      } catch (caught) {
+        if (id !== request.current) return
+        setError(
+          caught instanceof ApiError && caught.status === 503
+            ? "Couldn't load change history — this agent is currently unavailable."
+            : caught instanceof Error
+              ? caught.message
+              : String(caught)
+        )
+      } finally {
+        if (id === request.current) setLoading(false)
+      }
+    },
+    [agentId, path]
+  )
+
   useEffect(() => {
     request.current += 1
-    setOpen(false)
     setEvents(null)
     setNextCursor(null)
     setLoading(false)
     setError(null)
+    void load()
     return () => {
       request.current += 1
     }
-  }, [agentId, path])
-
-  const load = async (cursor?: string, append = false) => {
-    const id = ++request.current
-    setLoading(true)
-    setError(null)
-    try {
-      const page = await listMemoryFileHistory(agentId, path, { ...(cursor ? { cursor } : {}), limit: PAGE_SIZE })
-      if (id !== request.current) return
-      setEvents((current) => (append ? [...(current ?? []), ...page.events] : page.events))
-      setNextCursor(page.nextCursor)
-    } catch (caught) {
-      if (id !== request.current) return
-      setError(
-        caught instanceof ApiError && caught.status === 503
-          ? "Couldn't load change history — this agent is currently unavailable."
-          : caught instanceof Error
-            ? caught.message
-            : String(caught)
-      )
-    } finally {
-      if (id === request.current) setLoading(false)
-    }
-  }
-
-  const toggle = () => {
-    const next = !open
-    setOpen(next)
-    if (next && events === null && !loading) void load()
-  }
-
-  const loadedCount = events?.length ?? 0
+  }, [load])
 
   return (
-    <section className="mt-auto border-t border-(--border-subtle)" aria-label={`Change history for ${path}`}>
-      <button
-        type="button"
-        className="flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-4 py-3 text-left font-sans transition-colors hover:bg-(--surface-hover) focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-(--brand)"
-        aria-expanded={open}
-        aria-controls={regionId}
-        onClick={toggle}
-      >
-        <Icon name="history" size={14} className="text-(--text-tertiary)" />
-        <span className="text-[12px] font-semibold leading-normal text-(--text-secondary)">Change history</span>
-        {events !== null ? (
-          <span className="text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
-            {loadedCount}
-            {nextCursor ? '+' : ''} {loadedCount === 1 && !nextCursor ? 'change' : 'changes'}
-          </span>
-        ) : null}
-        <Icon
-          name="chevron-down"
-          size={14}
-          className={`ml-auto text-(--text-tertiary) transition-transform ${open ? 'rotate-180' : 'rotate-0'}`}
-        />
-      </button>
-
-      {open ? (
-        <div id={regionId} className="border-t border-(--border-subtle) bg-(--surface-sunken) p-3" aria-live="polite">
-          {loading && events === null ? (
-            <div className="flex items-center justify-center gap-2 py-6 text-[11.5px] text-(--text-tertiary)">
-              <Spinner size={16} />
-              Loading change history…
-            </div>
-          ) : error && events === null ? (
-            <div className="flex flex-col items-start gap-2 py-3 text-[11.5px] text-(--red-600)" role="alert">
+    <section
+      className="flex flex-1 flex-col bg-(--surface-sunken) p-3"
+      aria-label={`Change history for ${path}`}
+      aria-live="polite"
+    >
+      {loading && events === null ? (
+        <div className="flex items-center justify-center gap-2 py-6 text-[11.5px] text-(--text-tertiary)">
+          <Spinner size={16} />
+          Loading change history…
+        </div>
+      ) : error && events === null ? (
+        <div className="flex flex-col items-start gap-2 py-3 text-[11.5px] text-(--red-600)" role="alert">
+          <span>{error}</span>
+          <Button size="xs" variant="secondary" onClick={() => void load()}>
+            Retry
+          </Button>
+        </div>
+      ) : events?.length === 0 ? (
+        <div className="py-3 text-[11.5px] text-(--text-tertiary)">No recorded changes for this file yet.</div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {events?.map((event, index) => (
+            <HistoryEvent key={event.id ?? `${event.at}:${event.source}:${event.event}:${index}`} event={event} />
+          ))}
+          {error ? (
+            <div className="flex flex-wrap items-center gap-2 py-1 text-[11.5px] text-(--red-600)" role="alert">
               <span>{error}</span>
-              <Button size="xs" variant="secondary" onClick={() => void load()}>
+              <Button size="xs" variant="secondary" onClick={() => void load(nextCursor ?? undefined, true)}>
                 Retry
               </Button>
             </div>
-          ) : events?.length === 0 ? (
-            <div className="py-3 text-[11.5px] text-(--text-tertiary)">No recorded changes for this file yet.</div>
-          ) : (
-            <div className="flex flex-col gap-2">
-              {events?.map((event, index) => (
-                <HistoryEvent key={event.id ?? `${event.at}:${event.source}:${event.event}:${index}`} event={event} />
-              ))}
-              {error ? (
-                <div className="flex flex-wrap items-center gap-2 py-1 text-[11.5px] text-(--red-600)" role="alert">
-                  <span>{error}</span>
-                  <Button size="xs" variant="secondary" onClick={() => void load(nextCursor ?? undefined, true)}>
-                    Retry
-                  </Button>
-                </div>
-              ) : null}
-              {nextCursor && !error ? (
-                <div className="pt-1">
-                  <Button size="xs" variant="secondary" disabled={loading} onClick={() => void load(nextCursor, true)}>
-                    {loading ? 'Loading…' : 'Load older changes'}
-                  </Button>
-                </div>
-              ) : null}
+          ) : null}
+          {nextCursor && !error ? (
+            <div className="pt-1">
+              <Button size="xs" variant="secondary" disabled={loading} onClick={() => void load(nextCursor, true)}>
+                {loading ? 'Loading…' : 'Load older changes'}
+              </Button>
             </div>
-          )}
+          ) : null}
         </div>
-      ) : null}
+      )}
     </section>
   )
 }

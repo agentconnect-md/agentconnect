@@ -282,6 +282,14 @@ and `Add file`, `Edit`, and `Delete` actions on the right. New-file naming happe
 in that breadcrumb; completed slash-separated directory names become breadcrumb
 segments. The preview pane does not repeat the file name, path, or workspace label.
 
+The managed and native Memory file browser uses the same shared inline file editor,
+breadcrumb naming field, and header actions as Workspace. It must not introduce a
+separate prompt or modal flow for adding or editing files; only the persistence API
+and Memory's flat Markdown filename validation differ. File-specific capabilities
+belong in the preview summary row: managed Memory exposes `History` there today, and
+repository-backed Workspace history must reuse the same action slot and history pane
+when it is added.
+
 For a GitHub workspace, show the effective `read` or `write` access beside the
 repository. The editor may switch freely between scratch and GitHub, choose another
 repository or branch, change the working subdirectory, edit read/write access, or bind

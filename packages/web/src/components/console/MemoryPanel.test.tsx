@@ -30,12 +30,21 @@ vi.mock('@/components/console/ExternalMemoryBindingFields', () => ({
   ExternalMemoryBindingFields: () => null
 }))
 
-vi.mock('@/components/console/FileBrowser', () => ({
-  FileBrowserShell: ({ children }: { children: ReactNode }) => <div data-testid="file-memory-view">{children}</div>,
-  FileBrowserLayout: () => null,
-  FileBrowserPreviewHeader: () => null,
-  FileBrowserRow: () => null
-}))
+vi.mock('@/components/console/FileBrowser', async () => {
+  const actual = await vi.importActual<typeof import('@/components/console/FileBrowser')>(
+    '@/components/console/FileBrowser'
+  )
+  return {
+    ...actual,
+    FileBrowserShell: (props: { title: ReactNode; headerEnd?: ReactNode; children: ReactNode }) => (
+      <div data-testid="file-memory-view">
+        <actual.FileBrowserShell {...props} />
+      </div>
+    )
+  }
+})
+
+vi.mock('@/lib/use-is-mobile', () => ({ useIsMobile: () => false }))
 
 vi.mock('@/components/console/RecordMemoryPanel', () => ({
   RecordMemoryPanel: () => <div data-testid="record-memory-view" />
@@ -45,6 +54,11 @@ vi.mock('@/components/console/DreamPanel', () => ({
   DreamPanel: () => <div data-testid="dream-memory-view" />
 }))
 
+vi.mock('@/components/console/ManagedMemoryHistory', () => ({
+  ManagedMemoryHistory: () => <div data-testid="memory-file-history" />
+}))
+
+import { fetchAgentMemoryFull, listAgentMemory, updateAgentMemory } from '@/lib/api'
 import { MemoryPanel } from './MemoryPanel'
 
 const CONNECTION_ID = '11111111-1111-4111-8111-111111111111'
@@ -56,6 +70,18 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 beforeEach(() => {
   mocks.updateAgent.mockReset().mockResolvedValue(undefined)
+  vi.mocked(listAgentMemory)
+    .mockReset()
+    .mockResolvedValue({
+      exists: true,
+      files: [{ name: 'MEMORY.md', size: 9, mtime: '2026-07-27T09:00:00.000Z' }]
+    })
+  vi.mocked(fetchAgentMemoryFull)
+    .mockReset()
+    .mockResolvedValue({ exists: true, content: '# Memory', mtime: '2026-07-27T09:00:00.000Z' })
+  vi.mocked(updateAgentMemory)
+    .mockReset()
+    .mockResolvedValue({ path: 'MEMORY.md', size: 9, mtime: '2026-07-27T09:01:00.000Z' })
 })
 
 afterEach(async () => {
@@ -80,6 +106,92 @@ const openSettings = async (host: HTMLElement) => {
   expect(editButton).toBeTruthy()
   await act(async () => editButton?.click())
 }
+
+const clickButton = async (host: HTMLElement, label: string) => {
+  const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
+    (candidate) => candidate.textContent?.trim() === label
+  )
+  expect(button, `${label} button`).toBeTruthy()
+  await act(async () => button?.click())
+}
+
+const changeValue = async (element: HTMLInputElement | HTMLTextAreaElement, value: string) => {
+  await act(async () => {
+    const prototype = element instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype
+    Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(element, value)
+    element.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+
+describe('MemoryPanel file editor', () => {
+  it('places History in the shared file summary row', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <MemoryPanel
+          agentId="22222222-2222-4222-8222-222222222222"
+          canEdit
+          memoryProvider="managed"
+          autoDistill={false}
+        />
+      )
+      await Promise.resolve()
+    })
+
+    const history = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.trim() === 'History'
+    )
+    const summary = history?.closest('.h-\\[37px\\]')
+    expect(summary?.textContent).toContain('9 B')
+    expect(summary?.querySelector('button')).toBe(history)
+    expect(container.querySelector('[data-testid="memory-file-history"]')).toBeNull()
+
+    await act(async () => history?.click())
+    expect(container.querySelector('[data-testid="memory-file-history"]')).not.toBeNull()
+  })
+
+  it('uses the shared inline add flow instead of a browser prompt', async () => {
+    const prompt = vi.fn(() => 'legacy.md')
+    vi.stubGlobal('prompt', prompt)
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <MemoryPanel
+          agentId="22222222-2222-4222-8222-222222222222"
+          canEdit
+          memoryProvider="managed"
+          autoDistill={false}
+        />
+      )
+      await Promise.resolve()
+    })
+
+    await clickButton(container, 'Add file')
+    expect(prompt).not.toHaveBeenCalled()
+
+    const name = container.querySelector<HTMLInputElement>('input[aria-label="New memory file name"]')
+    const content = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="New file content"]')
+    expect(name?.closest('.cardhead')).not.toBeNull()
+    expect(content?.closest('.card')).not.toBeNull()
+
+    await changeValue(name!, 'deploys.md')
+    await changeValue(content!, '# Deploys')
+    await clickButton(container, 'Save changes')
+
+    expect(updateAgentMemory).toHaveBeenCalledWith(
+      '22222222-2222-4222-8222-222222222222',
+      '# Deploys',
+      'deploys.md',
+      undefined
+    )
+  })
+})
 
 describe('MemoryPanel settings draft', () => {
   it('defaults managed memory to daily dreaming and lets users disable automatic acceptance', async () => {
