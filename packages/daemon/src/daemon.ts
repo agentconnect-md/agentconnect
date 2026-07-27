@@ -3563,11 +3563,12 @@ export class Daemon {
     // continues it). No-op on other platforms.
     this.canonicalizeTelegramThread(msg)
 
-    // §14.3: gated-DM discovery must PRECEDE command interception — an Off DM
-    // whose first inbound is a control command is refused by command authz, but
-    // still needs its pending row + one-time notice. Idempotent/latched, and a
-    // no-op for enabled conversations, so the later route-miss call may repeat it.
-    this.maybeGatedNotice(msg, srcIntegrationIds ?? [], { dmOnly: true })
+    // §14.3: gated-DM ROW discovery must precede command interception AND routing —
+    // an Off DM whose first inbound is a control command is refused by command
+    // authz but still needs its pending row, and on a consolidated connection
+    // EVERY Off gated integration needs its own row. Report-only: the notice stays
+    // conditional on the message actually resolving to no admitted target.
+    this.discoverGatedDms(msg, srcIntegrationIds ?? [])
 
     // In-conversation control commands (`!stop` / `!queue …`) act on the running
     // agent and never reach it as a prompt — intercept before routing/dispatch.
@@ -3580,7 +3581,9 @@ export class Daemon {
         this.log.warn(`loop guard: ignored unauthenticated resume for ${loopGuardScope(msg)}`)
         return
       }
-      this.handleCommand(command, msg)
+      // §14.3: a command that resolved no admitted target in an Off gated
+      // conversation gets the same one-time notice as an unrouted message.
+      if (!this.handleCommand(command, msg)) this.maybeGatedNotice(msg, srcIntegrationIds ?? [])
       return
     }
 
@@ -6138,7 +6141,7 @@ export class Daemon {
     command: AgentCommand,
     msg: NormalizedMessage,
     explicitTarget?: { agentId: string; integrationId: string; via: RouteVia }
-  ): void {
+  ): boolean {
     let target = explicitTarget ?? routeRules(msg, this.mergedRules(), (c, t) => this.sessions.threadOwner(c, t))
     if (!target) {
       // Routing found no agent — the common group case: a bare `/status@bot` carries no
@@ -6150,11 +6153,11 @@ export class Daemon {
     if (!target && command.kind === 'resume') target = this.resolveTopLevelResumeTarget(msg)
     if (!target) {
       this.log.debug(`command: '${command.kind}' in ch=${msg.channel} — no agent resolved, ignoring`)
-      return
+      return false
     }
     if (!this.commandSenderAllowed(target.agentId, target.integrationId, msg)) {
       this.log.warn(`command: '${command.kind}' rejected for unauthorized sender ${msg.sender.id}`)
-      return
+      return false
     }
     const conn = this.replyConnFor(target.agentId, target.integrationId)
     // Where the command was sent — the reply lands here (Slack thread_ts; Telegram
@@ -6223,7 +6226,7 @@ export class Daemon {
         })
       if (stillStopping) {
         reply('Loop protection is still stopping the previous turn. Try `!resume` again in a moment.')
-        return
+        return true
       }
       const wasOpen = this.store.isLoopGuardOpen(scope)
       this.store.resetLoopGuard(scope)
@@ -6235,7 +6238,7 @@ export class Daemon {
       } else {
         reply('Loop protection is not active in this conversation.')
       }
-      return
+      return true
     }
 
     if (command.kind === 'stop') {
@@ -6246,11 +6249,11 @@ export class Daemon {
       const muteNote = 'Muted in this thread — @mention me to resume.'
       if (!inflight) {
         reply(rec ? `🔇 Nothing is running. ${muteNote}` : 'Nothing is running to stop.')
-        return
+        return true
       }
       this.interruptTurn(target.agentId, key, 'stop', acpSessionId ?? undefined)
       reply(`🛑 Stopped. ${muteNote}`)
-      return
+      return true
     }
 
     if (command.kind === 'cancel') {
@@ -6258,11 +6261,11 @@ export class Daemon {
       // live so a follow-up message dispatches normally. No-op (with a note) when idle.
       if (!inflight) {
         reply('Nothing is running to cancel.')
-        return
+        return true
       }
       this.interruptTurn(target.agentId, key, 'cancel', acpSessionId ?? undefined)
       reply('🛑 Cancelled.')
-      return
+      return true
     }
 
     if (command.kind === 'status') {
@@ -6271,7 +6274,7 @@ export class Daemon {
       // channel, per the resolution above). No-op note when there's none.
       if (!rec) {
         reply('No active session here yet — send me a message to start one.')
-        return
+        return true
       }
       const info = this.statusInfoFrom(target.agentId, key, acpSessionId ?? undefined)
       const link = acpSessionId ? this.sessionLink(acpSessionId) : undefined
@@ -6297,7 +6300,7 @@ export class Daemon {
         const text = link ? `${renderStatusBar(info)}  ·  <${link}|View session>` : renderStatusBar(info)
         reply(text)
       }
-      return
+      return true
     }
 
     if (
@@ -6308,7 +6311,7 @@ export class Daemon {
       this.agents.get(target.agentId)?.allowRuntimeChangesInChat !== true
     ) {
       reply('Runtime settings can only be changed by an Agent editor from the Agent page.')
-      return
+      return true
     }
 
     if (command.kind === 'fast') {
@@ -6316,15 +6319,15 @@ export class Daemon {
       // Fast button used to offer). Records the sticky override + applies live if warm.
       if (!rec) {
         reply('No active session here to configure.')
-        return
+        return true
       }
       if (command.enable === null) {
         reply('Usage: `/fast on` or `/fast off`.')
-        return
+        return true
       }
       this.setFastByKey(key, command.enable)
       reply(command.enable ? '⚡ Fast mode on.' : '🐢 Fast mode off.')
-      return
+      return true
     }
 
     if (command.kind === 'model' || command.kind === 'effort' || command.kind === 'permission') {
@@ -6334,7 +6337,7 @@ export class Daemon {
       // the sticky per-session override + applies it live when the ACP session is warm.
       if (!rec) {
         reply('No active session here to configure.')
-        return
+        return true
       }
       // Telegram + Discord list via a tappable button card, replied under the command;
       // returns false so handleSelectCommand falls back to a text list (Slack, or when
@@ -6370,7 +6373,7 @@ export class Daemon {
         reply,
         renderCard
       )
-      return
+      return true
     }
 
     // queue — now just admission through the UNIFIED per-sessionKey gate (§6.9 #390): the
@@ -6379,7 +6382,7 @@ export class Daemon {
     // gate (dispatch → QueueFullError), so there is no second FIFO here anymore.
     if (!command.text) {
       reply('Usage: `!queue <message>` — runs when the current turn finishes.')
-      return
+      return true
     }
     // Dispatch/queue into the resolved session's thread (the fallback may have retargeted
     // it from the bare command thread to the channel's latest session).
@@ -6389,7 +6392,7 @@ export class Daemon {
     if (inflight && (this.serialQueue.get(key)?.length ?? 0) >= MAX_QUEUED_PER_SESSION) {
       this.log.warn(`command: queue → agent "${target.agentId}" session ${key} full, rejected`)
       reply(`Queue is full (${MAX_QUEUED_PER_SESSION} pending) — wait for the current turn to finish.`)
-      return
+      return true
     }
     void this.dispatch(target.agentId, payload, target.integrationId, undefined, undefined, { isQueueCmd: true }).catch(
       (err) => {
@@ -6405,6 +6408,7 @@ export class Daemon {
       this.log.info(`command: queue → agent "${target.agentId}" session ${key} (depth ${depth})`)
       reply(`📥 Queued (#${depth}) — will run when the current turn finishes.`)
     }
+    return true
   }
 
   private selectLabel(kind: SelectKind): string {
@@ -10857,11 +10861,30 @@ export class Daemon {
    * bot must never look silently broken — and a gated DM conversation is reported to
    * the CP so the console can offer enabling it. Bot senders are never noticed.
    */
-  private maybeGatedNotice(msg: NormalizedMessage, srcIntegrationIds: string[], opts?: { dmOnly?: boolean }): void {
+  /** §14.3 DM ROW discovery, report-only: fan the pending-row report across EVERY
+   *  gated src integration whose conversation is Off. Runs before command
+   *  interception and routing for each inbound DM. No notice and no early return —
+   *  on a consolidated connection an Off sibling must not post a misleading lock
+   *  while another integration goes on to handle the DM, and every Off gated
+   *  integration needs its own row. */
+  private discoverGatedDms(msg: NormalizedMessage, srcIntegrationIds: string[]): void {
+    if (msg.sender.isBot || msg.source !== 'user') return
+    const isDm = msg.isDm || (msg.platform === 'slack' && msg.channel.startsWith('D'))
+    if (!isDm) return
+    for (const integrationId of srcIntegrationIds) {
+      const int = this.integrationConfigById(integrationId)
+      if (!int || int.platform !== msg.platform) continue
+      const routing = integrationRouting(int)
+      if (!routing.gated) continue
+      if (routing.bindRules.some((r) => r.channel === msg.channel)) continue // enabled
+      this.reportGatedDm(integrationId, msg)
+    }
+  }
+
+  private maybeGatedNotice(msg: NormalizedMessage, srcIntegrationIds: string[]): void {
     if (msg.sender.isBot || msg.source !== 'user') return
     // Slack `app_mention` payloads may omit channel_type, so hedge on the D-prefix.
     const isDm = msg.isDm || (msg.platform === 'slack' && msg.channel.startsWith('D'))
-    if (opts?.dmOnly && !isDm) return
     for (const integrationId of srcIntegrationIds) {
       const int = this.integrationConfigById(integrationId)
       if (!int || int.platform !== msg.platform) continue
