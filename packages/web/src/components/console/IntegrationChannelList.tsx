@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { agentLabel, type IntegrationChannelRow } from '@/lib/data'
+import { agentLabel, type IntegrationChannelRow, type IntegrationRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
@@ -123,6 +123,31 @@ export function placePopover(
   if (btn.bottom + POPOVER_H > vh - 8 && btn.top > POPOVER_H) style.bottom = vh - btn.top + 6
   else style.top = btn.bottom + 6
   return { style }
+}
+
+/**
+ * Explicit per-channel owners of one bot, merged across every install of it.
+ *
+ * A shared bot fans its membership snapshot out to one integration per agent,
+ * while the owner is persisted on a single canonical row — so the row this
+ * agent's page renders may carry no `agentId` even though a sibling install
+ * names the owner. The CP already resolves this bot-wide (GET /integrations
+ * stamps the effective owner onto every install, from ALL installs including
+ * ones the viewer can't see, and PATCH …/channels/:id routes ownership through
+ * `sharedBot.updateChannel`), so this is the client-side safety net for a row
+ * whose owner the CP couldn't resolve — never the only thing keeping the two
+ * pages agreeing. Mirrors `botChannels` in SettingsView.
+ */
+export function channelOwners(botId: string, integrations: IntegrationRow[]): Map<string, string> {
+  const owners = new Map<string, string>()
+  for (const i of integrations) {
+    if (i.botId !== botId) continue
+    for (const c of i.channels) {
+      if (c.kind === 'im' || !c.agentId || owners.has(c.channelId)) continue
+      owners.set(c.channelId, c.agentId)
+    }
+  }
+  return owners
 }
 
 /** Per-channel default dispatch for a SHARED bot (§10.1). Every active shared
@@ -281,20 +306,24 @@ export function IntegrationChannelList({
   /** Horizontal row padding, to line up with the host card (18 list / 14 detail). */
   padX?: number
 }) {
-  const { setChannelTrigger, setChannelAgent, bots, agents } = useConsoleData()
+  const { setChannelTrigger, setChannelAgent, bots, agents, integrations } = useConsoleData()
   // The agents that share this bot — the candidate per-channel defaults.
   const memberIds = shareable && botId ? (bots.find((b) => b.id === botId)?.agentIds ?? []) : []
   const member = (id: string): MemberAgent => {
     const a = agents.find((x) => x.id === id)
     return { id, label: a ? agentLabel(a) : id, runtime: a?.runtime ?? a?.model ?? '', icon: a?.icon }
   }
-  // The agents that share this bot. The channel's default is its explicit owner,
-  // falling back to the earliest install — the same ordering sharedBot.ts's
-  // compiler uses when a channel has never been claimed.
+  // The agents that share this bot. A channel's default is its explicit owner —
+  // this row's when the CP stamped it, else whichever sibling install of the bot
+  // persists it — falling back to the earliest install, the same ordering
+  // sharedBot.ts's compiler uses for a channel nobody has ever claimed.
   const members = memberIds.map(member)
+  const owners = shareable && botId ? channelOwners(botId, integrations) : undefined
   const viewer = agentId && memberIds.includes(agentId) ? member(agentId) : undefined
-  const defaultAgent = (c: IntegrationChannelRow) =>
-    (c.agentId ? members.find((m) => m.id === c.agentId) : undefined) ?? members[0]
+  const defaultAgent = (c: IntegrationChannelRow) => {
+    const explicit = c.agentId ?? owners?.get(c.channelId)
+    return (explicit ? members.find((m) => m.id === explicit) : undefined) ?? members[0]
+  }
   const channelRows = channels.filter((c) => c.kind !== 'im')
   const dmRows = channels.filter((c) => c.kind === 'im')
   const row = (c: IntegrationChannelRow) => {
@@ -316,6 +345,12 @@ export function IntegrationChannelList({
         <div className="ml-auto flex items-center gap-[10px] max-desktop:ml-0 max-desktop:w-full max-desktop:flex-col max-desktop:items-start">
           {def && (
             <>
+              {/* The PATCH goes through THIS agent's integration on purpose:
+                  ownership of a shared (http) channel is bot-scoped server-side —
+                  the route resolves the effective owner across every install,
+                  fences on it (`expectedOwnerAgentId`) and hands the write to
+                  `sharedBot.updateChannel`, so exactly one row stays canonical no
+                  matter which install the console patched. */}
               <DefaultAgentPicker
                 current={def}
                 viewer={viewer}
