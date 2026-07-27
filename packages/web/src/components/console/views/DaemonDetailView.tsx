@@ -15,9 +15,10 @@ import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
 import { useModal } from '@/components/console/ModalProvider'
 import { VisibilityValue } from '@/components/console/VisibilityField'
+import { DaemonLifecycleBadge, daemonLifecycleLabel } from '@/components/console/DaemonLifecycleBadge'
 import { DaemonUpgradeBadge } from '@/components/console/DaemonUpgradeBadge'
 import { NotFound } from '@/components/console/NotFound'
-import { AgentIconView, AgentMark, LoadingState, Spinner } from '@/components/marks'
+import { AgentIconView, AgentMark, LoadingState } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { useIsMobile } from '@/lib/use-is-mobile'
@@ -89,24 +90,12 @@ export default function DaemonDetailView() {
   // lifecycle actions are hidden (the CP 409s a second one) and a badge shows.
   const op = daemon.lifecycleOp
   const pending = op?.status === 'pending'
-  const pendingLabel =
-    op?.op === 'upgrade' ? `Upgrading${op.targetVersion ? ` to ${op.targetVersion}` : ''}…` : 'Restarting…'
+  const pendingLabel = op ? daemonLifecycleLabel(op) : ''
   // Restart/upgrade are owner-only fleet ops (server denyNonOwner) — gate the controls on
   // the DTO capability so non-owners never see an action they'd 403 on. Restart needs the
   // daemon live; upgrade additionally needs the resolver to have surfaced other versions.
   const canRestart = online && !pending && daemon.canManageLifecycle
   const canUpgrade = canRestart && daemon.availableVersions.some((v) => v !== daemon.version)
-
-  // Shared in-flight badge (both forks) — mirrors DaemonUpgradeBadge's shape.
-  const pendingPill = pending ? (
-    <span
-      title={pendingLabel}
-      className="inline-flex flex-none items-center gap-[5px] rounded-full border border-(--brand) bg-(--surface-sunken) py-[2px] pr-[9px] pl-[6px] font-sans text-[11px] font-semibold leading-normal text-(--brand)"
-    >
-      <Spinner size={11} />
-      {pendingLabel}
-    </span>
-  ) : null
 
   const hosted = agents.filter((a) => a.daemon === daemon.daemonId)
   const runtimes = daemon.runtimeModels.length
@@ -176,7 +165,7 @@ export default function DaemonDetailView() {
             {daemon.version}
           </span>
           {pending ? (
-            pendingPill
+            <DaemonLifecycleBadge op={op} />
           ) : (
             <DaemonUpgradeBadge
               show={daemon.upgradeAvailable}
@@ -523,7 +512,7 @@ export default function DaemonDetailView() {
               <span className="mono text-[12px]">{daemon.version}</span>
             </span>
             {pending ? (
-              pendingPill
+              <DaemonLifecycleBadge op={op} />
             ) : (
               <DaemonUpgradeBadge
                 show={daemon.upgradeAvailable}

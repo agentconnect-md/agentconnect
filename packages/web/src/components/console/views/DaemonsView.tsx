@@ -6,6 +6,7 @@ import { status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useModal } from '@/components/console/ModalProvider'
 import { RestrictedLock } from '@/components/console/VisibilityField'
+import { DaemonLifecycleBadge } from '@/components/console/DaemonLifecycleBadge'
 import { DaemonUpgradeBadge } from '@/components/console/DaemonUpgradeBadge'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -193,14 +194,14 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
             <span className="dot hidden flex-none desktop:inline-block" style={{ background: s.dot }} />
           </div>
           {/* Version meta — mobile appends the host (when it differs from the name); desktop shows
-              version only. An amber "Outdated" chip trails it when a newer release is available. */}
+              version only. The available-upgrade hint is hidden while an operation is in flight. */}
           <div className="flex min-w-0 items-center gap-[7px]">
             <span className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[11px] desktop:leading-[1.5] desktop:tabular-nums">
               {m.version}
               {m.host && m.host !== m.name && <span className="desktop:hidden">{` · ${m.host}`}</span>}
             </span>
             <DaemonUpgradeBadge
-              show={m.upgradeAvailable}
+              show={!pending && m.upgradeAvailable}
               latest={m.latestVersion}
               onClick={canUpgrade ? () => openModal('upgradeDaemon', m) : undefined}
             />
@@ -290,6 +291,11 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
           participate directly in the card's flex-col gap-3; on desktop it is the
           padded section under the header border. */}
       <div className="contents desktop:flex desktop:flex-col desktop:gap-3 desktop:px-4 desktop:py-[14px]">
+        {pending && (
+          <div className="flex">
+            <DaemonLifecycleBadge op={m.lifecycleOp} />
+          </div>
+        )}
         <div className="flex w-full gap-4 desktop:flex-col desktop:gap-3">
           <UtilBar label="CPU" pct={m.cpu} color={barColor} hot={hot} />
           <UtilBar label="Memory" mobileLabel="MEM" pct={m.mem} color={barColor} hot={hot} />
