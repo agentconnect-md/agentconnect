@@ -376,6 +376,69 @@ describe('DELETE /mcp-providers/:id — serialized against agent enable-list wri
     expect(agent.mcpServers).toEqual([]) // never bound to the invisible replacement
   })
 
+  it('a replacement completed between the route-entry read and the fence cannot become the grandfather baseline', async () => {
+    // The keep-exemption derives from the agent's COMMITTED enable-list read inside
+    // the fence, never from request-time snapshots: here the stale PATCH captures
+    // `before=['linear']` (bound to org-visible A) and then parks BEFORE any other
+    // read; a removal, A's delete, and a restricted same-name replacement B all
+    // complete during the pause. On resume, both a name match and an identity
+    // snapshot would say "kept" (everything now resolves to B) — but the committed
+    // list no longer holds the name, so the enable is fresh and B is invisible → 403.
+    const owner = await makeUser('mcpb-owner', 'owner')
+    const collab = await makeUser('mcpb-collab', 'collaborator')
+    const ownerApp = appAs(owner)
+    const collabApp = appAs(collab)
+
+    const providerA = await createProvider(ownerApp, 'linear')
+    const agentId = await createAgent(collabApp, 'baseline-racer', ['linear'])
+
+    // Park the stale PATCH right after its optimistic-CAS re-read (the SECOND
+    // agent.get: #1 is the route-entry getOrgAgent, #2 refreshMutationAgent) — the
+    // last read before the fence. The CAS row is captured pre-mutation, so the CAS
+    // passes on stale data and cannot save us; only the in-fence committed read can.
+    const repo = collabApp.deps.repos.agent
+    const realGet = repo.get.bind(repo)
+    let releaseGet!: () => void
+    const gate = new Promise<void>((r) => (releaseGet = r))
+    let notifyParked!: () => void
+    const parked = new Promise<void>((r) => (notifyParked = r))
+    let calls = 0
+    repo.get = async (id) => {
+      const row = await realGet(id)
+      if (++calls === 2) {
+        notifyParked()
+        await gate
+      }
+      return row
+    }
+    const stalePatch = collabApp.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { mcpServers: ['linear'] }
+    })
+    await parked
+
+    // While it sleeps: the reference is removed, A is deleted, restricted B lands.
+    expect(
+      (await collabApp.app.inject({ method: 'PATCH', url: `${ORG}/agents/${agentId}`, payload: { mcpServers: [] } }))
+        .statusCode
+    ).toBe(200)
+    expect((await ownerApp.app.inject({ method: 'DELETE', url: `${ORG}/mcp-providers/${providerA}` })).statusCode).toBe(
+      204
+    )
+    const bCreate = await ownerApp.app.inject({
+      method: 'POST',
+      url: `${ORG}/mcp-providers`,
+      payload: { name: 'linear', url: 'https://mcp.example.com/mcp', visibility: 'restricted', sharedWith: [] }
+    })
+    expect(bCreate.statusCode).toBe(201)
+
+    releaseGet()
+    expect((await stalePatch).statusCode).toBe(403) // committed list holds nothing — B is a fresh, invisible enable
+    const agent = (await collabApp.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })).json()
+    expect(agent.mcpServers).toEqual([])
+  })
+
   it('a sharing flip queues behind an in-flight enable (no check-to-commit visibility race)', async () => {
     // PUT /mcp-providers/:id/sharing joins the name chain: an agent write authorizes
     // visibility INSIDE that chain, so a restrict must not land between its check
