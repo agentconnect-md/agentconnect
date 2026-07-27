@@ -860,11 +860,18 @@ integration, carrying the counterpart's display name; an optional boot-time
 sweep (`conversations.list types=im`) can backfill DMs opened while the daemon
 was down.
 
-_v1 limitation — shared bots:_ the relay's membership snapshot drops IMs and no
-relay-side DM reporting exists yet, so a gated agent behind a **shared** bot has
-no DM rows and thus no DM enablement path — its DMs are simply always off
-(fail-closed). Direct integrations support DM rows fully. Relay-side DM
-reporting is a follow-up.
+_Shared bots:_ the relay's membership snapshot drops IMs, so DM rows take the
+incremental path there too — an unrouted DM to a bot backing ≥1 gated agent
+makes the relay emit `rc/bot-conversation` (conversation id + best-effort
+`users.info` counterpart name), which the CP fans across the bot's **gated
+installs** as pending Off rows; the relay also posts the one-time
+per-conversation notice (chrome-marked; the unrouted @-mention case included)
+since no daemon is involved before arbitration. Enabling the row compiles a
+conversation-scoped `auto` route plus a conversation-scoped **slug keyword**
+route — arbitration ranks scoped mention → keyword → auto — so a DM enabled
+for several gated agents can be addressed by slug while an unslugged DM falls
+to the first enabled agent. Unscoped keyword remains forbidden for gated
+agents.
 
 **Control-plane and web.**
 

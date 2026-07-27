@@ -99,6 +99,11 @@ export function arbitrate(
   //    rule fires on any message — the operator's trigger choice).
   const ownedMention = scoped.find((r) => r.match.kind === 'mention' && kindMatches(r, msg, a.botUserId))
   if (ownedMention) return target(ownedMention)
+  // Conversation-scoped keyword (§14.3): slug disambiguation inside a shared DM
+  // enabled for several gated agents — outranks the scoped auto so "<slug> …"
+  // names its agent; an unslugged message falls through to the first auto route.
+  const ownedKeyword = scoped.find((r) => r.match.kind === 'keyword' && kindMatches(r, msg, a.botUserId))
+  if (ownedKeyword) return target(ownedKeyword)
   const ownedAuto = scoped.find((r) => r.match.kind === 'auto')
   if (ownedAuto) return target(ownedAuto)
 

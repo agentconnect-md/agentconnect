@@ -2221,6 +2221,14 @@ export interface IntegrationChannelRepo {
     opts?: { defaultTrigger?: ChannelTrigger }
   ): Promise<void>
   listForIntegration(integrationId: IntegrationId): Promise<IntegrationChannelRecord[]>
+  /** Incremental conversation upsert (§14.3, DM rows): create the row (kind, name,
+   *  `agentId`, `defaultTrigger`) when absent; when it exists refresh only the name
+   *  — trigger and agentId are operator-owned once created. */
+  upsertConversation(
+    integrationId: IntegrationId,
+    conversation: ReportedChannel,
+    opts?: { agentId?: AgentId | null; defaultTrigger?: ChannelTrigger }
+  ): Promise<IntegrationChannelRecord>
   /** Channels across EVERY integration of a shared bot — the route compiler's
    *  channel-ownership source. */
   listForBot(botId: BotId): Promise<IntegrationChannelRecord[]>

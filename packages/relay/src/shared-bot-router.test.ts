@@ -133,6 +133,34 @@ describe('shared-bot arbitration (§10)', () => {
       expect(t).toEqual({ agentId: BOB, daemonId: D2, integrationId: 'iB' })
     })
 
+    it('a conversation-scoped keyword (DM slug) outranks the scoped auto route', () => {
+      const a = assignment()
+      a.gatedAgentIds = [ALICE, BOB]
+      a.routes = [
+        // Both gated agents enabled the same DM: one auto + one slug route each.
+        { agentId: ALICE, daemonId: D1, integrationId: 'iA', scope: { channel: 'D9' }, match: { kind: 'auto' } },
+        {
+          agentId: ALICE,
+          daemonId: D1,
+          integrationId: 'iA',
+          scope: { channel: 'D9' },
+          match: { kind: 'keyword', value: 'alice' }
+        },
+        { agentId: BOB, daemonId: D2, integrationId: 'iB', scope: { channel: 'D9' }, match: { kind: 'auto' } },
+        {
+          agentId: BOB,
+          daemonId: D2,
+          integrationId: 'iB',
+          scope: { channel: 'D9' },
+          match: { kind: 'keyword', value: 'bob' }
+        }
+      ]
+      const slugged = arbitrate(a, msg({ channel: 'D9', isDm: true, text: 'bob check this please' }), empty())
+      expect(slugged).toEqual({ agentId: BOB, daemonId: D2, integrationId: 'iB' })
+      const bare = arbitrate(a, msg({ channel: 'D9', isDm: true, text: 'hello' }), empty())
+      expect(bare).toEqual({ agentId: ALICE, daemonId: D1, integrationId: 'iA' })
+    })
+
     it('thread continuity to a NON-gated agent is unaffected by gatedAgentIds on others', () => {
       const a = { ...assignment(), gatedAgentIds: [ALICE] }
       const aff = new Map<string, RouteTarget>([['CX/ts1', { agentId: BOB, daemonId: D2, integrationId: 'iB' }]])

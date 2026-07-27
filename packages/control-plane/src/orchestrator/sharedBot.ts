@@ -302,6 +302,31 @@ export class SharedBotOrchestrator {
   }
 
   /**
+   * §14.3: fan an INCREMENTAL DM-conversation report across the bot's GATED installs
+   * as `kind:'im'` rows (default Off, owned by each install's agent) so console
+   * editors can enable the DM. Non-gated installs are untouched — their DMs already
+   * route via `defaultAgentId`. Idempotent, and no route recompile: an Off row
+   * compiles nothing; the recompile happens when an editor enables it.
+   */
+  async reportConversation(botId: string, conversation: ReportedChannel): Promise<void> {
+    const bot = await this.bots.get(BotId(botId))
+    if (!bot || bot.platform !== 'slack' || bot.transport !== 'http') {
+      this.log.warn({ botId }, 'shared-bot: conversation report for a non-http/unknown Slack bot — ignored')
+      return
+    }
+    const installs = await this.integrations.listForBot(bot.id)
+    for (const install of installs) {
+      const agent = await this.agents.get(install.agentId)
+      if (!agent || !isGatedAgent(agent)) continue
+      await this.channels.upsertConversation(
+        install.id,
+        { ...conversation, kind: 'im' },
+        { agentId: AgentId(install.agentId), defaultTrigger: 'off' }
+      )
+    }
+  }
+
+  /**
    * Set (or clear) a channel's default/owning agent for a shared bot — the target of
    * the in-Slack config modal (`rc/set-channel-agent`). Channel ownership is one
    * agent per channel, but rows are keyed per-install, so this makes the pick the
@@ -402,6 +427,23 @@ export class SharedBotOrchestrator {
         scope: { channel: c.channelId },
         match
       })
+      if (c.kind === 'im' && p.gated) {
+        // Slug disambiguation inside a shared DM enabled for SEVERAL gated agents
+        // (§14.3): a conversation-scoped keyword outranks the scoped auto in the
+        // relay's arbitration, so "<slug> …" names this agent while an unslugged
+        // DM falls to the first enabled auto route. (Unscoped keyword stays
+        // forbidden for gated agents.)
+        const slug = agentById.get(c.agentId)?.name
+        if (slug) {
+          routes.push({
+            agentId: p.integration.agentId,
+            daemonId: p.daemonId,
+            integrationId: p.integration.id,
+            scope: { channel: c.channelId },
+            match: { kind: 'keyword', value: slug }
+          })
+        }
+      }
     }
 
     // 2. keyword disambiguation (§10.2): one keyword rule per agent = its slug, so

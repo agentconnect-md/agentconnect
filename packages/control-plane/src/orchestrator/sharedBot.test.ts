@@ -126,7 +126,10 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       listForBot: async () => []
     }
     const intRepo: Pick<IntegrationRepo, 'listForBot'> = { listForBot: async () => integrations }
-    const chRepo: Pick<IntegrationChannelRepo, 'listForBot' | 'replaceSnapshot' | 'setAgent' | 'upsertAgent'> = {
+    const chRepo: Pick<
+      IntegrationChannelRepo,
+      'listForBot' | 'replaceSnapshot' | 'setAgent' | 'upsertAgent' | 'upsertConversation'
+    > = {
       listForBot: async () => channels,
       replaceSnapshot: async (integrationId, reported, opts) => {
         channels = channels.filter(
@@ -146,6 +149,21 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
         const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
         if (!row) return null
         row.agentId = agentId
+        return row
+      },
+      upsertConversation: async (integrationId, conversation, opts) => {
+        let row = channels.find((c) => c.integrationId === integrationId && c.channelId === conversation.id)
+        if (!row) {
+          row = channel({
+            integrationId,
+            channelId: conversation.id,
+            name: conversation.name ?? null,
+            kind: conversation.kind ?? 'channel',
+            trigger: opts?.defaultTrigger ?? 'mention',
+            agentId: opts?.agentId ?? null
+          })
+          channels.push(row)
+        } else if (conversation.name) row.name = conversation.name
         return row
       },
       upsertAgent: async (integrationId, channelId, agentId, opts) => {
@@ -327,6 +345,36 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       const bobRow = channels.find((c) => c.integrationId === INT_B && c.channelId === 'C7')
       expect(aliceRow?.trigger).toBe('off')
       expect(bobRow?.trigger).toBe('mention')
+    })
+
+    it('reportConversation fans a kind:im row (Off, agent-owned) to GATED installs only, idempotently', async () => {
+      gatedAgents = new Set([ALICE])
+      channels = []
+      const orch = makeOrch()
+      await orch.reportConversation(BOT, { id: 'D42', name: '@Alice' })
+      const aliceRow = channels.find((c) => c.integrationId === INT_A && c.channelId === 'D42')
+      expect(aliceRow).toMatchObject({ kind: 'im', trigger: 'off', agentId: ALICE, name: '@Alice' })
+      // BOB is org-visible — his DMs already route via defaultAgentId; no row.
+      expect(channels.some((c) => c.integrationId === INT_B && c.channelId === 'D42')).toBe(false)
+
+      // Editor enables it; a re-report must keep the trigger (name refresh only).
+      aliceRow!.trigger = 'any'
+      await orch.reportConversation(BOT, { id: 'D42', name: '@Alice Smith' })
+      expect(aliceRow).toMatchObject({ trigger: 'any', name: '@Alice Smith' })
+    })
+
+    it('an enabled gated DM row compiles a scoped auto route PLUS a scoped slug keyword (§14.3)', async () => {
+      gatedAgents = new Set([ALICE])
+      channels = [channel({ integrationId: INT_A, channelId: 'D42', kind: 'im', agentId: ALICE, trigger: 'any' })]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      const d42 = assign.routes.filter((r) => r.scope?.channel === 'D42')
+      expect(d42).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ agentId: ALICE, match: { kind: 'auto' } }),
+          expect.objectContaining({ agentId: ALICE, match: { kind: 'keyword', value: 'alice' } })
+        ])
+      )
     })
 
     it('lookupThread refuses a binding to a gated agent whose conversation is off', async () => {

@@ -394,6 +394,8 @@ export class SlackSharedIngest {
   private slackBotId = ''
   private channelRefresh?: Promise<void>
   private channelRefreshQueued = false
+  /** users.info label cache for gated-DM counterpart names (null = lookup failed). */
+  private readonly userNames = new Map<string, string | null>()
 
   constructor(
     readonly botId: string,
@@ -405,6 +407,35 @@ export class SlackSharedIngest {
    *  demux+authenticate a request to this bot. Read-only; NEVER log it. */
   get signingSecret(): string {
     return this.secrets.signingSecret
+  }
+
+  /** Post one plain, chrome-marked text message (the §14 gating notice) — chrome so
+   *  peer daemons' thread backfill never re-ingests it as conversation. */
+  async postText(channel: string, text: string, threadTs?: string): Promise<void> {
+    await this.web?.chat.postMessage({
+      channel,
+      text,
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+      metadata: { event_type: 'agentconnect_chrome', event_payload: {} }
+    })
+  }
+
+  /** Cached best-effort users.info lookup → "@Display Name" label for a gated-DM
+   *  conversation row. Undefined when the lookup fails (the row lands nameless). */
+  async lookupUserName(userId: string): Promise<string | undefined> {
+    if (this.userNames.has(userId)) return this.userNames.get(userId) ?? undefined
+    try {
+      const res = await this.web?.users.info({ user: userId })
+      const u = res?.user as
+        { profile?: { display_name?: string; real_name?: string }; real_name?: string; name?: string } | undefined
+      const name = u?.profile?.display_name || u?.profile?.real_name || u?.real_name || u?.name
+      const label = name ? `@${name}` : null
+      this.userNames.set(userId, label)
+      return label ?? undefined
+    } catch {
+      this.userNames.set(userId, null)
+      return undefined
+    }
   }
 
   /** Best-effort setup: resolve the bot user id for arbitration. No socket to open —

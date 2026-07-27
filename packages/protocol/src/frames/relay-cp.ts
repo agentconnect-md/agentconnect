@@ -575,6 +575,20 @@ export const RcBotChannels = z.object({
 })
 export type RcBotChannels = z.infer<typeof RcBotChannels>
 
+// R→C EVT (fire-and-forget) — INCREMENTAL conversation report (resource-visibility
+// §14.3): the relay saw an inbound DM to a shared bot that backs ≥1 gated
+// (restricted-visibility) agent and arbitration found no route. The CP fans a
+// `kind:'im'` row (default Off) across the bot's GATED installs so console editors
+// can enable it. Incremental on purpose — unlike `rc/bot-channels` this must never
+// carry full-set semantics (DM rows are never dropped by snapshots). Conversation
+// id/name are control metadata; no message content crosses this wire. Loss is
+// self-healing: the counterpart's next DM re-reports.
+export const RcBotConversation = z.object({
+  botId: z.string().uuid(),
+  conversation: IntegrationChannel
+})
+export type RcBotConversation = z.infer<typeof RcBotConversation>
+
 // R→C EVT (fire-and-forget) — durable thread-affinity REPORT leg (§10 step 3, the
 // 3-leg affinity dance). The relay tells the CP which agent now owns a (channel,
 // thread) `sessionKey` the first time it routes that thread, and again on a
@@ -697,6 +711,7 @@ export const RELAY_CP_SCHEMAS = {
   'rc/assign': RcAssign,
   'rc/set-channel-agent': RcSetChannelAgent,
   'rc/bot-channels': RcBotChannels,
+  'rc/bot-conversation': RcBotConversation,
   'rc/thread-assign': RcThreadAssign,
   'rc/thread-lookup': RcThreadLookup,
   'rc/thread-lookup/ok': RcThreadLookupOk,
@@ -738,6 +753,7 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/assign', RELAY_CP_SCHEMAS['rc/assign']),
   frameSchema('rc/set-channel-agent', RELAY_CP_SCHEMAS['rc/set-channel-agent']),
   frameSchema('rc/bot-channels', RELAY_CP_SCHEMAS['rc/bot-channels']),
+  frameSchema('rc/bot-conversation', RELAY_CP_SCHEMAS['rc/bot-conversation']),
   frameSchema('rc/thread-assign', RELAY_CP_SCHEMAS['rc/thread-assign']),
   frameSchema('rc/thread-lookup', RELAY_CP_SCHEMAS['rc/thread-lookup']),
   frameSchema('rc/thread-lookup/ok', RELAY_CP_SCHEMAS['rc/thread-lookup/ok']),

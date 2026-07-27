@@ -406,6 +406,29 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     }
   }
 
+  async upsertConversation(
+    integrationId: IntegrationId,
+    conversation: ReportedChannel,
+    opts?: { agentId?: AgentId | null; defaultTrigger?: ChannelTrigger }
+  ): Promise<IntegrationChannelRecord> {
+    const row = await this.db.integrationChannel.upsert({
+      where: { integrationId_channelId: { integrationId, channelId: conversation.id } },
+      create: {
+        integrationId,
+        channelId: conversation.id,
+        name: conversation.name ?? null,
+        isPrivate: conversation.isPrivate ?? false,
+        kind: conversation.kind ?? 'channel',
+        ...(opts?.defaultTrigger ? { trigger: opts.defaultTrigger } : {}),
+        ...(opts?.agentId !== undefined ? { agentId: opts.agentId } : {})
+      },
+      // Refresh only a KNOWN name — a nameless re-report must not clobber a
+      // previously resolved counterpart name; trigger/agentId stay operator-owned.
+      update: conversation.name ? { name: conversation.name } : {}
+    })
+    return toChannelRecord(row)
+  }
+
   async listForIntegration(integrationId: IntegrationId): Promise<IntegrationChannelRecord[]> {
     const rows = await this.db.integrationChannel.findMany({
       where: { integrationId },

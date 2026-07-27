@@ -1001,6 +1001,15 @@ export function buildContainer(
         http.log.error({ err, botId: m.botId }, 'relay: bot-channels snapshot failed')
       }
     },
+    // Incremental DM-conversation report (§14.3): surface a kind:'im' row (Off) on
+    // the bot's gated installs so console editors can enable the DM. Swallow+log.
+    onBotConversation: async (m) => {
+      try {
+        await sharedBot.reportConversation(m.botId, m.conversation)
+      } catch (err) {
+        http.log.error({ err, botId: m.botId }, 'relay: bot-conversation report failed')
+      }
+    },
     // Durable thread-affinity REPORT leg — persist + broadcast (rc/assign). Swallow+log:
     // a store error must not close the shared relay link.
     onThreadAssign: async (m) => {

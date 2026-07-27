@@ -29,6 +29,7 @@ const deps = (over: Partial<SharedBotManagerDeps> = {}): SharedBotManagerDeps =>
   getDaemon: () => undefined,
   setChannelAgent: vi.fn(),
   reportBotChannels: vi.fn(() => true),
+  reportBotConversation: vi.fn(() => true),
   reportThreadAssign: vi.fn(() => true),
   lookupThread: vi.fn(async () => ({ botId: BOT_ID, sessionKey: '', target: null }) as RcThreadLookupOk),
   isAgentBotApp: vi.fn(() => false),
@@ -64,6 +65,13 @@ const action = (over: Partial<SharedSlackSessionAction> = {}): SharedSlackSessio
 
 interface ManagerInternals {
   router: SharedBotRouter
+  ingests: Map<
+    string,
+    {
+      lookupUserName(u: string): Promise<string | undefined>
+      postText(c: string, t: string, th?: string): Promise<void>
+    }
+  >
   reportChannels(snapshot: RcBotChannels): void
   selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
   forwardSessionAction(botId: string, action: SharedSlackSessionAction): void
@@ -430,5 +438,88 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
 
     expect(lookupThread).toHaveBeenCalledTimes(1)
     expect(sendMsg).not.toHaveBeenCalled()
+  })
+})
+
+describe('SharedBotManager conversation gating (resource-visibility §14.3)', () => {
+  const fakeIngest = () => ({
+    lookupUserName: vi.fn(async () => '@Alice'),
+    postText: vi.fn(async () => {})
+  })
+  const gatedAssignment = (): BotAssignment => ({
+    botId: BOT_ID,
+    platform: 'slack',
+    secrets: { botToken: 'xoxb', signingSecret: 'ssecret' },
+    botUserId: 'UBOT',
+    members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
+    agents: [{ agentId: AGENT_ID, name: 'Agent' }],
+    routes: [], // everything gated ⇒ no keyword rung, no default
+    gatedAgentIds: [AGENT_ID]
+  })
+  const dm = (over: Partial<WireNormalizedMessage> = {}): WireNormalizedMessage => ({
+    msgId: 'slack:D42:1720000000.000100',
+    traceId: 't',
+    source: 'user',
+    platform: 'slack',
+    channel: 'D42',
+    sender: { id: 'U1', isBot: false },
+    text: 'hi there',
+    mentionedBots: [],
+    isDm: true,
+    ...over
+  })
+
+  it('reports an unrouted gated DM as a kind:im conversation and notices once per conversation', async () => {
+    const reportBotConversation = vi.fn(() => true)
+    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const internals = manager as unknown as ManagerInternals
+    internals.router.upsert(gatedAssignment())
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+
+    await internals.forward(BOT_ID, dm())
+    expect(reportBotConversation).toHaveBeenCalledWith({
+      botId: BOT_ID,
+      conversation: { id: 'D42', name: '@Alice', kind: 'im' }
+    })
+    expect(ingest.postText).toHaveBeenCalledTimes(1)
+    expect(ingest.postText.mock.calls[0]![0]).toBe('D42')
+
+    // Second DM: re-report (idempotent CP-side) but NO second notice.
+    await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000200' }))
+    expect(reportBotConversation).toHaveBeenCalledTimes(2)
+    expect(ingest.postText).toHaveBeenCalledTimes(1)
+  })
+
+  it('an unrouted @mention in a channel gets the notice but NO conversation report', async () => {
+    const reportBotConversation = vi.fn(() => true)
+    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const internals = manager as unknown as ManagerInternals
+    internals.router.upsert(gatedAssignment())
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+
+    await internals.forward(
+      BOT_ID,
+      dm({ channel: 'C9', isDm: false, thread: '123.456', text: '<@UBOT> hello', mentionedBots: ['UBOT'] })
+    )
+    expect(reportBotConversation).not.toHaveBeenCalled()
+    expect(ingest.postText).toHaveBeenCalledTimes(1)
+    expect(ingest.postText.mock.calls[0]![2]).toBe('123.456') // threaded, no channel spam
+  })
+
+  it('does nothing gated-related for a bot with no gated members', async () => {
+    const reportBotConversation = vi.fn(() => true)
+    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const internals = manager as unknown as ManagerInternals
+    const a = gatedAssignment()
+    a.gatedAgentIds = []
+    internals.router.upsert(a)
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+
+    await internals.forward(BOT_ID, dm())
+    expect(reportBotConversation).not.toHaveBeenCalled()
+    expect(ingest.postText).not.toHaveBeenCalled()
   })
 })
