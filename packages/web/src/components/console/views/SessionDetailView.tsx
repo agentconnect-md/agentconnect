@@ -304,12 +304,14 @@ function ContentBlock({ block }: { block: unknown }) {
 // locations, plus a "view full" affordance when only a truncated preview is inline.
 function ToolBodyDetail({ msg, sessionId }: { msg: SessionMessageDto; sessionId: string }) {
   const [open, setOpen] = useState(false)
-  const [full, setFull] = useState<string | null>(null) // full body JSON, once fetched
+  const [full, setFull] = useState<{ source: SessionMessageDto; body: string } | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  // Prefer the fetched full body over the inline preview once available.
-  const bodyStr = full ?? msg.body ?? null
+  // A same-seq live update replaces `msg`; associate the fetched body with the
+  // exact source row so an older full response can never mask the new preview.
+  const fullBody = full?.source === msg ? full.body : null
+  const bodyStr = fullBody ?? msg.body ?? null
   let body: ToolBody | null = null
   let parseErr = false
   if (bodyStr) {
@@ -320,7 +322,7 @@ function ToolBodyDetail({ msg, sessionId }: { msg: SessionMessageDto; sessionId:
     }
   }
 
-  const truncated = msg.bodyTruncated && full == null
+  const truncated = msg.bodyTruncated && fullBody == null
   const badge = statusBadge(body?.status ?? msg.toolStatus)
   const kind = body?.kind ?? msg.toolKind
   const bytes = msg.bodyBytes
@@ -331,7 +333,7 @@ function ToolBodyDetail({ msg, sessionId }: { msg: SessionMessageDto; sessionId:
     setErr(null)
     fetchToolBody(sessionId, msg.toolCallId ?? body?.toolCallId ?? '').then(
       (s) => {
-        setFull(s)
+        setFull({ source: msg, body: s })
         setLoading(false)
         setOpen(true)
       },
@@ -541,7 +543,7 @@ export default function SessionDetailView() {
   const {
     getPgSession,
     getLiveSteps,
-    clearLiveSteps,
+    reconcileLiveSteps,
     getPgInput,
     getPgImage,
     isPgBusy,
@@ -680,7 +682,7 @@ export default function SessionDetailView() {
           liveCursorRef.current = liveCursor
           tailReadyRef.current = true
           setTailReady(true)
-          if (!sessionBusyRef.current) clearLiveSteps(sid)
+          if (!sessionBusyRef.current) reconcileLiveSteps(sid, all, aid)
           return
         }
         cursor = page.nextCursor
@@ -690,7 +692,7 @@ export default function SessionDetailView() {
       liveCursorRef.current = liveCursor
       tailReadyRef.current = true
       setTailReady(true)
-      if (!sessionBusyRef.current) clearLiveSteps(sid)
+      if (!sessionBusyRef.current) reconcileLiveSteps(sid, all, aid)
     })().catch((e) => {
       if (!active) return
       setMsgErr(e instanceof Error ? e.message : String(e))
@@ -704,7 +706,7 @@ export default function SessionDetailView() {
         tailReadyRef.current = false
       }
     }
-  }, [wantTranscript, sid, aid, clearLiveSteps])
+  }, [wantTranscript, sid, aid, reconcileLiveSteps])
 
   const refreshTranscriptTail = useCallback((): Promise<void> => {
     if (!wantTranscript || !sid || !tailReadyRef.current || sessionBusyRef.current) return Promise.resolve()
@@ -715,12 +717,14 @@ export default function SessionDetailView() {
     const platform = session?.platform ?? ''
     const run = (async () => {
       let cursor = liveCursorRef.current
+      const persisted: SessionMessageDto[] = []
       for (let pageNo = 0; pageNo < 20; pageNo++) {
         const page = await fetchSessionMessages(sid, {
           ...(cursor !== null ? { after: cursor } : {}),
           limit: 200
         })
         if (tailSessionRef.current !== sid) return
+        persisted.push(...page.messages)
         setMsgs((current) => mergeSessionMessages(current ?? [], page.messages, platform))
         if (page.liveCursor !== null) {
           cursor = page.liveCursor
@@ -728,7 +732,7 @@ export default function SessionDetailView() {
         }
         if (!page.liveMore || page.liveCursor === null) break
       }
-      if (tailSessionRef.current === sid && !sessionBusyRef.current) clearLiveSteps(sid)
+      if (tailSessionRef.current === sid && !sessionBusyRef.current) reconcileLiveSteps(sid, persisted, aid)
     })()
       .catch(() => {
         // Keep the last good transcript. The next SSE signal, reconnect, or
@@ -743,7 +747,7 @@ export default function SessionDetailView() {
       })
     tailInFlightRef.current = run
     return run
-  }, [wantTranscript, sid, session?.platform, clearLiveSteps])
+  }, [wantTranscript, sid, aid, session?.platform, reconcileLiveSteps])
 
   const sessionActivityVersion = sid ? (sessionActivityVersionById[sid] ?? 0) : 0
   useEffect(() => {
