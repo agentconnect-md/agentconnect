@@ -12,7 +12,6 @@ import { useProfile } from '@/lib/profile'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { consoleKeys } from '@/lib/swr-keys'
 import {
-  ApiError,
   creatorLabel,
   startSlackInstall,
   getSlackInstall,
@@ -20,10 +19,11 @@ import {
   saveSlackConfig,
   fetchAgentHooks,
   fetchAgentRepos,
-  fetchAllGithubRepos,
   fetchGithubInstallationRepo,
   fetchGithubInstallations,
   fetchGithubInstallUrl,
+  fetchGithubRepoRoster,
+  invalidateGithubRepoRosterCache,
   syncGithubInstallations,
   updateAgentRepo,
   type CreateIntegrationInput,
@@ -1053,10 +1053,11 @@ export default function AddIntegrationModal({
   const [testSig, setTestSig] = useState<{ body: string; hex: string } | null>(null)
 
   // GitHub path (design: repo selector + "Listen for" event rows). The
-  // installations probe doubles as the enabled-probe; repos load page 1 per
-  // installation and filter client-side (same contract as the Add-agent picker).
+  // installations probe doubles as the enabled-probe; repository pages render
+  // progressively and filter client-side (same contract as Add-agent).
   const [gh, setGh] = useState<{ enabled: boolean; installations: GithubInstallationDto[] } | null>(null)
   const [ghRepos, setGhRepos] = useState<GithubRepoChoice[] | null>(null)
+  const [ghReposNonce, setGhReposNonce] = useState(0)
   // At least one installation's roster failed to load — the list may be
   // incomplete, which must not read as "no repositories". `denied` = the
   // per-user identity gate refused the caller (actionable: sign in with
@@ -1339,51 +1340,51 @@ export default function AddIntegrationModal({
     }
   }, [platform, gh])
 
-  // Repo pick list: every page from every installation, merged. GitHub offers
-  // no server-side search for App installations, so the dropdown filters this
-  // complete App-visible roster client-side.
+  // Repo pick list: merge pages from every installation as soon as they arrive.
+  // GitHub offers no server-side search for App installations, so the dropdown
+  // filters the progressively loaded App-visible roster client-side.
   useEffect(() => {
-    if (platform !== 'github' || !gh?.enabled || gh.installations.length === 0 || ghRepos !== null) return
+    if (platform !== 'github' || !gh?.enabled || gh.installations.length === 0) return
     let alive = true
     const ctrl = new AbortController()
-    void Promise.all(
-      gh.installations.map(async (installation) => {
-        try {
-          const repos = await fetchAllGithubRepos(installation.id, ctrl.signal)
-          return { page: repos.map((repo) => ({ ...repo, installationId: installation.id })) }
-        } catch (e) {
-          const denied = e instanceof ApiError && e.code === 'GITHUB_IDENTITY_REQUIRED'
-          return { error: denied ? ('denied' as const) : ('failed' as const) }
+    const applyRoster = (incoming: GithubRepoChoice[]) => {
+      if (!alive) return
+      setGhRepos((current) => {
+        const merged = new Map(incoming.map((repo) => [repo.fullName.toLowerCase(), repo]))
+        for (const repo of current ?? []) {
+          const key = repo.fullName.toLowerCase()
+          if (!merged.has(key)) merged.set(key, repo)
         }
+        return [...merged.values()]
       })
-    ).then((batches) => {
+    }
+    void fetchGithubRepoRoster(gh.installations, ctrl.signal, applyRoster).then(({ repos, denied, failed }) => {
       if (!alive) return
       // A failed roster read (GitHub outage) must not render as an empty
       // list — keep the pages that loaded and surface the gap with a retry.
       // An identity denial outranks a generic failure for messaging.
-      setGhReposError(batches.find((b) => b.error === 'denied')?.error ?? batches.find((b) => b.error)?.error ?? null)
-      setGhRepos(batches.flatMap((b) => b.page ?? []))
+      setGhReposError(denied ? 'denied' : failed ? 'failed' : null)
+      applyRoster(repos)
     })
     return () => {
       alive = false
       ctrl.abort()
     }
-  }, [platform, gh, ghRepos])
+  }, [platform, gh, ghReposNonce])
 
   // Resolve a complete owner/repo input directly as a fallback if a paged
   // roster request failed or the repository appeared after the roster loaded.
   const ghTypedRepo = /^[^/\s]+\/[^/\s]+$/.test(ghQ.trim()) ? ghQ.trim() : null
+  const ghExactAlreadyLoaded =
+    !!ghTypedRepo && ghRepos?.some((repo) => repo.fullName.toLowerCase() === ghTypedRepo.toLowerCase())
   useEffect(() => {
-    const exactAlreadyLoaded =
-      !!ghTypedRepo && ghRepos?.some((repo) => repo.fullName.toLowerCase() === ghTypedRepo.toLowerCase())
     if (
       platform !== 'github' ||
       !ghRepoOpen ||
       !gh?.enabled ||
       gh.installations.length === 0 ||
-      ghRepos === null ||
       !ghTypedRepo ||
-      exactAlreadyLoaded
+      ghExactAlreadyLoaded
     ) {
       setGhExactRepoLoading(false)
       return
@@ -1399,8 +1400,12 @@ export default function AddIntegrationModal({
     const ctrl = new AbortController()
     setGhExactRepoLoading(true)
     const timer = window.setTimeout(() => {
+      const matchingInstallations = gh.installations.filter(
+        (installation) => installation.accountLogin.toLowerCase() === owner.toLowerCase()
+      )
+      const candidates = matchingInstallations.length > 0 ? matchingInstallations : gh.installations
       void Promise.all(
-        gh.installations.map(async (installation) => {
+        candidates.map(async (installation) => {
           const found = await fetchGithubInstallationRepo(installation.id, owner, repo, ctrl.signal).catch(() => null)
           return found ? { ...found, installationId: installation.id } : null
         })
@@ -1430,7 +1435,7 @@ export default function AddIntegrationModal({
       ctrl.abort()
       window.clearTimeout(timer)
     }
-  }, [platform, ghRepoOpen, gh, ghRepos, ghTypedRepo])
+  }, [platform, ghRepoOpen, gh, ghTypedRepo, ghExactAlreadyLoaded])
 
   // Install deep link is minted fresh per click (one-shot signed state).
   const openGhInstall = async () => {
@@ -2204,8 +2209,10 @@ export default function AddIntegrationModal({
                                       type="button"
                                       className="lnk flex-none text-[12px]"
                                       onClick={() => {
+                                        invalidateGithubRepoRosterCache()
                                         setGhReposError(null)
                                         setGhRepos(null) // re-arms the roster effect
+                                        setGhReposNonce((value) => value + 1)
                                       }}
                                     >
                                       Retry

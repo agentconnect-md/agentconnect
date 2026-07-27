@@ -862,6 +862,7 @@ let apiOrgId: string | null = null
 
 /** Set by the OrgProvider whenever the active org (from the URL) resolves. */
 export function setApiOrgId(orgId: string | null): void {
+  if (apiOrgId !== orgId) invalidateGithubRepoRosterCache()
   apiOrgId = orgId
 }
 
@@ -3180,6 +3181,8 @@ export interface GithubRepoDto {
   updatedAt: string | null // last push — the picker row's "updated 3d ago"
 }
 
+export type GithubInstalledRepoDto = GithubRepoDto & { installationId: string }
+
 /** Installations list doubles as the enabled-probe: it is viewer-readable (the
  *  install-link route is not — minting a state is a write), and 404 ⇒ the
  *  feature is off on this deployment. */
@@ -3213,17 +3216,23 @@ export async function fetchGithubInstallUrl(): Promise<string | null> {
 /** Reconcile claims against GitHub — the fallback for a lost setup callback /
  *  pending admin approval. Returns the refreshed list. */
 export async function syncGithubInstallations(): Promise<GithubInstallationDto[]> {
-  return apiPost<GithubInstallationDto[]>(`${orgBase()}/github/installations/sync`, {})
+  const installations = await apiPost<GithubInstallationDto[]>(`${orgBase()}/github/installations/sync`, {})
+  invalidateGithubRepoRosterCache()
+  return installations
 }
 
 /** Remove the GitHub App from one account and revoke this installation's
  *  repository access. Owner-only; the CP also retires the local installation. */
 export async function uninstallGithubInstallation(id: string): Promise<void> {
   await apiDelete<void>(`${orgBase()}/github/installations/${encodeURIComponent(id)}`)
+  invalidateGithubRepoRosterCache(id)
 }
 
-const GITHUB_REPO_PAGE_SIZE = 100
+// Smaller pages make the first permission-filtered results visible sooner;
+// later pages stream in under the shared request limiter.
+const GITHUB_REPO_PAGE_SIZE = 50
 const GITHUB_REPO_REQUEST_CONCURRENCY = 4
+const GITHUB_REPO_ROSTER_CACHE_MS = 5 * 60_000
 // GitHub-side 5xx/429 blips are common during incidents; a page read gets two
 // quick retries so a transient failure heals before the picker surfaces it.
 const GITHUB_REPO_RETRY_DELAYS_MS = [250, 750] as const
@@ -3237,6 +3246,12 @@ type GithubRepoRequestWaiter = {
 
 let activeGithubRepoRequests = 0
 const githubRepoRequestWaiters: GithubRepoRequestWaiter[] = []
+const githubRepoRosterCache = new Map<string, { repos: GithubRepoDto[]; expiresAt: number }>()
+
+export function invalidateGithubRepoRosterCache(installationId?: string): void {
+  if (installationId) githubRepoRosterCache.delete(installationId)
+  else githubRepoRosterCache.clear()
+}
 
 function githubRepoAbortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException('The operation was aborted.', 'AbortError')
@@ -3300,7 +3315,8 @@ async function withGithubRepoRequestLimit<T>(run: () => Promise<T>, signal?: Abo
 }
 
 /** One page of installation repositories. GitHub offers no server-side search
- *  on this listing, so picker callers should normally use fetchAllGithubRepos. */
+ *  on this listing; picker components should normally use
+ *  fetchGithubRepoRoster. */
 export async function fetchGithubRepos(
   installationId: string,
   page = 1,
@@ -3326,29 +3342,98 @@ export async function fetchGithubRepos(
   }, signal)
 }
 
-/** Load the complete App-visible repository roster for client-side searching.
- *  GitHub exposes only pagination here, so fetch the remaining pages after the
- *  first response reveals the installation's total repository count. */
-export async function fetchAllGithubRepos(installationId: string, signal?: AbortSignal): Promise<GithubRepoDto[]> {
-  const first = await fetchGithubRepos(installationId, 1, signal)
-  const pageCount = Math.ceil(first.totalCount / GITHUB_REPO_PAGE_SIZE)
-  const pages = [
-    first,
-    ...(await Promise.all(
-      Array.from({ length: Math.max(0, pageCount - 1) }, (_, index) =>
-        fetchGithubRepos(installationId, index + 2, signal)
-      )
-    ))
-  ]
-
-  // The roster can change between page requests. Keep the first occurrence so
-  // callers never render duplicate rows if page boundaries shift mid-fetch.
+function mergeGithubRepoPages(
+  pages: Array<{ repos: GithubRepoDto[]; totalCount: number } | undefined>
+): GithubRepoDto[] {
   const unique = new Map<string, GithubRepoDto>()
-  for (const repo of pages.flatMap((page) => page.repos)) {
+  for (const repo of pages.flatMap((page) => page?.repos ?? [])) {
     const key = repo.fullName.toLowerCase()
     if (!unique.has(key)) unique.set(key, repo)
   }
   return [...unique.values()]
+}
+
+/** Load the complete App-visible repository roster for client-side searching.
+ *  Page 1 and every later page are published as soon as they arrive, while the
+ *  completed roster is cached across picker components for five minutes. */
+export async function fetchAllGithubRepos(
+  installationId: string,
+  signal?: AbortSignal,
+  onProgress?: (repos: GithubRepoDto[]) => void
+): Promise<GithubRepoDto[]> {
+  const cached = githubRepoRosterCache.get(installationId)
+  if (cached && cached.expiresAt > Date.now()) {
+    onProgress?.(cached.repos)
+    return cached.repos
+  }
+  if (cached) githubRepoRosterCache.delete(installationId)
+
+  const first = await fetchGithubRepos(installationId, 1, signal)
+  const pageCount = Math.ceil(first.totalCount / GITHUB_REPO_PAGE_SIZE)
+  const pages: Array<{ repos: GithubRepoDto[]; totalCount: number } | undefined> = Array.from({
+    length: Math.max(1, pageCount)
+  })
+  pages[0] = first
+  onProgress?.(mergeGithubRepoPages(pages))
+  await Promise.all(
+    Array.from({ length: Math.max(0, pageCount - 1) }, (_, index) =>
+      fetchGithubRepos(installationId, index + 2, signal).then((page) => {
+        pages[index + 1] = page
+        onProgress?.(mergeGithubRepoPages(pages))
+      })
+    )
+  )
+
+  const repos = mergeGithubRepoPages(pages)
+  githubRepoRosterCache.set(installationId, { repos, expiresAt: Date.now() + GITHUB_REPO_ROSTER_CACHE_MS })
+  return repos
+}
+
+function mergeGithubInstallationRosters(
+  installations: readonly Pick<GithubInstallationDto, 'id'>[],
+  rosters: ReadonlyMap<string, GithubRepoDto[]>
+): GithubInstalledRepoDto[] {
+  const unique = new Map<string, GithubInstalledRepoDto>()
+  for (const installation of installations) {
+    for (const repo of rosters.get(installation.id) ?? []) {
+      const key = repo.fullName.toLowerCase()
+      if (!unique.has(key)) unique.set(key, { ...repo, installationId: installation.id })
+    }
+  }
+  return [...unique.values()]
+}
+
+/** Merge every installation while retaining partial pages and per-installation
+ * failures. Pickers can render the first available page instead of waiting for
+ * the slowest organization. */
+export async function fetchGithubRepoRoster(
+  installations: readonly Pick<GithubInstallationDto, 'id'>[],
+  signal?: AbortSignal,
+  onProgress?: (repos: GithubInstalledRepoDto[]) => void
+): Promise<{ repos: GithubInstalledRepoDto[]; denied: boolean; failed: boolean }> {
+  const rosters = new Map<string, GithubRepoDto[]>()
+  const publish = (installationId: string, repos: GithubRepoDto[]) => {
+    rosters.set(installationId, repos)
+    onProgress?.(mergeGithubInstallationRosters(installations, rosters))
+  }
+  const errors = await Promise.all(
+    installations.map(async (installation) => {
+      try {
+        const repos = await fetchAllGithubRepos(installation.id, signal, (partial) => publish(installation.id, partial))
+        publish(installation.id, repos)
+        return null
+      } catch (error) {
+        return error
+      }
+    })
+  )
+  return {
+    repos: mergeGithubInstallationRosters(installations, rosters),
+    denied: errors.some((error) => error instanceof ApiError && error.code === 'GITHUB_IDENTITY_REQUIRED'),
+    failed: errors.some(
+      (error) => error !== null && !(error instanceof ApiError && error.code === 'GITHUB_IDENTITY_REQUIRED')
+    )
+  }
 }
 
 /** Resolve one repository through an App installation. Unlike the paged roster,

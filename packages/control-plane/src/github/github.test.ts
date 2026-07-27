@@ -283,6 +283,56 @@ describe('GithubService.outdatedInstallations', () => {
   })
 })
 
+describe('GithubService repository picker reads', () => {
+  const installation: GithubInstallationRecord = {
+    id: 'installation-row',
+    orgId: 'org-a' as never,
+    installationId: 42n,
+    accountLogin: 'acme',
+    accountType: 'Organization',
+    repositorySelection: 'all',
+    suspendedAt: null,
+    permissions: { metadata: 'read' },
+    revokedAt: null,
+    createdAt: new Date(0)
+  }
+
+  it('caches repository pages until the installation roster is invalidated', async () => {
+    const clock = new FakeClock(1_700_000_000_000)
+    const fetchImpl = vi.fn(async () =>
+      Response.json({
+        total_count: 1,
+        repositories: [
+          {
+            id: 1,
+            full_name: 'acme/one',
+            private: true,
+            default_branch: 'main',
+            description: null
+          }
+        ]
+      })
+    )
+    const svc = new GithubService({
+      cfg: cfg(),
+      clock,
+      installations: {} as never,
+      installState: { put: async () => {}, consume: async () => true },
+      pepper: 'p'.repeat(32),
+      fetchImpl
+    })
+    vi.spyOn(svc.tokens, 'metadataToken').mockResolvedValue('ghs_metadata')
+
+    await svc.listRepos(installation, 1, 100)
+    await svc.listRepos(installation, 1, 100)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+
+    svc.invalidateRepositoryRoster(installation.installationId)
+    await svc.listRepos(installation, 1, 100)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('GithubService.uninstallInstallation', () => {
   it('uninstalls with App auth, treats an already-gone installation as success, and invalidates the cache', async () => {
     const clock = new FakeClock(1_700_000_000_000)

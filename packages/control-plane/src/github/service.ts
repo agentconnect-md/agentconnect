@@ -49,6 +49,11 @@ interface GhRepo {
   updated_at?: string | null
 }
 
+interface GhRepoPage {
+  repos: GhRepo[]
+  totalCount: number
+}
+
 interface GhUser {
   id: number
   login: string
@@ -91,6 +96,8 @@ export interface GithubServiceDeps {
  * console's installation pickers. Settings can still force a fresh read after a
  * user explicitly presses Sync. */
 const OUTDATED_INSTALLATIONS_CACHE_MS = 30_000
+const REPO_PAGE_CACHE_MS = 5 * 60_000
+const MAX_REPO_PAGE_CACHE_ENTRIES = 1_000
 
 /** Capability-level clamp per RepoAccess tier (agent-multi-repo-authorization.md
  *  decision 3). Only capabilities the daemon asked for are actually minted. */
@@ -147,6 +154,9 @@ export class GithubService {
   private readonly mintBucket: TokenBucket
   private outdatedInstallationsCache:
     { expiresAt: number; settingsUrlsByInstallationId: ReadonlyMap<string, string> } | undefined
+  private readonly repoPageCache = new Map<string, { value: GhRepoPage; expiresAt: number }>()
+  private readonly repoPageInFlight = new Map<string, Promise<GhRepoPage>>()
+  private readonly repoRosterGeneration = new Map<string, number>()
 
   constructor(private readonly deps: GithubServiceDeps) {
     this.slug = deps.cfg.slug
@@ -165,6 +175,17 @@ export class GithubService {
 
   invalidateInstallationTokens(installationId: bigint): void {
     this.tokens.invalidateInstallation(installationId)
+  }
+
+  /** Installation/repository webhooks and explicit Sync calls invalidate every
+   * cached page. A generation fence prevents an older in-flight page from
+   * repopulating the cache after invalidation. */
+  invalidateRepositoryRoster(installationId: bigint): void {
+    const prefix = `${installationId}:`
+    this.repoRosterGeneration.set(prefix, (this.repoRosterGeneration.get(prefix) ?? 0) + 1)
+    for (const key of this.repoPageCache.keys()) {
+      if (key.startsWith(prefix)) this.repoPageCache.delete(key)
+    }
   }
 
   // ── install flow ──────────────────────────────────────────────────────────
@@ -191,6 +212,7 @@ export class GithubService {
     this.outdatedInstallationsCache = undefined
     const row = await this.deps.installations.upsertFromGithub(OrgIdOf(parsed.orgId), toFacts(ins))
     this.tokens.invalidateInstallation(row.installationId)
+    this.invalidateRepositoryRoster(row.installationId)
     this.deps.onInstallationFactsChanged?.(row.installationId, row.orgId)
     return row
   }
@@ -214,13 +236,17 @@ export class GithubService {
     for (const ins of all) {
       const row = await this.deps.installations.upsertFromGithub(orgId, toFacts(ins))
       this.tokens.invalidateInstallation(BigInt(ins.id))
+      this.invalidateRepositoryRoster(row.installationId)
       this.deps.onInstallationFactsChanged?.(row.installationId, row.orgId)
     }
     await this.deps.installations.markRevokedExcept(
       orgId,
       all.map((i) => BigInt(i.id))
     )
-    for (const row of before) this.tokens.invalidateInstallation(row.installationId)
+    for (const row of before) {
+      this.tokens.invalidateInstallation(row.installationId)
+      this.invalidateRepositoryRoster(row.installationId)
+    }
     for (const row of before) this.deps.onInstallationFactsChanged?.(row.installationId, row.orgId)
     return this.deps.installations.listForOrg(orgId)
   }
@@ -241,6 +267,7 @@ export class GithubService {
       if (!(e instanceof GithubApiError) || (e.status !== 404 && e.status !== 410)) throw e
     }
     this.outdatedInstallationsCache = undefined
+    this.invalidateRepositoryRoster(installationId)
   }
 
   /**
@@ -277,17 +304,39 @@ export class GithubService {
 
   // ── picker proxies ────────────────────────────────────────────────────────
 
-  async listRepos(
-    ins: GithubInstallationRecord,
-    page: number,
-    perPage: number
-  ): Promise<{ repos: GhRepo[]; totalCount: number }> {
-    const token = await this.tokens.metadataToken(ins.installationId)
-    const res = await githubRequest<{ total_count: number; repositories: GhRepo[] }>(
-      `/installation/repositories?per_page=${perPage}&page=${page}`,
-      { auth: token, fetchImpl: this.deps.fetchImpl, baseUrl: this.deps.baseUrl, bigIdsAsStrings: true }
-    )
-    return { repos: res.repositories, totalCount: res.total_count }
+  async listRepos(ins: GithubInstallationRecord, page: number, perPage: number): Promise<GhRepoPage> {
+    const prefix = `${ins.installationId}:`
+    const generation = this.repoRosterGeneration.get(prefix) ?? 0
+    const key = `${prefix}${generation}:${page}:${perPage}`
+    const cached = this.repoPageCache.get(key)
+    if (cached && cached.expiresAt > this.deps.clock.now()) return cached.value
+    if (cached) this.repoPageCache.delete(key)
+
+    let pending = this.repoPageInFlight.get(key)
+    if (!pending) {
+      pending = this.tokens
+        .metadataToken(ins.installationId)
+        .then((token) =>
+          githubRequest<{ total_count: number; repositories: GhRepo[] }>(
+            `/installation/repositories?per_page=${perPage}&page=${page}`,
+            { auth: token, fetchImpl: this.deps.fetchImpl, baseUrl: this.deps.baseUrl, bigIdsAsStrings: true }
+          )
+        )
+        .then((res) => {
+          const value = { repos: res.repositories, totalCount: res.total_count }
+          if ((this.repoRosterGeneration.get(prefix) ?? 0) === generation) {
+            if (this.repoPageCache.size >= MAX_REPO_PAGE_CACHE_ENTRIES) {
+              const oldest = this.repoPageCache.keys().next().value
+              if (oldest) this.repoPageCache.delete(oldest)
+            }
+            this.repoPageCache.set(key, { value, expiresAt: this.deps.clock.now() + REPO_PAGE_CACHE_MS })
+          }
+          return value
+        })
+        .finally(() => this.repoPageInFlight.delete(key))
+      this.repoPageInFlight.set(key, pending)
+    }
+    return pending
   }
 
   /** Branch names for the picker — needs contents:read (metadata-only 403s). */
@@ -467,6 +516,7 @@ export class GithubService {
       await this.deps.installations.markRevokedByInstallationId(installationId)
     }
     this.tokens.invalidateInstallation(installationId)
+    this.invalidateRepositoryRoster(installationId)
     this.deps.onInstallationFactsChanged?.(installationId, claimed.orgId)
     return refreshed
   }

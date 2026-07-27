@@ -1180,12 +1180,16 @@ the cache and stops requesting.
      list is **filtered per user**. Public repositories are retained directly.
      Each private repository is checked for effective permission and removed
      on `none`, so the **name** of an unauthorized repository never reaches the
-     console. Cost model: probe only private repositories, at most 100 per
-     page, with bounded concurrency of 8, and share the same
+     console. Cost model: probe only private repositories with eight bounded
+     REST lookups at a time, and share the same
      (installation, repo, login)->permission 5-minute cache with the
-     branches/create gates. Cold cost is one page of Metadata:read probes per
-     user every 5 minutes. A GraphQL alias batch query is the scale-up path when
-     per-repository probes become too expensive.
+     branches/create gates. Installation repository pages use the same TTL and
+     are invalidated by installation/repository webhooks and manual Sync, so
+     reopening another picker does not repeat the cold roster read.
+     Do not replace the REST permission endpoint with GraphQL
+     `Repository.collaborators(login:)`: installation tokens can return an
+     empty collaborator connection for a user whose REST effective permission
+     is non-`none`.
      An account without a GitHub identity receives
      `GITHUB_IDENTITY_REQUIRED` for the list as well, with a machine-coded 403
      and an explicit console prompt, consistent with all other checks. Access

@@ -112,6 +112,7 @@ describe('live-turn runtime auth signal', () => {
       emitDaemonRuntimes: (profiles: Array<{ runtime: string; authRequired?: boolean }>) => {
         emitted.push(profiles)
       },
+      emitSessionActivity: vi.fn(),
       stop: vi.fn(async () => {})
     }
 
@@ -169,6 +170,7 @@ describe('live-turn runtime auth signal', () => {
       emitDaemonRuntimes: () => {
         throw new Error('telemetry down')
       },
+      emitSessionActivity: vi.fn(),
       stop: vi.fn(async () => {})
     }
 
