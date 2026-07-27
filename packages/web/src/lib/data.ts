@@ -1442,7 +1442,7 @@ export interface DaemonRow {
   availableVersions: string[]
   /** The most recent CP-commanded restart/upgrade op (cli-daemon-split.md §7), or null.
    *  `status` is expiry-projected server-side; the modal tracks its own command by `id`
-   *  and the detail view derives the in-flight badge from `status === 'pending'`. */
+   *  and the daemon views derive the in-flight badge from `status === 'pending'`. */
   lifecycleOp: DaemonLifecycleOp | null
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
