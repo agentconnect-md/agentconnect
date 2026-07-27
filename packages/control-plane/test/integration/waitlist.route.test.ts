@@ -90,6 +90,25 @@ async function approveAndMint(email: string, opts: { expiresInMs?: number; revok
   return minted.token
 }
 
+/** Simulate the admin app minting a BEARER link — an approved entry with NO email,
+ *  redeemable once by any verified identity. Returns the plaintext token + its hash
+ *  (the row has no email to look it up by). */
+async function mintOpenLink(opts: { expiresInMs?: number; revoked?: boolean } = {}) {
+  const minted = codec.mint()
+  const now = Date.now()
+  await prisma.waitlistEntry.create({
+    data: {
+      status: 'approved',
+      source: 'admin',
+      tokenHash: minted.hash,
+      displayTail: minted.displayTail,
+      joinExpiresAt: new Date(now + (opts.expiresInMs ?? 30 * 24 * 3600 * 1000)),
+      revokedAt: opts.revoked ? new Date(now - 1) : null
+    }
+  })
+  return { token: minted.token, tokenHash: minted.hash }
+}
+
 describe('waitlist admission — GET /me/access', () => {
   it('always reports active when waitlist mode is off', async () => {
     const { app, close } = buildHttpApp(prisma, { OIDC_ISSUER: oidcIssuer, OIDC_AUDIENCE })
@@ -258,6 +277,103 @@ describe('waitlist admission — POST /waitlist/redeem', () => {
       // Repeat redeem is idempotent.
       const again = await app.inject({ method: 'POST', url: '/api/v1/waitlist/redeem', headers: h, payload: { token } })
       expect(again.statusCode).toBe(200)
+    } finally {
+      await close()
+    }
+  })
+
+  it('a bearer link (no email) activates any verified identity and records the redeemer', async () => {
+    const { token, tokenHash } = await mintOpenLink()
+    const { app, close } = buildApp()
+    try {
+      // Any verified email — the link was minted with no email to bind.
+      const h = await headers('wl-bearer', 'whoever@acme.dev')
+      await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+
+      const redeem = await app.inject({
+        method: 'POST',
+        url: '/api/v1/waitlist/redeem',
+        headers: h,
+        payload: { token }
+      })
+      expect(redeem.statusCode).toBe(200)
+      expect(redeem.json()).toEqual({ activated: true })
+
+      const user = await prisma.user.findUnique({ where: { oidcSubject: 'wl-bearer' } })
+      expect(user!.activatedAt).not.toBeNull()
+      const entry = await prisma.waitlistEntry.findUnique({ where: { tokenHash } })
+      expect(entry!.email).toBeNull() // stays a bearer row
+      expect(entry!.redeemedByUserId).toBe(user!.id)
+      expect(entry!.redeemedEmail).toBe('whoever@acme.dev') // redeemer recorded for audit
+
+      // Idempotent for the SAME user.
+      const again = await app.inject({ method: 'POST', url: '/api/v1/waitlist/redeem', headers: h, payload: { token } })
+      expect(again.statusCode).toBe(200)
+    } finally {
+      await close()
+    }
+  })
+
+  it('a bearer link is one-use — a second, different user is refused', async () => {
+    const { token } = await mintOpenLink()
+    const { app, close } = buildApp()
+    try {
+      const first = await headers('wl-bearer-first', 'first@acme.dev')
+      await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: first })
+      expect(
+        (await app.inject({ method: 'POST', url: '/api/v1/waitlist/redeem', headers: first, payload: { token } }))
+          .statusCode
+      ).toBe(200)
+
+      // A different identity now finds the link already consumed → 410.
+      const second = await headers('wl-bearer-second', 'second@acme.dev')
+      await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: second })
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/waitlist/redeem',
+        headers: second,
+        payload: { token }
+      })
+      expect(res.statusCode).toBe(410)
+      expect(res.json()).toMatchObject({ code: 'WAITLIST_LINK_UNAVAILABLE' })
+    } finally {
+      await close()
+    }
+  })
+
+  it('same-user retry stays 200 even after the link later expires or is revoked (bound + bearer)', async () => {
+    const boundToken = await approveAndMint('wl-retry@acme.dev')
+    const { app, close } = buildApp()
+    try {
+      // ── bound link ──
+      const h = await headers('wl-retry', 'wl-retry@acme.dev')
+      await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      const redeem = (token: string, hdrs: Record<string, string>) =>
+        app.inject({ method: 'POST', url: '/api/v1/waitlist/redeem', headers: hdrs, payload: { token } })
+
+      expect((await redeem(boundToken, h)).statusCode).toBe(200)
+      // Expiring the link AFTER redemption must not break the same user's retry.
+      await prisma.waitlistEntry.update({
+        where: { email: 'wl-retry@acme.dev' },
+        data: { joinExpiresAt: new Date(Date.now() - 1000) }
+      })
+      expect((await redeem(boundToken, h)).statusCode).toBe(200)
+      // Nor must a post-redemption revoke.
+      await prisma.waitlistEntry.update({ where: { email: 'wl-retry@acme.dev' }, data: { revokedAt: new Date() } })
+      expect((await redeem(boundToken, h)).statusCode).toBe(200)
+
+      // ── bearer link ──
+      const { token: bearerToken, tokenHash } = await mintOpenLink()
+      const hb = await headers('wl-retry-bearer', 'rb@acme.dev')
+      await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: hb })
+      expect((await redeem(bearerToken, hb)).statusCode).toBe(200)
+      await prisma.waitlistEntry.update({ where: { tokenHash }, data: { revokedAt: new Date() } })
+      expect((await redeem(bearerToken, hb)).statusCode).toBe(200) // same user, still ok
+
+      // A DIFFERENT user hitting the now-revoked bearer link is refused.
+      const other = await headers('wl-retry-other', 'other@acme.dev')
+      await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: other })
+      expect((await redeem(bearerToken, other)).statusCode).toBe(410)
     } finally {
       await close()
     }
