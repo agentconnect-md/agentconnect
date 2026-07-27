@@ -46,7 +46,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     })
   }
 
-  async aggregate(orgId: OrgId, since: Date, viewer?: ViewCtx): Promise<UsageAggregate> {
+  async aggregate(orgId: OrgId, since: Date, viewer?: ViewCtx, tzOffsetMin = 0): Promise<UsageAggregate> {
     // Derived visibility: usage rows inherit their agent's visibility, so scope
     // through the `agent` relation. A restricted agent a non-viewer can't see then
     // drops out of BOTH the per-agent breakdown and the totals (owner/undefined ⇒
@@ -100,6 +100,39 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     })
     const costCurrency = currencies.length === 1 ? currencies[0]!.costCurrency : null
 
-    return { totals: { ...totals, costCurrency }, agents }
+    // Spend-over-time series: attribute each session's cost to the bucket of its
+    // last activity, then fill empty buckets with 0 across the whole window. d1
+    // buckets hourly, longer ranges daily. Buckets align to the viewer's LOCAL
+    // day/hour: we shift into local time (subtract offMs), floor there, shift back
+    // — so `start` is the UTC instant of a local boundary and the client labels it
+    // in local tz. offMs is 0 ⇒ plain UTC.
+    // ponytail: one current offset applied across the whole window — a DST change
+    // mid-range misattributes the ~1h around the switch; acceptable for a spend
+    // chart, pass an IANA tz + date_trunc if hour-exact local days ever matter.
+    // ponytail: buckets in JS over the range's rows — fine for a workspace's
+    // session volume; switch to a date_trunc GROUP BY if a range ever returns
+    // 100k+ rows.
+    const HOUR_MS = 60 * 60 * 1000
+    const offMs = tzOffsetMin * 60 * 1000
+    const now = Date.now()
+    const bucket: 'hour' | 'day' = now - since.getTime() <= 2 * 24 * HOUR_MS ? 'hour' : 'day'
+    const stepMs = bucket === 'hour' ? HOUR_MS : 24 * HOUR_MS
+    // Floor `since` to the start of its local bucket, expressed as a UTC instant.
+    const floorSince = Math.floor((since.getTime() - offMs) / stepMs) * stepMs + offMs
+    const n = Math.floor((now - floorSince) / stepMs) + 1
+    const points: { start: string; costAmount: number }[] = Array.from({ length: n }, (_, i) => ({
+      start: new Date(floorSince + i * stepMs).toISOString(),
+      costAmount: 0
+    }))
+    const costRows = await this.db.sessionUsage.findMany({
+      where: { agent: agentScope, lastActivityAt: { gte: since } },
+      select: { lastActivityAt: true, costAmount: true }
+    })
+    for (const row of costRows) {
+      const idx = Math.floor((row.lastActivityAt.getTime() - floorSince) / stepMs)
+      if (idx >= 0 && idx < n) points[idx]!.costAmount += row.costAmount
+    }
+
+    return { totals: { ...totals, costCurrency }, agents, series: { bucket, points } }
   }
 }

@@ -18,7 +18,7 @@ ON CONFLICT ("id") DO NOTHING;
 
 INSERT INTO "membership" ("id","orgId","userId","role")
 VALUES ('mbr_owner_default0000000000','org_default00000000000000000','usr_owner000000000000000000','owner')
-ON CONFLICT ("id") DO NOTHING;
+ON CONFLICT ("orgId","userId") DO NOTHING;
 
 -- An extra teammate user, for multi-user dev UI testing
 INSERT INTO "app_user" ("id","email","displayName")
@@ -26,7 +26,7 @@ VALUES ('usr_dev0000000000000000000','dev@agentconnect.local','Dev Teammate')
 ON CONFLICT ("id") DO NOTHING;
 INSERT INTO "membership" ("id","orgId","userId","role")
 VALUES ('mbr_dev_default00000000000','org_default00000000000000000','usr_dev0000000000000000000','collaborator')
-ON CONFLICT ("id") DO NOTHING;
+ON CONFLICT ("orgId","userId") DO NOTHING;
 
 -- ── Daemon (one registered, ready, alive) ───────────────────────────────────
 INSERT INTO "daemon"
@@ -86,6 +86,50 @@ VALUES
    'plan','https://app.example/sessions/55555555','Reviewing PR #3: drafted a plan',
    'thinking', now(), now(), now())
 ON CONFLICT ("id") DO NOTHING;
+
+-- ── Extra codex agent so the Usage "by type" grouping shows >1 runtime ──────
+INSERT INTO "agent"
+  ("id","orgId","name","runtime","status","daemonId","workspaceMode","gitRepo","gitBranch","agentDir","capabilities","permissions","updatedAt")
+VALUES
+  ('77777777-7777-4777-8777-777777777777','org_default00000000000000000','builder','codex','active',
+   '11111111-1111-4111-8111-111111111111','scratch',NULL,NULL,NULL,
+   ARRAY['message.send'], '{"policy":"ask","autoApprove":[]}'::jsonb, now())
+ON CONFLICT ("id") DO NOTHING;
+
+-- ── Usage rows (Usage dashboard: spend-over-time chart + by-agent/type table) ─
+-- Synthetic per-session token/cost accounting. 90 daily sessions per agent with
+-- a gentle upward cost trend + a per-agent multiplier (so bars and shares vary),
+-- plus a 24-hour hourly spread for the reviewer so the d1 range isn't one bar.
+-- Metadata only; numbers are fabricated. Idempotent: ON CONFLICT keeps the first
+-- run's random values, so re-seeding doesn't reshuffle the chart.
+INSERT INTO "session_usage"
+  ("agentId","sessionId","platform","channel","totalTokens","inputTokens","outputTokens",
+   "costAmount","costCurrency","startedAt","lastActivityAt","updatedAt")
+SELECT
+  a.id, 'seed-day-' || a.id || '-' || g, 'slack','C0DEMO0001',
+  tok, (tok*0.7)::int, (tok*0.3)::int,
+  round(((0.2 + random()*2 + (90-g)*0.03) * a.mult)::numeric, 4)::float, 'USD',
+  now() - (g || ' days')::interval, now() - (g || ' days')::interval, now()
+FROM (VALUES
+  ('22222222-2222-4222-8222-222222222222'::uuid, 1.0),  -- reviewer  (claude)
+  ('33333333-3333-4333-8333-333333333333'::uuid, 0.6),  -- triager   (claude)
+  ('77777777-7777-4777-8777-777777777777'::uuid, 1.4)   -- builder   (codex)
+) a(id, mult)
+CROSS JOIN generate_series(0, 89) g
+CROSS JOIN LATERAL (SELECT (5000 + (random()*20000)::int) AS tok) t
+ON CONFLICT ("agentId","sessionId") DO NOTHING;
+
+INSERT INTO "session_usage"
+  ("agentId","sessionId","platform","channel","totalTokens","inputTokens","outputTokens",
+   "costAmount","costCurrency","startedAt","lastActivityAt","updatedAt")
+SELECT
+  '22222222-2222-4222-8222-222222222222'::uuid, 'seed-hr-' || h, 'slack','C0DEMO0001',
+  tok, (tok*0.7)::int, (tok*0.3)::int,
+  round((0.05 + random()*0.5)::numeric, 4)::float, 'USD',
+  now() - (h || ' hours')::interval, now() - (h || ' hours')::interval, now()
+FROM generate_series(0, 23) h
+CROSS JOIN LATERAL (SELECT (800 + (random()*4000)::int) AS tok) t
+ON CONFLICT ("agentId","sessionId") DO NOTHING;
 
 -- ── A cron definition ───────────────────────────────────────────────────────
 INSERT INTO "cron_def"

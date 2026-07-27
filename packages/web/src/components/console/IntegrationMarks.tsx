@@ -28,7 +28,7 @@ export function IntegrationMarks({
         {visibleIntegrations.map((integration, index) => (
           <span
             key={integration.id ?? `${integration.platform}:${index}`}
-            className={`imark imark-overlap h-[21px] w-[21px] ${index === 0 ? '' : '-ml-[7px]'}`}
+            className={`imark h-[21px] w-[21px] ${index === 0 ? '' : 'imark-overlap -ml-[7px]'}`}
           >
             <PlatformMark platform={integration.platform} />
           </span>
@@ -36,7 +36,7 @@ export function IntegrationMarks({
         {visibleHookKinds.map((kind, index) => (
           <span
             key={kind}
-            className={`imark imark-overlap h-[21px] w-[21px] ${visibleIntegrations.length + index === 0 ? '' : '-ml-[7px]'} ${kind === 'webhook' ? 'bg-(--surface-inverse)' : ''}`}
+            className={`imark h-[21px] w-[21px] ${visibleIntegrations.length + index === 0 ? '' : 'imark-overlap -ml-[7px]'} ${kind === 'webhook' ? 'bg-(--surface-inverse)' : ''}`}
             title={kind === 'github' ? 'GitHub events' : 'Inbound webhook'}
           >
             {kind === 'github' ? (

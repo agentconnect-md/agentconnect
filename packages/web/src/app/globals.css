@@ -916,9 +916,11 @@
     height: 60%;
   }
   /* `ring` is a Tailwind utility, so use a project-specific class for the
-     white spacer that keeps overlapping integration marks distinct. */
+     white spacer that keeps overlapping integration marks distinct. Only the
+     overlapped left edge needs it, and only marks that sit on top of another
+     get the class (see IntegrationMarks), so a single mark stays borderless. */
   .imark.imark-overlap {
-    box-shadow: 0 0 0 2px var(--surface-card);
+    box-shadow: -2px 0 0 0 var(--surface-card);
   }
   .lnk {
     display: inline-flex;

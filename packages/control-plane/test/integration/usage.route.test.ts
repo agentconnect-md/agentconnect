@@ -176,9 +176,27 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
         range: string
         totals: { sessions: number; totalTokens: number; costAmount: number; costCurrency: string | null }
         agents: { agentId: string; sessions: number; totalTokens: number; costAmount: number }[]
+        series: { bucket: 'hour' | 'day'; points: { start: string; costAmount: number }[] }
       }
 
       expect(body.range).toBe('d30')
+
+      // Spend-over-time series: d30 buckets daily; the three in-range sessions
+      // (10/20/30 min ago) all land in the final (today) bucket, and the stale
+      // 100-day row is out of window → excluded. So the series sums to 0.35.
+      expect(body.series.bucket).toBe('day')
+      expect(body.series.points.length).toBeGreaterThanOrEqual(30)
+      const seriesTotal = body.series.points.reduce((s, p) => s + p.costAmount, 0)
+      expect(seriesTotal).toBeCloseTo(0.35)
+      expect(body.series.points.at(-1)!.costAmount).toBeCloseTo(0.35)
+
+      // A local-tz offset only shifts bucket boundaries — it must never drop or
+      // double-count cost. Across extreme offsets the series still sums to 0.35.
+      for (const tz of [-720, 780]) {
+        const r = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d30&tz=${tz}` })
+        const s = (r.json() as typeof body).series.points.reduce((acc, p) => acc + p.costAmount, 0)
+        expect(s).toBeCloseTo(0.35)
+      }
       // Stale a-old row excluded: 3 in-range sessions, 3500 tokens.
       expect(body.totals.sessions).toBe(3)
       expect(body.totals.totalTokens).toBe(3500)
