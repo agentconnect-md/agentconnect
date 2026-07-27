@@ -1,6 +1,6 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
 import { GithubMark, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -9,6 +9,7 @@ import { agentLabel, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
+import { useIsMobile } from '@/lib/use-is-mobile'
 import { consoleKeys } from '@/lib/swr-keys'
 import {
   ApiError,
@@ -151,7 +152,8 @@ const GUIDE: Record<
   telegram: {
     linkHref: 'https://t.me/BotFather',
     linkLabel: 'Open @BotFather',
-    step1: 'Message @BotFather, send /newbot, and follow the prompts to name your bot — it replies with a token.',
+    step1:
+      'Open @BotFather → New bot (or send /newbot), give it a display name and a username ending in “bot” — it hands back the token.',
     step1Warning:
       'disable privacy mode in @BotFather (/setprivacy → Disable) after creation, so it reads every message.',
     tokenPlaceholder: '123456789:AAE…'
@@ -408,6 +410,556 @@ function SlackConfigTokenPreview() {
       </div>
     </div>
   )
+}
+
+// One step of a bot-setup walkthrough: the chip label, the mini-screen it shows, and the
+// caption under it. Kept together so the three can't drift apart.
+type WalkthroughStep = { label: string; caption: React.ReactNode; screen: React.ReactNode }
+
+// The walkthrough itself: step chips on top, one fixed-size mini-screen, a caption below.
+// Auto-advances every ~3s; hovering or focusing a chip pins that step, leaving the row resumes
+// the loop. Positioning is the caller's job — it is a popover on desktop and an inline panel on
+// mobile, and the interval only runs while it is mounted (i.e. actually on screen).
+function WalkthroughPanel({ steps }: { steps: WalkthroughStep[] }) {
+  const [step, setStep] = useState(0)
+  const [pinned, setPinned] = useState<number | null>(null)
+
+  // Auto-advance only while nothing is pinned and the user hasn't asked for reduced motion.
+  useEffect(() => {
+    if (pinned !== null) return
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
+    const t = setInterval(() => setStep((s) => (s + 1) % steps.length), 3200)
+    return () => clearInterval(t)
+  }, [pinned, steps.length])
+
+  const shown = (pinned ?? step) % steps.length
+  const pin = (i: number) => {
+    setPinned(i)
+    setStep(i)
+  }
+
+  return (
+    <div className="rounded-xl border border-(--border-default) bg-(--surface-card) p-2 shadow-(--shadow-xl)">
+      <div className="mb-2 flex gap-1" onMouseLeave={() => setPinned(null)}>
+        {steps.map((s, i) => (
+          <button
+            key={s.label}
+            type="button"
+            aria-current={i === shown}
+            onMouseEnter={() => pin(i)}
+            onFocus={() => pin(i)}
+            onBlur={() => setPinned(null)}
+            onClick={() => pin(i)}
+            className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1 font-sans text-[10px] font-semibold leading-normal transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) ${
+              i === shown
+                ? 'bg-(--surface-inverse) text-white'
+                : 'bg-(--surface-app) text-(--text-tertiary) hover:text-(--text-secondary)'
+            }`}
+          >
+            <span className={`mono text-[9px] ${i === shown ? 'opacity-70' : 'opacity-60'}`}>{i + 1}</span>
+            <span className="truncate">{s.label}</span>
+          </button>
+        ))}
+      </div>
+      {steps[shown]?.screen}
+      <div className="mt-1.5 px-1 font-sans text-[10.5px] font-normal leading-[1.45] text-(--text-secondary)">
+        {steps[shown]?.caption}
+      </div>
+    </div>
+  )
+}
+
+// The disclosure around the walkthrough, rendered inside the `group relative` wrapper of a
+// platform's portal button. Desktop: a popover above the button, revealed on hover AND on
+// keyboard focus anywhere in the group (the OutputModeHelp pattern) — it stays `invisible`
+// while closed so its chips are out of the tab order and can never eat the button's click.
+// Mobile: hover doesn't exist and the modal body would clip a popover, so it becomes an
+// explicit toggle with the panel expanding inline underneath.
+function BotSetupWalkthrough({ steps, label }: { steps: WalkthroughStep[]; label: string }) {
+  const isMobile = useIsMobile()
+  const [open, setOpen] = useState(false)
+  const panelId = useId()
+
+  if (isMobile) {
+    return (
+      <>
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={panelId}
+          onClick={() => setOpen((v) => !v)}
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border border-(--border-default) bg-(--surface-card) py-[7px] font-sans text-[12px] font-semibold leading-normal text-(--text-secondary) transition-colors hover:border-(--border-strong) hover:bg-(--surface-hover)"
+        >
+          <Icon name="list-checks" size={13} />
+          {open ? 'Hide' : 'Show'} the {steps.length} setup steps
+          <Icon name={open ? 'chevron-up' : 'chevron-down'} size={13} />
+        </button>
+        {open && (
+          <div id={panelId} className="mt-2">
+            <WalkthroughPanel steps={steps} />
+          </div>
+        )}
+      </>
+    )
+  }
+
+  return (
+    // The bottom padding bridges the gap to the button, so moving up onto the step chips never
+    // drops the hover.
+    <div
+      role="group"
+      aria-label={label}
+      className="pointer-events-none invisible absolute bottom-full left-1/2 z-50 w-[320px] -translate-x-1/2 pb-2 opacity-0 transition-[opacity,visibility] group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100"
+    >
+      <WalkthroughPanel steps={steps} />
+      <div className="pointer-events-none absolute bottom-[3px] left-1/2 h-2.5 w-2.5 -translate-x-1/2 rotate-45 border-r border-b border-(--border-default) bg-(--surface-card)" />
+    </div>
+  )
+}
+
+// One mini-screen: a title bar plus a fixed-height body, so every step of a walkthrough is
+// exactly the same size and the popover never jumps as it advances.
+function MiniScreen({
+  frameClass,
+  bar,
+  children
+}: {
+  frameClass: string
+  bar: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <div className={`overflow-hidden rounded-lg border ${frameClass}`}>
+      {bar}
+      <div className="relative h-[196px]">{children}</div>
+    </div>
+  )
+}
+
+// Telegram's own sheet chrome (fixed light/dark, independent of our theme).
+function TelegramBar({ icon, title }: { icon: string; title: string }) {
+  return (
+    <div className="flex items-center gap-1.5 border-b border-[#2c2c2e] bg-[#f0f0f0] px-2.5 py-1.5">
+      <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#2f7fd8] text-white">
+        <Icon name={icon} size={9} strokeWidth={2.25} />
+      </span>
+      <span className="font-sans text-[9.5px] font-bold leading-normal text-[#1d1c1d]">{title}</span>
+    </div>
+  )
+}
+
+// A browser chrome strip for previews of web consoles (matches the Slack config-token preview).
+function BrowserBar({ url }: { url: string }) {
+  return (
+    <div className="flex items-center gap-1.5 border-b border-[#e3e5e8] bg-[#f2f3f5] px-2.5 py-1.5">
+      <span className="h-2 w-2 flex-none rounded-full bg-[#e0605a]" />
+      <span className="h-2 w-2 flex-none rounded-full bg-[#e8b13a]" />
+      <span className="h-2 w-2 flex-none rounded-full bg-[#4aa564]" />
+      <span className="ml-1 min-w-0 truncate font-mono text-[9px] leading-normal text-[#5c5e66]">{url}</span>
+    </div>
+  )
+}
+
+// Discord's Privileged-Gateway-Intents switch, on or off.
+function DiscordToggle({ on }: { on: boolean }) {
+  return (
+    <span
+      className={`relative flex h-3 w-6 flex-none items-center rounded-full ${on ? 'bg-[#5865f2]' : 'bg-[#c4c9ce]'}`}
+    >
+      <span className={`absolute h-2 w-2 rounded-full bg-white ${on ? 'right-[3px]' : 'left-[3px]'}`} />
+    </span>
+  )
+}
+
+const TG_STEPS: WalkthroughStep[] = [
+  {
+    label: 'Find the bot',
+    caption: (
+      <>
+        Search <span className="mono">@BotFather</span> in Telegram (the verified one) and open the chat.
+      </>
+    ),
+    screen: (
+      <MiniScreen
+        frameClass="border-[#2c2c2e] bg-[#1c1c1d]"
+        bar={<TelegramBar icon="search" title="Telegram — search" />}
+      >
+        <div className="absolute inset-0 bg-white px-3 py-2.5">
+          <div className="flex items-center gap-1.5 rounded-md bg-[#f0f0f0] px-2 py-1.5">
+            <Icon name="search" size={10} color="#8e8e93" />
+            <span className="font-sans text-[10px] leading-normal text-[#1d1c1d]">@BotFather</span>
+          </div>
+          <div className="mt-2 mb-1 font-sans text-[8px] font-semibold uppercase leading-normal tracking-wide text-[#8e8e93]">
+            Contacts and chats
+          </div>
+          <div className="relative flex items-center gap-2 rounded-md px-1.5 py-1.5">
+            <span className="pointer-events-none absolute -inset-0.5 step-blink rounded-lg ring-2 ring-[#2f7fd8]" />
+            <span className="flex h-6 w-6 flex-none items-center justify-center rounded-full bg-[#2f7fd8] text-white">
+              <Icon name="bot" size={12} strokeWidth={2.25} />
+            </span>
+            <span className="flex min-w-0 flex-1 items-center gap-1">
+              <span className="truncate font-sans text-[10px] font-semibold leading-normal text-[#1d1c1d]">
+                BotFather
+              </span>
+              <Icon name="badge-check" size={10} color="#2f7fd8" />
+            </span>
+            <span className="flex-none rounded-full bg-[#2f7fd8] px-2 py-[2px] font-sans text-[8.5px] font-bold leading-normal text-white">
+              OPEN
+            </span>
+          </div>
+          <div className="mt-1.5 mb-1 font-sans text-[8px] font-semibold uppercase leading-normal tracking-wide text-[#8e8e93]">
+            Global search
+          </div>
+          {['@Botfagher_bot', '@botfather_tron_bot'].map((u) => (
+            <div key={u} className="flex items-center gap-2 px-1.5 py-1">
+              <span className="h-5 w-5 flex-none rounded-full bg-[#e6e6e6]" />
+              <span className="mono truncate text-[9px] leading-normal text-[#8e8e93]">{u}</span>
+            </div>
+          ))}
+          <div className="mt-1 font-sans text-[8.5px] leading-snug text-[#8e8e93]">
+            Impostors are everywhere — take the verified one.
+          </div>
+        </div>
+      </MiniScreen>
+    )
+  },
+  {
+    label: 'New bot',
+    caption: (
+      <>
+        Tap <span className="font-medium text-(--text-secondary)">Start</span> &rarr;{' '}
+        <span className="font-medium text-(--text-secondary)">New bot</span>, then pick a name and a username ending in{' '}
+        <span className="mono">bot</span>.
+      </>
+    ),
+    screen: (
+      <MiniScreen frameClass="border-[#2c2c2e] bg-[#1c1c1d]" bar={<TelegramBar icon="bot" title="BotFather" />}>
+        <div className="absolute inset-0 px-3 py-2.5">
+          <div className="mb-1.5 flex justify-center">
+            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#2c2c2e] text-[#8e8e93]">
+              <Icon name="camera" size={13} />
+            </span>
+          </div>
+          <div className="text-center font-sans text-[12px] font-bold leading-tight text-white">New bot</div>
+          <div className="mt-0.5 mb-2 text-center font-sans text-[9px] leading-tight text-[#8e8e93]">
+            Enter a name, description and username to create a new bot.
+          </div>
+          <div className="rounded-md bg-[#2c2c2e] px-2 py-1.5 font-sans text-[10px] leading-normal text-white">
+            My Agent
+          </div>
+          <div className="mt-0.5 rounded-md bg-[#2c2c2e] px-2 py-1.5 font-sans text-[10px] leading-normal text-[#8e8e93]">
+            About (Optional)
+          </div>
+          <div className="mt-1.5 rounded-md bg-[#2c2c2e] px-2 py-1.5 font-sans text-[10px] leading-normal text-[#8e8e93]">
+            t.me/<span className="text-white">my_agent_bot</span>
+          </div>
+          <div className="mt-1 font-sans text-[8.5px] leading-normal text-[#4db34d]">my_agent_bot is available.</div>
+        </div>
+      </MiniScreen>
+    )
+  },
+  {
+    label: 'Copy token',
+    caption: <>The bot&rsquo;s screen shows the API token — copy it and paste it below.</>,
+    screen: (
+      <MiniScreen frameClass="border-[#2c2c2e] bg-[#1c1c1d]" bar={<TelegramBar icon="bot" title="BotFather" />}>
+        <div className="absolute inset-0 flex flex-col justify-center px-3 py-2.5">
+          <div className="mb-1.5 flex justify-center">
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#4caf50] font-sans text-[13px] font-bold leading-none text-white">
+              M
+            </span>
+          </div>
+          <div className="text-center font-sans text-[12px] font-bold leading-tight text-white">My Agent</div>
+          <div className="mt-0.5 mb-2 text-center font-sans text-[9px] leading-tight text-[#8e8e93]">@my_agent_bot</div>
+          <div className="rounded-md bg-[#2c2c2e] p-2">
+            <div className="flex items-center gap-1.5">
+              <Icon name="key-round" size={10} color="#8e8e93" />
+              <span className="mono min-w-0 flex-1 truncate text-[9px] leading-normal text-[#8e8e93] blur-[2.5px]">
+                123456789:AAEabcdefghijklmnopqrstuvwxyz
+              </span>
+            </div>
+            <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+              <span className="relative rounded bg-[#2f7fd8] py-[3px] text-center font-sans text-[9px] font-semibold leading-normal text-white">
+                Copy
+                <span className="pointer-events-none absolute -inset-[3px] step-pulse rounded ring-2 ring-white" />
+              </span>
+              <span className="rounded bg-[#e0625a] py-[3px] text-center font-sans text-[9px] font-semibold leading-normal text-white">
+                Revoke
+              </span>
+            </div>
+          </div>
+          <div className="mt-1.5 font-sans text-[8.5px] leading-snug text-[#8e8e93]">
+            Access the API using this token. Keep it secret.
+          </div>
+        </div>
+      </MiniScreen>
+    )
+  }
+]
+
+// Discord's Developer Portal walkthrough, following the same three beats: create the app,
+// reveal + copy the bot token, then turn on the Message Content intent (the one setting whose
+// absence looks like a silently broken bot — see DISCORD_REQS).
+const DISCORD_STEPS: WalkthroughStep[] = [
+  {
+    label: 'New app',
+    caption: (
+      <>
+        <span className="font-medium text-(--text-secondary)">New Application</span>&#32;&rarr; name it, accept the
+        developer terms, then Create.
+      </>
+    ),
+    screen: (
+      <MiniScreen
+        frameClass="border-[#e3e5e8] bg-[#f2f3f5]"
+        bar={<BrowserBar url="discord.com/developers/applications" />}
+      >
+        <div className="absolute inset-0 bg-[#f2f3f5] px-3 py-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-sans text-[10px] font-bold leading-normal text-[#313338]">Applications</span>
+            <span className="rounded bg-[#5865f2] px-1.5 py-[3px] font-sans text-[8.5px] font-semibold leading-normal text-white">
+              New Application
+            </span>
+          </div>
+          <div className="mt-2 rounded-md border border-[#e3e5e8] bg-white p-2 shadow-(--shadow-md)">
+            <div className="font-sans text-[10.5px] font-bold leading-normal text-[#313338]">Create a new app</div>
+            <div className="mt-1.5 font-sans text-[8px] font-semibold uppercase leading-normal tracking-wide text-[#5c5e66]">
+              Name <span className="text-[#d83c3e]">*</span>
+            </div>
+            <div className="mt-1 rounded border border-[#c4c9ce] bg-white px-2 py-1 font-sans text-[9.5px] leading-normal text-[#313338]">
+              my-agent
+            </div>
+            <div className="mt-1.5 flex items-start gap-1.5">
+              <span className="mt-[1px] flex h-2.5 w-2.5 flex-none items-center justify-center rounded-[3px] bg-[#5865f2] text-white">
+                <Icon name="check" size={8} strokeWidth={3} />
+              </span>
+              <span className="font-sans text-[8px] leading-snug text-[#5c5e66]">
+                By clicking Create, you agree to the Discord Developer Terms of Service.
+              </span>
+            </div>
+            <div className="mt-1.5 flex justify-end gap-1.5">
+              <span className="rounded px-2 py-[3px] font-sans text-[9px] font-semibold leading-normal text-[#4e5058]">
+                Cancel
+              </span>
+              <span className="relative rounded bg-[#5865f2] px-2.5 py-[3px] font-sans text-[9px] font-semibold leading-normal text-white">
+                Create
+                <span className="pointer-events-none absolute -inset-[3px] step-pulse rounded ring-2 ring-[#5865f2]" />
+              </span>
+            </div>
+          </div>
+        </div>
+      </MiniScreen>
+    )
+  },
+  {
+    label: 'Copy token',
+    caption: (
+      <>
+        <span className="font-medium text-(--text-secondary)">Bot</span>&#32;&rarr; Reset Token, then copy it — Discord
+        shows the token only once.
+      </>
+    ),
+    screen: (
+      <MiniScreen
+        frameClass="border-[#e3e5e8] bg-white"
+        bar={<BrowserBar url="discord.com/developers/applications/…/bot" />}
+      >
+        <div className="absolute inset-0 flex bg-white">
+          <div className="w-[74px] flex-none border-r border-[#e3e5e8] bg-[#f2f3f5] px-1.5 py-2">
+            {['General Info', 'Installation', 'OAuth2', 'Bot'].map((n) => (
+              <div
+                key={n}
+                className={`truncate rounded px-1.5 py-1 font-sans text-[8.5px] leading-normal ${
+                  n === 'Bot' ? 'bg-white font-bold text-[#313338]' : 'text-[#5c5e66]'
+                }`}
+              >
+                {n}
+              </div>
+            ))}
+          </div>
+          <div className="min-w-0 flex-1 px-2.5 py-2">
+            <div className="font-sans text-[10.5px] font-bold leading-normal text-[#313338]">Bot</div>
+            <div className="mt-1.5 rounded border border-[#b7e2c4] bg-[#e7f6ec] px-1.5 py-1 font-sans text-[8px] leading-snug text-[#1a7f45]">
+              A new token was generated! Copy it now — it won&rsquo;t be shown again.
+            </div>
+            <div className="mt-2 font-sans text-[9px] font-bold leading-normal text-[#313338]">Token</div>
+            <div className="mono mt-1 truncate text-[9px] leading-normal text-[#5c5e66] blur-[2.5px]">
+              MTIzNDU2Nzg5MDEyMzQ1Njc4.Gabcde.fghijklmnopqrstuvwxyz
+            </div>
+            <div className="mt-1.5 flex gap-1.5">
+              <span className="relative rounded bg-[#5865f2] px-2.5 py-[3px] font-sans text-[9px] font-semibold leading-normal text-white">
+                Copy
+                <span className="pointer-events-none absolute -inset-[3px] step-pulse rounded ring-2 ring-[#5865f2]" />
+              </span>
+              <span className="rounded bg-[#6d6f78] px-2.5 py-[3px] font-sans text-[9px] font-semibold leading-normal text-white">
+                Reset Token
+              </span>
+            </div>
+          </div>
+        </div>
+      </MiniScreen>
+    )
+  },
+  {
+    label: 'Intents',
+    caption: (
+      <>
+        Same page: turn on <span className="font-medium text-(--text-secondary)">Message Content Intent</span>&#32;and
+        Save Changes, or every message arrives empty.
+      </>
+    ),
+    screen: (
+      <MiniScreen
+        frameClass="border-[#e3e5e8] bg-white"
+        bar={<BrowserBar url="discord.com/developers/applications/…/bot" />}
+      >
+        <div className="absolute inset-0 bg-white px-2.5 py-2">
+          <div className="font-sans text-[10px] font-bold leading-normal text-[#313338]">
+            Privileged Gateway Intents
+          </div>
+          <div className="mt-0.5 font-sans text-[8px] leading-snug text-[#5c5e66]">
+            Toggle the intents your bot needs to receive.
+          </div>
+          {[
+            { name: 'Presence Intent', on: false },
+            { name: 'Server Members Intent', on: false },
+            { name: 'Message Content Intent', on: true }
+          ].map((row) => (
+            <div key={row.name} className="relative mt-1.5 flex items-center gap-2 rounded px-1 py-1">
+              {row.on && (
+                <span className="pointer-events-none absolute -inset-0.5 step-blink rounded ring-2 ring-[#5865f2]" />
+              )}
+              <span
+                className={`min-w-0 flex-1 truncate font-sans text-[9px] leading-normal ${
+                  row.on ? 'font-bold text-[#313338]' : 'text-[#5c5e66]'
+                }`}
+              >
+                {row.name}
+              </span>
+              <DiscordToggle on={row.on} />
+            </div>
+          ))}
+          <div className="mt-2 flex items-center gap-2 rounded-md bg-[#313338] px-2 py-1.5">
+            <span className="min-w-0 flex-1 truncate font-sans text-[8.5px] leading-normal text-white">
+              Careful — you have unsaved changes!
+            </span>
+            <span className="flex-none rounded bg-[#248046] px-2 py-[3px] font-sans text-[8.5px] font-semibold leading-normal text-white">
+              Save Changes
+            </span>
+          </div>
+        </div>
+      </MiniScreen>
+    )
+  }
+]
+
+// Feishu's console (and Lark's, which is the same product on a different host) walked through
+// the same way: create the self-built app, then copy the credential pair off "Credentials &
+// Basic Info". It stops there on purpose — the remaining app-level settings (bot capability,
+// Long Connection events, scopes, publishing) are the FEISHU_REQS checklist further down this
+// pane, and repeating them here would only duplicate it. Built per region so every label and
+// the address bar say Feishu / open.feishu.cn or Lark / open.larksuite.com.
+function feishuWalkthroughSteps(brand: 'Feishu' | 'Lark', host: string): WalkthroughStep[] {
+  const nav = ['Credentials & Basic Info', 'Collaborators', 'Add Features', 'Bot']
+  const navItem = (name: string, active: string) => (
+    <div
+      key={name}
+      className={`truncate rounded px-1.5 py-1 font-sans text-[8px] leading-normal ${
+        name === active ? 'bg-[#e8f0ff] font-bold text-[#3370ff]' : 'text-[#646a73]'
+      }`}
+    >
+      {name}
+    </div>
+  )
+  return [
+    {
+      label: 'Create app',
+      caption: (
+        <>
+          In the {brand} developer console, create a{' '}
+          <span className="font-medium text-(--text-secondary)">custom app</span> for your workspace.
+        </>
+      ),
+      screen: (
+        <MiniScreen frameClass="border-[#dee0e3] bg-[#f5f6f7]" bar={<BrowserBar url={`${host}/app`} />}>
+          <div className="absolute inset-0 bg-[#f5f6f7] px-3 py-2.5">
+            <div className="font-sans text-[10px] font-bold leading-normal text-[#1f2329]">Create app</div>
+            <div className="mt-2 rounded-md border border-[#dee0e3] bg-white p-2 shadow-(--shadow-md)">
+              <div className="font-sans text-[9.5px] font-bold leading-normal text-[#1f2329]">Custom app</div>
+              <div className="mt-0.5 font-sans text-[8px] leading-snug text-[#646a73]">
+                Only usable inside your own organization — no review needed.
+              </div>
+              <div className="mt-1.5 font-sans text-[8px] font-semibold leading-normal text-[#646a73]">App name</div>
+              <div className="mt-1 rounded border border-[#dee0e3] bg-white px-2 py-1 font-sans text-[9.5px] leading-normal text-[#1f2329]">
+                acp-tester
+              </div>
+              <div className="mt-1.5 flex justify-end gap-1.5">
+                <span className="rounded px-2 py-[3px] font-sans text-[9px] font-semibold leading-normal text-[#646a73]">
+                  Cancel
+                </span>
+                <span className="relative rounded bg-[#3370ff] px-2.5 py-[3px] font-sans text-[9px] font-semibold leading-normal text-white">
+                  Create
+                  <span className="pointer-events-none absolute -inset-[3px] step-pulse rounded ring-2 ring-[#3370ff]" />
+                </span>
+              </div>
+            </div>
+          </div>
+        </MiniScreen>
+      )
+    },
+    {
+      label: 'ID & Secret',
+      caption: (
+        <>
+          <span className="font-medium text-(--text-secondary)">Credentials &amp; Basic Info</span>&#32;— copy the App
+          ID and reveal the App Secret; both go in the fields below.
+        </>
+      ),
+      screen: (
+        <MiniScreen frameClass="border-[#dee0e3] bg-white" bar={<BrowserBar url={`${host}/app/…/baseinfo`} />}>
+          <div className="absolute inset-0 flex bg-white">
+            <div className="w-[88px] flex-none border-r border-[#dee0e3] bg-white px-1.5 py-2">
+              <div className="px-1.5 pb-1 font-sans text-[7.5px] font-semibold uppercase leading-normal tracking-wide text-[#8f959e]">
+                Basic Info
+              </div>
+              {nav.slice(0, 2).map((n) => navItem(n, 'Credentials & Basic Info'))}
+              <div className="mt-1 px-1.5 pb-1 font-sans text-[7.5px] font-semibold uppercase leading-normal tracking-wide text-[#8f959e]">
+                Features
+              </div>
+              {nav.slice(2).map((n) => navItem(n, 'Credentials & Basic Info'))}
+            </div>
+            <div className="min-w-0 flex-1 px-2.5 py-2">
+              <div className="font-sans text-[10.5px] font-bold leading-normal text-[#1f2329]">Credentials</div>
+              <div className="mt-2 font-sans text-[8px] font-semibold leading-normal text-[#646a73]">App ID</div>
+              <div className="mt-1 flex items-center gap-1.5">
+                <span className="mono min-w-0 flex-1 truncate text-[9px] leading-normal text-[#1f2329]">
+                  cli_xxxxxxxxxxxxxxxx
+                </span>
+                <span className="relative flex-none text-[#3370ff]">
+                  <Icon name="copy" size={10} />
+                  <span className="pointer-events-none absolute -inset-[3px] step-pulse rounded ring-2 ring-[#3370ff]" />
+                </span>
+              </div>
+              <div className="mt-2 font-sans text-[8px] font-semibold leading-normal text-[#646a73]">App Secret</div>
+              <div className="mt-1 flex items-center gap-1.5">
+                <span className="min-w-0 flex-1 truncate font-sans text-[9px] leading-normal tracking-tight text-[#1f2329]">
+                  ****************************
+                </span>
+                <span className="flex flex-none items-center gap-1 text-[#3370ff]">
+                  <Icon name="copy" size={10} />
+                  <Icon name="eye" size={10} />
+                  <Icon name="refresh-cw" size={10} />
+                </span>
+              </div>
+              <div className="mt-2 font-sans text-[8px] leading-snug text-[#646a73]">
+                The secret is masked — reveal it once and store it safely.
+              </div>
+            </div>
+          </div>
+        </MiniScreen>
+      )
+    }
+  ]
 }
 
 // The integration is owned by one agent; that agent's daemon opens the connection.
@@ -2419,18 +2971,24 @@ export default function AddIntegrationModal({
                   <div className="mb-2 font-sans text-[12.5px] font-medium leading-[1.45] text-(--text-secondary)">
                     {GUIDE[platform].step1}
                   </div>
-                  <a
-                    href={GUIDE[platform].linkHref}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
-                  >
-                    <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
-                      <PlatformMark platform={platform} />
-                    </span>
-                    {GUIDE[platform].linkLabel}
-                    <Icon name="external-link" size={14} />
-                  </a>
+                  <div className="group relative">
+                    <a
+                      href={GUIDE[platform].linkHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
+                    >
+                      <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
+                        <PlatformMark platform={platform} />
+                      </span>
+                      {GUIDE[platform].linkLabel}
+                      <Icon name="external-link" size={14} />
+                    </a>
+                    <BotSetupWalkthrough
+                      steps={platform === 'telegram' ? TG_STEPS : DISCORD_STEPS}
+                      label={platform === 'telegram' ? 'Telegram bot setup steps' : 'Discord bot setup steps'}
+                    />
+                  </div>
                   {GUIDE[platform].step1Warning && (
                     <div className="mt-2 font-sans text-[12px] font-medium leading-[1.5] text-(--status-error)">
                       {GUIDE[platform].step1Warning}
@@ -2537,18 +3095,32 @@ export default function AddIntegrationModal({
                   Create a self-built app in the {feishuRegion === 'lark' ? 'Lark' : 'Feishu'} console, enable the bot,
                   then copy its App ID and App Secret from Credentials &amp; Basic Info.
                 </div>
-                <a
-                  href={feishuRegion === 'lark' ? 'https://open.larksuite.com/' : 'https://open.feishu.cn/'}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
-                >
-                  <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
-                    <PlatformMark platform="feishu" />
-                  </span>
-                  Open the {feishuRegion === 'lark' ? 'Lark' : 'Feishu'} console
-                  <Icon name="external-link" size={14} />
-                </a>
+                <div className="group relative">
+                  <a
+                    href={
+                      feishuRegion === 'lark'
+                        ? 'https://open.larksuite.com/page/launcher'
+                        : 'https://open.feishu.cn/page/launcher'
+                    }
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
+                  >
+                    <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
+                      <PlatformMark platform="feishu" />
+                    </span>
+                    Create {feishuRegion === 'lark' ? 'Lark' : 'Feishu'} bot
+                    <Icon name="external-link" size={14} />
+                  </a>
+                  <BotSetupWalkthrough
+                    steps={
+                      feishuRegion === 'lark'
+                        ? feishuWalkthroughSteps('Lark', 'open.larksuite.com')
+                        : feishuWalkthroughSteps('Feishu', 'open.feishu.cn')
+                    }
+                    label={feishuRegion === 'lark' ? 'Lark bot setup steps' : 'Feishu bot setup steps'}
+                  />
+                </div>
               </div>
             </div>
             <div className="mt-[14px] mb-[11px] flex items-center gap-[10px] border-t border-dashed border-(--border-default) pt-[13px]">
