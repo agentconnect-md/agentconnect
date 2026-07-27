@@ -5,6 +5,7 @@ import { fetchAgentDto, fetchSkillSourceSkills, type SkillSourceSkillsDto } from
 import { useConsoleData } from '@/lib/data-context'
 import { MOCK_MODE } from '@/lib/data'
 import { SkillMark, SkillSourceLine, ToolTile, ToolTileGrid } from '@/components/console/ToolTile'
+import { VisibilityValue } from '@/components/console/VisibilityField'
 import { Icon, Toggle } from '@/components/ui'
 
 /**
@@ -144,13 +145,20 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
                   ) : undefined
                 }
                 subtitle={<SkillSourceLine source={s.source} subDir={s.subDir} />}
+                // Who the source belongs to, worded exactly as its registry tile words it.
+                footer={<VisibilityValue visibility={s.visibility} sharedWith={s.sharedWith} createdBy={s.createdBy} />}
                 action={
                   <>
+                    {/* Expanding is a secondary move, so the chevron only surfaces on
+                        hover/keyboard focus (and stays put once open). Its box is always
+                        reserved, so revealing it never shifts the toggle. Touch has no
+                        hover, so below the desktop breakpoint it stays visible. */}
                     <button
                       type="button"
-                      className="iconbtn h-6 w-6"
+                      className={`iconbtn h-6 w-6 transition-opacity focus-visible:opacity-100 group-hover:opacity-100 max-desktop:opacity-100 ${isOpen ? 'opacity-100' : 'opacity-0'}`}
                       onClick={() => expand(s.id)}
                       aria-label="Show skills"
+                      aria-expanded={isOpen}
                       title="Show skills"
                     >
                       <Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={13} />

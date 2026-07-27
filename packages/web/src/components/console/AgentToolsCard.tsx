@@ -4,13 +4,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { fetchAgentDto } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { MOCK_MODE, type DaemonRow } from '@/lib/data'
-import { mcpCandidates, mcpCapsFor, mcpServerMeta, mcpServersForRuntime } from '@/components/console/McpServersField'
+import { mcpCandidates, mcpCapsFor, mcpKindLabel, mcpServersForRuntime } from '@/components/console/McpServersField'
 import { ProviderMark, ToolTile, ToolTileGrid, useConnectorIcons } from '@/components/console/ToolTile'
+import { VisibilityValue } from '@/components/console/VisibilityField'
 import { Icon, Toggle } from '@/components/ui'
 
 /**
  * Leads the agent's Tools & Skills tab: the MCP servers the owning daemon's
- * runtime can attach (via `mcpServersForRuntime`/`mcpServerMeta`), each with an
+ * runtime can attach (via `mcpServersForRuntime`/`mcpKindLabel`), each with an
  * enable/disable toggle. MCP is agent-scoped — this is the surface where it's
  * picked; the daemon detail view no longer lists MCP servers.
  *
@@ -48,6 +49,10 @@ export function AgentToolsCard({
     () => new Map(mcpProviders.flatMap((p) => (p.service ? [[p.name, p.service] as const] : []))),
     [mcpProviders]
   )
+  // The registry row behind a candidate name (when there is one) — it carries both the
+  // kind wording and the access footer, so an agent tile says the same thing about a
+  // server as its registry tile does.
+  const providerByName = useMemo(() => new Map(mcpProviders.map((p) => [p.name, p] as const)), [mcpProviders])
   const iconByService = useConnectorIcons(connectorsEnabled && serviceByName.size > 0)
   const iconFor = (name: string) => {
     const service = serviceByName.get(name)
@@ -122,6 +127,7 @@ export function AgentToolsCard({
   const tile = (name: string, meta: string, eligible: boolean) => {
     const on = enabled ? enabled.includes(name) : false // mirror the saved set; off until it loads
     const interactive = canEdit && enabled !== null && !saving && (eligible || on)
+    const provider = providerByName.get(name)
     return (
       <ToolTile
         key={name}
@@ -130,6 +136,17 @@ export function AgentToolsCard({
         subtitle={meta}
         dimmed={!eligible}
         action={<Toggle checked={on} disabled={!interactive} onChange={(next) => toggle(name, next)} />}
+        // Who the server belongs to, same as its registry tile. A daemon-local server
+        // has no registry row, so it has no access line to show.
+        footer={
+          provider ? (
+            <VisibilityValue
+              visibility={provider.visibility}
+              sharedWith={provider.sharedWith}
+              createdBy={provider.createdBy}
+            />
+          ) : undefined
+        }
       />
     )
   }
@@ -141,7 +158,7 @@ export function AgentToolsCard({
       </div>
       {servers.length > 0 || unknown.length > 0 ? (
         <ToolTileGrid columns={2}>
-          {servers.map((s) => tile(s.name, mcpServerMeta(s), true))}
+          {servers.map((s) => tile(s.name, mcpKindLabel(providerByName.get(s.name)?.kind), true))}
           {unknown.map((n) => tile(n, unknownMeta(n), false))}
         </ToolTileGrid>
       ) : (
