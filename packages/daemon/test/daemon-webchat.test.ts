@@ -100,6 +100,7 @@ function fakeCpClient() {
     dones,
     usageReports,
     emitUsageReport: vi.fn((report: unknown) => usageReports.push(report)),
+    emitSessionActivity: vi.fn(),
     stop: vi.fn(async () => {}),
     // The transport-neutral reply sink a dispatch()/handleRelayMsg call threads in (the
     // turn engine writes here instead of a hardcoded client; captures the same arrays).
