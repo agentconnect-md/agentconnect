@@ -291,11 +291,21 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
   })
 
   describe('conversation gating (resource-visibility §14)', () => {
-    it("an 'off' channel compiles no route (fail-closed until an editor enables it)", async () => {
+    it("a GATED owner's 'off' channel compiles no route (fail-closed until an editor enables it)", async () => {
+      gatedAgents = new Set([ALICE])
       channels = [channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'off' })]
       await makeOrch().syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
       expect(assign.routes.filter((r) => r.scope?.channel === 'C9')).toEqual([])
+    })
+
+    it("a NON-gated owner's preserved 'off' row is inert: ownership stays as a mention route (§14.4)", async () => {
+      channels = [channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'off' })]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.routes.filter((r) => r.scope?.channel === 'C9')).toEqual([
+        expect.objectContaining({ agentId: ALICE, match: { kind: 'mention' } })
+      ])
     })
 
     it('a gated member loses its keyword rung, never becomes the default, and rides gatedAgentIds', async () => {

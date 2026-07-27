@@ -412,11 +412,14 @@ export class SharedBotOrchestrator {
     const chans = await this.channels.listForBot(bot.id)
     for (const c of chans) {
       if (!c.agentId) continue
-      // Conversation gating (§14): an Off conversation compiles NO route — for a
-      // gated owner that is the fail-closed default until an editor enables it.
-      if (c.trigger === 'off') continue
       const p = byAgent.get(c.agentId)
       if (!p) continue // channel assigned to an agent not (yet) placed — skip
+      // Conversation gating (§14): an Off conversation compiles NO route for a
+      // GATED owner (fail-closed until an editor enables it). For a non-gated
+      // owner a preserved Off row is inert (§14.4) — the channel keeps its
+      // mention-trigger ownership, matching integrationToSpec(); an inert im row
+      // still compiles nothing (non-gated DMs already route via defaultAgentId).
+      if (c.trigger === 'off' && (p.gated || c.kind === 'im')) continue
       // A DM conversation row activates on any message once enabled (no mention
       // inside a DM); channels follow their trigger.
       const match: BindMatch = c.kind === 'im' || c.trigger === 'any' ? { kind: 'auto' } : { kind: 'mention' }

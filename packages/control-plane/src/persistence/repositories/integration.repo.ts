@@ -401,7 +401,9 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
           kind: c.kind ?? 'channel',
           ...(opts?.defaultTrigger ? { trigger: opts.defaultTrigger } : {})
         },
-        update: { name: c.name ?? null, isPrivate: c.isPrivate ?? false, kind: c.kind ?? 'channel' }
+        // kind updates only when explicitly reported: a kind-less membership/observed
+        // re-report must never downgrade an established 'im' row (§14.3).
+        update: { name: c.name ?? null, isPrivate: c.isPrivate ?? false, ...(c.kind ? { kind: c.kind } : {}) }
       })
     }
   }

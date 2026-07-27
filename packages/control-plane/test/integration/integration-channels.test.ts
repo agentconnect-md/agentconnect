@@ -136,6 +136,13 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     ;[dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
     expect(dto!.channels.map((c) => c.channelId).sort()).toEqual(['C2', 'D1'])
+
+    // A KIND-LESS re-report of the same id (telegram/discord observed-channel
+    // snapshots carry no kind) must not downgrade the established im row.
+    await report(DAEMON, id, [{ id: 'C2', name: 'ops' }, { id: 'D1' }])
+    res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    ;[dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
+    expect(dto!.channels.find((c) => c.channelId === 'D1')).toMatchObject({ kind: 'im' })
   })
 
   it('enabling conversations on a GATED integration pushes conversation-scoped rules ONLY (§14)', async () => {

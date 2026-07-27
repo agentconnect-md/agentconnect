@@ -2853,9 +2853,23 @@ export class Daemon {
         // every integration would attribute chats to the wrong bot. Only report when
         // there's exactly one — the common case — and skip the ambiguous multi-bot agent.
         if (!integ || rest.length > 0) continue
-        const channels: IntegrationChannel[] = this.store
-          .observedChannels(agent.id, platform)
-          .map((c) => (c.name ? { id: c.id, name: c.name } : { id: c.id }))
+        // The sessions table can't tell a DM chat from a group, so observed rows are
+        // kind-less. Preserve previously established `im` kinds (§14.3): re-mark
+        // overlapping ids and keep im-only entries, otherwise a refresh would
+        // downgrade a reported DM row back to 'channel' on the CP.
+        const priorIms = new Set(
+          (this.channelSnapshots.get(integ.id) ?? []).filter((x) => x.kind === 'im').map((x) => x.id)
+        )
+        const observed: IntegrationChannel[] = this.store.observedChannels(agent.id, platform).map((c) => ({
+          id: c.id,
+          ...(c.name ? { name: c.name } : {}),
+          ...(priorIms.has(c.id) ? { kind: 'im' as const } : {})
+        }))
+        const observedIds = new Set(observed.map((x) => x.id))
+        const keptIms = (this.channelSnapshots.get(integ.id) ?? []).filter(
+          (x) => x.kind === 'im' && !observedIds.has(x.id)
+        )
+        const channels = [...observed, ...keptIms]
         this.channelSnapshots.set(integ.id, channels)
         this.cpClient?.emitIntegrationChannels({ integrationId: integ.id, channels })
       }
@@ -10878,13 +10892,18 @@ export class Daemon {
    *  re-reports when it lands. */
   private reportGatedDm(integrationId: string, msg: NormalizedMessage): void {
     const existing = this.channelSnapshots.get(integrationId) ?? []
-    if (existing.some((c) => c.id === msg.channel)) return
+    const current = existing.find((c) => c.id === msg.channel)
+    if (current?.kind === 'im') return
     const known = this.store.getDisplayNames([msg.channel]).get(msg.channel)
-    const row: IntegrationChannel = { id: msg.channel, ...(known ? { name: known } : {}), kind: 'im' }
-    const next = [...existing, row]
+    // A previously-observed DM (telegram/discord observed-channel snapshots are
+    // kind-less) is UPGRADED to 'im' rather than skipped — e.g. after an
+    // org→restricted flip the chat already sits in the snapshot as 'channel'.
+    const next = current
+      ? existing.map((c) => (c.id === msg.channel ? { ...c, kind: 'im' as const } : c))
+      : [...existing, { id: msg.channel, ...(known ? { name: known } : {}), kind: 'im' as const }]
     this.channelSnapshots.set(integrationId, next)
     this.cpClient?.emitIntegrationChannels({ integrationId, channels: next })
-    if (known) return
+    if (known || current?.name) return
     const conn = this.connForIntegration(integrationId)
     if (!(conn instanceof SlackConnection)) return
     void conn

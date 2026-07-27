@@ -485,10 +485,65 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
     expect(ingest.postText).toHaveBeenCalledTimes(1)
     expect(ingest.postText.mock.calls[0]![0]).toBe('D42')
 
-    // Second DM: re-report (idempotent CP-side) but NO second notice.
+    // Second DM: report is latched per conversation (CP row exists), notice too.
     await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000200' }))
-    expect(reportBotConversation).toHaveBeenCalledTimes(2)
+    expect(reportBotConversation).toHaveBeenCalledTimes(1)
     expect(ingest.postText).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports a gated DM even when a non-gated default agent WINS the routing (mixed bot)', async () => {
+    const reportBotConversation = vi.fn(() => true)
+    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const internals = manager as unknown as ManagerInternals
+    const a = gatedAssignment()
+    // OTHER is org-visible and catches every unslugged DM as the group default.
+    a.members = [
+      { daemonId: DAEMON_ID, agentIds: [AGENT_ID] },
+      { daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] }
+    ]
+    a.agents = [
+      { agentId: AGENT_ID, name: 'Agent' },
+      { agentId: OTHER_AGENT_ID, name: 'Public' }
+    ]
+    a.routes = [
+      {
+        agentId: OTHER_AGENT_ID,
+        daemonId: OTHER_DAEMON_ID,
+        integrationId: OTHER_INTEGRATION_ID,
+        match: { kind: 'keyword', value: 'public' }
+      }
+    ]
+    a.defaultAgentId = OTHER_AGENT_ID
+    a.defaultDaemonId = OTHER_DAEMON_ID
+    internals.router.upsert(a)
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+
+    await internals.forward(BOT_ID, dm())
+    // The DM routed to the public default — the gated install still needs its
+    // pending Off row, but nothing was unrouted so there is NO notice.
+    expect(reportBotConversation).toHaveBeenCalledWith({
+      botId: BOT_ID,
+      conversation: { id: 'D42', name: '@Alice', kind: 'im' }
+    })
+    expect(ingest.postText).not.toHaveBeenCalled()
+  })
+
+  it('retries the DM report on the next DM when the CP link was down', async () => {
+    let ready = false
+    const reportBotConversation = vi.fn(() => ready)
+    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const internals = manager as unknown as ManagerInternals
+    internals.router.upsert(gatedAssignment())
+    internals.ingests.set(BOT_ID, fakeIngest())
+
+    await internals.forward(BOT_ID, dm())
+    expect(reportBotConversation).toHaveBeenCalledTimes(1) // dropped — not latched
+    ready = true
+    await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000200' }))
+    expect(reportBotConversation).toHaveBeenCalledTimes(2) // delivered — latched
+    await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000300' }))
+    expect(reportBotConversation).toHaveBeenCalledTimes(2)
   })
 
   it('an unrouted @mention in a channel gets the notice but NO conversation report', async () => {

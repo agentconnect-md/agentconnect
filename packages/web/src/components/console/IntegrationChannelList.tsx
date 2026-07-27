@@ -161,7 +161,11 @@ export function IntegrationChannelList({
       <span className="font-mono text-[14px] font-medium leading-normal text-(--text-tertiary)">
         {c.kind === 'im' ? '@' : '#'}
       </span>
-      <span className="mono min-w-0 flex-1 truncate text-[13px] text-(--text-primary)">{c.name}</span>
+      {/* DM labels are stored as "@Alice" (name resolvers); the glyph column already
+          renders the marker, so strip a leading @ to avoid "@@Alice". */}
+      <span className="mono min-w-0 flex-1 truncate text-[13px] text-(--text-primary)">
+        {c.kind === 'im' ? c.name.replace(/^@+/, '') : c.name}
+      </span>
       <div className="ml-auto flex items-center gap-[10px] max-desktop:ml-0 max-desktop:w-full max-desktop:flex-col max-desktop:items-stretch">
         {c.kind !== 'im' && shareable && agentOptions.length > 0 && (
           <DefaultAgentSelect
