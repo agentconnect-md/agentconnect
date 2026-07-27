@@ -102,6 +102,34 @@ describe('memory dreaming frames', () => {
     expect(() => DreamInfo.parse({ ...dream, sessionIds: Array.from({ length: 101 }, (_, i) => `s${i}`) })).toThrow()
   })
 
+  it('preserves execution correlation and token/cost usage', () => {
+    expect(
+      DreamInfo.parse({
+        ...dream,
+        executionSessionId: 'dream-session-1',
+        runtime: 'codex',
+        model: 'gpt-5.6',
+        stopReason: 'end_turn',
+        usage: {
+          inputBytes: 2048,
+          outputBytes: 512,
+          totalTokens: 120,
+          inputTokens: 90,
+          outputTokens: 30,
+          cachedReadTokens: 20,
+          costAmount: 0.012,
+          costCurrency: 'USD'
+        }
+      })
+    ).toMatchObject({
+      executionSessionId: 'dream-session-1',
+      runtime: 'codex',
+      model: 'gpt-5.6',
+      stopReason: 'end_turn',
+      usage: { totalTokens: 120, cachedReadTokens: 20, costAmount: 0.012 }
+    })
+  })
+
   it('round-trips dream frames through the wire union', () => {
     const start = AnyFrame.parse({
       v: 1,

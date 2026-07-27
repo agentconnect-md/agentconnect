@@ -205,6 +205,10 @@ describe('toDreamDto', () => {
       trigger: 'manual',
       sessionIds: ['s1', 's2'],
       snapshotDigest: 'sha256:abc',
+      executionSessionId: null,
+      runtime: null,
+      model: null,
+      stopReason: null,
       instructions: null,
       skills: null,
       usage: null,
@@ -222,15 +226,39 @@ describe('toDreamDto', () => {
       trigger: 'schedule',
       sessionIds: [],
       snapshotDigest: 'sha256:def',
+      executionSessionId: 'dream-session-2',
+      runtime: 'codex',
+      model: 'gpt-5.6',
+      stopReason: 'end_turn',
       instructions: 'focus on prefs',
-      usage: { inputBytes: 100, outputBytes: 40 },
+      usage: {
+        inputBytes: 100,
+        outputBytes: 40,
+        totalTokens: 21,
+        inputTokens: 16,
+        outputTokens: 5,
+        costAmount: 0.004,
+        costCurrency: 'USD'
+      },
       createdAt: '2026-07-24T00:00:00Z',
       endedAt: '2026-07-24T00:05:00Z'
     })
     expect(dto).toMatchObject({
       status: 'completed',
+      executionSessionId: 'dream-session-2',
+      runtime: 'codex',
+      model: 'gpt-5.6',
+      stopReason: 'end_turn',
       instructions: 'focus on prefs',
-      usage: { inputBytes: 100, outputBytes: 40 },
+      usage: {
+        inputBytes: 100,
+        outputBytes: 40,
+        totalTokens: 21,
+        inputTokens: 16,
+        outputTokens: 5,
+        costAmount: 0.004,
+        costCurrency: 'USD'
+      },
       endedAt: '2026-07-24T00:05:00Z',
       skills: null,
       error: null

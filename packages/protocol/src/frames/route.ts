@@ -8,10 +8,11 @@ import { z } from 'zod'
  * `${platform}:${channel}:${thread ?? "-"}`.
  */
 
-// `webchat` and `hook` are session-identity platforms only (the Playground
-// conversation / a webhook trigger's session) — no integration, no bind rules,
-// no routing-table participation, never a persisted DB Platform.
-export const Platform = z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook'])
+// `webchat`, `hook`, and `dream` are session-identity platforms only (the
+// Playground conversation / a webhook trigger / a background memory-consolidation
+// run) — no integration, no bind rules, no routing-table participation, never a
+// persisted DB Platform.
+export const Platform = z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream'])
 export type Platform = z.infer<typeof Platform>
 
 export const SessionKey = z.object({

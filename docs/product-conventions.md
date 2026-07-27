@@ -207,6 +207,12 @@ Automatic acceptance remains a safe best-effort path: a runtime without a truste
 extraction channel, an adoption fence conflict, or another failed swap leaves the
 completed result available for manual review instead of replacing live memory.
 
+Each dream model run appears in Sessions with its runtime, model, token/cost usage,
+and a lifecycle-only history. Dream history and evaluation events must never copy
+memory bodies, source transcript text, model proposals, or mined skill bodies. The
+Memory page links the execution session and the source sessions so operators can
+move between cost/lifecycle evidence and the conversations that were selected.
+
 ## GitHub informational review checks
 
 An Agent failure is not a code-review finding. When a GitHub review turn ends without a

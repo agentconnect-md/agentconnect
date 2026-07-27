@@ -2167,9 +2167,13 @@ export const DreamDto = z.object({
   trigger: z.enum(['manual', 'schedule', 'auto']),
   sessionIds: z.array(z.string()),
   snapshotDigest: z.string(),
+  executionSessionId: z.string().nullable(),
+  runtime: z.string().nullable(),
+  model: z.string().nullable(),
+  stopReason: z.string().nullable(),
   instructions: z.string().nullable(),
   skills: z.array(DreamSkillDto).nullable(),
-  usage: z.object({ inputBytes: z.number(), outputBytes: z.number() }).nullable(),
+  usage: SessionUsageDto.extend({ inputBytes: z.number(), outputBytes: z.number() }).nullable(),
   error: z.object({ type: z.string(), message: z.string() }).nullable(),
   createdAt: z.string(), // RFC3339
   endedAt: z.string().nullable() // RFC3339

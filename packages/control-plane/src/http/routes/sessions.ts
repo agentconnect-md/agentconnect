@@ -33,8 +33,8 @@ import {
 
 const SessionFilterQueryDto = z.object({
   agentId: z.string().optional(),
-  platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook']).optional(),
-  integration: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'github']).optional(),
+  platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream']).optional(),
+  integration: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'github', 'dream']).optional(),
   channel: z.string().optional(),
   triggeredBy: z.string().optional(),
   githubRepoId: z

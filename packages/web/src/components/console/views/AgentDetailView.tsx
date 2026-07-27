@@ -1491,6 +1491,7 @@ export default function AgentDetailView() {
           memoryConnectionId={da.memoryConnectionId}
           memoryRecall={da.memoryRecall}
           memoryCaptureMode={da.memoryCaptureMode}
+          sessionBasePath={orgPath('/sessions')}
         />
       )}
 

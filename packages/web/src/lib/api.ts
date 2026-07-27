@@ -1417,6 +1417,7 @@ function sessionChannelLabel(
   // "Playground" label (matching platName + the live playground session), and keep the raw
   // id in channelId so the detail view can RESUME it (reconnect with `?conversation_id=`).
   const isWebchat = platform === 'webchat'
+  const isDream = platform === 'dream'
   // A headless webhook's `channel` is the hook id (and `thread` may be the delivery key),
   // so render the CP-enriched hook name when present and otherwise hide the raw UUID.
   const isHook = platform === 'hook'
@@ -1429,13 +1430,15 @@ function sessionChannelLabel(
   const dmFallback = isSlackDm ? (triggeredByName ? `@${triggeredByName}` : 'DM') : null
   return isWebchat
     ? 'Playground'
-    : isHook
-      ? hookLabel
-      : channelName
-        ? channelName.startsWith('@')
-          ? channelName
-          : `#${channelName}`
-        : (dmFallback ?? (rawChannel || PLACEHOLDER))
+    : isDream
+      ? 'Memory'
+      : isHook
+        ? hookLabel
+        : channelName
+          ? channelName.startsWith('@')
+            ? channelName
+            : `#${channelName}`
+          : (dmFallback ?? (rawChannel || PLACEHOLDER))
 }
 
 export function sessionFromDto(d: SessionDto): Session {
@@ -1444,11 +1447,17 @@ export function sessionFromDto(d: SessionDto): Session {
   const platform = d.sessionKey.platform || 'slack'
   const isWebchat = platform === 'webchat'
   const isHook = platform === 'hook'
+  const isDream = platform === 'dream'
   const channel = sessionChannelLabel(platform, rawChannel, d.channelName, d.triggeredByName)
   const isSlackDm = platform === 'slack' && /^D/.test(rawChannel)
   const dmFallback = isSlackDm ? (d.triggeredByName ? `@${d.triggeredByName}` : 'DM') : null
-  const user =
-    d.triggeredByName || (isHook && d.triggeredBy?.startsWith('hook:') ? 'Webhook' : d.triggeredBy) || PLACEHOLDER
+  const user = isDream
+    ? d.triggeredBy === 'schedule'
+      ? 'Scheduled'
+      : d.triggeredBy === 'auto'
+        ? 'Automatic'
+        : 'Manual'
+    : d.triggeredByName || (isHook && d.triggeredBy?.startsWith('hook:') ? 'Webhook' : d.triggeredBy) || PLACEHOLDER
   return {
     id: d.sessionId,
     title: d.title || `Session ${d.sessionId.slice(0, 8)}`,
@@ -1913,9 +1922,13 @@ export interface DreamDto {
   trigger: 'manual' | 'schedule' | 'auto'
   sessionIds: string[]
   snapshotDigest: string
+  executionSessionId: string | null
+  runtime: string | null
+  model: string | null
+  stopReason: string | null
   instructions: string | null
   skills: { name: string; description: string; state: 'proposed' | 'accepted' | 'dismissed' }[] | null
-  usage: { inputBytes: number; outputBytes: number } | null
+  usage: (SessionUsageDto & { inputBytes: number; outputBytes: number }) | null
   error: { type: string; message: string } | null
   createdAt: string
   endedAt: string | null
