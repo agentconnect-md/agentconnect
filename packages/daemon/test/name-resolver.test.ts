@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { SlackNameResolver } from '../src/slack/name-resolver.js'
 import type { SlackConnection } from '../src/slack/connection.js'
+import { ChannelNameResolver, type ChannelInfoSource } from '../src/messages/channel-name-resolver.js'
 
 // The resolver only touches getChannelInfo/getUserProfile.
 function fakeConn(over: Partial<Pick<SlackConnection, 'getChannelInfo' | 'getUserProfile'>> = {}) {
@@ -85,5 +86,28 @@ describe('SlackNameResolver', () => {
     r.noteMessage(conn, msg('C1', 'U1', true))
     await flush()
     expect(conn.getChannelInfo).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('ChannelNameResolver', () => {
+  const source = (info: Awaited<ReturnType<ChannelInfoSource['getChannelInfo']>>): ChannelInfoSource => ({
+    getChannelInfo: vi.fn(async () => info),
+    getUserProfile: vi.fn(async (id: string) => ({ id, name: 'dana', realName: 'Dana Reyes' }))
+  })
+
+  it('labels a Discord thread with its enclosing channel, not the thread title', async () => {
+    const saved = new Map<string, string>()
+    const r = new ChannelNameResolver((id, name) => saved.set(id, name))
+    r.noteChannel(source({ id: 'T1', name: '@bot deploy the docs', parentName: 'general' }), 'T1')
+    await flush()
+    expect(saved.get('T1')).toBe('general')
+  })
+
+  it('keeps the channel name when there is no parent', async () => {
+    const saved = new Map<string, string>()
+    const r = new ChannelNameResolver((id, name) => saved.set(id, name))
+    r.noteChannel(source({ id: 'C1', name: 'general' }), 'C1')
+    await flush()
+    expect(saved.get('C1')).toBe('general')
   })
 })

@@ -433,18 +433,37 @@ export class DiscordConnection {
 
   // ── MCP MessageGateway: read helpers backing the injected channel tools ──
 
-  async getChannelInfo(channel: string): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean }> {
+  async getChannelInfo(channel: string): Promise<{
+    id: string
+    name?: string
+    isIm?: boolean
+    isPrivate?: boolean
+    parentName?: string
+  }> {
     const ch = await this.client.channels.fetch(channel).catch(() => null)
-    const c = ch as (Channel & { name?: string; isDMBased?: () => boolean }) | null
+    const c = ch as
+      | (Channel & { name?: string; isDMBased?: () => boolean; isThread?: () => boolean; parentId?: string | null })
+      | null
     const isIm = typeof c?.isDMBased === 'function' ? c.isDMBased() : false
+    // A thread's own name is the turn title the bot generated; readers that want the
+    // enclosing channel ("#general") get it as `parentName`.
+    const parentName =
+      typeof c?.isThread === 'function' && c.isThread() && c.parentId ? await this.channelName(c.parentId) : undefined
     return {
       id: channel,
       ...(c?.name ? { name: c.name } : {}),
+      ...(parentName ? { parentName } : {}),
       isIm,
       // A guild channel's visibility depends on role overwrites we don't resolve here;
       // treat non-DM guild channels as non-private best-effort.
       isPrivate: false
     }
+  }
+
+  /** Name of one channel id (cache-first via channels.fetch), undefined if unreachable. */
+  private async channelName(channel: string): Promise<string | undefined> {
+    const ch = await this.client.channels.fetch(channel).catch(() => null)
+    return (ch as (Channel & { name?: string }) | null)?.name
   }
 
   /** Discord bots cannot cheaply enumerate a channel's full member list — return []
