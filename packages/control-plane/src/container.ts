@@ -1003,6 +1003,9 @@ export function buildContainer(
         http.log.error({ err, botId: m.botId }, 'relay: bot-channels snapshot failed')
       }
     },
+    // §14.3 one-time gating-notice arbitration: the single CP grants each
+    // conversation exactly once per CP lifetime (pool-wide atomic latch).
+    noticeClaim: async (m) => sharedBot.claimGatingNotice(m),
     // Incremental DM-conversation report (§14.3): surface a kind:'im' row (Off) on
     // the bot's gated installs so console editors can enable the DM. Swallow+log.
     onBotConversation: async (m) => {

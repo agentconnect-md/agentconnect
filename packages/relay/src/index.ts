@@ -177,6 +177,7 @@ async function main(): Promise<void> {
     setChannelAgent: (botId, channelId, agentId) => client.emitSetChannelAgent({ botId, channelId, agentId }),
     reportBotChannels: (m) => client.emitBotChannels(m),
     reportBotConversation: (m) => client.emitBotConversation(m),
+    claimGatingNotice: (m) => client.claimNotice(m),
     reportThreadAssign: (m) => client.emitThreadAssign(m),
     lookupThread: (m) => client.lookupThread(m),
     isAgentBotApp: (targetAgentId, platform, channelId, appId) =>

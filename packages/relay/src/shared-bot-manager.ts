@@ -57,6 +57,12 @@ export interface SharedBotManagerDeps {
   reportThreadAssign: (m: RcThreadAssign) => boolean
   /** Pull a thread's persisted owner from the CP on an affinity miss (→ `rc/thread-lookup`). */
   lookupThread: (m: RcThreadLookup) => Promise<import('@agentconnect.md/protocol').RcThreadLookupOk>
+  /** Atomically claim the §14.3 one-time gating notice (→ `rc/notice-claim`): the
+   *  single CP grants each conversation exactly once across the whole pool. */
+  claimGatingNotice: (m: {
+    botId: string
+    channel: string
+  }) => Promise<import('@agentconnect.md/protocol').RcNoticeClaimOk>
   /** True when the sender app backs another AgentConnect agent beside the resolved
    *  target in this channel. Used only to suppress platform activation. */
   isAgentBotApp: (targetAgentId: string, platform: string, channelId: string, appId: string) => boolean
@@ -128,11 +134,10 @@ export class SharedBotManager {
   /** Latest bot-level channel snapshot dropped while the CP link was down. A full
    *  snapshot supersedes any older one for the same bot. */
   private readonly pendingChannelReports = new Map<string, RcBotChannels>()
-  /** §14 one-time gating-notice latch (`botId:channel`) — per relay lifetime.
-   *  Two-state: the NON-authoritative event copy shadow-primes `posted:false`
-   *  (keyed by msgId) so a LATER mention's authoritative copy landing on THIS pod
-   *  stays silent, while the SAME message's authoritative sibling still posts. */
-  private readonly gatedNoticesSent = new Map<string, { msgId: string; posted: boolean }>()
+  /** §14 gating-notice conversations this pod has already ARBITRATED (claim made,
+   *  granted or denied) — a local fast-path only; the pool-wide one-time guarantee
+   *  is the CP's atomic claim, never replica-local state. */
+  private readonly gatedNoticesSent = new Set<string>()
   /** §14.3 per-conversation DM-report latch (`botId:channel`) — scoped to the
    *  CURRENT bot assignment: cleared on assign/unassign and whenever the gated
    *  member set changes, since rows belong to the installs of that moment. */
@@ -425,18 +430,23 @@ export class SharedBotManager {
    *  silently broken. */
   private async noticeGatedUnrouted(botId: string, msg: WireNormalizedMessage, eligible: boolean): Promise<void> {
     // A channel mention arrives as TWO event copies that the pool LB may hand to
-    // different pods, so only the authoritative copy is `eligible` to post; the
-    // other copy SHADOW-PRIMES this pod's latch (posted:false, keyed by msgId) —
-    // the same message's authoritative sibling on this pod still posts, but a
-    // LATER mention whose authoritative copy lands here stays silent.
+    // different pods, so only the authoritative copy (app_mention / message.im)
+    // competes for the notice at all. The once-per-conversation guarantee is the
+    // CP's ATOMIC claim — replica-local latches cannot enforce it under arbitrary
+    // pool schedules (either copy of either mention may land on either pod). A
+    // denied claim means another pod (or an earlier mention) posted. CP link down
+    // ⇒ stay silent WITHOUT latching, so a later mention retries the claim.
+    if (!eligible) return
     const key = `${botId}:${msg.channel}`
-    const latch = this.gatedNoticesSent.get(key)
-    if (!eligible) {
-      if (!latch) this.gatedNoticesSent.set(key, { msgId: msg.msgId, posted: false })
+    if (this.gatedNoticesSent.has(key)) return
+    let granted: boolean
+    try {
+      granted = (await this.deps.claimGatingNotice({ botId, channel: msg.channel })).granted
+    } catch {
       return
     }
-    if (latch && (latch.posted || latch.msgId !== msg.msgId)) return
-    this.gatedNoticesSent.set(key, { msgId: msg.msgId, posted: true })
+    this.gatedNoticesSent.add(key)
+    if (!granted) return
     try {
       await this.ingests
         .get(botId)

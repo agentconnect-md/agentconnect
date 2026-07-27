@@ -651,6 +651,26 @@ export const RcThreadLookupOk = z.object({
 })
 export type RcThreadLookupOk = z.infer<typeof RcThreadLookupOk>
 
+// R→C REQ → rc/notice-claim/ok — §14.3 pool-wide ONE-TIME gating-notice
+// arbitration. Replica-local latches cannot enforce once-per-conversation under
+// arbitrary LB schedules (either event copy of a mention may land on either pod),
+// so a relay must CLAIM the conversation before posting the notice; the single
+// CP process grants each (botId, channel) exactly once per CP lifetime.
+export const RcNoticeClaim = z.object({
+  botId: z.string().uuid(),
+  channel: z.string().min(1) // platform conversation id (Slack C…/D…)
+})
+export type RcNoticeClaim = z.infer<typeof RcNoticeClaim>
+
+// C→R REP (corr = rc/notice-claim id). `granted: false` ⇒ another pod (or an
+// earlier mention) already claimed this conversation — stay silent.
+export const RcNoticeClaimOk = z.object({
+  botId: z.string().uuid(),
+  channel: z.string().min(1),
+  granted: z.boolean()
+})
+export type RcNoticeClaimOk = z.infer<typeof RcNoticeClaimOk>
+
 // C→R EVT — the bot-AGNOSTIC agent-collaboration routing snapshot (agent-collaboration
 // §2.3 / §6.2 / §6.5). FULL-REPLACE: the relay swaps its whole `(orgId,platform,channel)
 // → agents` table. Unlike `rc/bot-assign` (keyed by botId, can't address cross-bot), this
@@ -744,6 +764,8 @@ export const RELAY_CP_SCHEMAS = {
   'rc/thread-assign': RcThreadAssign,
   'rc/thread-lookup': RcThreadLookup,
   'rc/thread-lookup/ok': RcThreadLookupOk,
+  'rc/notice-claim': RcNoticeClaim,
+  'rc/notice-claim/ok': RcNoticeClaimOk,
   'rc/collab-routes': RcCollabRoutes,
   'rc/mcp-assign': RcMcpAssign,
   'rc/mcp-unassign': RcMcpUnassign,
@@ -786,6 +808,8 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/thread-assign', RELAY_CP_SCHEMAS['rc/thread-assign']),
   frameSchema('rc/thread-lookup', RELAY_CP_SCHEMAS['rc/thread-lookup']),
   frameSchema('rc/thread-lookup/ok', RELAY_CP_SCHEMAS['rc/thread-lookup/ok']),
+  frameSchema('rc/notice-claim', RELAY_CP_SCHEMAS['rc/notice-claim']),
+  frameSchema('rc/notice-claim/ok', RELAY_CP_SCHEMAS['rc/notice-claim/ok']),
   frameSchema('rc/collab-routes', RELAY_CP_SCHEMAS['rc/collab-routes']),
   frameSchema('rc/mcp-assign', RELAY_CP_SCHEMAS['rc/mcp-assign']),
   frameSchema('rc/mcp-unassign', RELAY_CP_SCHEMAS['rc/mcp-unassign']),

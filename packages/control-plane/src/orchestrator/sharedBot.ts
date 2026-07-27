@@ -301,6 +301,23 @@ export class SharedBotOrchestrator {
     await this.syncRoutes(botId)
   }
 
+  /** §14.3 gating-notice claims already granted, `botId:channel`. In-memory on the
+   *  single CP process = the pool-wide atomic latch (per CP lifetime — a restart
+   *  allows one fresh notice, matching the daemon's per-lifetime semantics).
+   *  Size-bounded: a full set resets rather than growing without limit. */
+  private readonly gatedNoticeClaims = new Set<string>()
+
+  /** Atomically claim the one-time §14.3 gating notice for a conversation. Relay
+   *  pods MUST claim before posting: replica-local latches cannot enforce
+   *  once-per-conversation under arbitrary LB schedules. */
+  claimGatingNotice(m: { botId: string; channel: string }): { botId: string; channel: string; granted: boolean } {
+    const key = `${m.botId}:${m.channel}`
+    if (this.gatedNoticeClaims.has(key)) return { ...m, granted: false }
+    if (this.gatedNoticeClaims.size >= 100_000) this.gatedNoticeClaims.clear()
+    this.gatedNoticeClaims.add(key)
+    return { ...m, granted: true }
+  }
+
   /**
    * §14.3: fan an INCREMENTAL DM-conversation report across the bot's GATED installs
    * as `kind:'im'` rows (default Off, owned by each install's agent) so console

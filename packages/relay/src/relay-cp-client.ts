@@ -35,6 +35,8 @@ import {
   type RcSetChannelAgent,
   type RcBotChannels,
   type RcBotConversation,
+  type RcNoticeClaim,
+  type RcNoticeClaimOk,
   type RcThreadAssign,
   type RcThreadLookup,
   type RcThreadLookupOk,
@@ -294,6 +296,24 @@ export class RelayCpClient {
     })
     if (rep.type !== 'rc/thread-lookup/ok') {
       throw new WireError('INTERNAL', `expected rc/thread-lookup/ok, got ${rep.type}`, false)
+    }
+    return rep.payload
+  }
+
+  /** `rc/notice-claim` → `rc/notice-claim/ok` — §14.3 pool-wide one-time notice
+   *  arbitration: claim the conversation before posting; the single CP grants each
+   *  exactly once. Single-shot: a CP outage rejects (the caller stays silent and a
+   *  later mention retries). */
+  async claimNotice(m: RcNoticeClaim): Promise<RcNoticeClaimOk> {
+    if (this.state !== 'READY' || !this.transport) {
+      throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
+    }
+    const rep = await this.sendRequest(buildRelayCpFrame('rc/notice-claim', m), {
+      maxTries: 1,
+      ackTimeoutMs: ACK_TIMEOUT_MS
+    })
+    if (rep.type !== 'rc/notice-claim/ok') {
+      throw new WireError('INTERNAL', `expected rc/notice-claim/ok, got ${rep.type}`, false)
     }
     return rep.payload
   }
