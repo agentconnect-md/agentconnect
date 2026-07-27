@@ -54,7 +54,13 @@ import { DreamRunner, DreamStateError } from './agents/dream-runner.js'
 import { createDreamReader } from './cp/dream-reader.js'
 import { routeRules, type RouteVia } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
-import { rulesFromAgent, resolveCpRule, resolveAgentIntegration, type RoutingRule } from './router/routing-rule.js'
+import {
+  rulesFromAgent,
+  resolveCpRule,
+  resolveAgentIntegration,
+  integrationRouting,
+  type RoutingRule
+} from './router/routing-rule.js'
 import { CpRoutingLayer } from './router/cp-routing-layer.js'
 import {
   consolidate,
@@ -194,7 +200,7 @@ import type {
   RequestPermissionRequest,
   RequestPermissionResponse
 } from '@agentclientprotocol/sdk'
-import type { Agent, CronDef } from './agents/agent-schema.js'
+import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
 import type { NormalizedMessage } from './messages/normalized.js'
 import type {
   RegisterReq,
@@ -1826,11 +1832,7 @@ export class Daemon {
         return !this.paused(ctx.agentId) && active !== undefined && !active.cancelledReason
       },
       setSessionTitle: (req) => this.setSessionTitleFromTool(req),
-      gatewayFor: (integrationId) =>
-        this.connByIntegration.get(integrationId) ??
-        this.tgConnByIntegration.get(integrationId) ??
-        this.dcConnByIntegration.get(integrationId) ??
-        this.fsConnByIntegration.get(integrationId),
+      gatewayFor: (integrationId) => this.connForIntegration(integrationId),
       // History-backed discovery for platforms whose bot API can't enumerate chats/users
       // (Telegram): the local session store already records every chat + triggering user.
       observedChannels: (agentId, platform) => this.store.observedChannels(agentId, platform),
@@ -2001,7 +2003,7 @@ export class Daemon {
         newTraceId: () => randomUUID(),
         onMessage: (msg) => {
           this.nameResolver?.noteMessage(conn, msg)
-          this.onInbound(msg)
+          this.onInbound(msg, this.srcIntegrationIds(conn))
         },
         onChannelsChanged: () => void this.refreshChannels(conn),
         onStatusAction: (a) => this.handleStatusAction(a),
@@ -2493,7 +2495,7 @@ export class Daemon {
           newTraceId: () => randomUUID(),
           onMessage: (msg) => {
             this.nameResolver?.noteMessage(conn, msg)
-            this.onInbound(msg)
+            this.onInbound(msg, this.srcIntegrationIds(conn))
           },
           onChannelsChanged: () => void this.refreshChannels(conn),
           onStatusAction: (a) => this.handleStatusAction(a),
@@ -2617,7 +2619,7 @@ export class Daemon {
         newTraceId: () => randomUUID(),
         onMessage: (msg) => {
           this.channelNameResolver?.noteChannel(conn, msg.channel, msg.sender.id)
-          this.onInbound(msg)
+          this.onInbound(msg, this.srcIntegrationIds(conn))
         },
         onCallback: (cb) => this.handleTelegramCallback(cb, conn),
         log: this.log
@@ -2680,7 +2682,7 @@ export class Daemon {
         newTraceId: () => randomUUID(),
         onMessage: (msg) => {
           this.channelNameResolver?.noteChannel(conn, msg.channel, msg.sender.id)
-          this.onInbound(msg)
+          this.onInbound(msg, this.srcIntegrationIds(conn))
         },
         onStatusAction: (a) => this.handleStatusAction(a),
         onSelectAction: (a) => this.handleDiscordSelect(a),
@@ -2758,7 +2760,7 @@ export class Daemon {
         newTraceId: () => randomUUID(),
         onMessage: (msg) => {
           this.channelNameResolver?.noteChannel(conn, msg.channel, msg.sender.id)
-          this.onInbound(msg)
+          this.onInbound(msg, this.srcIntegrationIds(conn))
         },
         log: this.log
       })
@@ -2880,8 +2882,14 @@ export class Daemon {
       }
       for (const [integrationId, c] of this.connByIntegration) {
         if (c !== conn) continue
-        this.channelSnapshots.set(integrationId, channels)
-        this.cpClient?.emitIntegrationChannels({ integrationId, channels })
+        // Preserve reported DM rows (§14.3): the membership listing carries channels
+        // only, but a gated integration's snapshot also holds DM conversations — a
+        // refresh must not wipe them (the CP protects them too; this keeps the
+        // in-memory snapshot honest for the reconnect re-assert).
+        const ims = (this.channelSnapshots.get(integrationId) ?? []).filter((x) => x.kind === 'im')
+        const merged = [...channels, ...ims]
+        this.channelSnapshots.set(integrationId, merged)
+        this.cpClient?.emitIntegrationChannels({ integrationId, channels: merged })
         this.maybeIntroduceOnJoin(integrationId, channels)
       }
       this.log.debug(`slack: channel snapshot for bot ${conn.botUserId}: ${channels.length} channel(s)`)
@@ -2980,7 +2988,7 @@ export class Daemon {
         // The arrow captures the NEW `conn` ref so nameResolver/onInbound use the
         // successfully-retried connection, not a stale one from an earlier attempt.
         this.nameResolver?.noteMessage(conn, msg)
-        this.onInbound(msg)
+        this.onInbound(msg, this.srcIntegrationIds(conn))
       },
       onChannelsChanged: () => void this.refreshChannels(conn),
       onStatusAction: (a) => this.handleStatusAction(a),
@@ -3514,7 +3522,7 @@ export class Daemon {
     return !!msg.sender.appId && this.cpCollab.isAgentBotApp(msg.platform, msg.channel, msg.sender.appId)
   }
 
-  private onInbound(msg: NormalizedMessage): void {
+  private onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
     // Drain gate (§2.5/§5.3): once the daemon is draining (SIGTERM or a scope:daemon
     // drain) it accepts no new turns — in-flight turns finish, new arrivals are
     // dropped (the platform redelivers / the user retries against the new owner).
@@ -3566,6 +3574,10 @@ export class Daemon {
       // coords as SessionManager → INSERT OR IGNORE
       // dedups rather than double-recording.
       this.recordUnrouted(msg)
+      // Conversation gating (§14): if this unrouted message explicitly addressed a
+      // GATED integration's bot (mention or DM), answer once per conversation and
+      // surface DM conversations to the console instead of appearing silently broken.
+      this.maybeGatedNotice(msg, srcIntegrationIds ?? [])
       this.log.debug(
         `routing: dropped message in ch=${msg.channel} (no agent matched — not a mention of a known bot, not a subscribed 'all' channel, not a thread/DM hit)`
       )
@@ -4198,6 +4210,15 @@ export class Daemon {
     // terminal agent-bot suppression here before commands or model admission.
     if (this.isAgentBotMessage(normalized)) {
       this.log.debug(`relay: consumed AgentConnect bot message ${msg.msgId} without waking ${msg.agentId}`)
+      return { msgId: msg.msgId, accepted: true }
+    }
+    // Conversation gating (§14) last-hop backstop: the relay arbitrates shared-bot
+    // routing, but a stale relay route snapshot must not activate a private agent in
+    // an Off conversation. Admission = a bindRule scoped to this conversation (the
+    // CP ships a gated install's enabled set even in shared mode).
+    if (!this.gatedAdmission(msg.integrationId, normalized)) {
+      this.maybeGatedNotice(normalized, [msg.integrationId])
+      this.log.debug(`relay: dropped ${msg.msgId} for gated integration ${msg.integrationId} (conversation off)`)
       return { msgId: msg.msgId, accepted: true }
     }
     // Shared-bot IM bypasses onInbound() because the relay already arbitrated the
@@ -6078,14 +6099,12 @@ export class Daemon {
       .get(agentId)
       ?.integrations.find((candidate) => candidate.id === integrationId && candidate.platform === msg.platform)
     if (!integration) return false
-    const allowed =
-      integration.platform === 'telegram'
-        ? integration.telegram.allowedUserIds
-        : integration.platform === 'discord'
-          ? integration.discord.allowedUserIds
-          : integration.platform === 'feishu'
-            ? integration.feishu.allowedUserIds
-            : integration.slack.allowedUserIds
+    const routing = integrationRouting(integration)
+    // Conversation gating (§14): control commands resolve their target OUTSIDE
+    // routeRules' scope filter (latest-session fallbacks), so they must repeat the
+    // admission check — an Off conversation of a gated integration takes no commands.
+    if (routing.gated && !routing.bindRules.some((r) => r.channel === msg.channel)) return false
+    const allowed = routing.allowedUserIds
     return allowed.length === 0 || allowed.includes(msg.sender.id)
   }
 
@@ -10777,18 +10796,129 @@ export class Daemon {
     })
   }
 
+  // ── Conversation gating (resource-visibility.md §14) ────────────────────────
+
+  /** One-time gating-notice latch, `${integrationId}:${channel}` — per daemon
+   *  lifetime (§14.7 open question 2: a restart re-notices, which is acceptable). */
+  private readonly gatedNoticesSent = new Set<string>()
+
+  /** The integration config backing `integrationId`, across all local agents. */
+  private integrationConfigById(integrationId: string): Integration | undefined {
+    for (const a of this.agents.values()) {
+      const int = a.integrations.find((i) => i.id === integrationId)
+      if (int) return int
+    }
+    return undefined
+  }
+
+  /** Every integrationId served by `conn` — ingress attribution for gating. A Slack
+   *  socket is per app token and may fan out to several integrations. */
+  private srcIntegrationIds(conn: unknown): string[] {
+    const out: string[] = []
+    for (const [id, c] of this.connByIntegration) if (c === conn) out.push(id)
+    for (const [id, c] of this.tgConnByIntegration) if (c === conn) out.push(id)
+    for (const [id, c] of this.dcConnByIntegration) if (c === conn) out.push(id)
+    for (const [id, c] of this.fsConnByIntegration) if (c === conn) out.push(id)
+    return out
+  }
+
+  /** §14 admission for a pre-addressed (relay) message: a gated integration accepts
+   *  a conversation only when its shipped bindRules carry a rule scoped to it. */
+  private gatedAdmission(integrationId: string, msg: NormalizedMessage): boolean {
+    const int = this.integrationConfigById(integrationId)
+    if (!int) return true // unknown here — agent/integration existence is checked separately
+    const routing = integrationRouting(int)
+    return !routing.gated || routing.bindRules.some((r) => r.channel === msg.channel)
+  }
+
+  /**
+   * §14: an explicitly-addressed message (a mention of a gated integration's bot, or
+   * a DM to it) that routed nowhere gets a ONE-TIME per-conversation notice — the
+   * bot must never look silently broken — and a gated DM conversation is reported to
+   * the CP so the console can offer enabling it. Bot senders are never noticed.
+   */
+  private maybeGatedNotice(msg: NormalizedMessage, srcIntegrationIds: string[]): void {
+    if (msg.sender.isBot || msg.source !== 'user') return
+    // Slack `app_mention` payloads may omit channel_type, so hedge on the D-prefix.
+    const isDm = msg.isDm || (msg.platform === 'slack' && msg.channel.startsWith('D'))
+    for (const integrationId of srcIntegrationIds) {
+      const int = this.integrationConfigById(integrationId)
+      if (!int || int.platform !== msg.platform) continue
+      const routing = integrationRouting(int)
+      if (!routing.gated) continue
+      const botUserId = this.botUserIds[integrationId] ?? routing.staticBotUserId ?? ''
+      const addressed = isDm || (botUserId !== '' && msg.mentionedBots.includes(botUserId))
+      if (!addressed) continue
+      // Reaching here ⇒ the conversation is Off/unknown for this gated integration
+      // (an enabled conversation would have routed via its scoped rule).
+      if (isDm) this.reportGatedDm(integrationId, msg)
+      const latch = `${integrationId}:${msg.channel}`
+      if (this.gatedNoticesSent.has(latch)) return
+      this.gatedNoticesSent.add(latch)
+      const conn = this.connForIntegration(integrationId)
+      if (!conn) return
+      const text =
+        '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.'
+      const thread = isDm ? undefined : msg.thread
+      // Chrome-marked so peer daemons' thread backfill never re-ingests the notice.
+      const post =
+        conn instanceof SlackConnection
+          ? conn.postMessage(msg.channel, text, thread, { chrome: true })
+          : conn.postChrome(msg.channel, text, { threadTs: thread })
+      void post.catch((err: unknown) =>
+        this.log.warn(`gating: notice post failed in ch=${msg.channel}: ${(err as Error).message}`)
+      )
+      return // one notice per message even when several integrations share the socket
+    }
+  }
+
+  /** §14.3: surface a gated DM conversation as a `kind:'im'` row (latest-wins
+   *  snapshot merge) so the console lists it for enablement. Name resolution is
+   *  best-effort: the display-name store first, then a Slack profile lookup that
+   *  re-reports when it lands. */
+  private reportGatedDm(integrationId: string, msg: NormalizedMessage): void {
+    const existing = this.channelSnapshots.get(integrationId) ?? []
+    if (existing.some((c) => c.id === msg.channel)) return
+    const known = this.store.getDisplayNames([msg.channel]).get(msg.channel)
+    const row: IntegrationChannel = { id: msg.channel, ...(known ? { name: known } : {}), kind: 'im' }
+    const next = [...existing, row]
+    this.channelSnapshots.set(integrationId, next)
+    this.cpClient?.emitIntegrationChannels({ integrationId, channels: next })
+    if (known) return
+    const conn = this.connForIntegration(integrationId)
+    if (!(conn instanceof SlackConnection)) return
+    void conn
+      .getUserProfile(msg.sender.id)
+      .then((prof) => {
+        const name = prof.realName || prof.name
+        if (!name) return
+        const snap = this.channelSnapshots.get(integrationId) ?? []
+        const updated = snap.map((c) => (c.id === msg.channel && !c.name ? { ...c, name: `@${name}` } : c))
+        this.channelSnapshots.set(integrationId, updated)
+        this.cpClient?.emitIntegrationChannels({ integrationId, channels: updated })
+      })
+      .catch(() => {})
+  }
+
+  /** The live platform connection serving `integrationId`, any platform. */
+  private connForIntegration(
+    integrationId: string
+  ): SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | undefined {
+    return (
+      this.connByIntegration.get(integrationId) ??
+      this.tgConnByIntegration.get(integrationId) ??
+      this.dcConnByIntegration.get(integrationId) ??
+      this.fsConnByIntegration.get(integrationId)
+    )
+  }
+
   private replyConnFor(
     agentId: string,
     integrationId?: string
   ): SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | undefined {
     const intId = integrationId ?? this.agents.get(agentId)?.integrations[0]?.id
     if (!intId) return undefined
-    return (
-      this.connByIntegration.get(intId) ??
-      this.tgConnByIntegration.get(intId) ??
-      this.dcConnByIntegration.get(intId) ??
-      this.fsConnByIntegration.get(intId)
-    )
+    return this.connForIntegration(intId)
   }
 
   /** The CP-owned cron ids currently on disk (register `localState.crons` — the

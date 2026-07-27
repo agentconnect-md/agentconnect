@@ -31,7 +31,11 @@ export const SlackConfigSchema = z.object({
   signingSecret: z.string().optional(),
   botUserId: z.string().optional(), // filled at connect via auth.test if absent; provided by CP for shared
   allowedUserIds: z.array(z.string()).default([]),
-  bindRules: z.array(BindRuleConfigSchema).default([])
+  bindRules: z.array(BindRuleConfigSchema).default([]),
+  // Conversation gating (resource-visibility.md §14): fail-closed ingress — the CP
+  // ships only conversation-scoped bindRules; explicitly-addressed unrouted
+  // messages get a one-time notice and DM conversations are reported to the CP.
+  gated: z.boolean().default(false)
 })
 export type SlackConfig = z.infer<typeof SlackConfigSchema>
 
@@ -40,7 +44,11 @@ export const TelegramConfigSchema = z.object({
   botUserId: z.string().optional(), // numeric bot id, filled at connect via getMe if absent
   botUsername: z.string().optional(), // @username without the '@', for mention detection; filled via getMe
   allowedUserIds: z.array(z.string()).default([]),
-  bindRules: z.array(BindRuleConfigSchema).default([])
+  bindRules: z.array(BindRuleConfigSchema).default([]),
+  // Conversation gating (resource-visibility.md §14): fail-closed ingress — the CP
+  // ships only conversation-scoped bindRules; explicitly-addressed unrouted
+  // messages get a one-time notice and DM conversations are reported to the CP.
+  gated: z.boolean().default(false)
 })
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>
 
@@ -49,7 +57,11 @@ export const DiscordConfigSchema = z.object({
   applicationId: z.string().optional(), // public client id for the invite URL (not used to connect)
   botUserId: z.string().optional(), // numeric bot user id, filled at connect via the ready event if absent
   allowedUserIds: z.array(z.string()).default([]),
-  bindRules: z.array(BindRuleConfigSchema).default([])
+  bindRules: z.array(BindRuleConfigSchema).default([]),
+  // Conversation gating (resource-visibility.md §14): fail-closed ingress — the CP
+  // ships only conversation-scoped bindRules; explicitly-addressed unrouted
+  // messages get a one-time notice and DM conversations are reported to the CP.
+  gated: z.boolean().default(false)
 })
 export type DiscordConfig = z.infer<typeof DiscordConfigSchema>
 
@@ -59,7 +71,11 @@ export const FeishuConfigSchema = z.object({
   botOpenId: z.string().optional(), // bot's own open_id for mention detection; filled at connect via bot/info if absent
   region: FeishuRegion.default('feishu'), // open-platform gateway: feishu.cn (default) vs larksuite.com
   allowedUserIds: z.array(z.string()).default([]),
-  bindRules: z.array(BindRuleConfigSchema).default([])
+  bindRules: z.array(BindRuleConfigSchema).default([]),
+  // Conversation gating (resource-visibility.md §14): fail-closed ingress — the CP
+  // ships only conversation-scoped bindRules; explicitly-addressed unrouted
+  // messages get a one-time notice and DM conversations are reported to the CP.
+  gated: z.boolean().default(false)
 })
 export type FeishuConfig = z.infer<typeof FeishuConfigSchema>
 

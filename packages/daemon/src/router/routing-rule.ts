@@ -27,34 +27,40 @@ export interface RoutingRule {
   platform?: string
 }
 
-/** Extract the platform-agnostic routing bits from a (discriminated) Integration. */
-function integrationRouting(int: Integration): {
+/** Extract the platform-agnostic routing bits from a (discriminated) Integration.
+ *  Exported for the daemon's conversation-gating ingress checks (§14). */
+export function integrationRouting(int: Integration): {
   staticBotUserId?: string
   bindRules: BindRuleConfig[]
   allowedUserIds: string[]
+  gated: boolean
 } {
   if (int.platform === 'slack')
     return {
       staticBotUserId: int.slack.botUserId,
       bindRules: int.slack.bindRules,
-      allowedUserIds: int.slack.allowedUserIds
+      allowedUserIds: int.slack.allowedUserIds,
+      gated: int.slack.gated
     }
   if (int.platform === 'discord')
     return {
       staticBotUserId: int.discord.botUserId,
       bindRules: int.discord.bindRules,
-      allowedUserIds: int.discord.allowedUserIds
+      allowedUserIds: int.discord.allowedUserIds,
+      gated: int.discord.gated
     }
   if (int.platform === 'feishu')
     return {
       staticBotUserId: int.feishu.botOpenId,
       bindRules: int.feishu.bindRules,
-      allowedUserIds: int.feishu.allowedUserIds
+      allowedUserIds: int.feishu.allowedUserIds,
+      gated: int.feishu.gated
     }
   return {
     staticBotUserId: int.telegram.botUserId,
     bindRules: int.telegram.bindRules,
-    allowedUserIds: int.telegram.allowedUserIds
+    allowedUserIds: int.telegram.allowedUserIds,
+    gated: int.telegram.gated
   }
 }
 

@@ -47,7 +47,8 @@ function toBotAssignment(a: import('@agentconnect.md/protocol').RcBotAssign): Bo
     agents: a.agents.map((x) => ({ agentId: x.agentId, name: x.name })),
     routes: a.routes,
     ...(a.defaultAgentId ? { defaultAgentId: a.defaultAgentId } : {}),
-    ...(a.defaultDaemonId ? { defaultDaemonId: a.defaultDaemonId } : {})
+    ...(a.defaultDaemonId ? { defaultDaemonId: a.defaultDaemonId } : {}),
+    gatedAgentIds: a.gatedAgentIds
   }
 }
 
@@ -145,7 +146,8 @@ async function main(): Promise<void> {
         agents: r.agents.map((x) => ({ agentId: x.agentId, name: x.name })),
         routes: r.routes,
         ...(r.defaultAgentId ? { defaultAgentId: r.defaultAgentId } : {}),
-        ...(r.defaultDaemonId ? { defaultDaemonId: r.defaultDaemonId } : {})
+        ...(r.defaultDaemonId ? { defaultDaemonId: r.defaultDaemonId } : {}),
+        gatedAgentIds: r.gatedAgentIds
       }),
     onAssign: (a) =>
       held.sharedBot?.setAffinity(a.botId, a.sessionKey, {

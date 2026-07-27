@@ -190,7 +190,7 @@ export class SharedBotManager {
   /** `rc/routes` — hot-update routes/members/default WITHOUT re-opening the ingest. */
   updateRoutes(
     botId: string,
-    patch: Pick<BotAssignment, 'members' | 'agents' | 'routes' | 'defaultAgentId' | 'defaultDaemonId'>
+    patch: Pick<BotAssignment, 'members' | 'agents' | 'routes' | 'defaultAgentId' | 'defaultDaemonId' | 'gatedAgentIds'>
   ): void {
     this.router.updateRoutes(botId, patch)
   }
