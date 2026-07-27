@@ -371,11 +371,35 @@ const SkillFilterName = z
 
 // A source string that becomes a positional argument to `npx skills add`. Reject
 // option-looking values for the same reason.
+//
+// Also reject secret carriers. A skill source is org metadata: it travels inline on
+// every referring AgentSpec and is shown next to the agents that install it (see
+// shared-skills.md), so it must never hold a credential — a private repo needs a
+// real grant, which this release does not have, and create already rejects a
+// confirmed private repo. Two forms are refused:
+//
+//   - userinfo — `https://<token>@host/repo`, `https://user:pw@host/repo`. The
+//     authority match is greedy so `user:p@ss@host` is caught by its LAST `@`. The
+//     scp-like `git@github.com:owner/repo` form has no `://` and is unaffected;
+//     `ssh://git@host/repo` names a ROLE, so colon-free userinfo stays allowed there.
+//   - query/fragment — `?access_token=…`, `#…`. `npx skills` has no use for either,
+//     and both are places a token hides in plain sight.
 const SkillSourceArg = z
   .string()
   .trim()
   .min(1)
   .refine((s) => !s.startsWith('-'), { message: 'source must not start with "-"' })
+  .refine((s) => !s.includes('?') && !s.includes('#'), {
+    message: 'source must not carry a query or fragment; they can hide a credential'
+  })
+  .refine(
+    (s) => {
+      const m = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/]*)@/.exec(s)
+      if (!m) return true
+      return !s.toLowerCase().startsWith('http') && !m[1]!.includes(':')
+    },
+    { message: 'source must not embed credentials; use a public repository' }
+  )
 
 // Enabled shared-skills (docs/designs/shared-skills.md): each entry is
 // "<sourceName>/<skillName>", "<sourceName>/*" (the whole source), or a bare
@@ -860,6 +884,23 @@ export const SkillSourceDto = z.object({
 })
 export const SkillSourceListDto = z.array(SkillSourceDto)
 export type SkillSourceDtoT = z.infer<typeof SkillSourceDto>
+
+/** `GET /agents/:id/skill-sources` — the registry rows this agent's enable-list
+ *  actually references, resolved for anyone who can view the AGENT rather than the
+ *  source. What an agent already installs is part of the agent (the definition
+ *  rides inline on its AgentSpec either way), so a source restricted away from the
+ *  caller still resolves here — otherwise the console can only show a bare name.
+ *  Slimmer than {@link SkillSourceDto}: no visibility/share fields, since seeing an
+ *  agent does not entitle the caller to the source's own share set. */
+export const AgentSkillSourceDto = z.object({
+  id: z.string(),
+  name: z.string(),
+  source: z.string(),
+  ref: z.string().nullable(),
+  subDir: z.string().nullable(),
+  skills: z.array(z.string()) // the source's own skill filter ([] ⇒ all)
+})
+export const AgentSkillSourceListDto = z.array(AgentSkillSourceDto)
 
 // ── open-connector connectors (docs: connectors integration) ─────────────────
 /** Whether the open-connector integration is configured on this CP (drives the

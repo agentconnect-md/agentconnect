@@ -3001,6 +3001,22 @@ export async function fetchSkillSourceSkills(id: string): Promise<SkillSourceSki
   return apiGet<SkillSourceSkillsDto>(`${orgBase()}/skill-sources/${encodeURIComponent(id)}/skills`)
 }
 
+// The sources an agent's enable-list references, resolved server-side from the refs.
+// Gated on viewing the AGENT, so a source that sharing hides from the org registry
+// list still resolves here — the agent card can show what it actually installs
+// instead of a bare name. Sources that no longer exist are simply omitted.
+export interface AgentSkillSourceDto {
+  id: string
+  name: string
+  source: string
+  ref: string | null
+  subDir: string | null
+  skills: string[]
+}
+export async function fetchAgentSkillSources(agentId: string): Promise<AgentSkillSourceDto[]> {
+  return apiGet<AgentSkillSourceDto[]>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/skill-sources`)
+}
+
 export async function previewSkillSource(input: PreviewSkillSourceInput): Promise<SkillSourcePreviewDto> {
   return apiPost<SkillSourcePreviewDto>(`${orgBase()}/skill-sources/preview`, input)
 }

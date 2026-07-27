@@ -228,6 +228,134 @@ describe('mcp provider visibility — list, get, sharing, enable-gate', () => {
   })
 })
 
+describe('skill source visibility — the agent that enables it resolves it anyway', () => {
+  /** Seed a skill_source row directly (no GitHub scan, no fan-out). `source`
+   *  bypasses `SkillSourceArg`, which is how a pre-guard row is simulated. */
+  async function seedSource(
+    id: string,
+    opts: {
+      name: string
+      source?: string
+      visibility?: 'org' | 'restricted'
+      sharedWith?: string[]
+      createdByUserId?: string
+    }
+  ): Promise<void> {
+    await prisma.skillSource.create({
+      data: {
+        id,
+        orgId: DEFAULT_ORG_ID,
+        name: opts.name,
+        source: opts.source ?? 'example-org/example-ai-kit',
+        ...(opts.visibility ? { visibility: opts.visibility } : {}),
+        ...(opts.sharedWith ? { sharedWith: opts.sharedWith } : {}),
+        ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {})
+      }
+    })
+  }
+
+  it('a source hidden from the registry list still resolves through an agent the caller can see', async () => {
+    const other = await makeUser('sk-other', 'collaborator')
+    const S = randomUUID()
+    await seedSource(S, { name: 'sk-hidden-kit', visibility: 'restricted', sharedWith: [] })
+    const A = randomUUID()
+    await seedAgent(prisma, A, { visibility: 'org' })
+    await prisma.agent.update({ where: { id: A }, data: { runtimeOverrides: { skills: ['sk-hidden-kit/*'] } } })
+
+    const app = appAs(other).app
+    // Hidden from the org registry — sharing still applies there.
+    const list = (await app.inject({ method: 'GET', url: `${ORG}/skill-sources` })).json() as Array<{ id: string }>
+    expect(list.map((s) => s.id)).not.toContain(S)
+    expect((await app.inject({ method: 'GET', url: `${ORG}/skill-sources/${S}` })).statusCode).toBe(404)
+
+    // But the agent's own enable-list resolves it, so the console can name the repo
+    // instead of rendering a bare, unexplained row.
+    const res = await app.inject({ method: 'GET', url: `${ORG}/agents/${A}/skill-sources` })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([
+      { id: S, name: 'sk-hidden-kit', source: 'example-org/example-ai-kit', ref: null, subDir: null, skills: [] }
+    ])
+    // Reading it there does NOT loosen the write gate: the ref can be dropped but
+    // not re-added, so the console renders that tile off-only.
+    const patch = (skills: string[]) => app.inject({ method: 'PATCH', url: `${ORG}/agents/${A}`, payload: { skills } })
+    expect((await patch([])).statusCode).toBe(200)
+    expect((await patch(['sk-hidden-kit/*'])).statusCode).toBe(403)
+  })
+
+  it('an enable-list ref to a source that no longer exists resolves to nothing', async () => {
+    const other = await makeUser('sk-gone', 'collaborator')
+    const A = randomUUID()
+    await seedAgent(prisma, A, { visibility: 'org' })
+    await prisma.agent.update({ where: { id: A }, data: { runtimeOverrides: { skills: ['sk-deleted/*'] } } })
+
+    const res = await appAs(other).app.inject({ method: 'GET', url: `${ORG}/agents/${A}/skill-sources` })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([])
+  })
+
+  it('a secret in a pre-guard source never crosses the boundary, in any of its hiding places', async () => {
+    const other = await makeUser('sk-cred', 'collaborator')
+    // Rows from before SkillSourceArg rejected secrets, each restricted away from
+    // `other` but reachable through an agent they can see. The last two are the
+    // bypasses a hand-rolled userinfo regex misses: a password containing `@`
+    // (minimal matching stops at the first one) and a token in the query/fragment.
+    const cases = [
+      { name: 'sk-cred-user', stored: 'https://ghp_notarealtoken@git.example.test/ops/skills.git' },
+      { name: 'sk-cred-pw', stored: 'https://user:p@ss-notarealtoken@git.example.test/ops/skills.git' },
+      { name: 'sk-cred-query', stored: 'https://git.example.test/ops/skills.git?access_token=notarealtoken#frag' }
+    ]
+    for (const c of cases) {
+      await seedSource(randomUUID(), { name: c.name, source: c.stored, visibility: 'restricted', sharedWith: [] })
+    }
+    const A = randomUUID()
+    await seedAgent(prisma, A, { visibility: 'org' })
+    await prisma.agent.update({
+      where: { id: A },
+      data: { runtimeOverrides: { skills: cases.map((c) => `${c.name}/*`) } }
+    })
+
+    const res = await appAs(other).app.inject({ method: 'GET', url: `${ORG}/agents/${A}/skill-sources` })
+    expect(res.statusCode).toBe(200)
+    const rows = res.json() as Array<{ name: string; source: string }>
+    expect(rows.map((r) => r.source)).toEqual([
+      'https://git.example.test/ops/skills.git',
+      'https://git.example.test/ops/skills.git',
+      'https://git.example.test/ops/skills.git'
+    ])
+    expect(res.payload).not.toContain('notarealtoken')
+  })
+
+  it('the write path refuses every secret-bearing source form, even from an owner', async () => {
+    const owner = await makeUser('sk-cred-owner', 'owner')
+    const create = (source: string) =>
+      appAs(owner).app.inject({ method: 'POST', url: `${ORG}/skill-sources`, payload: { name: 'sk-cred-new', source } })
+
+    for (const bad of [
+      'https://user:pw@git.example.test/ops/skills.git',
+      'https://ghp_notarealtoken@github.com/example-org/kit',
+      'https://user:p@ss@git.example.test/ops/skills.git', // password containing `@`
+      'https://git.example.test/ops/skills.git?access_token=notarealtoken', // query
+      'https://git.example.test/ops/skills.git#notarealtoken' // fragment
+    ]) {
+      expect((await create(bad)).statusCode).toBe(400)
+    }
+    expect((await create('git@github.com:example-org/example-kit.git')).statusCode).toBe(201) // scp-like form still fine
+  })
+
+  it('an invisible agent is not a back door onto its sources', async () => {
+    const other = await makeUser('sk-noagent', 'collaborator')
+    const S = randomUUID()
+    await seedSource(S, { name: 'sk-unreferenced', visibility: 'restricted', sharedWith: [] })
+    const A = randomUUID()
+    await seedAgent(prisma, A, { visibility: 'restricted', sharedWith: [] })
+    await prisma.agent.update({ where: { id: A }, data: { runtimeOverrides: { skills: ['sk-unreferenced/*'] } } })
+
+    const app = appAs(other).app
+    expect((await app.inject({ method: 'GET', url: `${ORG}/agents/${A}/skill-sources` })).statusCode).toBe(404)
+    expect((await app.inject({ method: 'GET', url: `${ORG}/skill-sources/${S}/skills` })).statusCode).toBe(404)
+  })
+})
+
 describe('agent call policy endpoint', () => {
   it('uses the existing agent edit gate: collaborator can edit, viewer cannot, invisible target 404s', async () => {
     const collaborator = await makeUser('call-policy-collaborator', 'collaborator')
