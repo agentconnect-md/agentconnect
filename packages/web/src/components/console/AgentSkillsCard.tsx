@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { fetchAgentDto, fetchSkillSourceSkills, type SkillSourceSkillsDto } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
+import { MOCK_MODE } from '@/lib/data'
+import { SkillMark, SkillSourceLine, ToolTile, ToolTileGrid } from '@/components/console/ToolTile'
 import { Icon, Toggle } from '@/components/ui'
 
 /**
@@ -36,7 +38,13 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
   const fetched = useRef(false)
 
   useEffect(() => {
-    if (fetched.current || !canEdit) return
+    if (fetched.current) return
+    // Demo agents (canEdit false) have no spec to fetch — mock mode seeds a selection
+    // so both tile states (whole source vs a picked subset) are visible.
+    if (!canEdit) {
+      if (MOCK_MODE) setEnabled(['example-ai-kit/*', 'internal-runbooks/safe-deploy'])
+      return
+    }
     fetched.current = true
     fetchAgentDto(agentId).then(
       (dto) => setEnabled(dto.skills ?? []),
@@ -115,41 +123,50 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
           No skill sources in your organization yet.
         </div>
       ) : (
-        <div>
+        <ToolTileGrid columns={2}>
           {skillSources.map((s) => {
             const sel = enabled ? selectionFor(enabled, s.name) : { all: false, skills: new Set<string>() }
             const on = sel.all || sel.skills.size > 0
             const manifest = manifests[s.id]
             const isOpen = expanded.has(s.id)
             return (
-              <div key={s.id} className="border-t border-(--border-subtle) first:border-t-0">
-                <div className="flex items-center gap-[11px] px-4 py-[11px] desktop:py-3">
-                  <button
-                    type="button"
-                    className="flex items-center gap-1 text-(--text-tertiary)"
-                    onClick={() => expand(s.id)}
-                    aria-label="Show skills"
-                  >
-                    <Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={15} />
-                    <Icon name="book-open" size={16} />
-                  </button>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate font-mono text-[12.5px] font-medium leading-normal text-(--text-primary)">
-                      {s.name}
-                    </div>
-                    <div className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                      {sel.all ? 'all skills' : sel.skills.size > 0 ? `${sel.skills.size} selected` : s.source}
-                    </div>
-                  </div>
-                  <Toggle checked={on} disabled={!interactive} onChange={(next) => toggleSource(s.name, next)} />
-                </div>
-
+              <ToolTile
+                key={s.id}
+                mark={<SkillMark />}
+                name={s.name}
+                // What's selected rides as a badge so the second line can stay the repo,
+                // matching the registry card's tile.
+                badge={
+                  on ? (
+                    <span className="badge flex-none bg-(--status-info-soft) text-[9.5px] text-(--status-info)">
+                      {sel.all ? 'all skills' : `${sel.skills.size} selected`}
+                    </span>
+                  ) : undefined
+                }
+                subtitle={<SkillSourceLine source={s.source} subDir={s.subDir} />}
+                action={
+                  <>
+                    <button
+                      type="button"
+                      className="iconbtn h-6 w-6"
+                      onClick={() => expand(s.id)}
+                      aria-label="Show skills"
+                      title="Show skills"
+                    >
+                      <Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={13} />
+                    </button>
+                    <span className="ml-[6px]">
+                      <Toggle checked={on} disabled={!interactive} onChange={(next) => toggleSource(s.name, next)} />
+                    </span>
+                  </>
+                }
+              >
                 {isOpen && (
-                  <div className="border-t border-(--border-subtle) bg-(--surface-sunken) px-4 py-2 pl-[52px]">
+                  <div className="border-t border-(--border-subtle) bg-(--surface-sunken) px-[14px] py-2">
                     {manifest === 'loading' || manifest === undefined ? (
                       <div className="py-1 font-sans text-[12px] text-(--text-tertiary)">Loading skills…</div>
                     ) : !manifest.resolvable || manifest.skills.length === 0 ? (
-                      <div className="py-1 font-sans text-[12px] text-(--text-tertiary)">
+                      <div className="py-1 font-sans text-[12px] leading-[1.5] text-(--text-tertiary)">
                         {manifest.resolvable
                           ? 'No SKILL.md found in this source.'
                           : 'Can’t list individual skills for this source — enable the whole source above.'}
@@ -184,28 +201,21 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
                     )}
                   </div>
                 )}
-              </div>
+              </ToolTile>
             )
           })}
 
           {orphaned.map((name) => (
-            <div
+            <ToolTile
               key={name}
-              className="flex items-center gap-[11px] border-t border-(--border-subtle) px-4 py-[11px] desktop:py-3"
-            >
-              <Icon name="book-open" size={16} color="var(--text-tertiary)" />
-              <div className="min-w-0 flex-1">
-                <div className="truncate font-mono text-[12.5px] font-medium leading-normal text-(--text-primary)">
-                  {name}
-                </div>
-                <div className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                  No longer in the org registry
-                </div>
-              </div>
-              <Toggle checked disabled={!interactive} onChange={() => toggleSource(name, false)} />
-            </div>
+              mark={<SkillMark />}
+              name={name}
+              subtitle="No longer in the org registry"
+              dimmed
+              action={<Toggle checked disabled={!interactive} onChange={() => toggleSource(name, false)} />}
+            />
           ))}
-        </div>
+        </ToolTileGrid>
       )}
 
       {err && (

@@ -14,7 +14,7 @@
 // create — never retrievable afterward. Self-contained (own create/edit/delete
 // dialogs in a scrim, like the API-keys card).
 
-import { useMemo, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import useSWR from 'swr'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
@@ -25,8 +25,9 @@ import {
   type McpHeaderInput,
   type ConnectorAuthDefinition
 } from '@/lib/api'
-import { credentialFieldsFor, initialAuthType, providerIconUrl, type CredentialField } from '@/lib/connectors'
+import { credentialFieldsFor, initialAuthType, type CredentialField } from '@/lib/connectors'
 import { VisibilityField, VisibilityValue, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
+import { ProviderMark, ToolTile, ToolTileGrid, useConnectorIcons } from '@/components/console/ToolTile'
 import { ConnectorsModal } from '@/components/console/ConnectorsModal'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -44,19 +45,7 @@ export function McpServersCard({ canWrite }: { canWrite: boolean }) {
   // the Add-connectors browser uses). Fetched once, only when there's a connector row
   // to decorate — custom providers keep the generic plug glyph.
   const hasConnectorRows = mcpProviders.some((p) => p.kind === 'open_connector' && p.service)
-  const { data: catalog } = useSWR(
-    connectorsEnabled && hasConnectorRows ? 'connector-catalog' : null,
-    () => fetchConnectorCatalog(),
-    { revalidateOnFocus: false }
-  )
-  const iconByService = useMemo(() => {
-    const m = new Map<string, string>()
-    for (const p of catalog?.providers ?? []) {
-      const url = providerIconUrl(p)
-      if (url) m.set(p.service, url)
-    }
-    return m
-  }, [catalog])
+  const iconByService = useConnectorIcons(connectorsEnabled && hasConnectorRows)
 
   const empty = (
     <div className="px-4 py-7 text-center">
@@ -135,7 +124,7 @@ export function McpServersCard({ canWrite }: { canWrite: boolean }) {
       ) : mcpProviders.length === 0 ? (
         empty
       ) : (
-        <div className="grid grid-cols-1 gap-3 px-4 py-[14px] desktop:grid-cols-[repeat(3,1fr)]">
+        <ToolTileGrid>
           {mcpProviders.map((p) => (
             <ProviderTile
               key={p.id}
@@ -146,7 +135,7 @@ export function McpServersCard({ canWrite }: { canWrite: boolean }) {
               onDelete={() => setDeleting(p)}
             />
           ))}
-        </div>
+        </ToolTileGrid>
       )}
 
       {creating && (
@@ -185,11 +174,10 @@ export function McpServersCard({ canWrite }: { canWrite: boolean }) {
   )
 }
 
-// One provider tile (3-up grid, same card style as the Skills library): mark well +
-// name + kind line with edit/delete icon buttons up top, access scope + added date
-// below. The upstream url, transport, and header names are intentionally not surfaced
-// here — they live in the edit dialog. open_connector tiles show the provider's
-// catalog icon (falls back to the generic plug glyph).
+// One provider tile — the shared ToolTile (see ToolTile.tsx), with edit/delete as its
+// action. The upstream url, transport, and header names are intentionally not surfaced
+// here — they live in the edit dialog. open_connector tiles show the provider's catalog
+// icon (falls back to the generic plug glyph).
 function ProviderTile({
   p,
   iconUrl,
@@ -204,55 +192,31 @@ function ProviderTile({
   onDelete: () => void
 }) {
   return (
-    <div className="flex min-w-0 flex-col gap-[10px] rounded-[9px] border border-(--border-subtle) px-[14px] py-[13px] transition-[border-color,box-shadow] hover:border-(--border-strong) hover:shadow-(--shadow-xs)">
-      <div className="flex min-w-0 items-center gap-[10px]">
-        <ProviderMark iconUrl={iconUrl} />
-        <div className="min-w-0 flex-1">
-          <div className="mono truncate text-[12.5px] font-semibold text-(--text-primary)">{p.name}</div>
-          <div className="mt-px truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-            {p.kind === 'open_connector' ? 'Open connector' : 'Custom MCP server'}
-          </div>
-        </div>
-        {canWrite && (
-          <span className="flex flex-none gap-px">
+    <ToolTile
+      mark={<ProviderMark iconUrl={iconUrl} />}
+      name={p.name}
+      subtitle={p.kind === 'open_connector' ? 'Open connector' : 'Custom MCP server'}
+      action={
+        canWrite ? (
+          <>
             <button className="iconbtn h-6 w-6" title="Edit" onClick={onEdit}>
               <Icon name="pencil" size={12} />
             </button>
             <button className="iconbtn h-6 w-6" title="Remove" onClick={onDelete}>
               <Icon name="trash-2" size={12} />
             </button>
+          </>
+        ) : undefined
+      }
+      footer={
+        <div className="flex min-w-0 items-center gap-2">
+          <VisibilityValue visibility={p.visibility} sharedWith={p.sharedWith} createdBy={p.createdBy} />
+          <span className="mono ml-auto flex-none text-[10.5px] text-(--text-disabled)">
+            added {fmtDate(p.createdAt)}
           </span>
-        )}
-      </div>
-      <div className="flex min-w-0 items-center gap-2">
-        <VisibilityValue visibility={p.visibility} sharedWith={p.sharedWith} createdBy={p.createdBy} />
-        <span className="mono ml-auto flex-none text-[10.5px] text-(--text-disabled)">
-          added {fmtDate(p.createdAt)}
-        </span>
-      </div>
-    </div>
-  )
-}
-
-// The tile's mark well: an open_connector provider's catalog icon when we have one
-// (falls back to the generic plug on a missing/broken image), else the plug glyph.
-function ProviderMark({ iconUrl }: { iconUrl?: string }) {
-  const [broken, setBroken] = useState(false)
-  return (
-    <span className="flex h-[30px] w-[30px] flex-none items-center justify-center overflow-hidden rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken)">
-      {!iconUrl || broken ? (
-        <Icon name="plug" size={15} color="var(--text-tertiary)" />
-      ) : (
-        <img
-          alt=""
-          src={iconUrl}
-          loading="lazy"
-          referrerPolicy="no-referrer"
-          className="h-[15px] w-[15px] object-contain"
-          onError={() => setBroken(true)}
-        />
-      )}
-    </span>
+        </div>
+      }
+    />
   )
 }
 
