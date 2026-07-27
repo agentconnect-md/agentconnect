@@ -596,7 +596,7 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
     expect(ingest.postText.mock.calls[0]![2]).toBe('123.456') // threaded, no channel spam
   })
 
-  it("suppresses the notice for a mention's non-authoritative event copy (cross-pod dedupe)", async () => {
+  it('same pod: the ineligible copy shadow-primes but never suppresses its OWN authoritative sibling', async () => {
     const manager = new SharedBotManager(deps())
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(gatedAssignment())
@@ -604,12 +604,48 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
     internals.ingests.set(BOT_ID, ingest)
     const mention = dm({ channel: 'C9', isDm: false, thread: '1.2', text: '<@UBOT> hi', mentionedBots: ['UBOT'] })
 
-    // message.channels copy (this pod): dropped without a notice…
+    // message.channels copy first: shadow-primed, no notice…
     await internals.forward(BOT_ID, mention, { noticeEligible: false })
     expect(ingest.postText).not.toHaveBeenCalled()
-    // …the app_mention copy (possibly ANOTHER pod) carries it.
+    // …its app_mention sibling (same msgId) still posts exactly once.
+    await internals.forward(BOT_ID, mention, { noticeEligible: true })
     await internals.forward(BOT_ID, mention, { noticeEligible: true })
     expect(ingest.postText).toHaveBeenCalledTimes(1)
+  })
+
+  it('two pods: the one-time invariant survives the authoritative copy switching replicas', async () => {
+    // Two manager instances = two relay pods with independent in-memory latches.
+    const podA = new SharedBotManager(deps())
+    const podB = new SharedBotManager(deps())
+    const a = podA as unknown as ManagerInternals
+    const b = podB as unknown as ManagerInternals
+    const ingestA = fakeIngest()
+    const ingestB = fakeIngest()
+    a.router.upsert(gatedAssignment())
+    b.router.upsert(gatedAssignment())
+    a.ingests.set(BOT_ID, ingestA)
+    b.ingests.set(BOT_ID, ingestB)
+    const m1 = dm({
+      msgId: 'slack:C9:1720000000.000100',
+      channel: 'C9',
+      isDm: false,
+      thread: '1.1',
+      text: '<@UBOT> hi',
+      mentionedBots: ['UBOT']
+    })
+    // Mention 1: message copy → pod A (ineligible), app_mention copy → pod B.
+    await a.forward(BOT_ID, m1, { noticeEligible: false })
+    await b.forward(BOT_ID, m1, { noticeEligible: true })
+    expect(ingestA.postText).not.toHaveBeenCalled()
+    expect(ingestB.postText).toHaveBeenCalledTimes(1)
+
+    // Mention 2 with the copies FLIPPED: pod A now holds the authoritative copy,
+    // but its shadow-primed latch (different msgId) keeps the conversation silent.
+    const m2 = { ...m1, msgId: 'slack:C9:1720000000.000200', thread: '2.2' }
+    await a.forward(BOT_ID, m2, { noticeEligible: true })
+    await b.forward(BOT_ID, m2, { noticeEligible: false })
+    expect(ingestA.postText).not.toHaveBeenCalled()
+    expect(ingestB.postText).toHaveBeenCalledTimes(1)
   })
 
   it('does nothing gated-related for a bot with no gated members', async () => {

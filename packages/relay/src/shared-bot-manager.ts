@@ -128,8 +128,11 @@ export class SharedBotManager {
   /** Latest bot-level channel snapshot dropped while the CP link was down. A full
    *  snapshot supersedes any older one for the same bot. */
   private readonly pendingChannelReports = new Map<string, RcBotChannels>()
-  /** §14 one-time gating-notice latch (`botId:channel`) — per relay lifetime. */
-  private readonly gatedNoticesSent = new Set<string>()
+  /** §14 one-time gating-notice latch (`botId:channel`) — per relay lifetime.
+   *  Two-state: the NON-authoritative event copy shadow-primes `posted:false`
+   *  (keyed by msgId) so a LATER mention's authoritative copy landing on THIS pod
+   *  stays silent, while the SAME message's authoritative sibling still posts. */
+  private readonly gatedNoticesSent = new Map<string, { msgId: string; posted: boolean }>()
   /** §14.3 per-conversation DM-report latch (`botId:channel`) — scoped to the
    *  CURRENT bot assignment: cleared on assign/unassign and whenever the gated
    *  member set changes, since rows belong to the installs of that moment. */
@@ -348,10 +351,7 @@ export class SharedBotManager {
       if (!msg.sender.isBot && hasGatedMembers) {
         const mentioned = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
         if (msg.isDm || mentioned) {
-          // Only the authoritative event copy carries the notice (see
-          // SlackSharedIngestDeps.onMessage) — a mention's `message.channels`
-          // sibling may land on ANOTHER pod, where the per-pod latch can't help.
-          if (meta?.noticeEligible !== false) await this.noticeGatedUnrouted(botId, msg)
+          await this.noticeGatedUnrouted(botId, msg, meta?.noticeEligible !== false)
           return
         }
       }
@@ -423,10 +423,20 @@ export class SharedBotManager {
   /** §14.3: the ONE-TIME per-conversation notice for an explicitly-addressed,
    *  unroutable message on a bot with gated members — the bot must never look
    *  silently broken. */
-  private async noticeGatedUnrouted(botId: string, msg: WireNormalizedMessage): Promise<void> {
-    const latch = `${botId}:${msg.channel}`
-    if (this.gatedNoticesSent.has(latch)) return
-    this.gatedNoticesSent.add(latch)
+  private async noticeGatedUnrouted(botId: string, msg: WireNormalizedMessage, eligible: boolean): Promise<void> {
+    // A channel mention arrives as TWO event copies that the pool LB may hand to
+    // different pods, so only the authoritative copy is `eligible` to post; the
+    // other copy SHADOW-PRIMES this pod's latch (posted:false, keyed by msgId) —
+    // the same message's authoritative sibling on this pod still posts, but a
+    // LATER mention whose authoritative copy lands here stays silent.
+    const key = `${botId}:${msg.channel}`
+    const latch = this.gatedNoticesSent.get(key)
+    if (!eligible) {
+      if (!latch) this.gatedNoticesSent.set(key, { msgId: msg.msgId, posted: false })
+      return
+    }
+    if (latch && (latch.posted || latch.msgId !== msg.msgId)) return
+    this.gatedNoticesSent.set(key, { msgId: msg.msgId, posted: true })
     try {
       await this.ingests
         .get(botId)
