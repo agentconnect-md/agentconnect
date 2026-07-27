@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { buildEnvelope, decodeEnvelope, MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
+import { buildEnvelope, decodeEnvelope, MAX_FRAME_BYTES, SESSION_LIVE_TAIL_FEATURE } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { WorkspaceViolationError } from '../../src/cp/workspace-reader.js'
 import { FakeTransport } from './fake-transport.js'
@@ -150,6 +150,25 @@ describe('CpClient dispatch', () => {
     const { client } = await readyClient({}, ['hook-report-ack-v1', 'gitcred-actions-v1'])
     expect(client.supportsServerFeature('gitcred-actions-v1')).toBe(true)
     expect(client.supportsServerFeature('future-feature')).toBe(false)
+  })
+
+  it('emits body-free session activity only when the CP negotiated live tails', async () => {
+    const activity = {
+      sessionId: 'session-live',
+      agentId: CRON_AGENT_ID,
+      revision: '12',
+      ts: '2026-07-27T00:00:00.000Z'
+    }
+    const current = await readyClient({}, [SESSION_LIVE_TAIL_FEATURE])
+    current.client.emitSessionActivity(activity)
+    expect(JSON.parse(current.t.sent[0]!)).toMatchObject({
+      type: 'event/session-activity',
+      payload: activity
+    })
+
+    const legacy = await readyClient({}, [])
+    legacy.client.emitSessionActivity(activity)
+    expect(legacy.t.sent).toHaveLength(0)
   })
 
   it('keeps hook/report correlated until the CP durably ACKs it', async () => {

@@ -733,6 +733,22 @@ describe('session read-back frames (console history pull)', () => {
     if (!legacyReq.ok || !isFrame('session/history')(legacyReq.frame))
       throw new Error('expected legacy session/history')
     expect(legacyReq.frame.payload.agentId).toBeUndefined()
+    const tailReq = decodeEnvelope(
+      envelope('session/history', { agentId: AGENT_ID, sessionId: SESSION_ID, after: '42' })
+    )
+    expect(tailReq.ok).toBe(true)
+    if (!tailReq.ok || !isFrame('session/history')(tailReq.frame)) throw new Error('expected tail request')
+    expect(tailReq.frame.payload.after).toBe('42')
+    expect(
+      decodeEnvelope(
+        envelope('session/history', {
+          agentId: AGENT_ID,
+          sessionId: SESSION_ID,
+          cursor: 'older',
+          after: '42'
+        })
+      ).ok
+    ).toBe(false)
 
     const page = decodeEnvelope(
       envelope('session/history/page', {
@@ -747,7 +763,9 @@ describe('session read-back frames (console history pull)', () => {
             attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: 'aW1hZ2U=' }]
           }
         ],
-        nextCursor: 'c-50'
+        nextCursor: 'c-50',
+        liveCursor: '42',
+        liveMore: true
       })
     )
     expect(page.ok).toBe(true)
@@ -755,6 +773,8 @@ describe('session read-back frames (console history pull)', () => {
     expect(page.frame.payload.messages[0]!.text).toBe('ship it')
     expect(page.frame.payload.messages[0]!.attachments?.[0]?.name).toBe('screen.webp')
     expect(page.frame.payload.nextCursor).toBe('c-50')
+    expect(page.frame.payload.liveCursor).toBe('42')
+    expect(page.frame.payload.liveMore).toBe(true)
   })
 
   it('session/history/page carries an enriched tool row (body + tool metadata)', () => {
@@ -1080,6 +1100,21 @@ describe('event/session sessionKey (session-metadata sync)', () => {
     expect(r.frame.payload.channelName).toBe('deploys')
     expect(r.frame.payload.triggeredByName).toBe('Dana Reyes')
     expect(r.frame.payload.threadUrl).toBe('https://slack.example/archives/C123/pT9')
+  })
+
+  it('accepts a metadata-only session activity cursor', () => {
+    const decoded = decodeEnvelope(
+      envelope('event/session-activity', {
+        sessionId: 'acp-sess-01H9',
+        agentId: AGENT_ID,
+        revision: '43',
+        ts: '2026-07-05T00:00:02.000Z'
+      })
+    )
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok || !isFrame('event/session-activity')(decoded.frame))
+      throw new Error('expected event/session-activity')
+    expect(decoded.frame.payload.revision).toBe('43')
   })
 })
 

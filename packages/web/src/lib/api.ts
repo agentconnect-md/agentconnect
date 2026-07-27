@@ -383,6 +383,8 @@ export interface SessionHistoryDto {
   sessionId: string
   messages: SessionMessageDto[]
   nextCursor: string | null
+  liveCursor: string | null
+  liveMore: boolean
 }
 
 // A scheduled trigger (`/crons`): every `schedule` tick the owning agent is
@@ -942,7 +944,18 @@ async function apiGet<T>(path: string): Promise<T> {
   return (await res.json()) as T
 }
 
-type SessionInvalidationHandler = () => void
+export interface SessionActivityDto {
+  sessionId: string
+  agentId: string
+  revision: string
+  ts: string
+}
+
+export interface SessionEventHandlers {
+  onConnect: () => void
+  onSession: () => void
+  onActivity: (activity: SessionActivityDto) => void
+}
 
 function waitBeforeReconnect(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -960,7 +973,7 @@ function waitBeforeReconnect(ms: number, signal: AbortSignal): Promise<void> {
 async function readSessionEventStream(
   orgId: string,
   signal: AbortSignal,
-  onInvalidate: SessionInvalidationHandler
+  handlers: SessionEventHandlers
 ): Promise<void> {
   const path = `/orgs/${encodeURIComponent(orgId)}/stream`
   const res = await fetch(`${cpBase()}${path}`, {
@@ -974,12 +987,29 @@ async function readSessionEventStream(
   // The sink has no replay/event ids, so every successful (re)connect invalidates
   // the list once. This closes both a disconnect gap and the initial GET→subscribe
   // race without requiring a polling cache layer.
-  onInvalidate()
+  handlers.onConnect()
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   const parser = createSseParser((event) => {
-    if (event.event === 'session') onInvalidate()
+    if (event.event === 'session') {
+      handlers.onSession()
+      return
+    }
+    if (event.event !== 'session-activity') return
+    try {
+      const activity = (JSON.parse(event.data) as { activity?: SessionActivityDto }).activity
+      if (
+        activity &&
+        typeof activity.sessionId === 'string' &&
+        typeof activity.agentId === 'string' &&
+        /^\d+$/.test(activity.revision) &&
+        typeof activity.ts === 'string'
+      )
+        handlers.onActivity(activity)
+    } catch {
+      // A malformed optional invalidation is ignored; reconnect/fallback polling heals it.
+    }
   })
 
   try {
@@ -995,13 +1025,13 @@ async function readSessionEventStream(
 }
 
 /**
- * Subscribe to the org's session-milestone SSE feed with the same auth headers
- * as REST calls. The callback is an invalidation signal (on connect and on each
- * session event), not an authoritative event payload. Returns an abort cleanup.
+ * Subscribe to the org's session SSE feed with the same auth headers as REST.
+ * Lifecycle events invalidate lists; activity events identify the transcript
+ * that should pull its daemon-local tail. Returns an abort cleanup.
  */
 export function subscribeSessionEvents(
   orgId: string,
-  onInvalidate: SessionInvalidationHandler,
+  handlers: SessionEventHandlers,
   onError?: (error: unknown) => void
 ): () => void {
   const ctrl = new AbortController()
@@ -1010,7 +1040,7 @@ export function subscribeSessionEvents(
   void (async () => {
     while (!ctrl.signal.aborted) {
       try {
-        await readSessionEventStream(orgId, ctrl.signal, onInvalidate)
+        await readSessionEventStream(orgId, ctrl.signal, handlers)
         retryMs = 1000
       } catch (error) {
         if (ctrl.signal.aborted) return
@@ -1602,9 +1632,13 @@ export function fetchSessionDetail(sessionId: string, orgId?: string): Promise<S
 // One page of a session's transcript, proxied live from the owning daemon. The
 // CP resolves the owner and daemon from its SessionMeta row; 503 if that daemon
 // is offline or the owning agent is unplaced.
-export async function fetchSessionMessages(sessionId: string, cursor?: string, limit = 50): Promise<SessionHistoryDto> {
-  const q = new URLSearchParams({ limit: String(limit) })
-  if (cursor) q.set('cursor', cursor)
+export async function fetchSessionMessages(
+  sessionId: string,
+  options: { cursor?: string; after?: string; limit?: number } = {}
+): Promise<SessionHistoryDto> {
+  const q = new URLSearchParams({ limit: String(options.limit ?? 50) })
+  if (options.cursor) q.set('cursor', options.cursor)
+  if (options.after) q.set('after', options.after)
   return apiGet<SessionHistoryDto>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/messages?${q.toString()}`)
 }
 

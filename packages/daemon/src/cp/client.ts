@@ -12,6 +12,7 @@ import type {
   FactsMcpServer,
   UsageReport,
   EventSession,
+  SessionActivity,
   IntegrationChannels,
   CronReport,
   HookReport,
@@ -64,7 +65,13 @@ import type {
   DreamFileReadReq,
   DreamSkillReviewReq
 } from '@agentconnect.md/protocol'
-import { buildEnvelope, decodeEnvelope, encode, MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
+import {
+  buildEnvelope,
+  decodeEnvelope,
+  encode,
+  MAX_FRAME_BYTES,
+  SESSION_LIVE_TAIL_FEATURE
+} from '@agentconnect.md/protocol'
 import type { SessionReader } from './session-reader.js'
 import { WorkspaceConflictError, WorkspaceViolationError, type WorkspaceReader } from './workspace-reader.js'
 import {
@@ -382,6 +389,13 @@ export class CpClient {
   emitEventSession(event: EventSession): void {
     if (this.state !== 'READY' && this.state !== 'DRAINING') return
     this.transport?.send(encode(buildEnvelope('event/session', event)))
+  }
+
+  /** Signal a durable transcript mutation without putting message content on the control WS. */
+  emitSessionActivity(activity: SessionActivity): void {
+    if (this.state !== 'READY' && this.state !== 'DRAINING') return
+    if (!this.supportsServerFeature(SESSION_LIVE_TAIL_FEATURE)) return
+    this.transport?.send(encode(buildEnvelope('event/session-activity', activity)))
   }
 
   /**

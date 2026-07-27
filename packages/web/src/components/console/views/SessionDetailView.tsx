@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import useSWR from 'swr'
@@ -51,6 +51,7 @@ import { formatTranscriptTime, parseTranscriptTime } from '@/lib/transcript-time
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
 import { sessionSenderLabel } from '@/lib/session-trigger'
+import { mergeSessionMessages } from '@/lib/session-transcript'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
@@ -527,7 +528,16 @@ export default function SessionDetailView() {
   const { activeOrg, orgPath } = useOrgs()
   const router = useRouter()
   const { id } = useParams<{ id: string }>()
-  const { agents, allSessions, sessionsLoading, crons, daemons, members } = useConsoleData()
+  const {
+    agents,
+    allSessions,
+    sessionsLoading,
+    crons,
+    daemons,
+    members,
+    sessionActivityVersionById,
+    sessionStreamGeneration
+  } = useConsoleData()
   const {
     getPgSession,
     getLiveSteps,
@@ -550,6 +560,7 @@ export default function SessionDetailView() {
   const [msgLoading, setMsgLoading] = useState(false)
   const [msgPaging, setMsgPaging] = useState(false)
   const [msgErr, setMsgErr] = useState<string | null>(null)
+  const [tailReady, setTailReady] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [showThinking, setShowThinking] = useState(true)
   const [showTools, setShowTools] = useState(true)
@@ -561,6 +572,11 @@ export default function SessionDetailView() {
     Record<string, { model?: string; effort?: string; permissionMode?: string }>
   >({})
   const imageInputRef = useRef<HTMLInputElement>(null)
+  const liveCursorRef = useRef<string | null>(null)
+  const tailSessionRef = useRef<string | null>(null)
+  const tailReadyRef = useRef(false)
+  const tailInFlightRef = useRef<Promise<void> | null>(null)
+  const tailDirtyRef = useRef(false)
 
   const localSession = getPgSession(id) ?? allSessions.find((s) => s.id === id) ?? null
   // Relationship links can point outside the cursor pages loaded by SessionsView.
@@ -592,6 +608,8 @@ export default function SessionDetailView() {
   const agentRuntime = session?.runtime || owner?.runtime || ''
   const runtimeMeta = acpRuntime(acpRegistry, agentRuntime)
   const sessionBusy = session ? isPgBusy(session.id) : false
+  const sessionBusyRef = useRef(sessionBusy)
+  sessionBusyRef.current = sessionBusy
 
   // A fresh Playground starts on a synthetic `pg_…` route so it can render before
   // the runtime creates a durable session. As soon as the real id arrives, make it
@@ -631,13 +649,16 @@ export default function SessionDetailView() {
   useEffect(() => {
     if (!wantTranscript || !sid || !aid) return
     let active = true
+    tailSessionRef.current = sid
+    tailReadyRef.current = false
+    liveCursorRef.current = null
+    tailInFlightRef.current = null
+    tailDirtyRef.current = false
+    setTailReady(false)
     setMsgLoading(true)
     setMsgErr(null)
     setMsgs(null)
     setMsgPaging(false)
-    // We're loading authoritative history — drop any optimistic live tail from a prior
-    // visit so a resumed turn already in that history doesn't also render from the tail.
-    clearLiveSteps(sid)
     // Pull the WHOLE history, not just the newest frame-budgeted page: render the
     // first (newest) page immediately, then keep paging strictly older via
     // nextCursor, prepending each page. Bounded so a pathological session can't
@@ -646,20 +667,30 @@ export default function SessionDetailView() {
     ;(async () => {
       let all: SessionMessageDto[] = []
       let cursor: string | undefined
+      let liveCursor: string | null = null
       for (let i = 0; i < MAX_PAGES; i++) {
-        const page = await fetchSessionMessages(sid, cursor)
+        const page = await fetchSessionMessages(sid, { ...(cursor ? { cursor } : {}) })
         if (!active) return
+        if (i === 0) liveCursor = page.liveCursor ?? null
         all = [...page.messages, ...all]
         setMsgs(all)
         setMsgLoading(false)
         if (!page.nextCursor) {
           setMsgPaging(false)
+          liveCursorRef.current = liveCursor
+          tailReadyRef.current = true
+          setTailReady(true)
+          if (!sessionBusyRef.current) clearLiveSteps(sid)
           return
         }
         cursor = page.nextCursor
         setMsgPaging(true)
       }
       setMsgPaging(false)
+      liveCursorRef.current = liveCursor
+      tailReadyRef.current = true
+      setTailReady(true)
+      if (!sessionBusyRef.current) clearLiveSteps(sid)
     })().catch((e) => {
       if (!active) return
       setMsgErr(e instanceof Error ? e.message : String(e))
@@ -668,8 +699,63 @@ export default function SessionDetailView() {
     })
     return () => {
       active = false
+      if (tailSessionRef.current === sid) {
+        tailSessionRef.current = null
+        tailReadyRef.current = false
+      }
     }
   }, [wantTranscript, sid, aid, clearLiveSteps])
+
+  const refreshTranscriptTail = useCallback((): Promise<void> => {
+    if (!wantTranscript || !sid || !tailReadyRef.current || sessionBusyRef.current) return Promise.resolve()
+    if (tailInFlightRef.current) {
+      tailDirtyRef.current = true
+      return tailInFlightRef.current
+    }
+    const platform = session?.platform ?? ''
+    const run = (async () => {
+      let cursor = liveCursorRef.current
+      for (let pageNo = 0; pageNo < 20; pageNo++) {
+        const page = await fetchSessionMessages(sid, {
+          ...(cursor !== null ? { after: cursor } : {}),
+          limit: 200
+        })
+        if (tailSessionRef.current !== sid) return
+        setMsgs((current) => mergeSessionMessages(current ?? [], page.messages, platform))
+        if (page.liveCursor !== null) {
+          cursor = page.liveCursor
+          liveCursorRef.current = cursor
+        }
+        if (!page.liveMore || page.liveCursor === null) break
+      }
+      if (tailSessionRef.current === sid && !sessionBusyRef.current) clearLiveSteps(sid)
+    })()
+      .catch(() => {
+        // Keep the last good transcript. The next SSE signal, reconnect, or
+        // safety poll retries without replacing visible history with an error.
+      })
+      .finally(() => {
+        if (tailInFlightRef.current !== run) return
+        tailInFlightRef.current = null
+        const retry = tailDirtyRef.current && tailSessionRef.current === sid
+        tailDirtyRef.current = false
+        if (retry) void refreshTranscriptTail()
+      })
+    tailInFlightRef.current = run
+    return run
+  }, [wantTranscript, sid, session?.platform, clearLiveSteps])
+
+  const sessionActivityVersion = sid ? (sessionActivityVersionById[sid] ?? 0) : 0
+  useEffect(() => {
+    if (!tailReady || sessionBusy) return
+    void refreshTranscriptTail()
+  }, [tailReady, sessionBusy, sessionActivityVersion, sessionStreamGeneration, refreshTranscriptTail])
+
+  useEffect(() => {
+    if (!tailReady) return
+    const timer = window.setInterval(() => void refreshTranscriptTail(), 15_000)
+    return () => window.clearInterval(timer)
+  }, [tailReady, refreshTranscriptTail])
 
   useEffect(() => {
     if (!session || (session.platform !== 'playground' && session.platform !== 'webchat') || !sessionBusy) return

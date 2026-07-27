@@ -1,24 +1,24 @@
 /**
  * `events/sink.ts` — the dashboard feed seam (design §2.3 `SessionEventSink`).
  *
- * The WS `event/session` handler `publish()`es converged session milestones
- * (NO bodies — metadata only); the C2 SSE route (`/stream`) `subscribe()`s and
- * relays them to the WebUI. An in-process pub/sub for the co-process MVP; the Go
- * split replaces the implementation behind this port (e.g. a broker) without
- * touching either edge.
+ * The WS handlers publish converged session milestones plus body-free transcript
+ * invalidations; the C2 SSE route (`/stream`) relays them to the WebUI. An
+ * in-process pub/sub for the co-process MVP; the Go split replaces the
+ * implementation behind this port (e.g. a broker) without touching either edge.
  */
-import type { EventSession } from '@agentconnect.md/protocol'
+import type { EventSession, SessionActivity } from '@agentconnect.md/protocol'
 import type { DaemonId } from '../domain/ids.js'
 
-/** A milestone as relayed to subscribers: the daemon that reported it + the event. */
-export interface SessionEventEnvelope {
-  daemonId: DaemonId
-  event: EventSession
-}
+/** A metadata event as relayed to subscribers, stamped with its reporting daemon. */
+export type SessionEventEnvelope =
+  | { daemonId: DaemonId; event: EventSession; activity?: never }
+  | { daemonId: DaemonId; activity: SessionActivity; event?: never }
 
 export interface SessionEventSink {
   /** Fan a converged milestone out to all current subscribers. */
   publish(daemonId: DaemonId, ev: EventSession): void
+  /** Fan a body-free transcript invalidation out to current subscribers. */
+  publishActivity(daemonId: DaemonId, activity: SessionActivity): void
   /** Subscribe; returns an unsubscribe fn. */
   subscribe(cb: (e: SessionEventEnvelope) => void): () => void
 }
@@ -29,6 +29,14 @@ export class InMemorySessionEventSink implements SessionEventSink {
 
   publish(daemonId: DaemonId, ev: EventSession): void {
     const envelope: SessionEventEnvelope = { daemonId, event: ev }
+    this.fanOut(envelope)
+  }
+
+  publishActivity(daemonId: DaemonId, activity: SessionActivity): void {
+    this.fanOut({ daemonId, activity })
+  }
+
+  private fanOut(envelope: SessionEventEnvelope): void {
     for (const cb of this.subscribers) {
       try {
         cb(envelope)

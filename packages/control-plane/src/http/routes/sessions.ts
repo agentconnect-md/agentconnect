@@ -257,10 +257,19 @@ function sessionDto(s: SessionPageRow, hookMetadata: Map<string, HookSessionMeta
   }
 }
 
-const SessionHistoryQueryDto = z.object({
-  cursor: z.string().optional(),
-  limit: z.coerce.number().int().positive().max(200).optional()
-})
+const SessionHistoryQueryDto = z
+  .object({
+    cursor: z.string().optional(),
+    after: z
+      .string()
+      .regex(/^\d+$/)
+      .refine((value) => Number.isSafeInteger(Number(value)))
+      .optional(),
+    limit: z.coerce.number().int().positive().max(200).optional()
+  })
+  .refine(({ cursor, after }) => cursor === undefined || after === undefined, {
+    message: 'cursor and after are mutually exclusive'
+  })
 
 export function sessionRoutes(deps: HttpDeps) {
   return async function sessionRoutesPlugin(app: FastifyInstance): Promise<void> {
@@ -479,9 +488,16 @@ export function sessionRoutes(deps: HttpDeps) {
             agentId: session.agentId,
             sessionId: session.id,
             ...(req.query.cursor !== undefined ? { cursor: req.query.cursor } : {}),
+            ...(req.query.after !== undefined ? { after: req.query.after } : {}),
             limit: req.query.limit ?? 50
           })
-          return { sessionId: page.sessionId, messages: page.messages, nextCursor: page.nextCursor ?? null }
+          return {
+            sessionId: page.sessionId,
+            messages: page.messages,
+            nextCursor: page.nextCursor ?? null,
+            liveCursor: page.liveCursor ?? null,
+            liveMore: page.liveMore ?? false
+          }
         } catch (err) {
           if (err instanceof NoConnection) {
             return reply
