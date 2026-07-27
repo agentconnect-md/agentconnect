@@ -439,6 +439,58 @@ describe('DELETE /mcp-providers/:id — serialized against agent enable-list wri
     expect(agent.mcpServers).toEqual([])
   })
 
+  it('a removal committed between the fence and the row write cannot revive the hold exemption (row-locked authorize)', async () => {
+    // The hold decision is evaluated INSIDE the agent-row-locked update transaction,
+    // against the committed list that write merges onto. A removal-only PATCH joins
+    // no provider-name chain, so it CAN commit inside the fence-to-write window —
+    // and any hold read taken earlier in the fence would wrongly keep exempting the
+    // stale writer. Here: restricted 'linear' held by an org-visible agent; the
+    // collaborator's stale full-replace PATCH parks just before its row update; the
+    // owner's removal commits; on resume the row-locked read shows nothing held,
+    // so re-adding the invisible provider is refused.
+    const owner = await makeUser('mcph-owner', 'owner')
+    const collab = await makeUser('mcph-collab', 'collaborator')
+    const ownerApp = appAs(owner)
+    const collabApp = appAs(collab)
+
+    const created = await ownerApp.app.inject({
+      method: 'POST',
+      url: `${ORG}/mcp-providers`,
+      payload: { name: 'linear', url: 'https://mcp.example.com/mcp', visibility: 'restricted', sharedWith: [] }
+    })
+    expect(created.statusCode).toBe(201)
+    const agentId = await createAgent(ownerApp, 'held-agent', ['linear'])
+
+    const writer = collabApp.deps.repos.agentConfig
+    const realUpdate = writer.update.bind(writer)
+    let releaseWriter!: () => void
+    const gate = new Promise<void>((r) => (releaseWriter = r))
+    let notifyParked!: () => void
+    const parked = new Promise<void>((r) => (notifyParked = r))
+    writer.update = async (...args: Parameters<typeof realUpdate>) => {
+      notifyParked()
+      await gate
+      return realUpdate(...args)
+    }
+    const stalePatch = collabApp.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { mcpServers: ['linear'] } // full replace — "unchanged" from its stale view
+    })
+    await parked
+
+    // The removal joins no chain — it lands inside the fence-to-write window.
+    expect(
+      (await ownerApp.app.inject({ method: 'PATCH', url: `${ORG}/agents/${agentId}`, payload: { mcpServers: [] } }))
+        .statusCode
+    ).toBe(200)
+
+    releaseWriter()
+    expect((await stalePatch).statusCode).toBe(403) // row-locked read: nothing held; 'linear' is invisible
+    const agent = (await ownerApp.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })).json()
+    expect(agent.mcpServers).toEqual([])
+  })
+
   it('a sharing flip queues behind an in-flight enable (no check-to-commit visibility race)', async () => {
     // PUT /mcp-providers/:id/sharing joins the name chain: an agent write authorizes
     // visibility INSIDE that chain, so a restrict must not land between its check

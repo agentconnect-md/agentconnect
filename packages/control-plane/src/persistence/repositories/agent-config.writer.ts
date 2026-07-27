@@ -12,7 +12,7 @@
  */
 import type { PrismaClient } from '../../generated/prisma/client.js'
 import { withTx } from '../prisma.js'
-import type { AgentConfigWriter, AgentRecord, CreateAgentInput, UpdateAgentInput } from '../ports.js'
+import type { AgentConfigWriter, AgentRecord, AgentUpdateOpts, CreateAgentInput, UpdateAgentInput } from '../ports.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import type { AgentId } from '../../domain/ids.js'
 import { PgAgentRepo } from './agent.repo.js'
@@ -38,14 +38,15 @@ export class PgAgentConfigWriter implements AgentConfigWriter {
   async update(
     agentId: AgentId,
     patch: UpdateAgentInput,
-    secrets?: Record<string, string | null>
+    secrets?: Record<string, string | null>,
+    opts?: AgentUpdateOpts
   ): Promise<AgentRecord> {
     const sealed = secrets && Object.keys(secrets).length > 0 ? await sealSecretPatch(this.cipher, secrets) : undefined
     return withTx(this.prisma, async (tx) => {
       if (sealed) await applySealedSecretPatch(tx, agentId, sealed)
       // The row update last: it stamps lastModifiedAt, so the audit advance and
       // the secret rows commit (or roll back) as one edit.
-      return new PgAgentRepo(tx).update(agentId, patch)
+      return new PgAgentRepo(tx).update(agentId, patch, opts)
     })
   }
 }

@@ -637,10 +637,20 @@ export interface AgentRecord {
   lastModifiedBy: AgentCreator | null // WebUI user who last edited it; null ⇒ never edited by a human
 }
 
+export interface AgentUpdateOpts {
+  authorizeMcpServers?: (currentlyHeld: readonly string[]) => void
+}
+
 export interface AgentRepo {
   create(input: CreateAgentInput): Promise<AgentRecord>
   get(agentId: AgentId): Promise<AgentRecord | null>
-  update(agentId: AgentId, patch: UpdateAgentInput): Promise<AgentRecord>
+  /** `opts.authorizeMcpServers` (only meaningful when the patch includes
+   *  `mcpServers`) runs INSIDE the row-locked transaction, right after the
+   *  committed runtimeOverrides read, with the agent's currently-held MCP list —
+   *  the one atomic point where an enable-list authorization decision and the
+   *  write it guards cannot be separated by a concurrent removal. A throw
+   *  aborts the transaction. */
+  update(agentId: AgentId, patch: UpdateAgentInput, opts?: AgentUpdateOpts): Promise<AgentRecord>
   /** Compare-and-set a workspace edit. The caller has already drained/proved
    *  an owning daemon when one exists. */
   setWorkspace(
@@ -1979,7 +1989,12 @@ export interface AgentConfigWriter {
   create(input: CreateAgentInput, secrets?: Record<string, string>): Promise<AgentRecord>
   /** Apply a PATCH: secret merge (see {@link AgentSecretStore.merge} semantics)
    *  + row update in one transaction. */
-  update(agentId: AgentId, patch: UpdateAgentInput, secrets?: Record<string, string | null>): Promise<AgentRecord>
+  update(
+    agentId: AgentId,
+    patch: UpdateAgentInput,
+    secrets?: Record<string, string | null>,
+    opts?: AgentUpdateOpts
+  ): Promise<AgentRecord>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

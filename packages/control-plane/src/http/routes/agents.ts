@@ -584,35 +584,38 @@ export function agentRoutes(deps: HttpDeps) {
     // missed reference is not.
     //
     // The visibility gate re-runs INSIDE the fence, with the keep-exemption derived
-    // from the agent's COMMITTED enable-list read inside the fence — never from
-    // request-time snapshots: a route-entry `before` list and a pre-fence provider
-    // identity map are captured at different instants, so a removal + same-name
-    // replacement landing between them can smuggle the replacement in as the
-    // "grandfathered" row. Committed-hold is sound on its own: while an agent holds
-    // a name, its provider row can be neither deleted nor name-captured by a new
-    // row (both 409 while referenced), so a held name's current row is necessarily
-    // the one the hold was originally authorized against. Sharing changes join the
-    // same name chain (routes/mcp-providers.ts), so visibility cannot flip between
-    // this check and run()'s commit. A refusal surfaces as McpEnableDenied (the
+    // from the agent's COMMITTED enable-list — never from request-time snapshots.
+    // Committed-hold is sound on its own: while an agent holds a name, its provider
+    // row can be neither deleted nor name-captured by a new row (both 409 while
+    // referenced), so a held name's current row is necessarily the one the hold was
+    // originally authorized against.
+    //
+    // The decision itself is handed to `run` as a checker and evaluated INSIDE the
+    // agent-row-locked update transaction (AgentUpdateOpts.authorizeMcpServers),
+    // against the same committed list that write is about to merge onto: a
+    // removal-only PATCH joins no provider-name chain, so any hold read taken here
+    // in the fence could be invalidated before the write lands — only the row lock
+    // makes hold-check and write inseparable. The registry/visibility sets ARE safe
+    // to capture here: provider create/delete/sharing all serialize on the very
+    // name chains this fence holds. A refusal surfaces as McpEnableDenied (the
     // route maps it to 403).
     const withSubmittedMcpProviderChains = async <T>(
       orgId: OrgId,
       ctx: ViewCtx,
-      agentId: AgentId | null, // null on create — a new agent grandfathers nothing
       submitted: readonly string[] | null | undefined,
-      run: () => Promise<T>
+      run: (authorizeMcpServers: (currentlyHeld: readonly string[]) => void) => Promise<T>
     ): Promise<T> => {
-      if (!submitted || submitted.length === 0) return run()
+      if (!submitted || submitted.length === 0) return run(() => {})
       return serializeByProviderNames(orgId, submitted, async () => {
-        const live = agentId ? await deps.repos.agent.get(agentId) : null
-        const held = new Set(live?.mcpServers ?? [])
         const registry = new Set((await deps.repos.mcpProvider.listForOrg(orgId)).map((p) => p.name))
         const visible = new Set((await deps.repos.mcpProvider.listForOrg(orgId, ctx)).map((p) => p.name))
-        const blocked = submitted.filter((n) => registry.has(n) && !held.has(n) && !visible.has(n))
-        if (blocked.length) {
-          throw new McpEnableDenied(`cannot enable MCP provider you don't have access to: ${blocked.join(', ')}`)
-        }
-        return run()
+        return run((currentlyHeld) => {
+          const held = new Set(currentlyHeld)
+          const blocked = submitted.filter((n) => registry.has(n) && !held.has(n) && !visible.has(n))
+          if (blocked.length) {
+            throw new McpEnableDenied(`cannot enable MCP provider you don't have access to: ${blocked.join(', ')}`)
+          }
+        })
       })
     }
 
@@ -932,8 +935,11 @@ export function agentRoutes(deps: HttpDeps) {
           // provider-delete's check→drop window.
           let agent: AgentRecord
           try {
-            agent = await withSubmittedMcpProviderChains(orgOf(req), ctxOf(req), null, req.body.mcpServers, () =>
-              deps.repos.agentConfig.create(
+            agent = await withSubmittedMcpProviderChains(orgOf(req), ctxOf(req), req.body.mcpServers, (authorize) => {
+              // A not-yet-created agent holds nothing, and nothing can concurrently
+              // remove from it — the empty-hold decision is stable through create.
+              authorize([])
+              return deps.repos.agentConfig.create(
                 {
                   id: agentId,
                   orgId: orgOf(req),
@@ -975,7 +981,7 @@ export function agentRoutes(deps: HttpDeps) {
                 // replicateUpsert below always sees the complete definition.
                 req.body.secrets
               )
-            )
+            })
           } catch (e) {
             if (e instanceof McpEnableDenied) {
               return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: e.message })
@@ -1364,16 +1370,18 @@ export function agentRoutes(deps: HttpDeps) {
             agent = await withSubmittedMcpProviderChains(
               orgOf(req),
               ctxOf(req),
-              AgentId(req.params.id),
               req.body.mcpServers,
-              () =>
+              (authorizeMcpServers) =>
                 deps.repos.agentConfig.update(
                   AgentId(req.params.id),
                   {
                     ...bodyPatch,
                     ...(req.principal ? { lastModifiedByUserId: req.principal.userId } : {})
                   },
-                  secretsPatch
+                  secretsPatch,
+                  // Evaluated inside the row-locked transaction, against the same
+                  // committed list this write merges onto (see the fence helper).
+                  { authorizeMcpServers }
                 )
             )
           } catch (e) {

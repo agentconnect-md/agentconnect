@@ -9,6 +9,7 @@ import type {
   AgentCallPolicy,
   AgentRepo,
   AgentRecord,
+  AgentUpdateOpts,
   AgentWorkspace,
   CreateAgentInput,
   HookRecord,
@@ -250,14 +251,15 @@ export class PgAgentRepo implements AgentRepo {
     return a ? toRecord(a) : null
   }
 
-  async update(agentId: AgentId, patch: UpdateAgentInput): Promise<AgentRecord> {
-    return this.transaction(async (tx) => this.updateInTx(tx, agentId, patch))
+  async update(agentId: AgentId, patch: UpdateAgentInput, opts?: AgentUpdateOpts): Promise<AgentRecord> {
+    return this.transaction(async (tx) => this.updateInTx(tx, agentId, patch, opts))
   }
 
   private async updateInTx(
     tx: Prisma.TransactionClient,
     agentId: AgentId,
-    patch: UpdateAgentInput
+    patch: UpdateAgentInput,
+    opts?: AgentUpdateOpts
   ): Promise<AgentRecord> {
     // model/reasoningEffort/env live in the runtimeOverrides JSON — merge key by
     // key so patching one never clobbers the others (null deletes its key).
@@ -287,6 +289,11 @@ export class PgAgentRepo implements AgentRepo {
         Prisma.sql`SELECT "runtimeOverrides" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
       )
       const cur = (rows[0]?.runtimeOverrides ?? null) as RuntimeOverrides | null
+      // The enable-list authorization decision happens HERE, against the row-locked
+      // committed list — a removal-only write (which joins no provider-name chain)
+      // can no longer land between the hold check and the write it authorized. A
+      // throw aborts the transaction before any merge is computed.
+      opts?.authorizeMcpServers?.(cur?.mcpServers ?? [])
       const next: RuntimeOverrides = { ...(cur ?? {}) }
       if (patch.model !== undefined) {
         if (patch.model === null) delete next.model
