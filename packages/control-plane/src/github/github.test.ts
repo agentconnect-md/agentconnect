@@ -305,7 +305,6 @@ describe('GithubService repository picker reads', () => {
         repositories: [
           {
             id: 1,
-            node_id: 'R_1',
             full_name: 'acme/one',
             private: true,
             default_branch: 'main',
@@ -331,55 +330,6 @@ describe('GithubService repository picker reads', () => {
     svc.invalidateRepositoryRoster(installation.installationId)
     await svc.listRepos(installation, 1, 100)
     expect(fetchImpl).toHaveBeenCalledTimes(2)
-  })
-
-  it('checks a large private page in bounded GraphQL batches', async () => {
-    const batchSizes: number[] = []
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as {
-        variables: { ids: string[]; login: string }
-      }
-      batchSizes.push(body.variables.ids.length)
-      expect(body.variables.login).toBe('octocat')
-      return Response.json({
-        data: {
-          nodes: body.variables.ids.map((id) => ({
-            id,
-            collaborators: {
-              edges:
-                id === 'R_0'
-                  ? [{ permission: 'ADMIN', node: { login: 'octocat' } }]
-                  : id === 'R_1'
-                    ? [{ permission: 'MAINTAIN', node: { login: 'octocat' } }]
-                    : id === 'R_2'
-                      ? [{ permission: 'TRIAGE', node: { login: 'octocat' } }]
-                      : []
-            }
-          }))
-        }
-      })
-    })
-    const svc = new GithubService({
-      cfg: cfg(),
-      clock: new FakeClock(1_700_000_000_000),
-      installations: {} as never,
-      installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
-      fetchImpl
-    })
-    vi.spyOn(svc.tokens, 'metadataToken').mockResolvedValue('ghs_metadata')
-    const repos = Array.from({ length: 51 }, (_, index) => ({
-      nodeId: `R_${index}`,
-      fullName: `acme/repo-${index}`
-    }))
-
-    const permissions = await svc.userRepoPermissions(installation, repos, 'octocat')
-
-    expect(batchSizes).toEqual([50, 1])
-    expect(permissions.get('R_0')).toBe('admin')
-    expect(permissions.get('R_1')).toBe('write')
-    expect(permissions.get('R_2')).toBe('read')
-    expect(permissions.get('R_50')).toBe('none')
   })
 })
 

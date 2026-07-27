@@ -134,7 +134,7 @@ function authz(opts: {
   permissions?: Record<string, RepoPermission>
 }) {
   const clock = new FakeClock(0)
-  const calls = { permission: 0, batches: 0 }
+  const calls = { permission: 0 }
   const svc = new GithubUserAuthzService({
     identity: { githubLoginFor: async () => opts.login ?? null },
     users: { getOidcSubject: async () => (opts.sub === undefined ? 'sub-1' : opts.sub) },
@@ -143,13 +143,6 @@ function authz(opts: {
       userRepoPermission: async (_ins, owner, repo) => {
         calls.permission++
         return opts.permissions?.[`${owner}/${repo}`] ?? opts.permission ?? 'none'
-      },
-      userRepoPermissions: async (_ins, repos) => {
-        calls.batches++
-        calls.permission += repos.length
-        return new Map(
-          repos.map(({ nodeId, fullName }) => [nodeId, opts.permissions?.[fullName] ?? opts.permission ?? 'none'])
-        )
       }
     },
     clock
@@ -220,29 +213,27 @@ describe('GithubUserAuthzService', () => {
       permissions: { 'o/readable': 'read', 'o/secret': 'none' }
     })
     const page = [
-      { nodeId: 'P', fullName: 'o/pub', private: false },
-      { nodeId: 'R', fullName: 'o/readable', private: true },
-      { nodeId: 'S', fullName: 'o/secret', private: true }
+      { fullName: 'o/pub', private: false },
+      { fullName: 'o/readable', private: true },
+      { fullName: 'o/secret', private: true }
     ]
     const visible = await svc.filterReposForUser('u1', INS, page)
     expect(visible.map((r) => r.fullName)).toEqual(['o/pub', 'o/readable'])
     expect(calls.permission).toBe(2) // public repos are never probed
-    expect(calls.batches).toBe(1)
   })
 
   it('list filter reuses the same permission cache as the gates', async () => {
     const { svc, calls } = authz({ login: 'me', repo: { private: true }, permission: 'read' })
-    await svc.filterReposForUser('u1', INS, [{ nodeId: 'R', fullName: 'o/r', private: true }])
+    await svc.filterReposForUser('u1', INS, [{ fullName: 'o/r', private: true }])
     await svc.assertAccess('u1', INS, 'o', 'r', 'read') // cache hit — no second probe
     expect(calls.permission).toBe(1)
-    expect(calls.batches).toBe(1)
   })
 
   it('list filter denies GITHUB_IDENTITY_REQUIRED like every other check', async () => {
     const { svc } = authz({ login: null })
-    await expect(
-      svc.filterReposForUser('u1', INS, [{ nodeId: 'P', fullName: 'o/pub', private: false }])
-    ).rejects.toMatchObject({ code: 'GITHUB_IDENTITY_REQUIRED' })
+    await expect(svc.filterReposForUser('u1', INS, [{ fullName: 'o/pub', private: false }])).rejects.toMatchObject({
+      code: 'GITHUB_IDENTITY_REQUIRED'
+    })
   })
 
   it('denial messages carry the effective permission for the write case', async () => {

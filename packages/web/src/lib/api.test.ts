@@ -288,7 +288,7 @@ describe('GitHub installation repositories', () => {
           : page === '2'
             ? [{ fullName: 'acme/beta-private', private: true }]
             : [{ fullName: 'acme/gamma', private: false }]
-      return new Response(JSON.stringify({ repos, totalCount: 201 }), {
+      return new Response(JSON.stringify({ repos, totalCount: 101 }), {
         status: 200,
         headers: { 'content-type': 'application/json' }
       })
@@ -306,9 +306,9 @@ describe('GitHub installation repositories', () => {
     expect(progress.at(-1)).toEqual(['acme/alpha', 'acme/beta-private', 'acme/gamma'])
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(fetchMock.mock.calls.map(([input]) => new URL(String(input)).searchParams.get('perPage'))).toEqual([
-      '100',
-      '100',
-      '100'
+      '50',
+      '50',
+      '50'
     ])
 
     await expect(fetchAllGithubRepos('installation-1')).resolves.toEqual(repos)
@@ -394,7 +394,7 @@ describe('GitHub installation repositories', () => {
       return new Response(
         JSON.stringify({
           repos: [{ fullName: `${url.pathname}-${url.searchParams.get('page')}`, private: true }],
-          totalCount: 101
+          totalCount: 51
         }),
         { status: 200, headers: { 'content-type': 'application/json' } }
       )

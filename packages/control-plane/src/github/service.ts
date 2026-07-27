@@ -41,7 +41,6 @@ interface GhInstallation {
 
 interface GhRepo {
   id: number | string
-  node_id: string
   full_name: string
   private: boolean
   default_branch: string
@@ -53,18 +52,6 @@ interface GhRepo {
 interface GhRepoPage {
   repos: GhRepo[]
   totalCount: number
-}
-
-interface GhGraphqlResponse<T> {
-  data?: T
-  errors?: Array<{ message?: string }>
-}
-
-interface GhRepoPermissionNode {
-  id: string
-  collaborators: {
-    edges: Array<{ permission: string; node: { login: string } }>
-  } | null
 }
 
 interface GhUser {
@@ -111,24 +98,6 @@ export interface GithubServiceDeps {
 const OUTDATED_INSTALLATIONS_CACHE_MS = 30_000
 const REPO_PAGE_CACHE_MS = 5 * 60_000
 const MAX_REPO_PAGE_CACHE_ENTRIES = 1_000
-const REPO_PERMISSION_BATCH_SIZE = 50
-const REPO_PERMISSIONS_QUERY = `
-  query RepositoryPermissions($ids: [ID!]!, $login: String!) {
-    nodes(ids: $ids) {
-      ... on Repository {
-        id
-        collaborators(login: $login, first: 1) {
-          edges {
-            permission
-            node {
-              login
-            }
-          }
-        }
-      }
-    }
-  }
-`
 
 /** Capability-level clamp per RepoAccess tier (agent-multi-repo-authorization.md
  *  decision 3). Only capabilities the daemon asked for are actually minted. */
@@ -567,64 +536,6 @@ export class GithubService {
     username: string
   ): Promise<'admin' | 'write' | 'read' | 'none'> {
     return this.userRepoPermissionWithPolicy(ins, owner, repo, username, 'legacy')
-  }
-
-  /** Resolve one user's effective permission across a picker page in bounded
-   * GraphQL batches. The page already came from this installation, so opaque
-   * node ids are both rename-stable and safe to query with its metadata token. */
-  async userRepoPermissions(
-    ins: GithubInstallationRecord,
-    repos: Array<{ nodeId: string; fullName: string }>,
-    username: string
-  ): Promise<ReadonlyMap<string, 'admin' | 'write' | 'read' | 'none'>> {
-    const permissions = new Map<string, 'admin' | 'write' | 'read' | 'none'>()
-    if (repos.length === 0) return permissions
-    const token = await this.tokens.metadataToken(ins.installationId)
-
-    for (let offset = 0; offset < repos.length; offset += REPO_PERMISSION_BATCH_SIZE) {
-      const batch = repos.slice(offset, offset + REPO_PERMISSION_BATCH_SIZE)
-      const response = await githubRequest<GhGraphqlResponse<{ nodes: Array<GhRepoPermissionNode | null> }>>(
-        '/graphql',
-        {
-          method: 'POST',
-          auth: token,
-          body: {
-            query: REPO_PERMISSIONS_QUERY,
-            variables: { ids: batch.map((repo) => repo.nodeId), login: username }
-          },
-          fetchImpl: this.deps.fetchImpl,
-          baseUrl: this.deps.baseUrl
-        }
-      )
-      if (!response.data || response.errors?.length) {
-        const detail = response.errors
-          ?.slice(0, 3)
-          .map((error) => error.message ?? 'unknown error')
-          .join('; ')
-        throw new GithubApiError(`github GraphQL error: ${detail || 'missing data'}`, 502, 'INTERNAL', true)
-      }
-
-      const byId = new Map(
-        response.data.nodes.filter((node): node is GhRepoPermissionNode => node !== null).map((node) => [node.id, node])
-      )
-      for (const repo of batch) {
-        const edge = byId
-          .get(repo.nodeId)
-          ?.collaborators?.edges.find((candidate) => candidate.node.login.toLowerCase() === username.toLowerCase())
-        const permission = edge?.permission
-        permissions.set(
-          repo.nodeId,
-          permission === 'ADMIN'
-            ? 'admin'
-            : permission === 'WRITE' || permission === 'MAINTAIN'
-              ? 'write'
-              : permission === 'READ' || permission === 'TRIAGE'
-                ? 'read'
-                : 'none'
-        )
-      }
-    }
-    return permissions
   }
 
   /** Authorization-specific permission lookup with the same strict error

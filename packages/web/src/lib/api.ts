@@ -3228,7 +3228,9 @@ export async function uninstallGithubInstallation(id: string): Promise<void> {
   invalidateGithubRepoRosterCache(id)
 }
 
-const GITHUB_REPO_PAGE_SIZE = 100
+// Smaller pages make the first permission-filtered results visible sooner;
+// later pages stream in under the shared request limiter.
+const GITHUB_REPO_PAGE_SIZE = 50
 const GITHUB_REPO_REQUEST_CONCURRENCY = 4
 const GITHUB_REPO_ROSTER_CACHE_MS = 5 * 60_000
 // GitHub-side 5xx/429 blips are common during incidents; a page read gets two

@@ -63,17 +63,14 @@ interface UserAuthzDeps {
       repo: string,
       username: string
     ): Promise<RepoPermission>
-    userRepoPermissions(
-      ins: GithubInstallationRecord,
-      repos: Array<{ nodeId: string; fullName: string }>,
-      username: string
-    ): Promise<ReadonlyMap<string, RepoPermission>>
   }
   users: { getOidcSubject(userId: string): Promise<string | null> }
   clock: Clock
 }
 
 const ACCESS_TTL_MS = 5 * 60_000
+/** Parallel verified REST permission probes per list-filter call. */
+const FILTER_CONCURRENCY = 8
 
 export class GithubUserAuthzService {
   /** (installation, repo, login) → effective permission; the one cacheable unit
@@ -134,61 +131,6 @@ export class GithubUserAuthzService {
     return pending
   }
 
-  /** Cached + per-repository deduped batch lookup for picker pages. An exact
-   * access check racing the batch joins the same promise instead of issuing its
-   * own REST request. */
-  private permissionsOf(
-    login: string,
-    ins: GithubInstallationRecord,
-    repos: Array<{ nodeId: string; fullName: string; owner: string; repo: string }>
-  ): Promise<RepoPermission[]> {
-    const results = new Array<Promise<RepoPermission>>(repos.length)
-    const fresh: Array<{
-      index: number
-      key: string
-      nodeId: string
-      fullName: string
-    }> = []
-
-    for (const [index, repo] of repos.entries()) {
-      const key = this.permissionKey(login, ins, repo.owner, repo.repo)
-      const cached = this.perms.get(key)
-      if (cached && cached.expiresAt > this.deps.clock.now()) {
-        results[index] = Promise.resolve(cached.value)
-        continue
-      }
-      const pending = this.permsInFlight.get(key)
-      if (pending) {
-        results[index] = pending
-        continue
-      }
-      fresh.push({ index, key, nodeId: repo.nodeId, fullName: repo.fullName })
-    }
-
-    if (fresh.length > 0) {
-      const batch = this.deps.github.userRepoPermissions(
-        ins,
-        fresh.map(({ nodeId, fullName }) => ({ nodeId, fullName })),
-        login
-      )
-      for (const repo of fresh) {
-        const pending = batch
-          .then((permissions) => {
-            const value = permissions.get(repo.nodeId) ?? 'none'
-            this.perms.set(repo.key, { value, expiresAt: this.deps.clock.now() + ACCESS_TTL_MS })
-            return value
-          })
-          .finally(() => {
-            if (this.permsInFlight.get(repo.key) === pending) this.permsInFlight.delete(repo.key)
-          })
-        this.permsInFlight.set(repo.key, pending)
-        results[repo.index] = pending
-      }
-    }
-
-    return Promise.all(results)
-  }
-
   /** Cached + deduped repo meta (privacy flag; null = out of grant). */
   private metaOf(ins: GithubInstallationRecord, owner: string, repo: string): Promise<{ private: boolean } | null> {
     const key = `${ins.installationId}:${owner}/${repo}`
@@ -232,26 +174,33 @@ export class GithubUserAuthzService {
    * List filter for the picker: keep public repos and private repos the caller
    * can read on GitHub — so no-access repo NAMES never render in the console.
    * Private repos are probed with the same cached permission unit as the gates
-   * (bounded GraphQL batches; the result shares the same per-repo cache as
-   * exact create/preflight gates). Throws
+   * using the verified REST endpoint with bounded concurrency. Throws
    * GITHUB_IDENTITY_REQUIRED like every other check — never a silent allow.
    */
-  async filterReposForUser<T extends { nodeId: string; fullName: string; private: boolean }>(
+  async filterReposForUser<T extends { fullName: string; private: boolean }>(
     userId: string,
     ins: GithubInstallationRecord,
     repos: T[]
   ): Promise<T[]> {
     const login = await this.loginOf(userId)
-    const privateRepos = repos.flatMap((candidate) => {
-      if (!candidate.private) return []
-      const [owner, repo] = candidate.fullName.split('/')
-      return owner && repo ? [{ nodeId: candidate.nodeId, fullName: candidate.fullName, owner, repo }] : []
-    })
-    const permissions = await this.permissionsOf(login, ins, privateRepos)
-    const readable = new Set(
-      privateRepos.flatMap((repo, index) => (permissions[index] === 'none' ? [] : [repo.nodeId]))
-    )
-    return repos.filter((repo) => !repo.private || readable.has(repo.nodeId))
+    const results = new Array<boolean>(repos.length).fill(false)
+    let next = 0
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const index = next++
+        if (index >= repos.length) return
+        const candidate = repos[index]!
+        if (!candidate.private) {
+          results[index] = true
+          continue
+        }
+        const [owner, repo] = candidate.fullName.split('/')
+        if (!owner || !repo) continue
+        results[index] = (await this.permissionOf(login, ins, owner, repo)) !== 'none'
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(FILTER_CONCURRENCY, repos.length) }, worker))
+    return repos.filter((_, index) => results[index])
   }
 
   /** The enforcement form: resolve access and throw USER_NO_ACCESS below `need`. */

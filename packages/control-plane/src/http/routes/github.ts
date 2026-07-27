@@ -278,7 +278,7 @@ export function githubRoutes(deps: HttpDeps) {
             ? await deps.githubUserAuthz.filterReposForUser(
                 req.principal!.userId,
                 ins,
-                repos.map((r) => ({ nodeId: r.node_id, fullName: r.full_name, private: r.private, repo: r }))
+                repos.map((r) => ({ fullName: r.full_name, private: r.private, repo: r }))
               )
             : repos.map((r) => ({ repo: r }))
           return {
