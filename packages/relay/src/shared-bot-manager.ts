@@ -190,7 +190,7 @@ export class SharedBotManager {
       a.botId,
       { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret },
       {
-        onMessage: (msg) => this.forward(a.botId, msg),
+        onMessage: (msg, meta) => this.forward(a.botId, msg, meta),
         onBotUserId: (uid) => this.router.setBotUserId(a.botId, uid),
         onChannelsChanged: (channels) => this.reportChannels({ botId: a.botId, channels }),
         agents: () => this.router.get(a.botId)?.agents ?? [],
@@ -310,7 +310,11 @@ export class SharedBotManager {
   /** Arbitrate + forward one message to its daemon (never throws — bounded loss).
    *  Reports a first-route/changed affinity to the CP, and on a genuine un-mentioned
    *  thread follow-up with no local affinity, pulls the persisted owner from the CP. */
-  private async forward(botId: string, msg: import('@agentconnect.md/protocol').WireNormalizedMessage): Promise<void> {
+  private async forward(
+    botId: string,
+    msg: import('@agentconnect.md/protocol').WireNormalizedMessage,
+    meta?: { noticeEligible?: boolean }
+  ): Promise<void> {
     // Filter before arbitration so a managed agent's platform copy cannot mutate
     // thread affinity or produce a CP assignment report.
     if (this.isAgentBotMessage(botId, msg)) {
@@ -344,7 +348,10 @@ export class SharedBotManager {
       if (!msg.sender.isBot && hasGatedMembers) {
         const mentioned = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
         if (msg.isDm || mentioned) {
-          await this.noticeGatedUnrouted(botId, msg)
+          // Only the authoritative event copy carries the notice (see
+          // SlackSharedIngestDeps.onMessage) — a mention's `message.channels`
+          // sibling may land on ANOTHER pod, where the per-pod latch can't help.
+          if (meta?.noticeEligible !== false) await this.noticeGatedUnrouted(botId, msg)
           return
         }
       }

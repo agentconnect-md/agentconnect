@@ -75,7 +75,7 @@ interface ManagerInternals {
   reportChannels(snapshot: RcBotChannels): void
   selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
   forwardSessionAction(botId: string, action: SharedSlackSessionAction): void
-  forward(botId: string, msg: WireNormalizedMessage): Promise<void>
+  forward(botId: string, msg: WireNormalizedMessage, meta?: { noticeEligible?: boolean }): Promise<void>
 }
 
 describe('SharedBotManager shared Slack session actions', () => {
@@ -594,6 +594,22 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
     expect(reportBotConversation).not.toHaveBeenCalled()
     expect(ingest.postText).toHaveBeenCalledTimes(1)
     expect(ingest.postText.mock.calls[0]![2]).toBe('123.456') // threaded, no channel spam
+  })
+
+  it("suppresses the notice for a mention's non-authoritative event copy (cross-pod dedupe)", async () => {
+    const manager = new SharedBotManager(deps())
+    const internals = manager as unknown as ManagerInternals
+    internals.router.upsert(gatedAssignment())
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+    const mention = dm({ channel: 'C9', isDm: false, thread: '1.2', text: '<@UBOT> hi', mentionedBots: ['UBOT'] })
+
+    // message.channels copy (this pod): dropped without a notice…
+    await internals.forward(BOT_ID, mention, { noticeEligible: false })
+    expect(ingest.postText).not.toHaveBeenCalled()
+    // …the app_mention copy (possibly ANOTHER pod) carries it.
+    await internals.forward(BOT_ID, mention, { noticeEligible: true })
+    expect(ingest.postText).toHaveBeenCalledTimes(1)
   })
 
   it('does nothing gated-related for a bot with no gated members', async () => {
