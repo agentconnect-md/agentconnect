@@ -175,6 +175,7 @@ export function MemoryPanel({
   const listRequest = useRef(0)
 
   const [editor, setEditor] = useState<FileBrowserEditorDraft | null>(null)
+  const [mobileListSignal, setMobileListSignal] = useState(0)
 
   // Existing-agent memory settings are one explicit draft. The content below
   // continues to reflect `persistedSettings` until Save succeeds, so selecting a
@@ -451,6 +452,12 @@ export function MemoryPanel({
 
   const closeEditor = () => {
     if (!editor?.saving) setEditor(null)
+  }
+
+  const backFromEditor = () => {
+    if (editor?.saving) return
+    setEditor(null)
+    setMobileListSignal((signal) => signal + 1)
   }
 
   const save = async () => {
@@ -834,7 +841,7 @@ export function MemoryPanel({
                 onDraftNameChange={(name) =>
                   setEditor((current) => (current?.target === '' ? { ...current, name, error: null } : current))
                 }
-                onBack={isMobile && editor ? closeEditor : undefined}
+                onBack={isMobile && editor ? backFromEditor : undefined}
                 disabled={editor?.saving}
                 nested={false}
                 ariaLabel="Memory file path"
@@ -866,7 +873,7 @@ export function MemoryPanel({
             }
           >
             <FileBrowserLayout
-              resetKey={agentId}
+              resetKey={`${agentId}:${mobileListSignal}`}
               previewOpen={editor !== null}
               tree={renderFileTree}
               preview={

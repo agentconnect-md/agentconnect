@@ -4,7 +4,7 @@ import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({ updateAgent: vi.fn() }))
+const mocks = vi.hoisted(() => ({ updateAgent: vi.fn(), isMobile: false }))
 
 vi.mock('next/dynamic', () => ({ default: () => () => null }))
 
@@ -44,7 +44,7 @@ vi.mock('@/components/console/FileBrowser', async () => {
   }
 })
 
-vi.mock('@/lib/use-is-mobile', () => ({ useIsMobile: () => false }))
+vi.mock('@/lib/use-is-mobile', () => ({ useIsMobile: () => mocks.isMobile }))
 
 vi.mock('@/components/console/RecordMemoryPanel', () => ({
   RecordMemoryPanel: () => <div data-testid="record-memory-view" />
@@ -70,6 +70,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 beforeEach(() => {
   mocks.updateAgent.mockReset().mockResolvedValue(undefined)
+  mocks.isMobile = false
   vi.mocked(listAgentMemory)
     .mockReset()
     .mockResolvedValue({
@@ -190,6 +191,44 @@ describe('MemoryPanel file editor', () => {
       'deploys.md',
       undefined
     )
+  })
+
+  it('returns mobile editing to the file list only from the breadcrumb back action', async () => {
+    mocks.isMobile = true
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <MemoryPanel
+          agentId="22222222-2222-4222-8222-222222222222"
+          canEdit
+          memoryProvider="managed"
+          autoDistill={false}
+        />
+      )
+      await Promise.resolve()
+    })
+
+    const memory = container.querySelector<HTMLElement>('[data-testid="file-memory-view"]')!
+    const tree = memory.querySelector<HTMLElement>('[data-file-browser-pane="tree"]')!
+    const preview = memory.querySelector<HTMLElement>('[data-file-browser-pane="preview"]')!
+    await clickButton(tree, 'MEMORY.md')
+    expect(tree.classList.contains('hidden')).toBe(true)
+    expect(preview.classList.contains('flex')).toBe(true)
+
+    await clickButton(memory, 'Edit')
+    await clickButton(memory, 'Cancel')
+    expect(tree.classList.contains('hidden')).toBe(true)
+    expect(preview.classList.contains('flex')).toBe(true)
+
+    await clickButton(memory, 'Edit')
+    const back = memory.querySelector<HTMLButtonElement>('button[aria-label="Back to files"]')
+    expect(back).not.toBeNull()
+    await act(async () => back?.click())
+    expect(tree.classList.contains('block')).toBe(true)
+    expect(preview.classList.contains('hidden')).toBe(true)
   })
 })
 
