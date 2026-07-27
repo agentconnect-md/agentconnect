@@ -138,7 +138,7 @@ export class SharedBotOrchestrator {
       { botId: bot.id, members: compiled.members.length, routes: compiled.routes.length },
       'shared-bot: broadcast assign to relay pool'
     )
-    await this.pushSpecs(compiled, secret, bot.shareable)
+    await this.pushSpecs(compiled, secret, bot)
   }
 
   /**
@@ -167,7 +167,7 @@ export class SharedBotOrchestrator {
       })
     )
     const secret = await this.botSecret.get(bot.id)
-    if (secret) await this.pushSpecs(compiled, secret, bot.shareable)
+    if (secret) await this.pushSpecs(compiled, secret, bot)
   }
 
   /** Release a bot from the relay pool (transport flipped / uninstalled / last
@@ -668,7 +668,11 @@ export class SharedBotOrchestrator {
 
   /** Deliver the shared (send-only) spec to each member agent's daemon (best-effort).
    *  `shareable` rides each spec so the daemon knows whether to expose "Switch agent". */
-  private async pushSpecs(compiled: Compiled, secret: BotSecretMaterial, shareable: boolean): Promise<void> {
+  private async pushSpecs(
+    compiled: Compiled,
+    secret: BotSecretMaterial,
+    bot: Pick<BotRecord, 'shareable' | 'slackAppId'>
+  ): Promise<void> {
     // A gated install's spec carries its conversation-scoped rules for the daemon's
     // last-hop admission backstop (§14.3). One listForBot covers every install; rows
     // are keyed per install, so filter by integrationId.
@@ -680,7 +684,7 @@ export class SharedBotOrchestrator {
         const channels = gated ? botChannels.filter((c) => c.integrationId === integration.id) : []
         await this.control.integrationUpsert(
           daemonId,
-          sharedIntegrationToSpec(integration, secret, shareable, channels, gated)
+          sharedIntegrationToSpec(integration, secret, bot.shareable, channels, gated, bot.slackAppId ?? undefined)
         )
       } catch (err) {
         if (!(err instanceof NoConnection)) throw err

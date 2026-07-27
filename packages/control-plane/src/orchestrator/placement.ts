@@ -292,7 +292,8 @@ export function sharedIntegrationToSpec(
   secret: BotSecretMaterial,
   shareable: boolean,
   channels: IntegrationChannelRecord[] = [],
-  gated = false
+  gated = false,
+  slackAppId?: string
 ): IntegrationSpec {
   return {
     integrationId: i.id,
@@ -305,6 +306,7 @@ export function sharedIntegrationToSpec(
       mode: 'shared',
       shareable,
       botToken: secret.botToken,
+      ...(slackAppId ? { appId: slackAppId } : {}),
       allowedUserIds: [],
       bindRules: gated ? gatedBindRules(channels) : [],
       gated
@@ -382,7 +384,7 @@ export class Placement implements ReconcileService {
           // reconciles it send-only (no Socket Mode). Socket bots reconcile as direct.
           const gated = gatedAgentIds.has(i.agentId)
           return bot?.transport === 'http'
-            ? sharedIntegrationToSpec(i, secret, bot.shareable, channels, gated)
+            ? sharedIntegrationToSpec(i, secret, bot.shareable, channels, gated, bot.slackAppId ?? undefined)
             : integrationToSpec(i, secret, channels, gated)
         })
       )

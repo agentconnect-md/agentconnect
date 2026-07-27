@@ -78,6 +78,7 @@ function toIntegration(spec: IntegrationSpec): Integration {
       // Shared mode carries no appToken (the relay owns the event stream) but does
       // carry the CP-resolved botUserId; direct mode is the reverse.
       ...(spec.slack.appToken ? { appToken: spec.slack.appToken } : {}),
+      ...(spec.slack.appId ? { appId: spec.slack.appId } : {}),
       ...(spec.slack.botUserId ? { botUserId: spec.slack.botUserId } : {}),
       allowedUserIds: spec.slack.allowedUserIds,
       bindRules: spec.slack.bindRules,

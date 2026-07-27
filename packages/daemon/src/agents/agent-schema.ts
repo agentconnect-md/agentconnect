@@ -28,6 +28,7 @@ export const SlackConfigSchema = z.object({
   shareable: z.boolean().default(false),
   botToken: z.string(),
   appToken: z.string().optional(), // direct only (Socket Mode); absent for shared
+  appId: z.string().optional(), // public A… app id used for Slack permission-update links
   signingSecret: z.string().optional(),
   botUserId: z.string().optional(), // filled at connect via auth.test if absent; provided by CP for shared
   allowedUserIds: z.array(z.string()).default([]),

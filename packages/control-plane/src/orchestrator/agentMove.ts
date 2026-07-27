@@ -554,7 +554,7 @@ export class AgentMoveService {
           botId: String(bot.id),
           shared: isHttp,
           spec: isHttp
-            ? sharedIntegrationToSpec(integration, secret, bot.shareable, channels, gated)
+            ? sharedIntegrationToSpec(integration, secret, bot.shareable, channels, gated, bot.slackAppId ?? undefined)
             : integrationToSpec(integration, secret, channels, gated)
         }
       })
