@@ -244,14 +244,13 @@ function markdownUrl(raw: string): string | undefined {
 
 /** Small inline avatar ahead of the agent name. GitHub's comment sanitizer
  * keeps `img` (src/width/height/alt) and proxies src through camo, so the same
- * public URL Slack fetches for icon_url renders here too. Its default baseline
- * leaves the icon slightly above the adjacent text, while `align="middle"`
- * renders visibly low; `sub` aligns their bottom edges. Decorative: the agent
- * name follows as text, so a blocked/broken image loses nothing. */
+ * public URL Slack fetches for icon_url renders here too. The nested `sub`
+ * aligns the icon with the surrounding footer text. Decorative: the agent name
+ * follows as text, so a blocked/broken image loses nothing. */
 function attributionIconImage(raw: string | undefined): string {
   const src = raw ? safeHttpUrl(raw) : undefined
   if (src === undefined) return ''
-  return `<sub><img src="${src.replace(/"/g, '%22')}" width="14" height="14" alt=""></sub> `
+  return `<sub><img src="${src.replace(/"/g, '%22')}" width="11" height="11" alt=""></sub> `
 }
 
 /** Shared public attribution chrome for both ordinary comments and formal
@@ -264,12 +263,13 @@ export function githubAttributionFooter(attribution?: GithubCommentAttribution):
   const agentUrl = markdownUrl(attribution.agentUrl)
   const sessionUrl = markdownUrl(attribution.sessionUrl)
   const agent = `${attributionIconImage(attribution.iconUrl)}${agentUrl ? `[${name}](${agentUrl})` : name}`
-  return `\n\n${renderAttributionMessage({
+  const message = renderAttributionMessage({
     agent,
     runtime,
     model,
     renderSession: sessionUrl ? (label) => `[${escapeMarkdownText(label)}](${sessionUrl})` : undefined
-  })}`
+  })
+  return `\n\n<sub>${message}\n</sub>`
 }
 
 interface MarkdownFence {
