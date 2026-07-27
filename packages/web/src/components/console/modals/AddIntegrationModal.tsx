@@ -1,6 +1,6 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
 import { GithubMark, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -9,6 +9,7 @@ import { agentLabel, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
+import { useIsMobile } from '@/lib/use-is-mobile'
 import { consoleKeys } from '@/lib/swr-keys'
 import {
   ApiError,
@@ -411,15 +412,15 @@ function SlackConfigTokenPreview() {
   )
 }
 
-// One step of a bot-setup hover walkthrough: the chip label, the mini-screen it shows, and
-// the caption under it. Kept together so the three can't drift apart.
+// One step of a bot-setup walkthrough: the chip label, the mini-screen it shows, and the
+// caption under it. Kept together so the three can't drift apart.
 type WalkthroughStep = { label: string; caption: React.ReactNode; screen: React.ReactNode }
 
-// The shared shell behind the Telegram and Discord "how do I create the bot" hover previews:
-// step chips on top, one fixed-size mini-screen, a caption below, and a caret pointing at the
-// button. Auto-advances every ~3s; hovering a chip pins that step. Pointer-events stay off
-// until it is actually shown, so the button underneath always keeps its click.
-function BotSetupWalkthrough({ steps }: { steps: WalkthroughStep[] }) {
+// The walkthrough itself: step chips on top, one fixed-size mini-screen, a caption below.
+// Auto-advances every ~3s; hovering or focusing a chip pins that step, leaving the row resumes
+// the loop. Positioning is the caller's job — it is a popover on desktop and an inline panel on
+// mobile, and the interval only runs while it is mounted (i.e. actually on screen).
+function WalkthroughPanel({ steps }: { steps: WalkthroughStep[] }) {
   const [step, setStep] = useState(0)
   const [pinned, setPinned] = useState<number | null>(null)
 
@@ -438,34 +439,79 @@ function BotSetupWalkthrough({ steps }: { steps: WalkthroughStep[] }) {
   }
 
   return (
-    // The wrapper only becomes interactive while it is shown, and its bottom padding bridges
-    // the gap to the button so moving up onto the step chips never drops the hover.
-    <div className="pointer-events-none absolute bottom-full left-1/2 z-50 w-[320px] -translate-x-1/2 pb-2 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100">
-      <div className="rounded-xl border border-(--border-default) bg-(--surface-card) p-2 shadow-(--shadow-xl)">
-        {/* Step chips — hovering one pins that step, leaving the row resumes the loop. */}
-        <div className="mb-2 flex gap-1" onMouseLeave={() => setPinned(null)}>
-          {steps.map((s, i) => (
-            <button
-              key={s.label}
-              type="button"
-              onMouseEnter={() => pin(i)}
-              onClick={() => pin(i)}
-              className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1 font-sans text-[10px] font-semibold leading-normal transition-colors ${
-                i === shown
-                  ? 'bg-(--surface-inverse) text-white'
-                  : 'bg-(--surface-app) text-(--text-tertiary) hover:text-(--text-secondary)'
-              }`}
-            >
-              <span className={`mono text-[9px] ${i === shown ? 'opacity-70' : 'opacity-60'}`}>{i + 1}</span>
-              <span className="truncate">{s.label}</span>
-            </button>
-          ))}
-        </div>
-        {steps[shown]?.screen}
-        <div className="mt-1.5 px-1 font-sans text-[10.5px] font-normal leading-[1.45] text-(--text-secondary)">
-          {steps[shown]?.caption}
-        </div>
+    <div className="rounded-xl border border-(--border-default) bg-(--surface-card) p-2 shadow-(--shadow-xl)">
+      <div className="mb-2 flex gap-1" onMouseLeave={() => setPinned(null)}>
+        {steps.map((s, i) => (
+          <button
+            key={s.label}
+            type="button"
+            aria-current={i === shown}
+            onMouseEnter={() => pin(i)}
+            onFocus={() => pin(i)}
+            onBlur={() => setPinned(null)}
+            onClick={() => pin(i)}
+            className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1 font-sans text-[10px] font-semibold leading-normal transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) ${
+              i === shown
+                ? 'bg-(--surface-inverse) text-white'
+                : 'bg-(--surface-app) text-(--text-tertiary) hover:text-(--text-secondary)'
+            }`}
+          >
+            <span className={`mono text-[9px] ${i === shown ? 'opacity-70' : 'opacity-60'}`}>{i + 1}</span>
+            <span className="truncate">{s.label}</span>
+          </button>
+        ))}
       </div>
+      {steps[shown]?.screen}
+      <div className="mt-1.5 px-1 font-sans text-[10.5px] font-normal leading-[1.45] text-(--text-secondary)">
+        {steps[shown]?.caption}
+      </div>
+    </div>
+  )
+}
+
+// The disclosure around the walkthrough, rendered inside the `group relative` wrapper of a
+// platform's portal button. Desktop: a popover above the button, revealed on hover AND on
+// keyboard focus anywhere in the group (the OutputModeHelp pattern) — it stays `invisible`
+// while closed so its chips are out of the tab order and can never eat the button's click.
+// Mobile: hover doesn't exist and the modal body would clip a popover, so it becomes an
+// explicit toggle with the panel expanding inline underneath.
+function BotSetupWalkthrough({ steps, label }: { steps: WalkthroughStep[]; label: string }) {
+  const isMobile = useIsMobile()
+  const [open, setOpen] = useState(false)
+  const panelId = useId()
+
+  if (isMobile) {
+    return (
+      <>
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={panelId}
+          onClick={() => setOpen((v) => !v)}
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border border-(--border-default) bg-(--surface-card) py-[7px] font-sans text-[12px] font-semibold leading-normal text-(--text-secondary) transition-colors hover:border-(--border-strong) hover:bg-(--surface-hover)"
+        >
+          <Icon name="list-checks" size={13} />
+          {open ? 'Hide' : 'Show'} the {steps.length} setup steps
+          <Icon name={open ? 'chevron-up' : 'chevron-down'} size={13} />
+        </button>
+        {open && (
+          <div id={panelId} className="mt-2">
+            <WalkthroughPanel steps={steps} />
+          </div>
+        )}
+      </>
+    )
+  }
+
+  return (
+    // The bottom padding bridges the gap to the button, so moving up onto the step chips never
+    // drops the hover.
+    <div
+      role="group"
+      aria-label={label}
+      className="pointer-events-none invisible absolute bottom-full left-1/2 z-50 w-[320px] -translate-x-1/2 pb-2 opacity-0 transition-[opacity,visibility] group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100"
+    >
+      <WalkthroughPanel steps={steps} />
       <div className="pointer-events-none absolute bottom-[3px] left-1/2 h-2.5 w-2.5 -translate-x-1/2 rotate-45 border-r border-b border-(--border-default) bg-(--surface-card)" />
     </div>
   )
@@ -2938,7 +2984,10 @@ export default function AddIntegrationModal({
                       {GUIDE[platform].linkLabel}
                       <Icon name="external-link" size={14} />
                     </a>
-                    <BotSetupWalkthrough steps={platform === 'telegram' ? TG_STEPS : DISCORD_STEPS} />
+                    <BotSetupWalkthrough
+                      steps={platform === 'telegram' ? TG_STEPS : DISCORD_STEPS}
+                      label={platform === 'telegram' ? 'Telegram bot setup steps' : 'Discord bot setup steps'}
+                    />
                   </div>
                   {GUIDE[platform].step1Warning && (
                     <div className="mt-2 font-sans text-[12px] font-medium leading-[1.5] text-(--status-error)">
@@ -3069,6 +3118,7 @@ export default function AddIntegrationModal({
                         ? feishuWalkthroughSteps('Lark', 'open.larksuite.com')
                         : feishuWalkthroughSteps('Feishu', 'open.feishu.cn')
                     }
+                    label={feishuRegion === 'lark' ? 'Lark bot setup steps' : 'Feishu bot setup steps'}
                   />
                 </div>
               </div>
