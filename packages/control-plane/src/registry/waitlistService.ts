@@ -59,7 +59,7 @@ export class WaitlistService {
    *  edge and stored as a JSON note on the CREATE path — applicant context for the
    *  admin app; the email is never taken from it. */
   addSelf(email: string, intake: WaitlistIntake): Promise<WaitlistEntryStatus> {
-    return this.repo.addSelf(email, JSON.stringify(intake))
+    return this.repo.addSelf(email, JSON.stringify(intake), intake.name)
   }
 
   /** Redeem a join link for the signed-in user. A token failing codec validation

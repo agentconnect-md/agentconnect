@@ -2603,14 +2603,17 @@ export interface WaitlistRepo {
    * and an approved/pending one is not disturbed); returns the resulting status.
    * `note` is the applicant's self-submitted intake (opaque JSON string, written
    * only on the CREATE path) — context for the admin app, never the email source.
+   * `name` is the intake display name, mirrored into the `name` column on CREATE.
    */
-  addSelf(email: string, note?: string): Promise<WaitlistEntryStatus>
+  addSelf(email: string, note?: string, name?: string): Promise<WaitlistEntryStatus>
   /**
    * Redeem an admin-minted join link for a signed-in user (single transaction,
    * row-level `FOR UPDATE`, waitlist-and-login.md §6). On success sets
-   * `User.activatedAt`, creates the personal org, and stamps `redeemed*`. The
-   * `verifiedEmail` (already normalized) must equal the entry's email or the redeem
-   * fails `email_mismatch`. Idempotent: a repeat by the SAME user returns `activated`.
+   * `User.activatedAt`, creates the personal org, and stamps `redeemed*` (including
+   * `redeemedEmail`). Conditional email binding: a BOUND entry (email set) must match
+   * `verifiedEmail` (already normalized) or the redeem fails `email_mismatch`; a
+   * BEARER entry (email null) skips the match and any verified identity may redeem it
+   * once. Idempotent: a repeat by the SAME user returns `activated`.
    */
   redeem(tokenHash: string, userId: string, verifiedEmail: string, now: Date): Promise<WaitlistRedeemResult>
 }

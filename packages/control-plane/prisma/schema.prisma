@@ -182,12 +182,18 @@ model OrgInviteRedemption {
 
 // ───────────────────────────────────────────────────────────────────────────
 // WaitlistEntry — closed-beta admission
-//   One row per verified email. TWO write sides share this table (§7):
-//     • the EXTERNAL admin app writes approval/mint fields (status, note, source,
-//       tokenHash, displayTail, joinExpiresAt, revokedAt, approved*) — enforced by
-//       a column-level least-privilege DB role granted in the migration;
+//   One row per activation link. TWO write sides share this table (§7):
+//     • the EXTERNAL admin app writes approval/mint fields (name, email, status,
+//       note, source, tokenHash, displayTail, joinExpiresAt, revokedAt, approved*)
+//       — enforced by a column-level least-privilege DB role granted in the migration;
 //     • the CP writes ONLY the redemption fields (redeemed*), in the same
 //       transaction that sets User.activatedAt.
+//   `email` is OPTIONAL and drives the ONE redemption rule (§6): a row WITH an email
+//   may be redeemed ONLY by that verified email (strong binding); a row with NO email
+//   is a one-time BEARER link — any verified identity may redeem it once, and the
+//   redeemer's email is recorded in `redeemedEmail`. `email` stays `@unique` so real
+//   emails don't collide and self-signup upserts still work; Postgres treats NULLs as
+//   distinct, so any number of bearer rows (email null) coexist.
 //   The join link reuses OrgInviteLink's peppered-hash + tail + expiry/revoke
 //   shape, but the token is minted by the admin app and only VERIFIED (hashed &
 //   compared) by the CP on redeem. Minting/approval/admin-auth are out of this
@@ -202,7 +208,8 @@ enum WaitlistStatus {
 
 model WaitlistEntry {
   id     String         @id @default(cuid())
-  email  String         @unique // normalized lowercase, matching auth.ts
+  name   String? // display name for the applicant / invitee (admin- or intake-supplied)
+  email  String?        @unique // normalized lowercase (auth.ts); NULL ⇒ bearer link
   status WaitlistStatus @default(pending)
   note   String? // applicant message / admin note
   source String? // 'self' | 'admin' | …
@@ -218,6 +225,7 @@ model WaitlistEntry {
   approvedAt       DateTime? @db.Timestamptz(6)
   redeemedByUserId String? // written ONLY by the CP redeem path
   redeemedAt       DateTime? @db.Timestamptz(6) // written ONLY by the CP redeem path
+  redeemedEmail    String? // the redeemer's verified email; written ONLY by the CP redeem path
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
