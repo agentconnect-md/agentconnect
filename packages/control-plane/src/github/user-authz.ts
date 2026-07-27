@@ -63,14 +63,17 @@ interface UserAuthzDeps {
       repo: string,
       username: string
     ): Promise<RepoPermission>
+    userRepoPermissions(
+      ins: GithubInstallationRecord,
+      repos: Array<{ nodeId: string; fullName: string }>,
+      username: string
+    ): Promise<ReadonlyMap<string, RepoPermission>>
   }
   users: { getOidcSubject(userId: string): Promise<string | null> }
   clock: Clock
 }
 
 const ACCESS_TTL_MS = 5 * 60_000
-/** Parallel permission probes per list-filter call (page ≤ 100 repos). */
-const FILTER_CONCURRENCY = 8
 
 export class GithubUserAuthzService {
   /** (installation, repo, login) → effective permission; the one cacheable unit
@@ -103,6 +106,10 @@ export class GithubUserAuthzService {
     return login
   }
 
+  private permissionKey(login: string, ins: GithubInstallationRecord, owner: string, repo: string): string {
+    return `${ins.installationId}:${owner.toLowerCase()}/${repo.toLowerCase()}:${login.toLowerCase()}`
+  }
+
   /** Cached + deduped effective permission of `login` on one repo. */
   private permissionOf(
     login: string,
@@ -110,7 +117,7 @@ export class GithubUserAuthzService {
     owner: string,
     repo: string
   ): Promise<RepoPermission> {
-    const key = `${ins.installationId}:${owner}/${repo}:${login}`
+    const key = this.permissionKey(login, ins, owner, repo)
     const cached = this.perms.get(key)
     if (cached && cached.expiresAt > this.deps.clock.now()) return Promise.resolve(cached.value)
     let pending = this.permsInFlight.get(key)
@@ -125,6 +132,61 @@ export class GithubUserAuthzService {
       this.permsInFlight.set(key, pending)
     }
     return pending
+  }
+
+  /** Cached + per-repository deduped batch lookup for picker pages. An exact
+   * access check racing the batch joins the same promise instead of issuing its
+   * own REST request. */
+  private permissionsOf(
+    login: string,
+    ins: GithubInstallationRecord,
+    repos: Array<{ nodeId: string; fullName: string; owner: string; repo: string }>
+  ): Promise<RepoPermission[]> {
+    const results = new Array<Promise<RepoPermission>>(repos.length)
+    const fresh: Array<{
+      index: number
+      key: string
+      nodeId: string
+      fullName: string
+    }> = []
+
+    for (const [index, repo] of repos.entries()) {
+      const key = this.permissionKey(login, ins, repo.owner, repo.repo)
+      const cached = this.perms.get(key)
+      if (cached && cached.expiresAt > this.deps.clock.now()) {
+        results[index] = Promise.resolve(cached.value)
+        continue
+      }
+      const pending = this.permsInFlight.get(key)
+      if (pending) {
+        results[index] = pending
+        continue
+      }
+      fresh.push({ index, key, nodeId: repo.nodeId, fullName: repo.fullName })
+    }
+
+    if (fresh.length > 0) {
+      const batch = this.deps.github.userRepoPermissions(
+        ins,
+        fresh.map(({ nodeId, fullName }) => ({ nodeId, fullName })),
+        login
+      )
+      for (const repo of fresh) {
+        const pending = batch
+          .then((permissions) => {
+            const value = permissions.get(repo.nodeId) ?? 'none'
+            this.perms.set(repo.key, { value, expiresAt: this.deps.clock.now() + ACCESS_TTL_MS })
+            return value
+          })
+          .finally(() => {
+            if (this.permsInFlight.get(repo.key) === pending) this.permsInFlight.delete(repo.key)
+          })
+        this.permsInFlight.set(repo.key, pending)
+        results[repo.index] = pending
+      }
+    }
+
+    return Promise.all(results)
   }
 
   /** Cached + deduped repo meta (privacy flag; null = out of grant). */
@@ -170,35 +232,26 @@ export class GithubUserAuthzService {
    * List filter for the picker: keep public repos and private repos the caller
    * can read on GitHub — so no-access repo NAMES never render in the console.
    * Private repos are probed with the same cached permission unit as the gates
-   * (bounded concurrency; a cold 100-private page costs that many Metadata:read
-   * calls once per user per 5 minutes — fine at realistic grant sizes, and the
-   * GraphQL alias batch is the tracked upgrade if an org outgrows it). Throws
+   * (bounded GraphQL batches; the result shares the same per-repo cache as
+   * exact create/preflight gates). Throws
    * GITHUB_IDENTITY_REQUIRED like every other check — never a silent allow.
    */
-  async filterReposForUser<T extends { fullName: string; private: boolean }>(
+  async filterReposForUser<T extends { nodeId: string; fullName: string; private: boolean }>(
     userId: string,
     ins: GithubInstallationRecord,
     repos: T[]
   ): Promise<T[]> {
     const login = await this.loginOf(userId)
-    const results = new Array<boolean>(repos.length).fill(false)
-    let next = 0
-    const worker = async (): Promise<void> => {
-      for (;;) {
-        const i = next++
-        if (i >= repos.length) return
-        const r = repos[i]!
-        if (!r.private) {
-          results[i] = true
-          continue
-        }
-        const [owner, repo] = r.fullName.split('/')
-        if (!owner || !repo) continue
-        results[i] = (await this.permissionOf(login, ins, owner, repo)) !== 'none'
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(FILTER_CONCURRENCY, repos.length) }, worker))
-    return repos.filter((_, i) => results[i])
+    const privateRepos = repos.flatMap((candidate) => {
+      if (!candidate.private) return []
+      const [owner, repo] = candidate.fullName.split('/')
+      return owner && repo ? [{ nodeId: candidate.nodeId, fullName: candidate.fullName, owner, repo }] : []
+    })
+    const permissions = await this.permissionsOf(login, ins, privateRepos)
+    const readable = new Set(
+      privateRepos.flatMap((repo, index) => (permissions[index] === 'none' ? [] : [repo.nodeId]))
+    )
+    return repos.filter((repo) => !repo.private || readable.has(repo.nodeId))
   }
 
   /** The enforcement form: resolve access and throw USER_NO_ACCESS below `need`. */

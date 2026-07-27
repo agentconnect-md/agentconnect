@@ -545,6 +545,7 @@ export function buildContainer(
         recompileOrg: (orgId) => hookService.rebroadcastGithubForOrg(orgId),
         onFactsChanged: (installationId, orgId) => {
           github.tokens.invalidateInstallation(installationId)
+          github.invalidateRepositoryRoster(installationId)
           void repos.hook.wakeReviewProjectionsForInstallation(installationId, new Date(clock.now()))
           void repos.hook.wakeReviewProjectionsForOrg(orgId, new Date(clock.now()))
           githubRunReporter?.kick()

@@ -8,8 +8,10 @@ import {
   deleteMemoryRecord,
   deleteOrgIcon,
   fetchAllGithubRepos,
+  fetchGithubRepoRoster,
   fetchMemoryAdminSurface,
   fmtCountCompact,
+  invalidateGithubRepoRosterCache,
   listMemoryRecordHistory,
   listMemoryFileHistory,
   listMemoryRecords,
@@ -272,11 +274,12 @@ describe('GitHub hook review settings', () => {
 
 describe('GitHub installation repositories', () => {
   afterEach(() => {
+    invalidateGithubRepoRosterCache()
     setApiOrgId(null)
     vi.unstubAllGlobals()
   })
 
-  it('loads every page so private repositories can be searched by partial name', async () => {
+  it('publishes pages progressively and reuses the completed roster', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const page = new URL(String(input)).searchParams.get('page')
       const repos =
@@ -293,15 +296,49 @@ describe('GitHub installation repositories', () => {
     vi.stubGlobal('fetch', fetchMock)
     setApiOrgId('org-1')
 
-    const repos = await fetchAllGithubRepos('installation-1')
+    const progress: string[][] = []
+    const repos = await fetchAllGithubRepos('installation-1', undefined, (partial) => {
+      progress.push(partial.map((repo) => repo.fullName))
+    })
 
     expect(repos.map((repo) => repo.fullName)).toEqual(['acme/alpha', 'acme/beta-private', 'acme/gamma'])
+    expect(progress[0]).toEqual(['acme/alpha'])
+    expect(progress.at(-1)).toEqual(['acme/alpha', 'acme/beta-private', 'acme/gamma'])
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(fetchMock.mock.calls.map(([input]) => new URL(String(input)).searchParams.get('perPage'))).toEqual([
       '100',
       '100',
       '100'
     ])
+
+    await expect(fetchAllGithubRepos('installation-1')).resolves.toEqual(repos)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('merges repository progress across installations', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const installationId = new URL(String(input)).pathname.split('/').at(-2)
+      return new Response(
+        JSON.stringify({
+          repos: [{ fullName: `${installationId}/repo`, private: true }],
+          totalCount: 1
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    setApiOrgId('org-1')
+    const progress: string[][] = []
+
+    const result = await fetchGithubRepoRoster(
+      [{ id: 'installation-1' }, { id: 'installation-2' }],
+      undefined,
+      (repos) => progress.push(repos.map((repo) => repo.installationId))
+    )
+
+    expect(result).toMatchObject({ denied: false, failed: false })
+    expect(result.repos.map((repo) => repo.installationId)).toEqual(['installation-1', 'installation-2'])
+    expect(progress.at(-1)).toEqual(['installation-1', 'installation-2'])
   })
 
   it('retries transient upstream failures (502/429) before surfacing them', async () => {

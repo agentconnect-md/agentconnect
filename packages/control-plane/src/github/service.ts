@@ -41,12 +41,30 @@ interface GhInstallation {
 
 interface GhRepo {
   id: number | string
+  node_id: string
   full_name: string
   private: boolean
   default_branch: string
   description: string | null
   pushed_at?: string | null
   updated_at?: string | null
+}
+
+interface GhRepoPage {
+  repos: GhRepo[]
+  totalCount: number
+}
+
+interface GhGraphqlResponse<T> {
+  data?: T
+  errors?: Array<{ message?: string }>
+}
+
+interface GhRepoPermissionNode {
+  id: string
+  collaborators: {
+    edges: Array<{ permission: string; node: { login: string } }>
+  } | null
 }
 
 interface GhUser {
@@ -91,6 +109,26 @@ export interface GithubServiceDeps {
  * console's installation pickers. Settings can still force a fresh read after a
  * user explicitly presses Sync. */
 const OUTDATED_INSTALLATIONS_CACHE_MS = 30_000
+const REPO_PAGE_CACHE_MS = 5 * 60_000
+const MAX_REPO_PAGE_CACHE_ENTRIES = 1_000
+const REPO_PERMISSION_BATCH_SIZE = 50
+const REPO_PERMISSIONS_QUERY = `
+  query RepositoryPermissions($ids: [ID!]!, $login: String!) {
+    nodes(ids: $ids) {
+      ... on Repository {
+        id
+        collaborators(login: $login, first: 1) {
+          edges {
+            permission
+            node {
+              login
+            }
+          }
+        }
+      }
+    }
+  }
+`
 
 /** Capability-level clamp per RepoAccess tier (agent-multi-repo-authorization.md
  *  decision 3). Only capabilities the daemon asked for are actually minted. */
@@ -147,6 +185,9 @@ export class GithubService {
   private readonly mintBucket: TokenBucket
   private outdatedInstallationsCache:
     { expiresAt: number; settingsUrlsByInstallationId: ReadonlyMap<string, string> } | undefined
+  private readonly repoPageCache = new Map<string, { value: GhRepoPage; expiresAt: number }>()
+  private readonly repoPageInFlight = new Map<string, Promise<GhRepoPage>>()
+  private readonly repoRosterGeneration = new Map<string, number>()
 
   constructor(private readonly deps: GithubServiceDeps) {
     this.slug = deps.cfg.slug
@@ -165,6 +206,17 @@ export class GithubService {
 
   invalidateInstallationTokens(installationId: bigint): void {
     this.tokens.invalidateInstallation(installationId)
+  }
+
+  /** Installation/repository webhooks and explicit Sync calls invalidate every
+   * cached page. A generation fence prevents an older in-flight page from
+   * repopulating the cache after invalidation. */
+  invalidateRepositoryRoster(installationId: bigint): void {
+    const prefix = `${installationId}:`
+    this.repoRosterGeneration.set(prefix, (this.repoRosterGeneration.get(prefix) ?? 0) + 1)
+    for (const key of this.repoPageCache.keys()) {
+      if (key.startsWith(prefix)) this.repoPageCache.delete(key)
+    }
   }
 
   // ── install flow ──────────────────────────────────────────────────────────
@@ -191,6 +243,7 @@ export class GithubService {
     this.outdatedInstallationsCache = undefined
     const row = await this.deps.installations.upsertFromGithub(OrgIdOf(parsed.orgId), toFacts(ins))
     this.tokens.invalidateInstallation(row.installationId)
+    this.invalidateRepositoryRoster(row.installationId)
     this.deps.onInstallationFactsChanged?.(row.installationId, row.orgId)
     return row
   }
@@ -214,13 +267,17 @@ export class GithubService {
     for (const ins of all) {
       const row = await this.deps.installations.upsertFromGithub(orgId, toFacts(ins))
       this.tokens.invalidateInstallation(BigInt(ins.id))
+      this.invalidateRepositoryRoster(row.installationId)
       this.deps.onInstallationFactsChanged?.(row.installationId, row.orgId)
     }
     await this.deps.installations.markRevokedExcept(
       orgId,
       all.map((i) => BigInt(i.id))
     )
-    for (const row of before) this.tokens.invalidateInstallation(row.installationId)
+    for (const row of before) {
+      this.tokens.invalidateInstallation(row.installationId)
+      this.invalidateRepositoryRoster(row.installationId)
+    }
     for (const row of before) this.deps.onInstallationFactsChanged?.(row.installationId, row.orgId)
     return this.deps.installations.listForOrg(orgId)
   }
@@ -241,6 +298,7 @@ export class GithubService {
       if (!(e instanceof GithubApiError) || (e.status !== 404 && e.status !== 410)) throw e
     }
     this.outdatedInstallationsCache = undefined
+    this.invalidateRepositoryRoster(installationId)
   }
 
   /**
@@ -277,17 +335,39 @@ export class GithubService {
 
   // ── picker proxies ────────────────────────────────────────────────────────
 
-  async listRepos(
-    ins: GithubInstallationRecord,
-    page: number,
-    perPage: number
-  ): Promise<{ repos: GhRepo[]; totalCount: number }> {
-    const token = await this.tokens.metadataToken(ins.installationId)
-    const res = await githubRequest<{ total_count: number; repositories: GhRepo[] }>(
-      `/installation/repositories?per_page=${perPage}&page=${page}`,
-      { auth: token, fetchImpl: this.deps.fetchImpl, baseUrl: this.deps.baseUrl, bigIdsAsStrings: true }
-    )
-    return { repos: res.repositories, totalCount: res.total_count }
+  async listRepos(ins: GithubInstallationRecord, page: number, perPage: number): Promise<GhRepoPage> {
+    const prefix = `${ins.installationId}:`
+    const generation = this.repoRosterGeneration.get(prefix) ?? 0
+    const key = `${prefix}${generation}:${page}:${perPage}`
+    const cached = this.repoPageCache.get(key)
+    if (cached && cached.expiresAt > this.deps.clock.now()) return cached.value
+    if (cached) this.repoPageCache.delete(key)
+
+    let pending = this.repoPageInFlight.get(key)
+    if (!pending) {
+      pending = this.tokens
+        .metadataToken(ins.installationId)
+        .then((token) =>
+          githubRequest<{ total_count: number; repositories: GhRepo[] }>(
+            `/installation/repositories?per_page=${perPage}&page=${page}`,
+            { auth: token, fetchImpl: this.deps.fetchImpl, baseUrl: this.deps.baseUrl, bigIdsAsStrings: true }
+          )
+        )
+        .then((res) => {
+          const value = { repos: res.repositories, totalCount: res.total_count }
+          if ((this.repoRosterGeneration.get(prefix) ?? 0) === generation) {
+            if (this.repoPageCache.size >= MAX_REPO_PAGE_CACHE_ENTRIES) {
+              const oldest = this.repoPageCache.keys().next().value
+              if (oldest) this.repoPageCache.delete(oldest)
+            }
+            this.repoPageCache.set(key, { value, expiresAt: this.deps.clock.now() + REPO_PAGE_CACHE_MS })
+          }
+          return value
+        })
+        .finally(() => this.repoPageInFlight.delete(key))
+      this.repoPageInFlight.set(key, pending)
+    }
+    return pending
   }
 
   /** Branch names for the picker — needs contents:read (metadata-only 403s). */
@@ -467,6 +547,7 @@ export class GithubService {
       await this.deps.installations.markRevokedByInstallationId(installationId)
     }
     this.tokens.invalidateInstallation(installationId)
+    this.invalidateRepositoryRoster(installationId)
     this.deps.onInstallationFactsChanged?.(installationId, claimed.orgId)
     return refreshed
   }
@@ -486,6 +567,64 @@ export class GithubService {
     username: string
   ): Promise<'admin' | 'write' | 'read' | 'none'> {
     return this.userRepoPermissionWithPolicy(ins, owner, repo, username, 'legacy')
+  }
+
+  /** Resolve one user's effective permission across a picker page in bounded
+   * GraphQL batches. The page already came from this installation, so opaque
+   * node ids are both rename-stable and safe to query with its metadata token. */
+  async userRepoPermissions(
+    ins: GithubInstallationRecord,
+    repos: Array<{ nodeId: string; fullName: string }>,
+    username: string
+  ): Promise<ReadonlyMap<string, 'admin' | 'write' | 'read' | 'none'>> {
+    const permissions = new Map<string, 'admin' | 'write' | 'read' | 'none'>()
+    if (repos.length === 0) return permissions
+    const token = await this.tokens.metadataToken(ins.installationId)
+
+    for (let offset = 0; offset < repos.length; offset += REPO_PERMISSION_BATCH_SIZE) {
+      const batch = repos.slice(offset, offset + REPO_PERMISSION_BATCH_SIZE)
+      const response = await githubRequest<GhGraphqlResponse<{ nodes: Array<GhRepoPermissionNode | null> }>>(
+        '/graphql',
+        {
+          method: 'POST',
+          auth: token,
+          body: {
+            query: REPO_PERMISSIONS_QUERY,
+            variables: { ids: batch.map((repo) => repo.nodeId), login: username }
+          },
+          fetchImpl: this.deps.fetchImpl,
+          baseUrl: this.deps.baseUrl
+        }
+      )
+      if (!response.data || response.errors?.length) {
+        const detail = response.errors
+          ?.slice(0, 3)
+          .map((error) => error.message ?? 'unknown error')
+          .join('; ')
+        throw new GithubApiError(`github GraphQL error: ${detail || 'missing data'}`, 502, 'INTERNAL', true)
+      }
+
+      const byId = new Map(
+        response.data.nodes.filter((node): node is GhRepoPermissionNode => node !== null).map((node) => [node.id, node])
+      )
+      for (const repo of batch) {
+        const edge = byId
+          .get(repo.nodeId)
+          ?.collaborators?.edges.find((candidate) => candidate.node.login.toLowerCase() === username.toLowerCase())
+        const permission = edge?.permission
+        permissions.set(
+          repo.nodeId,
+          permission === 'ADMIN'
+            ? 'admin'
+            : permission === 'WRITE' || permission === 'MAINTAIN'
+              ? 'write'
+              : permission === 'READ' || permission === 'TRIAGE'
+                ? 'read'
+                : 'none'
+        )
+      }
+    }
+    return permissions
   }
 
   /** Authorization-specific permission lookup with the same strict error

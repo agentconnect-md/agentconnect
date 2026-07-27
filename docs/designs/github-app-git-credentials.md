@@ -1181,11 +1181,11 @@ the cache and stops requesting.
      Each private repository is checked for effective permission and removed
      on `none`, so the **name** of an unauthorized repository never reaches the
      console. Cost model: probe only private repositories, at most 100 per
-     page, with bounded concurrency of 8, and share the same
+     page, through bounded GraphQL `nodes` batches of 50, and share the same
      (installation, repo, login)->permission 5-minute cache with the
-     branches/create gates. Cold cost is one page of Metadata:read probes per
-     user every 5 minutes. A GraphQL alias batch query is the scale-up path when
-     per-repository probes become too expensive.
+     branches/create gates. Installation repository pages use the same TTL and
+     are invalidated by installation/repository webhooks and manual Sync, so
+     reopening another picker does not repeat the cold roster read.
      An account without a GitHub identity receives
      `GITHUB_IDENTITY_REQUIRED` for the list as well, with a machine-coded 403
      and an explicit console prompt, consistent with all other checks. Access
