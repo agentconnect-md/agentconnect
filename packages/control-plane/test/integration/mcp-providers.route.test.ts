@@ -70,6 +70,28 @@ describe('DELETE /mcp-providers/:id — referenced-guard', () => {
     expect(gone.statusCode).toBe(404)
   })
 
+  it('creating a provider under a name an agent already enables is refused (name-capture guard)', async () => {
+    // The mirror image of the delete guard: agents bind by NAME, so a new provider
+    // under an enabled name would silently capture those agents' sessions onto its
+    // upstream. Refuse while referenced — under a different name creation is fine.
+    const app = makeApp()
+    await createAgent(app, 'local-user', ['linear'])
+
+    const captured = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/mcp-providers`,
+      payload: { name: 'linear', url: 'https://mcp.example.com/mcp' }
+    })
+    expect(captured.statusCode).toBe(409)
+
+    const other = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/mcp-providers`,
+      payload: { name: 'linear-2', url: 'https://mcp.example.com/mcp' }
+    })
+    expect(other.statusCode).toBe(201)
+  })
+
   it('only an exact name match blocks — daemon-local server names on agents do not', async () => {
     const app = makeApp()
     const providerId = await createProvider(app, 'linear')
@@ -232,6 +254,60 @@ describe('DELETE /mcp-providers/:id — serialized against agent enable-list wri
     expect((await patchA).statusCode).toBe(200)
     expect((await del).statusCode).toBe(409) // A's restore committed first — the reference is seen
     expect((await app.app.inject({ method: 'GET', url: `${ORG}/mcp-providers/${providerId}` })).statusCode).toBe(200)
+  })
+
+  it('a same-name provider re-create cannot slip between a delete and a queued agent write (name-keyed fence)', async () => {
+    // The chains are keyed by (orgId, NAME) — the durable binding key — not the row
+    // id: an id-keyed chain dies with the deleted row, so a replacement provider
+    // created under the same name could commit inside the window while an agent
+    // write (queued behind the old row's delete) still holds a stale authorization.
+    // Ordering under the fence: DELETE 204 → the queued agent write commits the name
+    // (daemon-local at that instant) → the re-create queues behind it and is then
+    // REFUSED by the name-capture guard. No silent rebind.
+    const app = makeApp()
+    const providerId = await createProvider(app, 'linear')
+    const { release, parked } = parkDeleteAtReferenceCheck(app)
+
+    const del = app.app.inject({ method: 'DELETE', url: `${ORG}/mcp-providers/${providerId}` })
+    await parked
+
+    // Park the queued agent writer at its persist step (INSIDE the name chain) so
+    // the recreate window between delete-commit and write-commit is held open.
+    const writer = app.deps.repos.agentConfig
+    const realCreate = writer.create.bind(writer)
+    let releaseWriter!: () => void
+    const writerGate = new Promise<void>((r) => (releaseWriter = r))
+    let notifyWriterParked!: () => void
+    const writerParked = new Promise<void>((r) => (notifyWriterParked = r))
+    writer.create = async (...args: Parameters<typeof realCreate>) => {
+      notifyWriterParked()
+      await writerGate
+      return realCreate(...args)
+    }
+    const create = app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'window-racer', runtime: 'claude', mcpServers: ['linear'] }
+    })
+
+    release()
+    expect((await del).statusCode).toBe(204)
+    await writerParked // the writer now holds the name chain, pre-commit
+
+    const recreate = app.app.inject({
+      method: 'POST',
+      url: `${ORG}/mcp-providers`,
+      payload: { name: 'linear', url: 'https://mcp.example.com/mcp' }
+    })
+    const winner = await Promise.race([
+      recreate.then(() => 'created' as const),
+      settleTick(300).then(() => 'blocked' as const)
+    ])
+    expect(winner).toBe('blocked') // the same-name create queues behind the held chain
+
+    releaseWriter()
+    expect((await create).statusCode).toBe(201)
+    expect((await recreate).statusCode).toBe(409) // …and is then refused: the agent holds the name
   })
 
   it('a sibling-field PATCH omitting mcpServers cannot restore a concurrently-removed name (atomic bag merge)', async () => {

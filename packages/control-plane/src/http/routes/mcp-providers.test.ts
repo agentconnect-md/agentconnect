@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { rotateProviderGrant, serializeByProvider, serializeByProviders } from './mcp-providers.js'
+import { rotateProviderGrant, serializeByProvider, serializeByProviderNames } from './mcp-providers.js'
 import { grantKeyHash } from '../../orchestrator/mcpProvider.js'
 import type { McpProviderRecord, McpGrantRecord, McpGrantRepo, McpHeader } from '../../persistence/ports.js'
 import type { OrgId } from '../../domain/ids.js'
@@ -169,7 +169,7 @@ describe('rotateProviderGrant', () => {
     // rotation + a PATCH-style re-push (read active inside the lock, then push it) race
     await Promise.all([
       rotateProviderGrant(provider, [], provider.orgId, repo, pushAssign, () => {}),
-      serializeByProvider(provider.id, async () => {
+      serializeByProvider(provider.orgId, provider.name, async () => {
         const grant = (await repo.activeForProvider(provider.id))[0]
         if (grant) await pushAssign(provider, [], grant.key, provider.orgId)
       })
@@ -180,7 +180,7 @@ describe('rotateProviderGrant', () => {
   })
 })
 
-describe('serializeByProviders', () => {
+describe('serializeByProviderNames', () => {
   it('two multi-provider writers naming the chains in opposite order both complete, mutually excluded', async () => {
     // Unsorted entry would deadlock here: A holds p1 waiting on p2's tail while B
     // holds p2 waiting on p1's. Sorted entry means both join p1 first — strict
@@ -193,8 +193,8 @@ describe('serializeByProviders', () => {
       return label
     }
     const [a, b] = await Promise.all([
-      serializeByProviders(['p1', 'p2'], critical('A')),
-      serializeByProviders(['p2', 'p1'], critical('B'))
+      serializeByProviderNames('org-1', ['p1', 'p2'], critical('A')),
+      serializeByProviderNames('org-1', ['p2', 'p1'], critical('B'))
     ])
     expect(a).toBe('A')
     expect(b).toBe('B')
@@ -205,12 +205,12 @@ describe('serializeByProviders', () => {
     const order: string[] = []
     let release!: () => void
     const gate = new Promise<void>((r) => (release = r))
-    const del = serializeByProvider('p1', async () => {
+    const del = serializeByProvider('org-1', 'p1', async () => {
       order.push('delete:checked')
       await gate // parked mid-critical-section (the reference check just read its snapshot)
       order.push('delete:dropped')
     })
-    const write = serializeByProviders(['p1'], async () => {
+    const write = serializeByProviderNames('org-1', ['p1'], async () => {
       order.push('agent:written')
     })
     await new Promise((r) => setTimeout(r, 10))

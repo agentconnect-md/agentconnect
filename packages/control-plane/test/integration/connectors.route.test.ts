@@ -153,6 +153,26 @@ describe('connectors routes', () => {
     expect(list.json().find((p: { name: string }) => p.name === 'restricted-conn')?.visibility).toBe('restricted')
   })
 
+  it('409s a connection whose name an agent already enables (name-capture guard)', async () => {
+    // Same rule as POST /mcp-providers: a connection is a provider row bound by NAME,
+    // so creating one under an enabled name would capture those agents' sessions.
+    const { client } = stubConnectors()
+    const app = appWith(client)
+    const agent = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'local-user', runtime: 'claude', mcpServers: ['prod-conn'] }
+    })
+    expect(agent.statusCode).toBe(201)
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/connectors/connections`,
+      payload: { service: 'stripe', connectionName: 'prod-conn', authType: 'api_key', values: { apiKey: 'x' } }
+    })
+    expect(res.statusCode).toBe(409)
+  })
+
   it('409s a duplicate connection name (org-unique)', async () => {
     const { client } = stubConnectors()
     const app = appWith(client)

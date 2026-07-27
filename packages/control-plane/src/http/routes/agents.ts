@@ -35,7 +35,11 @@ import { type AgentRecord, type AgentWorkspace, isSyntheticEmail } from '../../p
 import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, type OrgId } from '../../domain/ids.js'
 import { mcpProxyDef, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
-import { serializeByProviders } from './mcp-providers.js'
+import { serializeByProviderNames } from './mcp-providers.js'
+
+/** Thrown inside the provider-name fence when the in-fence visibility re-check
+ *  refuses an enable-list name; the route maps it to a 403. */
+class McpEnableDenied extends Error {}
 import { parseSkillRef, redactSourceCredentials } from '../../orchestrator/skillSource.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from '../../orchestrator/memoryConnection.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
@@ -566,27 +570,36 @@ export function agentRoutes(deps: HttpDeps) {
       return blocked.length ? `cannot enable MCP provider you don't have access to: ${blocked.join(', ')}` : null
     }
 
-    // Run an agent write inside the per-provider chains of every registry provider its
-    // SUBMITTED enable-list names (serializeByProviders — sorted, deadlock-free), so the
-    // write cannot land between a provider DELETE's reference check and its row drop
-    // (see routes/mcp-providers.ts). Keyed off the whole submitted list, NOT an
-    // added-vs-before diff: ordinary agent edits may overlap, so `before` can be a
-    // stale route snapshot — a full-replace PATCH re-asserting a name it believes
-    // unchanged may be the write that RESTORES it after a concurrent removal, and it
-    // must serialize like any other reference-creating write. Removal-only submissions
-    // ([] / null / untouched) don't join any chain: a stale 409 on the delete side is
-    // benign, a missed reference is not. Non-registry (daemon-local) names carry no
-    // provider row to serialize on.
+    // Run an agent write inside the (orgId, name) provider chains of every name its
+    // SUBMITTED enable-list contains (serializeByProviderNames — sorted, deadlock-
+    // free), so the write cannot land between a provider DELETE's reference check and
+    // its row drop, nor interleave with a same-name provider create (see
+    // routes/mcp-providers.ts — the chains are keyed by NAME, the durable binding
+    // key, so no resolve-to-row-id staleness exists). Keyed off the whole submitted
+    // list, NOT an added-vs-before diff: ordinary agent edits may overlap, so a
+    // full-replace PATCH re-asserting a name it believes unchanged may be the write
+    // that RESTORES it after a concurrent removal, and it must serialize like any
+    // other reference-creating write. Removal-only submissions ([] / null /
+    // untouched) don't join any chain: a stale 409 on the delete side is benign, a
+    // missed reference is not.
+    //
+    // The visibility gate re-runs INSIDE the fence: the route's earlier check may
+    // have validated against a provider row that a serialized delete+create has since
+    // replaced — authorization must hold for whatever the names resolve to at commit
+    // time. A refusal surfaces as McpEnableDenied (the route maps it to 403).
     const withSubmittedMcpProviderChains = async <T>(
       orgId: OrgId,
+      ctx: ViewCtx,
+      before: readonly string[],
       submitted: readonly string[] | null | undefined,
       run: () => Promise<T>
     ): Promise<T> => {
       if (!submitted || submitted.length === 0) return run()
-      const ids = (await deps.repos.mcpProvider.listForOrg(orgId))
-        .filter((p) => submitted.includes(p.name))
-        .map((p) => p.id)
-      return ids.length ? serializeByProviders(ids, run) : run()
+      return serializeByProviderNames(orgId, submitted, async () => {
+        const denied = await enablingUnseenDenied(orgId, ctx, before, submitted)
+        if (denied) throw new McpEnableDenied(denied)
+        return run()
+      })
     }
 
     // Skills enablement authorization (shared-skills.md §9). A skill-ref is
@@ -903,50 +916,58 @@ export function agentRoutes(deps: HttpDeps) {
           // happens before it opens) — a failure can't leave a partial definition.
           // Chained per submitted MCP provider name so the row can't commit inside a concurrent
           // provider-delete's check→drop window.
-          const agent = await withSubmittedMcpProviderChains(orgOf(req), req.body.mcpServers, () =>
-            deps.repos.agentConfig.create(
-              {
-                id: agentId,
-                orgId: orgOf(req),
-                name: req.body.name,
-                ...(req.body.displayName !== undefined ? { displayName: req.body.displayName } : {}),
-                // Absent ⇒ the repo assigns a random glyph+color combo (product default).
-                ...(req.body.icon !== undefined ? { icon: req.body.icon } : {}),
-                ...(req.body.description !== undefined ? { description: req.body.description } : {}),
-                runtime: req.body.runtime,
-                ...(req.body.model !== undefined ? { model: req.body.model } : {}),
-                ...(req.body.reasoningEffort !== undefined ? { reasoningEffort: req.body.reasoningEffort } : {}),
-                ...(req.body.outputMode !== undefined ? { outputMode: req.body.outputMode } : {}),
-                ...(req.body.showFooter !== undefined ? { showFooter: req.body.showFooter } : {}),
-                ...(req.body.fastMode !== undefined ? { fastMode: req.body.fastMode } : {}),
-                ...(req.body.permissionMode !== undefined ? { permissionMode: req.body.permissionMode } : {}),
-                ...(req.body.allowRuntimeChangesInChat !== undefined
-                  ? { allowRuntimeChangesInChat: req.body.allowRuntimeChangesInChat }
-                  : {}),
-                ...(req.body.pause !== undefined ? { pause: req.body.pause } : {}),
-                ...(req.body.introduceOnJoin !== undefined ? { introduceOnJoin: req.body.introduceOnJoin } : {}),
-                restrictFileAccess,
-                ...(req.body.env !== undefined ? { env: req.body.env } : {}),
-                ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
-                ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
-                ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
-                ...(req.body.daemonId !== undefined ? { daemonId: DaemonId(req.body.daemonId) } : {}),
-                ...(workspace !== undefined ? { workspace } : {}),
-                ...(workspaceRepoId !== undefined ? { workspaceRepoId } : {}),
-                ...(req.principal ? { createdByUserId: req.principal.userId } : {}),
-                ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
-                ...(initialSharedWith ? { sharedWith: initialSharedWith } : {}),
-                ...(req.body.callPolicy ? { callPolicy: req.body.callPolicy } : {}),
-                ...(initialAllowedCallers ? { allowedCallerAgentIds: initialAllowedCallers } : {}),
-                ...(req.body.outboundPolicy ? { outboundPolicy: req.body.outboundPolicy } : {}),
-                ...(initialAllowedTargets ? { allowedTargetAgentIds: initialAllowedTargets } : {}),
-                capabilities: req.body.capabilities
-              },
-              // Initial write-only secrets — same transaction, so the first
-              // replicateUpsert below always sees the complete definition.
-              req.body.secrets
+          let agent: AgentRecord
+          try {
+            agent = await withSubmittedMcpProviderChains(orgOf(req), ctxOf(req), [], req.body.mcpServers, () =>
+              deps.repos.agentConfig.create(
+                {
+                  id: agentId,
+                  orgId: orgOf(req),
+                  name: req.body.name,
+                  ...(req.body.displayName !== undefined ? { displayName: req.body.displayName } : {}),
+                  // Absent ⇒ the repo assigns a random glyph+color combo (product default).
+                  ...(req.body.icon !== undefined ? { icon: req.body.icon } : {}),
+                  ...(req.body.description !== undefined ? { description: req.body.description } : {}),
+                  runtime: req.body.runtime,
+                  ...(req.body.model !== undefined ? { model: req.body.model } : {}),
+                  ...(req.body.reasoningEffort !== undefined ? { reasoningEffort: req.body.reasoningEffort } : {}),
+                  ...(req.body.outputMode !== undefined ? { outputMode: req.body.outputMode } : {}),
+                  ...(req.body.showFooter !== undefined ? { showFooter: req.body.showFooter } : {}),
+                  ...(req.body.fastMode !== undefined ? { fastMode: req.body.fastMode } : {}),
+                  ...(req.body.permissionMode !== undefined ? { permissionMode: req.body.permissionMode } : {}),
+                  ...(req.body.allowRuntimeChangesInChat !== undefined
+                    ? { allowRuntimeChangesInChat: req.body.allowRuntimeChangesInChat }
+                    : {}),
+                  ...(req.body.pause !== undefined ? { pause: req.body.pause } : {}),
+                  ...(req.body.introduceOnJoin !== undefined ? { introduceOnJoin: req.body.introduceOnJoin } : {}),
+                  restrictFileAccess,
+                  ...(req.body.env !== undefined ? { env: req.body.env } : {}),
+                  ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
+                  ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
+                  ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
+                  ...(req.body.daemonId !== undefined ? { daemonId: DaemonId(req.body.daemonId) } : {}),
+                  ...(workspace !== undefined ? { workspace } : {}),
+                  ...(workspaceRepoId !== undefined ? { workspaceRepoId } : {}),
+                  ...(req.principal ? { createdByUserId: req.principal.userId } : {}),
+                  ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
+                  ...(initialSharedWith ? { sharedWith: initialSharedWith } : {}),
+                  ...(req.body.callPolicy ? { callPolicy: req.body.callPolicy } : {}),
+                  ...(initialAllowedCallers ? { allowedCallerAgentIds: initialAllowedCallers } : {}),
+                  ...(req.body.outboundPolicy ? { outboundPolicy: req.body.outboundPolicy } : {}),
+                  ...(initialAllowedTargets ? { allowedTargetAgentIds: initialAllowedTargets } : {}),
+                  capabilities: req.body.capabilities
+                },
+                // Initial write-only secrets — same transaction, so the first
+                // replicateUpsert below always sees the complete definition.
+                req.body.secrets
+              )
             )
-          )
+          } catch (e) {
+            if (e instanceof McpEnableDenied) {
+              return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: e.message })
+            }
+            throw e
+          }
           // `?connect=true` also provisions a daemon connect token + start command
           // so the onboarding screen can show "run this to connect a daemon".
           const connect = req.query.connect
@@ -1324,16 +1345,29 @@ export function agentRoutes(deps: HttpDeps) {
           // submitted MCP provider name so the row can't commit inside a concurrent
           // provider-delete's check→drop window.
           const { secrets: secretsPatch, ...bodyPatch } = req.body
-          const agent = await withSubmittedMcpProviderChains(orgOf(req), req.body.mcpServers, () =>
-            deps.repos.agentConfig.update(
-              AgentId(req.params.id),
-              {
-                ...bodyPatch,
-                ...(req.principal ? { lastModifiedByUserId: req.principal.userId } : {})
-              },
-              secretsPatch
+          let agent: AgentRecord
+          try {
+            agent = await withSubmittedMcpProviderChains(
+              orgOf(req),
+              ctxOf(req),
+              existing.mcpServers,
+              req.body.mcpServers,
+              () =>
+                deps.repos.agentConfig.update(
+                  AgentId(req.params.id),
+                  {
+                    ...bodyPatch,
+                    ...(req.principal ? { lastModifiedByUserId: req.principal.userId } : {})
+                  },
+                  secretsPatch
+                )
             )
-          )
+          } catch (e) {
+            if (e instanceof McpEnableDenied) {
+              return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: e.message })
+            }
+            throw e
+          }
           await pushExternalMemoryBeforeAgent(agent)
           await replicateUpsert(agent)
           await removeUnusedExternalMemoryAfterAgent(existing, agent)

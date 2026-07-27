@@ -122,17 +122,24 @@ export function connectorRoutes(deps: HttpDeps) {
         ]
 
         // 1) Record the connection as an open_connector MCP provider. The org-unique
-        //    name is the atomic reservation — a duplicate throws P2002 ⇒ 409.
+        //    name is the atomic reservation — a duplicate throws P2002 ⇒ 409. Created
+        //    inside the (orgId, name) chain with the same name-capture guard as
+        //    POST /mcp-providers: agents bind by NAME, so a connection under a name
+        //    agents already enable would capture their sessions onto this upstream.
         let provider
         try {
-          provider = await deps.repos.mcpProvider.create({
-            orgId,
-            name: connectionName,
-            url: deps.connectors.mcpUrl,
-            kind: 'open_connector',
-            createdByUserId: userId,
-            ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
-            ...(sharedWith ? { sharedWith } : {})
+          provider = await serializeByProvider(orgId, connectionName, async () => {
+            const agents = await deps.repos.agent.list(orgId)
+            if (agents.some((a) => a.mcpServers.includes(connectionName))) return null
+            return deps.repos.mcpProvider.create({
+              orgId,
+              name: connectionName,
+              url: deps.connectors!.mcpUrl,
+              kind: 'open_connector',
+              createdByUserId: userId,
+              ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
+              ...(sharedWith ? { sharedWith } : {})
+            })
           })
         } catch (e) {
           if ((e as { code?: string }).code === 'P2002') {
@@ -141,6 +148,14 @@ export function connectorRoutes(deps: HttpDeps) {
               .send({ error: 'Conflict', statusCode: 409, message: `connection "${connectionName}" already exists` })
           }
           throw e
+        }
+        if (!provider) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message:
+              'an agent already enables an MCP server with this name; unselect it there first or pick another name'
+          })
         }
         // 2) Store markers, mint the grant, push the binding, and provision the profile
         //    in open-connector. Any failure here rolls the whole thing back so a partial
@@ -185,7 +200,7 @@ export function connectorRoutes(deps: HttpDeps) {
           // prevent, so a referenced row is kept instead: the caller still gets the
           // error below, and reconnect repairs the connection (or delete it after
           // unselecting).
-          await serializeByProvider(provider.id, async () => {
+          await serializeByProvider(orgId, provider.name, async () => {
             const agents = await deps.repos.agent.list(orgId)
             if (agents.some((a) => a.mcpServers.includes(provider.name))) return
             await pushUnassign(provider, orgId)
