@@ -349,10 +349,10 @@ export function mcpProviderRoutes(deps: HttpDeps) {
           tags: [Tag.Mcp],
           summary: 'Delete an MCP provider',
           description:
-            'Delete an MCP provider and cascade-drop its upstream secret and grants. (The relay/daemon unbind is wired in a later step.)',
+            'Delete an MCP provider, unbind it from relays/daemons, and cascade-drop its upstream secret and grants. Rejected with 409 while any agent still enables it — unselect it from those agents first.',
           operationId: 'deleteMcpProvider',
           params: IdParam,
-          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto }
+          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -360,6 +360,18 @@ export function mcpProviderRoutes(deps: HttpDeps) {
         const existing = await deps.repos.mcpProvider.get(req.params.id)
         if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
+        }
+        // Agents bind a provider by NAME (runtimeOverrides.mcpServers), so deleting while
+        // referenced would leave dangling selectors that silently re-bind to any future
+        // provider recreated under the same name. Same rule as skill-source delete.
+        const agents = await deps.repos.agent.list(orgOf(req))
+        const referenced = agents.some((a) => a.mcpServers.includes(existing.name))
+        if (referenced) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'mcp provider is still enabled by one or more agents; unselect it there first'
+          })
         }
         // Serialized with rotation/patch: unbind + delete must not interleave with a rotation
         // that would re-bind a torn-down provider (or mint against a cascade-deleted row).
