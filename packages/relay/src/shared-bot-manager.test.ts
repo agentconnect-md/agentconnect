@@ -22,6 +22,8 @@ const OTHER_DAEMON_ID = '55555555-5555-4555-8555-555555555555'
 const OTHER_AGENT_ID = '66666666-6666-4666-8666-666666666666'
 const OTHER_INTEGRATION_ID = '77777777-7777-4777-8777-777777777777'
 const SESSION_KEY = 'slack:C123:1720000000.000100:agent'
+const SELF_RELAY = '88888888-8888-4888-8888-888888888881'
+const PEER_RELAY = '88888888-8888-4888-8888-888888888882'
 const silentLog: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 
 /** Manager deps with the required affinity + clock stubs, overridable per test. */
@@ -30,6 +32,8 @@ const deps = (over: Partial<SharedBotManagerDeps> = {}): SharedBotManagerDeps =>
   setChannelAgent: vi.fn(),
   reportBotChannels: vi.fn(() => true),
   reportBotConversation: vi.fn(() => true),
+  reportNoticePosted: vi.fn(() => true),
+  selfRelayId: () => SELF_RELAY,
   reportThreadAssign: vi.fn(() => true),
   lookupThread: vi.fn(async () => ({ botId: BOT_ID, sessionKey: '', target: null }) as RcThreadLookupOk),
   isAgentBotApp: vi.fn(() => false),
@@ -454,7 +458,8 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
     members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
     agents: [{ agentId: AGENT_ID, name: 'Agent' }],
     routes: [], // everything gated ⇒ no keyword rung, no default
-    gatedAgentIds: [AGENT_ID]
+    gatedAgentIds: [AGENT_ID],
+    noticeAuthority: SELF_RELAY
   })
   const dm = (over: Partial<WireNormalizedMessage> = {}): WireNormalizedMessage => ({
     msgId: 'slack:D42:1720000000.000100',
@@ -489,6 +494,78 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
     await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000200' }))
     expect(reportBotConversation).toHaveBeenCalledTimes(1)
     expect(ingest.postText).toHaveBeenCalledTimes(1)
+  })
+
+  it('a first gated DM on a NON-authority pod still posts (single event copy, receiving pod owns it)', async () => {
+    const manager = new SharedBotManager(deps({ selfRelayId: () => PEER_RELAY }))
+    const internals = manager as unknown as ManagerInternals
+    internals.router.upsert(gatedAssignment()) // noticeAuthority = SELF_RELAY, not this pod
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+
+    await internals.forward(BOT_ID, dm())
+    expect(ingest.postText).toHaveBeenCalledTimes(1)
+  })
+
+  it('a DM whose notice was already DELIVERED (noticedDmConversations) is latched on EVERY pod', async () => {
+    const manager = new SharedBotManager(deps())
+    const internals = manager as unknown as ManagerInternals
+    const a = gatedAssignment()
+    a.noticedDmConversations = ['D42'] // delivery reported + re-stamped by the CP
+    internals.router.upsert(a)
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+
+    await internals.forward(BOT_ID, dm())
+    expect(ingest.postText).not.toHaveBeenCalled()
+  })
+
+  it('a DM discovered while a public default routed it STILL gets its notice once unroutable', async () => {
+    const reportNoticePosted = vi.fn(() => true)
+    const daemon = { sendMsg: vi.fn(async (m: { msgId: string }) => ({ msgId: m.msgId, accepted: true })) }
+    const manager = new SharedBotManager(
+      deps({ reportNoticePosted, getDaemon: () => daemon as unknown as RelayDaemonConnection })
+    )
+    const internals = manager as unknown as ManagerInternals
+    const a = gatedAssignment()
+    // Mixed bot: OTHER is org-visible and catches the DM as the group default.
+    a.members = [
+      { daemonId: DAEMON_ID, agentIds: [AGENT_ID] },
+      { daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] }
+    ]
+    a.agents = [
+      { agentId: AGENT_ID, name: 'Agent' },
+      { agentId: OTHER_AGENT_ID, name: 'Public' }
+    ]
+    a.routes = [
+      {
+        agentId: OTHER_AGENT_ID,
+        daemonId: OTHER_DAEMON_ID,
+        integrationId: OTHER_INTEGRATION_ID,
+        match: { kind: 'keyword', value: 'public' }
+      }
+    ]
+    a.defaultAgentId = OTHER_AGENT_ID
+    a.defaultDaemonId = OTHER_DAEMON_ID
+    internals.router.upsert(a)
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+
+    // DM 1 routes to the public default: row discovery happens, NO notice.
+    await internals.forward(BOT_ID, dm())
+    expect(ingest.postText).not.toHaveBeenCalled()
+
+    // The public default is removed (uninstall/restriction) — DM now unroutable.
+    manager.updateRoutes(BOT_ID, {
+      members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
+      agents: [{ agentId: AGENT_ID, name: 'Agent' }],
+      routes: [],
+      gatedAgentIds: [AGENT_ID]
+      // no noticedDmConversations: discovery alone must never latch the notice
+    })
+    await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000300' }))
+    expect(ingest.postText).toHaveBeenCalledTimes(1)
+    expect(reportNoticePosted).toHaveBeenCalledWith({ botId: BOT_ID, channel: 'D42' })
   })
 
   it('reports a gated DM even when a non-gated default agent WINS the routing (mixed bot)', async () => {
@@ -594,6 +671,79 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
     expect(reportBotConversation).not.toHaveBeenCalled()
     expect(ingest.postText).toHaveBeenCalledTimes(1)
     expect(ingest.postText.mock.calls[0]![2]).toBe('123.456') // threaded, no channel spam
+  })
+
+  /** Two manager instances = two relay pods; only the authority pod may post. */
+  const pod = (authority: boolean) => {
+    const manager = new SharedBotManager(deps({ selfRelayId: () => (authority ? SELF_RELAY : PEER_RELAY) }))
+    const internals = manager as unknown as ManagerInternals
+    const ingest = fakeIngest()
+    internals.router.upsert(gatedAssignment()) // noticeAuthority = SELF_RELAY
+    internals.ingests.set(BOT_ID, ingest)
+    return { internals, ingest }
+  }
+  const mention = (msgId: string, thread: string) =>
+    dm({ msgId, channel: 'C9', isDm: false, thread, text: '<@UBOT> hi', mentionedBots: ['UBOT'] })
+  const M1 = 'slack:C9:1720000000.000100'
+  const M2 = 'slack:C9:1720000000.000200'
+
+  it('authority pod: sibling copies and repeat mentions collapse to exactly one notice', async () => {
+    const auth = pod(true)
+    await auth.internals.forward(BOT_ID, mention(M1, '1.1'))
+    await auth.internals.forward(BOT_ID, mention(M1, '1.1'))
+    await auth.internals.forward(BOT_ID, mention(M2, '2.2'))
+    expect(auth.ingest.postText).toHaveBeenCalledTimes(1)
+  })
+
+  it('non-authority pod never posts, whatever schedule its copies arrive in', async () => {
+    const auth = pod(true)
+    const peer = pod(false)
+    // Mention 1 split across pods; mention 2 lands entirely on the peer.
+    await peer.internals.forward(BOT_ID, mention(M1, '1.1'))
+    await auth.internals.forward(BOT_ID, mention(M1, '1.1'))
+    await peer.internals.forward(BOT_ID, mention(M2, '2.2'))
+    await peer.internals.forward(BOT_ID, mention(M2, '2.2'))
+    expect(auth.ingest.postText).toHaveBeenCalledTimes(1)
+    expect(peer.ingest.postText).not.toHaveBeenCalled()
+  })
+
+  it('a mention missing the authority pod is caught by the next one that reaches it', async () => {
+    const auth = pod(true)
+    const peer = pod(false)
+    await peer.internals.forward(BOT_ID, mention(M1, '1.1')) // both copies miss the authority
+    expect(auth.ingest.postText).not.toHaveBeenCalled()
+    expect(peer.ingest.postText).not.toHaveBeenCalled()
+    await auth.internals.forward(BOT_ID, mention(M2, '2.2')) // caught here — exactly once overall
+    expect(auth.ingest.postText).toHaveBeenCalledTimes(1)
+    expect(peer.ingest.postText).not.toHaveBeenCalled()
+  })
+
+  it('crossed concurrent mentions: only the authority posts, exactly once', async () => {
+    const auth = pod(true)
+    const peer = pod(false)
+    await peer.internals.forward(BOT_ID, mention(M2, '2.2'))
+    await auth.internals.forward(BOT_ID, mention(M1, '1.1'))
+    await peer.internals.forward(BOT_ID, mention(M1, '1.1'))
+    await auth.internals.forward(BOT_ID, mention(M2, '2.2'))
+    expect(auth.ingest.postText).toHaveBeenCalledTimes(1)
+    expect(peer.ingest.postText).not.toHaveBeenCalled()
+  })
+
+  it('no authority stamped (old CP / empty roster): no pod posts; DM discovery still reports', async () => {
+    const reportBotConversation = vi.fn(() => true)
+    const manager = new SharedBotManager(deps({ reportBotConversation, selfRelayId: () => SELF_RELAY }))
+    const internals = manager as unknown as ManagerInternals
+    const a = gatedAssignment()
+    delete a.noticeAuthority
+    internals.router.upsert(a)
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+
+    await internals.forward(BOT_ID, mention(M1, '1.1'))
+    expect(ingest.postText).not.toHaveBeenCalled()
+    // An authority-less (or non-authority) pod still fans out gated-DM rows.
+    await internals.forward(BOT_ID, dm())
+    expect(reportBotConversation).toHaveBeenCalledTimes(1)
   })
 
   it('does nothing gated-related for a bot with no gated members', async () => {

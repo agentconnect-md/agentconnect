@@ -51,12 +51,19 @@ export interface SharedBotManagerDeps {
   /** Report one gated-DM conversation to the CP (§14.3, → `rc/bot-conversation`).
    *  Best-effort: loss self-heals on the counterpart's next DM. */
   reportBotConversation: (m: RcBotConversation) => boolean
+  /** Report one DELIVERED §14.3 DM gating notice (→ `rc/notice-posted`) so the CP
+   *  re-stamps the pool-wide latch. Best-effort: loss costs at most one duplicate
+   *  notice later, never a lost enablement path. */
+  reportNoticePosted: (m: { botId: string; channel: string }) => boolean
   /** Report the thread's now-resolved owner to the CP (→ `rc/thread-assign`). Returns
    *  `false` if the CP link was not READY and the frame was dropped, so the manager can
    *  retry it when the link recovers ({@link SharedBotManager.flushPendingReports}). */
   reportThreadAssign: (m: RcThreadAssign) => boolean
   /** Pull a thread's persisted owner from the CP on an affinity miss (→ `rc/thread-lookup`). */
   lookupThread: (m: RcThreadLookup) => Promise<import('@agentconnect.md/protocol').RcThreadLookupOk>
+  /** This pod's CP-assigned relayId (stable pool identity; undefined before the
+   *  first register) — compared against the assignment's §14.3 noticeAuthority. */
+  selfRelayId: () => string | undefined
   /** True when the sender app backs another AgentConnect agent beside the resolved
    *  target in this channel. Used only to suppress platform activation. */
   isAgentBotApp: (targetAgentId: string, platform: string, channelId: string, appId: string) => boolean
@@ -128,7 +135,8 @@ export class SharedBotManager {
   /** Latest bot-level channel snapshot dropped while the CP link was down. A full
    *  snapshot supersedes any older one for the same bot. */
   private readonly pendingChannelReports = new Map<string, RcBotChannels>()
-  /** §14 one-time gating-notice latch (`botId:channel`) — per relay lifetime. */
+  /** §14 one-time gating-notice latch (`botId:channel`) on the AUTHORITY pod —
+   *  correct because only one pod ever posts (deterministic per-bot authority). */
   private readonly gatedNoticesSent = new Set<string>()
   /** §14.3 per-conversation DM-report latch (`botId:channel`) — scoped to the
    *  CURRENT bot assignment: cleared on assign/unassign and whenever the gated
@@ -209,7 +217,17 @@ export class SharedBotManager {
   /** `rc/routes` — hot-update routes/members/default WITHOUT re-opening the ingest. */
   updateRoutes(
     botId: string,
-    patch: Pick<BotAssignment, 'members' | 'agents' | 'routes' | 'defaultAgentId' | 'defaultDaemonId' | 'gatedAgentIds'>
+    patch: Pick<
+      BotAssignment,
+      | 'members'
+      | 'agents'
+      | 'routes'
+      | 'defaultAgentId'
+      | 'defaultDaemonId'
+      | 'gatedAgentIds'
+      | 'noticeAuthority'
+      | 'noticedDmConversations'
+    >
   ): void {
     // A changed gated member set may require a fresh DM fan-out (§14.3) — e.g. a
     // newly restricted or newly installed member needs its own pending Off row.
@@ -417,9 +435,31 @@ export class SharedBotManager {
    *  unroutable message on a bot with gated members — the bot must never look
    *  silently broken. */
   private async noticeGatedUnrouted(botId: string, msg: WireNormalizedMessage): Promise<void> {
-    const latch = `${botId}:${msg.channel}`
-    if (this.gatedNoticesSent.has(latch)) return
-    this.gatedNoticesSent.add(latch)
+    // Once-per-conversation cannot rest on replica-local state, and the CP must
+    // never be a per-message round-trip (daemon-centric boundary) — so both
+    // arbitration inputs are data-plane state stamped on the assignment:
+    //  • CHANNEL mentions arrive as TWO event copies that may land on different
+    //    pods → only the deterministic noticeAuthority pod posts (whichever copy
+    //    reaches it first; the local latch collapses siblings). A mention whose
+    //    copies miss the authority is caught by the next one; no authority ⇒ no
+    //    pod posts.
+    //  • DMs have a SINGLE event copy → the RECEIVING pod posts, gated by the
+    //    noticedDmConversations set — DELIVERED notices only (reported below via
+    //    rc/notice-posted and re-stamped pool-wide by the CP), never mere row
+    //    discovery: a mixed bot's DM routed by its public default creates a row
+    //    without a notice, and must still get one if it later becomes
+    //    unroutable. (A second DM inside the re-stamp window may double —
+    //    KNOWN, low-severity.)
+    const a = this.router.get(botId)
+    if (msg.isDm) {
+      if (a?.noticedDmConversations?.includes(msg.channel)) return
+    } else {
+      const authority = a?.noticeAuthority
+      if (!authority || authority !== this.deps.selfRelayId()) return
+    }
+    const key = `${botId}:${msg.channel}`
+    if (this.gatedNoticesSent.has(key)) return
+    this.gatedNoticesSent.add(key)
     try {
       await this.ingests
         .get(botId)
@@ -428,6 +468,8 @@ export class SharedBotManager {
           '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.',
           msg.isDm ? undefined : msg.thread
         )
+      // Pool-wide DM latch = DELIVERY, reported after the post succeeds.
+      if (msg.isDm) this.deps.reportNoticePosted({ botId, channel: msg.channel })
     } catch (err) {
       this.deps.log.warn(`shared-bot(${botId}): gating notice failed in ch=${msg.channel}: ${(err as Error).message}`)
     }

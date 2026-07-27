@@ -48,7 +48,9 @@ function toBotAssignment(a: import('@agentconnect.md/protocol').RcBotAssign): Bo
     routes: a.routes,
     ...(a.defaultAgentId ? { defaultAgentId: a.defaultAgentId } : {}),
     ...(a.defaultDaemonId ? { defaultDaemonId: a.defaultDaemonId } : {}),
-    gatedAgentIds: a.gatedAgentIds
+    gatedAgentIds: a.gatedAgentIds,
+    noticedDmConversations: a.noticedDmConversations,
+    ...(a.noticeAuthority ? { noticeAuthority: a.noticeAuthority } : {})
   }
 }
 
@@ -147,7 +149,9 @@ async function main(): Promise<void> {
         routes: r.routes,
         ...(r.defaultAgentId ? { defaultAgentId: r.defaultAgentId } : {}),
         ...(r.defaultDaemonId ? { defaultDaemonId: r.defaultDaemonId } : {}),
-        gatedAgentIds: r.gatedAgentIds
+        gatedAgentIds: r.gatedAgentIds,
+        noticeAuthority: r.noticeAuthority,
+        noticedDmConversations: r.noticedDmConversations
       }),
     onAssign: (a) =>
       held.sharedBot?.setAffinity(a.botId, a.sessionKey, {
@@ -177,6 +181,8 @@ async function main(): Promise<void> {
     setChannelAgent: (botId, channelId, agentId) => client.emitSetChannelAgent({ botId, channelId, agentId }),
     reportBotChannels: (m) => client.emitBotChannels(m),
     reportBotConversation: (m) => client.emitBotConversation(m),
+    reportNoticePosted: (m) => client.emitNoticePosted(m),
+    selfRelayId: () => client.relayId,
     reportThreadAssign: (m) => client.emitThreadAssign(m),
     lookupThread: (m) => client.lookupThread(m),
     isAgentBotApp: (targetAgentId, platform, channelId, appId) =>

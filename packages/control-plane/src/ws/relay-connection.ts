@@ -24,6 +24,7 @@ import type {
   RcRunReport,
   RcBotChannels,
   RcBotConversation,
+  RcNoticePosted,
   RcSetChannelAgent,
   RcThreadAssign,
   RcThreadLookup,
@@ -61,6 +62,13 @@ export interface RelayConnDeps {
   /** Apply an INCREMENTAL DM-conversation report (resource-visibility §14.3): fan a
    *  kind:'im' row (default Off) across the bot's gated installs. Fire-and-forget. */
   onBotConversation: (m: RcBotConversation) => Promise<void>
+  /** Record a DELIVERED §14.3 DM gating notice and re-stamp the pool's latch.
+   *  Fire-and-forget. */
+  onNoticePosted: (m: RcNoticePosted) => Promise<void>
+  /** Fired after this relay left the connected registry (socket closed) — the
+   *  connected roster changed, so §14.3 notice authorities must re-converge on the
+   *  survivors. Best-effort; never throws. */
+  onRelayGone?: () => void
   /** Persist a relay `rc/thread-assign` (durable thread affinity REPORT leg) and
    *  broadcast the binding pool-wide (rc/assign). Fire-and-forget; a store error must
    *  not close the link. */
@@ -151,6 +159,9 @@ export class RelayConnection implements RelayChannel {
         case 'rc/bot-conversation':
           await this.deps.onBotConversation(frame.payload)
           return
+        case 'rc/notice-posted':
+          await this.deps.onNoticePosted(frame.payload)
+          return
         case 'rc/thread-assign':
           await this.handleThreadAssign(frame.payload)
           return
@@ -184,6 +195,7 @@ export class RelayConnection implements RelayChannel {
           type === 'rc/set-channel-agent' ||
           type === 'rc/bot-channels' ||
           type === 'rc/bot-conversation' ||
+          type === 'rc/notice-posted' ||
           type === 'rc/thread-assign' ||
           type === 'rc/thread-lookup' ||
           type === 'rc/github-installation'
@@ -372,6 +384,9 @@ export class RelayConnection implements RelayChannel {
     // Drop from the registry only if still ours (a late close from a superseded old
     // socket must not evict the live one). The durable `relay` row ages out of the
     // roster via the sweeper (bounded failover window, §13).
-    if (this.relayId) this.deps.relayReg.remove(this.relayId, this)
+    if (this.relayId) {
+      this.deps.relayReg.remove(this.relayId, this)
+      this.deps.onRelayGone?.()
+    }
   }
 }

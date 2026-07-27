@@ -59,6 +59,10 @@ interface Compiled {
   defaultDaemonId?: string
   /** Members whose ingress is conversation-gated (resource-visibility.md §14). */
   gatedAgentIds: string[]
+  /** DM conversation ids whose §14.3 notice was ACTUALLY DELIVERED — the
+   *  pool-wide latch for single-copy DM messages (never row-derived: discovery
+   *  without delivery must not latch). */
+  noticedDmConversations: string[]
   /** Placed member integrations (spec push targets: daemonId + integration). */
   placed: { integration: IntegrationRecord; daemonId: string; gated: boolean }[]
 }
@@ -143,7 +147,9 @@ export class SharedBotOrchestrator {
         routes: compiled.routes,
         ...(compiled.defaultAgentId ? { defaultAgentId: compiled.defaultAgentId } : {}),
         ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {}),
-        gatedAgentIds: compiled.gatedAgentIds
+        gatedAgentIds: compiled.gatedAgentIds,
+        noticedDmConversations: compiled.noticedDmConversations,
+        ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
       })
     )
     const secret = await this.botSecret.get(bot.id)
@@ -301,6 +307,38 @@ export class SharedBotOrchestrator {
     await this.syncRoutes(botId)
   }
 
+  /** §14.3 DM notices ACTUALLY DELIVERED (`botId:channel`), reported via
+   *  `rc/notice-posted`. Per CP lifetime (a restart allows one fresh notice —
+   *  the daemon's own latch semantics); size-bounded. */
+  private readonly noticedDms = new Set<string>()
+
+  /** Record one delivered §14.3 DM notice and re-stamp the pool so every pod
+   *  latches the conversation. Fire-and-forget from the relay's perspective. */
+  async recordNoticePosted(m: { botId: string; channel: string }): Promise<void> {
+    const key = `${m.botId}:${m.channel}`
+    if (this.noticedDms.has(key)) return
+    if (this.noticedDms.size >= 100_000) this.noticedDms.clear()
+    this.noticedDms.add(key)
+    await this.syncRoutes(m.botId)
+  }
+
+  /** §14.3: the relay DETERMINISTICALLY responsible for a bot's one-time gating
+   *  notices, chosen from the CONNECTED roster at (re)assign/replay time — pure
+   *  config-time orchestration, never a per-message CP round-trip (the CP stays
+   *  off the message hot path). Stable while the roster is stable; a roster
+   *  change re-broadcasts and moves the authority (its local latch moves too —
+   *  per-lifetime notice semantics, matching the daemon). Undefined ⇒ no relay. */
+  private noticeAuthorityFor(botId: string): string | undefined {
+    const ids = this.relayReg
+      .all()
+      .map((ch) => ch.relayId)
+      .sort()
+    if (ids.length === 0) return undefined
+    let h = 0
+    for (const c of botId) h = (h * 31 + c.charCodeAt(0)) >>> 0
+    return ids[h % ids.length]
+  }
+
   /**
    * §14.3: fan an INCREMENTAL DM-conversation report across the bot's GATED installs
    * as `kind:'im'` rows (default Off, owned by each install's agent) so console
@@ -324,6 +362,10 @@ export class SharedBotOrchestrator {
         { agentId: AgentId(install.agentId), defaultTrigger: 'off' }
       )
     }
+    // No route recompile: an Off row compiles nothing, and the notice latch is
+    // deliberately NOT row-derived (rc/notice-posted owns it) — a conversation
+    // discovered while a public default still routed it must keep its claim to a
+    // notice if it later becomes unroutable.
   }
 
   /**
@@ -482,6 +524,10 @@ export class SharedBotOrchestrator {
         daemonId: p.daemonId
       }
     })
+    const dmPrefix = `${bot.id}:`
+    const noticedDmConversations = [...this.noticedDms]
+      .filter((k) => k.startsWith(dmPrefix))
+      .map((k) => k.slice(dmPrefix.length))
     return {
       platform: bot.platform === 'slack' ? 'slack' : bot.platform === 'telegram' ? 'telegram' : 'discord',
       members,
@@ -489,6 +535,7 @@ export class SharedBotOrchestrator {
       routes,
       ...(first ? { defaultAgentId: first.integration.agentId, defaultDaemonId: first.daemonId } : {}),
       gatedAgentIds: placed.filter((p) => p.gated).map((p) => p.integration.agentId),
+      noticedDmConversations,
       placed: placed.map((p) => ({ integration: p.integration, daemonId: p.daemonId, gated: p.gated }))
     }
   }
@@ -531,7 +578,9 @@ export class SharedBotOrchestrator {
       routes: compiled.routes,
       ...(compiled.defaultAgentId ? { defaultAgentId: compiled.defaultAgentId } : {}),
       ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {}),
-      gatedAgentIds: compiled.gatedAgentIds
+      gatedAgentIds: compiled.gatedAgentIds,
+      noticedDmConversations: compiled.noticedDmConversations,
+      ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
     }
   }
 

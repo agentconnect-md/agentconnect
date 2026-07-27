@@ -542,7 +542,22 @@ export const RcBotAssign = z.object({
   // fail-closed. The relay's thread-affinity rung honours a binding to a gated agent
   // only while that agent still has a channel-scoped route in the conversation —
   // otherwise a thread bound before the gate was applied would keep routing forever.
-  gatedAgentIds: z.array(z.string().uuid()).default([])
+  gatedAgentIds: z.array(z.string().uuid()).default([]),
+  // §14.3 one-time gating notice, CHANNEL conversations: the relayId
+  // DETERMINISTICALLY responsible for posting it for this bot. A channel mention
+  // arrives as two event copies that may land on different pods — only the
+  // authority posts (local per-conversation latch). Stamped from the connected
+  // roster at (re)assign/replay time and re-converged on relay join/leave/sweep.
+  // Absent ⇒ no relay posts.
+  noticeAuthority: z.string().uuid().optional(),
+  // §14.3 one-time gating notice, DM conversations: the ids whose notice was
+  // ACTUALLY DELIVERED (reported via `rc/notice-posted`, pool-converged by the
+  // CP re-stamp). A DM has a SINGLE event copy, so the RECEIVING pod posts —
+  // but only for a conversation not in this set. Deliberately NOT derived from
+  // conversation rows: a row can exist from mere discovery (a mixed bot's DM
+  // routed to its public default) with no notice ever posted, and the
+  // conversation must still get one if it later becomes unroutable.
+  noticedDmConversations: z.array(z.string()).default([])
 })
 export type RcBotAssign = z.infer<typeof RcBotAssign>
 
@@ -562,7 +577,9 @@ export const RcRoutes = z.object({
   routes: z.array(AttributedRoute),
   defaultAgentId: z.string().uuid().optional(),
   defaultDaemonId: z.string().uuid().optional(),
-  gatedAgentIds: z.array(z.string().uuid()).default([]) // §14 — see RcBotAssign.gatedAgentIds
+  gatedAgentIds: z.array(z.string().uuid()).default([]), // §14 — see RcBotAssign.gatedAgentIds
+  noticeAuthority: z.string().uuid().optional(), // §14.3 — see RcBotAssign.noticeAuthority
+  noticedDmConversations: z.array(z.string()).default([]) // §14.3 — see RcBotAssign.noticedDmConversations
 })
 export type RcRoutes = z.infer<typeof RcRoutes>
 
@@ -603,6 +620,16 @@ export const RcBotChannels = z.object({
   channels: z.array(IntegrationChannel)
 })
 export type RcBotChannels = z.infer<typeof RcBotChannels>
+
+// R→C EVT (fire-and-forget) — a relay POSTED the one-time §14.3 gating notice in
+// a DM conversation. The CP records delivery and re-stamps the pool's
+// `noticedDmConversations` so every pod latches. Loss (link down) costs at most
+// one duplicate notice later — never a lost enablement path.
+export const RcNoticePosted = z.object({
+  botId: z.string().uuid(),
+  channel: z.string().min(1)
+})
+export type RcNoticePosted = z.infer<typeof RcNoticePosted>
 
 // R→C EVT (fire-and-forget) — INCREMENTAL conversation report (resource-visibility
 // §14.3): the relay saw an inbound DM to a shared bot that backs ≥1 gated
@@ -741,6 +768,7 @@ export const RELAY_CP_SCHEMAS = {
   'rc/set-channel-agent': RcSetChannelAgent,
   'rc/bot-channels': RcBotChannels,
   'rc/bot-conversation': RcBotConversation,
+  'rc/notice-posted': RcNoticePosted,
   'rc/thread-assign': RcThreadAssign,
   'rc/thread-lookup': RcThreadLookup,
   'rc/thread-lookup/ok': RcThreadLookupOk,
@@ -783,6 +811,7 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/set-channel-agent', RELAY_CP_SCHEMAS['rc/set-channel-agent']),
   frameSchema('rc/bot-channels', RELAY_CP_SCHEMAS['rc/bot-channels']),
   frameSchema('rc/bot-conversation', RELAY_CP_SCHEMAS['rc/bot-conversation']),
+  frameSchema('rc/notice-posted', RELAY_CP_SCHEMAS['rc/notice-posted']),
   frameSchema('rc/thread-assign', RELAY_CP_SCHEMAS['rc/thread-assign']),
   frameSchema('rc/thread-lookup', RELAY_CP_SCHEMAS['rc/thread-lookup']),
   frameSchema('rc/thread-lookup/ok', RELAY_CP_SCHEMAS['rc/thread-lookup/ok']),

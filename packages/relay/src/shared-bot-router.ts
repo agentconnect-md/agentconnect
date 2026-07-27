@@ -36,6 +36,12 @@ export interface BotAssignment {
    *  in the conversation — a binding made before the gate was applied must not keep
    *  routing a private agent in a now-Off conversation. */
   gatedAgentIds?: string[]
+  /** §14.3: the relayId deterministically responsible for this bot's one-time
+   *  CHANNEL gating notices (stamped by the CP from the connected roster). */
+  noticeAuthority?: string
+  /** §14.3: DM conversation ids whose notice was ACTUALLY DELIVERED (pool-wide
+   *  latch for single-copy DM messages; never mere row discovery). */
+  noticedDmConversations?: string[]
 }
 
 /** The arbitration verdict — a target the daemon dispatches to. */
@@ -162,7 +168,17 @@ export class SharedBotRouter {
   /** Replace routes/members/agents/default WITHOUT touching secrets or botUserId (rc/routes). */
   updateRoutes(
     botId: string,
-    patch: Pick<BotAssignment, 'members' | 'agents' | 'routes' | 'defaultAgentId' | 'defaultDaemonId' | 'gatedAgentIds'>
+    patch: Pick<
+      BotAssignment,
+      | 'members'
+      | 'agents'
+      | 'routes'
+      | 'defaultAgentId'
+      | 'defaultDaemonId'
+      | 'gatedAgentIds'
+      | 'noticeAuthority'
+      | 'noticedDmConversations'
+    >
   ): void {
     const a = this.bots.get(botId)
     if (!a) return
@@ -172,6 +188,8 @@ export class SharedBotRouter {
     a.defaultAgentId = patch.defaultAgentId
     a.defaultDaemonId = patch.defaultDaemonId
     a.gatedAgentIds = patch.gatedAgentIds
+    a.noticeAuthority = patch.noticeAuthority
+    a.noticedDmConversations = patch.noticedDmConversations
   }
 
   remove(botId: string): BotAssignment | undefined {
