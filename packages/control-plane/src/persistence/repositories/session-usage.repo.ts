@@ -11,9 +11,16 @@
  * for workspace-wide token totals.
  */
 import type { PrismaLike } from '../prisma.js'
-import type { SessionUsageRepo, SessionUsageInput, UsageAggregate, AgentUsageAggregate, ViewCtx } from '../ports.js'
+import type {
+  SessionUsageRepo,
+  SessionUsageInput,
+  SessionUsageCounts,
+  UsageAggregate,
+  AgentUsageAggregate,
+  ViewCtx
+} from '../ports.js'
 import { visibilityWhere } from '../ports.js'
-import type { OrgId } from '../../domain/ids.js'
+import type { AgentId, OrgId } from '../../domain/ids.js'
 
 export class PgSessionUsageRepo implements SessionUsageRepo {
   constructor(private readonly db: PrismaLike) {}
@@ -44,6 +51,25 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       create: { agentId: input.agentId, sessionId: input.sessionId, ...fields },
       update: fields
     })
+  }
+
+  async get(agentId: AgentId, sessionId: string): Promise<SessionUsageCounts | null> {
+    const usage = await this.db.sessionUsage.findUnique({
+      where: { agentId_sessionId: { agentId, sessionId } }
+    })
+    if (!usage) return null
+    return {
+      totalTokens: usage.totalTokens,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      thoughtTokens: usage.thoughtTokens,
+      cachedReadTokens: usage.cachedReadTokens,
+      cachedWriteTokens: usage.cachedWriteTokens,
+      ...(usage.contextUsed !== null ? { contextUsed: usage.contextUsed } : {}),
+      ...(usage.contextSize !== null ? { contextSize: usage.contextSize } : {}),
+      ...(usage.costAmount !== 0 || usage.costCurrency ? { costAmount: usage.costAmount } : {}),
+      ...(usage.costCurrency ? { costCurrency: usage.costCurrency } : {})
+    }
   }
 
   async aggregate(orgId: OrgId, since: Date, viewer?: ViewCtx): Promise<UsageAggregate> {

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { sessionFromDto, type SessionDto } from './api'
+import {
+  mergeSessionDetailUsage,
+  sessionFromDetailDto,
+  sessionFromDto,
+  type SessionDetailDto,
+  type SessionDto
+} from './api'
 import { sessionPlatform } from './data'
 import {
   githubRepoIdFromSessionTriggerFilter,
@@ -99,6 +105,60 @@ describe('sessionTriggerKind', () => {
       model: 'gpt-5.6',
       tokens: '120',
       cost: '$0.01'
+    })
+  })
+
+  it('hydrates token and cost usage from a direct session-detail response', () => {
+    const detail: SessionDetailDto = {
+      id: 'dream-session-1',
+      parentSession: null,
+      childSessions: [],
+      agentId: 'target-agent',
+      platform: 'dream',
+      channel: 'memory',
+      thread: 'drm-1',
+      title: 'Memory dream',
+      status: 'completed',
+      lastActivityAt: '2026-07-27T00:00:00.000Z',
+      usage: {
+        totalTokens: 12_400,
+        inputTokens: 10_000,
+        outputTokens: 2_400,
+        costAmount: 0.12,
+        costCurrency: 'USD'
+      },
+      triggeredBy: 'manual',
+      channelName: null,
+      triggeredByName: null,
+      threadUrl: null,
+      runtime: 'codex',
+      model: 'gpt-5.6',
+      effort: null,
+      fastMode: null,
+      permissionMode: 'read-only',
+      outputMode: null,
+      daemonId: 'daemon-1'
+    }
+
+    const hydrated = sessionFromDetailDto(detail)
+    expect(hydrated).toMatchObject({
+      platform: 'dream',
+      tokens: '12K',
+      cost: '$0.12',
+      usage: { inputTokens: 10_000, outputTokens: 2_400 }
+    })
+
+    const staleListRow = sessionFromDto(
+      sessionDto({
+        sessionId: detail.id,
+        sessionKey: { platform: 'dream', channel: 'memory' },
+        usage: null
+      })
+    )
+    expect(mergeSessionDetailUsage(staleListRow, hydrated)).toMatchObject({
+      tokens: '12K',
+      cost: '$0.12',
+      usage: { totalTokens: 12_400 }
     })
   })
 })

@@ -434,8 +434,9 @@ bounded byte-count metadata. Every extraction is also represented as a `dream`
 session in the normal Sessions list and usage reports. Its history contains only
 safe lifecycle messages; the memory snapshot, source transcripts, model proposal,
 and skill bodies never enter session history, evaluation events, or logs. The
-Memory Dream list links both the execution session and its source sessions and
-shows model, duration, token/cost, and prompt/output byte metrics.
+Memory Dream list links the execution session and shows that run's model,
+duration, token/cost, and prompt/output byte metrics. Source-session selection is
+input metadata, not the Dream session's history or usage.
 
 ## 11. Explicitly out of scope (v1)
 

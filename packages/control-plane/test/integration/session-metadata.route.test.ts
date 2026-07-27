@@ -102,6 +102,20 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       outputMode: 'medium',
       ts: '2026-07-05T00:00:00.000Z'
     })
+    await prisma.sessionUsage.create({
+      data: {
+        agentId: AGENT,
+        sessionId: SESSION,
+        platform: 'slack',
+        channel: 'C123',
+        totalTokens: 1_200,
+        inputTokens: 1_000,
+        outputTokens: 200,
+        costAmount: 0.012,
+        costCurrency: 'USD',
+        lastActivityAt: new Date('2026-07-05T00:00:01.000Z')
+      }
+    })
 
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}` })
     expect(res.statusCode).toBe(200)
@@ -120,6 +134,13 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       permissionMode: string | null
       outputMode: string | null
       daemonId: string | null
+      usage: {
+        totalTokens: number
+        inputTokens: number
+        outputTokens: number
+        costAmount: number
+        costCurrency: string
+      }
     }
     expect(body.id).toBe(SESSION)
     expect(body.agentId).toBe(AGENT)
@@ -135,6 +156,13 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     expect(body.permissionMode).toBe('acceptEdits')
     expect(body.outputMode).toBe('medium')
     expect(body.daemonId).toBe(DAEMON) // CP-stamped from the reporting WS connection
+    expect(body.usage).toMatchObject({
+      totalTokens: 1_200,
+      inputTokens: 1_000,
+      outputTokens: 200,
+      costAmount: 0.012,
+      costCurrency: 'USD'
+    })
 
     const stored = await prisma.sessionMeta.findUniqueOrThrow({ where: { id: SESSION } })
     expect(stored.title).toBe('Roll out api@1.4.2')
@@ -164,6 +192,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
         permissionMode: string | null
         outputMode: string | null
         daemonId: string | null
+        usage: { totalTokens: number } | null
       }>
     }
     expect(listBody.sessions[0]!.runtime).toBe('claude')
@@ -173,6 +202,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     expect(listBody.sessions[0]!.permissionMode).toBe('acceptEdits')
     expect(listBody.sessions[0]!.outputMode).toBe('medium')
     expect(listBody.sessions[0]!.daemonId).toBe(DAEMON)
+    expect(listBody.sessions[0]!.usage?.totalTokens).toBe(1_200)
   })
 
   it('is idempotent — a later milestone advances the same session row', async () => {

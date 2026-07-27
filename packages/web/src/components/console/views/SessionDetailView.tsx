@@ -33,6 +33,7 @@ import {
   fetchToolBody,
   fmtCountCompact,
   memberDisplayName,
+  mergeSessionDetailUsage,
   sessionFromDetailDto,
   type SessionDetailDto,
   type SessionMessageDto,
@@ -595,7 +596,11 @@ export default function SessionDetailView() {
     ([, orgId, , sessionId]) => fetchSessionDetail(sessionId as string, orgId as string),
     { refreshInterval: 30_000 }
   )
-  const sessionBase = localSession ?? (sessionDetail ? sessionFromDetailDto(sessionDetail) : null)
+  const detailSession = sessionDetail ? sessionFromDetailDto(sessionDetail) : null
+  // The cursor-loaded list row can predate the final Dream usage report. Keep
+  // its local/live fields, but let the independently refreshed detail snapshot
+  // supply the authoritative per-session token and cost totals.
+  const sessionBase = localSession ? mergeSessionDetailUsage(localSession, detailSession) : detailSession
   const owner = sessionBase ? agents.find((a) => a.id === sessionBase.agentId) : undefined
   const session =
     sessionBase && !localSession

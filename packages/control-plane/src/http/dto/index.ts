@@ -1917,6 +1917,7 @@ export const SessionDetailDto = z.object({
   title: z.string().nullable(),
   status: z.string().nullable(),
   lastActivityAt: z.string(),
+  usage: SessionUsageDto.nullable(),
   triggeredBy: z.string().nullable(),
   channelName: z.string().nullable(),
   triggeredByName: z.string().nullable(),

@@ -417,9 +417,10 @@ export function sessionRoutes(deps: HttpDeps) {
         // is indistinguishable from no parent; hidden children are omitted.
         const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((a) => a.id)
         const visibleAgentIdSet = new Set<string>(visibleAgentIds)
-        const [parent, children] = await Promise.all([
+        const [parent, children, usage] = await Promise.all([
           s.parentSessionId ? deps.repos.session.get(s.parentSessionId) : Promise.resolve(null),
-          deps.repos.session.listChildren(SessionId(s.id), visibleAgentIds)
+          deps.repos.session.listChildren(SessionId(s.id), visibleAgentIds),
+          deps.repos.sessionUsage.get(s.agentId, s.id)
         ])
         return {
           id: s.id,
@@ -436,6 +437,7 @@ export function sessionRoutes(deps: HttpDeps) {
           title: s.title,
           status: s.status,
           lastActivityAt: s.lastActivityAt.toISOString(),
+          usage,
           triggeredBy: s.triggeredBy,
           channelName: s.channelName,
           triggeredByName: s.triggeredByName,
