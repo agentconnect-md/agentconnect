@@ -61,6 +61,7 @@ import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
+import { useSessionList } from '@/lib/use-session-list'
 import {
   GH_FAMILIES,
   GH_TRIGGER_MODES,
@@ -121,6 +122,7 @@ export default function AgentDetailView() {
     useConsoleData()
   const { openPlayground } = usePlayground()
   const { openModal } = useModal()
+  const { total: agentSessionTotal } = useSessionList(MOCK_MODE ? null : activeOrg?.id, { agentId: id })
   // Which webhook row has its recent-deliveries panel expanded (one at a time).
   const [hookRunsFor, setHookRunsFor] = useState<string | null>(null)
   // Hooks are agent-scoped (no org-wide list). Keep a stable resource key so a
@@ -398,7 +400,7 @@ export default function AgentDetailView() {
       ? (da.hookKinds ?? [])
       : [...new Set(agentHooks.filter((hook) => hook.enabled).map((hook) => hook.kind))]
   const hasIntegrationMarks = agentInts.length > 0 || integrationHookKinds.length > 0
-  const sessionCount = getSessions(da.id).length
+  const sessionCount = MOCK_MODE ? getSessions(da.id).length : agentSessionTotal
   // Icon upload is available only when the object store is configured (org flag) — the
   // picker hides Upload otherwise. On success the CP has persisted the new icon; refetch.
   const onUploadIcon = activeOrg?.iconUploadEnabled
