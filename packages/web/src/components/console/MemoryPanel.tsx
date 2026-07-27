@@ -8,8 +8,8 @@
 // friendly notice.
 //
 // Left: the file list (index + topics). Right: the selected file, viewed as
-// markdown or edited in a textarea + Save (PUT). "New topic" creates a file. The
-// CP enforces edit permission (a 403 surfaces as an error), matching the console.
+// markdown or edited through the same inline file-browser surface as Workspace.
+// The CP enforces edit permission (a 403 surfaces as an error), matching the console.
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
@@ -42,16 +42,24 @@ import {
   type MemorySettingsDraft
 } from '@/components/console/memory-settings'
 import {
+  FileBrowserBreadcrumb,
+  FileBrowserEditor,
+  FileBrowserEditorActions,
+  FileBrowserHistoryButton,
   FileBrowserLayout,
-  FileBrowserPreviewHeader,
+  FileBrowserPreviewSummary,
   FileBrowserRow,
-  FileBrowserShell
+  FileBrowserShell,
+  formatFileMtime,
+  formatFileSize,
+  type FileBrowserEditorDraft
 } from '@/components/console/FileBrowser'
 import { RecordMemoryPanel } from '@/components/console/RecordMemoryPanel'
 import { DreamPanel } from '@/components/console/DreamPanel'
 import { DreamScheduleFields } from '@/components/console/DreamScheduleFields'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { ManagedMemoryHistory } from '@/components/console/ManagedMemoryHistory'
+import { useIsMobile } from '@/lib/use-is-mobile'
 
 const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), {
   ssr: false,
@@ -152,6 +160,7 @@ export function MemoryPanel({
   sessionBasePath?: string
 }) {
   const { updateAgent } = useConsoleData()
+  const isMobile = useIsMobile()
   const [files, setFiles] = useState<MemoryFileEntry[]>([])
   const [listLoading, setListLoading] = useState(true)
   const [listError, setListError] = useState<string | null>(null)
@@ -161,13 +170,12 @@ export function MemoryPanel({
   const [fileExists, setFileExists] = useState<boolean | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const loadRequest = useRef(0)
   const listRequest = useRef(0)
 
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState<string | null>(null)
+  const [editor, setEditor] = useState<FileBrowserEditorDraft | null>(null)
+  const [mobileListSignal, setMobileListSignal] = useState(0)
 
   // Existing-agent memory settings are one explicit draft. The content below
   // continues to reflect `persistedSettings` until Save succeeds, so selecting a
@@ -187,7 +195,6 @@ export function MemoryPanel({
   const [savingProvider, setSavingProvider] = useState(false)
   const [providerError, setProviderError] = useState<string | null>(null)
   const [confirmingBackendChange, setConfirmingBackendChange] = useState(false)
-  const [previewRequest, setPreviewRequest] = useState(0)
   // The settings form is collapsed behind a one-line summary by default so the
   // memory content itself stays the page's focus. Closing the form discards any
   // unsaved draft — a closed form always summarizes the persisted settings.
@@ -355,7 +362,8 @@ export function MemoryPanel({
       const request = ++loadRequest.current
       setLoading(true)
       setError(null)
-      setEditing(false)
+      setEditor(null)
+      setHistoryOpen(false)
       setContent('')
       setLoadedMtime(null)
       setFileExists(null)
@@ -387,7 +395,8 @@ export function MemoryPanel({
     setFiles([])
     setSelected(INDEX)
     setContent('')
-    setEditing(false)
+    setEditor(null)
+    setHistoryOpen(false)
     setError(null)
     if (persistedProvider === 'none' || persistedProvider === 'external') {
       setListLoading(false)
@@ -413,44 +422,82 @@ export function MemoryPanel({
 
   const resolveMemoryLink = (href: string) => resolveMemoryMarkdownLink(href, select)
 
-  const newTopic = () => {
-    const name = window.prompt('New memory file name (e.g. "deploys.md"):')?.trim()
-    if (!name) return
-    if (!TOPIC_RE.test(name) || name === INDEX) {
-      window.alert('Use a flat .md file name, e.g. "deploys.md".')
-      return
-    }
-    loadRequest.current += 1
-    setLoading(false)
-    setSelected(name)
-    setContent('')
-    setLoadedMtime(null) // brand-new file — no precondition
-    setFileExists(false)
-    setError(null)
-    setDraft(`# ${name.replace(/\.md$/, '')}\n\n`)
-    setSaveError(null)
-    setEditing(true)
-    setPreviewRequest((request) => request + 1)
+  const startCreate = () => {
+    setHistoryOpen(false)
+    setEditor({
+      target: '',
+      directory: '',
+      name: '',
+      content: '',
+      mtime: null,
+      loading: false,
+      saving: false,
+      error: null
+    })
+  }
+
+  const startEdit = () => {
+    setHistoryOpen(false)
+    setEditor({
+      target: selected,
+      directory: '',
+      name: selected,
+      content,
+      mtime: loadedMtime,
+      loading: false,
+      saving: false,
+      error: null
+    })
+  }
+
+  const closeEditor = () => {
+    if (!editor?.saving) setEditor(null)
+  }
+
+  const backFromEditor = () => {
+    if (editor?.saving) return
+    setEditor(null)
+    setMobileListSignal((signal) => signal + 1)
   }
 
   const save = async () => {
-    setSaving(true)
-    setSaveError(null)
+    if (!editor || editor.saving || editor.loading) return
+    const creating = editor.target === ''
+    const target = creating ? editor.name.trim() : editor.target
+    if (creating && (!TOPIC_RE.test(target) || target === INDEX)) {
+      setEditor({ ...editor, error: 'Use a flat .md file name, e.g. "deploys.md".' })
+      return
+    }
+    const savingEditor = { ...editor, saving: true, error: null }
+    setEditor(savingEditor)
     try {
-      const res = await updateAgentMemory(agentId, draft, selected === INDEX ? undefined : selected, loadedMtime)
-      setContent(draft)
+      const res = await updateAgentMemory(
+        agentId,
+        savingEditor.content,
+        target === INDEX ? undefined : target,
+        creating ? undefined : savingEditor.mtime
+      )
+      setSelected(target)
+      setContent(savingEditor.content)
       setLoadedMtime(res.mtime) // track the new mtime for the next edit
       setFileExists(true)
-      setEditing(false)
+      setEditor(null)
       await loadList() // a brand-new topic now shows in the list
     } catch (e) {
-      if (e instanceof ApiError && e.status === 409) {
-        setSaveError('This file changed since you opened it (the agent may have updated it). Reload before saving.')
-      } else {
-        setSaveError(e instanceof Error ? e.message : String(e))
-      }
-    } finally {
-      setSaving(false)
+      setEditor((current) =>
+        current?.target === savingEditor.target
+          ? {
+              ...current,
+              saving: false,
+              error:
+                e instanceof ApiError && e.status === 409
+                  ? 'This file changed since you opened it (the agent may have updated it). Reload before saving.'
+                  : e instanceof Error
+                    ? e.message
+                    : String(e)
+            }
+          : current
+      )
     }
   }
 
@@ -501,31 +548,29 @@ export function MemoryPanel({
     </>
   )
 
+  const selectedFile = files.find((file) => file.name === selected)
+  const previewMeta = [
+    formatFileSize(selectedFile?.size ?? null),
+    selectedFile?.mtime ? `edited ${formatFileMtime(selectedFile.mtime)}` : ''
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
   const renderPreview = (onBack?: () => void) => (
     <>
-      <FileBrowserPreviewHeader
-        icon={selected === INDEX ? 'book-marked' : fileExists === false ? 'file-plus' : 'file-text'}
-        name={selected}
+      <FileBrowserPreviewSummary
+        meta={previewMeta}
         onBack={onBack}
         actions={
-          !editing && canEdit && !loading && !error && fileExists !== null ? (
-            <Button
-              variant="secondary"
-              size="xs"
-              onClick={() => {
-                setDraft(content)
-                setSaveError(null)
-                setEditing(true)
-              }}
-            >
-              <Icon name="pencil" size={14} />
-              Edit
-            </Button>
+          persistedProvider === 'managed' && !loading && !error && fileExists === true ? (
+            <FileBrowserHistoryButton active={historyOpen} onClick={() => setHistoryOpen((open) => !open)} />
           ) : undefined
         }
       />
 
-      {loading ? (
+      {historyOpen && persistedProvider === 'managed' && fileExists === true ? (
+        <ManagedMemoryHistory key={`${agentId}:${selected}`} agentId={agentId} path={selected} />
+      ) : loading ? (
         <div className="flex items-center justify-center py-10">
           <Spinner />
         </div>
@@ -535,31 +580,6 @@ export function MemoryPanel({
           <Button variant="secondary" size="xs" onClick={() => void loadFile(selected)}>
             Retry
           </Button>
-        </div>
-      ) : editing ? (
-        <div className="flex flex-col gap-3 p-4">
-          <textarea
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            spellCheck={false}
-            className="mono min-h-[320px] w-full resize-y rounded-md border border-(--border-subtle) bg-(--surface-sunken) p-3 text-[12.5px] leading-[1.6] text-(--text-primary) outline-none focus:border-(--brand-soft-text)"
-            placeholder={
-              selected === INDEX
-                ? '# Agent memory index\n\nKeep it short — link to topic files and read them on demand.'
-                : '# Topic\n\nDurable notes for this topic…'
-            }
-          />
-          {saveError && (
-            <div className="font-sans text-[12.5px] font-normal leading-normal text-(--red-600)">{saveError}</div>
-          )}
-          <div className="flex items-center gap-2">
-            <Button variant="primary" size="sm" onClick={() => void (saving ? undefined : save())}>
-              {saving ? 'Saving…' : 'Save'}
-            </Button>
-            <Button variant="secondary" size="sm" onClick={() => (saving ? undefined : setEditing(false))}>
-              Cancel
-            </Button>
-          </div>
         </div>
       ) : content.trim() ? (
         <div className="max-h-[520px] overflow-auto px-[18px] py-4">
@@ -578,13 +598,6 @@ export function MemoryPanel({
               }${canEdit ? ', or you can edit it here.' : '.'}`}
         </div>
       )}
-      {persistedProvider === 'managed' && !editing && !loading && !error && fileExists === true ? (
-        <ManagedMemoryHistory
-          key={`${agentId}:${selected}:${loadedMtime ?? 'unknown'}`}
-          agentId={agentId}
-          path={selected}
-        />
-      ) : null}
     </>
   )
 
@@ -819,25 +832,64 @@ export function MemoryPanel({
       ) : (
         <>
           <FileBrowserShell
-            title="Memory"
+            title={
+              <FileBrowserBreadcrumb
+                root="Memory"
+                path={editor?.target ?? selected}
+                creating={editor?.target === ''}
+                draftName={editor?.name ?? ''}
+                onDraftNameChange={(name) =>
+                  setEditor((current) => (current?.target === '' ? { ...current, name, error: null } : current))
+                }
+                onBack={isMobile && editor ? backFromEditor : undefined}
+                disabled={editor?.saving}
+                nested={false}
+                ariaLabel="Memory file path"
+                inputAriaLabel="New memory file name"
+              />
+            }
             headerEnd={
-              canEdit ? (
-                <button
-                  type="button"
-                  onClick={newTopic}
-                  className="flex cursor-pointer items-center gap-[4px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-semibold leading-normal text-(--brand-soft-text)"
-                >
-                  <Icon name="plus" size={13} />
-                  New
-                </button>
+              editor ? (
+                <FileBrowserEditorActions
+                  saving={editor.saving}
+                  onCancel={closeEditor}
+                  onSave={() => void save()}
+                  disabled={editor.loading || (!editor.target && !editor.name.trim())}
+                />
+              ) : canEdit ? (
+                <div className="flex flex-none items-center gap-2">
+                  <Button variant="secondary" size="xs" className="flex-none" onClick={startCreate}>
+                    <Icon name="file-plus" size={13} />
+                    Add file
+                  </Button>
+                  {!loading && !error && fileExists !== null ? (
+                    <Button variant="secondary" size="xs" className="flex-none" onClick={startEdit}>
+                      <Icon name="pencil" size={13} />
+                      Edit
+                    </Button>
+                  ) : null}
+                </div>
               ) : undefined
             }
           >
             <FileBrowserLayout
-              resetKey={agentId}
-              openPreviewSignal={previewRequest}
+              resetKey={`${agentId}:${mobileListSignal}`}
+              previewOpen={editor !== null}
               tree={renderFileTree}
-              preview={renderPreview}
+              preview={
+                editor
+                  ? () => (
+                      <FileBrowserEditor
+                        draft={editor}
+                        onContentChange={(content) =>
+                          setEditor((current) => (current ? { ...current, content, error: null } : current))
+                        }
+                        onCancel={closeEditor}
+                        onSubmit={() => void save()}
+                      />
+                    )
+                  : renderPreview
+              }
             />
           </FileBrowserShell>
           {/* Dreaming is managed-only and is secondary to the live memory

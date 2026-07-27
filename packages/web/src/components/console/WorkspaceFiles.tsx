@@ -37,11 +37,18 @@ import type { WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
 import type { Agent } from '@/lib/data'
 import type { MarkdownLinkResolution } from '@/components/console/MarkdownView'
 import {
+  FileBrowserBreadcrumb,
+  FileBrowserEditor,
+  FileBrowserEditorActions,
   FileBrowserLayout,
+  FileBrowserPreviewSummary,
   FileBrowserRow,
   FileBrowserShell,
   MARKDOWN_FILE_RE,
-  fileBrowserGlyph
+  fileBrowserGlyph,
+  formatFileMtime,
+  formatFileSize,
+  type FileBrowserEditorDraft
 } from '@/components/console/FileBrowser'
 
 // react-markdown + remark-gfm are heavy and only needed when a markdown file is
@@ -80,31 +87,6 @@ function entryIcon(e: WorkspaceEntryDto): string {
   if (e.type === 'symlink') return 'link-2'
   if (e.type === 'other') return 'file-question-mark'
   return fileBrowserGlyph(e.name)
-}
-
-function fmtBytes(n: number | null): string {
-  if (n == null) return ''
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
-}
-
-// Relative when recent (matches the fleet's "last seen" feel), short date otherwise.
-function fmtMtime(iso: string | null): string {
-  if (!iso) return ''
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ''
-  const ms = Date.now() - d.getTime()
-  const s = Math.round(ms / 1000)
-  if (!Number.isFinite(s) || s < 0) return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
-  if (s < 60) return `${s}s ago`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  const dd = Math.floor(h / 24)
-  if (dd < 7) return `${dd}d ago`
-  return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
 // Parse a full git remote address (https or ssh) into a display label ("org/repo")
@@ -164,17 +146,6 @@ type Viewer = {
   loadingMore: boolean
 }
 
-type EditorDraft = {
-  target: string // '' creates; an existing path edits in place
-  directory: string
-  name: string
-  content: string
-  mtime: string | null
-  loading: boolean
-  saving: boolean
-  error: string | null
-}
-
 type DeleteDraft = {
   path: string
   mtime: string
@@ -201,7 +172,7 @@ export function WorkspaceFiles({
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [viewer, setViewer] = useState<Viewer | null>(null)
-  const [editor, setEditor] = useState<EditorDraft | null>(null)
+  const [editor, setEditor] = useState<FileBrowserEditorDraft | null>(null)
   const [deleteDraft, setDeleteDraft] = useState<DeleteDraft | null>(null)
   const [mobileListSignal, setMobileListSignal] = useState(0)
   // git-repo workspaces: current-checkout status + on-demand pull. Null while
@@ -387,19 +358,15 @@ export function WorkspaceFiles({
     }
   }, [agentId, editorTarget])
 
-  const mutationOpen = editor !== null || deleteDraft !== null
-  const mutationBusy = editor?.saving || deleteDraft?.deleting || false
-
   useEffect(() => {
-    if (!mutationOpen) return
+    if (!deleteDraft) return
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || mutationBusy) return
-      setEditor(null)
+      if (event.key !== 'Escape' || deleteDraft.deleting) return
       setDeleteDraft(null)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [mutationOpen, mutationBusy])
+  }, [deleteDraft])
 
   // git status of the workspace checkout. A non-repo answer and a thrown request
   // (offline daemon) both leave `git` unset — the workspace card then renders the
@@ -665,7 +632,7 @@ export function WorkspaceFiles({
               </Fragment>
             )
           }
-          const meta = [fmtBytes(e.size), fmtMtime(e.mtime)].filter(Boolean).join(' · ')
+          const meta = [formatFileSize(e.size), formatFileMtime(e.mtime)].filter(Boolean).join(' · ')
           const status = dirtyMap.get(full)
           return (
             <FileBrowserRow
@@ -717,7 +684,7 @@ export function WorkspaceFiles({
     commit: git?.lastCommit
       ? {
           sha: git.lastCommit.shortSha,
-          time: fmtMtime(git.lastCommit.committedAt),
+          time: formatFileMtime(git.lastCommit.committedAt),
           title: git.lastCommit.subject
         }
       : null,
@@ -734,7 +701,7 @@ export function WorkspaceFiles({
 
       <FileBrowserShell
         title={
-          <WorkspaceBreadcrumb
+          <FileBrowserBreadcrumb
             root={workspaceRoot}
             path={breadcrumbPath}
             creating={editor?.target === ''}
@@ -742,64 +709,65 @@ export function WorkspaceFiles({
             onDraftNameChange={updateCreateName}
             onBack={isMobile && editor ? backFromEditor : undefined}
             disabled={editor?.saving}
+            ariaLabel="Workspace path"
           />
         }
         headerEnd={
-          <div className="flex flex-none items-center gap-2">
-            {editor ? (
-              <>
-                <Button variant="secondary" size="xs" onClick={closeEditor} disabled={editor.saving}>
-                  Cancel
-                </Button>
-                <Button
-                  size="xs"
-                  onClick={() => void saveEditor()}
-                  disabled={
-                    editor.saving ||
-                    editor.loading ||
-                    (!!editor.target && !editor.mtime) ||
-                    (!editor.target && !editor.name.trim().split('/').at(-1))
-                  }
-                >
-                  {editor.saving ? 'Saving…' : 'Save changes'}
-                </Button>
-              </>
-            ) : deleteDraft ? (
-              <>
-                <Button
-                  variant="secondary"
-                  size="xs"
-                  onClick={() => setDeleteDraft(null)}
-                  disabled={deleteDraft.deleting}
-                >
-                  Cancel
-                </Button>
-                <Button variant="danger" size="xs" onClick={() => void confirmDelete()} disabled={deleteDraft.deleting}>
-                  <Icon name="trash-2" size={13} />
-                  {deleteDraft.deleting ? 'Deleting…' : 'Delete file'}
-                </Button>
-              </>
-            ) : canEdit ? (
-              <>
-                <Button variant="secondary" size="xs" className="flex-none" onClick={startCreate}>
-                  <Icon name="file-plus" size={13} />
-                  Add file
-                </Button>
-                {viewerCanEdit ? (
-                  <Button variant="secondary" size="xs" className="flex-none" onClick={() => startEdit(viewer!.path)}>
-                    <Icon name="pencil" size={13} />
-                    Edit
+          editor ? (
+            <FileBrowserEditorActions
+              saving={editor.saving}
+              onCancel={closeEditor}
+              onSave={() => void saveEditor()}
+              disabled={
+                editor.loading ||
+                (!!editor.target && !editor.mtime) ||
+                (!editor.target && !editor.name.trim().split('/').at(-1))
+              }
+            />
+          ) : (
+            <div className="flex flex-none items-center gap-2">
+              {deleteDraft ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    onClick={() => setDeleteDraft(null)}
+                    disabled={deleteDraft.deleting}
+                  >
+                    Cancel
                   </Button>
-                ) : null}
-                {viewerCanDelete ? (
-                  <Button variant="secondary" size="xs" className="flex-none" onClick={startDelete}>
+                  <Button
+                    variant="danger"
+                    size="xs"
+                    onClick={() => void confirmDelete()}
+                    disabled={deleteDraft.deleting}
+                  >
                     <Icon name="trash-2" size={13} />
-                    Delete
+                    {deleteDraft.deleting ? 'Deleting…' : 'Delete file'}
                   </Button>
-                ) : null}
-              </>
-            ) : null}
-          </div>
+                </>
+              ) : canEdit ? (
+                <>
+                  <Button variant="secondary" size="xs" className="flex-none" onClick={startCreate}>
+                    <Icon name="file-plus" size={13} />
+                    Add file
+                  </Button>
+                  {viewerCanEdit ? (
+                    <Button variant="secondary" size="xs" className="flex-none" onClick={() => startEdit(viewer!.path)}>
+                      <Icon name="pencil" size={13} />
+                      Edit
+                    </Button>
+                  ) : null}
+                  {viewerCanDelete ? (
+                    <Button variant="secondary" size="xs" className="flex-none" onClick={startDelete}>
+                      <Icon name="trash-2" size={13} />
+                      Delete
+                    </Button>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          )
         }
       >
         {!editor && root?.loading && !root.entries && (
@@ -842,11 +810,13 @@ export function WorkspaceFiles({
             preview={
               editor
                 ? () => (
-                    <WorkspaceFileEditor
+                    <FileBrowserEditor
                       draft={editor}
+                      disabled={Boolean(editor.target && !editor.mtime)}
                       onContentChange={(content) =>
                         setEditor((current) => (current ? { ...current, content, error: null } : current))
                       }
+                      onCancel={closeEditor}
                       onSubmit={() => void saveEditor()}
                     />
                   )
@@ -883,99 +853,6 @@ function EmptyNote({ text }: { text: string }) {
       <Icon name="folder" size={20} color="var(--text-tertiary)" />
       <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">{text}</div>
     </div>
-  )
-}
-
-function WorkspaceBreadcrumb({
-  root,
-  path,
-  creating,
-  draftName,
-  onDraftNameChange,
-  onBack,
-  disabled
-}: {
-  root: string
-  path: string
-  creating: boolean
-  draftName: string
-  onDraftNameChange: (name: string) => void
-  onBack?: () => void
-  disabled?: boolean
-}) {
-  const baseSegments = path.split('/').filter(Boolean)
-  const draftParts = creating ? draftName.replace(/^\/+/, '').split('/') : []
-  const draftDirectories = draftParts.slice(0, -1).filter(Boolean)
-  const draftLeaf = creating ? (draftParts.at(-1) ?? '') : ''
-  const segments = [...baseSegments, ...draftDirectories]
-  const updateDraftLeaf = (leaf: string) => onDraftNameChange([...draftDirectories, leaf].join('/'))
-
-  return (
-    <nav className="flex min-w-0 items-center gap-[6px] overflow-hidden" aria-label="Workspace path">
-      {onBack ? (
-        <button
-          type="button"
-          className="iconbtn h-7 w-7 flex-none"
-          onClick={onBack}
-          title="Back to files"
-          aria-label="Back to files"
-        >
-          <Icon name="arrow-left" size={15} />
-        </button>
-      ) : null}
-      <span
-        className={`mono max-w-[120px] flex-none truncate text-[12px] font-semibold text-(--text-primary) ${
-          segments.length > 0 || creating ? 'max-desktop:hidden' : ''
-        }`}
-      >
-        {root}
-      </span>
-      {segments.map((segment, index) => {
-        const current = !creating && index === segments.length - 1
-        const mobileCurrent = index === segments.length - 1
-        return (
-          <Fragment key={`${index}:${segment}`}>
-            <span className="flex-none text-[12px] font-normal text-(--text-tertiary) max-desktop:hidden" aria-hidden>
-              /
-            </span>
-            <span
-              className={`mono min-w-[24px] max-w-[140px] shrink truncate text-[12px] ${
-                current ? 'font-semibold text-(--text-primary)' : 'font-medium text-(--text-secondary)'
-              } ${mobileCurrent ? '' : 'max-desktop:hidden'}`}
-            >
-              {segment}
-            </span>
-          </Fragment>
-        )
-      })}
-      {segments.length === 0 && !creating ? (
-        <span className="flex-none text-[12px] font-normal text-(--text-tertiary)" aria-hidden>
-          /
-        </span>
-      ) : null}
-      {creating ? (
-        <>
-          <span className="flex-none text-[12px] font-normal text-(--text-tertiary)" aria-hidden>
-            /
-          </span>
-          <input
-            className="inp mono h-7 w-[96px] min-w-16 max-w-full shrink px-2 py-1 text-[12px] desktop:w-[170px] desktop:min-w-[80px] desktop:max-w-[30vw]"
-            value={draftLeaf}
-            onChange={(event) => updateDraftLeaf(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key !== 'Backspace' || draftLeaf || draftDirectories.length === 0) return
-              event.preventDefault()
-              onDraftNameChange([...draftDirectories.slice(0, -1), draftDirectories.at(-1)!].join('/'))
-            }}
-            placeholder="Name your file…"
-            aria-label="New file path"
-            spellCheck={false}
-            disabled={disabled}
-            autoFocus
-          />
-        </>
-      ) : null}
-    </nav>
   )
 }
 
@@ -1042,38 +919,37 @@ function FilePreview({
     [isText, showCode, content, html]
   )
 
-  const meta = [fmtBytes(viewer.file?.size ?? null), viewer.file?.mtime ? `edited ${fmtMtime(viewer.file.mtime)}` : '']
+  const meta = [
+    formatFileSize(viewer.file?.size ?? null),
+    viewer.file?.mtime ? `edited ${formatFileMtime(viewer.file.mtime)}` : ''
+  ]
     .filter(Boolean)
     .join(' · ')
 
   return (
     <>
-      <div className="flex h-[37px] min-w-0 flex-none items-center gap-2 border-b border-(--border-subtle) px-4">
-        {onBack ? (
-          <button
-            type="button"
-            className="iconbtn h-7 w-7 flex-none"
-            onClick={onBack}
-            title="Back to files"
-            aria-label="Back to files"
-          >
-            <Icon name="arrow-left" size={15} />
-          </button>
-        ) : null}
-        <span className="min-w-0 flex-1 truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-          {meta}
-        </span>
-        {isMd && isText ? (
-          <span className="pillbar flex-none">
-            <button className={mode === 'preview' ? 'pill on' : 'pill'} onClick={() => setMode('preview')}>
-              Preview
-            </button>
-            <button className={mode === 'code' ? 'pill on' : 'pill'} onClick={() => setMode('code')}>
-              Code
-            </button>
-          </span>
-        ) : null}
-      </div>
+      <FileBrowserPreviewSummary
+        meta={meta}
+        onBack={onBack}
+        actions={
+          isMd && isText ? (
+            <span className="pillbar flex-none">
+              <button
+                className={mode === 'preview' ? 'pill on py-[3px]' : 'pill py-[3px]'}
+                onClick={() => setMode('preview')}
+              >
+                Preview
+              </button>
+              <button
+                className={mode === 'code' ? 'pill on py-[3px]' : 'pill py-[3px]'}
+                onClick={() => setMode('code')}
+              >
+                Code
+              </button>
+            </span>
+          ) : undefined
+        }
+      />
 
       {deletePrompt ? (
         <div
@@ -1110,7 +986,7 @@ function FilePreview({
       {!viewer.loading && !viewer.err && viewer.file?.exists && viewer.file.encoding === 'none' && (
         <div className="flex items-center gap-2 p-4 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
           <Icon name="file-question-mark" size={15} />
-          Binary file — not displayed ({fmtBytes(viewer.file.size)})
+          Binary file — not displayed ({formatFileSize(viewer.file.size)})
         </div>
       )}
 
@@ -1128,7 +1004,7 @@ function FilePreview({
           {viewer.file.truncated && (
             <div className="flex items-center gap-[10px] border-t border-(--border-subtle) px-4 pt-[10px] pb-[14px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
               <span>
-                Showing first {fmtBytes(viewer.file.nextOffset)} of {fmtBytes(viewer.file.size)}
+                Showing first {formatFileSize(viewer.file.nextOffset)} of {formatFileSize(viewer.file.size)}
               </span>
               <button className="lnk text-[12px]" onClick={onMore}>
                 {viewer.loadingMore ? 'Loading…' : viewer.moreErr ? 'Retry' : 'Load more'}
@@ -1141,51 +1017,5 @@ function FilePreview({
         </>
       )}
     </>
-  )
-}
-
-function WorkspaceFileEditor({
-  draft,
-  onContentChange,
-  onSubmit
-}: {
-  draft: EditorDraft
-  onContentChange: (content: string) => void
-  onSubmit: () => void
-}) {
-  const creating = draft.target === ''
-
-  return (
-    <form
-      className="flex min-h-[300px] flex-1 flex-col"
-      aria-label={creating ? 'New workspace file' : `Edit ${draft.target}`}
-      onSubmit={(event) => {
-        event.preventDefault()
-        onSubmit()
-      }}
-    >
-      {draft.loading ? (
-        <div className="flex flex-1 justify-center py-10">
-          <Spinner size={28} />
-        </div>
-      ) : (
-        <div className="flex flex-1 flex-col gap-3 p-4">
-          {draft.error ? (
-            <div className="text-[12.5px] text-(--status-error)" role="alert">
-              {draft.error}
-            </div>
-          ) : null}
-          <textarea
-            className="inp mono min-h-[390px] flex-1 resize-y items-start justify-start px-3 py-[10px] leading-[1.6] focus:border-(--brand) focus:outline-none"
-            value={draft.content}
-            onChange={(event) => onContentChange(event.target.value)}
-            aria-label={creating ? 'New file content' : `Edit ${draft.target}`}
-            spellCheck={false}
-            disabled={draft.saving || (!creating && !draft.mtime)}
-            autoFocus={!creating}
-          />
-        </div>
-      )}
-    </form>
   )
 }

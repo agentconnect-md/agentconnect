@@ -43,7 +43,7 @@ function button(label: string): HTMLButtonElement | undefined {
 }
 
 describe('ManagedMemoryHistory', () => {
-  it('loads lazily, exposes expandable snapshots, and pages older changes', async () => {
+  it('loads on mount, exposes expandable snapshots, and pages older changes', async () => {
     const nextCursor = '11111111-1111-4111-8111-111111111111'
     mocks.listMemoryFileHistory
       .mockResolvedValueOnce({
@@ -91,15 +91,8 @@ describe('ManagedMemoryHistory', () => {
       root?.render(<ManagedMemoryHistory agentId="agent-1" path="notes.md" />)
     })
 
-    expect(mocks.listMemoryFileHistory).not.toHaveBeenCalled()
-    const disclosure = button('Change history')
-    expect(disclosure?.getAttribute('aria-expanded')).toBe('false')
-    expect(disclosure?.closest('section')?.classList.contains('mt-auto')).toBe(true)
-
-    await act(async () => disclosure?.click())
-
-    expect(disclosure?.getAttribute('aria-expanded')).toBe('true')
     expect(mocks.listMemoryFileHistory).toHaveBeenNthCalledWith(1, 'agent-1', 'notes.md', { limit: 5 })
+    expect(container.querySelector('section')?.classList.contains('flex-1')).toBe(true)
     expect(container.querySelectorAll('details')).toHaveLength(2)
     expect(container.textContent).toContain('Dream adoption')
     const firstEvent = container.querySelector('details') as HTMLDetailsElement
@@ -129,7 +122,7 @@ describe('ManagedMemoryHistory', () => {
     expect(container.textContent).toContain('Long snapshots were shortened')
   })
 
-  it('shows an empty state without eagerly reopening on collapse', async () => {
+  it('shows an empty state without refetching for the same file', async () => {
     mocks.listMemoryFileHistory.mockResolvedValue({ events: [], nextCursor: null })
     container = document.createElement('div')
     document.body.append(container)
@@ -138,11 +131,10 @@ describe('ManagedMemoryHistory', () => {
       root?.render(<ManagedMemoryHistory agentId="agent-1" path="MEMORY.md" />)
     })
 
-    const disclosure = button('Change history')
-    await act(async () => disclosure?.click())
     expect(container.textContent).toContain('No recorded changes for this file yet.')
-    await act(async () => disclosure?.click())
-    await act(async () => disclosure?.click())
+    await act(async () => {
+      root?.render(<ManagedMemoryHistory agentId="agent-1" path="MEMORY.md" />)
+    })
     expect(mocks.listMemoryFileHistory).toHaveBeenCalledTimes(1)
   })
 
@@ -167,7 +159,6 @@ describe('ManagedMemoryHistory', () => {
       root?.render(<ManagedMemoryHistory agentId="agent-1" path="MEMORY.md" />)
     })
 
-    await act(async () => button('Change history')?.click())
     await act(async () => container?.querySelector<HTMLElement>('details summary')?.click())
 
     expect(container.textContent).toContain('The before snapshot was not recorded for this older change.')
