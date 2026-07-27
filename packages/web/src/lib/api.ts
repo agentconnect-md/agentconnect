@@ -220,6 +220,7 @@ export interface AgentCallPolicyInput {
 // session-cumulative; context/cost are the latest snapshot. All fields optional —
 // a runtime that reports no usage yields absent fields.
 export interface SessionUsageDto {
+  reportedAt?: string
   totalTokens?: number
   inputTokens?: number
   outputTokens?: number
@@ -1532,6 +1533,15 @@ export function sessionFromDetailDto(d: SessionDetailDto): Session {
  *  before the daemon's final cumulative usage report. */
 export function mergeSessionDetailUsage(local: Session, detail: Session | null): Session {
   if (!detail?.usage) return local
+  if (local.usage) {
+    const localReportedAt = local.usage.reportedAt ? Date.parse(local.usage.reportedAt) : Number.NaN
+    const detailReportedAt = detail.usage.reportedAt ? Date.parse(detail.usage.reportedAt) : Number.NaN
+    // A live session can have usage without a persisted timestamp. Preserve that
+    // state unless the detail snapshot proves it is newer; never let a cached
+    // detail response move cumulative token/cost totals backward.
+    if (!Number.isFinite(detailReportedAt)) return local
+    if (!Number.isFinite(localReportedAt) || detailReportedAt <= localReportedAt) return local
+  }
   return {
     ...local,
     usage: detail.usage,

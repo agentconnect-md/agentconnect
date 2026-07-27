@@ -121,6 +121,7 @@ describe('sessionTriggerKind', () => {
       status: 'completed',
       lastActivityAt: '2026-07-27T00:00:00.000Z',
       usage: {
+        reportedAt: '2026-07-27T00:02:00.000Z',
         totalTokens: 12_400,
         inputTokens: 10_000,
         outputTokens: 2_400,
@@ -152,10 +153,45 @@ describe('sessionTriggerKind', () => {
       sessionDto({
         sessionId: detail.id,
         sessionKey: { platform: 'dream', channel: 'memory' },
-        usage: null
+        usage: {
+          reportedAt: '2026-07-27T00:03:00.000Z',
+          totalTokens: 20_000,
+          costAmount: 0.2,
+          costCurrency: 'USD'
+        }
       })
     )
     expect(mergeSessionDetailUsage(staleListRow, hydrated)).toMatchObject({
+      tokens: '20K',
+      cost: '$0.20',
+      usage: { totalTokens: 20_000 }
+    })
+
+    const freshDetail = {
+      ...hydrated,
+      tokens: '30K',
+      cost: '$0.30',
+      usage: {
+        ...hydrated.usage!,
+        reportedAt: '2026-07-27T00:04:00.000Z',
+        totalTokens: 30_000,
+        costAmount: 0.3
+      }
+    }
+    expect(mergeSessionDetailUsage(staleListRow, freshDetail)).toMatchObject({
+      tokens: '30K',
+      cost: '$0.30',
+      usage: { totalTokens: 30_000 }
+    })
+
+    const unmeteredListRow = sessionFromDto(
+      sessionDto({
+        sessionId: detail.id,
+        sessionKey: { platform: 'dream', channel: 'memory' },
+        usage: null
+      })
+    )
+    expect(mergeSessionDetailUsage(unmeteredListRow, hydrated)).toMatchObject({
       tokens: '12K',
       cost: '$0.12',
       usage: { totalTokens: 12_400 }

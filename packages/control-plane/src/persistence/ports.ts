@@ -935,6 +935,8 @@ export interface WebchatConversationRepo {
 
 /** The token/cost snapshot carried by a `usage/report` EVT (protocol `SessionUsage`). */
 export interface SessionUsageCounts {
+  /** Daemon timestamp of the cumulative snapshot; orders competing list/detail reads. */
+  reportedAt?: string
   totalTokens?: number
   inputTokens?: number
   outputTokens?: number

@@ -1822,6 +1822,7 @@ export const SessionKeyDto = z.object({
 /** Per-session token accounting surfaced to the console (see protocol `SessionUsage`).
  *  Token counts are session-cumulative; context/cost are the latest snapshot. */
 export const SessionUsageDto = z.object({
+  reportedAt: z.string().optional(),
   totalTokens: z.number().optional(),
   inputTokens: z.number().optional(),
   outputTokens: z.number().optional(),

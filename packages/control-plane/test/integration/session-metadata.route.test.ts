@@ -135,6 +135,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       outputMode: string | null
       daemonId: string | null
       usage: {
+        reportedAt: string
         totalTokens: number
         inputTokens: number
         outputTokens: number
@@ -157,6 +158,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     expect(body.outputMode).toBe('medium')
     expect(body.daemonId).toBe(DAEMON) // CP-stamped from the reporting WS connection
     expect(body.usage).toMatchObject({
+      reportedAt: '2026-07-05T00:00:01.000Z',
       totalTokens: 1_200,
       inputTokens: 1_000,
       outputTokens: 200,
@@ -192,7 +194,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
         permissionMode: string | null
         outputMode: string | null
         daemonId: string | null
-        usage: { totalTokens: number } | null
+        usage: { reportedAt: string; totalTokens: number } | null
       }>
     }
     expect(listBody.sessions[0]!.runtime).toBe('claude')
@@ -203,6 +205,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     expect(listBody.sessions[0]!.outputMode).toBe('medium')
     expect(listBody.sessions[0]!.daemonId).toBe(DAEMON)
     expect(listBody.sessions[0]!.usage?.totalTokens).toBe(1_200)
+    expect(listBody.sessions[0]!.usage?.reportedAt).toBe('2026-07-05T00:00:01.000Z')
   })
 
   it('is idempotent — a later milestone advances the same session row', async () => {

@@ -59,6 +59,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     })
     if (!usage) return null
     return {
+      reportedAt: usage.lastActivityAt.toISOString(),
       totalTokens: usage.totalTokens,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,

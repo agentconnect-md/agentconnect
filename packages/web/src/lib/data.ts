@@ -709,6 +709,8 @@ export interface SessionStep {
 // Per-session token accounting (protocol `SessionUsage`), metered by the daemon.
 // Token counts are session-cumulative; context/cost are the latest snapshot.
 export interface SessionUsage {
+  /** Daemon timestamp of this cumulative snapshot (orders list/detail refreshes). */
+  reportedAt?: string
   totalTokens?: number
   inputTokens?: number
   outputTokens?: number
