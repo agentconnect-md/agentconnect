@@ -159,6 +159,42 @@ describe('Feishu/Lark permission update notice', () => {
     expect(url.searchParams.get('q')).toBe(`${contactScope},${sendScope}`)
   })
 
+  it('keeps scopes learned while a permission card is in flight', async () => {
+    const contactScope = 'contact:contact.base:readonly'
+    const sendScope = 'im:message:send_as_bot'
+    let profileCall = 0
+    let resolveFirstCard!: (value: { messageId: string }) => void
+    const { conn, createCard } = connectionFor(
+      'feishu',
+      async () => {},
+      async () => {
+        profileCall += 1
+        throw permissionError(99991672, [profileCall === 1 ? contactScope : sendScope])
+      }
+    )
+    createCard.mockImplementationOnce(
+      async () =>
+        await new Promise<{ messageId: string }>((resolve) => {
+          resolveFirstCard = resolve
+        })
+    )
+
+    await conn.getUserProfile('ou_contact')
+    const firstPost = conn.postMessage('A', 'first')
+    await vi.waitFor(() => expect(createCard).toHaveBeenCalledOnce())
+    await conn.getUserProfile('ou_message')
+    resolveFirstCard({ messageId: 'notice-1' })
+    await firstPost
+
+    await conn.postMessage('B', 'follow-up')
+    expect(createCard).toHaveBeenCalledTimes(2)
+    const card = createCard.mock.calls[1]![1] as {
+      body: { elements: { behaviors?: { default_url: string }[] }[] }
+    }
+    const url = new URL(card.body.elements[1]!.behaviors![0]!.default_url)
+    expect(url.searchParams.get('q')).toBe(`${contactScope},${sendScope}`)
+  })
+
   it('does not post a permission card for an unrelated request error', async () => {
     const { conn, createCard } = connectionFor('lark', async () => {
       throw permissionError(230001)

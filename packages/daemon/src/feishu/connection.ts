@@ -396,6 +396,7 @@ export class FeishuConnection {
    * connection, with a bounded retry when the bot currently cannot send the card. */
   private globalPermissionIssues = new Set<Exclude<FeishuPermissionIssue, 'chat-access'>>()
   private permissionScopes = new Set<string>()
+  private globalPermissionRevision = 0
   private permissionIssueChannels = new Set<string>()
   private loggedPermissionIssues = new Set<string>()
   private permissionNoticeSent = false
@@ -565,6 +566,7 @@ export class FeishuConnection {
     const oldScopeCount = this.permissionScopes.size
     for (const scope of scopes) this.permissionScopes.add(scope)
     if (wasNewIssue || this.permissionScopes.size !== oldScopeCount) {
+      this.globalPermissionRevision += 1
       this.permissionNoticeRetryAt.delete('global')
     }
     return true
@@ -616,6 +618,7 @@ export class FeishuConnection {
     const updateUrl = this.permissionUpdateUrl(pending.permission)
     if (!updateUrl) return
 
+    const globalPermissionRevision = this.globalPermissionRevision
     this.permissionNoticeInFlight = true
     const notice = FEISHU_PERMISSION_NOTICE[pending.permission.issue]
     try {
@@ -624,7 +627,7 @@ export class FeishuConnection {
         anchor,
         buildPermissionUpdateCard(updateUrl, notice.description, notice.buttonLabel)
       )
-      this.permissionNoticeSent = true
+      if (this.globalPermissionRevision === globalPermissionRevision) this.permissionNoticeSent = true
     } catch (err) {
       this.rememberPermissionIssue(err, channel)
       this.permissionNoticeRetryAt.set(
