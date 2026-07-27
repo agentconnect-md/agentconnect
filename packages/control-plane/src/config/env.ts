@@ -164,7 +164,12 @@ export const AppConfigSchema = z.object({
   OPEN_CONNECTOR_URL: z.string().url().optional(),
   // Provider whitelist for the connectors catalog. '*' (or unset) ⇒ every provider;
   // otherwise a comma-separated list of `service` ids.
-  OPEN_CONNECTOR_PROVIDER_WHITELIST: z.string().optional()
+  OPEN_CONNECTOR_PROVIDER_WHITELIST: z.string().optional(),
+  // Provider blocklist applied after the whitelist. Defaults to the exact open-connector
+  // service ids that overlap AgentConnect's native integrations.
+  OPEN_CONNECTOR_PROVIDER_BLOCKLIST: z
+    .string()
+    .default('github,slack,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot')
 })
 
 export type AppConfig = z.infer<typeof AppConfigSchema>

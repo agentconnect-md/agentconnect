@@ -71,7 +71,12 @@ function stubConnectors(opts: { failSave?: boolean } = {}) {
     }
     throw new Error(`unexpected fetch ${method} ${url}`)
   }
-  const client = new ConnectorsClient({ baseUrl: 'http://oc.example.com', fetch: doFetch, whitelist: null })
+  const client = new ConnectorsClient({
+    baseUrl: 'http://oc.example.com',
+    fetch: doFetch,
+    whitelist: null,
+    blocklist: new Set(['github', 'slack'])
+  })
   return { client, calls }
 }
 
@@ -96,8 +101,8 @@ describe('connectors routes', () => {
     expect((await app.app.inject({ method: 'GET', url: `${ORG}/connectors/config` })).json()).toEqual({ enabled: true })
     const res = await app.app.inject({ method: 'GET', url: `${ORG}/connectors/catalog` })
     expect(res.statusCode).toBe(200)
-    // github (configured oauth) + stripe (non-oauth); slack (unconfigured oauth) dropped.
-    expect(res.json().providers.map((p: { service: string }) => p.service)).toEqual(['github', 'stripe'])
+    // Native GitHub/Slack integrations are blocklisted; only the non-conflicting provider remains.
+    expect(res.json().providers.map((p: { service: string }) => p.service)).toEqual(['stripe'])
   })
 
   it('creates an open_connector provider + saves the profile for an api-key connection', async () => {

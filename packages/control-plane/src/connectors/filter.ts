@@ -38,15 +38,24 @@ export interface OcOAuthConfig {
   clientId: string | null
 }
 
+function parseServiceIds(raw: string | undefined): string[] {
+  return (raw ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
 /** `'*'` (the default) or unset ⇒ null (no restriction); else a set of `service` ids. */
 export function parseWhitelist(raw: string | undefined): Set<string> | null {
   const trimmed = raw?.trim()
   if (!trimmed || trimmed === '*') return null
-  const entries = trimmed
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
+  const entries = parseServiceIds(trimmed)
   return entries.length > 0 ? new Set(entries) : null
+}
+
+/** Unset/blank ⇒ no exclusions; else the exact `service` ids to omit. */
+export function parseBlocklist(raw: string | undefined): Set<string> {
+  return new Set(parseServiceIds(raw))
 }
 
 /**
@@ -54,7 +63,7 @@ export function parseWhitelist(raw: string | undefined): Set<string> | null {
  * from each. A method is connectable when it's api-key / custom / no-auth (the user just
  * fills it in) OR it's OAuth whose client secret is configured upstream. Concretely:
  *
- * - whitelist-allowed only;
+ * - whitelist-allowed and not blocklisted;
  * - drop the `oauth2` method when its client secret ISN'T configured — but KEEP the
  *   provider if it still offers another method (e.g. a provider that does both OAuth and
  *   api-key shows just the api-key form while OAuth is unconfigured);
@@ -66,12 +75,13 @@ export function parseWhitelist(raw: string | undefined): Set<string> | null {
 export function filterCatalog(
   providers: OcProvider[],
   oauthConfigs: OcOAuthConfig[],
-  whitelist: Set<string> | null
+  whitelist: Set<string> | null,
+  blocklist: Set<string>
 ): OcProvider[] {
   const configuredOAuth = new Set(oauthConfigs.filter((c) => c.configured).map((c) => c.service))
   const kept: OcProvider[] = []
   for (const p of providers) {
-    if (whitelist !== null && !whitelist.has(p.service)) continue
+    if (blocklist.has(p.service) || (whitelist !== null && !whitelist.has(p.service))) continue
     const { actions: _actions, ...rest } = p
     // Configured OAuth (or a provider with no OAuth to gate) passes through untouched.
     if (configuredOAuth.has(p.service)) {

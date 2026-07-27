@@ -64,7 +64,7 @@ export function connectorRoutes(deps: HttpDeps) {
           tags: [Tag.Mcp],
           summary: 'Browse connector providers',
           description:
-            'The open-connector provider catalog, filtered to connectable providers (non-OAuth, or OAuth with a configured client secret) and any provider whitelist. 404 when the integration is not configured.',
+            'The open-connector provider catalog, filtered to connectable providers (non-OAuth, or OAuth with a configured client secret), the provider whitelist, and the provider blocklist. 404 when the integration is not configured.',
           operationId: 'listConnectorProviders',
           response: { 200: ConnectorCatalogDto, 404: ErrorDto, 502: ErrorDto }
         }
