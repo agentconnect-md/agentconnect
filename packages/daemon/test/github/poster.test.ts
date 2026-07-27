@@ -352,33 +352,35 @@ describe('GithubFinalPoster', () => {
         method: 'POST',
         url: 'https://api.github.com/repos/acme/infra/pulls/42/comments/3565283658/replies',
         body:
-          'Paths must stay in the archive directory.\n\nsent by ' +
+          'Paths must stay in the archive directory.\n\n<sub>sent by ' +
           '[review-bot](<https://app.example.test/acme/agents/review-bot>) (Codex · gpt-5.6-luna) · ' +
-          '[open in session](<https://app.example.test/acme/sessions/session-1>)'
+          '[open in session](<https://app.example.test/acme/sessions/session-1>)\n</sub>'
       }
     ])
   })
 
   it('omits an unsafe session link without leaving dangling separator chrome', () => {
     expect(githubAttributionFooter({ ...attribution, sessionUrl: 'file:///tmp/session-1' })).toBe(
-      '\n\nsent by [review-bot](<https://app.example.test/acme/agents/review-bot>) (Codex · gpt-5.6-luna)'
+      '\n\n<sub>sent by [review-bot](<https://app.example.test/acme/agents/review-bot>) ' +
+        '(Codex · gpt-5.6-luna)\n</sub>'
     )
   })
 
   it('renders the agent avatar inline ahead of the agent name when attribution carries an icon URL', () => {
     const iconUrl = 'https://api.example.test/v1/agents/agent-1/icon?v=1700000000000'
     expect(githubAttributionFooter({ ...attribution, iconUrl })).toBe(
-      `\n\nsent by <sub><img src="${iconUrl}" width="14" height="14" alt=""></sub> ` +
+      `\n\n<sub>sent by <sub><img src="${iconUrl}" width="11" height="11" alt=""></sub> ` +
         '[review-bot](<https://app.example.test/acme/agents/review-bot>) (Codex · gpt-5.6-luna) · ' +
-        '[open in session](<https://app.example.test/acme/sessions/session-1>)'
+        '[open in session](<https://app.example.test/acme/sessions/session-1>)\n</sub>'
     )
   })
 
   it('drops a non-http icon URL and keeps the text-only footer', () => {
     for (const iconUrl of ['data:image/png;base64,AAAA', 'javascript:alert(1)', 'not a url', '']) {
       expect(githubAttributionFooter({ ...attribution, iconUrl })).toBe(
-        '\n\nsent by [review-bot](<https://app.example.test/acme/agents/review-bot>) (Codex · gpt-5.6-luna) · ' +
-          '[open in session](<https://app.example.test/acme/sessions/session-1>)'
+        '\n\n<sub>sent by [review-bot](<https://app.example.test/acme/agents/review-bot>) ' +
+          '(Codex · gpt-5.6-luna) · ' +
+          '[open in session](<https://app.example.test/acme/sessions/session-1>)\n</sub>'
       )
     }
   })
@@ -409,8 +411,8 @@ describe('GithubFinalPoster', () => {
     await poster.publish('Answer')
 
     expect(f.calls[0]!.body).toBe(
-      'Answer\n\nsent by [review-bot](<https://app.example.test/acme/agents/review-bot>) ' +
-        '(Codex · gpt-5.6-luna) · [open in session](<https://app.example.test/acme/sessions/session-1>)'
+      'Answer\n\n<sub>sent by [review-bot](<https://app.example.test/acme/agents/review-bot>) ' +
+        '(Codex · gpt-5.6-luna) · [open in session](<https://app.example.test/acme/sessions/session-1>)\n</sub>'
     )
     expect(f.calls[0]!.body.match(/open in session/g)).toHaveLength(1)
   })
@@ -441,8 +443,9 @@ describe('GithubFinalPoster', () => {
     expect(body).toContain('_(truncated — see the session transcript for the full reply)_')
     expect(
       body.endsWith(
-        'sent by [review-bot](<https://app.example.test/acme/agents/review-bot>) ' +
-          '(Codex · gpt-5.6-luna) · [open in session](<https://app.example.test/acme/sessions/session-1>)'
+        '<sub>sent by [review-bot](<https://app.example.test/acme/agents/review-bot>) ' +
+          '(Codex · gpt-5.6-luna) · ' +
+          '[open in session](<https://app.example.test/acme/sessions/session-1>)\n</sub>'
       )
     ).toBe(true)
   })
@@ -478,7 +481,7 @@ describe('GithubFinalPoster', () => {
 
     await poster.publish(fence + 'ts\nconst answer = 42')
 
-    expect(f.calls[0]!.body).toContain('const answer = 42\n' + fence + '\n\nsent by ')
+    expect(f.calls[0]!.body).toContain('const answer = 42\n' + fence + '\n\n<sub>sent by ')
   })
 
   it('degrades a non-auth create failure to one warning without rejecting or retrying', async () => {
