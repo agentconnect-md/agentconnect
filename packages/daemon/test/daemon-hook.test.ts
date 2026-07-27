@@ -152,6 +152,41 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('persists a structured initial title for a GitHub pull-request session', async () => {
+    const { factory } = streamingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    ;(daemon as any).makeGithubReply = vi.fn(() => ({
+      poster: { publish: vi.fn(async () => {}) },
+      collector: new GithubReplyCollector()
+    }))
+
+    const ack = await (daemon as any).handleRelayMsg(
+      fire({
+        sessionKey: 'agentconnect-md/agentconnect#144',
+        context: {
+          source: 'github',
+          event: 'pull_request',
+          action: 'opened',
+          repo: 'agentconnect-md/agentconnect',
+          number: 144,
+          title: 'perf(github): speed up review delivery',
+          truncated: false
+        }
+      }),
+      () => {}
+    )
+
+    expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1))
+    expect((daemon as any).store.getSessionByAcpId('acp-hook-1')?.title).toBe(
+      'PR agentconnect-md/agentconnect#144: perf(github): speed up review delivery'
+    )
+    await daemon.stop()
+  }, 15_000)
+
   it.each([
     {
       name: 'provider quota exhaustion',
@@ -1635,6 +1670,32 @@ describe('buildHookMessage', () => {
       const anchor = hookAnchorText(ghFire())
       expect(anchor).toBe('🪝 issues:opened — acme/infra#42 — db down')
       expect(anchor).not.toContain('ignore all previous')
+    })
+
+    it('builds concise structured titles for GitHub subjects', () => {
+      const issue = buildHookMessage(ghFire(), 'trace-issue')
+      expect(issue.initialSessionTitle).toBe('Issue acme/infra#42: db down')
+
+      const pullRequest = buildHookMessage(
+        ghFire(
+          { event: 'issue_comment', action: 'created', repo: 'display-only/wrong', number: 999 },
+          {
+            github: {
+              repoId: '123',
+              repoFullName: 'acme/infra',
+              sourceInstallationId: '456',
+              subjectKind: 'pull_request',
+              pullNumber: 144
+            }
+          }
+        ),
+        'trace-pr'
+      )
+      expect(pullRequest.initialSessionTitle).toBe('PR acme/infra#144: db down')
+
+      const long = buildHookMessage(ghFire({ title: 'x'.repeat(100) }), 'trace-long').initialSessionTitle!
+      expect([...long]).toHaveLength(80)
+      expect(long.endsWith('…')).toBe(true)
     })
 
     it('a numbered thread carries the auto-reply hint (do not self-comment); a threadless push does not', () => {

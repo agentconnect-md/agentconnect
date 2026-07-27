@@ -77,9 +77,9 @@ export interface SessionRecord {
   // NULL on legacy rows / non-platform sessions). Display-name resolution is a
   // separate `display_names` lookup keyed by this id.
   triggeredBy?: string | null
-  // Human-facing session title supplied by the runtime (ACP
-  // `session_info_update`) or AgentConnect's `setSessionTitle` tool. NULL until
-  // either source reports one.
+  // Human-facing session title supplied by an ingress when the session is
+  // created, by the runtime (ACP `session_info_update`), or by AgentConnect's
+  // `setSessionTitle` tool. Later runtime/tool updates win.
   title?: string | null
   // Slack-only chrome: the current in-thread status-bar message ts. One per session
   // so later turns edit the same status line instead of posting duplicates.
@@ -1356,8 +1356,8 @@ export class LocalStore {
     }
   }
 
-  /** Human-facing session title from ACP or the AgentConnect title tool (latest
-   *  wins; null clears per ACP semantics). No-op on an unknown key. */
+  /** Human-facing session title from ingress, ACP, or the AgentConnect title
+   *  tool (latest wins; null clears per ACP semantics). No-op on an unknown key. */
   setSessionTitle(key: string, title: string | null): void {
     this.db.prepare('UPDATE sessions SET title = ? WHERE key = ?').run(title, key)
   }

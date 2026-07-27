@@ -43,6 +43,36 @@ function splitSessionKey(msg: RdMsgHook): { channel: string; thread?: string } {
 
 /** The well-known payload fields a caller can speak through, in priority order. */
 const MESSAGE_FIELDS = ['prompt', 'text', 'message'] as const
+const SESSION_TITLE_MAX_CHARS = 80
+
+function clampSessionTitle(title: string): string {
+  const chars = [...title]
+  return chars.length > SESSION_TITLE_MAX_CHARS
+    ? `${chars
+        .slice(0, SESSION_TITLE_MAX_CHARS - 1)
+        .join('')
+        .trimEnd()}…`
+    : title
+}
+
+/** Initial console title from the signed GitHub envelope. Prefer the separate,
+ *  body-free subject metadata when a current relay provides it; the context
+ *  fields keep rolling upgrades readable. */
+function githubSessionTitle(msg: RdMsgHook): string | undefined {
+  const context = msg.context
+  if (context?.source !== 'github') return undefined
+
+  const subjectKind =
+    msg.github?.subjectKind ??
+    (context.event?.startsWith('pull_request') ? 'pull_request' : context.event === 'issues' ? 'issue' : undefined)
+  const label = subjectKind === 'pull_request' ? 'PR' : subjectKind === 'issue' ? 'Issue' : 'GitHub'
+  const repo = msg.github?.repoFullName ?? context.repo
+  const number = subjectKind === 'pull_request' ? (msg.github?.pullNumber ?? context.number) : context.number
+  const target = `${repo ?? ''}${number !== undefined ? `#${number}` : ''}`
+  const prefix = target ? `${label} ${target}` : label
+  const detail = context.title?.replace(/\s+/g, ' ').trim()
+  return clampSessionTitle(detail ? `${prefix}: ${detail}` : prefix)
+}
 
 /**
  * Pull the caller's message out of the delivery body: a bare JSON string is
@@ -242,6 +272,7 @@ export function hookAnchorText(msg: RdMsgHook): string {
 
 export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMessage {
   const { channel, thread } = splitSessionKey(msg)
+  const initialSessionTitle = githubSessionTitle(msg)
   // `msgId` is the collision-free delivery identity but is not a timestamp. Keep
   // the display/order key in epoch milliseconds and append the complete identity
   // so distinct same-millisecond deliveries cannot share a transcript primary key.
@@ -262,6 +293,7 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
       thread: msg.msgId,
       sender: { id: `hook:${msg.hookId}`, isBot: false },
       text: buildHookText(msg),
+      ...(initialSessionTitle ? { initialSessionTitle } : {}),
       mentionedBots: [],
       isDm: false,
       trigger: 'hook'
@@ -277,6 +309,7 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
     ...(thread ? { thread } : {}),
     sender: { id: `hook:${msg.hookId}`, isBot: false },
     text: buildHookText(msg),
+    ...(initialSessionTitle ? { initialSessionTitle } : {}),
     mentionedBots: [],
     isDm: false,
     trigger: 'hook',

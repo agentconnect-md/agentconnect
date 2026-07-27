@@ -182,9 +182,9 @@ export function createSessionReader(
   return {
     list(req) {
       const rows = store.listSessions(req.agentId)
-      // Title = the title supplied by ACP or the AgentConnect title tool, else a
-      // fallback derived from the session's FIRST user message. Before the agent has
-      // a meaningful request to name, this keeps the console better than "Session <id>".
+      // Title = the ingress/runtime/tool title, else a fallback derived from the
+      // session's FIRST user message. Before the agent has a meaningful request to
+      // name, this keeps the console better than "Session <id>".
       // firstMessageText only runs for untitled rows (`||` short-circuits).
       const enriched = rows.map((r) => ({
         r,
