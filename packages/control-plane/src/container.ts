@@ -19,7 +19,7 @@ import { HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED } from '@agentconnect.md/p
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
 import { resolveGithubAppConfig } from './github/config.js'
 import type { FetchLike } from './github/api.js'
-import { ConnectorsClient, parseWhitelist } from './connectors/index.js'
+import { ConnectorsClient, parseBlocklist, parseWhitelist } from './connectors/index.js'
 import { GithubService } from './github/service.js'
 import { GithubInstallationDoorbell } from './github/installation-doorbell.service.js'
 import { GithubCommentAuthzService } from './github/comment-authz.service.js'
@@ -337,7 +337,8 @@ export function buildContainer(
       ? new ConnectorsClient({
           baseUrl: config.OPEN_CONNECTOR_URL,
           fetch: connectorsFetch,
-          whitelist: parseWhitelist(config.OPEN_CONNECTOR_PROVIDER_WHITELIST)
+          whitelist: parseWhitelist(config.OPEN_CONNECTOR_PROVIDER_WHITELIST),
+          blocklist: parseBlocklist(config.OPEN_CONNECTOR_PROVIDER_BLOCKLIST)
         })
       : undefined
 

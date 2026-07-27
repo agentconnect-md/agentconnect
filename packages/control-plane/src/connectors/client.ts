@@ -12,6 +12,7 @@ export interface ConnectorsClientOptions {
   baseUrl: string
   fetch: FetchLike
   whitelist: Set<string> | null
+  blocklist: Set<string>
 }
 
 export class ConnectorsError extends Error {
@@ -28,11 +29,13 @@ export class ConnectorsClient {
   private readonly base: string
   private readonly doFetch: FetchLike
   private readonly whitelist: Set<string> | null
+  private readonly blocklist: Set<string>
 
   constructor(opts: ConnectorsClientOptions) {
     this.base = opts.baseUrl.replace(/\/+$/, '')
     this.doFetch = opts.fetch
     this.whitelist = opts.whitelist
+    this.blocklist = opts.blocklist
   }
 
   /** The open-connector MCP endpoint — the upstream url stored on each connection's
@@ -69,7 +72,7 @@ export class ConnectorsClient {
       this.json<OcProvider[]>('/api/providers'),
       this.json<OcOAuthConfig[]>('/api/oauth/configs')
     ])
-    return { providers: filterCatalog(providers, oauthConfigs, this.whitelist) }
+    return { providers: filterCatalog(providers, oauthConfigs, this.whitelist, this.blocklist) }
   }
 
   /** Save an api-key / custom / no-auth connection under a profile name. */

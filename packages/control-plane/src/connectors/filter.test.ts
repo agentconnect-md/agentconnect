@@ -3,6 +3,7 @@ import {
   composeProfileName,
   filterCatalog,
   isValidConnectionName,
+  parseBlocklist,
   parseWhitelist,
   type OcOAuthConfig,
   type OcProvider
@@ -43,33 +44,44 @@ describe('filterCatalog', () => {
     const providers = [provider('github'), provider('slack'), provider('stripe', { oauth: false })]
     const configs = [config('github', true), config('slack', false)]
 
-    const kept = filterCatalog(providers, configs, null)
+    const kept = filterCatalog(providers, configs, null, new Set())
     expect(kept.map((p) => p.service)).toEqual(['github', 'stripe'])
     expect(kept.every((p) => p.actions === undefined)).toBe(true)
   })
 
   it('keeps a non-oauth provider even with no oauth config', () => {
-    expect(filterCatalog([provider('stripe', { oauth: false })], [], null).map((p) => p.service)).toEqual(['stripe'])
+    expect(filterCatalog([provider('stripe', { oauth: false })], [], null, new Set()).map((p) => p.service)).toEqual([
+      'stripe'
+    ])
   })
 
   it('keeps a dual provider but strips the oauth2 method when its secret is unconfigured', () => {
-    const kept = filterCatalog([dualProvider('linear')], [config('linear', false)], null)
+    const kept = filterCatalog([dualProvider('linear')], [config('linear', false)], null, new Set())
     expect(kept.map((p) => p.service)).toEqual(['linear'])
     expect(kept[0].auth.map((a) => a.type)).toEqual(['api_key'])
     expect(kept[0].authTypes).toEqual(['api_key'])
   })
 
   it('keeps both methods on a dual provider when oauth IS configured', () => {
-    const kept = filterCatalog([dualProvider('linear')], [config('linear', true)], null)
+    const kept = filterCatalog([dualProvider('linear')], [config('linear', true)], null, new Set())
     expect(kept[0].auth.map((a) => a.type)).toEqual(['oauth2', 'api_key'])
     expect(kept[0].authTypes).toEqual(['oauth2', 'api_key'])
   })
 
   it('applies the whitelist', () => {
     const providers = [provider('github'), provider('stripe', { oauth: false })]
-    expect(filterCatalog(providers, [config('github', true)], new Set(['github'])).map((p) => p.service)).toEqual([
-      'github'
-    ])
+    expect(
+      filterCatalog(providers, [config('github', true)], new Set(['github']), new Set()).map((p) => p.service)
+    ).toEqual(['github'])
+  })
+
+  it('applies the blocklist after the whitelist', () => {
+    const providers = [provider('github'), provider('stripe', { oauth: false })]
+    expect(
+      filterCatalog(providers, [config('github', true)], new Set(['github', 'stripe']), new Set(['github'])).map(
+        (p) => p.service
+      )
+    ).toEqual(['stripe'])
   })
 })
 
@@ -80,6 +92,15 @@ describe('parseWhitelist', () => {
   })
   it('parses a comma list, trimming blanks', () => {
     expect(parseWhitelist('github, google ,, slack')).toEqual(new Set(['github', 'google', 'slack']))
+  })
+})
+
+describe('parseBlocklist', () => {
+  it('parses exact service ids and treats blank input as no exclusions', () => {
+    expect(parseBlocklist(undefined)).toEqual(new Set())
+    expect(parseBlocklist('github, telegram ,, feishu_app_bot')).toEqual(
+      new Set(['github', 'telegram', 'feishu_app_bot'])
+    )
   })
 })
 

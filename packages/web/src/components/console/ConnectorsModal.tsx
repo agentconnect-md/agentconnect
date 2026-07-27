@@ -181,7 +181,7 @@ function ProviderBrowser({
             <div className="font-sans text-[13px] font-semibold leading-normal">No connectors available</div>
             <div className="mx-auto mt-1 max-w-[430px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
               Non-OAuth connectors and OAuth providers with a configured client secret appear here, subject to the
-              provider whitelist. Configure one upstream or widen the whitelist to make it available.
+              configured catalog filters. Configure one upstream or adjust those filters to make it available.
             </div>
           </div>
         ) : shown.length === 0 ? (
