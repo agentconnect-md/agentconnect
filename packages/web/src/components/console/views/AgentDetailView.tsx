@@ -1458,7 +1458,7 @@ export default function AgentDetailView() {
                             <GithubMark />
                           </span>
                         ) : (
-                          <span className="imark h-[26px] w-[26px] border-0 bg-transparent">
+                          <span className="flex h-[26px] w-[26px] flex-none items-center justify-center">
                             <PlatformMark platform={p.key} fillPct={100} />
                           </span>
                         )}
