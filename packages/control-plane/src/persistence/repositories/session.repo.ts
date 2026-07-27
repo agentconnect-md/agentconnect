@@ -63,6 +63,7 @@ function usageKey(agentId: string, sessionId: string): string {
 }
 
 function usageCounts(u: {
+  lastActivityAt: Date
   totalTokens: number
   inputTokens: number
   outputTokens: number
@@ -75,6 +76,7 @@ function usageCounts(u: {
   costCurrency: string | null
 }): SessionUsageCounts {
   return {
+    reportedAt: u.lastActivityAt.toISOString(),
     totalTokens: u.totalTokens,
     inputTokens: u.inputTokens,
     outputTokens: u.outputTokens,

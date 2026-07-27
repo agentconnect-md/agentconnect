@@ -130,7 +130,14 @@ describe('DreamPanel', () => {
     expect(button(header as HTMLElement, 'Dream now')).toBeTruthy()
   })
 
-  it('shows model, duration, token/cost usage, and session links', async () => {
+  it('marks older completed runs without token metering as unavailable', async () => {
+    api.listDreams.mockResolvedValue([dream()])
+    const host = await render()
+    expect(host.textContent).toContain('Tokens unavailable')
+    expect(host.textContent).not.toContain('sessions mined')
+  })
+
+  it('leads with this run’s token/cost usage and links its execution session', async () => {
     api.listDreams.mockResolvedValue([
       dream({
         executionSessionId: 'dream-session-1',
@@ -156,7 +163,9 @@ describe('DreamPanel', () => {
     expect(host.textContent).toContain('$0.12')
     expect(host.textContent).toContain('2.0 KB prompt')
     expect(host.querySelector('a[href="/acme/sessions/dream-session-1"]')?.textContent).toContain('Open session')
-    expect(host.querySelector('a[href="/acme/sessions/s1"]')).not.toBeNull()
+    expect(host.textContent).not.toContain('sessions mined')
+    expect(host.textContent).not.toContain('Sources')
+    expect(host.querySelector('a[href="/acme/sessions/s1"]')).toBeNull()
   })
 
   it('blocks the trigger for a viewer, with the reason', async () => {

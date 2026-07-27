@@ -935,6 +935,8 @@ export interface WebchatConversationRepo {
 
 /** The token/cost snapshot carried by a `usage/report` EVT (protocol `SessionUsage`). */
 export interface SessionUsageCounts {
+  /** Daemon timestamp of the cumulative snapshot; orders competing list/detail reads. */
+  reportedAt?: string
   totalTokens?: number
   inputTokens?: number
   outputTokens?: number
@@ -981,6 +983,8 @@ export interface UsageAggregate {
 export interface SessionUsageRepo {
   /** Upsert a session's cumulative usage (idempotent on `(agentId, sessionId)`). */
   record(input: SessionUsageInput): Promise<void>
+  /** Read one session's latest cumulative usage snapshot. */
+  get(agentId: AgentId, sessionId: string): Promise<SessionUsageCounts | null>
   /** Aggregate usage for an org over sessions active at/after `since` (range window).
    *  When a `viewer` is supplied, sessions of restricted agents they can't see are
    *  excluded from both the totals and the per-agent breakdown (derived visibility,

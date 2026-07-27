@@ -206,6 +206,7 @@ describe('Daemon evaluation surface', () => {
       .map((row: { text: string }) => row.text)
       .join('\n')
     expect(history).toContain('Memory dream started.')
+    expect(history).not.toContain('source session')
     expect(history).toContain('Dream completed.')
     expect(history).not.toContain(proposal)
     expect(collector.events().map((event) => event.type)).toEqual(['memory.dream.started', 'memory.dream.completed'])

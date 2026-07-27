@@ -3434,7 +3434,7 @@ export class Daemon {
       ts: monotonicTs(),
       sender: agentId,
       kind: 'text',
-      text: `Memory dream started. ${context.sessionIds.length} source session${context.sessionIds.length === 1 ? '' : 's'} selected.`
+      text: 'Memory dream started.'
     })
     this.emitSessionMetadataSnapshot({
       sessionId,

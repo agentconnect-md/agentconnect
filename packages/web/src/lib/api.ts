@@ -220,6 +220,7 @@ export interface AgentCallPolicyInput {
 // session-cumulative; context/cost are the latest snapshot. All fields optional —
 // a runtime that reports no usage yields absent fields.
 export interface SessionUsageDto {
+  reportedAt?: string
   totalTokens?: number
   inputTokens?: number
   outputTokens?: number
@@ -331,6 +332,7 @@ export interface SessionDetailDto {
   title: string | null
   status: string | null
   lastActivityAt: string
+  usage: SessionUsageDto | null
   triggeredBy: string | null
   channelName: string | null
   triggeredByName: string | null
@@ -1497,8 +1499,8 @@ export function sessionFromDto(d: SessionDto): Session {
 }
 
 /** Hydrate a session detail that was not present in the currently loaded list
- *  pages. Usage stays unknown until its list page is loaded, but navigation and
- *  transcript pull have the same metadata as an ordinary list-derived session. */
+ *  pages. Detail carries its own latest usage snapshot so a direct link can show
+ *  this session's token/cost accounting without depending on list pagination. */
 export function sessionFromDetailDto(d: SessionDetailDto): Session {
   return sessionFromDto({
     sessionId: d.id,
@@ -1511,7 +1513,7 @@ export function sessionFromDetailDto(d: SessionDetailDto): Session {
     title: d.title,
     status: d.status,
     lastActivityAt: d.lastActivityAt,
-    usage: null,
+    usage: d.usage,
     triggeredBy: d.triggeredBy,
     channelName: d.channelName,
     triggeredByName: d.triggeredByName,
@@ -1524,6 +1526,28 @@ export function sessionFromDetailDto(d: SessionDetailDto): Session {
     outputMode: d.outputMode,
     daemonId: d.daemonId
   })
+}
+
+/** Keep local/live session fields while refreshing usage from the independently
+ *  polled detail endpoint. This closes the race where the list row arrived just
+ *  before the daemon's final cumulative usage report. */
+export function mergeSessionDetailUsage(local: Session, detail: Session | null): Session {
+  if (!detail?.usage) return local
+  if (local.usage) {
+    const localReportedAt = local.usage.reportedAt ? Date.parse(local.usage.reportedAt) : Number.NaN
+    const detailReportedAt = detail.usage.reportedAt ? Date.parse(detail.usage.reportedAt) : Number.NaN
+    // A live session can have usage without a persisted timestamp. Preserve that
+    // state unless the detail snapshot proves it is newer; never let a cached
+    // detail response move cumulative token/cost totals backward.
+    if (!Number.isFinite(detailReportedAt)) return local
+    if (!Number.isFinite(localReportedAt) || detailReportedAt <= localReportedAt) return local
+  }
+  return {
+    ...local,
+    usage: detail.usage,
+    tokens: detail.tokens,
+    cost: detail.cost
+  }
 }
 
 export function daemonFromDto(d: DaemonViewDto): DaemonRow {

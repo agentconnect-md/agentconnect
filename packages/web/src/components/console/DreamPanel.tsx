@@ -236,10 +236,14 @@ export function DreamPanel({
         const duration = elapsed(dream.createdAt, dream.endedAt)
         const usage = dream.usage
         const metrics = [
+          usage?.totalTokens !== undefined
+            ? `${fmtCountCompact(usage.totalTokens)} tokens`
+            : isDreamTerminal(dream.status)
+              ? 'Tokens unavailable'
+              : null,
+          usage?.costAmount !== undefined ? fmtCost(usage.costAmount, usage.costCurrency) : null,
           dream.model,
-          duration,
-          usage?.totalTokens !== undefined ? `${fmtCountCompact(usage.totalTokens)} tokens` : null,
-          usage?.costAmount !== undefined ? fmtCost(usage.costAmount, usage.costCurrency) : null
+          duration
         ].filter((value): value is string => Boolean(value))
         const byteMetrics = usage
           ? `${fmtBytes(usage.inputBytes)} prompt · ${fmtBytes(usage.outputBytes)} output`
@@ -259,28 +263,12 @@ export function DreamPanel({
                 {dream.trigger === 'schedule' ? ' · scheduled' : ''}
               </span>
               <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                {when(dream.createdAt)} · {dream.sessionIds.length} session
-                {dream.sessionIds.length === 1 ? '' : 's'} mined
+                {when(dream.createdAt)}
                 {dream.error ? ` · ${dream.error.message}` : ''}
               </span>
               {metrics.length || byteMetrics ? (
                 <span className="font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
                   {[...metrics, ...(byteMetrics ? [byteMetrics] : [])].join(' · ')}
-                </span>
-              ) : null}
-              {sessionBasePath && dream.sessionIds.length ? (
-                <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 font-sans text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
-                  <span>Sources</span>
-                  {dream.sessionIds.slice(0, 4).map((sessionId) => (
-                    <Link
-                      key={sessionId}
-                      href={`${sessionBasePath}/${encodeURIComponent(sessionId)}`}
-                      className="lnk font-mono text-[10.5px]"
-                    >
-                      {sessionId.slice(0, 10)}
-                    </Link>
-                  ))}
-                  {dream.sessionIds.length > 4 ? <span>+{dream.sessionIds.length - 4}</span> : null}
                 </span>
               ) : null}
             </span>
