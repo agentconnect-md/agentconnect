@@ -398,6 +398,52 @@ describe('waitlist admission — POST /waitlist/redeem', () => {
     }
   })
 
+  it('activates concurrent redeemers competing for the SAME personal-org slug', async () => {
+    // Regression: allocating the slug by INSERT-and-catch (or by read-then-insert)
+    // loses this race — the loser's failed statement aborts its redeem transaction and
+    // the route answers 500. All three share the email local-part, so they derive the
+    // same base slug and must be handed distinct ones.
+    const links = await Promise.all([mintOpenLink(), mintOpenLink(), mintOpenLink()])
+    const identities = [
+      ['wl-race-a', 'dup@a.example'],
+      ['wl-race-b', 'dup@b.example'],
+      ['wl-race-c', 'dup@c.example']
+    ] as const
+    const { app, close } = buildApp()
+    try {
+      const hdrs = await Promise.all(identities.map(([sub, email]) => headers(sub, email)))
+      for (const h of hdrs) await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+
+      const results = await Promise.all(
+        hdrs.map((h, i) =>
+          app.inject({
+            method: 'POST',
+            url: '/api/v1/waitlist/redeem',
+            headers: h,
+            payload: { token: links[i]!.token }
+          })
+        )
+      )
+      expect(results.map((r) => r.statusCode)).toEqual([200, 200, 200])
+
+      // Each ends up owning exactly one org, and the slugs are distinct.
+      const slugs: string[] = []
+      for (const [sub] of identities) {
+        const user = await prisma.user.findUnique({ where: { oidcSubject: sub } })
+        const owned = await prisma.membership.findMany({
+          where: { userId: user!.id, role: 'owner' },
+          select: { org: { select: { slug: true } } }
+        })
+        expect(owned).toHaveLength(1)
+        slugs.push(owned[0]!.org.slug)
+      }
+      expect(new Set(slugs).size).toBe(3)
+      expect([...slugs].sort()).toEqual(['dup', 'dup-2', 'dup-3'])
+    } finally {
+      await close()
+    }
+  })
+
   it('same-user retry stays 200 even after the link later expires or is revoked (bound + bearer)', async () => {
     const boundToken = await approveAndMint('wl-retry@acme.dev')
     const { app, close } = buildApp()
