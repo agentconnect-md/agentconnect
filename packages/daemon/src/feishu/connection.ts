@@ -262,6 +262,7 @@ const PERMISSION_NOTICE_RETRY_MS = 5 * 60_000
 type FeishuPermissionIssue = 'app-permissions' | 'bot-capability' | 'app-availability' | 'chat-access'
 
 type UnknownRecord = Record<string, unknown>
+type FeishuPermissionState = { issue: FeishuPermissionIssue; scopes: string[] }
 
 function asRecord(value: unknown): UnknownRecord | undefined {
   return value && typeof value === 'object' ? (value as UnknownRecord) : undefined
@@ -292,6 +293,52 @@ function feishuErrorCode(err: unknown): number | undefined {
   const candidate = body?.code ?? asRecord(body?.error)?.code
   const code = typeof candidate === 'number' ? candidate : Number(candidate)
   return Number.isFinite(code) ? code : undefined
+}
+
+const FEISHU_SCOPE_RE = /^[a-z0-9][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)+$/
+
+function validatedFeishuScopes(values: unknown[]): string[] {
+  const scopes = new Set<string>()
+  for (const value of values) {
+    if (typeof value !== 'string' || value.length > 128 || !FEISHU_SCOPE_RE.test(value)) continue
+    scopes.add(value)
+    if (scopes.size >= 20) break
+  }
+  return [...scopes]
+}
+
+/** Retain the exact missing scopes reported by Feishu/Lark instead of guessing from
+ * the error code. `99991672` is shared by every API family (including contact reads),
+ * so a fixed IM scope list can produce a successful but useless repair card. */
+function feishuRequiredScopes(err: unknown, appId: string, region: FeishuRegion): string[] {
+  const body = feishuErrorBody(err)
+  const nested = asRecord(body?.error)
+  const violations = Array.isArray(nested?.permission_violations)
+    ? nested.permission_violations
+    : Array.isArray(body?.permission_violations)
+      ? body.permission_violations
+      : []
+  const subjects = validatedFeishuScopes(violations.map((item) => asRecord(item)?.subject))
+  if (subjects.length) return subjects
+
+  // Some API versions expose only `error.helps[].url`. Accept its q scopes only when
+  // the link points to this exact app on the configured regional developer domain.
+  const helps = Array.isArray(nested?.helps) ? nested.helps : Array.isArray(body?.helps) ? body.helps : []
+  const expectedOrigin = region === 'lark' ? 'https://open.larksuite.com' : 'https://open.feishu.cn'
+  const expectedPath = `/app/${appId}/auth`
+  for (const help of helps) {
+    const candidate = asRecord(help)?.url
+    if (typeof candidate !== 'string') continue
+    try {
+      const url = new URL(candidate)
+      if (url.origin !== expectedOrigin || url.pathname !== expectedPath) continue
+      const scopes = validatedFeishuScopes((url.searchParams.get('q') ?? '').split(','))
+      if (scopes.length) return scopes
+    } catch {
+      // Ignore malformed platform help data and fall back to the app settings page.
+    }
+  }
+  return []
 }
 
 const FEISHU_PERMISSION_NOTICE: Record<
@@ -347,7 +394,7 @@ export class FeishuConnection {
   private queue: SlackSendQueue
   /** App-level permission failures repeat across streamed writes. Announce once per
    * connection, with a bounded retry when the bot currently cannot send the card. */
-  private permissionIssue?: FeishuPermissionIssue
+  private permissionIssue?: FeishuPermissionState
   private permissionNoticeSent = false
   private permissionNoticeInFlight = false
   private permissionNoticeRetryAt = 0
@@ -490,8 +537,9 @@ export class FeishuConnection {
   private rememberPermissionIssue(err: unknown): boolean {
     const issue = feishuPermissionIssueFrom(err)
     if (!issue) return false
-    const changed = this.permissionIssue !== issue
-    this.permissionIssue = issue
+    const scopes = issue === 'app-permissions' ? feishuRequiredScopes(err, this.appId, this.region) : []
+    const changed = this.permissionIssue?.issue !== issue || this.permissionIssue.scopes.join(',') !== scopes.join(',')
+    this.permissionIssue = { issue, scopes }
     if (changed) {
       const code = feishuErrorCode(err)
       this.deps.log?.warn(
@@ -502,13 +550,13 @@ export class FeishuConnection {
     return true
   }
 
-  private permissionUpdateUrl(issue: FeishuPermissionIssue): string | undefined {
+  private permissionUpdateUrl({ issue, scopes }: FeishuPermissionState): string | undefined {
     if (!/^cli_[A-Za-z0-9]+$/.test(this.appId)) return undefined
     const host = this.region === 'lark' ? 'https://open.larksuite.com' : 'https://open.feishu.cn'
     const appRoot = `${host}/app/${encodeURIComponent(this.appId)}`
-    if (issue !== 'app-permissions') return appRoot
+    if (issue !== 'app-permissions' || scopes.length === 0) return appRoot
     const params = new URLSearchParams({
-      q: 'im:message,im:message:send_as_bot,im:resource,im:chat',
+      q: scopes.join(','),
       op_from: 'openapi',
       token_type: 'tenant'
     })
@@ -520,19 +568,19 @@ export class FeishuConnection {
    * retried only after a cooldown because missing send/chat access also blocks the
    * warning itself. */
   private async postPermissionUpdateCard(channel: string, anchor?: string): Promise<void> {
-    const issue = this.permissionIssue
+    const permission = this.permissionIssue
     if (
-      !issue ||
+      !permission ||
       this.permissionNoticeSent ||
       this.permissionNoticeInFlight ||
       Date.now() < this.permissionNoticeRetryAt
     )
       return
-    const updateUrl = this.permissionUpdateUrl(issue)
+    const updateUrl = this.permissionUpdateUrl(permission)
     if (!updateUrl) return
 
     this.permissionNoticeInFlight = true
-    const notice = FEISHU_PERMISSION_NOTICE[issue]
+    const notice = FEISHU_PERMISSION_NOTICE[permission.issue]
     try {
       await this.sendPermissionCard(
         channel,

@@ -1,13 +1,28 @@
 import { describe, expect, it, vi } from 'vitest'
 import { FeishuConnection, type ConsolidatedFeishuGroup, type FeishuClientHandle } from '../src/feishu/connection.js'
 
-function permissionError(code = 99991672): Error {
+function permissionError(
+  code = 99991672,
+  scopes = ['im:message', 'im:message:send_as_bot', 'im:resource', 'im:chat']
+): Error {
   return Object.assign(new Error('Request failed with status code 400'), {
-    response: { data: { code, msg: 'Access denied. Required scopes are missing.' } }
+    response: {
+      data: {
+        code,
+        msg: 'Access denied. Required scopes are missing.',
+        error: {
+          permission_violations: scopes.map((subject) => ({ type: 'action_scope_required', subject }))
+        }
+      }
+    }
   })
 }
 
-function connectionFor(region: 'feishu' | 'lark', patchText: () => Promise<void>) {
+function connectionFor(
+  region: 'feishu' | 'lark',
+  patchText: () => Promise<void>,
+  getUser: (id: string) => Promise<{ id: string }> = async (id) => ({ id })
+) {
   const createCard = vi.fn(async (_chatId: string, _card: Record<string, unknown>) => ({ messageId: 'notice-1' }))
   const replyCard = vi.fn(async (_messageId: string, _card: Record<string, unknown>) => ({ messageId: 'notice-2' }))
   const handle: FeishuClientHandle = {
@@ -21,7 +36,7 @@ function connectionFor(region: 'feishu' | 'lark', patchText: () => Promise<void>
       getChat: async (id) => ({ id }),
       listChatMembers: async () => [],
       listChats: async () => [],
-      getUser: async (id) => ({ id }),
+      getUser,
       getBotInfo: async () => ({})
     },
     startWs: async () => {},
@@ -70,6 +85,28 @@ describe('Feishu/Lark permission update notice', () => {
     expect(url.searchParams.get('q')).toBe('im:message,im:message:send_as_bot,im:resource,im:chat')
     expect(url.searchParams.get('op_from')).toBe('openapi')
     expect(url.searchParams.get('token_type')).toBe('tenant')
+  })
+
+  it('uses the platform-reported contact scopes for a profile permission failure', async () => {
+    const contactScopes = ['contact:contact.base:readonly', 'contact:contact:readonly_as_app']
+    const { conn, createCard } = connectionFor(
+      'feishu',
+      async () => {},
+      async () => {
+        throw permissionError(99991672, contactScopes)
+      }
+    )
+
+    await conn.getUserProfile('ou_user')
+    await conn.postMessage('oc_chat', 'reply')
+
+    expect(createCard).toHaveBeenCalledOnce()
+    const card = createCard.mock.calls[0]![1] as {
+      body: { elements: { behaviors?: { default_url: string }[] }[] }
+    }
+    const url = new URL(card.body.elements[1]!.behaviors![0]!.default_url)
+    expect(url.searchParams.get('q')).toBe(contactScopes.join(','))
+    expect(url.searchParams.get('q')).not.toContain('im:message')
   })
 
   it('does not post a permission card for an unrelated request error', async () => {
