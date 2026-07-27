@@ -111,7 +111,6 @@ const DISCORD_BOT_PERMISSIONS = (
 ).toString()
 
 type DiscordPermissionIssue = 'missing-access' | 'missing-permissions' | 'missing-oauth-scope'
-type DiscordPermissionState = { issue: DiscordPermissionIssue; channel?: string }
 
 type DiscordErrorLike = {
   code?: unknown
@@ -160,11 +159,12 @@ export class DiscordConnection {
   private statusKeys = new Map<string, string>()
   /** Permission failures can repeat for every streamed write. Announce once per bot
    * connection, with a bounded retry if the bot currently cannot send the notice. */
-  private permissionIssue?: DiscordPermissionState
+  private hasGlobalPermissionIssue = false
+  private permissionIssueChannels = new Set<string>()
   private loggedPermissionIssues = new Set<DiscordPermissionIssue>()
   private permissionNoticeSent = false
   private permissionNoticeInFlight = false
-  private permissionNoticeRetryAt = 0
+  private permissionNoticeRetryAt = new Map<string, number>()
   /** The bot token this gateway authenticated with (used to detect a swap). */
   readonly botToken: string
   /** The bot's user id (a numeric snowflake, as string). Discord routes mentions on
@@ -362,18 +362,22 @@ export class DiscordConnection {
       this.loggedPermissionIssues.add(issue)
       this.deps.log?.warn(`discord: bot permission update required (${issue})`)
     }
-    const next: DiscordPermissionState = {
-      issue,
-      // OAuth scope is application-wide. Access/permission errors discovered during a
-      // channel operation must stay on that channel so a healthy guild cannot consume
-      // a stale retry. Calls without a channel (command registration) remain global.
-      ...(issue !== 'missing-oauth-scope' && channel ? { channel } : {})
+    // OAuth scope is application-wide. Access/permission errors discovered during a
+    // channel operation stay on that channel; calls without a channel (command
+    // registration) remain global. Keep both layers so a failed channel notice cannot
+    // replace an earlier unsent global repair.
+    if (issue === 'missing-oauth-scope' || !channel) {
+      this.hasGlobalPermissionIssue = true
+    } else if (!this.permissionIssueChannels.has(channel)) {
+      this.permissionIssueChannels.add(channel)
+      this.permissionNoticeRetryAt.delete(`channel:${channel}`)
     }
-    if (this.permissionIssue?.issue !== next.issue || this.permissionIssue.channel !== next.channel) {
-      this.permissionNoticeRetryAt = 0
-    }
-    this.permissionIssue = next
     return true
+  }
+
+  private pendingPermissionKey(channel: string): string | undefined {
+    if (this.hasGlobalPermissionIssue) return `global:${channel}`
+    return this.permissionIssueChannels.has(channel) ? `channel:${channel}` : undefined
   }
 
   private permissionUpdateUrl(): string | undefined {
@@ -392,13 +396,12 @@ export class DiscordConnection {
    * (`undefined`). The in-flight claim is set before any await so concurrent thread or
    * chrome failures cannot race into duplicate notices. */
   private async postPermissionUpdateNotice(channel: string, target?: Sendable | null): Promise<void> {
-    const permission = this.permissionIssue
+    const pendingKey = this.pendingPermissionKey(channel)
     if (
-      !permission ||
-      (permission.channel !== undefined && permission.channel !== channel) ||
+      !pendingKey ||
       this.permissionNoticeSent ||
       this.permissionNoticeInFlight ||
-      Date.now() < this.permissionNoticeRetryAt
+      Date.now() < (this.permissionNoticeRetryAt.get(pendingKey) ?? 0)
     )
       return
     const updateUrl = this.permissionUpdateUrl()
@@ -408,14 +411,20 @@ export class DiscordConnection {
     try {
       const ch = target === undefined ? await this.sendableChannel(channel) : target
       if (!ch) {
-        this.permissionNoticeRetryAt = Date.now() + PERMISSION_NOTICE_RETRY_MS
+        this.permissionNoticeRetryAt.set(
+          this.pendingPermissionKey(channel) ?? pendingKey,
+          Date.now() + PERMISSION_NOTICE_RETRY_MS
+        )
         return
       }
       await ch.send(buildPermissionUpdateNotice(updateUrl))
       this.permissionNoticeSent = true
     } catch (err) {
       this.rememberPermissionIssue(err, channel)
-      this.permissionNoticeRetryAt = Date.now() + PERMISSION_NOTICE_RETRY_MS
+      this.permissionNoticeRetryAt.set(
+        this.pendingPermissionKey(channel) ?? pendingKey,
+        Date.now() + PERMISSION_NOTICE_RETRY_MS
+      )
       this.deps.log?.debug(`discord: permission update notice failed (ch=${channel}): ${(err as Error).message}`)
     } finally {
       this.permissionNoticeInFlight = false

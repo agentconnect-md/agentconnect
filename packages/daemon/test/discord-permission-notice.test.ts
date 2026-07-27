@@ -99,9 +99,45 @@ describe('Discord permission update notice', () => {
 
     await conn.createThread('A', 'message-1', 'Thread')
     expect(sendA).toHaveBeenCalledOnce()
-    ;(conn as unknown as { permissionNoticeRetryAt: number }).permissionNoticeRetryAt = 0
+    ;(conn as unknown as { permissionNoticeRetryAt: Map<string, number> }).permissionNoticeRetryAt.clear()
 
     await conn.sendChatAction('B')
     expect(sendB).not.toHaveBeenCalled()
+  })
+
+  it('preserves a global OAuth repair when a channel-specific notice fails', async () => {
+    const missingScope = Object.assign(new Error('Missing required OAuth2 scope'), { code: 50026 })
+    const missingPermission = Object.assign(new Error('Missing Permissions'), { code: 50013 })
+    const sendA = vi.fn(async () => {
+      throw missingPermission
+    })
+    const sendB = vi.fn(async () => ({ id: 'notice-B' }))
+    const conn = connectionWith((id) =>
+      id === 'A'
+        ? {
+            send: sendA,
+            messages: {
+              fetch: vi.fn(async () => ({
+                startThread: async () => {
+                  throw missingPermission
+                }
+              }))
+            }
+          }
+        : { send: sendB, sendTyping: vi.fn(async () => {}) }
+    )
+    ;(
+      conn as unknown as {
+        rememberPermissionIssue: (err: unknown, channel?: string) => boolean
+      }
+    ).rememberPermissionIssue(missingScope)
+
+    await conn.createThread('A', 'message-1', 'Thread')
+    expect(sendA).toHaveBeenCalledOnce()
+    ;(conn as unknown as { permissionNoticeRetryAt: Map<string, number> }).permissionNoticeRetryAt.clear()
+
+    await conn.sendChatAction('B')
+    expect(sendB).toHaveBeenCalledOnce()
+    expect((sendB.mock.calls[0]![0] as { content: string }).content).toContain('Permissions update required')
   })
 })

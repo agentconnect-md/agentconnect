@@ -262,7 +262,7 @@ const PERMISSION_NOTICE_RETRY_MS = 5 * 60_000
 type FeishuPermissionIssue = 'app-permissions' | 'bot-capability' | 'app-availability' | 'chat-access'
 
 type UnknownRecord = Record<string, unknown>
-type FeishuPermissionState = { issue: FeishuPermissionIssue; scopes: string[]; channel?: string }
+type FeishuPermissionState = { issue: FeishuPermissionIssue; scopes: string[] }
 
 function asRecord(value: unknown): UnknownRecord | undefined {
   return value && typeof value === 'object' ? (value as UnknownRecord) : undefined
@@ -394,11 +394,13 @@ export class FeishuConnection {
   private queue: SlackSendQueue
   /** App-level permission failures repeat across streamed writes. Announce once per
    * connection, with a bounded retry when the bot currently cannot send the card. */
-  private permissionIssue?: FeishuPermissionState
+  private globalPermissionIssues = new Set<Exclude<FeishuPermissionIssue, 'chat-access'>>()
+  private permissionScopes = new Set<string>()
+  private permissionIssueChannels = new Set<string>()
   private loggedPermissionIssues = new Set<string>()
   private permissionNoticeSent = false
   private permissionNoticeInFlight = false
-  private permissionNoticeRetryAt = 0
+  private permissionNoticeRetryAt = new Map<string, number>()
   /** The appId this connection authenticated with (used to detect a swap). */
   readonly appId: string
   /** The gateway region this connection dialed (feishu.cn vs larksuite.com). Reconcile
@@ -550,18 +552,41 @@ export class FeishuConnection {
     }
     // Chat access is target-specific. Without a concrete chat there is nowhere
     // accurate to display "add the bot to this chat", so keep only the diagnostic log.
-    if (issue === 'chat-access' && !channel) return true
-
-    const next: FeishuPermissionState = { issue, scopes, ...(issue === 'chat-access' ? { channel } : {}) }
-    if (
-      this.permissionIssue?.issue !== next.issue ||
-      this.permissionIssue.scopes.join(',') !== next.scopes.join(',') ||
-      this.permissionIssue.channel !== next.channel
-    ) {
-      this.permissionNoticeRetryAt = 0
+    if (issue === 'chat-access') {
+      if (channel && !this.permissionIssueChannels.has(channel)) {
+        this.permissionIssueChannels.add(channel)
+        this.permissionNoticeRetryAt.delete(`channel:${channel}`)
+      }
+      return true
     }
-    this.permissionIssue = next
+
+    const wasNewIssue = !this.globalPermissionIssues.has(issue)
+    this.globalPermissionIssues.add(issue)
+    const oldScopeCount = this.permissionScopes.size
+    for (const scope of scopes) this.permissionScopes.add(scope)
+    if (wasNewIssue || this.permissionScopes.size !== oldScopeCount) {
+      for (const key of this.permissionNoticeRetryAt.keys()) {
+        if (key.startsWith('global:')) this.permissionNoticeRetryAt.delete(key)
+      }
+    }
     return true
+  }
+
+  private pendingGlobalPermission(): FeishuPermissionState | undefined {
+    if (this.globalPermissionIssues.has('app-permissions')) {
+      return { issue: 'app-permissions', scopes: [...this.permissionScopes] }
+    }
+    if (this.globalPermissionIssues.has('bot-capability')) return { issue: 'bot-capability', scopes: [] }
+    if (this.globalPermissionIssues.has('app-availability')) return { issue: 'app-availability', scopes: [] }
+    return undefined
+  }
+
+  private pendingPermission(channel: string): { permission: FeishuPermissionState; key: string } | undefined {
+    const global = this.pendingGlobalPermission()
+    if (global) return { permission: global, key: `global:${channel}` }
+    return this.permissionIssueChannels.has(channel)
+      ? { permission: { issue: 'chat-access', scopes: [] }, key: `channel:${channel}` }
+      : undefined
   }
 
   private permissionUpdateUrl({ issue, scopes }: FeishuPermissionState): string | undefined {
@@ -582,20 +607,19 @@ export class FeishuConnection {
    * retried only after a cooldown because missing send/chat access also blocks the
    * warning itself. */
   private async postPermissionUpdateCard(channel: string, anchor?: string): Promise<void> {
-    const permission = this.permissionIssue
+    const pending = this.pendingPermission(channel)
     if (
-      !permission ||
-      (permission.channel !== undefined && permission.channel !== channel) ||
+      !pending ||
       this.permissionNoticeSent ||
       this.permissionNoticeInFlight ||
-      Date.now() < this.permissionNoticeRetryAt
+      Date.now() < (this.permissionNoticeRetryAt.get(pending.key) ?? 0)
     )
       return
-    const updateUrl = this.permissionUpdateUrl(permission)
+    const updateUrl = this.permissionUpdateUrl(pending.permission)
     if (!updateUrl) return
 
     this.permissionNoticeInFlight = true
-    const notice = FEISHU_PERMISSION_NOTICE[permission.issue]
+    const notice = FEISHU_PERMISSION_NOTICE[pending.permission.issue]
     try {
       await this.sendPermissionCard(
         channel,
@@ -605,7 +629,10 @@ export class FeishuConnection {
       this.permissionNoticeSent = true
     } catch (err) {
       this.rememberPermissionIssue(err, channel)
-      this.permissionNoticeRetryAt = Date.now() + PERMISSION_NOTICE_RETRY_MS
+      this.permissionNoticeRetryAt.set(
+        this.pendingPermission(channel)?.key ?? pending.key,
+        Date.now() + PERMISSION_NOTICE_RETRY_MS
+      )
       this.deps.log?.debug(`feishu: permission update card failed (ch=${channel}): ${(err as Error).message}`)
     } finally {
       this.permissionNoticeInFlight = false

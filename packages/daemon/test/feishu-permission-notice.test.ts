@@ -23,11 +23,12 @@ function connectionFor(
   patchText: () => Promise<void>,
   getUser: (id: string) => Promise<{ id: string }> = async (id) => ({ id })
 ) {
+  const createText = vi.fn(async (_chatId: string, _text: string) => ({}))
   const createCard = vi.fn(async (_chatId: string, _card: Record<string, unknown>) => ({ messageId: 'notice-1' }))
   const replyCard = vi.fn(async (_messageId: string, _card: Record<string, unknown>) => ({ messageId: 'notice-2' }))
   const handle: FeishuClientHandle = {
     api: {
-      createText: async () => ({}),
+      createText,
       createCard,
       replyText: async () => ({}),
       replyCard,
@@ -52,7 +53,7 @@ function connectionFor(
     { group, onMessage: () => {}, newTraceId: () => 'trace', sendIntervalMs: 0 },
     () => handle
   )
-  return { conn, createCard, replyCard }
+  return { conn, createText, createCard, replyCard }
 }
 
 describe('Feishu/Lark permission update notice', () => {
@@ -121,10 +122,37 @@ describe('Feishu/Lark permission update notice', () => {
 
     await conn.updateMessage('A', 'om_progress', 'first')
     expect(createCard.mock.calls.map(([chatId]) => chatId)).toEqual(['A'])
-    ;(conn as unknown as { permissionNoticeRetryAt: number }).permissionNoticeRetryAt = 0
+    ;(conn as unknown as { permissionNoticeRetryAt: Map<string, number> }).permissionNoticeRetryAt.clear()
 
     await conn.postMessage('B', 'healthy')
     expect(createCard.mock.calls.map(([chatId]) => chatId)).toEqual(['A'])
+  })
+
+  it('merges application scopes until a permission card succeeds', async () => {
+    const contactScope = 'contact:contact.base:readonly'
+    const sendScope = 'im:message:send_as_bot'
+    const { conn, createText, createCard } = connectionFor(
+      'lark',
+      async () => {},
+      async () => {
+        throw permissionError(99991672, [contactScope])
+      }
+    )
+    createText.mockRejectedValueOnce(permissionError(99991672, [sendScope]))
+    createCard.mockRejectedValueOnce(permissionError(99991672, [sendScope]))
+
+    await conn.getUserProfile('ou_user')
+    await conn.postMessage('A', 'blocked')
+    expect(createCard).toHaveBeenCalledOnce()
+    ;(conn as unknown as { permissionNoticeRetryAt: Map<string, number> }).permissionNoticeRetryAt.clear()
+
+    await conn.postMessage('B', 'repaired')
+    expect(createCard).toHaveBeenCalledTimes(2)
+    const card = createCard.mock.calls[1]![1] as {
+      body: { elements: { behaviors?: { default_url: string }[] }[] }
+    }
+    const url = new URL(card.body.elements[1]!.behaviors![0]!.default_url)
+    expect(url.searchParams.get('q')).toBe(`${contactScope},${sendScope}`)
   })
 
   it('does not post a permission card for an unrelated request error', async () => {
