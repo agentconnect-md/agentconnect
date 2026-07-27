@@ -293,33 +293,52 @@ describe('skill source visibility — the agent that enables it resolves it anyw
     expect(res.json()).toEqual([])
   })
 
-  it('a credential in a pre-guard source never crosses the boundary, and can no longer be stored', async () => {
+  it('a secret in a pre-guard source never crosses the boundary, in any of its hiding places', async () => {
     const other = await makeUser('sk-cred', 'collaborator')
-    const owner = await makeUser('sk-cred-owner', 'owner')
-    const S = randomUUID()
-    // A row from before SkillSourceArg rejected credentials: restricted away from
-    // `other`, but reachable through an agent they can see.
-    await seedSource(S, {
-      name: 'sk-cred-kit',
-      source: 'https://ghp_notarealtoken@git.example.test/ops/skills.git',
-      visibility: 'restricted',
-      sharedWith: []
-    })
+    // Rows from before SkillSourceArg rejected secrets, each restricted away from
+    // `other` but reachable through an agent they can see. The last two are the
+    // bypasses a hand-rolled userinfo regex misses: a password containing `@`
+    // (minimal matching stops at the first one) and a token in the query/fragment.
+    const cases = [
+      { name: 'sk-cred-user', stored: 'https://ghp_notarealtoken@git.example.test/ops/skills.git' },
+      { name: 'sk-cred-pw', stored: 'https://user:p@ss-notarealtoken@git.example.test/ops/skills.git' },
+      { name: 'sk-cred-query', stored: 'https://git.example.test/ops/skills.git?access_token=notarealtoken#frag' }
+    ]
+    for (const c of cases) {
+      await seedSource(randomUUID(), { name: c.name, source: c.stored, visibility: 'restricted', sharedWith: [] })
+    }
     const A = randomUUID()
     await seedAgent(prisma, A, { visibility: 'org' })
-    await prisma.agent.update({ where: { id: A }, data: { runtimeOverrides: { skills: ['sk-cred-kit/*'] } } })
+    await prisma.agent.update({
+      where: { id: A },
+      data: { runtimeOverrides: { skills: cases.map((c) => `${c.name}/*`) } }
+    })
 
     const res = await appAs(other).app.inject({ method: 'GET', url: `${ORG}/agents/${A}/skill-sources` })
     expect(res.statusCode).toBe(200)
-    const [row] = res.json() as Array<{ source: string }>
-    expect(row!.source).toBe('https://git.example.test/ops/skills.git')
-    expect(res.payload).not.toContain('ghp_notarealtoken')
+    const rows = res.json() as Array<{ name: string; source: string }>
+    expect(rows.map((r) => r.source)).toEqual([
+      'https://git.example.test/ops/skills.git',
+      'https://git.example.test/ops/skills.git',
+      'https://git.example.test/ops/skills.git'
+    ])
+    expect(res.payload).not.toContain('notarealtoken')
+  })
 
-    // ...and the write path no longer accepts one, even from an owner.
+  it('the write path refuses every secret-bearing source form, even from an owner', async () => {
+    const owner = await makeUser('sk-cred-owner', 'owner')
     const create = (source: string) =>
       appAs(owner).app.inject({ method: 'POST', url: `${ORG}/skill-sources`, payload: { name: 'sk-cred-new', source } })
-    expect((await create('https://user:pw@git.example.test/ops/skills.git')).statusCode).toBe(400)
-    expect((await create('https://ghp_notarealtoken@github.com/example-org/kit')).statusCode).toBe(400)
+
+    for (const bad of [
+      'https://user:pw@git.example.test/ops/skills.git',
+      'https://ghp_notarealtoken@github.com/example-org/kit',
+      'https://user:p@ss@git.example.test/ops/skills.git', // password containing `@`
+      'https://git.example.test/ops/skills.git?access_token=notarealtoken', // query
+      'https://git.example.test/ops/skills.git#notarealtoken' // fragment
+    ]) {
+      expect((await create(bad)).statusCode).toBe(400)
+    }
     expect((await create('git@github.com:example-org/example-kit.git')).statusCode).toBe(201) // scp-like form still fine
   })
 

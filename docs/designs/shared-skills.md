@@ -235,13 +235,21 @@ the console renders no tile for them — they install nothing either
 (`resolveAgentSkillEntries` drops unknown names), so there is nothing truthful for
 a placeholder row to say.
 
-Crossing that boundary requires the source string to be **credential-free**, which
-is now enforced rather than assumed. `SkillSourceArg` rejects a scheme URL that
-embeds userinfo (`https://<token>@host/repo`, `https://user:pw@host/repo`); the
-scp-like `git@github.com:owner/repo` form has no userinfo and `ssh://git@host/repo`
-names a role, so both still pass. Rows stored before that guard are redacted at the
-agent-scoped response boundary (`redactSourceCredentials`), never in the registry
-response or in the `AgentSpec` the daemon clones from.
+Crossing that boundary requires the source string to be **secret-free**, which is
+now enforced rather than assumed. `SkillSourceArg` rejects a scheme URL that embeds
+userinfo (`https://<token>@host/repo`, `https://user:pw@host/repo`, including a
+password containing `@`) and any query or fragment (`?access_token=…`), which
+`npx skills` has no use for. The scp-like `git@github.com:owner/repo` form has no
+userinfo and `ssh://git@host/repo` names a role, so both still pass.
+
+Rows stored before that guard are redacted at the agent-scoped response boundary by
+`redactSourceCredentials`, which delegates to the protocol's **`redactGitUrlSecrets`**
+rather than re-deriving the rules — that codec is total and already handles the last
+authority `@`, query/fragment stripping, backslash authority ambiguity, and
+malformed historical values. Bare `owner/repo` shorthand is passed through verbatim
+(it cannot carry a secret, and the codec would expand it to a full URL). The
+registry response and the `AgentSpec` the daemon clones from are untouched — the
+daemon needs the real URL.
 
 Writes are unchanged: adding a ref is still gated on seeing the **source**
 (`enablingUnseenSkillDenied`, §9). A tile the caller reaches only through the agent

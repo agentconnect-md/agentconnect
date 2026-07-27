@@ -372,19 +372,26 @@ const SkillFilterName = z
 // A source string that becomes a positional argument to `npx skills add`. Reject
 // option-looking values for the same reason.
 //
-// Also reject embedded credentials (`https://<token>@host/repo`,
-// `https://user:pw@host/repo`). A skill source is org metadata that travels inline
-// on every referring AgentSpec and is shown next to the agents that install it, so
-// it must never be a secret carrier — a private repo needs a real grant, which this
-// release does not have (see shared-skills.md; create already rejects a confirmed
-// private repo). The scp-like `git@github.com:owner/repo` form has no `://` and is
-// unaffected; `ssh://git@host/repo` names a ROLE, not a credential, so a
-// colon-free userinfo stays allowed there.
+// Also reject secret carriers. A skill source is org metadata: it travels inline on
+// every referring AgentSpec and is shown next to the agents that install it (see
+// shared-skills.md), so it must never hold a credential — a private repo needs a
+// real grant, which this release does not have, and create already rejects a
+// confirmed private repo. Two forms are refused:
+//
+//   - userinfo — `https://<token>@host/repo`, `https://user:pw@host/repo`. The
+//     authority match is greedy so `user:p@ss@host` is caught by its LAST `@`. The
+//     scp-like `git@github.com:owner/repo` form has no `://` and is unaffected;
+//     `ssh://git@host/repo` names a ROLE, so colon-free userinfo stays allowed there.
+//   - query/fragment — `?access_token=…`, `#…`. `npx skills` has no use for either,
+//     and both are places a token hides in plain sight.
 const SkillSourceArg = z
   .string()
   .trim()
   .min(1)
   .refine((s) => !s.startsWith('-'), { message: 'source must not start with "-"' })
+  .refine((s) => !s.includes('?') && !s.includes('#'), {
+    message: 'source must not carry a query or fragment; they can hide a credential'
+  })
   .refine(
     (s) => {
       const m = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/]*)@/.exec(s)
