@@ -198,7 +198,11 @@ async function materialize(
     }
   }
   if (names.length === 0) {
-    await writeMarker(acpCwd, { installed: [] }, opts.warn)
+    // Only record an empty set if something was actually removed. Writing a
+    // marker unconditionally would create a file in EVERY workspace on every
+    // prep — pointless for the overwhelmingly common no-accepted-skills case,
+    // and a spurious workspace mutation the reconcile watcher can react to.
+    if (result.removed.length > 0) await writeMarker(acpCwd, { installed: [] }, opts.warn)
     return result
   }
 
