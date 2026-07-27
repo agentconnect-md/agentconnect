@@ -72,7 +72,7 @@ export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string): st
     case 'first':
       return `Runs when an issue or PR is opened, plus on later @${agentName} mentions.`
     case 'every':
-      return 'Runs on every update and reply.'
+      return 'Runs when an issue or PR is opened and on supported updates and replies (close, reopen and edits are ignored).'
     case 'mention':
       return `Runs only when @${agentName} is mentioned.`
   }

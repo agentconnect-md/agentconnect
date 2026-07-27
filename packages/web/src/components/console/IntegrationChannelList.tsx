@@ -63,11 +63,19 @@ function TriggerToggle({
         ? [
             ['off', 'off', "The agent doesn't respond in this channel."],
             ['any', 'any message', 'The agent responds to every message in this channel.'],
-            ['mention', '@-mention', 'The agent responds only when @-mentioned.']
+            [
+              'mention',
+              '@-mention',
+              "The agent responds when @-mentioned. Follow-ups in a thread it has joined don't need another mention."
+            ]
           ]
         : [
             ['any', 'any message', 'The agent responds to every message in this channel.'],
-            ['mention', '@-mention', 'The agent responds only when @-mentioned.']
+            [
+              'mention',
+              '@-mention',
+              "The agent responds when @-mentioned. Follow-ups in a thread it has joined don't need another mention."
+            ]
           ]
   return (
     <span className="inline-flex items-center gap-[7px] max-desktop:w-full">

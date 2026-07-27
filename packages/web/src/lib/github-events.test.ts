@@ -32,7 +32,9 @@ describe('GH_TRIGGER_PILL', () => {
   it('names the agent in the per-segment hover copy', () => {
     expect(githubTriggerTooltip('first', 'reviewer')).toContain('@reviewer')
     expect(githubTriggerTooltip('mention', 'reviewer')).toContain('@reviewer')
-    expect(githubTriggerTooltip('every', 'reviewer')).toBe('Runs on every update and reply.')
+    expect(githubTriggerTooltip('every', 'reviewer')).toBe(
+      'Runs when an issue or PR is opened and on supported updates and replies (close, reopen and edits are ignored).'
+    )
   })
 })
 
