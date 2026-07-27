@@ -1135,6 +1135,11 @@ export class Daemon {
     string,
     { chunks: string[]; sessionKey?: string; runtimeCostReported?: boolean }
   >()
+  /** Sessions whose cancel backstop fired while the runtime prompt is still
+   *  executing. Keep dropping every late update until that exact prompt settles:
+   *  otherwise a delayed Dream proposal can escape into generic evaluation or
+   *  transcript surfaces after its collector has been released. */
+  private memoryExtractionQuarantines = new Set<string>()
   /** One isolated extractor session per agent/host lifetime (never shown to users). */
   private memoryExtractionSessions = new Map<string, string>()
   private memoryExtractionDirs = new Map<string, string>()
@@ -3390,8 +3395,14 @@ export class Daemon {
     // launching an uncancellable prompt.
     if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
     const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
-    const selectedModel = host.modelOptions?.(sessionId)?.current
-    const model = selectedModel && selectedModel !== 'default' ? selectedModel : agent.runtimeOverrides?.model
+    const modelOptions = host.modelOptions?.(sessionId) ?? null
+    const selectedModel = modelOptions?.current
+    // Mirror ordinary-turn attribution: a runtime-owned `default` means the
+    // concrete model is unknown. Only use config when the runtime exposes no
+    // selector at all; an advertised `default` may mean the override failed to
+    // apply, and persisting/pricing that override would be false observability.
+    const model =
+      modelOptions === null ? agent.runtimeOverrides?.model : selectedModel === 'default' ? undefined : selectedModel
     const executionKey = sessionKey('dream', 'memory', context.dreamId, agentId)
     const now = this.clock.now()
     this.store.upsertSession({
@@ -3468,7 +3479,14 @@ export class Daemon {
         // yields, stop awaiting after DREAM_CANCEL_FORCE_MS from the abort so the
         // `finally` discards the ACP session instead of leaking it. The runner's
         // own grace window already releases the reservation independently.
-        const result = await this.promptWithCancelBackstop(host, sessionId, text, signal)
+        const result = await this.promptWithCancelBackstop(host, sessionId, text, signal, (prompt) => {
+          // Release the potentially large proposal chunks once the backstop wins,
+          // but retain a key-only tombstone until the ignored prompt truly ends.
+          if (this.memoryExtractionCollectors.get(key) === collector) this.memoryExtractionCollectors.delete(key)
+          this.memoryExtractionQuarantines.add(key)
+          const release = () => this.memoryExtractionQuarantines.delete(key)
+          void prompt.then(release, release)
+        })
         promptCompleted = true
         if (result.usage) {
           const counts = {
@@ -3496,7 +3514,7 @@ export class Daemon {
           ...(Object.keys(usage).length ? { usage } : {})
         }
       } finally {
-        this.memoryExtractionCollectors.delete(key)
+        if (!this.memoryExtractionQuarantines.has(key)) this.memoryExtractionCollectors.delete(key)
       }
     } finally {
       signal.removeEventListener('abort', onAbort)
@@ -3539,16 +3557,17 @@ export class Daemon {
     host: AcpHost,
     sessionId: string,
     text: string,
-    signal: AbortSignal
+    signal: AbortSignal,
+    onDetached?: (prompt: ReturnType<AcpHost['prompt']>) => void
   ): Promise<Awaited<ReturnType<AcpHost['prompt']>>> {
     const done = host.prompt(sessionId, [{ type: 'text', text }])
     let timer: ReturnType<typeof setTimeout> | undefined
     const backstop = new Promise<never>((_resolve, reject) => {
       const arm = () =>
-        (timer = setTimeout(
-          () => reject(new Error('dream extraction ignored session/cancel; detached after backstop')),
-          DREAM_CANCEL_FORCE_MS
-        ))
+        (timer = setTimeout(() => {
+          onDetached?.(done)
+          reject(new Error('dream extraction ignored session/cancel; detached after backstop'))
+        }, DREAM_CANCEL_FORCE_MS))
       if (signal.aborted) arm()
       else signal.addEventListener('abort', arm, { once: true })
     })
@@ -10657,7 +10676,8 @@ export class Daemon {
     // transcript recorder (tool rawInput/rawOutput included) all hang off this entry
     // point, so this one transform keeps a leaked value out of every surface at once.
     update = this.maskAgentSecrets(agentId, update)
-    const extraction = this.memoryExtractionCollectors.get(pendingTurnKey(agentId, sessionId))
+    const extractionKey = pendingTurnKey(agentId, sessionId)
+    const extraction = this.memoryExtractionCollectors.get(extractionKey)
     if (extraction) {
       if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
         extraction.chunks.push(String(update.content.text ?? ''))
@@ -10677,6 +10697,11 @@ export class Daemon {
       }
       return
     }
+    // A runtime can ignore session/cancel and keep streaming after the bounded
+    // Dream await has detached. The collector is gone by then, but the content is
+    // still private extraction output and must never fall through to generic ACP
+    // evaluation, transcript, or delivery handling.
+    if (this.memoryExtractionQuarantines.has(extractionKey)) return
     const p = this.pending.get(pendingTurnKey(agentId, sessionId))
     this.emitEvaluation({
       type: 'acp.update',
