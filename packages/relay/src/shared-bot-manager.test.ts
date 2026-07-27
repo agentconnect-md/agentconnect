@@ -22,6 +22,8 @@ const OTHER_DAEMON_ID = '55555555-5555-4555-8555-555555555555'
 const OTHER_AGENT_ID = '66666666-6666-4666-8666-666666666666'
 const OTHER_INTEGRATION_ID = '77777777-7777-4777-8777-777777777777'
 const SESSION_KEY = 'slack:C123:1720000000.000100:agent'
+const SELF_RELAY = '88888888-8888-4888-8888-888888888881'
+const PEER_RELAY = '88888888-8888-4888-8888-888888888882'
 const silentLog: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 
 /** Manager deps with the required affinity + clock stubs, overridable per test. */
@@ -30,7 +32,7 @@ const deps = (over: Partial<SharedBotManagerDeps> = {}): SharedBotManagerDeps =>
   setChannelAgent: vi.fn(),
   reportBotChannels: vi.fn(() => true),
   reportBotConversation: vi.fn(() => true),
-  claimGatingNotice: vi.fn(async (m: { botId: string; channel: string }) => ({ ...m, granted: true })),
+  selfRelayId: () => SELF_RELAY,
   reportThreadAssign: vi.fn(() => true),
   lookupThread: vi.fn(async () => ({ botId: BOT_ID, sessionKey: '', target: null }) as RcThreadLookupOk),
   isAgentBotApp: vi.fn(() => false),
@@ -76,7 +78,7 @@ interface ManagerInternals {
   reportChannels(snapshot: RcBotChannels): void
   selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
   forwardSessionAction(botId: string, action: SharedSlackSessionAction): void
-  forward(botId: string, msg: WireNormalizedMessage, meta?: { noticeEligible?: boolean }): Promise<void>
+  forward(botId: string, msg: WireNormalizedMessage): Promise<void>
 }
 
 describe('SharedBotManager shared Slack session actions', () => {
@@ -455,7 +457,8 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
     members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
     agents: [{ agentId: AGENT_ID, name: 'Agent' }],
     routes: [], // everything gated ⇒ no keyword rung, no default
-    gatedAgentIds: [AGENT_ID]
+    gatedAgentIds: [AGENT_ID],
+    noticeAuthority: SELF_RELAY
   })
   const dm = (over: Partial<WireNormalizedMessage> = {}): WireNormalizedMessage => ({
     msgId: 'slack:D42:1720000000.000100',
@@ -597,89 +600,77 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
     expect(ingest.postText.mock.calls[0]![2]).toBe('123.456') // threaded, no channel spam
   })
 
-  /** The single CP's atomic per-conversation claim, shared by every "pod". */
-  const cpNoticeArbiter = () => {
-    const claimed = new Set<string>()
-    return vi.fn(async (m: { botId: string; channel: string }) => {
-      const key = `${m.botId}:${m.channel}`
-      const granted = !claimed.has(key)
-      claimed.add(key)
-      return { ...m, granted }
-    })
-  }
-  /** Two manager instances sharing one CP arbiter = two relay pods. */
-  const twoPods = () => {
-    const claim = cpNoticeArbiter()
-    const make = () => {
-      const manager = new SharedBotManager(deps({ claimGatingNotice: claim }))
-      const internals = manager as unknown as ManagerInternals
-      const ingest = fakeIngest()
-      internals.router.upsert(gatedAssignment())
-      internals.ingests.set(BOT_ID, ingest)
-      return { internals, ingest }
-    }
-    return { a: make(), b: make(), claim }
+  /** Two manager instances = two relay pods; only the authority pod may post. */
+  const pod = (authority: boolean) => {
+    const manager = new SharedBotManager(deps({ selfRelayId: () => (authority ? SELF_RELAY : PEER_RELAY) }))
+    const internals = manager as unknown as ManagerInternals
+    const ingest = fakeIngest()
+    internals.router.upsert(gatedAssignment()) // noticeAuthority = SELF_RELAY
+    internals.ingests.set(BOT_ID, ingest)
+    return { internals, ingest }
   }
   const mention = (msgId: string, thread: string) =>
     dm({ msgId, channel: 'C9', isDm: false, thread, text: '<@UBOT> hi', mentionedBots: ['UBOT'] })
   const M1 = 'slack:C9:1720000000.000100'
   const M2 = 'slack:C9:1720000000.000200'
-  const posts = (...pods: { ingest: ReturnType<typeof fakeIngest> }[]) =>
-    pods.reduce((n, p) => n + p.ingest.postText.mock.calls.length, 0)
 
-  it('same pod: the ineligible sibling never competes; the authoritative copy posts exactly once', async () => {
-    const { a } = twoPods()
-    await a.internals.forward(BOT_ID, mention(M1, '1.1'), { noticeEligible: false })
-    expect(a.ingest.postText).not.toHaveBeenCalled()
-    await a.internals.forward(BOT_ID, mention(M1, '1.1'), { noticeEligible: true })
-    await a.internals.forward(BOT_ID, mention(M1, '1.1'), { noticeEligible: true })
-    expect(a.ingest.postText).toHaveBeenCalledTimes(1)
+  it('authority pod: sibling copies and repeat mentions collapse to exactly one notice', async () => {
+    const auth = pod(true)
+    await auth.internals.forward(BOT_ID, mention(M1, '1.1'))
+    await auth.internals.forward(BOT_ID, mention(M1, '1.1'))
+    await auth.internals.forward(BOT_ID, mention(M2, '2.2'))
+    expect(auth.ingest.postText).toHaveBeenCalledTimes(1)
   })
 
-  it('two pods, copies split then flipped: exactly one notice (CP claim, not local state)', async () => {
-    const { a, b } = twoPods()
-    await a.internals.forward(BOT_ID, mention(M1, '1.1'), { noticeEligible: false })
-    await b.internals.forward(BOT_ID, mention(M1, '1.1'), { noticeEligible: true })
-    await a.internals.forward(BOT_ID, mention(M2, '2.2'), { noticeEligible: true })
-    await b.internals.forward(BOT_ID, mention(M2, '2.2'), { noticeEligible: false })
-    expect(posts(a, b)).toBe(1)
+  it('non-authority pod never posts, whatever schedule its copies arrive in', async () => {
+    const auth = pod(true)
+    const peer = pod(false)
+    // Mention 1 split across pods; mention 2 lands entirely on the peer.
+    await peer.internals.forward(BOT_ID, mention(M1, '1.1'))
+    await auth.internals.forward(BOT_ID, mention(M1, '1.1'))
+    await peer.internals.forward(BOT_ID, mention(M2, '2.2'))
+    await peer.internals.forward(BOT_ID, mention(M2, '2.2'))
+    expect(auth.ingest.postText).toHaveBeenCalledTimes(1)
+    expect(peer.ingest.postText).not.toHaveBeenCalled()
   })
 
-  it('two pods, both first copies on A then a later authoritative copy on B: exactly one notice', async () => {
-    const { a, b } = twoPods()
-    await a.internals.forward(BOT_ID, mention(M1, '1.1'), { noticeEligible: false })
-    await a.internals.forward(BOT_ID, mention(M1, '1.1'), { noticeEligible: true })
-    await b.internals.forward(BOT_ID, mention(M2, '2.2'), { noticeEligible: true })
-    expect(posts(a, b)).toBe(1)
+  it('a mention missing the authority pod is caught by the next one that reaches it', async () => {
+    const auth = pod(true)
+    const peer = pod(false)
+    await peer.internals.forward(BOT_ID, mention(M1, '1.1')) // both copies miss the authority
+    expect(auth.ingest.postText).not.toHaveBeenCalled()
+    expect(peer.ingest.postText).not.toHaveBeenCalled()
+    await auth.internals.forward(BOT_ID, mention(M2, '2.2')) // caught here — exactly once overall
+    expect(auth.ingest.postText).toHaveBeenCalledTimes(1)
+    expect(peer.ingest.postText).not.toHaveBeenCalled()
   })
 
-  it('two pods, crossed concurrent mentions: exactly one notice, never zero', async () => {
-    const { a, b } = twoPods()
-    // A sees M1 non-authoritative + M2 authoritative; B sees the mirror image.
-    await a.internals.forward(BOT_ID, mention(M1, '1.1'), { noticeEligible: false })
-    await b.internals.forward(BOT_ID, mention(M2, '2.2'), { noticeEligible: false })
-    await a.internals.forward(BOT_ID, mention(M2, '2.2'), { noticeEligible: true })
-    await b.internals.forward(BOT_ID, mention(M1, '1.1'), { noticeEligible: true })
-    expect(posts(a, b)).toBe(1)
+  it('crossed concurrent mentions: only the authority posts, exactly once', async () => {
+    const auth = pod(true)
+    const peer = pod(false)
+    await peer.internals.forward(BOT_ID, mention(M2, '2.2'))
+    await auth.internals.forward(BOT_ID, mention(M1, '1.1'))
+    await peer.internals.forward(BOT_ID, mention(M1, '1.1'))
+    await auth.internals.forward(BOT_ID, mention(M2, '2.2'))
+    expect(auth.ingest.postText).toHaveBeenCalledTimes(1)
+    expect(peer.ingest.postText).not.toHaveBeenCalled()
   })
 
-  it('CP link down: silent without latching, and the claim retries on the next mention', async () => {
-    let up = false
-    const claimGatingNotice = vi.fn(async (m: { botId: string; channel: string }) => {
-      if (!up) throw new Error('link not ready')
-      return { ...m, granted: true }
-    })
-    const manager = new SharedBotManager(deps({ claimGatingNotice }))
+  it('no authority stamped (old CP / empty roster): no pod posts; DM discovery still reports', async () => {
+    const reportBotConversation = vi.fn(() => true)
+    const manager = new SharedBotManager(deps({ reportBotConversation, selfRelayId: () => SELF_RELAY }))
     const internals = manager as unknown as ManagerInternals
+    const a = gatedAssignment()
+    delete a.noticeAuthority
+    internals.router.upsert(a)
     const ingest = fakeIngest()
-    internals.router.upsert(gatedAssignment())
     internals.ingests.set(BOT_ID, ingest)
 
-    await internals.forward(BOT_ID, mention(M1, '1.1'), { noticeEligible: true })
+    await internals.forward(BOT_ID, mention(M1, '1.1'))
     expect(ingest.postText).not.toHaveBeenCalled()
-    up = true
-    await internals.forward(BOT_ID, mention(M2, '2.2'), { noticeEligible: true })
-    expect(ingest.postText).toHaveBeenCalledTimes(1)
+    // An authority-less (or non-authority) pod still fans out gated-DM rows.
+    await internals.forward(BOT_ID, dm())
+    expect(reportBotConversation).toHaveBeenCalledTimes(1)
   })
 
   it('does nothing gated-related for a bot with no gated members', async () => {

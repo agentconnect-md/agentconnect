@@ -143,7 +143,8 @@ export class SharedBotOrchestrator {
         routes: compiled.routes,
         ...(compiled.defaultAgentId ? { defaultAgentId: compiled.defaultAgentId } : {}),
         ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {}),
-        gatedAgentIds: compiled.gatedAgentIds
+        gatedAgentIds: compiled.gatedAgentIds,
+        ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
       })
     )
     const secret = await this.botSecret.get(bot.id)
@@ -301,21 +302,21 @@ export class SharedBotOrchestrator {
     await this.syncRoutes(botId)
   }
 
-  /** §14.3 gating-notice claims already granted, `botId:channel`. In-memory on the
-   *  single CP process = the pool-wide atomic latch (per CP lifetime — a restart
-   *  allows one fresh notice, matching the daemon's per-lifetime semantics).
-   *  Size-bounded: a full set resets rather than growing without limit. */
-  private readonly gatedNoticeClaims = new Set<string>()
-
-  /** Atomically claim the one-time §14.3 gating notice for a conversation. Relay
-   *  pods MUST claim before posting: replica-local latches cannot enforce
-   *  once-per-conversation under arbitrary LB schedules. */
-  claimGatingNotice(m: { botId: string; channel: string }): { botId: string; channel: string; granted: boolean } {
-    const key = `${m.botId}:${m.channel}`
-    if (this.gatedNoticeClaims.has(key)) return { ...m, granted: false }
-    if (this.gatedNoticeClaims.size >= 100_000) this.gatedNoticeClaims.clear()
-    this.gatedNoticeClaims.add(key)
-    return { ...m, granted: true }
+  /** §14.3: the relay DETERMINISTICALLY responsible for a bot's one-time gating
+   *  notices, chosen from the CONNECTED roster at (re)assign/replay time — pure
+   *  config-time orchestration, never a per-message CP round-trip (the CP stays
+   *  off the message hot path). Stable while the roster is stable; a roster
+   *  change re-broadcasts and moves the authority (its local latch moves too —
+   *  per-lifetime notice semantics, matching the daemon). Undefined ⇒ no relay. */
+  private noticeAuthorityFor(botId: string): string | undefined {
+    const ids = this.relayReg
+      .all()
+      .map((ch) => ch.relayId)
+      .sort()
+    if (ids.length === 0) return undefined
+    let h = 0
+    for (const c of botId) h = (h * 31 + c.charCodeAt(0)) >>> 0
+    return ids[h % ids.length]
   }
 
   /**
@@ -548,7 +549,8 @@ export class SharedBotOrchestrator {
       routes: compiled.routes,
       ...(compiled.defaultAgentId ? { defaultAgentId: compiled.defaultAgentId } : {}),
       ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {}),
-      gatedAgentIds: compiled.gatedAgentIds
+      gatedAgentIds: compiled.gatedAgentIds,
+      ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
     }
   }
 

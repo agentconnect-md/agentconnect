@@ -542,7 +542,13 @@ export const RcBotAssign = z.object({
   // fail-closed. The relay's thread-affinity rung honours a binding to a gated agent
   // only while that agent still has a channel-scoped route in the conversation —
   // otherwise a thread bound before the gate was applied would keep routing forever.
-  gatedAgentIds: z.array(z.string().uuid()).default([])
+  gatedAgentIds: z.array(z.string().uuid()).default([]),
+  // §14.3 one-time gating notice: the relayId DETERMINISTICALLY responsible for
+  // posting it for this bot's conversations. Stamped at (re)assign time from the
+  // connected roster — pure data-plane arbitration at message time (a channel
+  // mention's two event copies may land on different pods; only the authority
+  // posts, with a local per-conversation latch). Absent ⇒ no relay posts.
+  noticeAuthority: z.string().uuid().optional()
 })
 export type RcBotAssign = z.infer<typeof RcBotAssign>
 
@@ -562,7 +568,8 @@ export const RcRoutes = z.object({
   routes: z.array(AttributedRoute),
   defaultAgentId: z.string().uuid().optional(),
   defaultDaemonId: z.string().uuid().optional(),
-  gatedAgentIds: z.array(z.string().uuid()).default([]) // §14 — see RcBotAssign.gatedAgentIds
+  gatedAgentIds: z.array(z.string().uuid()).default([]), // §14 — see RcBotAssign.gatedAgentIds
+  noticeAuthority: z.string().uuid().optional() // §14.3 — see RcBotAssign.noticeAuthority
 })
 export type RcRoutes = z.infer<typeof RcRoutes>
 
@@ -650,26 +657,6 @@ export const RcThreadLookupOk = z.object({
   target: z.object({ agentId: z.string().uuid(), daemonId: z.string().uuid() }).nullable()
 })
 export type RcThreadLookupOk = z.infer<typeof RcThreadLookupOk>
-
-// R→C REQ → rc/notice-claim/ok — §14.3 pool-wide ONE-TIME gating-notice
-// arbitration. Replica-local latches cannot enforce once-per-conversation under
-// arbitrary LB schedules (either event copy of a mention may land on either pod),
-// so a relay must CLAIM the conversation before posting the notice; the single
-// CP process grants each (botId, channel) exactly once per CP lifetime.
-export const RcNoticeClaim = z.object({
-  botId: z.string().uuid(),
-  channel: z.string().min(1) // platform conversation id (Slack C…/D…)
-})
-export type RcNoticeClaim = z.infer<typeof RcNoticeClaim>
-
-// C→R REP (corr = rc/notice-claim id). `granted: false` ⇒ another pod (or an
-// earlier mention) already claimed this conversation — stay silent.
-export const RcNoticeClaimOk = z.object({
-  botId: z.string().uuid(),
-  channel: z.string().min(1),
-  granted: z.boolean()
-})
-export type RcNoticeClaimOk = z.infer<typeof RcNoticeClaimOk>
 
 // C→R EVT — the bot-AGNOSTIC agent-collaboration routing snapshot (agent-collaboration
 // §2.3 / §6.2 / §6.5). FULL-REPLACE: the relay swaps its whole `(orgId,platform,channel)
@@ -764,8 +751,6 @@ export const RELAY_CP_SCHEMAS = {
   'rc/thread-assign': RcThreadAssign,
   'rc/thread-lookup': RcThreadLookup,
   'rc/thread-lookup/ok': RcThreadLookupOk,
-  'rc/notice-claim': RcNoticeClaim,
-  'rc/notice-claim/ok': RcNoticeClaimOk,
   'rc/collab-routes': RcCollabRoutes,
   'rc/mcp-assign': RcMcpAssign,
   'rc/mcp-unassign': RcMcpUnassign,
@@ -808,8 +793,6 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/thread-assign', RELAY_CP_SCHEMAS['rc/thread-assign']),
   frameSchema('rc/thread-lookup', RELAY_CP_SCHEMAS['rc/thread-lookup']),
   frameSchema('rc/thread-lookup/ok', RELAY_CP_SCHEMAS['rc/thread-lookup/ok']),
-  frameSchema('rc/notice-claim', RELAY_CP_SCHEMAS['rc/notice-claim']),
-  frameSchema('rc/notice-claim/ok', RELAY_CP_SCHEMAS['rc/notice-claim/ok']),
   frameSchema('rc/collab-routes', RELAY_CP_SCHEMAS['rc/collab-routes']),
   frameSchema('rc/mcp-assign', RELAY_CP_SCHEMAS['rc/mcp-assign']),
   frameSchema('rc/mcp-unassign', RELAY_CP_SCHEMAS['rc/mcp-unassign']),

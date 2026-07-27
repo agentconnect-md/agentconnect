@@ -488,40 +488,11 @@ describe('SlackSharedIngest message events', () => {
     })
 
     expect(onMessage).toHaveBeenCalledTimes(2)
-    // Authoritative notice copy (§14.3): app_mention in a channel is eligible,
-    // a message.im DM is eligible — the message.channels sibling of a mention
-    // (tested below) is not.
-    expect(onMessage.mock.calls[0]![1]).toEqual({ noticeEligible: true }) // app_mention C1
     const [message] = onMessage.mock.calls[1]!
     expect(message.text).toContain('<@UBOT>')
     expect(message.text).toContain('<https://example.test/reth|paradigmxyz/reth on GitHub>')
     expect(message.text).toContain('Performance improvements')
     expect(message.text).not.toContain('Acknowledge')
-
-    // The message.channels copy of a mention is NOT notice-eligible (its
-    // app_mention sibling — possibly on another relay pod — is), while a plain
-    // DM message is.
-    await ingest.handleEvent({
-      type: 'message',
-      channel: 'C1',
-      channel_type: 'channel',
-      ts: '100.2',
-      user: 'U1',
-      text: '<@UBOT> hi'
-    })
-    expect(onMessage.mock.calls[2]![1]).toEqual({ noticeEligible: false })
-    await ingest.handleEvent({
-      type: 'message',
-      channel: 'D1',
-      channel_type: 'im',
-      ts: '100.3',
-      user: 'U1',
-      text: 'hello'
-    })
-    expect(onMessage.mock.calls[3]![1]).toEqual({ noticeEligible: true })
-    // A DM @-mention's app_mention sibling is ineligible too (message.im wins).
-    await ingest.handleEvent({ type: 'app_mention', channel: 'D1', ts: '100.4', user: 'U1', text: '<@UBOT> hi' })
-    expect(onMessage.mock.calls[4]![1]).toEqual({ noticeEligible: false })
     expect(message.sender).toEqual({ id: 'BCHANGELOGUE', isBot: true, appId: 'ACHANGELOGUE' })
   })
 })

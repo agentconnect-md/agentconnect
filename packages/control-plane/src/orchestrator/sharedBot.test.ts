@@ -395,11 +395,10 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       expect(assign.routes.filter((r) => r.scope?.channel === 'D42')).toEqual([])
     })
 
-    it('claimGatingNotice grants each conversation exactly once (pool-wide atomic latch)', async () => {
-      const orch = makeOrch()
-      expect(orch.claimGatingNotice({ botId: BOT, channel: 'C9' })).toMatchObject({ granted: true })
-      expect(orch.claimGatingNotice({ botId: BOT, channel: 'C9' })).toMatchObject({ granted: false })
-      expect(orch.claimGatingNotice({ botId: BOT, channel: 'D42' })).toMatchObject({ granted: true })
+    it('stamps a deterministic notice authority from the connected relay roster', async () => {
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.noticeAuthority).toBe(RELAY) // sole connected relay
     })
 
     it('lookupThread refuses a binding to a gated agent whose conversation is off', async () => {

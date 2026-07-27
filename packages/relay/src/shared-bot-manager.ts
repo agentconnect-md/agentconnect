@@ -57,12 +57,9 @@ export interface SharedBotManagerDeps {
   reportThreadAssign: (m: RcThreadAssign) => boolean
   /** Pull a thread's persisted owner from the CP on an affinity miss (→ `rc/thread-lookup`). */
   lookupThread: (m: RcThreadLookup) => Promise<import('@agentconnect.md/protocol').RcThreadLookupOk>
-  /** Atomically claim the §14.3 one-time gating notice (→ `rc/notice-claim`): the
-   *  single CP grants each conversation exactly once across the whole pool. */
-  claimGatingNotice: (m: {
-    botId: string
-    channel: string
-  }) => Promise<import('@agentconnect.md/protocol').RcNoticeClaimOk>
+  /** This pod's CP-assigned relayId (stable pool identity; undefined before the
+   *  first register) — compared against the assignment's §14.3 noticeAuthority. */
+  selfRelayId: () => string | undefined
   /** True when the sender app backs another AgentConnect agent beside the resolved
    *  target in this channel. Used only to suppress platform activation. */
   isAgentBotApp: (targetAgentId: string, platform: string, channelId: string, appId: string) => boolean
@@ -134,9 +131,8 @@ export class SharedBotManager {
   /** Latest bot-level channel snapshot dropped while the CP link was down. A full
    *  snapshot supersedes any older one for the same bot. */
   private readonly pendingChannelReports = new Map<string, RcBotChannels>()
-  /** §14 gating-notice conversations this pod has already ARBITRATED (claim made,
-   *  granted or denied) — a local fast-path only; the pool-wide one-time guarantee
-   *  is the CP's atomic claim, never replica-local state. */
+  /** §14 one-time gating-notice latch (`botId:channel`) on the AUTHORITY pod —
+   *  correct because only one pod ever posts (deterministic per-bot authority). */
   private readonly gatedNoticesSent = new Set<string>()
   /** §14.3 per-conversation DM-report latch (`botId:channel`) — scoped to the
    *  CURRENT bot assignment: cleared on assign/unassign and whenever the gated
@@ -198,7 +194,7 @@ export class SharedBotManager {
       a.botId,
       { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret },
       {
-        onMessage: (msg, meta) => this.forward(a.botId, msg, meta),
+        onMessage: (msg) => this.forward(a.botId, msg),
         onBotUserId: (uid) => this.router.setBotUserId(a.botId, uid),
         onChannelsChanged: (channels) => this.reportChannels({ botId: a.botId, channels }),
         agents: () => this.router.get(a.botId)?.agents ?? [],
@@ -217,7 +213,10 @@ export class SharedBotManager {
   /** `rc/routes` — hot-update routes/members/default WITHOUT re-opening the ingest. */
   updateRoutes(
     botId: string,
-    patch: Pick<BotAssignment, 'members' | 'agents' | 'routes' | 'defaultAgentId' | 'defaultDaemonId' | 'gatedAgentIds'>
+    patch: Pick<
+      BotAssignment,
+      'members' | 'agents' | 'routes' | 'defaultAgentId' | 'defaultDaemonId' | 'gatedAgentIds' | 'noticeAuthority'
+    >
   ): void {
     // A changed gated member set may require a fresh DM fan-out (§14.3) — e.g. a
     // newly restricted or newly installed member needs its own pending Off row.
@@ -318,11 +317,7 @@ export class SharedBotManager {
   /** Arbitrate + forward one message to its daemon (never throws — bounded loss).
    *  Reports a first-route/changed affinity to the CP, and on a genuine un-mentioned
    *  thread follow-up with no local affinity, pulls the persisted owner from the CP. */
-  private async forward(
-    botId: string,
-    msg: import('@agentconnect.md/protocol').WireNormalizedMessage,
-    meta?: { noticeEligible?: boolean }
-  ): Promise<void> {
+  private async forward(botId: string, msg: import('@agentconnect.md/protocol').WireNormalizedMessage): Promise<void> {
     // Filter before arbitration so a managed agent's platform copy cannot mutate
     // thread affinity or produce a CP assignment report.
     if (this.isAgentBotMessage(botId, msg)) {
@@ -356,7 +351,7 @@ export class SharedBotManager {
       if (!msg.sender.isBot && hasGatedMembers) {
         const mentioned = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
         if (msg.isDm || mentioned) {
-          await this.noticeGatedUnrouted(botId, msg, meta?.noticeEligible !== false)
+          await this.noticeGatedUnrouted(botId, msg)
           return
         }
       }
@@ -428,25 +423,20 @@ export class SharedBotManager {
   /** §14.3: the ONE-TIME per-conversation notice for an explicitly-addressed,
    *  unroutable message on a bot with gated members — the bot must never look
    *  silently broken. */
-  private async noticeGatedUnrouted(botId: string, msg: WireNormalizedMessage, eligible: boolean): Promise<void> {
+  private async noticeGatedUnrouted(botId: string, msg: WireNormalizedMessage): Promise<void> {
     // A channel mention arrives as TWO event copies that the pool LB may hand to
-    // different pods, so only the authoritative copy (app_mention / message.im)
-    // competes for the notice at all. The once-per-conversation guarantee is the
-    // CP's ATOMIC claim — replica-local latches cannot enforce it under arbitrary
-    // pool schedules (either copy of either mention may land on either pod). A
-    // denied claim means another pod (or an earlier mention) posted. CP link down
-    // ⇒ stay silent WITHOUT latching, so a later mention retries the claim.
-    if (!eligible) return
+    // different pods, so once-per-conversation cannot rest on replica-local
+    // state — and the CP must never be a per-message round-trip (daemon-centric
+    // boundary). Arbitration is therefore DETERMINISTIC data-plane state stamped
+    // at assign time: only the bot's noticeAuthority pod posts (whichever copy
+    // reaches it first; the local latch collapses siblings), every other pod
+    // stays silent. A mention whose copies all miss the authority pod is caught
+    // by the next one; no authority stamped ⇒ no pod posts.
+    const authority = this.router.get(botId)?.noticeAuthority
+    if (!authority || authority !== this.deps.selfRelayId()) return
     const key = `${botId}:${msg.channel}`
     if (this.gatedNoticesSent.has(key)) return
-    let granted: boolean
-    try {
-      granted = (await this.deps.claimGatingNotice({ botId, channel: msg.channel })).granted
-    } catch {
-      return
-    }
     this.gatedNoticesSent.add(key)
-    if (!granted) return
     try {
       await this.ingests
         .get(botId)

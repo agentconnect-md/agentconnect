@@ -366,13 +366,7 @@ function isRoutableEvent(event: SlackMessageEvent): boolean {
 export interface SlackSharedIngestDeps {
   /** Hand a normalized message to the router/forwarder; resolves once the delivery
    *  outcome is known (delivered or dropped). NEVER throws — runs after the HTTP 200. */
-  /** `meta.noticeEligible`: whether THIS event copy may carry the §14 gating
-   *  notice. A channel @-mention arrives as TWO independent Events API POSTs
-   *  (`message.channels` + `app_mention`) that the pool's LB may hand to
-   *  DIFFERENT relay pods, and the notice latch is per-pod — so only the
-   *  authoritative copy (app_mention for channels, message.im for DMs) is
-   *  eligible, collapsing the cross-pod double-notice. */
-  onMessage: (msg: WireNormalizedMessage, meta?: { noticeEligible?: boolean }) => Promise<void>
+  onMessage: (msg: WireNormalizedMessage) => Promise<void>
   /** Report the resolved bot user id (from auth.test) for arbitration. */
   onBotUserId: (botUserId: string) => void
   /** Report the bot's complete Slack channel-membership snapshot after an event
@@ -480,14 +474,7 @@ export class SlackSharedIngest {
       if (!event || isSlackSystemMessage(event) || ownMessage || !isRoutableEvent(event)) return
       if (event.type !== 'message' && event.type !== 'app_mention') return
       const msg = normalizeSlackMessage(event)
-      if (msg) {
-        // Authoritative notice copy: app_mention for channels, message.im for DMs
-        // (a DM mention can fire BOTH; app_mention may omit channel_type, so hedge
-        // on the D-prefix like the daemon does).
-        const isImChannel = event.channel_type === 'im' || (event.channel?.startsWith('D') ?? false)
-        const noticeEligible = event.type === 'app_mention' ? !isImChannel : isImChannel
-        await this.deps.onMessage(msg, { noticeEligible })
-      }
+      if (msg) await this.deps.onMessage(msg)
     } catch (err) {
       this.deps.log.warn(`shared-ingest(${this.botId}): event handler error: ${(err as Error).message}`)
     }

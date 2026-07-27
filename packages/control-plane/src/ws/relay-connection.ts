@@ -24,8 +24,6 @@ import type {
   RcRunReport,
   RcBotChannels,
   RcBotConversation,
-  RcNoticeClaim,
-  RcNoticeClaimOk,
   RcSetChannelAgent,
   RcThreadAssign,
   RcThreadLookup,
@@ -71,9 +69,6 @@ export interface RelayConnDeps {
    *  binding. May throw on a transient store error → the handler answers a retryable
    *  error REP without closing the shared relay link. */
   threadLookup: (m: RcThreadLookup) => Promise<RcThreadLookupOk>
-  /** Atomically claim the §14.3 one-time gating notice for a conversation — the
-   *  single CP grants each (botId, channel) exactly once per CP lifetime. */
-  noticeClaim: (m: RcNoticeClaim) => Promise<RcNoticeClaimOk>
   /** Apply a relay `rc/github-installation` doorbell poke (webhook-triggers
    *  decision 11). Fire-and-forget; store/GitHub errors must not close the link. */
   onGithubInstallation: (m: RcGithubInstallation) => Promise<void>
@@ -162,9 +157,6 @@ export class RelayConnection implements RelayChannel {
         case 'rc/thread-lookup':
           await this.handleThreadLookup(frame, frame.payload)
           return
-        case 'rc/notice-claim':
-          await this.handleNoticeClaim(frame, frame.payload)
-          return
         case 'rc/github-installation':
           await this.handleGithubInstallation(frame.payload)
           return
@@ -194,7 +186,6 @@ export class RelayConnection implements RelayChannel {
           type === 'rc/bot-conversation' ||
           type === 'rc/thread-assign' ||
           type === 'rc/thread-lookup' ||
-          type === 'rc/notice-claim' ||
           type === 'rc/github-installation'
         )
       default:
@@ -277,19 +268,6 @@ export class RelayConnection implements RelayChannel {
       return
     }
     this.reply(frame, 'rc/thread-lookup/ok', result)
-  }
-
-  private async handleNoticeClaim(frame: RelayCpFrame, req: RcNoticeClaim): Promise<void> {
-    // Mirror handleThreadLookup: a transient error answers a retryable REP, never
-    // closes the shared link.
-    let result: RcNoticeClaimOk
-    try {
-      result = await this.deps.noticeClaim(req)
-    } catch {
-      this.sendError(frame.id, 'INTERNAL', 'notice claim failed', true)
-      return
-    }
-    this.reply(frame, 'rc/notice-claim/ok', result)
   }
 
   private async handleVerify(frame: RelayCpFrame, req: RcVerify): Promise<void> {
