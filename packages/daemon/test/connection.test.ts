@@ -29,24 +29,27 @@ const mk = (id: string, appToken: string, botToken: string): Agent =>
 
 describe('consolidate', () => {
   it('opens one connection per unique appToken and groups integrations', () => {
-    const groups = consolidate([mk('a', 'xapp-1', 'xoxb-a'), mk('b', 'xapp-1', 'xoxb-a'), mk('c', 'xapp-2', 'xoxb-c')])
+    const appToken = 'xapp-1-A123-456-secret'
+    const groups = consolidate([mk('a', appToken, 'xoxb-a'), mk('b', appToken, 'xoxb-a'), mk('c', 'xapp-2', 'xoxb-c')])
     expect(groups.size).toBe(2)
-    expect(groups.get('xapp-1')!.integrations).toHaveLength(2)
+    expect(groups.get(appToken)).toMatchObject({ appId: 'A123', integrations: expect.any(Array) })
+    expect(groups.get(appToken)!.integrations).toHaveLength(2)
     expect(groups.get('xapp-2')!.integrations).toHaveLength(1)
   })
 })
 
 function fakeAppWith(
   setStatus: (a: any) => Promise<unknown>,
-  setTitle: (a: any) => Promise<unknown> = async () => undefined
+  setTitle: (a: any) => Promise<unknown> = async () => undefined,
+  postMessage: (a: any) => Promise<unknown> = async () => ({})
 ) {
   return {
     message() {},
     event() {},
     action() {},
     client: {
-      auth: { test: async () => ({ user_id: 'U1' }) },
-      chat: { postMessage: async () => ({}) },
+      auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
+      chat: { postMessage },
       assistant: { threads: { setStatus, setTitle } }
     },
     start: async () => {},
@@ -391,6 +394,15 @@ describe('SlackConnection membership events', () => {
     await handlers.get('channel_left')!({ event: { channel: 'C1' } })
     await handlers.get('group_left')!({ event: { channel: 'G1' } })
     expect(changed).toBe(3)
+  })
+
+  it('acknowledges the permission-update URL button', async () => {
+    const actions = new Map<string, (a: any) => unknown>()
+    const conn = new SlackConnection(deps() as any, () => fakeAppWithEvents(new Map(), actions) as any)
+    await conn.start()
+    const ack = vi.fn(async () => {})
+    await actions.get('ac_update_permissions')!({ ack, action: {} })
+    expect(ack).toHaveBeenCalledOnce()
   })
 
   it('opens the controls modal on Configure and routes status actions by session key', async () => {
@@ -747,6 +759,50 @@ describe('SlackConnection.setStatus', () => {
     )
     await expect(conn.setStatus('C1', '123.45', 'is thinking…')).resolves.toBeUndefined()
   })
+
+  it('posts one permission-update card when Slack reports a missing scope', async () => {
+    const missingScope = Object.assign(new Error('An API error occurred: missing_scope'), {
+      data: { error: 'missing_scope', needed: 'assistant:write', provided: 'chat:write' }
+    })
+    const postMessage = vi.fn(async () => ({ ts: 'card-1' }))
+    const conn = new SlackConnection(
+      { ...deps(), group: { ...deps().group, appId: 'A123' }, sendIntervalMs: 0 } as any,
+      () =>
+        fakeAppWith(
+          async () => {
+            throw missingScope
+          },
+          undefined,
+          postMessage
+        ) as any
+    )
+    await conn.start()
+
+    await conn.setStatus('C1', '123.45', 'is thinking…')
+    await conn.setStatus('C1', '123.45', 'is still thinking…')
+
+    expect(postMessage).toHaveBeenCalledOnce()
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: 'C1',
+        thread_ts: '123.45',
+        text: expect.stringContaining('Permissions update required'),
+        blocks: expect.arrayContaining([
+          expect.objectContaining({ type: 'section' }),
+          expect.objectContaining({
+            type: 'actions',
+            elements: [
+              expect.objectContaining({
+                style: 'primary',
+                url: 'https://app.slack.com/app-settings/T123/A123/oauth'
+              })
+            ]
+          })
+        ]),
+        metadata: { event_type: 'agentconnect_chrome', event_payload: {} }
+      })
+    )
+  })
 })
 
 describe('SlackConnection.setTitle', () => {
@@ -776,6 +832,35 @@ describe('SlackConnection.setTitle', () => {
         ) as any
     )
     await expect(conn.setTitle('D1', '123.45', 'Runtime summary')).resolves.toBeUndefined()
+  })
+
+  it('coalesces concurrent missing-scope notices into one card', async () => {
+    const missingScope = Object.assign(new Error('An API error occurred: missing_scope'), {
+      data: { error: 'missing_scope', needed: 'assistant:write', provided: 'chat:write' }
+    })
+    let resolveCard!: (value: { ts: string }) => void
+    const postMessage = vi.fn(
+      () =>
+        new Promise<{ ts: string }>((resolve) => {
+          resolveCard = resolve
+        })
+    )
+    const setTitle = vi.fn(async () => {
+      throw missingScope
+    })
+    const conn = new SlackConnection(
+      { ...deps(), group: { ...deps().group, appId: 'A123' }, sendIntervalMs: 0 } as any,
+      () => fakeAppWith(async () => undefined, setTitle, postMessage) as any
+    )
+
+    const first = conn.setTitle('D1', '123.45', 'First title')
+    await vi.waitFor(() => expect(postMessage).toHaveBeenCalledOnce())
+    const second = conn.setTitle('D1', '123.45', 'Second title')
+    await vi.waitFor(() => expect(setTitle).toHaveBeenCalledTimes(2))
+    expect(postMessage).toHaveBeenCalledOnce()
+
+    resolveCard({ ts: 'card-1' })
+    await Promise.all([first, second])
   })
 })
 

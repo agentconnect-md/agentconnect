@@ -8,6 +8,7 @@ import {
   buildStatusModal,
   buildPermissionCard,
   buildPermissionResolvedCard,
+  buildPermissionUpdateCard,
   buildElicitationCard,
   buildElicitationResolvedCard,
   buildAttributionBlocks,
@@ -1178,6 +1179,21 @@ describe('permission card', () => {
     expect((allow[0] as any).text.text).toContain(':white_check_mark:')
     expect((buildPermissionResolvedCard(req(), 'Reject', false)[0] as any).text.text).toContain(':no_entry_sign:')
     expect((buildPermissionResolvedCard(req(), 'Cancelled')[0] as any).text.text).toContain(':hourglass:')
+  })
+
+  it('renders a primary URL button for updating Slack permissions', () => {
+    const updateUrl = 'https://app.slack.com/app-settings/T123/A123/oauth'
+    const [message, actions] = buildPermissionUpdateCard(updateUrl) as any[]
+    expect(message.text.text).toContain('Permissions update required')
+    expect(actions.elements).toEqual([
+      expect.objectContaining({
+        type: 'button',
+        style: 'primary',
+        url: updateUrl,
+        action_id: 'ac_update_permissions',
+        text: expect.objectContaining({ text: 'Update permissions' })
+      })
+    ])
   })
 
   it('encode/decode round-trips and splits on the first | (optionId may contain |)', () => {

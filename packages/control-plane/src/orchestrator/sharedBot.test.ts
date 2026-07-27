@@ -96,7 +96,7 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
   let botRow: BotRecord
   let integrations: IntegrationRecord[]
   let channels: IntegrationChannelRecord[]
-  let upserts: { daemonId: string; spec: { platform: string; slack?: { mode?: string } } }[]
+  let upserts: { daemonId: string; spec: { platform: string; slack?: { mode?: string; appId?: string } } }[]
   // Drives the SessionRepo.findThreadOwner fallback in lookupThread (null = no daemon session).
   let threadOwner: { agentId: string; daemonId: string } | null
   let threadOwnerLookup: { botId: BotId; channel: string; thread: string } | null
@@ -302,6 +302,13 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     await makeOrch().syncBot(BOT)
     const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
     expect(assign.routes[0]).toMatchObject({ agentId: ALICE, scope: { channel: 'C9' }, match: { kind: 'auto' } })
+  })
+
+  it('carries the public Slack app id to each daemon for permission-update links', async () => {
+    botRow = bot({ slackAppId: 'A123' })
+    await makeOrch().syncBot(BOT)
+    expect(upserts).toHaveLength(2)
+    expect(upserts.every((upsert) => upsert.spec.slack?.appId === 'A123')).toBe(true)
   })
 
   describe('conversation gating (resource-visibility §14)', () => {

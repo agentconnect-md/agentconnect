@@ -430,7 +430,7 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
         integrationId: INTEGRATION_ID,
         agentId: AGENT_ID,
         platform: 'slack',
-        slack: { botToken: 'xoxb-abc', appToken: 'xapp-1-def' }
+        slack: { botToken: 'xoxb-abc', appToken: 'xapp-1-def', appId: 'A123' }
       })
     )
     expect(r.ok).toBe(true)
@@ -438,6 +438,7 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     if (r.frame.payload.platform !== 'slack') throw new Error('expected slack integration')
     expect(r.frame.payload.slack.botToken).toBe('xoxb-abc')
     expect(r.frame.payload.slack.appToken).toBe('xapp-1-def')
+    expect(r.frame.payload.slack.appId).toBe('A123')
     expect(r.frame.payload.slack.allowedUserIds).toEqual([]) // zod default
     expect(r.frame.payload.slack.bindRules).toEqual([]) // zod default
   })

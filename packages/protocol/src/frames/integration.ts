@@ -60,6 +60,7 @@ export const IntegrationSlackConfig = z
     mode: z.enum(['direct', 'shared']).default('direct'),
     botToken: z.string(), // xoxb-…  (plaintext — never log) — always present (send path)
     appToken: z.string().optional(), // xapp-… (plaintext — never log) — direct only (Socket Mode)
+    appId: z.string().optional(), // A… public metadata — permission-update deep link (especially shared mode)
     // Multi-agent opt-in — the bot backs MANY agents, so an in-thread "Switch agent"
     // control is meaningful. ONLY ever true in `shared` mode (an http/relay bot); a
     // non-shareable http bot is still `shared` for routing but has one agent, so the

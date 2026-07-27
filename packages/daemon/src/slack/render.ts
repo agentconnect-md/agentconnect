@@ -317,6 +317,10 @@ export function renderStatusBar(info: StatusBarInfo): string {
  *  values because a shared bot receives the same actions on the relay first. */
 export const STATUS_ACTION = SLACK_STATUS_ACTION
 
+/** URL-only OAuth button. Direct Socket Mode bots still receive its interaction
+ * payload and must ACK it; shared HTTP bots are ACKed by the relay ingress. */
+export const PERMISSION_UPDATE_ACTION = 'ac_update_permissions'
+
 /** The modal view's callback_id — used if we ever handle a submit (controls apply on
  *  interaction today, so there's no submit). */
 export const STATUS_MODAL_CALLBACK = 'ac_status_modal'
@@ -383,6 +387,33 @@ export function buildPermissionResolvedCard(
     {
       type: 'section',
       text: { type: 'mrkdwn', text: `:lock: *Permission* — ${permToolLabel(params)}\n${icon} ${decision}` }
+    }
+  ]
+}
+
+/** A workspace-level OAuth warning shown when Slack rejects an API call with
+ * `missing_scope`. The URL button needs no daemon-side action handling: Slack opens
+ * the app's OAuth & Permissions page directly so an owner can update/reinstall it. */
+export function buildPermissionUpdateCard(updateUrl: string): unknown[] {
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: ':warning: *Permissions update required.* Please update and re-authorize this Slack app to ensure all features work correctly.'
+      }
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Update permissions', emoji: true },
+          style: 'primary',
+          url: updateUrl,
+          action_id: PERMISSION_UPDATE_ACTION
+        }
+      ]
     }
   ]
 }
