@@ -35,6 +35,7 @@ import { type AgentRecord, type AgentWorkspace, isSyntheticEmail } from '../../p
 import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, type OrgId } from '../../domain/ids.js'
 import { mcpProxyDef, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
+import { parseSkillRef } from '../../orchestrator/skillSource.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from '../../orchestrator/memoryConnection.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView, canEdit, canManageSharing, type ViewCtx } from '../visibility.js'
@@ -54,6 +55,7 @@ import {
   SetAgentCallPolicyBody,
   AgentDto,
   AgentPermissionRequestPageDto,
+  AgentSkillSourceListDto,
   AgentPermissionDecisionBody,
   AgentCreatedDto,
   AgentListDto,
@@ -1002,6 +1004,30 @@ export function agentRoutes(deps: HttpDeps) {
           await hookKindsOf(deps, agent.id),
           iconBasesOf(deps),
           await sandboxPolicyFor(deps, agent)
+        )
+      }
+    )
+
+    r.get(
+      '/agents/:id/skill-sources',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'List an agent’s enabled skill sources',
+          description:
+            'Resolve the agent’s skill enable-list ("<source>/<skill>" refs) into the registry rows it references. Gated on viewing the AGENT, not the source: a source restricted away from the caller still resolves, because its definition is part of what this agent installs. Refs to a source that no longer exists are omitted.',
+          operationId: 'listAgentSkillSources',
+          params: IdParam,
+          response: { 200: AgentSkillSourceListDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        const names = [...new Set(agent.skills.map((ref) => parseSkillRef(ref).source))]
+        const rows = await Promise.all(names.map((name) => deps.repos.skillSource.getByName(agent.orgId, name)))
+        return rows.flatMap((s) =>
+          s ? [{ id: s.id, name: s.name, source: s.source, ref: s.ref, subDir: s.subDir, skills: s.skills }] : []
         )
       }
     )

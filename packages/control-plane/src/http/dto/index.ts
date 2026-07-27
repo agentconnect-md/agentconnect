@@ -861,6 +861,23 @@ export const SkillSourceDto = z.object({
 export const SkillSourceListDto = z.array(SkillSourceDto)
 export type SkillSourceDtoT = z.infer<typeof SkillSourceDto>
 
+/** `GET /agents/:id/skill-sources` — the registry rows this agent's enable-list
+ *  actually references, resolved for anyone who can view the AGENT rather than the
+ *  source. What an agent already installs is part of the agent (the definition
+ *  rides inline on its AgentSpec either way), so a source restricted away from the
+ *  caller still resolves here — otherwise the console can only show a bare name.
+ *  Slimmer than {@link SkillSourceDto}: no visibility/share fields, since seeing an
+ *  agent does not entitle the caller to the source's own share set. */
+export const AgentSkillSourceDto = z.object({
+  id: z.string(),
+  name: z.string(),
+  source: z.string(),
+  ref: z.string().nullable(),
+  subDir: z.string().nullable(),
+  skills: z.array(z.string()) // the source's own skill filter ([] ⇒ all)
+})
+export const AgentSkillSourceListDto = z.array(AgentSkillSourceDto)
+
 // ── open-connector connectors (docs: connectors integration) ─────────────────
 /** Whether the open-connector integration is configured on this CP (drives the
  *  console's "Add connectors" menu item). */

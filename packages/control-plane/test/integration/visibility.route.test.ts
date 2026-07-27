@@ -228,6 +228,78 @@ describe('mcp provider visibility — list, get, sharing, enable-gate', () => {
   })
 })
 
+describe('skill source visibility — the agent that enables it resolves it anyway', () => {
+  /** Seed a skill_source row directly (no GitHub scan, no fan-out). */
+  async function seedSource(
+    id: string,
+    opts: { name: string; visibility?: 'org' | 'restricted'; sharedWith?: string[]; createdByUserId?: string }
+  ): Promise<void> {
+    await prisma.skillSource.create({
+      data: {
+        id,
+        orgId: DEFAULT_ORG_ID,
+        name: opts.name,
+        source: 'example-org/example-ai-kit',
+        ...(opts.visibility ? { visibility: opts.visibility } : {}),
+        ...(opts.sharedWith ? { sharedWith: opts.sharedWith } : {}),
+        ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {})
+      }
+    })
+  }
+
+  it('a source hidden from the registry list still resolves through an agent the caller can see', async () => {
+    const other = await makeUser('sk-other', 'collaborator')
+    const S = randomUUID()
+    await seedSource(S, { name: 'sk-hidden-kit', visibility: 'restricted', sharedWith: [] })
+    const A = randomUUID()
+    await seedAgent(prisma, A, { visibility: 'org' })
+    await prisma.agent.update({ where: { id: A }, data: { runtimeOverrides: { skills: ['sk-hidden-kit/*'] } } })
+
+    const app = appAs(other).app
+    // Hidden from the org registry — sharing still applies there.
+    const list = (await app.inject({ method: 'GET', url: `${ORG}/skill-sources` })).json() as Array<{ id: string }>
+    expect(list.map((s) => s.id)).not.toContain(S)
+    expect((await app.inject({ method: 'GET', url: `${ORG}/skill-sources/${S}` })).statusCode).toBe(404)
+
+    // But the agent's own enable-list resolves it, so the console can name the repo
+    // instead of rendering a bare, unexplained row.
+    const res = await app.inject({ method: 'GET', url: `${ORG}/agents/${A}/skill-sources` })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([
+      { id: S, name: 'sk-hidden-kit', source: 'example-org/example-ai-kit', ref: null, subDir: null, skills: [] }
+    ])
+    // Reading it there does NOT loosen the write gate: the ref can be dropped but
+    // not re-added, so the console renders that tile off-only.
+    const patch = (skills: string[]) => app.inject({ method: 'PATCH', url: `${ORG}/agents/${A}`, payload: { skills } })
+    expect((await patch([])).statusCode).toBe(200)
+    expect((await patch(['sk-hidden-kit/*'])).statusCode).toBe(403)
+  })
+
+  it('an enable-list ref to a source that no longer exists resolves to nothing', async () => {
+    const other = await makeUser('sk-gone', 'collaborator')
+    const A = randomUUID()
+    await seedAgent(prisma, A, { visibility: 'org' })
+    await prisma.agent.update({ where: { id: A }, data: { runtimeOverrides: { skills: ['sk-deleted/*'] } } })
+
+    const res = await appAs(other).app.inject({ method: 'GET', url: `${ORG}/agents/${A}/skill-sources` })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([])
+  })
+
+  it('an invisible agent is not a back door onto its sources', async () => {
+    const other = await makeUser('sk-noagent', 'collaborator')
+    const S = randomUUID()
+    await seedSource(S, { name: 'sk-unreferenced', visibility: 'restricted', sharedWith: [] })
+    const A = randomUUID()
+    await seedAgent(prisma, A, { visibility: 'restricted', sharedWith: [] })
+    await prisma.agent.update({ where: { id: A }, data: { runtimeOverrides: { skills: ['sk-unreferenced/*'] } } })
+
+    const app = appAs(other).app
+    expect((await app.inject({ method: 'GET', url: `${ORG}/agents/${A}/skill-sources` })).statusCode).toBe(404)
+    expect((await app.inject({ method: 'GET', url: `${ORG}/skill-sources/${S}/skills` })).statusCode).toBe(404)
+  })
+})
+
 describe('agent call policy endpoint', () => {
   it('uses the existing agent edit gate: collaborator can edit, viewer cannot, invisible target 404s', async () => {
     const collaborator = await makeUser('call-policy-collaborator', 'collaborator')
