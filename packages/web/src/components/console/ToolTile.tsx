@@ -43,7 +43,9 @@ export function ToolTile({
 }) {
   return (
     <div
-      className={`flex min-w-0 flex-col overflow-hidden rounded-[9px] border border-(--border-subtle) transition-[border-color,box-shadow] hover:border-(--border-strong) hover:shadow-(--shadow-xs) ${dimmed ? 'opacity-60' : ''}`}
+      // `group` so an action can reveal itself on tile hover (see the skills card's
+      // expand chevron) rather than sitting there permanently.
+      className={`group flex min-w-0 flex-col overflow-hidden rounded-[9px] border border-(--border-subtle) transition-[border-color,box-shadow] hover:border-(--border-strong) hover:shadow-(--shadow-xs) ${dimmed ? 'opacity-60' : ''}`}
     >
       <div className="flex min-w-0 flex-col gap-[10px] px-[14px] py-[13px]">
         <div className="flex min-w-0 items-center gap-[10px]">
