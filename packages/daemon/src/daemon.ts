@@ -154,6 +154,7 @@ import {
   RELAY_DAEMON_SUBPROTOCOL,
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
+  effectiveMemoryDreamingPolicy,
   gitRepoLabel
 } from '@agentconnect.md/protocol'
 import { createSessionReader } from './cp/session-reader.js'
@@ -431,12 +432,12 @@ function reviewResultForWire(effect: GithubReviewEffect): HookReviewResult {
 
 // Cap per-session `!queue` depth so a hung turn or a user spamming `!queue` can't
 // grow `queued` without bound. Past the cap we reject with a clear message.
-/** An agent's dreaming policy, or undefined when it has none. An absent memory
- *  binding means the managed default, but dreaming itself is always opt-in — and
- *  it is only valid on the managed provider (the protocol enforces that too). */
+/** An agent's effective dreaming policy. Managed memory defaults to a daily
+ *  auto-adopting dream; an explicit disabled policy or non-managed provider is
+ *  preserved by the shared resolver. */
 function dreamingPolicyOf(agent: { memory?: Agent['memory'] } | undefined): MemoryDreamingPolicy | undefined {
-  const memory = agent?.memory
-  return memory?.provider === 'managed' ? memory.dreaming : undefined
+  if (!agent) return undefined
+  return effectiveMemoryDreamingPolicy(agent.memory)
 }
 
 const MAX_QUEUED_PER_SESSION = 10

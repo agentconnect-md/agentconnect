@@ -8,22 +8,29 @@ import {
 /**
  * Managed-only dreaming policy as a form draft. It carries the COMPLETE policy —
  * including fields the console doesn't yet edit (`sessionWindow`, `timezone`, and
- * the later-phase `mineSkills`/`autoAdopt`) — because a managed-memory save
- * PATCHes the `memory` binding wholesale, so anything the draft drops is lost.
- * The UI edits `enabled`, `schedule`, and `instructions`; the rest is preserved
+ * the later-phase `mineSkills`) — because a managed-memory save PATCHes the
+ * `memory` binding wholesale, so anything the draft drops is lost. The UI edits
+ * `enabled`, `schedule`, `autoAdopt`, and `instructions`; the rest is preserved
  * verbatim from whatever the API (or a later phase) set.
  */
 export interface DreamingDraft {
   enabled: boolean
   instructions: string
+  autoAdopt: boolean
   sessionWindow?: number
   schedule?: string
   timezone?: string
   mineSkills?: boolean
-  autoAdopt?: boolean
 }
 
-export const DEFAULT_DREAMING_DRAFT: DreamingDraft = { enabled: false, instructions: '' }
+/** Managed memory dreams daily at 04:00 in the daemon host's timezone and
+ * accepts safe results automatically unless the user opts out. */
+export const DEFAULT_DREAMING_DRAFT: DreamingDraft = {
+  enabled: true,
+  instructions: '',
+  schedule: '0 4 * * *',
+  autoAdopt: true
+}
 
 export type MemoryProviderChoice = 'managed' | 'native' | 'external' | 'none'
 
@@ -88,11 +95,11 @@ export function memorySettingsDraft(input: {
       ? {
           enabled: input.dreaming.enabled,
           instructions: input.dreaming.instructions ?? '',
+          autoAdopt: input.dreaming.autoAdopt ?? true,
           ...(input.dreaming.sessionWindow !== undefined ? { sessionWindow: input.dreaming.sessionWindow } : {}),
           ...(input.dreaming.schedule ? { schedule: input.dreaming.schedule } : {}),
           ...(input.dreaming.timezone ? { timezone: input.dreaming.timezone } : {}),
-          ...(input.dreaming.mineSkills !== undefined ? { mineSkills: input.dreaming.mineSkills } : {}),
-          ...(input.dreaming.autoAdopt !== undefined ? { autoAdopt: input.dreaming.autoAdopt } : {})
+          ...(input.dreaming.mineSkills !== undefined ? { mineSkills: input.dreaming.mineSkills } : {})
         }
       : { ...DEFAULT_DREAMING_DRAFT },
     external: {
@@ -178,19 +185,19 @@ export function memoryConfigForDraft(draft: MemorySettingsDraft): AgentMemoryCon
 }
 
 /** Map the dreaming form back to the wire policy, preserving every preserved
- *  field, or undefined when the policy is entirely absent (nothing enabled and
- *  no field set) — so an untouched managed agent emits no `dreaming` binding. */
+ *  field. When a policy differs from the defaults, `autoAdopt` is explicit so
+ *  false remains a durable opt-out. */
 export function dreamingConfigForDraft(draft: DreamingDraft): MemoryDreamingConfig | undefined {
   const instructions = draft.instructions.trim()
   const schedule = draft.schedule?.trim()
   const hasAny =
-    draft.enabled ||
+    draft.enabled !== DEFAULT_DREAMING_DRAFT.enabled ||
     !!instructions ||
-    !!schedule ||
+    schedule !== DEFAULT_DREAMING_DRAFT.schedule ||
     !!draft.timezone ||
     draft.sessionWindow !== undefined ||
     draft.mineSkills !== undefined ||
-    draft.autoAdopt !== undefined
+    draft.autoAdopt !== DEFAULT_DREAMING_DRAFT.autoAdopt
   if (!hasAny) return undefined
   return {
     enabled: draft.enabled,
@@ -199,6 +206,6 @@ export function dreamingConfigForDraft(draft: DreamingDraft): MemoryDreamingConf
     ...(draft.timezone ? { timezone: draft.timezone } : {}),
     ...(instructions ? { instructions } : {}),
     ...(draft.mineSkills !== undefined ? { mineSkills: draft.mineSkills } : {}),
-    ...(draft.autoAdopt !== undefined ? { autoAdopt: draft.autoAdopt } : {})
+    autoAdopt: draft.autoAdopt
   }
 }

@@ -82,6 +82,48 @@ const openSettings = async (host: HTMLElement) => {
 }
 
 describe('MemoryPanel settings draft', () => {
+  it('defaults managed memory to daily dreaming and lets users disable automatic acceptance', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <MemoryPanel
+          agentId="22222222-2222-4222-8222-222222222222"
+          canEdit
+          memoryProvider="managed"
+          autoDistill={false}
+        />
+      )
+    })
+
+    await openSettings(container)
+    const checkboxFor = (text: string) =>
+      [...container!.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((box) =>
+        box.parentElement?.textContent?.includes(text)
+      )
+
+    expect(checkboxFor('Enable dreaming')?.checked).toBe(true)
+    expect(checkboxFor('Run on a schedule')?.checked).toBe(true)
+    expect(checkboxFor('Automatically accept completed results')?.checked).toBe(true)
+    expect(container.textContent).toContain('Daily')
+
+    await act(async () => checkboxFor('Automatically accept completed results')?.click())
+    const save = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === 'Save memory settings'
+    )
+    await act(async () => save?.click())
+
+    expect(mocks.updateAgent).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', {
+      memory: {
+        provider: 'managed',
+        autoDistill: false,
+        dreaming: { enabled: true, schedule: '0 4 * * *', autoAdopt: false }
+      }
+    })
+  })
+
   it('collapses the settings form behind a summary of the persisted backend', async () => {
     container = document.createElement('div')
     document.body.append(container)
@@ -102,6 +144,8 @@ describe('MemoryPanel settings draft', () => {
     // and scope; the persisted memory content is shown.
     expect(container.querySelector('[data-memory-provider="managed"]')).toBeNull()
     expect(container.textContent).toContain('Managed')
+    expect(container.textContent).toContain('Dreaming daily')
+    expect(container.textContent).toContain('Auto-accept on')
     expect(container.textContent).toContain('Agent scope')
     expect(container.querySelector('[data-testid="file-memory-view"]')).not.toBeNull()
 

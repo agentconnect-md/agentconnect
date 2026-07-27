@@ -119,7 +119,7 @@ export const MemoryDreamingPolicy = z
     instructions: z.string().max(4096).optional(),
     /** Also mine reusable procedures into candidate skills (§7). Default false. */
     mineSkills: z.boolean().optional(),
-    /** Adopt the memory store automatically on completion. Honored only when the
+    /** Adopt the memory store automatically on completion. Default true. Honored only when the
      *  extraction ran on a trusted-channel runtime — the config still saves, but
      *  an untrusted run leaves the dream reviewable instead of adopting it.
      *  Never applies to skills (§7). */
@@ -136,6 +136,12 @@ export const BuiltInMemoryBinding = z
   .strict()
   .superRefine(/* dreaming ⇒ provider === 'managed' */)
 ```
+
+With managed memory, an absent `dreaming` policy resolves to `{ enabled: true,
+schedule: '0 4 * * *', autoAdopt: true }`. The cron uses daemon-local time when
+no timezone is set. An explicit policy preserves an absent schedule as
+manual-only, while `autoAdopt: false` is the durable opt-out from automatic
+acceptance.
 
 `memory-settings.ts` (console) grows a **Background memory** section rendered
 only when the Managed provider is selected, presenting the two mechanisms as
