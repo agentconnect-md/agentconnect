@@ -178,8 +178,16 @@ export function connectorRoutes(deps: HttpDeps) {
         } catch (e) {
           // Roll back the just-created provider row (+ its binding/secret/grant via
           // cascade) so a failed step never strands an unusable connection. Serialized
-          // with rotation/patch/delete.
+          // with rotation/patch/delete — and REFERENCE-SAFE like the DELETE route: the
+          // row was committed (visible) before the upstream step, so an agent write may
+          // have enabled this name in the meantime (it serialized on this same chain).
+          // Deleting then would leave the dangling selector the delete guard exists to
+          // prevent, so a referenced row is kept instead: the caller still gets the
+          // error below, and reconnect repairs the connection (or delete it after
+          // unselecting).
           await serializeByProvider(provider.id, async () => {
+            const agents = await deps.repos.agent.list(orgId)
+            if (agents.some((a) => a.mcpServers.includes(provider.name))) return
             await pushUnassign(provider, orgId)
             await deps.repos.mcpProvider.delete(provider.id)
           })

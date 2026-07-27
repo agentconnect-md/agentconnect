@@ -177,4 +177,60 @@ describe('DELETE /mcp-providers/:id — serialized against agent enable-list wri
     expect((await del).statusCode).toBe(204)
     expect((await patch).statusCode).toBe(200)
   })
+
+  it('a stale full-replace PATCH re-asserting the name still fences the delete (no diff-based bypass)', async () => {
+    // Ordinary PATCHes overlap: PATCH-A submits ['linear'] (unchanged from ITS
+    // snapshot), parks before persisting; PATCH-B removes 'linear'; DELETE then runs.
+    // With an added-vs-before diff the parked PATCH-A computed added=[] and skipped
+    // the chain, so DELETE saw B's empty list, returned 204, and A restored the name
+    // onto a deleted provider. Keyed off the SUBMITTED list, A holds the chain while
+    // parked — the DELETE queues behind it and 409s once A's restore commits.
+    const app = makeApp()
+    const providerId = await createProvider(app, 'linear')
+    const agentId = await createAgent(app, 'stale-patcher', ['linear'])
+
+    // Park the FIRST agent-row write (PATCH-A's persist step) inside whatever fences
+    // the route takes; later writes (PATCH-B) pass through.
+    const writer = app.deps.repos.agentConfig
+    const realUpdate = writer.update.bind(writer)
+    let releaseA!: () => void
+    const gateA = new Promise<void>((r) => (releaseA = r))
+    let notifyParkedA!: () => void
+    const parkedA = new Promise<void>((r) => (notifyParkedA = r))
+    let intercepted = false
+    writer.update = async (...args: Parameters<typeof realUpdate>) => {
+      if (!intercepted) {
+        intercepted = true
+        notifyParkedA()
+        await gateA
+      }
+      return realUpdate(...args)
+    }
+
+    const patchA = app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { mcpServers: ['linear'] } // full replace, "unchanged" from A's stale view
+    })
+    await parkedA
+
+    const patchB = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { mcpServers: [] }
+    })
+    expect(patchB.statusCode).toBe(200)
+
+    const del = app.app.inject({ method: 'DELETE', url: `${ORG}/mcp-providers/${providerId}` })
+    const winner = await Promise.race([
+      del.then(() => 'deleted' as const),
+      settleTick(300).then(() => 'blocked' as const)
+    ])
+    expect(winner).toBe('blocked') // the delete waits behind the parked PATCH-A's chain hold
+
+    releaseA()
+    expect((await patchA).statusCode).toBe(200)
+    expect((await del).statusCode).toBe(409) // A's restore committed first — the reference is seen
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/mcp-providers/${providerId}` })).statusCode).toBe(200)
+  })
 })

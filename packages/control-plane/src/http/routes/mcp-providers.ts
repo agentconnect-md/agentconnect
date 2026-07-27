@@ -90,10 +90,10 @@ export function serializeByProvider<T>(providerId: string, run: () => Promise<T>
 
 /**
  * Serialize one operation across SEVERAL provider chains — how an agent enable-list
- * write (routes/agents.ts) joins the chains of every provider it is adding, so it
- * cannot interleave with a DELETE between that delete's reference check and its row
- * drop. Chains are entered in sorted id order so two multi-provider writers can't
- * deadlock waiting on each other's tails.
+ * write (routes/agents.ts) joins the chains of every registry provider its submitted
+ * list names, so it cannot interleave with a DELETE between that delete's reference
+ * check and its row drop. Chains are entered in sorted id order so two multi-provider
+ * writers can't deadlock waiting on each other's tails.
  */
 export function serializeByProviders<T>(providerIds: readonly string[], run: () => Promise<T>): Promise<T> {
   const sorted = [...new Set(providerIds)].sort()

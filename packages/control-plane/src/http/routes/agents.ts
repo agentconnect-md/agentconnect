@@ -567,21 +567,24 @@ export function agentRoutes(deps: HttpDeps) {
     }
 
     // Run an agent write inside the per-provider chains of every registry provider its
-    // enable-list is ADDING (serializeByProviders — sorted, deadlock-free), so the write
-    // cannot land between a provider DELETE's reference check and its row drop (see
-    // routes/mcp-providers.ts). Removal-only changes don't join any chain: a stale 409
-    // on the delete side is benign, a missed reference is not. Non-registry (daemon-
-    // local) names carry no provider row to serialize on.
-    const withAddedMcpProviderChains = async <T>(
+    // SUBMITTED enable-list names (serializeByProviders — sorted, deadlock-free), so the
+    // write cannot land between a provider DELETE's reference check and its row drop
+    // (see routes/mcp-providers.ts). Keyed off the whole submitted list, NOT an
+    // added-vs-before diff: ordinary agent edits may overlap, so `before` can be a
+    // stale route snapshot — a full-replace PATCH re-asserting a name it believes
+    // unchanged may be the write that RESTORES it after a concurrent removal, and it
+    // must serialize like any other reference-creating write. Removal-only submissions
+    // ([] / null / untouched) don't join any chain: a stale 409 on the delete side is
+    // benign, a missed reference is not. Non-registry (daemon-local) names carry no
+    // provider row to serialize on.
+    const withSubmittedMcpProviderChains = async <T>(
       orgId: OrgId,
-      before: readonly string[],
-      after: readonly string[] | null | undefined,
+      submitted: readonly string[] | null | undefined,
       run: () => Promise<T>
     ): Promise<T> => {
-      const added = (after ?? []).filter((n) => !before.includes(n))
-      if (added.length === 0) return run()
+      if (!submitted || submitted.length === 0) return run()
       const ids = (await deps.repos.mcpProvider.listForOrg(orgId))
-        .filter((p) => added.includes(p.name))
+        .filter((p) => submitted.includes(p.name))
         .map((p) => p.id)
       return ids.length ? serializeByProviders(ids, run) : run()
     }
@@ -898,9 +901,9 @@ export function agentRoutes(deps: HttpDeps) {
               : undefined
           // One transaction for the agent row + its initial secret rows (sealing
           // happens before it opens) — a failure can't leave a partial definition.
-          // Chained per added MCP provider so the row can't commit inside a concurrent
+          // Chained per submitted MCP provider name so the row can't commit inside a concurrent
           // provider-delete's check→drop window.
-          const agent = await withAddedMcpProviderChains(orgOf(req), [], req.body.mcpServers, () =>
+          const agent = await withSubmittedMcpProviderChains(orgOf(req), req.body.mcpServers, () =>
             deps.repos.agentConfig.create(
               {
                 id: agentId,
@@ -1318,10 +1321,10 @@ export function agentRoutes(deps: HttpDeps) {
           // The row patch and the secret merge commit as ONE transaction (sealing
           // outside it), so the replicateUpsert below can only ever ship a
           // definition that fully applied — never a half-updated one. Chained per
-          // added MCP provider so the row can't commit inside a concurrent
+          // submitted MCP provider name so the row can't commit inside a concurrent
           // provider-delete's check→drop window.
           const { secrets: secretsPatch, ...bodyPatch } = req.body
-          const agent = await withAddedMcpProviderChains(orgOf(req), existing.mcpServers, req.body.mcpServers, () =>
+          const agent = await withSubmittedMcpProviderChains(orgOf(req), req.body.mcpServers, () =>
             deps.repos.agentConfig.update(
               AgentId(req.params.id),
               {
