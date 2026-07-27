@@ -31,6 +31,8 @@ import type {
   IntegrationRepo,
   IntegrationRecord,
   IntegrationChannelRepo,
+  IntegrationChannelRecord,
+  ChannelTrigger,
   ReportedChannel,
   AgentRepo,
   AgentRecord,
@@ -67,7 +69,19 @@ interface Compiled {
   placed: { integration: IntegrationRecord; daemonId: string; gated: boolean }[]
 }
 
+/** Resolve a persisted owner marker to its active integration, falling back to
+ * the earliest active install for new or legacy ownerless channels. */
+export function pickChannelOwner(
+  installs: IntegrationRecord[],
+  rows: IntegrationChannelRecord[]
+): IntegrationRecord | undefined {
+  const assigned = new Set(rows.flatMap((row) => (row.agentId ? [row.agentId] : [])))
+  return installs.find((integration) => assigned.has(integration.agentId)) ?? installs[0]
+}
+
 export class SharedBotOrchestrator {
+  private readonly channelMutationChains = new Map<string, Promise<unknown>>()
+
   constructor(
     private readonly bots: BotRepo,
     private readonly botSecret: BotSecretStore,
@@ -270,13 +284,9 @@ export class SharedBotOrchestrator {
    *  app membership, so fan the snapshot across them, preserving per-install
    *  trigger/owner fields in the repository, then hot-refresh relay routes.
    *
-   *  A freshly-invited channel is seeded with the bot's CREATING agent as its
-   *  default owner (§10.1), so it routes out of the box instead of landing on
-   *  "No default" (a bare mention would fall to the group default, but an
-   *  "any message" channel with no owner routes nothing). Only genuinely NEW
-   *  channels are seeded — a channel the operator later clears to "No default"
-   *  stays cleared, never re-seeded. The seed is written on the creating install's
-   *  row alone, preserving the one-owner-per-channel invariant.
+   *  For a shared bot, route compilation converges every reported channel to
+   *  exactly one owner. A new or ownerless channel is assigned to the bot's
+   *  creating (earliest active) agent, while an existing owner is preserved.
    */
   async replaceChannels(botId: string, channels: ReportedChannel[]): Promise<void> {
     const bot = await this.bots.get(BotId(botId))
@@ -285,24 +295,12 @@ export class SharedBotOrchestrator {
       return
     }
     const installs = await this.integrations.listForBot(bot.id)
-    // Channels already known (on ANY install) before this snapshot — the set we must
-    // NOT seed, so an operator's later "No default" clear is honoured, not overwritten.
-    const known = new Set((await this.channels.listForBot(bot.id)).map((c) => c.channelId))
     for (const integration of installs) {
       // Conversation gating (§14): a gated install's fresh channels start Off — an
       // editor must enable them in the console before the compiler emits a route.
       const owner = await this.agents.get(integration.agentId)
       const defaultTrigger = owner && isGatedAgent(owner) ? ('off' as const) : undefined
       await this.channels.replaceSnapshot(integration.id, channels, defaultTrigger ? { defaultTrigger } : undefined)
-    }
-    // The creating agent = the earliest install (`listForBot` is createdAt-asc). Own
-    // each new channel on its row so the channel-scoped rule the compiler reads points
-    // at the creating agent (and no other install co-owns it). Operator-overridable.
-    const creating = installs[0]
-    if (creating) {
-      for (const c of channels) {
-        if (!known.has(c.id)) await this.channels.upsertAgent(creating.id, c.id, creating.agentId)
-      }
     }
     await this.syncRoutes(botId)
   }
@@ -369,56 +367,184 @@ export class SharedBotOrchestrator {
   }
 
   /**
-   * Set (or clear) a channel's default/owning agent for a shared bot — the target of
-   * the in-Slack config modal (`rc/set-channel-agent`). Channel ownership is one
-   * agent per channel, but rows are keyed per-install, so this makes the pick the
-   * SOLE owner: it clears the channel's row on every OTHER install of the bot, then
-   * upserts it (with `agentId`) on the chosen agent's own install — which is what the
-   * route compiler reads as the channel-scoped rule. `agentId: null` just clears.
-   * Recompiles + pushes the bot's routes (`rc/routes`). Fire-and-forget safe.
+   * Update a shared channel through its bot-level ownership boundary. The selected
+   * agent becomes the sole owner, and the channel trigger follows the channel when
+   * ownership changes instead of reverting to a stale per-install value.
    */
-  async setChannelAgent(botId: string, channelId: string, agentId: string | null): Promise<void> {
-    const bot = await this.bots.get(BotId(botId))
-    if (bot?.transport !== 'http') {
-      this.log.warn({ botId }, 'shared-bot: set-channel-agent for a non-http/unknown bot — ignored')
-      return
-    }
-    const installs = await this.integrations.listForBot(bot.id)
-    // The chosen owner must actually be an agent installed on this bot.
-    const owner = agentId ? installs.find((i) => i.agentId === agentId) : undefined
-    if (agentId && !owner) {
-      this.log.warn({ botId, agentId }, 'shared-bot: set-channel-agent for a non-member agent — ignored')
-      return
-    }
-    // One owner per channel: drop this channel's row on every other install, then set
-    // it (name/isPrivate default in the daemon-report sense are irrelevant here — the
-    // row exists purely to carry the agentId ownership the compiler reads).
-    for (const i of installs) {
-      if (owner && i.id === owner.id) continue
-      await this.channels.setAgent(i.id, channelId, null)
-    }
-    if (owner) {
-      // Conversation gating (§14): the in-Slack config modal is reachable by any
-      // workspace user, so assigning a channel to a GATED agent must not enable it —
-      // a freshly-created row starts Off; only a console editor can flip the trigger.
-      const ownerAgent = await this.agents.get(owner.agentId)
-      const defaultTrigger = ownerAgent && isGatedAgent(ownerAgent) ? ('off' as const) : undefined
-      await this.channels.upsertAgent(
-        owner.id,
-        channelId,
-        AgentId(agentId!),
-        defaultTrigger ? { defaultTrigger } : undefined
+  async updateChannel(
+    botId: string,
+    channelId: string,
+    patch: { agentId?: string; trigger?: ChannelTrigger },
+    options: { expectedOwnerAgentId?: string; source?: 'console' | 'slack' } = {}
+  ): Promise<IntegrationChannelRecord | null> {
+    return this.serializeChannelMutation(botId, channelId, async () => {
+      const bot = await this.bots.get(BotId(botId))
+      if (bot?.transport !== 'http') {
+        this.log.warn({ botId }, 'shared-bot: update-channel for a non-http/unknown bot — ignored')
+        return null
+      }
+      const installs = await this.integrations.listForBot(bot.id)
+      if (installs.length === 0) return null
+      const rows = (await this.channels.listForBot(bot.id)).filter(
+        (row) => row.kind === 'channel' && row.channelId === channelId
       )
-    }
-    await this.syncRoutes(botId)
+      const currentOwner = pickChannelOwner(installs, rows)
+      if (options.expectedOwnerAgentId && currentOwner?.agentId !== options.expectedOwnerAgentId) {
+        this.log.warn(
+          { botId, channelId, expectedOwnerAgentId: options.expectedOwnerAgentId },
+          'shared-bot: channel owner changed before update — ignored'
+        )
+        return null
+      }
+      const owner = patch.agentId ? installs.find((i) => i.agentId === patch.agentId) : currentOwner
+      if (!owner) {
+        this.log.warn({ botId, agentId: patch.agentId }, 'shared-bot: update-channel for a non-member agent — ignored')
+        return null
+      }
+
+      const currentRow = currentOwner
+        ? (rows.find((row) => row.agentId === currentOwner.agentId) ??
+          rows.find((row) => row.integrationId === currentOwner.id))
+        : undefined
+      const targetAgent = options.source === 'slack' ? await this.agents.get(owner.agentId) : null
+      let updated = await this.persistChannelOwner(installs, channelId, owner)
+      const trigger =
+        targetAgent && isGatedAgent(targetAgent)
+          ? ('off' as const)
+          : (patch.trigger ?? currentRow?.trigger ?? rows[0]?.trigger ?? updated.trigger)
+      await this.syncChannelTrigger(installs, channelId, trigger, rows)
+      updated = { ...updated, trigger }
+      await this.syncRoutes(botId)
+      return updated
+    })
+  }
+
+  /** The in-Slack config modal changes only the owner. A workspace user must
+   * never enable a restricted agent, so that target always starts Off. */
+  async setChannelAgent(botId: string, channelId: string, agentId: string): Promise<void> {
+    await this.updateChannel(botId, channelId, { agentId }, { source: 'slack' })
+  }
+
+  /** Preserve bot-scoped channel state before an owner integration is deleted. */
+  async prepareIntegrationRemoval(botId: string): Promise<void> {
+    const bot = await this.bots.get(BotId(botId))
+    if (bot?.transport !== 'http') return
+    const installs = await this.integrations.listForBot(bot.id)
+    await this.ensureChannelOwners(bot.id, installs)
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
 
-  /** Compile the attributed routing table from the bot's installs + channels. */
+  /** Serialize the owner check and write per channel. Console authorization
+   * happens before this boundary and supplies the owner it authorized; a queued
+   * Slack move therefore makes that Console mutation fail closed. */
+  private serializeChannelMutation<T>(botId: string, channelId: string, run: () => Promise<T>): Promise<T> {
+    const key = `${botId}\u0000${channelId}`
+    const previous = this.channelMutationChains.get(key) ?? Promise.resolve()
+    const result = previous.then(run, run)
+    const settled = result.then(
+      () => undefined,
+      () => undefined
+    )
+    this.channelMutationChains.set(key, settled)
+    void settled.finally(() => {
+      if (this.channelMutationChains.get(key) === settled) this.channelMutationChains.delete(key)
+    })
+    return result
+  }
+
+  /** Store one canonical owner row and clear every sibling install's copy. */
+  private async persistChannelOwner(
+    installs: IntegrationRecord[],
+    channelId: string,
+    owner: IntegrationRecord
+  ): Promise<IntegrationChannelRecord> {
+    const ownerAgent = await this.agents.get(owner.agentId)
+    const defaultTrigger = ownerAgent && isGatedAgent(ownerAgent) ? ('off' as const) : undefined
+    const updated = await this.channels.upsertAgent(
+      owner.id,
+      channelId,
+      owner.agentId,
+      defaultTrigger ? { defaultTrigger } : undefined
+    )
+    // Establish the replacement before clearing stale markers: even if a later
+    // cleanup write fails, the channel never regresses to having no owner.
+    for (const integration of installs) {
+      if (integration.id === owner.id) continue
+      await this.channels.setAgent(integration.id, channelId, null)
+    }
+    return updated
+  }
+
+  /** Keep the effective trigger on every active membership row, creating a
+   * missing sibling from the best available channel metadata. Ownership is
+   * canonical, but complete repeated state lets owner deletion preserve the
+   * channel and trigger even before a new install reports its own snapshot. */
+  private async syncChannelTrigger(
+    installs: IntegrationRecord[],
+    channelId: string,
+    trigger: ChannelTrigger,
+    knownRows: IntegrationChannelRecord[]
+  ): Promise<void> {
+    const known = new Map(knownRows.map((row) => [row.integrationId, row]))
+    const template = knownRows.find((row) => row.name !== null) ?? knownRows[0]
+    for (const integration of installs) {
+      const row = known.get(integration.id)
+      if (row?.trigger === trigger) continue
+      if (!row) {
+        const backfilled = await this.channels.upsertConversation(
+          integration.id,
+          {
+            id: channelId,
+            ...(template?.name ? { name: template.name } : {}),
+            isPrivate: template?.isPrivate ?? false,
+            kind: 'channel'
+          },
+          { defaultTrigger: trigger }
+        )
+        if (backfilled.trigger === trigger) continue
+      }
+      await this.channels.setTrigger(integration.id, channelId, trigger)
+    }
+  }
+
+  /**
+   * Converge every channel to one canonical owner. This repairs owner deletion,
+   * legacy ownerless rows, and older Web writes that stored an owner on the wrong
+   * integration. DM rows are intentionally excluded because gated DMs may enable
+   * several agents independently.
+   */
+  private async ensureChannelOwners(botId: BotId, installs: IntegrationRecord[]): Promise<void> {
+    if (installs.length === 0) return
+    const rows = (await this.channels.listForBot(botId)).filter((row) => row.kind === 'channel')
+    const channelIds = [...new Set(rows.map((row) => row.channelId))]
+    for (const channelId of channelIds) {
+      const channelRows = rows.filter((row) => row.channelId === channelId)
+      const owner = pickChannelOwner(installs, channelRows)
+      if (!owner) continue
+      const persistedOwner = channelRows.some((row) => row.agentId === owner.agentId)
+      let trigger =
+        channelRows.find((row) => row.agentId === owner.agentId)?.trigger ??
+        channelRows.find((row) => row.integrationId === owner.id)?.trigger ??
+        channelRows[0]?.trigger
+      if (!persistedOwner) {
+        const ownerAgent = await this.agents.get(owner.agentId)
+        if (ownerAgent && isGatedAgent(ownerAgent)) trigger = 'off'
+      }
+      const canonical = channelRows.some((row) => row.integrationId === owner.id && row.agentId === owner.agentId)
+      const conflicting = channelRows.some(
+        (row) => row.agentId !== null && (row.integrationId !== owner.id || row.agentId !== owner.agentId)
+      )
+      if (!canonical || conflicting) await this.persistChannelOwner(installs, channelId, owner)
+      if (trigger !== undefined) await this.syncChannelTrigger(installs, channelId, trigger, channelRows)
+    }
+  }
+
+  /** Compile the attributed routing table after converging channel ownership. */
   private async compile(bot: BotRecord): Promise<Compiled | null> {
     const integrations = await this.integrations.listForBot(bot.id)
     if (integrations.length === 0) return null
+    await this.ensureChannelOwners(bot.id, integrations)
     const agentById = new Map<string, AgentRecord>()
     for (const i of integrations) {
       const a = await this.agents.get(i.agentId)

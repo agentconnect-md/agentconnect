@@ -601,12 +601,12 @@ export type RcAssign = z.infer<typeof RcAssign>
 // in-Slack config modal (§10.1). The CP persists it as the channel's owner
 // (IntegrationChannel.agentId on the chosen agent's install for this bot, clearing
 // any other install's row for the same channel) and re-compiles the bot's routes
-// (rc/routes). `agentId: null` clears the channel's default. The relay acks the
-// modal immediately; this rides best-effort like other rc EVTs.
+// (rc/routes). A shared channel always has one owner. The relay acks the modal
+// immediately; this rides best-effort like other rc EVTs.
 export const RcSetChannelAgent = z.object({
   botId: z.string().uuid(),
   channelId: z.string().min(1),
-  agentId: z.string().uuid().nullable()
+  agentId: z.string().uuid()
 })
 export type RcSetChannelAgent = z.infer<typeof RcSetChannelAgent>
 

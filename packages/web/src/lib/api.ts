@@ -536,7 +536,7 @@ export interface IntegrationChannelDto {
   isPrivate: boolean
   kind: 'channel' | 'im'
   trigger: ChannelTrigger
-  agentId: string | null // per-channel default agent for a shared bot; null ⇒ unset
+  agentId: string | null // effective shared-channel owner; null before convergence / when not applicable
 }
 
 // `/integrations` list/create row — control-plane metadata only, NEVER tokens.
@@ -2527,7 +2527,7 @@ export async function fetchHookRuns(id: string, orgId?: string): Promise<HookRun
 export async function updateIntegrationChannel(
   integrationId: string,
   channelId: string,
-  patch: { trigger?: ChannelTrigger; agentId?: string | null }
+  patch: { trigger?: ChannelTrigger; agentId?: string }
 ): Promise<IntegrationChannelDto> {
   return apiPatch<IntegrationChannelDto>(
     `${orgBase()}/integrations/${encodeURIComponent(integrationId)}/channels/${encodeURIComponent(channelId)}`,

@@ -184,7 +184,9 @@ Slack HTTP bots require both a bot token and signing secret in the bot secret
 store. Secret reads and writes pass through the configured `SecretCipher`; list
 and metadata APIs do not select secret material.
 
-`IntegrationChannel.agentId` represents a channel-scoped default agent.
+`IntegrationChannel.agentId` represents a channel-scoped default agent. Exactly one
+active integration row carries that owner for each shared channel; sibling rows are
+null because channel membership is repeated per integration.
 `SharedThreadAgent` is the durable fallback for relay-local thread affinity. It
 contains routing metadata only, never message text.
 
@@ -329,6 +331,14 @@ channel settings. The relay applies the shared routing ladder:
 2. existing thread affinity;
 3. agent-slug keyword disambiguation;
 4. the bot's default agent for a bare mention or direct message.
+
+Before compiling routes, CP converges each channel to one canonical owner row and
+replicates its effective trigger across the sibling membership rows, backfilling a
+missing row when a new install has not reported membership yet. A new or ownerless
+channel uses the earliest active integration, and a Console owner change preserves
+the trigger. An in-Slack move or automatic fallback to a restricted agent stays Off.
+This also preserves state and repairs ownership when an integration is removed;
+`No default` is not an operator state.
 
 Each target contains `agentId`, `daemonId`, and `integrationId`. The relay drops
 messages produced by another managed AgentConnect bot before arbitration so
