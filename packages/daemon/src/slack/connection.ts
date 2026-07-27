@@ -684,6 +684,9 @@ export class SlackConnection {
     if (this.permissionUpdateAnnounced || this.missingScopes.size === 0) return
     const updateUrl = this.permissionUpdateUrl()
     if (!updateUrl) return
+    // Claim before the first await so overlapping status/title failures cannot
+    // race into duplicate cards. A failed post releases the claim for a later retry.
+    this.permissionUpdateAnnounced = true
     const text =
       'Permissions update required. Please update and re-authorize this Slack app to ensure all features work correctly.'
     try {
@@ -696,8 +699,8 @@ export class SlackConnection {
         unfurl_media: false,
         metadata: { event_type: SLACK_CHROME_EVENT_TYPE, event_payload: {} }
       })
-      this.permissionUpdateAnnounced = true
     } catch (err) {
+      this.permissionUpdateAnnounced = false
       this.rememberMissingScopes(err)
       this.deps.log?.debug(`slack: permission update card failed (ch=${channel}): ${(err as Error).message}`)
     }

@@ -833,6 +833,35 @@ describe('SlackConnection.setTitle', () => {
     )
     await expect(conn.setTitle('D1', '123.45', 'Runtime summary')).resolves.toBeUndefined()
   })
+
+  it('coalesces concurrent missing-scope notices into one card', async () => {
+    const missingScope = Object.assign(new Error('An API error occurred: missing_scope'), {
+      data: { error: 'missing_scope', needed: 'assistant:write', provided: 'chat:write' }
+    })
+    let resolveCard!: (value: { ts: string }) => void
+    const postMessage = vi.fn(
+      () =>
+        new Promise<{ ts: string }>((resolve) => {
+          resolveCard = resolve
+        })
+    )
+    const setTitle = vi.fn(async () => {
+      throw missingScope
+    })
+    const conn = new SlackConnection(
+      { ...deps(), group: { ...deps().group, appId: 'A123' }, sendIntervalMs: 0 } as any,
+      () => fakeAppWith(async () => undefined, setTitle, postMessage) as any
+    )
+
+    const first = conn.setTitle('D1', '123.45', 'First title')
+    await vi.waitFor(() => expect(postMessage).toHaveBeenCalledOnce())
+    const second = conn.setTitle('D1', '123.45', 'Second title')
+    await vi.waitFor(() => expect(setTitle).toHaveBeenCalledTimes(2))
+    expect(postMessage).toHaveBeenCalledOnce()
+
+    resolveCard({ ts: 'card-1' })
+    await Promise.all([first, second])
+  })
 })
 
 describe('SlackConnection.updateBlocks', () => {
