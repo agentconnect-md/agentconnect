@@ -5,9 +5,11 @@ import type { IntegrationChannelRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 
-/** The per-conversation trigger toggle. Channels: "@-mention" (default) vs "any
- *  message", plus an "off" segment on a gated (restricted-agent) integration —
- *  resource-visibility.md §14. DM rows are binary off/on. */
+/** The per-conversation trigger toggle: a ⚡ marker followed by the segmented
+ *  bar. Channels: "any message" vs "@-mention" (default; mention sits last),
+ *  plus an "off" segment on a gated (restricted-agent) integration —
+ *  resource-visibility.md §14. DM rows are binary off/on. Every segment
+ *  carries hover copy. */
 function TriggerToggle({
   channel,
   disabled,
@@ -27,13 +29,14 @@ function TriggerToggle({
     setSaving(true)
     Promise.resolve(onChange(trigger)).finally(() => setSaving(false))
   }
-  const seg = (trigger: IntegrationChannelRow['trigger'], label: string) => {
+  const seg = (trigger: IntegrationChannelRow['trigger'], label: string, hint: string) => {
     const active = channel.trigger === trigger
     return (
       <button
         key={trigger}
         onClick={() => pick(trigger)}
         disabled={disabled || saving}
+        title={hint}
         className={`rounded-[7px] border-0 px-3 py-[5px] font-sans text-[12.5px] leading-normal max-desktop:w-full ${
           disabled ? 'cursor-default' : 'cursor-pointer'
         } ${
@@ -47,34 +50,40 @@ function TriggerToggle({
     )
   }
   // A DM conversation activates on any message once enabled — binary off/on. A
-  // channel keeps the mention/any choice; "off" appears when gated (and, so the
-  // state stays visible, on an inert off row of a no-longer-gated integration).
-  const segs: [IntegrationChannelRow['trigger'], string][] =
+  // channel keeps the any/mention choice (mention last); "off" appears when
+  // gated (and, so the state stays visible, on an inert off row of a
+  // no-longer-gated integration).
+  const segs: [IntegrationChannelRow['trigger'], string, string][] =
     channel.kind === 'im'
       ? [
-          ['off', 'off'],
-          ['any', 'on']
+          ['off', 'off', "The agent doesn't respond in this conversation."],
+          ['any', 'on', 'The agent responds to messages in this conversation.']
         ]
       : gated || channel.trigger === 'off'
         ? [
-            ['off', 'off'],
-            ['mention', '@-mention'],
-            ['any', 'any message']
+            ['off', 'off', "The agent doesn't respond in this channel."],
+            ['any', 'any message', 'The agent responds to every message in this channel.'],
+            ['mention', '@-mention', 'The agent responds only when @-mentioned.']
           ]
         : [
-            ['mention', '@-mention'],
-            ['any', 'any message']
+            ['any', 'any message', 'The agent responds to every message in this channel.'],
+            ['mention', '@-mention', 'The agent responds only when @-mentioned.']
           ]
   return (
-    <div
-      className={
-        segs.length === 3
-          ? 'inline-flex gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[2px] max-desktop:grid max-desktop:w-full max-desktop:grid-cols-3'
-          : 'inline-flex gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[2px] max-desktop:grid max-desktop:w-full max-desktop:grid-cols-2'
-      }
-    >
-      {segs.map(([trigger, label]) => seg(trigger, label))}
-    </div>
+    <span className="inline-flex items-center gap-[7px] max-desktop:w-full">
+      <span title="Trigger — when the agent responds here" className="flex-none leading-none">
+        <Icon name="zap" size={14} color="var(--text-tertiary)" />
+      </span>
+      <div
+        className={
+          segs.length === 3
+            ? 'inline-flex flex-1 gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[2px] max-desktop:grid max-desktop:grid-cols-3'
+            : 'inline-flex flex-1 gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[2px] max-desktop:grid max-desktop:grid-cols-2'
+        }
+      >
+        {segs.map(([trigger, label, hint]) => seg(trigger, label, hint))}
+      </div>
+    </span>
   )
 }
 

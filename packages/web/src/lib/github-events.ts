@@ -50,12 +50,32 @@ export const GH_FAMILIES: { fam: GhFamily; pill: string; icon: string; label: st
   }
 ]
 
-/** The "when" dropdown's vocabulary, in menu order. */
+/** The trigger modes in display order — mention deliberately last. */
 export const GH_TRIGGER_MODES: readonly GhTriggerMode[] = ['first', 'every', 'mention']
+/** The Add-integration cadence tiles' vocabulary ("Trigger when …"). */
 export const GH_TRIGGER_LABEL: Record<GhTriggerMode, string> = {
   first: 'created',
   every: 'updated',
   mention: 'mention only'
+}
+/** The agent-detail trigger bar's segment vocabulary (shared with the IM bar's
+ *  "@-mention" wording; mention sits last there too). */
+export const GH_TRIGGER_PILL: Record<GhTriggerMode, string> = {
+  first: 'create',
+  every: 'update',
+  mention: '@-mention'
+}
+
+/** Per-segment hover copy for the trigger bar. */
+export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string): string {
+  switch (mode) {
+    case 'first':
+      return `Runs when an issue or PR is opened, plus on later @${agentName} mentions.`
+    case 'every':
+      return 'Runs on every update and reply.'
+    case 'mention':
+      return `Runs only when @${agentName} is mentioned.`
+  }
 }
 
 /** Concrete hover copy for the agent-targeted GitHub mention form. */
