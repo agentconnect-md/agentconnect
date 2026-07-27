@@ -873,9 +873,12 @@ different relay pods, the CHANNEL notice is posted only by the bot's
 connected roster at (re)assign time and re-converges on relay join, disconnect,
 and sweep (config-time orchestration; the CP is never a per-message
 round-trip) — with a local per-conversation latch on that pod. A DM has a
-SINGLE event copy, so the RECEIVING pod posts its notice, latched pool-wide and
-durably by the **`gatedDmConversations`** set (derived from the CP's `im` rows
-and re-stamped by the first DM's own `rc/bot-conversation` report). Enabling the row compiles a
+SINGLE event copy, so the RECEIVING pod posts its notice; the pool-wide latch
+is the **`noticedDmConversations`** set, which records notices ACTUALLY
+DELIVERED (reported via `rc/notice-posted` after the post, then re-stamped to
+every pod) — deliberately not derived from conversation rows, since a mixed
+bot's DM routed by its public default creates a row with no notice and must
+still receive one if it later becomes unroutable. Enabling the row compiles a
 conversation-scoped `auto` route plus a conversation-scoped **slug keyword**
 route — arbitration ranks scoped mention → keyword → auto — so a DM enabled
 for several gated agents can be addressed by slug while an unslugged DM falls

@@ -1020,6 +1020,15 @@ export function buildContainer(
         .reconcileAll()
         .catch((err) => http.log.error({ err }, 'relay: shared-bot reconcile on disconnect failed'))
     },
+    // A relay delivered a §14.3 DM gating notice — record + re-stamp the pool's
+    // latch. Swallow+log.
+    onNoticePosted: async (m) => {
+      try {
+        await sharedBot.recordNoticePosted(m)
+      } catch (err) {
+        http.log.error({ err, botId: m.botId }, 'relay: notice-posted record failed')
+      }
+    },
     // Incremental DM-conversation report (§14.3): surface a kind:'im' row (Off) on
     // the bot's gated installs so console editors can enable the DM. Swallow+log.
     onBotConversation: async (m) => {

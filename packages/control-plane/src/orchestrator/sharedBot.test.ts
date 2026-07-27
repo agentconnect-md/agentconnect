@@ -372,11 +372,23 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       await orch.reportConversation(BOT, { id: 'D42', name: '@Alice Smith' })
       expect(aliceRow).toMatchObject({ trigger: 'any', name: '@Alice Smith' })
 
-      // The report re-stamps the pool: rc/routes now carries the DM in the durable
-      // gatedDmConversations set (the pool-wide one-time DM-notice latch, §14.3).
+      // Discovery alone must NOT latch the notice: the report triggers no route
+      // re-stamp, and only rc/notice-posted (actual delivery) does.
+      expect(ch.sends.filter((s) => s.type === 'rc/routes')).toHaveLength(0)
+    })
+
+    it('recordNoticePosted re-stamps the pool with the DELIVERED conversation', async () => {
+      gatedAgents = new Set([ALICE])
+      const orch = makeOrch()
+      await orch.recordNoticePosted({ botId: BOT, channel: 'D42' })
       const routes = ch.sends.filter((s) => s.type === 'rc/routes')
       expect(routes.length).toBeGreaterThan(0)
-      expect((routes.at(-1)!.payload as { gatedDmConversations: string[] }).gatedDmConversations).toContain('D42')
+      const stamped = routes.at(-1)!.payload as { noticedDmConversations: string[] }
+      expect(stamped.noticedDmConversations).toEqual(['D42'])
+      // Idempotent: a repeat report neither grows the set nor re-pushes.
+      const before = ch.sends.length
+      await orch.recordNoticePosted({ botId: BOT, channel: 'D42' })
+      expect(ch.sends.length).toBe(before)
     })
 
     it('an enabled gated DM row compiles a scoped auto route PLUS a scoped slug keyword (§14.3)', async () => {

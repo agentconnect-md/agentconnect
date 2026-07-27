@@ -51,6 +51,10 @@ export interface SharedBotManagerDeps {
   /** Report one gated-DM conversation to the CP (§14.3, → `rc/bot-conversation`).
    *  Best-effort: loss self-heals on the counterpart's next DM. */
   reportBotConversation: (m: RcBotConversation) => boolean
+  /** Report one DELIVERED §14.3 DM gating notice (→ `rc/notice-posted`) so the CP
+   *  re-stamps the pool-wide latch. Best-effort: loss costs at most one duplicate
+   *  notice later, never a lost enablement path. */
+  reportNoticePosted: (m: { botId: string; channel: string }) => boolean
   /** Report the thread's now-resolved owner to the CP (→ `rc/thread-assign`). Returns
    *  `false` if the CP link was not READY and the frame was dropped, so the manager can
    *  retry it when the link recovers ({@link SharedBotManager.flushPendingReports}). */
@@ -222,7 +226,7 @@ export class SharedBotManager {
       | 'defaultDaemonId'
       | 'gatedAgentIds'
       | 'noticeAuthority'
-      | 'gatedDmConversations'
+      | 'noticedDmConversations'
     >
   ): void {
     // A changed gated member set may require a fresh DM fan-out (§14.3) — e.g. a
@@ -440,13 +444,15 @@ export class SharedBotManager {
     //    copies miss the authority is caught by the next one; no authority ⇒ no
     //    pod posts.
     //  • DMs have a SINGLE event copy → the RECEIVING pod posts, gated by the
-    //    DURABLE gatedDmConversations set (CP rows): the first DM is unknown
-    //    pool-wide (post; its rc/bot-conversation report re-stamps every pod),
-    //    later DMs are latched everywhere, across restarts too. (A second DM
-    //    inside the re-stamp window may double — KNOWN, low-severity.)
+    //    noticedDmConversations set — DELIVERED notices only (reported below via
+    //    rc/notice-posted and re-stamped pool-wide by the CP), never mere row
+    //    discovery: a mixed bot's DM routed by its public default creates a row
+    //    without a notice, and must still get one if it later becomes
+    //    unroutable. (A second DM inside the re-stamp window may double —
+    //    KNOWN, low-severity.)
     const a = this.router.get(botId)
     if (msg.isDm) {
-      if (a?.gatedDmConversations?.includes(msg.channel)) return
+      if (a?.noticedDmConversations?.includes(msg.channel)) return
     } else {
       const authority = a?.noticeAuthority
       if (!authority || authority !== this.deps.selfRelayId()) return
@@ -462,6 +468,8 @@ export class SharedBotManager {
           '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.',
           msg.isDm ? undefined : msg.thread
         )
+      // Pool-wide DM latch = DELIVERY, reported after the post succeeds.
+      if (msg.isDm) this.deps.reportNoticePosted({ botId, channel: msg.channel })
     } catch (err) {
       this.deps.log.warn(`shared-bot(${botId}): gating notice failed in ch=${msg.channel}: ${(err as Error).message}`)
     }

@@ -32,6 +32,7 @@ const deps = (over: Partial<SharedBotManagerDeps> = {}): SharedBotManagerDeps =>
   setChannelAgent: vi.fn(),
   reportBotChannels: vi.fn(() => true),
   reportBotConversation: vi.fn(() => true),
+  reportNoticePosted: vi.fn(() => true),
   selfRelayId: () => SELF_RELAY,
   reportThreadAssign: vi.fn(() => true),
   lookupThread: vi.fn(async () => ({ botId: BOT_ID, sessionKey: '', target: null }) as RcThreadLookupOk),
@@ -506,17 +507,65 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
     expect(ingest.postText).toHaveBeenCalledTimes(1)
   })
 
-  it('a DM already in the durable gatedDmConversations set is latched on EVERY pod', async () => {
+  it('a DM whose notice was already DELIVERED (noticedDmConversations) is latched on EVERY pod', async () => {
     const manager = new SharedBotManager(deps())
     const internals = manager as unknown as ManagerInternals
     const a = gatedAssignment()
-    a.gatedDmConversations = ['D42'] // CP rows exist — stamped on (re)assign
+    a.noticedDmConversations = ['D42'] // delivery reported + re-stamped by the CP
     internals.router.upsert(a)
     const ingest = fakeIngest()
     internals.ingests.set(BOT_ID, ingest)
 
     await internals.forward(BOT_ID, dm())
     expect(ingest.postText).not.toHaveBeenCalled()
+  })
+
+  it('a DM discovered while a public default routed it STILL gets its notice once unroutable', async () => {
+    const reportNoticePosted = vi.fn(() => true)
+    const daemon = { sendMsg: vi.fn(async (m: { msgId: string }) => ({ msgId: m.msgId, accepted: true })) }
+    const manager = new SharedBotManager(
+      deps({ reportNoticePosted, getDaemon: () => daemon as unknown as RelayDaemonConnection })
+    )
+    const internals = manager as unknown as ManagerInternals
+    const a = gatedAssignment()
+    // Mixed bot: OTHER is org-visible and catches the DM as the group default.
+    a.members = [
+      { daemonId: DAEMON_ID, agentIds: [AGENT_ID] },
+      { daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] }
+    ]
+    a.agents = [
+      { agentId: AGENT_ID, name: 'Agent' },
+      { agentId: OTHER_AGENT_ID, name: 'Public' }
+    ]
+    a.routes = [
+      {
+        agentId: OTHER_AGENT_ID,
+        daemonId: OTHER_DAEMON_ID,
+        integrationId: OTHER_INTEGRATION_ID,
+        match: { kind: 'keyword', value: 'public' }
+      }
+    ]
+    a.defaultAgentId = OTHER_AGENT_ID
+    a.defaultDaemonId = OTHER_DAEMON_ID
+    internals.router.upsert(a)
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+
+    // DM 1 routes to the public default: row discovery happens, NO notice.
+    await internals.forward(BOT_ID, dm())
+    expect(ingest.postText).not.toHaveBeenCalled()
+
+    // The public default is removed (uninstall/restriction) — DM now unroutable.
+    manager.updateRoutes(BOT_ID, {
+      members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
+      agents: [{ agentId: AGENT_ID, name: 'Agent' }],
+      routes: [],
+      gatedAgentIds: [AGENT_ID]
+      // no noticedDmConversations: discovery alone must never latch the notice
+    })
+    await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000300' }))
+    expect(ingest.postText).toHaveBeenCalledTimes(1)
+    expect(reportNoticePosted).toHaveBeenCalledWith({ botId: BOT_ID, channel: 'D42' })
   })
 
   it('reports a gated DM even when a non-gated default agent WINS the routing (mixed bot)', async () => {

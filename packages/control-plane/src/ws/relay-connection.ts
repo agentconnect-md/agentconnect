@@ -24,6 +24,7 @@ import type {
   RcRunReport,
   RcBotChannels,
   RcBotConversation,
+  RcNoticePosted,
   RcSetChannelAgent,
   RcThreadAssign,
   RcThreadLookup,
@@ -61,6 +62,9 @@ export interface RelayConnDeps {
   /** Apply an INCREMENTAL DM-conversation report (resource-visibility §14.3): fan a
    *  kind:'im' row (default Off) across the bot's gated installs. Fire-and-forget. */
   onBotConversation: (m: RcBotConversation) => Promise<void>
+  /** Record a DELIVERED §14.3 DM gating notice and re-stamp the pool's latch.
+   *  Fire-and-forget. */
+  onNoticePosted: (m: RcNoticePosted) => Promise<void>
   /** Fired after this relay left the connected registry (socket closed) — the
    *  connected roster changed, so §14.3 notice authorities must re-converge on the
    *  survivors. Best-effort; never throws. */
@@ -155,6 +159,9 @@ export class RelayConnection implements RelayChannel {
         case 'rc/bot-conversation':
           await this.deps.onBotConversation(frame.payload)
           return
+        case 'rc/notice-posted':
+          await this.deps.onNoticePosted(frame.payload)
+          return
         case 'rc/thread-assign':
           await this.handleThreadAssign(frame.payload)
           return
@@ -188,6 +195,7 @@ export class RelayConnection implements RelayChannel {
           type === 'rc/set-channel-agent' ||
           type === 'rc/bot-channels' ||
           type === 'rc/bot-conversation' ||
+          type === 'rc/notice-posted' ||
           type === 'rc/thread-assign' ||
           type === 'rc/thread-lookup' ||
           type === 'rc/github-installation'

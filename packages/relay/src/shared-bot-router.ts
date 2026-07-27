@@ -39,9 +39,9 @@ export interface BotAssignment {
   /** §14.3: the relayId deterministically responsible for this bot's one-time
    *  CHANNEL gating notices (stamped by the CP from the connected roster). */
   noticeAuthority?: string
-  /** §14.3: DM conversation ids already surfaced as CP rows — the pool-wide
-   *  DURABLE latch for single-copy DM notices. */
-  gatedDmConversations?: string[]
+  /** §14.3: DM conversation ids whose notice was ACTUALLY DELIVERED (pool-wide
+   *  latch for single-copy DM messages; never mere row discovery). */
+  noticedDmConversations?: string[]
 }
 
 /** The arbitration verdict — a target the daemon dispatches to. */
@@ -177,7 +177,7 @@ export class SharedBotRouter {
       | 'defaultDaemonId'
       | 'gatedAgentIds'
       | 'noticeAuthority'
-      | 'gatedDmConversations'
+      | 'noticedDmConversations'
     >
   ): void {
     const a = this.bots.get(botId)
@@ -189,7 +189,7 @@ export class SharedBotRouter {
     a.defaultDaemonId = patch.defaultDaemonId
     a.gatedAgentIds = patch.gatedAgentIds
     a.noticeAuthority = patch.noticeAuthority
-    a.gatedDmConversations = patch.gatedDmConversations
+    a.noticedDmConversations = patch.noticedDmConversations
   }
 
   remove(botId: string): BotAssignment | undefined {
