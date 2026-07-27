@@ -42,8 +42,45 @@ const SKILL_FILE_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i
 const MAX_FILES_PER_SKILL = 24
 const MAX_FILE_BYTES = 64 * 1024
 
+/** Records exactly which dirs this pass materialized, so the next pass can
+ *  remove the ones no longer wanted WITHOUT touching hand-authored skills or
+ *  those `installSkills` owns (it keeps its own separate marker). */
+const MARKER_DIR = '.agentconnect'
+const MARKER_FILE = 'dream-skills-install.json'
+
+interface Marker {
+  installed: string[]
+}
+
+/** Only paths this feature could have produced may drive a removal — the marker
+ *  is on-disk state an agent can edit, so its entries are untrusted input. */
+function isOwnedSkillDir(rel: string): boolean {
+  const m = /^(\.claude\/skills|\.agents\/skills)\/([a-z0-9][a-z0-9-]{0,62})$/.exec(rel)
+  return m !== null
+}
+
+async function readMarker(cwd: string): Promise<Marker> {
+  try {
+    const raw = await fsp.readFile(join(cwd, MARKER_DIR, MARKER_FILE), 'utf8')
+    const parsed = JSON.parse(raw) as Marker
+    return { installed: Array.isArray(parsed.installed) ? parsed.installed.filter(isOwnedSkillDir) : [] }
+  } catch {
+    return { installed: [] }
+  }
+}
+
+async function writeMarker(cwd: string, marker: Marker): Promise<void> {
+  try {
+    await fsp.mkdir(join(cwd, MARKER_DIR), { recursive: true })
+    await fsp.writeFile(join(cwd, MARKER_DIR, MARKER_FILE), JSON.stringify(marker), 'utf8')
+  } catch {
+    // best-effort: a lost marker costs a stale dir, never a failed session
+  }
+}
+
 export interface MaterializeResult {
   installed: string[]
+  removed: string[]
   errors: Array<{ skill: string; error: string }>
 }
 
@@ -77,14 +114,33 @@ export async function materializeAcceptedDreamSkills(
   acpCwd: string,
   opts: { warn?: (msg: string) => void } = {}
 ): Promise<MaterializeResult> {
-  const result: MaterializeResult = { installed: [], errors: [] }
+  const result: MaterializeResult = { installed: [], removed: [], errors: [] }
   const rootRel = skillRootFor(agent.runtime)
   if (!rootRel) return result // no mapping for this runtime; nothing to do
 
   const names = await acceptedDreamSkillNames({ dir: agent.dir })
-  if (names.length === 0) return result
-
   const skillsRoot = join(acpCwd, ...rootRel.split('/'))
+
+  // RECONCILE FIRST, and even when this agent accepted nothing. A checkout can
+  // be shared between agents, so a skill agent A accepted must not still be
+  // sitting in the runtime's discovery root when agent B is prepared — that
+  // would hand B executable instruction content it never reviewed.
+  const desired = new Set(names.map((name) => `${rootRel}/${name}`))
+  const prior = await readMarker(acpCwd)
+  for (const rel of prior.installed) {
+    if (desired.has(rel)) continue
+    try {
+      await containedRemoveDir(acpCwd, join(acpCwd, ...rel.split('/').slice(0, -1)), join(acpCwd, ...rel.split('/')))
+      result.removed.push(rel)
+    } catch (err) {
+      opts.warn?.(`skills: could not remove stale dream skill "${rel}" — ${err instanceof Error ? err.message : ''}`)
+    }
+  }
+  if (names.length === 0) {
+    await writeMarker(acpCwd, { installed: [] })
+    return result
+  }
+
   for (const name of names) {
     const source = join(agent.dir, ACCEPTED_SKILLS_DIRNAME, name)
     const destDir = join(skillsRoot, name)
@@ -95,20 +151,31 @@ export async function materializeAcceptedDreamSkills(
 
       // Read the canonical (daemon-owned) copy. Symlinks are not followed here
       // either: the accepted tree should only ever contain regular files.
-      const entries = (await fsp.readdir(source, { withFileTypes: true }))
-        .filter((e) => e.isFile() && !e.isSymbolicLink() && SKILL_FILE_RE.test(e.name))
-        .slice(0, MAX_FILES_PER_SKILL)
-      if (!entries.some((e) => e.name === 'SKILL.md')) {
+      // The accepted tree is `SKILL.md` plus an optional FLAT `scripts/` dir —
+      // exactly what DreamRunner stages. Copying only the top level would report
+      // success while silently dropping every reviewed script.
+      const files: Array<{ rel: string; abs: string }> = []
+      for (const entry of await fsp.readdir(source, { withFileTypes: true })) {
+        if (entry.isFile() && !entry.isSymbolicLink() && SKILL_FILE_RE.test(entry.name)) {
+          files.push({ rel: entry.name, abs: join(source, entry.name) })
+        } else if (entry.isDirectory() && !entry.isSymbolicLink() && entry.name === 'scripts') {
+          for (const script of await fsp.readdir(join(source, 'scripts'), { withFileTypes: true })) {
+            if (!script.isFile() || script.isSymbolicLink() || !SKILL_FILE_RE.test(script.name)) continue
+            files.push({ rel: `scripts/${script.name}`, abs: join(source, 'scripts', script.name) })
+          }
+        }
+      }
+      if (!files.some((f) => f.rel === 'SKILL.md')) {
         result.errors.push({ skill: name, error: 'accepted skill has no SKILL.md' })
         continue
       }
-      for (const entry of entries) {
-        const body = await fsp.readFile(join(source, entry.name))
+      for (const file of files.slice(0, MAX_FILES_PER_SKILL)) {
+        const body = await fsp.readFile(file.abs)
         if (body.byteLength > MAX_FILE_BYTES) {
-          result.errors.push({ skill: name, error: `${entry.name} exceeds the size cap` })
+          result.errors.push({ skill: name, error: `${file.rel} exceeds the size cap` })
           continue
         }
-        await publish(acpCwd, skillsRoot, join(destDir, entry.name), body)
+        await publish(acpCwd, skillsRoot, join(destDir, ...file.rel.split('/')), body)
       }
       result.installed.push(`${rootRel}/${name}`)
     } catch (err) {
@@ -122,5 +189,6 @@ export async function materializeAcceptedDreamSkills(
       )
     }
   }
+  await writeMarker(acpCwd, { installed: result.installed })
   return result
 }

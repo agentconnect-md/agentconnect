@@ -84,6 +84,47 @@ describe('materializeAcceptedDreamSkills', () => {
     expect(existsSync(join(cwd, '.claude/skills', name, 'gone.md'))).toBe(false)
   })
 
+  it('copies the staged scripts/ subtree, not just the top level', async () => {
+    // DreamRunner stages `<skill>/scripts/<file>`. Copying only top-level files
+    // reported success while every reviewed script silently vanished.
+    const { dir, cwd, name } = await fixture()
+    await mkdir(join(dir, 'skills', name, 'scripts'), { recursive: true })
+    await writeFile(join(dir, 'skills', name, 'scripts', 'run.sh'), '#!/bin/sh\necho go\n', 'utf8')
+
+    const result = await materializeAcceptedDreamSkills({ dir, runtime: 'claude' }, cwd)
+    expect(result.errors).toEqual([])
+    expect(await readFile(join(cwd, '.claude/skills', name, 'scripts', 'run.sh'), 'utf8')).toContain('echo go')
+  })
+
+  it('does not leak one agent’s accepted skill into another sharing the checkout', async () => {
+    // Shared checkouts are supported: preparing agent A then agent B must not
+    // leave A's executable instruction content in B's discovery root.
+    const { dir: dirA, cwd, name } = await fixture()
+    await materializeAcceptedDreamSkills({ dir: dirA, runtime: 'claude' }, cwd)
+    expect(existsSync(join(cwd, '.claude/skills', name, 'SKILL.md'))).toBe(true)
+
+    // Agent B shares the cwd and has accepted nothing.
+    const dirB = await mkdtemp(join(tmpdir(), 'ac-agent-b-'))
+    const result = await materializeAcceptedDreamSkills({ dir: dirB, runtime: 'claude' }, cwd)
+
+    expect(result.removed).toEqual([`.claude/skills/${name}`])
+    expect(existsSync(join(cwd, '.claude/skills', name))).toBe(false)
+  })
+
+  it('leaves skills it does not own alone while reconciling', async () => {
+    // Hand-authored skills (and anything installSkills owns) share the root.
+    const { dir, cwd, name } = await fixture()
+    await materializeAcceptedDreamSkills({ dir, runtime: 'claude' }, cwd)
+    await mkdir(join(cwd, '.claude/skills', 'hand-written'), { recursive: true })
+    await writeFile(join(cwd, '.claude/skills', 'hand-written', 'SKILL.md'), 'mine', 'utf8')
+
+    const dirB = await mkdtemp(join(tmpdir(), 'ac-agent-b-'))
+    await materializeAcceptedDreamSkills({ dir: dirB, runtime: 'claude' }, cwd)
+
+    expect(existsSync(join(cwd, '.claude/skills', name))).toBe(false) // ours, reconciled away
+    expect(existsSync(join(cwd, '.claude/skills', 'hand-written', 'SKILL.md'))).toBe(true) // not ours
+  })
+
   it('skips a malformed accepted skill without failing the others', async () => {
     const { dir, cwd } = await fixture()
     await mkdir(join(dir, 'skills', 'broken'), { recursive: true })
