@@ -241,15 +241,20 @@ describe('DreamRunner pipeline', () => {
     // ACP runtime that drops session/cancel. The runner's grace window must still
     // release the reservation so a replacement dream can run.
     let calls = 0
+    let markFirstExtractionReady!: () => void
+    const firstExtractionReady = new Promise<void>((resolve) => {
+      markFirstExtractionReady = resolve
+    })
     const { store, runner } = await setup({
       cancelGraceMs: 20,
       extract: (_a, _s, _p, _signal) => {
         if (calls++ > 0) return Promise.resolve(PROPOSAL)
+        markFirstExtractionReady()
         return new Promise<string>(() => {}) // never resolves, ignores abort
       }
     })
     const first = await runner.start('a1', { trigger: 'manual' })
-    await new Promise((r) => setTimeout(r, 10))
+    await firstExtractionReady
     runner.cancel('a1', first.dreamId)
     const done = await settle(store, first.dreamId)
     expect(done.status).toBe('canceled')
