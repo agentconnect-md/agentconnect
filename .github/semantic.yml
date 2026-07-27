@@ -1,0 +1,3 @@
+# Require Conventional Commits syntax in pull request titles.
+enabled: true
+titleOnly: true
