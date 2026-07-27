@@ -3563,6 +3563,12 @@ export class Daemon {
     // continues it). No-op on other platforms.
     this.canonicalizeTelegramThread(msg)
 
+    // §14.3: gated-DM discovery must PRECEDE command interception — an Off DM
+    // whose first inbound is a control command is refused by command authz, but
+    // still needs its pending row + one-time notice. Idempotent/latched, and a
+    // no-op for enabled conversations, so the later route-miss call may repeat it.
+    this.maybeGatedNotice(msg, srcIntegrationIds ?? [], { dmOnly: true })
+
     // In-conversation control commands (`!stop` / `!queue …`) act on the running
     // agent and never reach it as a prompt — intercept before routing/dispatch.
     const command = parseCommand(msg.text)
@@ -10851,20 +10857,22 @@ export class Daemon {
    * bot must never look silently broken — and a gated DM conversation is reported to
    * the CP so the console can offer enabling it. Bot senders are never noticed.
    */
-  private maybeGatedNotice(msg: NormalizedMessage, srcIntegrationIds: string[]): void {
+  private maybeGatedNotice(msg: NormalizedMessage, srcIntegrationIds: string[], opts?: { dmOnly?: boolean }): void {
     if (msg.sender.isBot || msg.source !== 'user') return
     // Slack `app_mention` payloads may omit channel_type, so hedge on the D-prefix.
     const isDm = msg.isDm || (msg.platform === 'slack' && msg.channel.startsWith('D'))
+    if (opts?.dmOnly && !isDm) return
     for (const integrationId of srcIntegrationIds) {
       const int = this.integrationConfigById(integrationId)
       if (!int || int.platform !== msg.platform) continue
       const routing = integrationRouting(int)
       if (!routing.gated) continue
+      // An ENABLED conversation never gets a report/notice — this guard makes the
+      // helper safe from the pre-command call site, which sees every DM.
+      if (routing.bindRules.some((r) => r.channel === msg.channel)) continue
       const botUserId = this.botUserIds[integrationId] ?? routing.staticBotUserId ?? ''
       const addressed = isDm || (botUserId !== '' && msg.mentionedBots.includes(botUserId))
       if (!addressed) continue
-      // Reaching here ⇒ the conversation is Off/unknown for this gated integration
-      // (an enabled conversation would have routed via its scoped rule).
       if (isDm) this.reportGatedDm(integrationId, msg)
       const latch = `${integrationId}:${msg.channel}`
       if (this.gatedNoticesSent.has(latch)) return

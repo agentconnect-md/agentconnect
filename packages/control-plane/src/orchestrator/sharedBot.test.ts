@@ -387,6 +387,14 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       )
     })
 
+    it('an enabled im row of a NON-gated owner is inert: no scoped route (DMs stay on defaultAgentId)', async () => {
+      // ALICE flipped restricted → org with an enabled DM row left behind (§14.4).
+      channels = [channel({ integrationId: INT_A, channelId: 'D42', kind: 'im', agentId: ALICE, trigger: 'any' })]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.routes.filter((r) => r.scope?.channel === 'D42')).toEqual([])
+    })
+
     it('lookupThread refuses a binding to a gated agent whose conversation is off', async () => {
       gatedAgents = new Set([ALICE])
       threadBinding = { agentId: ALICE, daemonId: D1 }

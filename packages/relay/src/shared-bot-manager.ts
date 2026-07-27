@@ -130,8 +130,15 @@ export class SharedBotManager {
   private readonly pendingChannelReports = new Map<string, RcBotChannels>()
   /** §14 one-time gating-notice latch (`botId:channel`) — per relay lifetime. */
   private readonly gatedNoticesSent = new Set<string>()
-  /** §14.3 per-conversation DM-report latch (`botId:channel`) — per relay lifetime. */
+  /** §14.3 per-conversation DM-report latch (`botId:channel`) — scoped to the
+   *  CURRENT bot assignment: cleared on assign/unassign and whenever the gated
+   *  member set changes, since rows belong to the installs of that moment. */
   private readonly gatedDmReported = new Set<string>()
+
+  private clearGatedDmLatches(botId: string): void {
+    const prefix = `${botId}:`
+    for (const k of [...this.gatedDmReported]) if (k.startsWith(prefix)) this.gatedDmReported.delete(k)
+  }
 
   constructor(private readonly deps: SharedBotManagerDeps) {}
 
@@ -167,6 +174,9 @@ export class SharedBotManager {
 
   /** `rc/bot-assign` — (re)load the routing table + (re)build the bot's HTTP ingest. */
   async assign(a: BotAssignment): Promise<void> {
+    // A full (re)assignment can mean new installs / a changed gated set — stale
+    // DM-report latches would starve a later gated install of its pending row.
+    this.clearGatedDmLatches(a.botId)
     this.router.upsert(a)
     if (a.platform !== 'slack') {
       this.deps.log.warn(`shared-bot(${a.botId}): platform '${a.platform}' ingest not yet supported (milestone C)`)
@@ -201,11 +211,17 @@ export class SharedBotManager {
     botId: string,
     patch: Pick<BotAssignment, 'members' | 'agents' | 'routes' | 'defaultAgentId' | 'defaultDaemonId' | 'gatedAgentIds'>
   ): void {
+    // A changed gated member set may require a fresh DM fan-out (§14.3) — e.g. a
+    // newly restricted or newly installed member needs its own pending Off row.
+    const prev = this.router.get(botId)?.gatedAgentIds ?? []
+    const next = patch.gatedAgentIds ?? []
+    if (prev.length !== next.length || !prev.every((id) => next.includes(id))) this.clearGatedDmLatches(botId)
     this.router.updateRoutes(botId, patch)
   }
 
   /** `rc/bot-unassign` — drop the routes + close the ingest. */
   async unassign(botId: string): Promise<void> {
+    this.clearGatedDmLatches(botId)
     this.router.remove(botId)
     await this.stopIngest(botId)
   }

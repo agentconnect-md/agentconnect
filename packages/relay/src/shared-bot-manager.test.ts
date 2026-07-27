@@ -529,6 +529,39 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
     expect(ingest.postText).not.toHaveBeenCalled()
   })
 
+  it('resets the DM-report latch when the gated member set changes (new install needs its row)', async () => {
+    const reportBotConversation = vi.fn(() => true)
+    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const internals = manager as unknown as ManagerInternals
+    const a = gatedAssignment()
+    internals.router.upsert(a)
+    internals.ingests.set(BOT_ID, fakeIngest())
+
+    await internals.forward(BOT_ID, dm())
+    expect(reportBotConversation).toHaveBeenCalledTimes(1) // latched for this assignment
+
+    // A routes update with a CHANGED gated set (e.g. a newly restricted install)
+    // must invalidate the latch so the next DM fans out the new install's row.
+    manager.updateRoutes(BOT_ID, {
+      members: a.members,
+      agents: a.agents,
+      routes: a.routes,
+      gatedAgentIds: [AGENT_ID, OTHER_AGENT_ID]
+    })
+    await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000200' }))
+    expect(reportBotConversation).toHaveBeenCalledTimes(2)
+
+    // An unchanged gated set keeps the latch.
+    manager.updateRoutes(BOT_ID, {
+      members: a.members,
+      agents: a.agents,
+      routes: a.routes,
+      gatedAgentIds: [AGENT_ID, OTHER_AGENT_ID]
+    })
+    await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000300' }))
+    expect(reportBotConversation).toHaveBeenCalledTimes(2)
+  })
+
   it('retries the DM report on the next DM when the CP link was down', async () => {
     let ready = false
     const reportBotConversation = vi.fn(() => ready)
