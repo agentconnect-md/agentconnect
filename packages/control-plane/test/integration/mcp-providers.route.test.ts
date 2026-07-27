@@ -233,4 +233,54 @@ describe('DELETE /mcp-providers/:id — serialized against agent enable-list wri
     expect((await del).statusCode).toBe(409) // A's restore committed first — the reference is seen
     expect((await app.app.inject({ method: 'GET', url: `${ORG}/mcp-providers/${providerId}` })).statusCode).toBe(200)
   })
+
+  it('a sibling-field PATCH omitting mcpServers cannot restore a concurrently-removed name (atomic bag merge)', async () => {
+    // runtimeOverrides is ONE JsonB bag, so a model-only PATCH re-writes the whole
+    // bag from what it read. Unlocked, it could carry a stale mcpServers key back
+    // after another PATCH removed it — behind the DELETE guard's back and without
+    // ever joining a provider chain (it submits no mcpServers). The repo now
+    // row-locks the bag read (FOR UPDATE), so bag writers fully serialize and the
+    // sibling PATCH merges onto the post-removal bag. An external row lock parks
+    // BOTH patches at their bag read so they queue and serialize behind it.
+    const app = makeApp()
+    const providerId = await createProvider(app, 'linear')
+    const agentId = await createAgent(app, 'sibling-racer', ['linear'])
+
+    let releaseRow!: () => void
+    const rowHeld = new Promise<void>((r) => (releaseRow = r))
+    let rowLocked!: () => void
+    const lockedRow = new Promise<void>((r) => (rowLocked = r))
+    const externalLock = prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
+        rowLocked()
+        await rowHeld
+      },
+      { timeout: 20_000 }
+    )
+    await lockedRow
+
+    const removal = app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { mcpServers: [] }
+    })
+    await settleTick(250)
+    const sibling = app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { model: 'stale-sibling' }
+    })
+    await settleTick(250)
+
+    releaseRow()
+    await externalLock
+    expect((await removal).statusCode).toBe(200)
+    expect((await sibling).statusCode).toBe(200)
+
+    const agent = (await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })).json()
+    expect(agent.model).toBe('stale-sibling')
+    expect(agent.mcpServers).toEqual([]) // the omitted key did NOT restore 'linear'
+    expect((await app.app.inject({ method: 'DELETE', url: `${ORG}/mcp-providers/${providerId}` })).statusCode).toBe(204)
+  })
 })
