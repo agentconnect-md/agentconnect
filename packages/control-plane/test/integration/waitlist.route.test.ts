@@ -341,6 +341,44 @@ describe('waitlist admission — POST /waitlist/redeem', () => {
     }
   })
 
+  it('same-user retry stays 200 even after the link later expires or is revoked (bound + bearer)', async () => {
+    const boundToken = await approveAndMint('wl-retry@acme.dev')
+    const { app, close } = buildApp()
+    try {
+      // ── bound link ──
+      const h = await headers('wl-retry', 'wl-retry@acme.dev')
+      await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      const redeem = (token: string, hdrs: Record<string, string>) =>
+        app.inject({ method: 'POST', url: '/api/v1/waitlist/redeem', headers: hdrs, payload: { token } })
+
+      expect((await redeem(boundToken, h)).statusCode).toBe(200)
+      // Expiring the link AFTER redemption must not break the same user's retry.
+      await prisma.waitlistEntry.update({
+        where: { email: 'wl-retry@acme.dev' },
+        data: { joinExpiresAt: new Date(Date.now() - 1000) }
+      })
+      expect((await redeem(boundToken, h)).statusCode).toBe(200)
+      // Nor must a post-redemption revoke.
+      await prisma.waitlistEntry.update({ where: { email: 'wl-retry@acme.dev' }, data: { revokedAt: new Date() } })
+      expect((await redeem(boundToken, h)).statusCode).toBe(200)
+
+      // ── bearer link ──
+      const { token: bearerToken, tokenHash } = await mintOpenLink()
+      const hb = await headers('wl-retry-bearer', 'rb@acme.dev')
+      await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: hb })
+      expect((await redeem(bearerToken, hb)).statusCode).toBe(200)
+      await prisma.waitlistEntry.update({ where: { tokenHash }, data: { revokedAt: new Date() } })
+      expect((await redeem(bearerToken, hb)).statusCode).toBe(200) // same user, still ok
+
+      // A DIFFERENT user hitting the now-revoked bearer link is refused.
+      const other = await headers('wl-retry-other', 'other@acme.dev')
+      await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: other })
+      expect((await redeem(bearerToken, other)).statusCode).toBe(410)
+    } finally {
+      await close()
+    }
+  })
+
   it('refuses when the signed-in email differs from the link email', async () => {
     const token = await approveAndMint('wl-owner@acme.dev')
     const { app, close } = buildApp()

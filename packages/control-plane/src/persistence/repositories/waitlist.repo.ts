@@ -80,12 +80,19 @@ export class PgWaitlistRepo implements WaitlistRepo {
       await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "waitlist_entry" WHERE "tokenHash" = ${tokenHash} FOR UPDATE`)
 
       const entry = await tx.waitlistEntry.findUnique({ where: { tokenHash } })
-      // Unknown / not-approved / revoked / expired → indistinguishable "invalid" to
-      // avoid leaking which condition failed.
-      if (!entry || entry.status !== 'approved' || entry.revokedAt) return { status: 'invalid' }
+      if (!entry) return { status: 'invalid' }
+      // Idempotency FIRST (§6): once THIS user has redeemed the link, a repeat always
+      // succeeds — even if the link was later revoked or expired. Their account is
+      // already activated, so a retry must not be punished. This must precede the
+      // approval/revoke/expiry gates below (a DIFFERENT user still fails there).
+      if (entry.redeemedByUserId === userId) return { status: 'activated' }
+
+      // From here the link is unredeemed or was taken by someone else. Unknown /
+      // not-approved / revoked / expired / already-taken all collapse to an
+      // indistinguishable "invalid" so we don't leak which condition failed.
+      if (entry.status !== 'approved' || entry.revokedAt) return { status: 'invalid' }
       if (entry.joinExpiresAt && entry.joinExpiresAt.getTime() < now.getTime()) return { status: 'invalid' }
-      // Already redeemed by a DIFFERENT user — every link is one-use/one-user.
-      if (entry.redeemedByUserId && entry.redeemedByUserId !== userId) return { status: 'invalid' }
+      if (entry.redeemedByUserId) return { status: 'invalid' } // redeemed by a DIFFERENT user
 
       // Conditional email binding (§6). A row WITH an email is bound: the signed-in
       // user's verified email must match the one the link was minted for (surfaced so
@@ -103,16 +110,15 @@ export class PgWaitlistRepo implements WaitlistRepo {
       if (!user) return { status: 'invalid' }
 
       // Activate (idempotent) + create the personal org (idempotent) + stamp the
-      // redemption. All within this locked transaction.
+      // redemption. All within this locked transaction. `redeemedByUserId` is null
+      // here (the same-user short-circuit and different-user reject are both above).
       if (!user.activatedAt) await tx.user.update({ where: { id: userId }, data: { activatedAt: now } })
       const realEmail = isSyntheticEmail(user.email) ? normalizedEmail : user.email
       await ensurePersonalOrg(tx, userId, user.displayName, realEmail)
-      if (!entry.redeemedByUserId) {
-        await tx.waitlistEntry.update({
-          where: { tokenHash },
-          data: { redeemedByUserId: userId, redeemedAt: now, redeemedEmail: normalizedEmail }
-        })
-      }
+      await tx.waitlistEntry.update({
+        where: { tokenHash },
+        data: { redeemedByUserId: userId, redeemedAt: now, redeemedEmail: normalizedEmail }
+      })
       return { status: 'activated' }
     })
   }

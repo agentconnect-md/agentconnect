@@ -107,7 +107,7 @@ export function waitlistRoutes(deps: HttpDeps) {
           tags: [Tag.Profile],
           summary: 'Redeem a waitlist activation link',
           description:
-            'Redeem the join link minted for the signed-in user, making them a formal (activated) user with a personal org. The link’s email must match the caller’s verified email. Idempotent on repeat by the same user. Requires OIDC sign-in with a verified email.',
+            'Redeem an activation link, making the signed-in user a formal (activated) user with a personal org. A link minted for a specific email must be redeemed by that verified email; an email-less bearer link may be redeemed by any verified identity and binds to the first redeemer (one use). Idempotent on repeat by the same user. Requires OIDC sign-in with a verified email.',
           operationId: 'redeemWaitlistLink',
           body: WaitlistRedeemBody,
           response: {
