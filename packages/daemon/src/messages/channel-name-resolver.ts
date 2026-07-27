@@ -7,7 +7,14 @@ import type { Logger } from '../log.js'
  * no name of its own.
  */
 export interface ChannelInfoSource {
-  getChannelInfo(channel: string): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean }>
+  getChannelInfo(channel: string): Promise<{
+    id: string
+    name?: string
+    isIm?: boolean
+    isPrivate?: boolean
+    /** Enclosing channel name when `channel` is itself a thread (Discord). */
+    parentName?: string
+  }>
   getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }>
 }
 
@@ -75,8 +82,12 @@ export class ChannelNameResolver {
       const info = await src.getChannelInfo(channel)
       // A named channel/group is saved bare (the console prefixes "#"); a DM that carries
       // its own handle (a Telegram @username) is saved "@name" so readers can tell it apart.
-      if (info.name) {
-        this.save(channel, info.isIm ? `@${info.name}` : info.name)
+      // A Discord session keys on the THREAD id, whose own name is the turn's title — label
+      // it with the enclosing channel instead, so the console reads "#general" the way a
+      // threaded Slack session does.
+      const name = info.parentName ?? info.name
+      if (name) {
+        this.save(channel, info.isIm ? `@${name}` : name)
         return
       }
       // A DM with no name of its own (a Discord DM channel) — label it by the human on the
