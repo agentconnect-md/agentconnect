@@ -68,7 +68,13 @@ export const IntegrationSlackConfig = z
     shareable: z.boolean().default(false),
     botUserId: z.string().optional(), // lazily resolved via auth.test; may be seeded by CP
     allowedUserIds: z.array(z.string()).default([]),
-    bindRules: z.array(IntegrationBindRule).default([]) // empty for shared (relay arbitrates)
+    bindRules: z.array(IntegrationBindRule).default([]), // empty for shared (relay arbitrates)
+    // Conversation gating (resource-visibility.md §14): true ⇒ this integration is
+    // fail-closed — the CP ships only conversation-scoped bindRules (no unscoped
+    // defaults), and the daemon answers explicitly-addressed unrouted messages with
+    // a one-time notice + reports DM conversations. Derived from the owning agent's
+    // restricted visibility; carries NO identities. Defaults false (pre-field specs).
+    gated: z.boolean().default(false)
   })
   .superRefine((c, ctx) => {
     if (c.mode === 'direct' && !c.appToken)
@@ -84,7 +90,8 @@ export type IntegrationSlackConfig = z.infer<typeof IntegrationSlackConfig>
 export const IntegrationTelegramConfig = z.object({
   botToken: z.string(), // BotFather "123456:ABC…"  (plaintext — never log)
   allowedUserIds: z.array(z.string()).default([]),
-  bindRules: z.array(IntegrationBindRule).default([])
+  bindRules: z.array(IntegrationBindRule).default([]),
+  gated: z.boolean().default(false) // conversation gating — see IntegrationSlackConfig.gated
 })
 export type IntegrationTelegramConfig = z.infer<typeof IntegrationTelegramConfig>
 
@@ -98,7 +105,8 @@ export const IntegrationDiscordConfig = z.object({
   botToken: z.string(), // Bot <token>  (plaintext — never log)
   applicationId: z.string().optional(), // client/application id — public, for the invite URL
   allowedUserIds: z.array(z.string()).default([]),
-  bindRules: z.array(IntegrationBindRule).default([])
+  bindRules: z.array(IntegrationBindRule).default([]),
+  gated: z.boolean().default(false) // conversation gating — see IntegrationSlackConfig.gated
 })
 export type IntegrationDiscordConfig = z.infer<typeof IntegrationDiscordConfig>
 
@@ -126,7 +134,8 @@ export const IntegrationFeishuConfig = z.object({
   botOpenId: z.string().optional(), // bot's own open_id; lazily resolved via bot/info
   region: FeishuRegion.default('feishu'), // open-platform gateway: feishu.cn vs larksuite.com
   allowedUserIds: z.array(z.string()).default([]),
-  bindRules: z.array(IntegrationBindRule).default([])
+  bindRules: z.array(IntegrationBindRule).default([]),
+  gated: z.boolean().default(false) // conversation gating — see IntegrationSlackConfig.gated
 })
 export type IntegrationFeishuConfig = z.infer<typeof IntegrationFeishuConfig>
 
@@ -175,11 +184,18 @@ export const IntegrationRemove = z.object({
 })
 export type IntegrationRemove = z.infer<typeof IntegrationRemove>
 
-/** One channel the bot is currently a member of (metadata only — no messages). */
+/**
+ * One conversation the bot participates in (metadata only — no messages).
+ * `kind` distinguishes member channels from DM conversations (resource-
+ * visibility.md §14.3): absent = 'channel' for wire compatibility. DM rows
+ * (`kind: 'im'`, Slack "D…" ids) are reported only for gated integrations, on
+ * first inbound DM; their `name` is the counterpart's display name.
+ */
 export const IntegrationChannel = z.object({
-  id: z.string(), // platform channel id (Slack "C…")
-  name: z.string().optional(), // "#deploys" without the hash; absent if lookup failed
-  isPrivate: z.boolean().optional()
+  id: z.string(), // platform conversation id (Slack "C…" / DM "D…")
+  name: z.string().optional(), // "#deploys" without the hash (or DM counterpart); absent if lookup failed
+  isPrivate: z.boolean().optional(),
+  kind: z.enum(['channel', 'im']).optional() // absent = 'channel'
 })
 export type IntegrationChannel = z.infer<typeof IntegrationChannel>
 

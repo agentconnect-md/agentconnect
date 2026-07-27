@@ -3,8 +3,12 @@
 > **Status:** Implemented. The schema, server predicates, Console enforcement,
 > sharing controls, and referenced-resource validation all use the same
 > visibility contract. User-facing labels are **Everyone** and **Selected**.
+> Section 14 (platform conversation gating) is a **proposed** addendum, not yet
+> implemented.
 >
-> **Scope:** control-plane + web. The daemon execution data plane is unaffected.
+> **Scope:** control-plane + web. The daemon execution data plane is unaffected
+> except for §14, which extends restricted visibility to platform ingress via a
+> derived per-conversation gate (protocol + daemon + web).
 >
 > `McpProvider` uses the same `visibility` and `sharedWith` model, including
 > pruning on member removal. Webchat ingress runs through the relay; the
@@ -549,6 +553,13 @@ Visibility is purely a **Console read-model concern**, enforced only on Control
 Plane REST, WebSocket, and SSE read paths. A daemon neither knows nor needs to
 know who can see a resource.
 
+Section 14 introduces one deliberate, **derived-form** exception: for a
+restricted agent the CP assembles different integration bind rules and a
+boolean `gated` flag. The invariant that survives is that **no owner, viewer,
+or `sharedWith` identity ever crosses the wire** — the daemon learns that an
+integration is fail-closed, never who may see the agent — and placement reads
+stay unfiltered exactly as above.
+
 ## 10. Schema Compatibility
 
 The current schema baseline is
@@ -697,3 +708,231 @@ non-creator, non-owner collaborator has `canManageSharing=false`; and
 7. **Drop the entire SSE `/stream` envelope for an invisible agent.** Resolve
    `agentId -> canView` per envelope and send nothing when false. A restricted
    agent remains completely invisible, matching list/get 404 semantics.
+
+## 14. Platform conversation gating (private agents) — proposed
+
+> **Status:** Proposed — product design agreed, implementation not started.
+> Scope: protocol + daemon + control-plane + web. Slack is the driving case;
+> the mechanism is platform-generic (Telegram / Discord / Feishu integrations
+> share the same bind-rule shape).
+
+### 14.1 Problem
+
+The sections above protect a restricted agent in the Console, but the moment it
+gets a platform integration the IM surface is fail-open: **any workspace member
+can invite the bot into any channel, or DM it, and talk to the private agent.**
+
+The platform cannot fix this for us. Slack's app approval governs who may
+_install_ an app, not who may _use_ it; there is no per-user invite ACL. Once
+installed, every member can add the bot to channels they are in and can open a
+DM with it. Native mitigations (private channels, disabling the App Home
+Messages tab) are coarse, app-global, and do not compose with per-agent
+semantics — especially not for a shared (whole-pool) bot serving many agents.
+So authorization must live in AgentConnect's own routing layer.
+
+### 14.2 Product design
+
+**Per-conversation tri-state.** The existing per-channel trigger
+(`mention` | `any`) gains a third state:
+
+| State            | Meaning                                                  |
+| ---------------- | -------------------------------------------------------- |
+| **Off**          | The agent does not activate in this conversation at all. |
+| **Mention**      | Activates on explicit @-mention (today's default).       |
+| **All messages** | Activates on any message (today's `any`).                |
+
+**Gating applies only to restricted agents.**
+
+- **Org-visible agents keep exactly today's behavior.** Unscoped mention
+  default everywhere, DMs open to the whole workspace, per-channel "All
+  messages" opt-in. Nothing changes for them — no new rows, no new UX.
+- **Restricted agents are gated: every conversation defaults to Off.** When
+  the bot is invited to a channel, the channel appears on the integration card
+  in a pending/Off state. An **editor must enable it in the Console**, choosing
+  Mention or All messages. Because the Console is itself protected by this
+  design's predicates, the set of people who can enable a conversation is
+  exactly the private group — the two ACL worlds meet here without any
+  Slack↔AgentConnect identity mapping.
+
+**DMs are conversations too (restricted agents only).** For a gated
+integration, each DM conversation is listed as its own row (platform DM
+conversation id, displayed with the counterpart's name), default **Off**,
+individually enabled by an editor. The integration card groups rows into
+**Channels** and **Direct messages**; DM rows are binary (Off / On — a DM needs
+no mention distinction). Public agents' DMs stay open and produce no rows.
+
+**Behavior of an Off conversation.**
+
+- The bot stays in the channel (no auto-leave) but does not activate: plain
+  messages, keyword/auto triggers, thread follow-ups, and bot-authored
+  activations are all dropped.
+- An **explicitly addressed** message — an @-mention of the bot, or a DM —
+  receives a **one-time per-conversation notice** ("This agent isn't enabled in
+  this conversation. Ask an admin to enable it in the AgentConnect console.")
+  so the bot never appears silently broken, and access pressure is routed to
+  the editors. Subsequent addressed messages in the same conversation are
+  dropped silently.
+- The Console shows a pending indicator on conversations awaiting a decision.
+- Optional (nice-to-have): a "Leave channel" action on a channel row for
+  unwanted invites (`conversations.leave`).
+
+**Trust model — authorize places, not people.** Enabling a channel entrusts
+that channel's **entire current and future membership**. That is a deliberate
+trade-off: the unit of authorization is the conversation, and Slack-native
+membership (especially private channels) governs who is inside it. Per-user
+filtering (the daemon's dormant `allowedUserIds`, or identity mapping that
+would enforce agent visibility directly at ingress) remains a possible future
+overlay — see §14.6.
+
+**Inbound only.** Gating governs **inbound activation** exclusively. Outbound
+deliveries — cron and hook targets posting into a conversation — are already
+editor-configured and keep working regardless of the conversation's state.
+
+### 14.3 Mechanism
+
+**Enforcement points.** The Console is only a configuration surface; where the
+gate executes depends on the transport:
+
+- **Direct (socket) integrations** terminate in the daemon's `routeRules`
+  arbitration over the merged rule set — the scoped-rules mechanism below is the
+  complete gate.
+- **Shared (http) integrations do NOT pass through `routeRules`**: the relay
+  arbitrates from the CP-compiled attributed route table and forwards
+  pre-addressed (`handleRelayIm` dispatches without local routing). The gate is
+  therefore two-layered: (1) **primary — CP route compilation + relay
+  arbitration**: an Off conversation compiles no route, a gated agent is
+  excluded from the unscoped keyword rule and from `defaultAgentId` (the two
+  rungs that make a shared bot fail-open for a bare `@bot` and DMs), the relay's
+  thread-continuity rung honours a binding to a gated agent only while it still
+  has a channel-scoped route in the conversation (`gatedAgentIds` rides
+  `rc/bot-assign`/`rc/routes`), and the CP's `rc/thread-lookup` backstop applies
+  the same check; (2) **backstop — the daemon's `handleRelayIm` admission
+  check**: the shared spec carries the gated install's conversation-scoped
+  bindRules + `gated`, and the last hop refuses (with the one-time notice) any
+  conversation those rules don't cover, so a stale relay route snapshot cannot
+  activate a private agent. The in-Slack config modal (`rc/set-channel-agent`)
+  is reachable by any workspace user, so assigning a channel to a gated agent
+  creates its row **Off** — only a Console editor can enable it.
+
+Control commands (`!stop`, `/status`, …) resolve their target outside
+`routeRules`' scope filter (latest-session fallbacks), so the daemon repeats the
+conversation-admission check in its command authorization.
+
+**Scoped rules instead of unscoped defaults.** Today the CP ships every
+integration `DEFAULT_BIND_RULES` — an **unscoped** `mention` rule and an
+**unscoped** `dm` rule — plus one channel-scoped `auto` rule per "All messages"
+channel (`orchestrator/placement.ts`). For a **gated** integration the CP stops
+emitting the unscoped defaults and emits only conversation-scoped rules for
+enabled conversations:
+
+- channel enabled as Mention → `{ channel: C…, match: { kind: 'mention' } }`
+- channel enabled as All → `{ channel: C…, match: { kind: 'auto' } }`
+- DM conversation enabled → `{ channel: D…, match: { kind: 'dm' } }`
+
+An unknown conversation then matches **no rule**, so nothing routes — the
+fail-closed default (including the window between the bot joining a channel and
+the membership report landing) falls out of the existing scope matching in
+`router/routing-table.ts` with zero new enforcement machinery. Thread affinity
+is already scope-filtered (`scopeCandidates`), so follow-ups in an Off
+conversation are blocked by the same mechanism. Non-gated integrations keep
+`DEFAULT_BIND_RULES` verbatim.
+
+_Implementation check:_ confirm the daemon's normalized DM messages carry the
+platform DM conversation id as `msg.channel` on every platform, so a
+channel-scoped `dm` rule matches. (True for Slack `D…` ids; verify Telegram /
+Discord / Feishu DM id shape when extending.)
+
+**Spec flag: `gated`.** `IntegrationSpec` gains a boolean (working name
+`gated`) so the daemon knows this integration is fail-closed. The daemon needs
+it for the two behaviors a rule miss cannot express: (1) send the one-time
+notice when an explicitly addressed message matches no rule; (2) report a
+previously unseen DM conversation so its row appears in the Console's pending
+list. Without the flag (public agents) daemon behavior is byte-for-byte
+unchanged. This is the §9 derived-form exception: the flag carries no
+identities.
+
+**Conversation reporting.** The `integration/channels` D→C EVT and
+`IntegrationChannel` protocol shape gain `kind: 'channel' | 'im'` (absent =
+`'channel'` for wire compatibility). Channel rows keep coming from membership
+events as today; the membership snapshot must never delete `im` rows (they are
+reported incrementally). DM rows are reported on first inbound DM to a gated
+integration, carrying the counterpart's display name; an optional boot-time
+sweep (`conversations.list types=im`) can backfill DMs opened while the daemon
+was down.
+
+_Shared bots:_ the relay's membership snapshot drops IMs, so DM rows take the
+incremental path there too — an unrouted DM to a bot backing ≥1 gated agent
+makes the relay emit `rc/bot-conversation` (conversation id + best-effort
+`users.info` counterpart name), which the CP fans across the bot's **gated
+installs** as pending Off rows; the relay also posts the one-time
+per-conversation notice (chrome-marked; the unrouted @-mention case included)
+since no daemon is involved before arbitration. Enabling the row compiles a
+conversation-scoped `auto` route plus a conversation-scoped **slug keyword**
+route — arbitration ranks scoped mention → keyword → auto — so a DM enabled
+for several gated agents can be addressed by slug while an unslugged DM falls
+to the first enabled agent. Unscoped keyword remains forbidden for gated
+agents.
+
+**Control-plane and web.**
+
+- `IntegrationChannel` (table `integration_channel`): `ChannelTrigger` enum
+  gains `off`; new `kind` column (`channel` | `im`). Row creation from the
+  membership report derives the default trigger from gating: `off` when gated,
+  `mention` otherwise (today's default).
+- The existing per-channel trigger PATCH route accepts `off` and reuses the
+  existing recompute-bindRules-and-push flow. Authorization is unchanged — the
+  route already requires edit rights on the agent, which for a restricted agent
+  means the private group.
+- `gated` is **derived** from `agent.visibility === 'restricted'` at spec
+  assembly; there is no separate stored toggle (see §14.7).
+- Web `IntegrationChannelList`: tri-state segmented control per channel row
+  (Off / Mention / All messages), a Direct-messages section with binary rows,
+  pending badges, and a banner on restricted agents' integration cards
+  explaining the gate.
+
+### 14.4 Visibility transitions
+
+- **org → restricted:** gating turns on. Existing known channel rows keep
+  their current trigger (grandfathered enabled) so running setups are not cut
+  mid-conversation; a Console banner prompts the editor to review them. DM
+  conversations start Off — rows appear as counterparts next write, each
+  receiving the one-time notice.
+- **restricted → org:** gating turns off; unscoped defaults return. Rows and
+  their trigger values persist inert (an `off` row on a non-gated integration
+  is ignored) so flipping back restores the previous decisions — the same
+  preservation principle as Decision 4.
+
+### 14.5 Rollout / migration
+
+Existing integrations already attached to restricted agents follow the same
+grandfathering as the org → restricted transition: known channels keep their
+triggers, DMs close. Closing DMs is the one behavior break for incumbent DM
+users; the one-time notice tells them what happened and the pending row gives
+editors a one-click re-enable. (The strict alternative — everything Off on
+migration — was considered and rejected as needlessly disruptive to channels
+that editors demonstrably already configured.)
+
+### 14.6 Out of scope / future overlays
+
+- **Per-user allowlists.** The daemon already enforces
+  `Integration.<platform>.allowedUserIds` end-to-end (routing filter +
+  control-command authz); the CP simply always sends `[]`. Wiring CP storage +
+  UI to it is a natural finer-grained overlay on top of conversation gating.
+- **Identity mapping.** Resolving platform senders to AgentConnect users
+  (e.g. Slack `users.info` email ↔ OIDC email, with a manual link fallback)
+  would let ingress enforce agent visibility itself, making "private" mean the
+  same set of people on every surface. Conversation gating neither depends on
+  nor conflicts with this.
+- **Auto-leave policy** (bot automatically leaves channels it is not enabled
+  in), **user-group-based grants**, and webchat/GitHub surfaces (already gated
+  by Console auth / repo authorization respectively).
+
+### 14.7 Open questions
+
+1. Does `gated` need a per-integration override (e.g. force-gate a public
+   agent's integration), or is derivation from visibility enough for v1?
+   Current call: derivation only.
+2. Exact notice copy and whether the notice deduplication window should reset
+   (e.g. after 24 h) or be strictly once per conversation per daemon lifetime.
+3. Whether the DM boot-sweep ships in v1 or first-message reporting alone is
+   enough.

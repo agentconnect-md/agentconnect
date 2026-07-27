@@ -2182,39 +2182,61 @@ export interface ChannelPlacementRecord {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// IntegrationChannelRepo (C6) — daemon-reported channel membership + the
-// per-channel trigger choice ('@-mention' vs 'any message'). Names/ids are
-// control metadata, never message content.
+// IntegrationChannelRepo (C6) — daemon-reported conversation membership + the
+// per-conversation trigger choice ('off' / '@-mention' / 'any message'). Names
+// and ids are control metadata, never message content.
 // ───────────────────────────────────────────────────────────────────────────
 
-export type ChannelTrigger = 'mention' | 'any'
+export type ChannelTrigger = 'off' | 'mention' | 'any'
 
-/** One channel the integration's bot is a member of, as reported by the daemon. */
+/** Member channel vs DM conversation (resource-visibility.md §14.3). */
+export type ConversationKind = 'channel' | 'im'
+
+/** One conversation the integration's bot participates in, as reported by the daemon. */
 export interface IntegrationChannelRecord {
   integrationId: IntegrationId
   channelId: string
   name: string | null
   isPrivate: boolean
+  kind: ConversationKind
   trigger: ChannelTrigger
   /** Per-channel default/owning agent for a shared bot (§10.1); null ⇒ unset. */
   agentId: AgentId | null
 }
 
-/** Daemon-reported channel (no trigger — that is operator-owned CP state). */
+/** Daemon-reported conversation (no trigger — that is operator-owned CP state). */
 export interface ReportedChannel {
   id: string
   name?: string
   isPrivate?: boolean
+  /** Absent = 'channel' (wire compatibility). */
+  kind?: ConversationKind
 }
 
 export interface IntegrationChannelRepo {
   /**
    * Converge to the daemon's membership snapshot (latest-wins): upsert every
-   * reported channel (refreshing name/isPrivate, PRESERVING the stored trigger),
-   * delete rows the bot is no longer a member of.
+   * reported conversation (refreshing name/isPrivate, PRESERVING the stored
+   * trigger), delete kind='channel' rows the bot is no longer a member of. DM
+   * (kind='im') rows are NEVER deleted by the snapshot — they are reported
+   * incrementally on first inbound DM (§14.3), so a membership-only report must
+   * not wipe them. `defaultTrigger` seeds NEW rows only ('off' for a gated
+   * integration, 'mention' otherwise); existing rows keep their trigger.
    */
-  replaceSnapshot(integrationId: IntegrationId, channels: ReportedChannel[]): Promise<void>
+  replaceSnapshot(
+    integrationId: IntegrationId,
+    channels: ReportedChannel[],
+    opts?: { defaultTrigger?: ChannelTrigger }
+  ): Promise<void>
   listForIntegration(integrationId: IntegrationId): Promise<IntegrationChannelRecord[]>
+  /** Incremental conversation upsert (§14.3, DM rows): create the row (kind, name,
+   *  `agentId`, `defaultTrigger`) when absent; when it exists refresh only the name
+   *  — trigger and agentId are operator-owned once created. */
+  upsertConversation(
+    integrationId: IntegrationId,
+    conversation: ReportedChannel,
+    opts?: { agentId?: AgentId | null; defaultTrigger?: ChannelTrigger }
+  ): Promise<IntegrationChannelRecord>
   /** Channels across EVERY integration of a shared bot — the route compiler's
    *  channel-ownership source. */
   listForBot(botId: BotId): Promise<IntegrationChannelRecord[]>
@@ -2233,8 +2255,15 @@ export interface IntegrationChannelRepo {
   ): Promise<IntegrationChannelRecord | null>
   /** Set the channel's owning agent, CREATING the row if absent. A shared bot's
    *  ingest is on the relay, so the daemon never reports its channels — the config
-   *  modal must be able to name a channel the CP has never seen. */
-  upsertAgent(integrationId: IntegrationId, channelId: string, agentId: AgentId): Promise<IntegrationChannelRecord>
+   *  modal must be able to name a channel the CP has never seen. `defaultTrigger`
+   *  seeds a CREATED row only ('off' for a gated owner, §14); an existing row
+   *  keeps its trigger. */
+  upsertAgent(
+    integrationId: IntegrationId,
+    channelId: string,
+    agentId: AgentId,
+    opts?: { defaultTrigger?: ChannelTrigger }
+  ): Promise<IntegrationChannelRecord>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

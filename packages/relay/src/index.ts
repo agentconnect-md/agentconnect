@@ -47,7 +47,8 @@ function toBotAssignment(a: import('@agentconnect.md/protocol').RcBotAssign): Bo
     agents: a.agents.map((x) => ({ agentId: x.agentId, name: x.name })),
     routes: a.routes,
     ...(a.defaultAgentId ? { defaultAgentId: a.defaultAgentId } : {}),
-    ...(a.defaultDaemonId ? { defaultDaemonId: a.defaultDaemonId } : {})
+    ...(a.defaultDaemonId ? { defaultDaemonId: a.defaultDaemonId } : {}),
+    gatedAgentIds: a.gatedAgentIds
   }
 }
 
@@ -145,7 +146,8 @@ async function main(): Promise<void> {
         agents: r.agents.map((x) => ({ agentId: x.agentId, name: x.name })),
         routes: r.routes,
         ...(r.defaultAgentId ? { defaultAgentId: r.defaultAgentId } : {}),
-        ...(r.defaultDaemonId ? { defaultDaemonId: r.defaultDaemonId } : {})
+        ...(r.defaultDaemonId ? { defaultDaemonId: r.defaultDaemonId } : {}),
+        gatedAgentIds: r.gatedAgentIds
       }),
     onAssign: (a) =>
       held.sharedBot?.setAffinity(a.botId, a.sessionKey, {
@@ -174,6 +176,7 @@ async function main(): Promise<void> {
     getDaemon: (daemonId) => held.rdServer?.get(daemonId),
     setChannelAgent: (botId, channelId, agentId) => client.emitSetChannelAgent({ botId, channelId, agentId }),
     reportBotChannels: (m) => client.emitBotChannels(m),
+    reportBotConversation: (m) => client.emitBotConversation(m),
     reportThreadAssign: (m) => client.emitThreadAssign(m),
     lookupThread: (m) => client.lookupThread(m),
     isAgentBotApp: (targetAgentId, platform, channelId, appId) =>

@@ -524,14 +524,17 @@ export interface SlackConfigInput {
   refreshToken?: string // xoxe-… — optional; omit to store an access-only (expiring) token
 }
 
-// How the bot activates in one channel: only when @-mentioned, or on any message.
-export type ChannelTrigger = 'mention' | 'any'
+// How the bot activates in one conversation: not at all ('off' — conversation
+// gating for restricted agents), only when @-mentioned, or on any message.
+export type ChannelTrigger = 'off' | 'mention' | 'any'
 
-// One channel the integration's bot is in (daemon-reported) + its trigger choice.
+// One conversation the integration's bot is in (daemon-reported) + its trigger
+// choice. kind 'im' rows are DM conversations (gated/restricted agents only).
 export interface IntegrationChannelDto {
   channelId: string
-  name: string | null // "deploys" without the hash; null if lookup failed
+  name: string | null // "deploys" without the hash (or DM counterpart); null if lookup failed
   isPrivate: boolean
+  kind: 'channel' | 'im'
   trigger: ChannelTrigger
   agentId: string | null // per-channel default agent for a shared bot; null ⇒ unset
 }

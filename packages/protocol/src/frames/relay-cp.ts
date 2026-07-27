@@ -537,7 +537,12 @@ export const RcBotAssign = z.object({
   agents: z.array(RcAgentDirEntry).default([]), // member directory (id→name) for the config modal
   routes: z.array(AttributedRoute),
   defaultAgentId: z.string().uuid().optional(), // bare @bot / DM fallback within the group (§10.3)
-  defaultDaemonId: z.string().uuid().optional()
+  defaultDaemonId: z.string().uuid().optional(),
+  // Conversation gating (resource-visibility.md §14): member agents whose ingress is
+  // fail-closed. The relay's thread-affinity rung honours a binding to a gated agent
+  // only while that agent still has a channel-scoped route in the conversation —
+  // otherwise a thread bound before the gate was applied would keep routing forever.
+  gatedAgentIds: z.array(z.string().uuid()).default([])
 })
 export type RcBotAssign = z.infer<typeof RcBotAssign>
 
@@ -556,7 +561,8 @@ export const RcRoutes = z.object({
   agents: z.array(RcAgentDirEntry).default([]),
   routes: z.array(AttributedRoute),
   defaultAgentId: z.string().uuid().optional(),
-  defaultDaemonId: z.string().uuid().optional()
+  defaultDaemonId: z.string().uuid().optional(),
+  gatedAgentIds: z.array(z.string().uuid()).default([]) // §14 — see RcBotAssign.gatedAgentIds
 })
 export type RcRoutes = z.infer<typeof RcRoutes>
 
@@ -597,6 +603,20 @@ export const RcBotChannels = z.object({
   channels: z.array(IntegrationChannel)
 })
 export type RcBotChannels = z.infer<typeof RcBotChannels>
+
+// R→C EVT (fire-and-forget) — INCREMENTAL conversation report (resource-visibility
+// §14.3): the relay saw an inbound DM to a shared bot that backs ≥1 gated
+// (restricted-visibility) agent and arbitration found no route. The CP fans a
+// `kind:'im'` row (default Off) across the bot's GATED installs so console editors
+// can enable it. Incremental on purpose — unlike `rc/bot-channels` this must never
+// carry full-set semantics (DM rows are never dropped by snapshots). Conversation
+// id/name are control metadata; no message content crosses this wire. Loss is
+// self-healing: the counterpart's next DM re-reports.
+export const RcBotConversation = z.object({
+  botId: z.string().uuid(),
+  conversation: IntegrationChannel
+})
+export type RcBotConversation = z.infer<typeof RcBotConversation>
 
 // R→C EVT (fire-and-forget) — durable thread-affinity REPORT leg (§10 step 3, the
 // 3-leg affinity dance). The relay tells the CP which agent now owns a (channel,
@@ -720,6 +740,7 @@ export const RELAY_CP_SCHEMAS = {
   'rc/assign': RcAssign,
   'rc/set-channel-agent': RcSetChannelAgent,
   'rc/bot-channels': RcBotChannels,
+  'rc/bot-conversation': RcBotConversation,
   'rc/thread-assign': RcThreadAssign,
   'rc/thread-lookup': RcThreadLookup,
   'rc/thread-lookup/ok': RcThreadLookupOk,
@@ -761,6 +782,7 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/assign', RELAY_CP_SCHEMAS['rc/assign']),
   frameSchema('rc/set-channel-agent', RELAY_CP_SCHEMAS['rc/set-channel-agent']),
   frameSchema('rc/bot-channels', RELAY_CP_SCHEMAS['rc/bot-channels']),
+  frameSchema('rc/bot-conversation', RELAY_CP_SCHEMAS['rc/bot-conversation']),
   frameSchema('rc/thread-assign', RELAY_CP_SCHEMAS['rc/thread-assign']),
   frameSchema('rc/thread-lookup', RELAY_CP_SCHEMAS['rc/thread-lookup']),
   frameSchema('rc/thread-lookup/ok', RELAY_CP_SCHEMAS['rc/thread-lookup/ok']),

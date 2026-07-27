@@ -25,7 +25,7 @@ import type { AgentRecord, IntegrationRecord, IntegrationChannelRecord } from '.
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView, canEdit } from '../visibility.js'
-import { integrationToSpec } from '../../orchestrator/placement.js'
+import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewSlackBot, slackAppIdFromAppToken } from '../install-slack.js'
 import { discordAppIdFromBotToken } from '../discord-identity.js'
@@ -43,7 +43,14 @@ import {
 } from '../dto/index.js'
 
 function toChannelDto(c: IntegrationChannelRecord): IntegrationChannelDtoT {
-  return { channelId: c.channelId, name: c.name, isPrivate: c.isPrivate, trigger: c.trigger, agentId: c.agentId }
+  return {
+    channelId: c.channelId,
+    name: c.name,
+    isPrivate: c.isPrivate,
+    kind: c.kind,
+    trigger: c.trigger,
+    agentId: c.agentId
+  }
 }
 
 function toDto(i: IntegrationRecord, channels: IntegrationChannelRecord[] = []): IntegrationDtoT {
@@ -81,13 +88,17 @@ export function integrationRoutes(deps: HttpDeps) {
     // daemon. Best-effort: if the daemon is offline the reconcile roster carries it
     // on the next connect. Token-bearing — never log the spec.
     const replicateUpsert = async (i: IntegrationRecord, daemonId: string): Promise<void> => {
-      const [secret, channels] = await Promise.all([
+      const [secret, channels, owner] = await Promise.all([
         deps.repos.botSecret.get(i.botId),
-        deps.repos.integrationChannel.listForIntegration(i.id)
+        deps.repos.integrationChannel.listForIntegration(i.id),
+        deps.repos.agent.get(i.agentId)
       ])
       if (!secret) return
       try {
-        await deps.control.integrationUpsert(daemonId, integrationToSpec(i, secret, channels))
+        await deps.control.integrationUpsert(
+          daemonId,
+          integrationToSpec(i, secret, channels, owner ? isGatedAgent(owner) : false)
+        )
       } catch (err) {
         if (!(err instanceof NoConnection)) throw err
         app.log.debug({ integrationId: i.id, daemonId }, 'integration/upsert skipped: daemon offline')

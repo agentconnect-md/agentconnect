@@ -34,6 +34,7 @@ import {
   type RcGithubInstallation,
   type RcSetChannelAgent,
   type RcBotChannels,
+  type RcBotConversation,
   type RcThreadAssign,
   type RcThreadLookup,
   type RcThreadLookupOk,
@@ -251,6 +252,17 @@ export class RelayCpClient {
       return false
     }
     this.transport.send(JSON.stringify(buildRelayCpFrame('rc/bot-channels', m)))
+    return true
+  }
+
+  /** Emit one incremental gated-DM conversation report (§14.3). Best-effort: a drop
+   *  self-heals on the counterpart's next DM, so there is no pending-retry queue. */
+  emitBotConversation(m: RcBotConversation): boolean {
+    if (this.state !== 'READY' || !this.transport) {
+      this.deps.log.warn(`relay: dropping rc/bot-conversation for ${m.botId} (link ${this.state})`)
+      return false
+    }
+    this.transport.send(JSON.stringify(buildRelayCpFrame('rc/bot-conversation', m)))
     return true
   }
 

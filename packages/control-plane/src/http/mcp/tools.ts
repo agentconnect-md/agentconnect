@@ -345,13 +345,13 @@ export const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'setChannelTrigger',
     description:
-      'Change how an integration behaves in one channel: the trigger mode (mention-only vs any message) and/or the channel’s owning agent (null clears the per-channel override).',
+      'Change how an integration behaves in one conversation: the trigger mode (off / mention-only / any message; off disables the conversation) and/or the channel’s owning agent (null clears the per-channel override).',
     write: true,
     schema: z
       .object({
         integrationId: z.string().min(1).describe('The integration id (from listIntegrations)'),
         channelId: z.string().min(1).describe('The platform channel id (from listIntegrations channels)'),
-        trigger: z.enum(['mention', 'any']).optional(),
+        trigger: z.enum(['off', 'mention', 'any']).optional(),
         agentId: z
           .string()
           .min(1)

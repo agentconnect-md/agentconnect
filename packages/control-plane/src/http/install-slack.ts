@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto'
 import type { HttpDeps } from './deps.js'
 import type { AgentRecord, IntegrationRecord, SlackTransport } from '../persistence/ports.js'
 import { BotId, IntegrationId, type OrgId } from '../domain/ids.js'
-import { integrationToSpec } from '../orchestrator/placement.js'
+import { integrationToSpec, isGatedAgent } from '../orchestrator/placement.js'
 import { NoConnection } from '../orchestrator/outbound.js'
 
 /** App-level tokens are structured `xapp-1-{APP_ID}-{epoch}-{hex}`. The id segment
@@ -119,7 +119,10 @@ export async function installNewSlackBot(
   ])
   if (secret) {
     try {
-      await deps.control.integrationUpsert(daemonId, integrationToSpec(integration, secret, channels))
+      await deps.control.integrationUpsert(
+        daemonId,
+        integrationToSpec(integration, secret, channels, isGatedAgent(agent))
+      )
     } catch (err) {
       if (!(err instanceof NoConnection)) throw err
       log.debug({ integrationId: id, daemonId }, 'integration/upsert skipped: daemon offline')

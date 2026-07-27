@@ -21,6 +21,8 @@ import type {
   RdMsgIm,
   RdMsgSlackAction,
   RcBotChannels,
+  RcBotConversation,
+  WireNormalizedMessage,
   RcThreadAssign,
   RcThreadLookup
 } from '@agentconnect.md/protocol'
@@ -46,6 +48,9 @@ export interface SharedBotManagerDeps {
   /** Report the authoritative HTTP Slack channel-membership snapshot to the CP.
    *  Returns false when the CP link is down so the latest snapshot can be retried. */
   reportBotChannels: (m: RcBotChannels) => boolean
+  /** Report one gated-DM conversation to the CP (§14.3, → `rc/bot-conversation`).
+   *  Best-effort: loss self-heals on the counterpart's next DM. */
+  reportBotConversation: (m: RcBotConversation) => boolean
   /** Report the thread's now-resolved owner to the CP (→ `rc/thread-assign`). Returns
    *  `false` if the CP link was not READY and the frame was dropped, so the manager can
    *  retry it when the link recovers ({@link SharedBotManager.flushPendingReports}). */
@@ -123,6 +128,17 @@ export class SharedBotManager {
   /** Latest bot-level channel snapshot dropped while the CP link was down. A full
    *  snapshot supersedes any older one for the same bot. */
   private readonly pendingChannelReports = new Map<string, RcBotChannels>()
+  /** §14 one-time gating-notice latch (`botId:channel`) — per relay lifetime. */
+  private readonly gatedNoticesSent = new Set<string>()
+  /** §14.3 per-conversation DM-report latch (`botId:channel`) — scoped to the
+   *  CURRENT bot assignment: cleared on assign/unassign and whenever the gated
+   *  member set changes, since rows belong to the installs of that moment. */
+  private readonly gatedDmReported = new Set<string>()
+
+  private clearGatedDmLatches(botId: string): void {
+    const prefix = `${botId}:`
+    for (const k of [...this.gatedDmReported]) if (k.startsWith(prefix)) this.gatedDmReported.delete(k)
+  }
 
   constructor(private readonly deps: SharedBotManagerDeps) {}
 
@@ -158,6 +174,9 @@ export class SharedBotManager {
 
   /** `rc/bot-assign` — (re)load the routing table + (re)build the bot's HTTP ingest. */
   async assign(a: BotAssignment): Promise<void> {
+    // A full (re)assignment can mean new installs / a changed gated set — stale
+    // DM-report latches would starve a later gated install of its pending row.
+    this.clearGatedDmLatches(a.botId)
     this.router.upsert(a)
     if (a.platform !== 'slack') {
       this.deps.log.warn(`shared-bot(${a.botId}): platform '${a.platform}' ingest not yet supported (milestone C)`)
@@ -190,13 +209,19 @@ export class SharedBotManager {
   /** `rc/routes` — hot-update routes/members/default WITHOUT re-opening the ingest. */
   updateRoutes(
     botId: string,
-    patch: Pick<BotAssignment, 'members' | 'agents' | 'routes' | 'defaultAgentId' | 'defaultDaemonId'>
+    patch: Pick<BotAssignment, 'members' | 'agents' | 'routes' | 'defaultAgentId' | 'defaultDaemonId' | 'gatedAgentIds'>
   ): void {
+    // A changed gated member set may require a fresh DM fan-out (§14.3) — e.g. a
+    // newly restricted or newly installed member needs its own pending Off row.
+    const prev = this.router.get(botId)?.gatedAgentIds ?? []
+    const next = patch.gatedAgentIds ?? []
+    if (prev.length !== next.length || !prev.every((id) => next.includes(id))) this.clearGatedDmLatches(botId)
     this.router.updateRoutes(botId, patch)
   }
 
   /** `rc/bot-unassign` — drop the routes + close the ingest. */
   async unassign(botId: string): Promise<void> {
+    this.clearGatedDmLatches(botId)
     this.router.remove(botId)
     await this.stopIngest(botId)
   }
@@ -293,6 +318,12 @@ export class SharedBotManager {
       return
     }
     const sessionKey = sessionKeyOf(msg)
+    const assignment = this.router.get(botId)
+    const hasGatedMembers = (assignment?.gatedAgentIds?.length ?? 0) > 0
+    // §14.3 DM discovery must NOT depend on the arbitration outcome: on a
+    // mixed-visibility bot the public default agent wins every unslugged DM, yet
+    // the gated installs still need their pending Off row to ever be enableable.
+    if (msg.isDm && !msg.sender.isBot && hasGatedMembers) await this.reportGatedDmConversation(botId, msg)
     const prior = this.router.peekAffinity(botId, sessionKey)
     let tgt = this.router.route(botId, msg)
     if (tgt) {
@@ -305,6 +336,18 @@ export class SharedBotManager {
         this.report({ botId, sessionKey, agentId: tgt.agentId, daemonId: tgt.daemonId })
       }
     } else {
+      // Conversation gating (resource-visibility §14.3): an explicitly-addressed
+      // message (DM, or @bot mention) that arbitration could not place, on a bot
+      // that backs ≥1 gated agent, must not look silently dead — answer once per
+      // conversation (the DM row itself was already reported above, un-gated on
+      // the routing outcome).
+      if (!msg.sender.isBot && hasGatedMembers) {
+        const mentioned = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
+        if (msg.isDm || mentioned) {
+          await this.noticeGatedUnrouted(botId, msg)
+          return
+        }
+      }
       // Backstop leg: only a real un-mentioned threaded follow-up is worth a CP lookup.
       if (!this.router.isUnmentionedThreadFollowup(botId, msg)) return
       let target: { agentId: string; daemonId: string } | null
@@ -347,6 +390,46 @@ export class SharedBotManager {
       this.deps.log.warn(
         `shared-bot(${botId}): forward to ${tgt.daemonId} failed: ${(err as Error).message} (dropped ${n})`
       )
+    }
+  }
+
+  /**
+   * §14.3: surface one human DM conversation to the CP as an incremental
+   * `kind:'im'` report (fanned to gated installs as pending Off rows — the console
+   * enablement path). Fires for EVERY human DM on a bot with gated members,
+   * routed or not; latched per conversation per relay lifetime (the CP upsert is
+   * idempotent, this only bounds chatter — a relay restart re-reports harmlessly).
+   * Channel rows need no report here — membership snapshots already carry them.
+   */
+  private async reportGatedDmConversation(botId: string, msg: WireNormalizedMessage): Promise<void> {
+    const latch = `${botId}:${msg.channel}`
+    if (this.gatedDmReported.has(latch)) return
+    const name = await this.ingests.get(botId)?.lookupUserName(msg.sender.id)
+    const sent = this.deps.reportBotConversation({
+      botId,
+      conversation: { id: msg.channel, ...(name ? { name } : {}), kind: 'im' }
+    })
+    // Latch only a delivered report — a CP-link-down drop retries on the next DM.
+    if (sent) this.gatedDmReported.add(latch)
+  }
+
+  /** §14.3: the ONE-TIME per-conversation notice for an explicitly-addressed,
+   *  unroutable message on a bot with gated members — the bot must never look
+   *  silently broken. */
+  private async noticeGatedUnrouted(botId: string, msg: WireNormalizedMessage): Promise<void> {
+    const latch = `${botId}:${msg.channel}`
+    if (this.gatedNoticesSent.has(latch)) return
+    this.gatedNoticesSent.add(latch)
+    try {
+      await this.ingests
+        .get(botId)
+        ?.postText(
+          msg.channel,
+          '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.',
+          msg.isDm ? undefined : msg.thread
+        )
+    } catch (err) {
+      this.deps.log.warn(`shared-bot(${botId}): gating notice failed in ch=${msg.channel}: ${(err as Error).message}`)
     }
   }
 

@@ -23,6 +23,7 @@ import type {
   RcRegister,
   RcRunReport,
   RcBotChannels,
+  RcBotConversation,
   RcSetChannelAgent,
   RcThreadAssign,
   RcThreadLookup,
@@ -57,6 +58,9 @@ export interface RelayConnDeps {
   onSetChannelAgent: (m: RcSetChannelAgent) => Promise<void>
   /** Apply a complete Slack channel-membership snapshot reported by HTTP ingest. */
   onBotChannels: (m: RcBotChannels) => Promise<void>
+  /** Apply an INCREMENTAL DM-conversation report (resource-visibility §14.3): fan a
+   *  kind:'im' row (default Off) across the bot's gated installs. Fire-and-forget. */
+  onBotConversation: (m: RcBotConversation) => Promise<void>
   /** Persist a relay `rc/thread-assign` (durable thread affinity REPORT leg) and
    *  broadcast the binding pool-wide (rc/assign). Fire-and-forget; a store error must
    *  not close the link. */
@@ -144,6 +148,9 @@ export class RelayConnection implements RelayChannel {
         case 'rc/bot-channels':
           await this.deps.onBotChannels(frame.payload)
           return
+        case 'rc/bot-conversation':
+          await this.deps.onBotConversation(frame.payload)
+          return
         case 'rc/thread-assign':
           await this.handleThreadAssign(frame.payload)
           return
@@ -176,6 +183,7 @@ export class RelayConnection implements RelayChannel {
           type === 'rc/run-report' ||
           type === 'rc/set-channel-agent' ||
           type === 'rc/bot-channels' ||
+          type === 'rc/bot-conversation' ||
           type === 'rc/thread-assign' ||
           type === 'rc/thread-lookup' ||
           type === 'rc/github-installation'

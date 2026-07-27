@@ -22,12 +22,18 @@ const INTEGRATION: IntegrationRecord = {
 }
 const SECRET = { botToken: 'xoxb-abc', appToken: 'xapp-def' }
 
-const channel = (channelId: string, trigger: 'mention' | 'any'): IntegrationChannelRecord => ({
+const channel = (
+  channelId: string,
+  trigger: 'off' | 'mention' | 'any',
+  kind: 'channel' | 'im' = 'channel'
+): IntegrationChannelRecord => ({
   integrationId: INTEGRATION.id,
   channelId,
   name: channelId.toLowerCase(),
   isPrivate: false,
-  trigger
+  kind,
+  trigger,
+  agentId: null
 })
 
 describe('integrationToSpec bindRules', () => {
@@ -63,6 +69,39 @@ describe('integrationToSpec bindRules', () => {
       { match: { kind: 'dm' } },
       { channel: '-100', match: { kind: 'auto' } }
     ])
+  })
+})
+
+describe('integrationToSpec conversation gating (§14)', () => {
+  it('gated: emits ONLY conversation-scoped rules — no unscoped defaults', () => {
+    const spec = integrationToSpec(
+      INTEGRATION,
+      SECRET,
+      [channel('C1', 'mention'), channel('C2', 'any'), channel('C3', 'off'), channel('D1', 'any', 'im')],
+      true
+    )
+    if (spec.platform !== 'slack') throw new Error('expected slack spec')
+    expect(spec.slack.gated).toBe(true)
+    expect(spec.slack.bindRules).toEqual([
+      { channel: 'C1', match: { kind: 'mention' } },
+      { channel: 'C2', match: { kind: 'auto' } },
+      { channel: 'D1', match: { kind: 'dm' } }
+    ])
+  })
+
+  it('gated with no enabled conversations ships an EMPTY rule set (fail-closed)', () => {
+    const spec = integrationToSpec(INTEGRATION, SECRET, [channel('C1', 'off'), channel('D1', 'off', 'im')], true)
+    if (spec.platform !== 'slack') throw new Error('expected slack spec')
+    expect(spec.slack.bindRules).toEqual([])
+    expect(spec.slack.gated).toBe(true)
+  })
+
+  it("non-gated: 'off' rows stay inert (defaults unchanged) and gated is false", () => {
+    const spec = integrationToSpec(INTEGRATION, SECRET, [channel('C1', 'off'), channel('D1', 'any', 'im')])
+    if (spec.platform !== 'slack') throw new Error('expected slack spec')
+    expect(spec.slack.gated).toBe(false)
+    // The im row adds no auto rule either — DMs are covered by the unscoped dm default.
+    expect(spec.slack.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
   })
 })
 

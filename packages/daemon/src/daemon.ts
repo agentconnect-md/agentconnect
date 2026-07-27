@@ -54,7 +54,13 @@ import { DreamRunner, DreamStateError } from './agents/dream-runner.js'
 import { createDreamReader } from './cp/dream-reader.js'
 import { routeRules, type RouteVia } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
-import { rulesFromAgent, resolveCpRule, resolveAgentIntegration, type RoutingRule } from './router/routing-rule.js'
+import {
+  rulesFromAgent,
+  resolveCpRule,
+  resolveAgentIntegration,
+  integrationRouting,
+  type RoutingRule
+} from './router/routing-rule.js'
 import { CpRoutingLayer } from './router/cp-routing-layer.js'
 import {
   consolidate,
@@ -194,7 +200,7 @@ import type {
   RequestPermissionRequest,
   RequestPermissionResponse
 } from '@agentclientprotocol/sdk'
-import type { Agent, CronDef } from './agents/agent-schema.js'
+import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
 import type { NormalizedMessage } from './messages/normalized.js'
 import type {
   RegisterReq,
@@ -1826,11 +1832,7 @@ export class Daemon {
         return !this.paused(ctx.agentId) && active !== undefined && !active.cancelledReason
       },
       setSessionTitle: (req) => this.setSessionTitleFromTool(req),
-      gatewayFor: (integrationId) =>
-        this.connByIntegration.get(integrationId) ??
-        this.tgConnByIntegration.get(integrationId) ??
-        this.dcConnByIntegration.get(integrationId) ??
-        this.fsConnByIntegration.get(integrationId),
+      gatewayFor: (integrationId) => this.connForIntegration(integrationId),
       // History-backed discovery for platforms whose bot API can't enumerate chats/users
       // (Telegram): the local session store already records every chat + triggering user.
       observedChannels: (agentId, platform) => this.store.observedChannels(agentId, platform),
@@ -2001,7 +2003,7 @@ export class Daemon {
         newTraceId: () => randomUUID(),
         onMessage: (msg) => {
           this.nameResolver?.noteMessage(conn, msg)
-          this.onInbound(msg)
+          this.onInbound(msg, this.srcIntegrationIds(conn))
         },
         onChannelsChanged: () => void this.refreshChannels(conn),
         onStatusAction: (a) => this.handleStatusAction(a),
@@ -2493,7 +2495,7 @@ export class Daemon {
           newTraceId: () => randomUUID(),
           onMessage: (msg) => {
             this.nameResolver?.noteMessage(conn, msg)
-            this.onInbound(msg)
+            this.onInbound(msg, this.srcIntegrationIds(conn))
           },
           onChannelsChanged: () => void this.refreshChannels(conn),
           onStatusAction: (a) => this.handleStatusAction(a),
@@ -2617,7 +2619,7 @@ export class Daemon {
         newTraceId: () => randomUUID(),
         onMessage: (msg) => {
           this.channelNameResolver?.noteChannel(conn, msg.channel, msg.sender.id)
-          this.onInbound(msg)
+          this.onInbound(msg, this.srcIntegrationIds(conn))
         },
         onCallback: (cb) => this.handleTelegramCallback(cb, conn),
         log: this.log
@@ -2680,7 +2682,7 @@ export class Daemon {
         newTraceId: () => randomUUID(),
         onMessage: (msg) => {
           this.channelNameResolver?.noteChannel(conn, msg.channel, msg.sender.id)
-          this.onInbound(msg)
+          this.onInbound(msg, this.srcIntegrationIds(conn))
         },
         onStatusAction: (a) => this.handleStatusAction(a),
         onSelectAction: (a) => this.handleDiscordSelect(a),
@@ -2758,7 +2760,7 @@ export class Daemon {
         newTraceId: () => randomUUID(),
         onMessage: (msg) => {
           this.channelNameResolver?.noteChannel(conn, msg.channel, msg.sender.id)
-          this.onInbound(msg)
+          this.onInbound(msg, this.srcIntegrationIds(conn))
         },
         log: this.log
       })
@@ -2851,9 +2853,23 @@ export class Daemon {
         // every integration would attribute chats to the wrong bot. Only report when
         // there's exactly one — the common case — and skip the ambiguous multi-bot agent.
         if (!integ || rest.length > 0) continue
-        const channels: IntegrationChannel[] = this.store
-          .observedChannels(agent.id, platform)
-          .map((c) => (c.name ? { id: c.id, name: c.name } : { id: c.id }))
+        // The sessions table can't tell a DM chat from a group, so observed rows are
+        // kind-less. Preserve previously established `im` kinds (§14.3): re-mark
+        // overlapping ids and keep im-only entries, otherwise a refresh would
+        // downgrade a reported DM row back to 'channel' on the CP.
+        const priorIms = new Set(
+          (this.channelSnapshots.get(integ.id) ?? []).filter((x) => x.kind === 'im').map((x) => x.id)
+        )
+        const observed: IntegrationChannel[] = this.store.observedChannels(agent.id, platform).map((c) => ({
+          id: c.id,
+          ...(c.name ? { name: c.name } : {}),
+          ...(priorIms.has(c.id) ? { kind: 'im' as const } : {})
+        }))
+        const observedIds = new Set(observed.map((x) => x.id))
+        const keptIms = (this.channelSnapshots.get(integ.id) ?? []).filter(
+          (x) => x.kind === 'im' && !observedIds.has(x.id)
+        )
+        const channels = [...observed, ...keptIms]
         this.channelSnapshots.set(integ.id, channels)
         this.cpClient?.emitIntegrationChannels({ integrationId: integ.id, channels })
       }
@@ -2880,8 +2896,14 @@ export class Daemon {
       }
       for (const [integrationId, c] of this.connByIntegration) {
         if (c !== conn) continue
-        this.channelSnapshots.set(integrationId, channels)
-        this.cpClient?.emitIntegrationChannels({ integrationId, channels })
+        // Preserve reported DM rows (§14.3): the membership listing carries channels
+        // only, but a gated integration's snapshot also holds DM conversations — a
+        // refresh must not wipe them (the CP protects them too; this keeps the
+        // in-memory snapshot honest for the reconnect re-assert).
+        const ims = (this.channelSnapshots.get(integrationId) ?? []).filter((x) => x.kind === 'im')
+        const merged = [...channels, ...ims]
+        this.channelSnapshots.set(integrationId, merged)
+        this.cpClient?.emitIntegrationChannels({ integrationId, channels: merged })
         this.maybeIntroduceOnJoin(integrationId, channels)
       }
       this.log.debug(`slack: channel snapshot for bot ${conn.botUserId}: ${channels.length} channel(s)`)
@@ -2980,7 +3002,7 @@ export class Daemon {
         // The arrow captures the NEW `conn` ref so nameResolver/onInbound use the
         // successfully-retried connection, not a stale one from an earlier attempt.
         this.nameResolver?.noteMessage(conn, msg)
-        this.onInbound(msg)
+        this.onInbound(msg, this.srcIntegrationIds(conn))
       },
       onChannelsChanged: () => void this.refreshChannels(conn),
       onStatusAction: (a) => this.handleStatusAction(a),
@@ -3514,7 +3536,7 @@ export class Daemon {
     return !!msg.sender.appId && this.cpCollab.isAgentBotApp(msg.platform, msg.channel, msg.sender.appId)
   }
 
-  private onInbound(msg: NormalizedMessage): void {
+  private onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
     // Drain gate (§2.5/§5.3): once the daemon is draining (SIGTERM or a scope:daemon
     // drain) it accepts no new turns — in-flight turns finish, new arrivals are
     // dropped (the platform redelivers / the user retries against the new owner).
@@ -3541,6 +3563,13 @@ export class Daemon {
     // continues it). No-op on other platforms.
     this.canonicalizeTelegramThread(msg)
 
+    // §14.3: gated-DM ROW discovery must precede command interception AND routing —
+    // an Off DM whose first inbound is a control command is refused by command
+    // authz but still needs its pending row, and on a consolidated connection
+    // EVERY Off gated integration needs its own row. Report-only: the notice stays
+    // conditional on the message actually resolving to no admitted target.
+    this.discoverGatedDms(msg, srcIntegrationIds ?? [])
+
     // In-conversation control commands (`!stop` / `!queue …`) act on the running
     // agent and never reach it as a prompt — intercept before routing/dispatch.
     const command = parseCommand(msg.text)
@@ -3552,7 +3581,9 @@ export class Daemon {
         this.log.warn(`loop guard: ignored unauthenticated resume for ${loopGuardScope(msg)}`)
         return
       }
-      this.handleCommand(command, msg)
+      // §14.3: a command that resolved no admitted target in an Off gated
+      // conversation gets the same one-time notice as an unrouted message.
+      if (!this.handleCommand(command, msg)) this.maybeGatedNotice(msg, srcIntegrationIds ?? [])
       return
     }
 
@@ -3566,6 +3597,10 @@ export class Daemon {
       // coords as SessionManager → INSERT OR IGNORE
       // dedups rather than double-recording.
       this.recordUnrouted(msg)
+      // Conversation gating (§14): if this unrouted message explicitly addressed a
+      // GATED integration's bot (mention or DM), answer once per conversation and
+      // surface DM conversations to the console instead of appearing silently broken.
+      this.maybeGatedNotice(msg, srcIntegrationIds ?? [])
       this.log.debug(
         `routing: dropped message in ch=${msg.channel} (no agent matched — not a mention of a known bot, not a subscribed 'all' channel, not a thread/DM hit)`
       )
@@ -4198,6 +4233,15 @@ export class Daemon {
     // terminal agent-bot suppression here before commands or model admission.
     if (this.isAgentBotMessage(normalized)) {
       this.log.debug(`relay: consumed AgentConnect bot message ${msg.msgId} without waking ${msg.agentId}`)
+      return { msgId: msg.msgId, accepted: true }
+    }
+    // Conversation gating (§14) last-hop backstop: the relay arbitrates shared-bot
+    // routing, but a stale relay route snapshot must not activate a private agent in
+    // an Off conversation. Admission = a bindRule scoped to this conversation (the
+    // CP ships a gated install's enabled set even in shared mode).
+    if (!this.gatedAdmission(msg.integrationId, normalized)) {
+      this.maybeGatedNotice(normalized, [msg.integrationId])
+      this.log.debug(`relay: dropped ${msg.msgId} for gated integration ${msg.integrationId} (conversation off)`)
       return { msgId: msg.msgId, accepted: true }
     }
     // Shared-bot IM bypasses onInbound() because the relay already arbitrated the
@@ -6078,14 +6122,12 @@ export class Daemon {
       .get(agentId)
       ?.integrations.find((candidate) => candidate.id === integrationId && candidate.platform === msg.platform)
     if (!integration) return false
-    const allowed =
-      integration.platform === 'telegram'
-        ? integration.telegram.allowedUserIds
-        : integration.platform === 'discord'
-          ? integration.discord.allowedUserIds
-          : integration.platform === 'feishu'
-            ? integration.feishu.allowedUserIds
-            : integration.slack.allowedUserIds
+    const routing = integrationRouting(integration)
+    // Conversation gating (§14): control commands resolve their target OUTSIDE
+    // routeRules' scope filter (latest-session fallbacks), so they must repeat the
+    // admission check — an Off conversation of a gated integration takes no commands.
+    if (routing.gated && !routing.bindRules.some((r) => r.channel === msg.channel)) return false
+    const allowed = routing.allowedUserIds
     return allowed.length === 0 || allowed.includes(msg.sender.id)
   }
 
@@ -6099,7 +6141,7 @@ export class Daemon {
     command: AgentCommand,
     msg: NormalizedMessage,
     explicitTarget?: { agentId: string; integrationId: string; via: RouteVia }
-  ): void {
+  ): boolean {
     let target = explicitTarget ?? routeRules(msg, this.mergedRules(), (c, t) => this.sessions.threadOwner(c, t))
     if (!target) {
       // Routing found no agent — the common group case: a bare `/status@bot` carries no
@@ -6111,11 +6153,11 @@ export class Daemon {
     if (!target && command.kind === 'resume') target = this.resolveTopLevelResumeTarget(msg)
     if (!target) {
       this.log.debug(`command: '${command.kind}' in ch=${msg.channel} — no agent resolved, ignoring`)
-      return
+      return false
     }
     if (!this.commandSenderAllowed(target.agentId, target.integrationId, msg)) {
       this.log.warn(`command: '${command.kind}' rejected for unauthorized sender ${msg.sender.id}`)
-      return
+      return false
     }
     const conn = this.replyConnFor(target.agentId, target.integrationId)
     // Where the command was sent — the reply lands here (Slack thread_ts; Telegram
@@ -6184,7 +6226,7 @@ export class Daemon {
         })
       if (stillStopping) {
         reply('Loop protection is still stopping the previous turn. Try `!resume` again in a moment.')
-        return
+        return true
       }
       const wasOpen = this.store.isLoopGuardOpen(scope)
       this.store.resetLoopGuard(scope)
@@ -6196,7 +6238,7 @@ export class Daemon {
       } else {
         reply('Loop protection is not active in this conversation.')
       }
-      return
+      return true
     }
 
     if (command.kind === 'stop') {
@@ -6207,11 +6249,11 @@ export class Daemon {
       const muteNote = 'Muted in this thread — @mention me to resume.'
       if (!inflight) {
         reply(rec ? `🔇 Nothing is running. ${muteNote}` : 'Nothing is running to stop.')
-        return
+        return true
       }
       this.interruptTurn(target.agentId, key, 'stop', acpSessionId ?? undefined)
       reply(`🛑 Stopped. ${muteNote}`)
-      return
+      return true
     }
 
     if (command.kind === 'cancel') {
@@ -6219,11 +6261,11 @@ export class Daemon {
       // live so a follow-up message dispatches normally. No-op (with a note) when idle.
       if (!inflight) {
         reply('Nothing is running to cancel.')
-        return
+        return true
       }
       this.interruptTurn(target.agentId, key, 'cancel', acpSessionId ?? undefined)
       reply('🛑 Cancelled.')
-      return
+      return true
     }
 
     if (command.kind === 'status') {
@@ -6232,7 +6274,7 @@ export class Daemon {
       // channel, per the resolution above). No-op note when there's none.
       if (!rec) {
         reply('No active session here yet — send me a message to start one.')
-        return
+        return true
       }
       const info = this.statusInfoFrom(target.agentId, key, acpSessionId ?? undefined)
       const link = acpSessionId ? this.sessionLink(acpSessionId) : undefined
@@ -6258,7 +6300,7 @@ export class Daemon {
         const text = link ? `${renderStatusBar(info)}  ·  <${link}|View session>` : renderStatusBar(info)
         reply(text)
       }
-      return
+      return true
     }
 
     if (
@@ -6269,7 +6311,7 @@ export class Daemon {
       this.agents.get(target.agentId)?.allowRuntimeChangesInChat !== true
     ) {
       reply('Runtime settings can only be changed by an Agent editor from the Agent page.')
-      return
+      return true
     }
 
     if (command.kind === 'fast') {
@@ -6277,15 +6319,15 @@ export class Daemon {
       // Fast button used to offer). Records the sticky override + applies live if warm.
       if (!rec) {
         reply('No active session here to configure.')
-        return
+        return true
       }
       if (command.enable === null) {
         reply('Usage: `/fast on` or `/fast off`.')
-        return
+        return true
       }
       this.setFastByKey(key, command.enable)
       reply(command.enable ? '⚡ Fast mode on.' : '🐢 Fast mode off.')
-      return
+      return true
     }
 
     if (command.kind === 'model' || command.kind === 'effort' || command.kind === 'permission') {
@@ -6295,7 +6337,7 @@ export class Daemon {
       // the sticky per-session override + applies it live when the ACP session is warm.
       if (!rec) {
         reply('No active session here to configure.')
-        return
+        return true
       }
       // Telegram + Discord list via a tappable button card, replied under the command;
       // returns false so handleSelectCommand falls back to a text list (Slack, or when
@@ -6331,7 +6373,7 @@ export class Daemon {
         reply,
         renderCard
       )
-      return
+      return true
     }
 
     // queue — now just admission through the UNIFIED per-sessionKey gate (§6.9 #390): the
@@ -6340,7 +6382,7 @@ export class Daemon {
     // gate (dispatch → QueueFullError), so there is no second FIFO here anymore.
     if (!command.text) {
       reply('Usage: `!queue <message>` — runs when the current turn finishes.')
-      return
+      return true
     }
     // Dispatch/queue into the resolved session's thread (the fallback may have retargeted
     // it from the bare command thread to the channel's latest session).
@@ -6350,7 +6392,7 @@ export class Daemon {
     if (inflight && (this.serialQueue.get(key)?.length ?? 0) >= MAX_QUEUED_PER_SESSION) {
       this.log.warn(`command: queue → agent "${target.agentId}" session ${key} full, rejected`)
       reply(`Queue is full (${MAX_QUEUED_PER_SESSION} pending) — wait for the current turn to finish.`)
-      return
+      return true
     }
     void this.dispatch(target.agentId, payload, target.integrationId, undefined, undefined, { isQueueCmd: true }).catch(
       (err) => {
@@ -6366,6 +6408,7 @@ export class Daemon {
       this.log.info(`command: queue → agent "${target.agentId}" session ${key} (depth ${depth})`)
       reply(`📥 Queued (#${depth}) — will run when the current turn finishes.`)
     }
+    return true
   }
 
   private selectLabel(kind: SelectKind): string {
@@ -10777,18 +10820,155 @@ export class Daemon {
     })
   }
 
+  // ── Conversation gating (resource-visibility.md §14) ────────────────────────
+
+  /** One-time gating-notice latch, `${integrationId}:${channel}` — per daemon
+   *  lifetime (§14.7 open question 2: a restart re-notices, which is acceptable). */
+  private readonly gatedNoticesSent = new Set<string>()
+
+  /** The integration config backing `integrationId`, across all local agents. */
+  private integrationConfigById(integrationId: string): Integration | undefined {
+    for (const a of this.agents.values()) {
+      const int = a.integrations?.find((i) => i.id === integrationId)
+      if (int) return int
+    }
+    return undefined
+  }
+
+  /** Every integrationId served by `conn` — ingress attribution for gating. A Slack
+   *  socket is per app token and may fan out to several integrations. */
+  private srcIntegrationIds(conn: unknown): string[] {
+    const out: string[] = []
+    for (const [id, c] of this.connByIntegration) if (c === conn) out.push(id)
+    for (const [id, c] of this.tgConnByIntegration) if (c === conn) out.push(id)
+    for (const [id, c] of this.dcConnByIntegration) if (c === conn) out.push(id)
+    for (const [id, c] of this.fsConnByIntegration) if (c === conn) out.push(id)
+    return out
+  }
+
+  /** §14 admission for a pre-addressed (relay) message: a gated integration accepts
+   *  a conversation only when its shipped bindRules carry a rule scoped to it. */
+  private gatedAdmission(integrationId: string, msg: NormalizedMessage): boolean {
+    const int = this.integrationConfigById(integrationId)
+    if (!int) return true // unknown here — agent/integration existence is checked separately
+    const routing = integrationRouting(int)
+    return !routing.gated || routing.bindRules.some((r) => r.channel === msg.channel)
+  }
+
+  /**
+   * §14: an explicitly-addressed message (a mention of a gated integration's bot, or
+   * a DM to it) that routed nowhere gets a ONE-TIME per-conversation notice — the
+   * bot must never look silently broken — and a gated DM conversation is reported to
+   * the CP so the console can offer enabling it. Bot senders are never noticed.
+   */
+  /** §14.3 DM ROW discovery, report-only: fan the pending-row report across EVERY
+   *  gated src integration whose conversation is Off. Runs before command
+   *  interception and routing for each inbound DM. No notice and no early return —
+   *  on a consolidated connection an Off sibling must not post a misleading lock
+   *  while another integration goes on to handle the DM, and every Off gated
+   *  integration needs its own row. */
+  private discoverGatedDms(msg: NormalizedMessage, srcIntegrationIds: string[]): void {
+    if (msg.sender.isBot || msg.source !== 'user') return
+    const isDm = msg.isDm || (msg.platform === 'slack' && msg.channel.startsWith('D'))
+    if (!isDm) return
+    for (const integrationId of srcIntegrationIds) {
+      const int = this.integrationConfigById(integrationId)
+      if (!int || int.platform !== msg.platform) continue
+      const routing = integrationRouting(int)
+      if (!routing.gated) continue
+      if (routing.bindRules.some((r) => r.channel === msg.channel)) continue // enabled
+      this.reportGatedDm(integrationId, msg)
+    }
+  }
+
+  private maybeGatedNotice(msg: NormalizedMessage, srcIntegrationIds: string[]): void {
+    if (msg.sender.isBot || msg.source !== 'user') return
+    // Slack `app_mention` payloads may omit channel_type, so hedge on the D-prefix.
+    const isDm = msg.isDm || (msg.platform === 'slack' && msg.channel.startsWith('D'))
+    for (const integrationId of srcIntegrationIds) {
+      const int = this.integrationConfigById(integrationId)
+      if (!int || int.platform !== msg.platform) continue
+      const routing = integrationRouting(int)
+      if (!routing.gated) continue
+      // An ENABLED conversation never gets a report/notice — this guard makes the
+      // helper safe from the pre-command call site, which sees every DM.
+      if (routing.bindRules.some((r) => r.channel === msg.channel)) continue
+      const botUserId = this.botUserIds[integrationId] ?? routing.staticBotUserId ?? ''
+      const addressed = isDm || (botUserId !== '' && msg.mentionedBots.includes(botUserId))
+      if (!addressed) continue
+      if (isDm) this.reportGatedDm(integrationId, msg)
+      const latch = `${integrationId}:${msg.channel}`
+      if (this.gatedNoticesSent.has(latch)) return
+      this.gatedNoticesSent.add(latch)
+      const conn = this.connForIntegration(integrationId)
+      if (!conn) return
+      const text =
+        '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.'
+      const thread = isDm ? undefined : msg.thread
+      // Chrome-marked so peer daemons' thread backfill never re-ingests the notice.
+      const post =
+        conn instanceof SlackConnection
+          ? conn.postMessage(msg.channel, text, thread, { chrome: true })
+          : conn.postChrome(msg.channel, text, { threadTs: thread })
+      void post.catch((err: unknown) =>
+        this.log.warn(`gating: notice post failed in ch=${msg.channel}: ${(err as Error).message}`)
+      )
+      return // one notice per message even when several integrations share the socket
+    }
+  }
+
+  /** §14.3: surface a gated DM conversation as a `kind:'im'` row (latest-wins
+   *  snapshot merge) so the console lists it for enablement. Name resolution is
+   *  best-effort: the display-name store first, then a Slack profile lookup that
+   *  re-reports when it lands. */
+  private reportGatedDm(integrationId: string, msg: NormalizedMessage): void {
+    const existing = this.channelSnapshots.get(integrationId) ?? []
+    const current = existing.find((c) => c.id === msg.channel)
+    if (current?.kind === 'im') return
+    const known = this.store.getDisplayNames([msg.channel]).get(msg.channel)
+    // A previously-observed DM (telegram/discord observed-channel snapshots are
+    // kind-less) is UPGRADED to 'im' rather than skipped — e.g. after an
+    // org→restricted flip the chat already sits in the snapshot as 'channel'.
+    const next = current
+      ? existing.map((c) => (c.id === msg.channel ? { ...c, kind: 'im' as const } : c))
+      : [...existing, { id: msg.channel, ...(known ? { name: known } : {}), kind: 'im' as const }]
+    this.channelSnapshots.set(integrationId, next)
+    this.cpClient?.emitIntegrationChannels({ integrationId, channels: next })
+    if (known || current?.name) return
+    const conn = this.connForIntegration(integrationId)
+    if (!(conn instanceof SlackConnection)) return
+    void conn
+      .getUserProfile(msg.sender.id)
+      .then((prof) => {
+        const name = prof.realName || prof.name
+        if (!name) return
+        const snap = this.channelSnapshots.get(integrationId) ?? []
+        const updated = snap.map((c) => (c.id === msg.channel && !c.name ? { ...c, name: `@${name}` } : c))
+        this.channelSnapshots.set(integrationId, updated)
+        this.cpClient?.emitIntegrationChannels({ integrationId, channels: updated })
+      })
+      .catch(() => {})
+  }
+
+  /** The live platform connection serving `integrationId`, any platform. */
+  private connForIntegration(
+    integrationId: string
+  ): SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | undefined {
+    return (
+      this.connByIntegration.get(integrationId) ??
+      this.tgConnByIntegration.get(integrationId) ??
+      this.dcConnByIntegration.get(integrationId) ??
+      this.fsConnByIntegration.get(integrationId)
+    )
+  }
+
   private replyConnFor(
     agentId: string,
     integrationId?: string
   ): SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | undefined {
     const intId = integrationId ?? this.agents.get(agentId)?.integrations[0]?.id
     if (!intId) return undefined
-    return (
-      this.connByIntegration.get(intId) ??
-      this.tgConnByIntegration.get(intId) ??
-      this.dcConnByIntegration.get(intId) ??
-      this.fsConnByIntegration.get(intId)
-    )
+    return this.connForIntegration(intId)
   }
 
   /** The CP-owned cron ids currently on disk (register `localState.crons` — the

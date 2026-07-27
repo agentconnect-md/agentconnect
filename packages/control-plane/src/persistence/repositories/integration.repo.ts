@@ -28,6 +28,7 @@ import type {
   IntegrationChannelRecord,
   ReportedChannel,
   ChannelTrigger,
+  ConversationKind,
   ViewCtx
 } from '../ports.js'
 import { visibilityWhere } from '../ports.js'
@@ -366,6 +367,7 @@ function toChannelRecord(c: IntegrationChannel): IntegrationChannelRecord {
     channelId: c.channelId,
     name: c.name,
     isPrivate: c.isPrivate,
+    kind: c.kind as ConversationKind,
     trigger: c.trigger as ChannelTrigger,
     agentId: c.agentId ? AgentId(c.agentId) : null
   }
@@ -375,19 +377,58 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   constructor(private readonly db: PrismaLike) {}
 
   // Converge to the daemon's membership snapshot: refresh name/isPrivate on known
-  // channels (PRESERVING the operator's trigger), insert new ones (trigger defaults
-  // to 'mention'), and drop rows the bot is no longer a member of.
-  async replaceSnapshot(integrationId: IntegrationId, channels: ReportedChannel[]): Promise<void> {
+  // conversations (PRESERVING the operator's trigger), insert new ones (trigger =
+  // `defaultTrigger`, 'mention' unless the integration is gated), and drop
+  // kind='channel' rows the bot is no longer a member of. DM (kind='im') rows are
+  // reported incrementally on first inbound DM (§14.3), so the membership snapshot
+  // must never delete them.
+  async replaceSnapshot(
+    integrationId: IntegrationId,
+    channels: ReportedChannel[],
+    opts?: { defaultTrigger?: ChannelTrigger }
+  ): Promise<void> {
     await this.db.integrationChannel.deleteMany({
-      where: { integrationId, channelId: { notIn: channels.map((c) => c.id) } }
+      where: { integrationId, kind: 'channel', channelId: { notIn: channels.map((c) => c.id) } }
     })
     for (const c of channels) {
       await this.db.integrationChannel.upsert({
         where: { integrationId_channelId: { integrationId, channelId: c.id } },
-        create: { integrationId, channelId: c.id, name: c.name ?? null, isPrivate: c.isPrivate ?? false },
-        update: { name: c.name ?? null, isPrivate: c.isPrivate ?? false }
+        create: {
+          integrationId,
+          channelId: c.id,
+          name: c.name ?? null,
+          isPrivate: c.isPrivate ?? false,
+          kind: c.kind ?? 'channel',
+          ...(opts?.defaultTrigger ? { trigger: opts.defaultTrigger } : {})
+        },
+        // kind updates only when explicitly reported: a kind-less membership/observed
+        // re-report must never downgrade an established 'im' row (§14.3).
+        update: { name: c.name ?? null, isPrivate: c.isPrivate ?? false, ...(c.kind ? { kind: c.kind } : {}) }
       })
     }
+  }
+
+  async upsertConversation(
+    integrationId: IntegrationId,
+    conversation: ReportedChannel,
+    opts?: { agentId?: AgentId | null; defaultTrigger?: ChannelTrigger }
+  ): Promise<IntegrationChannelRecord> {
+    const row = await this.db.integrationChannel.upsert({
+      where: { integrationId_channelId: { integrationId, channelId: conversation.id } },
+      create: {
+        integrationId,
+        channelId: conversation.id,
+        name: conversation.name ?? null,
+        isPrivate: conversation.isPrivate ?? false,
+        kind: conversation.kind ?? 'channel',
+        ...(opts?.defaultTrigger ? { trigger: opts.defaultTrigger } : {}),
+        ...(opts?.agentId !== undefined ? { agentId: opts.agentId } : {})
+      },
+      // Refresh only a KNOWN name — a nameless re-report must not clobber a
+      // previously resolved counterpart name; trigger/agentId stay operator-owned.
+      update: conversation.name ? { name: conversation.name } : {}
+    })
+    return toChannelRecord(row)
   }
 
   async listForIntegration(integrationId: IntegrationId): Promise<IntegrationChannelRecord[]> {
@@ -426,11 +467,17 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   async upsertAgent(
     integrationId: IntegrationId,
     channelId: string,
-    agentId: AgentId
+    agentId: AgentId,
+    opts?: { defaultTrigger?: ChannelTrigger }
   ): Promise<IntegrationChannelRecord> {
     const row = await this.db.integrationChannel.upsert({
       where: { integrationId_channelId: { integrationId, channelId } },
-      create: { integrationId, channelId, agentId },
+      create: {
+        integrationId,
+        channelId,
+        agentId,
+        ...(opts?.defaultTrigger ? { trigger: opts.defaultTrigger } : {})
+      },
       update: { agentId }
     })
     return toChannelRecord(row)

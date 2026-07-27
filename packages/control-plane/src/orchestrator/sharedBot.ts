@@ -39,7 +39,7 @@ import type {
 } from '../persistence/ports.js'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
-import { sharedIntegrationToSpec } from './placement.js'
+import { isGatedAgent, sharedIntegrationToSpec } from './placement.js'
 import { AgentId, BotId, DaemonId } from '../domain/ids.js'
 
 export interface SharedBotLog {
@@ -57,8 +57,10 @@ interface Compiled {
   routes: AttributedRoute[]
   defaultAgentId?: string
   defaultDaemonId?: string
+  /** Members whose ingress is conversation-gated (resource-visibility.md §14). */
+  gatedAgentIds: string[]
   /** Placed member integrations (spec push targets: daemonId + integration). */
-  placed: { integration: IntegrationRecord; daemonId: string }[]
+  placed: { integration: IntegrationRecord; daemonId: string; gated: boolean }[]
 }
 
 export class SharedBotOrchestrator {
@@ -140,7 +142,8 @@ export class SharedBotOrchestrator {
         agents: compiled.agents,
         routes: compiled.routes,
         ...(compiled.defaultAgentId ? { defaultAgentId: compiled.defaultAgentId } : {}),
-        ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {})
+        ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {}),
+        gatedAgentIds: compiled.gatedAgentIds
       })
     )
     const secret = await this.botSecret.get(bot.id)
@@ -204,10 +207,17 @@ export class SharedBotOrchestrator {
   }
 
   /** Pull-on-miss BACKSTOP leg (§10): answer a relay's `rc/thread-lookup` from the
-   *  persisted binding (`target: null` ⇒ the CP holds none). */
+   *  persisted binding (`target: null` ⇒ the CP holds none). A binding to a GATED
+   *  agent is honoured only while its conversation is still enabled (§14) — a
+   *  thread bound before the gate was applied must not keep re-seeding relay
+   *  affinity forever. */
   async lookupThread(m: RcThreadLookup): Promise<RcThreadLookupOk> {
+    const channel = m.sessionKey.slice(0, Math.max(m.sessionKey.indexOf('/'), 0)) || m.sessionKey
     const t = await this.threads.get(BotId(m.botId), m.sessionKey)
     if (t) {
+      if (!(await this.threadTargetAllowed(m.botId, channel, t.agentId))) {
+        return { botId: m.botId, sessionKey: m.sessionKey, target: null }
+      }
       return { botId: m.botId, sessionKey: m.sessionKey, target: { agentId: t.agentId, daemonId: t.daemonId } }
     }
     // Affinity miss: fall back to session metadata. A session an agent created directly on the
@@ -221,9 +231,26 @@ export class SharedBotOrchestrator {
       const channel = m.sessionKey.slice(0, slash)
       const thread = m.sessionKey.slice(slash + 1)
       const owner = await this.sessions.findThreadOwner(BotId(m.botId), channel, thread)
-      if (owner) return { botId: m.botId, sessionKey: m.sessionKey, target: owner }
+      if (owner && (await this.threadTargetAllowed(m.botId, channel, owner.agentId))) {
+        return { botId: m.botId, sessionKey: m.sessionKey, target: owner }
+      }
     }
     return { botId: m.botId, sessionKey: m.sessionKey, target: null }
+  }
+
+  /** §14 conversation-gating check for the thread-lookup backstop: a non-gated
+   *  target is always allowed; a gated target needs its install's row for this
+   *  conversation to be enabled (trigger ≠ off). Fail-closed on missing rows. */
+  private async threadTargetAllowed(botId: string, channel: string, agentId: string): Promise<boolean> {
+    const agent = await this.agents.get(AgentId(agentId))
+    if (!agent) return false
+    if (!isGatedAgent(agent)) return true
+    const installs = await this.integrations.listForBot(BotId(botId))
+    const install = installs.find((i) => i.agentId === agentId)
+    if (!install) return false
+    const rows = await this.channels.listForBot(BotId(botId))
+    const row = rows.find((c) => c.integrationId === install.id && c.channelId === channel)
+    return !!row && row.trigger !== 'off'
   }
 
   /** Is at least one relay connected right now? The install-time gate: a shared
@@ -255,7 +282,13 @@ export class SharedBotOrchestrator {
     // Channels already known (on ANY install) before this snapshot — the set we must
     // NOT seed, so an operator's later "No default" clear is honoured, not overwritten.
     const known = new Set((await this.channels.listForBot(bot.id)).map((c) => c.channelId))
-    for (const integration of installs) await this.channels.replaceSnapshot(integration.id, channels)
+    for (const integration of installs) {
+      // Conversation gating (§14): a gated install's fresh channels start Off — an
+      // editor must enable them in the console before the compiler emits a route.
+      const owner = await this.agents.get(integration.agentId)
+      const defaultTrigger = owner && isGatedAgent(owner) ? ('off' as const) : undefined
+      await this.channels.replaceSnapshot(integration.id, channels, defaultTrigger ? { defaultTrigger } : undefined)
+    }
     // The creating agent = the earliest install (`listForBot` is createdAt-asc). Own
     // each new channel on its row so the channel-scoped rule the compiler reads points
     // at the creating agent (and no other install co-owns it). Operator-overridable.
@@ -266,6 +299,31 @@ export class SharedBotOrchestrator {
       }
     }
     await this.syncRoutes(botId)
+  }
+
+  /**
+   * §14.3: fan an INCREMENTAL DM-conversation report across the bot's GATED installs
+   * as `kind:'im'` rows (default Off, owned by each install's agent) so console
+   * editors can enable the DM. Non-gated installs are untouched — their DMs already
+   * route via `defaultAgentId`. Idempotent, and no route recompile: an Off row
+   * compiles nothing; the recompile happens when an editor enables it.
+   */
+  async reportConversation(botId: string, conversation: ReportedChannel): Promise<void> {
+    const bot = await this.bots.get(BotId(botId))
+    if (!bot || bot.platform !== 'slack' || bot.transport !== 'http') {
+      this.log.warn({ botId }, 'shared-bot: conversation report for a non-http/unknown Slack bot — ignored')
+      return
+    }
+    const installs = await this.integrations.listForBot(bot.id)
+    for (const install of installs) {
+      const agent = await this.agents.get(install.agentId)
+      if (!agent || !isGatedAgent(agent)) continue
+      await this.channels.upsertConversation(
+        install.id,
+        { ...conversation, kind: 'im' },
+        { agentId: AgentId(install.agentId), defaultTrigger: 'off' }
+      )
+    }
   }
 
   /**
@@ -297,7 +355,19 @@ export class SharedBotOrchestrator {
       if (owner && i.id === owner.id) continue
       await this.channels.setAgent(i.id, channelId, null)
     }
-    if (owner) await this.channels.upsertAgent(owner.id, channelId, AgentId(agentId!))
+    if (owner) {
+      // Conversation gating (§14): the in-Slack config modal is reachable by any
+      // workspace user, so assigning a channel to a GATED agent must not enable it —
+      // a freshly-created row starts Off; only a console editor can flip the trigger.
+      const ownerAgent = await this.agents.get(owner.agentId)
+      const defaultTrigger = ownerAgent && isGatedAgent(ownerAgent) ? ('off' as const) : undefined
+      await this.channels.upsertAgent(
+        owner.id,
+        channelId,
+        AgentId(agentId!),
+        defaultTrigger ? { defaultTrigger } : undefined
+      )
+    }
     await this.syncRoutes(botId)
   }
 
@@ -316,7 +386,12 @@ export class SharedBotOrchestrator {
     const placed = integrations
       .map((integration) => ({ integration, agent: agentById.get(integration.agentId) }))
       .filter((x): x is { integration: IntegrationRecord; agent: AgentRecord } => !!x.agent?.daemonId)
-      .map((x) => ({ integration: x.integration, agent: x.agent, daemonId: x.agent.daemonId! }))
+      .map((x) => ({
+        integration: x.integration,
+        agent: x.agent,
+        daemonId: x.agent.daemonId!,
+        gated: isGatedAgent(x.agent)
+      }))
     if (placed.length === 0) return null
 
     // members: daemonId → agentIds (the daemon connections the relay expects).
@@ -339,7 +414,17 @@ export class SharedBotOrchestrator {
       if (!c.agentId) continue
       const p = byAgent.get(c.agentId)
       if (!p) continue // channel assigned to an agent not (yet) placed — skip
-      const match: BindMatch = c.trigger === 'any' ? { kind: 'auto' } : { kind: 'mention' }
+      // Conversation gating (§14): an Off conversation compiles NO route for a
+      // GATED owner (fail-closed until an editor enables it). For a non-gated
+      // owner a preserved row is inert (§14.4): a channel keeps its
+      // mention-trigger ownership (matching integrationToSpec()), while an im
+      // row compiles nothing at all — §14 DM rows only steer gated members;
+      // non-gated DMs route via defaultAgentId as they always did.
+      if (c.kind === 'im' && (!p.gated || c.trigger === 'off')) continue
+      if (c.trigger === 'off' && p.gated) continue
+      // A DM conversation row activates on any message once enabled (no mention
+      // inside a DM); channels follow their trigger.
+      const match: BindMatch = c.kind === 'im' || c.trigger === 'any' ? { kind: 'auto' } : { kind: 'mention' }
       routes.push({
         agentId: p.integration.agentId,
         daemonId: p.daemonId,
@@ -347,6 +432,23 @@ export class SharedBotOrchestrator {
         scope: { channel: c.channelId },
         match
       })
+      if (c.kind === 'im' && p.gated) {
+        // Slug disambiguation inside a shared DM enabled for SEVERAL gated agents
+        // (§14.3): a conversation-scoped keyword outranks the scoped auto in the
+        // relay's arbitration, so "<slug> …" names this agent while an unslugged
+        // DM falls to the first enabled auto route. (Unscoped keyword stays
+        // forbidden for gated agents.)
+        const slug = agentById.get(c.agentId)?.name
+        if (slug) {
+          routes.push({
+            agentId: p.integration.agentId,
+            daemonId: p.daemonId,
+            integrationId: p.integration.id,
+            scope: { channel: c.channelId },
+            match: { kind: 'keyword', value: slug }
+          })
+        }
+      }
     }
 
     // 2. keyword disambiguation (§10.2): one keyword rule per agent = its slug, so
@@ -355,6 +457,9 @@ export class SharedBotOrchestrator {
     for (const p of placed) {
       const a = agentById.get(p.integration.agentId)
       if (!a) continue
+      // Conversation gating (§14): no UNSCOPED rung may name a gated agent — the
+      // keyword slug would make "@bot <slug>" fail-open in every conversation.
+      if (isGatedAgent(a)) continue
       routes.push({
         agentId: p.integration.agentId,
         daemonId: p.daemonId,
@@ -363,10 +468,12 @@ export class SharedBotOrchestrator {
       })
     }
 
-    // 3. default agent (§10.3): the earliest install of the group catches a bare
-    //    @bot + DMs. Delivered as `defaultAgentId` (the relay's fallback rung), not
-    //    a route, so it never pre-empts keyword/channel arbitration.
-    const first = placed[0]!
+    // 3. default agent (§10.3): the earliest NON-GATED install of the group catches
+    //    a bare @bot + DMs. Delivered as `defaultAgentId` (the relay's fallback
+    //    rung), not a route, so it never pre-empts keyword/channel arbitration. A
+    //    gated agent must never be the fallback (§14: the bare-@bot/DM rungs are
+    //    what make a shared bot fail-open); a group of only gated agents has none.
+    const first = placed.find((p) => !p.gated)
     const agents = placed.map((p) => {
       const a = agentById.get(p.integration.agentId)
       return {
@@ -380,18 +487,28 @@ export class SharedBotOrchestrator {
       members,
       agents,
       routes,
-      defaultAgentId: first.integration.agentId,
-      defaultDaemonId: first.daemonId,
-      placed: placed.map((p) => ({ integration: p.integration, daemonId: p.daemonId }))
+      ...(first ? { defaultAgentId: first.integration.agentId, defaultDaemonId: first.daemonId } : {}),
+      gatedAgentIds: placed.filter((p) => p.gated).map((p) => p.integration.agentId),
+      placed: placed.map((p) => ({ integration: p.integration, daemonId: p.daemonId, gated: p.gated }))
     }
   }
 
   /** Deliver the shared (send-only) spec to each member agent's daemon (best-effort).
    *  `shareable` rides each spec so the daemon knows whether to expose "Switch agent". */
   private async pushSpecs(compiled: Compiled, secret: BotSecretMaterial, shareable: boolean): Promise<void> {
-    for (const { integration, daemonId } of compiled.placed) {
+    // A gated install's spec carries its conversation-scoped rules for the daemon's
+    // last-hop admission backstop (§14.3). One listForBot covers every install; rows
+    // are keyed per install, so filter by integrationId.
+    const anyGated = compiled.placed.some((p) => p.gated)
+    const botChannels =
+      anyGated && compiled.placed[0] ? await this.channels.listForBot(BotId(compiled.placed[0].integration.botId)) : []
+    for (const { integration, daemonId, gated } of compiled.placed) {
       try {
-        await this.control.integrationUpsert(daemonId, sharedIntegrationToSpec(integration, secret, shareable))
+        const channels = gated ? botChannels.filter((c) => c.integrationId === integration.id) : []
+        await this.control.integrationUpsert(
+          daemonId,
+          sharedIntegrationToSpec(integration, secret, shareable, channels, gated)
+        )
       } catch (err) {
         if (!(err instanceof NoConnection)) throw err
         this.log.debug?.({ integrationId: integration.id, daemonId }, 'shared-bot: spec push skipped — daemon offline')
@@ -413,7 +530,8 @@ export class SharedBotOrchestrator {
       agents: compiled.agents,
       routes: compiled.routes,
       ...(compiled.defaultAgentId ? { defaultAgentId: compiled.defaultAgentId } : {}),
-      ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {})
+      ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {}),
+      gatedAgentIds: compiled.gatedAgentIds
     }
   }
 

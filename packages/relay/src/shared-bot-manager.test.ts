@@ -29,6 +29,7 @@ const deps = (over: Partial<SharedBotManagerDeps> = {}): SharedBotManagerDeps =>
   getDaemon: () => undefined,
   setChannelAgent: vi.fn(),
   reportBotChannels: vi.fn(() => true),
+  reportBotConversation: vi.fn(() => true),
   reportThreadAssign: vi.fn(() => true),
   lookupThread: vi.fn(async () => ({ botId: BOT_ID, sessionKey: '', target: null }) as RcThreadLookupOk),
   isAgentBotApp: vi.fn(() => false),
@@ -64,6 +65,13 @@ const action = (over: Partial<SharedSlackSessionAction> = {}): SharedSlackSessio
 
 interface ManagerInternals {
   router: SharedBotRouter
+  ingests: Map<
+    string,
+    {
+      lookupUserName(u: string): Promise<string | undefined>
+      postText(c: string, t: string, th?: string): Promise<void>
+    }
+  >
   reportChannels(snapshot: RcBotChannels): void
   selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
   forwardSessionAction(botId: string, action: SharedSlackSessionAction): void
@@ -430,5 +438,176 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
 
     expect(lookupThread).toHaveBeenCalledTimes(1)
     expect(sendMsg).not.toHaveBeenCalled()
+  })
+})
+
+describe('SharedBotManager conversation gating (resource-visibility §14.3)', () => {
+  const fakeIngest = () => ({
+    lookupUserName: vi.fn(async () => '@Alice'),
+    postText: vi.fn(async () => {})
+  })
+  const gatedAssignment = (): BotAssignment => ({
+    botId: BOT_ID,
+    platform: 'slack',
+    secrets: { botToken: 'xoxb', signingSecret: 'ssecret' },
+    botUserId: 'UBOT',
+    members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
+    agents: [{ agentId: AGENT_ID, name: 'Agent' }],
+    routes: [], // everything gated ⇒ no keyword rung, no default
+    gatedAgentIds: [AGENT_ID]
+  })
+  const dm = (over: Partial<WireNormalizedMessage> = {}): WireNormalizedMessage => ({
+    msgId: 'slack:D42:1720000000.000100',
+    traceId: 't',
+    source: 'user',
+    platform: 'slack',
+    channel: 'D42',
+    sender: { id: 'U1', isBot: false },
+    text: 'hi there',
+    mentionedBots: [],
+    isDm: true,
+    ...over
+  })
+
+  it('reports an unrouted gated DM as a kind:im conversation and notices once per conversation', async () => {
+    const reportBotConversation = vi.fn(() => true)
+    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const internals = manager as unknown as ManagerInternals
+    internals.router.upsert(gatedAssignment())
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+
+    await internals.forward(BOT_ID, dm())
+    expect(reportBotConversation).toHaveBeenCalledWith({
+      botId: BOT_ID,
+      conversation: { id: 'D42', name: '@Alice', kind: 'im' }
+    })
+    expect(ingest.postText).toHaveBeenCalledTimes(1)
+    expect(ingest.postText.mock.calls[0]![0]).toBe('D42')
+
+    // Second DM: report is latched per conversation (CP row exists), notice too.
+    await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000200' }))
+    expect(reportBotConversation).toHaveBeenCalledTimes(1)
+    expect(ingest.postText).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports a gated DM even when a non-gated default agent WINS the routing (mixed bot)', async () => {
+    const reportBotConversation = vi.fn(() => true)
+    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const internals = manager as unknown as ManagerInternals
+    const a = gatedAssignment()
+    // OTHER is org-visible and catches every unslugged DM as the group default.
+    a.members = [
+      { daemonId: DAEMON_ID, agentIds: [AGENT_ID] },
+      { daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] }
+    ]
+    a.agents = [
+      { agentId: AGENT_ID, name: 'Agent' },
+      { agentId: OTHER_AGENT_ID, name: 'Public' }
+    ]
+    a.routes = [
+      {
+        agentId: OTHER_AGENT_ID,
+        daemonId: OTHER_DAEMON_ID,
+        integrationId: OTHER_INTEGRATION_ID,
+        match: { kind: 'keyword', value: 'public' }
+      }
+    ]
+    a.defaultAgentId = OTHER_AGENT_ID
+    a.defaultDaemonId = OTHER_DAEMON_ID
+    internals.router.upsert(a)
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+
+    await internals.forward(BOT_ID, dm())
+    // The DM routed to the public default — the gated install still needs its
+    // pending Off row, but nothing was unrouted so there is NO notice.
+    expect(reportBotConversation).toHaveBeenCalledWith({
+      botId: BOT_ID,
+      conversation: { id: 'D42', name: '@Alice', kind: 'im' }
+    })
+    expect(ingest.postText).not.toHaveBeenCalled()
+  })
+
+  it('resets the DM-report latch when the gated member set changes (new install needs its row)', async () => {
+    const reportBotConversation = vi.fn(() => true)
+    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const internals = manager as unknown as ManagerInternals
+    const a = gatedAssignment()
+    internals.router.upsert(a)
+    internals.ingests.set(BOT_ID, fakeIngest())
+
+    await internals.forward(BOT_ID, dm())
+    expect(reportBotConversation).toHaveBeenCalledTimes(1) // latched for this assignment
+
+    // A routes update with a CHANGED gated set (e.g. a newly restricted install)
+    // must invalidate the latch so the next DM fans out the new install's row.
+    manager.updateRoutes(BOT_ID, {
+      members: a.members,
+      agents: a.agents,
+      routes: a.routes,
+      gatedAgentIds: [AGENT_ID, OTHER_AGENT_ID]
+    })
+    await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000200' }))
+    expect(reportBotConversation).toHaveBeenCalledTimes(2)
+
+    // An unchanged gated set keeps the latch.
+    manager.updateRoutes(BOT_ID, {
+      members: a.members,
+      agents: a.agents,
+      routes: a.routes,
+      gatedAgentIds: [AGENT_ID, OTHER_AGENT_ID]
+    })
+    await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000300' }))
+    expect(reportBotConversation).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries the DM report on the next DM when the CP link was down', async () => {
+    let ready = false
+    const reportBotConversation = vi.fn(() => ready)
+    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const internals = manager as unknown as ManagerInternals
+    internals.router.upsert(gatedAssignment())
+    internals.ingests.set(BOT_ID, fakeIngest())
+
+    await internals.forward(BOT_ID, dm())
+    expect(reportBotConversation).toHaveBeenCalledTimes(1) // dropped — not latched
+    ready = true
+    await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000200' }))
+    expect(reportBotConversation).toHaveBeenCalledTimes(2) // delivered — latched
+    await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000300' }))
+    expect(reportBotConversation).toHaveBeenCalledTimes(2)
+  })
+
+  it('an unrouted @mention in a channel gets the notice but NO conversation report', async () => {
+    const reportBotConversation = vi.fn(() => true)
+    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const internals = manager as unknown as ManagerInternals
+    internals.router.upsert(gatedAssignment())
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+
+    await internals.forward(
+      BOT_ID,
+      dm({ channel: 'C9', isDm: false, thread: '123.456', text: '<@UBOT> hello', mentionedBots: ['UBOT'] })
+    )
+    expect(reportBotConversation).not.toHaveBeenCalled()
+    expect(ingest.postText).toHaveBeenCalledTimes(1)
+    expect(ingest.postText.mock.calls[0]![2]).toBe('123.456') // threaded, no channel spam
+  })
+
+  it('does nothing gated-related for a bot with no gated members', async () => {
+    const reportBotConversation = vi.fn(() => true)
+    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const internals = manager as unknown as ManagerInternals
+    const a = gatedAssignment()
+    a.gatedAgentIds = []
+    internals.router.upsert(a)
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+
+    await internals.forward(BOT_ID, dm())
+    expect(reportBotConversation).not.toHaveBeenCalled()
+    expect(ingest.postText).not.toHaveBeenCalled()
   })
 })

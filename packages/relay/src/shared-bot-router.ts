@@ -31,6 +31,11 @@ export interface BotAssignment {
   routes: AttributedRoute[]
   defaultAgentId?: string
   defaultDaemonId?: string
+  /** Conversation-gated members (resource-visibility.md §14): thread continuity to
+   *  one of these agents is honoured only while it still has a channel-scoped route
+   *  in the conversation — a binding made before the gate was applied must not keep
+   *  routing a private agent in a now-Off conversation. */
+  gatedAgentIds?: string[]
 }
 
 /** The arbitration verdict — a target the daemon dispatches to. */
@@ -94,14 +99,22 @@ export function arbitrate(
   //    rule fires on any message — the operator's trigger choice).
   const ownedMention = scoped.find((r) => r.match.kind === 'mention' && kindMatches(r, msg, a.botUserId))
   if (ownedMention) return target(ownedMention)
+  // Conversation-scoped keyword (§14.3): slug disambiguation inside a shared DM
+  // enabled for several gated agents — outranks the scoped auto so "<slug> …"
+  // names its agent; an unslugged message falls through to the first auto route.
+  const ownedKeyword = scoped.find((r) => r.match.kind === 'keyword' && kindMatches(r, msg, a.botUserId))
+  if (ownedKeyword) return target(ownedKeyword)
   const ownedAuto = scoped.find((r) => r.match.kind === 'auto')
   if (ownedAuto) return target(ownedAuto)
 
   // 2. Thread continuity: an un-mentioned follow-up in a thread the relay already
-  //    routed continues to that agent, provided it is still a member. A durable
-  //    `rc/assign` seed carries no integrationId — backfill it from the agent's route.
+  //    routed continues to that agent, provided it is still a member — and, for a
+  //    conversation-gated agent (§14), provided the conversation is still enabled
+  //    (a channel-scoped route for that agent exists). The affinity map is not
+  //    scope-filtered, so without this check a pre-gate binding routes forever.
   const cont = affinity.get(sessionKeyOf(msg))
-  if (cont && a.members.some((m) => m.daemonId === cont.daemonId && m.agentIds.includes(cont.agentId))) {
+  const contGateOk = !cont || !a.gatedAgentIds?.includes(cont.agentId) || scoped.some((r) => r.agentId === cont.agentId)
+  if (cont && contGateOk && a.members.some((m) => m.daemonId === cont.daemonId && m.agentIds.includes(cont.agentId))) {
     if (cont.integrationId) return cont
     const route = a.routes.find((r) => r.agentId === cont.agentId)
     if (route) return { ...cont, integrationId: route.integrationId }
@@ -149,7 +162,7 @@ export class SharedBotRouter {
   /** Replace routes/members/agents/default WITHOUT touching secrets or botUserId (rc/routes). */
   updateRoutes(
     botId: string,
-    patch: Pick<BotAssignment, 'members' | 'agents' | 'routes' | 'defaultAgentId' | 'defaultDaemonId'>
+    patch: Pick<BotAssignment, 'members' | 'agents' | 'routes' | 'defaultAgentId' | 'defaultDaemonId' | 'gatedAgentIds'>
   ): void {
     const a = this.bots.get(botId)
     if (!a) return
@@ -158,6 +171,7 @@ export class SharedBotRouter {
     a.routes = patch.routes
     a.defaultAgentId = patch.defaultAgentId
     a.defaultDaemonId = patch.defaultDaemonId
+    a.gatedAgentIds = patch.gatedAgentIds
   }
 
   remove(botId: string): BotAssignment | undefined {
