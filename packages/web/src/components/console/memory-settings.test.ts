@@ -70,6 +70,8 @@ describe('memory settings UX model', () => {
   })
 
   it('builds the same guarded API shapes for every mode', () => {
+    // The absent managed-memory policy is the daily auto-accepting product
+    // default, so it remains compact on the wire.
     expect(memoryConfigForDraft(memorySettingsDraft({ provider: 'managed', autoDistill: true }))).toEqual({
       provider: 'managed',
       autoDistill: true
@@ -89,20 +91,33 @@ describe('memory settings UX model', () => {
     ).toMatchObject({ provider: 'external', connectionId: CONNECTION_A })
   })
 
-  it('models managed dreaming as an optional binding', () => {
-    // Off by default: an untouched managed agent emits no `dreaming` binding.
-    const off = memorySettingsDraft({ provider: 'managed', autoDistill: false })
-    expect(off.dreaming).toEqual({ enabled: false, instructions: '' })
-    expect(memoryConfigForDraft(off)).toEqual({ provider: 'managed', autoDistill: false })
-    expect(dreamingConfigForDraft(off.dreaming)).toBeUndefined()
+  it('models daily dreaming and automatic acceptance as managed-memory defaults with durable opt-outs', () => {
+    const defaults = memorySettingsDraft({ provider: 'managed', autoDistill: false })
+    expect(defaults.dreaming).toEqual({
+      enabled: true,
+      instructions: '',
+      schedule: '0 4 * * *',
+      autoAdopt: true
+    })
+    expect(memoryConfigForDraft(defaults)).toEqual({ provider: 'managed', autoDistill: false })
+    expect(dreamingConfigForDraft(defaults.dreaming)).toBeUndefined()
 
-    // Enabling and editing instructions is tracked as an unsaved change.
-    const enabled = { ...off, dreaming: { enabled: true, instructions: 'focus on prefs' } }
-    expect(memorySettingsChanged(off, enabled)).toBe(true)
-    expect(memoryConfigForDraft(enabled)).toEqual({
+    const manualReview = {
+      ...defaults,
+      dreaming: { ...defaults.dreaming, schedule: undefined, autoAdopt: false }
+    }
+    expect(memorySettingsChanged(defaults, manualReview)).toBe(true)
+    expect(memoryConfigForDraft(manualReview)).toEqual({
       provider: 'managed',
       autoDistill: false,
-      dreaming: { enabled: true, instructions: 'focus on prefs' }
+      dreaming: { enabled: true, autoAdopt: false }
+    })
+
+    const disabled = { ...defaults, dreaming: { ...defaults.dreaming, enabled: false } }
+    expect(memoryConfigForDraft(disabled)).toEqual({
+      provider: 'managed',
+      autoDistill: false,
+      dreaming: { enabled: false, schedule: '0 4 * * *', autoAdopt: true }
     })
   })
 

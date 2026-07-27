@@ -181,6 +181,17 @@ unbound while its previous connection is still in use; the user must choose anot
 connection or explicitly switch to a different backend or Off. Server-side schema and
 daemon admission remain fail-closed even when the console validates the draft first.
 
+## Managed-memory dreaming defaults
+
+Managed memory defaults to dreaming once per day at 04:00 in the owning daemon's
+timezone and automatically accepting the completed store proposal. Users can turn
+dreaming off, remove its schedule to keep only manual runs, or turn automatic acceptance
+off independently.
+
+Automatic acceptance remains a safe best-effort path: a runtime without a trusted
+extraction channel, an adoption fence conflict, or another failed swap leaves the
+completed result available for manual review instead of replacing live memory.
+
 ## GitHub informational review checks
 
 An Agent failure is not a code-review finding. When a GitHub review turn ends without a

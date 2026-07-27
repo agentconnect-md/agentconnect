@@ -295,8 +295,17 @@ export function MemoryPanel({
   // always named — memory is agent-scoped and shared across users.
   const settingsSummary = (() => {
     switch (persistedProvider) {
-      case 'managed':
-        return `Managed directory · Auto-distill ${persistedSettings.autoDistill ? 'on' : 'off'} · Dreaming ${persistedSettings.dreaming.enabled ? 'on' : 'off'} · Agent scope`
+      case 'managed': {
+        const dreaming = persistedSettings.dreaming
+        const cadence = dreaming.schedule === '0 4 * * *' ? 'daily' : dreaming.schedule ? 'scheduled' : 'manual'
+        return [
+          'Managed directory',
+          `Auto-distill ${persistedSettings.autoDistill ? 'on' : 'off'}`,
+          dreaming.enabled ? `Dreaming ${cadence}` : 'Dreaming off',
+          `Auto-accept ${dreaming.autoAdopt ? 'on' : 'off'}`,
+          'Agent scope'
+        ].join(' · ')
+      }
       case 'native':
         return 'Runtime-native memory · Agent scope'
       case 'external': {
@@ -673,8 +682,8 @@ export function MemoryPanel({
                       setProviderError(null)
                     }}
                   />
-                  Enable dreaming — consolidate the store from recent sessions, staged for review before it replaces the
-                  live store. Runs on demand, plus the schedule below if you set one.
+                  Enable dreaming — consolidate the store from recent sessions. Runs on demand and on the schedule
+                  below.
                 </label>
                 {settings.dreaming.enabled ? (
                   <div className="ml-6 flex flex-col gap-2">
@@ -690,6 +699,22 @@ export function MemoryPanel({
                         setProviderError(null)
                       }}
                     />
+                    <label className="flex items-start gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+                      <input
+                        type="checkbox"
+                        checked={settings.dreaming.autoAdopt}
+                        disabled={!canEdit || savingProvider}
+                        onChange={() => {
+                          setSettings((current) => ({
+                            ...current,
+                            dreaming: { ...current.dreaming, autoAdopt: !current.dreaming.autoAdopt }
+                          }))
+                          setProviderError(null)
+                        }}
+                      />
+                      Automatically accept completed results and replace live memory. If a result cannot be applied
+                      safely, it stays ready for review.
+                    </label>
                     <label className="flex flex-col gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
                       Instructions (optional — steer what the dream focuses on)
                       <textarea
