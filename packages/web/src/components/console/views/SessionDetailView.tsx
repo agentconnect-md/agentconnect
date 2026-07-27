@@ -24,6 +24,7 @@ import {
   sessionPlatform,
   speaker,
   status,
+  type Agent,
   type SessionImage,
   type SessionStep
 } from '@/lib/data'
@@ -458,14 +459,17 @@ type Turn =
 
 function SessionRelationLink({
   relation,
+  agent,
   orgPath,
   bordered = false
 }: {
   relation: SessionRelationDto
+  agent?: Agent
   orgPath: (path: string) => string
   bordered?: boolean
 }) {
   const title = relation.title?.trim() || `Session ${relation.id.slice(0, 8)}`
+  const agentName = agent ? agentLabel(agent) : relation.agentId
   return (
     <Link
       href={orgPath(`/sessions/${encodeURIComponent(relation.id)}`)}
@@ -474,8 +478,15 @@ function SessionRelationLink({
         bordered ? 'border-t border-(--border-subtle)' : ''
       }`}
     >
-      <Icon name="message-square" size={14} className="flex-none" />
-      <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-semibold leading-normal">{title}</span>
+      <span className="av h-6 w-6 flex-none rounded-sm">
+        {agent ? <AgentIconView icon={agent.icon} runtime={agent.runtime} size={24} /> : <Icon name="bot" size={14} />}
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col gap-[1px]">
+        <span className="truncate font-sans text-[12.5px] font-semibold leading-normal">{title}</span>
+        <span className="truncate font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)">
+          {agentName}
+        </span>
+      </span>
       {relation.title && (
         <span className="hidden flex-none font-mono text-[10.5px] font-medium leading-normal text-(--text-tertiary) desktop:inline">
           {relation.id.slice(0, 8)}
@@ -489,10 +500,12 @@ function SessionRelationLink({
 function SessionFamilyLinks({
   parent,
   children,
+  agentById,
   orgPath
 }: {
   parent: SessionRelationDto | null
   children: SessionRelationDto[]
+  agentById: ReadonlyMap<string, Agent>
   orgPath: (path: string) => string
 }) {
   if (!parent && children.length === 0) return null
@@ -507,7 +520,7 @@ function SessionFamilyLinks({
           <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
             Parent session
           </span>
-          <SessionRelationLink relation={parent} orgPath={orgPath} />
+          <SessionRelationLink relation={parent} agent={agentById.get(parent.agentId)} orgPath={orgPath} />
         </div>
       )}
       {children.length > 0 && (
@@ -517,7 +530,13 @@ function SessionFamilyLinks({
           </span>
           <div className="min-w-0">
             {children.map((child, index) => (
-              <SessionRelationLink key={child.id} relation={child} orgPath={orgPath} bordered={index > 0} />
+              <SessionRelationLink
+                key={child.id}
+                relation={child}
+                agent={agentById.get(child.agentId)}
+                orgPath={orgPath}
+                bordered={index > 0}
+              />
             ))}
           </div>
         </div>
@@ -601,7 +620,8 @@ export default function SessionDetailView() {
   // its local/live fields, but let the independently refreshed detail snapshot
   // supply the authoritative per-session token and cost totals.
   const sessionBase = localSession ? mergeSessionDetailUsage(localSession, detailSession) : detailSession
-  const owner = sessionBase ? agents.find((a) => a.id === sessionBase.agentId) : undefined
+  const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents])
+  const owner = sessionBase?.agentId ? agentById.get(sessionBase.agentId) : undefined
   const session =
     sessionBase && !localSession
       ? {
@@ -1380,6 +1400,7 @@ export default function SessionDetailView() {
         <SessionFamilyLinks
           parent={sessionDetail.parentSession}
           children={sessionDetail.childSessions}
+          agentById={agentById}
           orgPath={orgPath}
         />
       )}
