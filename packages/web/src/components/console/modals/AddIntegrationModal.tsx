@@ -84,7 +84,7 @@ export const BOT_PLATFORMS: { key: BotPlatform; label: string }[] = [
   { key: 'slack', label: 'Slack' },
   { key: 'telegram', label: 'Telegram' },
   { key: 'discord', label: 'Discord' },
-  { key: 'feishu', label: 'Feishu' }
+  { key: 'feishu', label: 'Lark' }
 ]
 
 export const PLATFORMS: { key: Platform; label: string }[] = [
@@ -123,7 +123,7 @@ function fmtAgo(iso: string | null): string {
 
 function inviteBotHint(
   target: 'channel' | 'group',
-  platform: 'Slack' | 'Telegram' | 'Discord' | 'Feishu',
+  platform: 'Slack' | 'Telegram' | 'Discord' | 'Feishu' | 'Lark',
   nextStep = 'it starts listening there'
 ): string {
   return `invite the bot to any ${target} in ${platform} and ${nextStep}.`
@@ -132,8 +132,7 @@ function inviteBotHint(
 const IM_INVITE_HINT = {
   slack: inviteBotHint('channel', 'Slack'),
   telegram: inviteBotHint('group', 'Telegram'),
-  discord: inviteBotHint('channel', 'Discord'),
-  feishu: inviteBotHint('group', 'Feishu', '@-mention it to start')
+  discord: inviteBotHint('channel', 'Discord')
 } as const
 
 // Per-platform "create a new bot" walkthrough for the non-Slack platforms (Slack
@@ -994,6 +993,7 @@ export default function AddIntegrationModal({
   const [appToken, setAppToken] = useState('')
   // Feishu/Lark gateway: new installs default to international Lark.
   const [feishuRegion, setFeishuRegion] = useState<'feishu' | 'lark'>('lark')
+  const feishuBrand = feishuRegion === 'lark' ? 'Lark' : 'Feishu'
   const [saving, setSaving] = useState(false)
   const [showErrors, setShowErrors] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -2483,16 +2483,19 @@ export default function AddIntegrationModal({
             {(
               [
                 {
+                  key: 'create' as const,
+                  icon: 'key-round',
+                  title: 'Create a new bot',
+                  desc:
+                    platform === 'feishu'
+                      ? `Create a self-built app in the ${feishuBrand} console and paste its App ID & Secret.`
+                      : CREATE_DESC[platform]
+                },
+                {
                   key: 'existing' as const,
                   icon: 'bot',
                   title: 'Use an existing bot',
                   desc: "A bot you've created that no agent is using."
-                },
-                {
-                  key: 'create' as const,
-                  icon: 'key-round',
-                  title: 'Create a new bot',
-                  desc: CREATE_DESC[platform]
                 }
               ] as const
             ).map((t) => {
@@ -3057,11 +3060,11 @@ export default function AddIntegrationModal({
                 + host — an app is registered in one region, so the operator chooses first. */}
             <div className="mb-3">
               <span className="fldlbl mb-[6px] block">Region</span>
-              <div className="grid grid-cols-2 gap-[6px]" role="radiogroup" aria-label="Feishu region">
+              <div className="grid grid-cols-2 gap-[6px]" role="radiogroup" aria-label="Lark or Feishu region">
                 {(
                   [
-                    { key: 'feishu', label: 'Feishu', sub: '飞书 · China' },
-                    { key: 'lark', label: 'Lark', sub: 'International' }
+                    { key: 'lark', label: 'Lark', sub: 'International' },
+                    { key: 'feishu', label: 'Feishu', sub: '飞书 · China' }
                   ] as const
                 ).map((r) => (
                   <button
@@ -3092,8 +3095,8 @@ export default function AddIntegrationModal({
               </span>
               <div className="min-w-0 flex-1">
                 <div className="mb-2 font-sans text-[12.5px] font-medium leading-[1.45] text-(--text-secondary)">
-                  Create a self-built app in the {feishuRegion === 'lark' ? 'Lark' : 'Feishu'} console, enable the bot,
-                  then copy its App ID and App Secret from Credentials &amp; Basic Info.
+                  Create a self-built app in the {feishuBrand}&#32;console, enable the bot, then copy its App ID and App
+                  Secret from Credentials &amp; Basic Info.
                 </div>
                 <div className="group relative">
                   <a
@@ -3109,7 +3112,7 @@ export default function AddIntegrationModal({
                     <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
                       <PlatformMark platform="feishu" />
                     </span>
-                    Create {feishuRegion === 'lark' ? 'Lark' : 'Feishu'} bot
+                    Create {feishuBrand} bot
                     <Icon name="external-link" size={14} />
                   </a>
                   <BotSetupWalkthrough
@@ -3157,7 +3160,7 @@ export default function AddIntegrationModal({
           <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
             <div className="mb-[11px] flex items-center gap-2 font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary)">
               <Icon name="shield-check" size={14} color="var(--brand)" className="flex-none" />
-              Feishu setup checklist
+              {feishuBrand} setup checklist
             </div>
             <ul className="flex flex-col gap-[10px]">
               {FEISHU_REQS.map((r) => (
@@ -3199,7 +3202,7 @@ export default function AddIntegrationModal({
                 : platform === 'slack'
                   ? IM_INVITE_HINT.slack
                   : platform === 'feishu'
-                    ? IM_INVITE_HINT.feishu
+                    ? inviteBotHint('group', feishuBrand, '@-mention it to start')
                     : IM_INVITE_HINT[platform]}
           </span>
         </div>
