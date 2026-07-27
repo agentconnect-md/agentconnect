@@ -1084,6 +1084,7 @@ export default function AgentDetailView() {
                         integrationId={g.id}
                         channels={g.channels}
                         botId={g.botId}
+                        agentId={da.id}
                         shareable={g.shareable}
                         gated={da.visibility === 'restricted'}
                         padX={16}
@@ -1169,10 +1170,10 @@ export default function AgentDetailView() {
                             {g.shareable && (
                               <span
                                 className="badge bg-(--surface-app) text-(--text-tertiary)"
-                                title="Shared bot — used by multiple agents, inbound via a relay"
+                                title="Shared bot — used by multiple agents, inbound via a relay. Each channel dispatches to one of them by default."
                               >
                                 <Icon name="users" size={11} />
-                                shared
+                                shared · {g.agentCount} {g.agentCount === '1' ? 'agent' : 'agents'}
                               </span>
                             )}
                           </div>
@@ -1202,6 +1203,7 @@ export default function AgentDetailView() {
                         integrationId={g.id}
                         channels={g.channels}
                         botId={g.botId}
+                        agentId={da.id}
                         shareable={g.shareable}
                         gated={da.visibility === 'restricted'}
                         padX={14}
