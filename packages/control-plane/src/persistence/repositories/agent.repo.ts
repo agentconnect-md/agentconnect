@@ -9,6 +9,7 @@ import type {
   AgentCallPolicy,
   AgentRepo,
   AgentRecord,
+  AgentUpdateOpts,
   AgentWorkspace,
   CreateAgentInput,
   HookRecord,
@@ -250,7 +251,16 @@ export class PgAgentRepo implements AgentRepo {
     return a ? toRecord(a) : null
   }
 
-  async update(agentId: AgentId, patch: UpdateAgentInput): Promise<AgentRecord> {
+  async update(agentId: AgentId, patch: UpdateAgentInput, opts?: AgentUpdateOpts): Promise<AgentRecord> {
+    return this.transaction(async (tx) => this.updateInTx(tx, agentId, patch, opts))
+  }
+
+  private async updateInTx(
+    tx: Prisma.TransactionClient,
+    agentId: AgentId,
+    patch: UpdateAgentInput,
+    opts?: AgentUpdateOpts
+  ): Promise<AgentRecord> {
     // model/reasoningEffort/env live in the runtimeOverrides JSON — merge key by
     // key so patching one never clobbers the others (null deletes its key).
     let overrides: RuntimeOverrides | typeof undefined
@@ -268,8 +278,22 @@ export class PgAgentRepo implements AgentRepo {
       patch.skills !== undefined ||
       patch.memory !== undefined
     ) {
-      const cur = (await this.db.agent.findUnique({ where: { id: agentId } }))
-        ?.runtimeOverrides as RuntimeOverrides | null
+      // Row-lock the read: overrides are ONE JsonB bag, so the read-merge-write
+      // below replaces keys this patch OMITS with whatever it read. Unlocked,
+      // two overlapping edits lose each other's keys — and an omitted
+      // mcpServers/skills key could "restore" entries a concurrent edit removed,
+      // resurrecting a reference the provider-delete guard already checked
+      // (routes/mcp-providers.ts). FOR UPDATE holds the row until this
+      // transaction commits, so concurrent bag writers fully serialize.
+      const rows = await tx.$queryRaw<Array<{ runtimeOverrides: unknown }>>(
+        Prisma.sql`SELECT "runtimeOverrides" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
+      )
+      const cur = (rows[0]?.runtimeOverrides ?? null) as RuntimeOverrides | null
+      // The enable-list authorization decision happens HERE, against the row-locked
+      // committed list — a removal-only write (which joins no provider-name chain)
+      // can no longer land between the hold check and the write it authorized. A
+      // throw aborts the transaction before any merge is computed.
+      opts?.authorizeMcpServers?.(cur?.mcpServers ?? [])
       const next: RuntimeOverrides = { ...(cur ?? {}) }
       if (patch.model !== undefined) {
         if (patch.model === null) delete next.model
@@ -317,7 +341,7 @@ export class PgAgentRepo implements AgentRepo {
       }
       overrides = next
     }
-    const a = await this.db.agent.update({
+    const a = await tx.agent.update({
       where: { id: agentId },
       data: {
         ...(patch.displayName !== undefined ? { displayName: patch.displayName } : {}),

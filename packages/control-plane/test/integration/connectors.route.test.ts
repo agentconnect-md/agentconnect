@@ -25,8 +25,9 @@ interface StubCall {
 }
 
 /** A stub open-connector server: canned catalog, records connection PUT / oauth POST,
- *  and can be told to fail the connection save (to exercise rollback). */
-function stubConnectors(opts: { failSave?: boolean } = {}) {
+ *  and can be told to fail the connection save (to exercise rollback). `onSave` is
+ *  awaited before the save responds — a test can park the create flow mid-provision. */
+function stubConnectors(opts: { failSave?: boolean; onSave?: () => Promise<void> } = {}) {
   const calls: StubCall[] = []
   const doFetch: FetchLike = async (url, init) => {
     const method = init?.method ?? 'GET'
@@ -64,6 +65,7 @@ function stubConnectors(opts: { failSave?: boolean } = {}) {
       return json([{ service: 'github', configured: true, clientId: 'gh' }])
     }
     if (url.includes('/api/connections/')) {
+      if (opts.onSave) await opts.onSave()
       return opts.failSave ? json({ message: 'save failed' }, 500) : json({ ok: true })
     }
     if (url.endsWith('/api/oauth/authorizations')) {
@@ -156,6 +158,26 @@ describe('connectors routes', () => {
     expect(list.json().find((p: { name: string }) => p.name === 'restricted-conn')?.visibility).toBe('restricted')
   })
 
+  it('409s a connection whose name an agent already enables (name-capture guard)', async () => {
+    // Same rule as POST /mcp-providers: a connection is a provider row bound by NAME,
+    // so creating one under an enabled name would capture those agents' sessions.
+    const { client } = stubConnectors()
+    const app = appWith(client)
+    const agent = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'local-user', runtime: 'claude', mcpServers: ['prod-conn'] }
+    })
+    expect(agent.statusCode).toBe(201)
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/connectors/connections`,
+      payload: { service: 'stripe', connectionName: 'prod-conn', authType: 'api_key', values: { apiKey: 'x' } }
+    })
+    expect(res.statusCode).toBe(409)
+  })
+
   it('409s a duplicate connection name (org-unique)', async () => {
     const { client } = stubConnectors()
     const app = appWith(client)
@@ -179,6 +201,48 @@ describe('connectors routes', () => {
     expect(res.statusCode).toBeGreaterThanOrEqual(400)
     const list = await app.app.inject({ method: 'GET', url: `${ORG}/mcp-providers` })
     expect(list.json().find((p: { name: string }) => p.name === 'willfail')).toBeUndefined()
+  })
+
+  it('rollback keeps the row when an agent enabled the connection while the save was pending (reference-safe)', async () => {
+    // The provider row is committed and VISIBLE before the upstream save resolves, so
+    // an agent can legitimately enable it in that window. A failing save must then
+    // NOT cascade-delete the row out from under the reference (the dangling-selector
+    // hole the DELETE route's 409 guard closes) — the rollback re-checks references
+    // inside the same per-provider chain and keeps a referenced row.
+    let releaseSave!: () => void
+    const saveGate = new Promise<void>((r) => (releaseSave = r))
+    let notifySaving!: () => void
+    const saving = new Promise<void>((r) => (notifySaving = r))
+    const { client } = stubConnectors({
+      failSave: true,
+      onSave: () => {
+        notifySaving()
+        return saveGate
+      }
+    })
+    const app = appWith(client)
+
+    const create = app.app.inject({
+      method: 'POST',
+      url: `${ORG}/connectors/connections`,
+      payload: { service: 'stripe', connectionName: 'race-conn', authType: 'api_key', values: { apiKey: 'x' } }
+    })
+    await saving // provider row is committed; upstream save is parked
+
+    const agent = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'conn-racer', runtime: 'claude', mcpServers: ['race-conn'] }
+    })
+    expect(agent.statusCode).toBe(201)
+
+    releaseSave() // the save now fails → rollback runs, sees the reference
+    expect((await create).statusCode).toBeGreaterThanOrEqual(400) // caller still gets the failure
+
+    const list = await app.app.inject({ method: 'GET', url: `${ORG}/mcp-providers` })
+    expect(list.json().find((p: { name: string }) => p.name === 'race-conn')).toBeDefined()
+    const agentRow = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agent.json().id}` })
+    expect(agentRow.json().mcpServers).toEqual(['race-conn'])
   })
 
   it('returns an authorizationUrl for an oauth2 connection', async () => {
