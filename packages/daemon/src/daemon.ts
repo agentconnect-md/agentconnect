@@ -16,7 +16,8 @@ import {
   type InboxRow,
   type OrchestrationRow,
   type SessionRecord,
-  type SubtaskRow
+  type SubtaskRow,
+  type TranscriptMutation
 } from './store/local-store.js'
 import { AcpHost, turnFailureCode, turnFailureReason, type AcpPermissionPolicyEvent } from './acp/acp-host.js'
 import { detectSandbox, SandboxError, type SandboxMechanism } from './acp/sandbox.js'
@@ -221,6 +222,7 @@ import type {
   DrainDone,
   SessionKey,
   EventSession,
+  SessionActivity,
   SessionListItem,
   AgentLaunch,
   AgentLaunched,
@@ -1403,6 +1405,7 @@ export class Daemon {
   // Durable hook/report outbox drain. A READY socket may survive a temporary
   // CP/DB failure, so retries cannot depend only on reconnect callbacks.
   private hookReportRetryTimer?: TimerHandle
+  private transcriptActivityTimers = new Map<string, { timer: TimerHandle; activity: SessionActivity }>()
   private readonly hookReportInflight = new Set<string>()
   // Fresh per READY connection. Legacy CPs have no correlated ACK, so the local
   // outbox stamps each best-effort EVT with this generation and sends it at
@@ -1716,6 +1719,7 @@ export class Daemon {
     })
 
     this.store = new LocalStore(statePath(root))
+    this.store.setTranscriptMutationListener((mutation) => this.scheduleSessionActivity(mutation))
     this.memoryOutbox = new MemoryCaptureOutbox(this.store, this.memoryConnections, {
       log: { warn: (message) => this.log.warn(message) }
     })
@@ -12474,6 +12478,35 @@ export class Daemon {
     return { ok: false, reason: 'unknown cron' }
   }
 
+  /** Coalesce hot transcript writes into body-free, per-session invalidations. */
+  private scheduleSessionActivity(mutation: TranscriptMutation): void {
+    const ts = new Date(this.clock.now()).toISOString()
+    for (const agentId of mutation.agentIds) {
+      for (const sessionId of this.store.sessionIdsForTranscript(agentId, mutation.channel, mutation.thread)) {
+        const key = `${agentId}\0${sessionId}`
+        const existing = this.transcriptActivityTimers.get(key)
+        if (existing) {
+          existing.activity.revision = String(mutation.revision)
+          existing.activity.ts = ts
+          continue
+        }
+        const activity: SessionActivity = {
+          sessionId,
+          agentId,
+          revision: String(mutation.revision),
+          ts
+        }
+        const timer = this.clock.setTimeout(() => {
+          const pending = this.transcriptActivityTimers.get(key)
+          if (!pending || pending.timer !== timer) return
+          this.transcriptActivityTimers.delete(key)
+          this.cpClient?.emitSessionActivity(pending.activity)
+        }, 250)
+        this.transcriptActivityTimers.set(key, { timer, activity })
+      }
+    }
+  }
+
   private startCpClient(root: string): void {
     const cp = this.cfg.controlPlane
     if (!cp?.enabled || !cp.url || !cp.key) {
@@ -13058,6 +13091,9 @@ export class Daemon {
     // §2.5: gate new turns and let in-flight ones finish (deadline-bounded) BEFORE
     // tearing the hosts down — a hard kill mid-turn loses the reply + transcript.
     await this.drainForShutdown()
+    this.store.setTranscriptMutationListener()
+    for (const { timer } of this.transcriptActivityTimers.values()) this.clock.clearTimeout(timer)
+    this.transcriptActivityTimers.clear()
     const errors: unknown[] = []
     this.scheduler?.stop()
     this.dreamScheduler?.stop()

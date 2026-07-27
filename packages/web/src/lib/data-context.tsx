@@ -113,6 +113,10 @@ interface ConsoleData {
   allSessions: Session[]
   sessionFacets: SessionFacets
   sessionsNextCursor: string | null
+  /** Per-session body-free SSE invalidation counter for open transcript views. */
+  sessionActivityVersionById: Record<string, number>
+  /** Advances on every SSE (re)connect so views close any disconnect gap. */
+  sessionStreamGeneration: number
   crons: CronDto[]
   integrations: IntegrationRow[]
   /** Durable bot identities (freed + in-use) — Add-integration picker + Settings Bots card. */
@@ -569,6 +573,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const sessionRefreshGenerationRef = useRef(0)
   const sessionRefreshInFlightRef = useRef(false)
   const sessionRefreshDirtyRef = useRef(false)
+  const [sessionActivityVersionById, setSessionActivityVersionById] = useState<Record<string, number>>({})
+  const [sessionStreamGeneration, setSessionStreamGeneration] = useState(0)
 
   // Every cache key carries the org id. Unlike `keepPreviousData`, separate keys
   // never paint one org's stale rows under another org while the new pull starts.
@@ -732,6 +738,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     const generation = ++sessionRefreshGenerationRef.current
     sessionRefreshInFlightRef.current = false
     sessionRefreshDirtyRef.current = false
+    setSessionActivityVersionById({})
     if (orgLoading || !activeOrg) return
 
     const scheduleSessionRefresh = () => {
@@ -741,7 +748,18 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
         void drainSessionRefreshes(generation)
       }, SESSION_EVENT_REFRESH_DEBOUNCE_MS)
     }
-    const unsubscribe = subscribeSessionEvents(activeOrg.id, scheduleSessionRefresh)
+    const unsubscribe = subscribeSessionEvents(activeOrg.id, {
+      onConnect: () => {
+        scheduleSessionRefresh()
+        setSessionStreamGeneration((current) => current + 1)
+      },
+      onSession: scheduleSessionRefresh,
+      onActivity: ({ sessionId }) =>
+        setSessionActivityVersionById((current) => ({
+          ...current,
+          [sessionId]: (current[sessionId] ?? 0) + 1
+        }))
+    })
     return () => {
       sessionRefreshGenerationRef.current++
       sessionRefreshDirtyRef.current = false
@@ -1194,6 +1212,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       allSessions,
       sessionFacets,
       sessionsNextCursor,
+      sessionActivityVersionById,
+      sessionStreamGeneration,
       crons,
       integrations,
       bots,
@@ -1254,6 +1274,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       allSessions,
       sessionFacets,
       sessionsNextCursor,
+      sessionActivityVersionById,
+      sessionStreamGeneration,
       crons,
       integrations,
       bots,

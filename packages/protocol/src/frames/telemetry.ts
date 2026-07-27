@@ -63,6 +63,19 @@ export const EventSession = z.object({
 export type EventSession = z.infer<typeof EventSession>
 
 /**
+ * Metadata-only transcript invalidation. Message/tool bodies remain daemon-local;
+ * an authorized browser uses this signal to pull the changed rows through
+ * `session/history.after`.
+ */
+export const SessionActivity = z.object({
+  sessionId: z.string(),
+  agentId: z.string().uuid(),
+  revision: z.string().regex(/^\d+$/),
+  ts: z.string().datetime()
+})
+export type SessionActivity = z.infer<typeof SessionActivity>
+
+/**
  * Per-session token-usage report — D→C EVT. The daemon meters usage from the
  * agent's ACP stream and reports the session's CUMULATIVE snapshot (latest-wins)
  * so the CP can persist it for the console's historical usage aggregates. This is

@@ -1955,7 +1955,9 @@ export const SessionMessageDto = z.object({
 export const SessionHistoryDto = z.object({
   sessionId: z.string(),
   messages: z.array(SessionMessageDto),
-  nextCursor: z.string().nullable()
+  nextCursor: z.string().nullable(),
+  liveCursor: z.string().nullable(),
+  liveMore: z.boolean()
 })
 
 /** `GET /sessions/:id/tool-body` query — one byte slice of a tool call's full ToolBody JSON. */

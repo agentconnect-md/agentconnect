@@ -98,6 +98,7 @@ import {
 import {
   Heartbeat,
   EventSession,
+  SessionActivity,
   UsageReport,
   FactsRuntimeProfile,
   DaemonRuntimes,
@@ -190,6 +191,7 @@ export const FRAME_SCHEMAS = {
   'scope-attestation': ScopeAttestation,
   // ── dashboard / facts ──
   'event/session': EventSession,
+  'event/session-activity': SessionActivity,
   'usage/report': UsageReport,
   'facts/runtime-profile': FactsRuntimeProfile,
   'facts/daemon-runtimes': DaemonRuntimes,
@@ -361,6 +363,7 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('secrets/revoke', FRAME_SCHEMAS['secrets/revoke']),
   frame('scope-attestation', FRAME_SCHEMAS['scope-attestation']),
   frame('event/session', FRAME_SCHEMAS['event/session']),
+  frame('event/session-activity', FRAME_SCHEMAS['event/session-activity']),
   frame('usage/report', FRAME_SCHEMAS['usage/report']),
   frame('facts/runtime-profile', FRAME_SCHEMAS['facts/runtime-profile']),
   frame('facts/daemon-runtimes', FRAME_SCHEMAS['facts/daemon-runtimes']),
