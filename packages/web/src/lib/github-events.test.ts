@@ -36,6 +36,13 @@ describe('GH_TRIGGER_PILL', () => {
       'Runs when an issue or PR is opened and on supported updates and replies (close, reopen and edits are ignored).'
     )
   })
+
+  it('mention-mode copy admits the App broadcast and explicit App review requests, without an absolute "only"', () => {
+    const copy = githubTriggerTooltip('mention', 'reviewer')
+    expect(copy).toContain('GitHub App')
+    expect(copy).toContain('review request')
+    expect(copy).not.toMatch(/\bonly\b/)
+  })
 })
 
 describe('GH_FAMILIES', () => {

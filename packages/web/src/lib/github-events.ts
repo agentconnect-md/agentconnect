@@ -74,7 +74,9 @@ export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string): st
     case 'every':
       return 'Runs when an issue or PR is opened and on supported updates and replies (close, reopen and edits are ignored).'
     case 'mention':
-      return `Runs only when @${agentName} is mentioned.`
+      // Not "only @agent": the App handle is the repository-wide broadcast, and
+      // an authorized native App review request bypasses cadence/mention/label.
+      return `Runs when @${agentName} or the GitHub App is mentioned, and on explicit App review requests.`
   }
 }
 
