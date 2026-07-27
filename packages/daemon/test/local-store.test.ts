@@ -30,6 +30,35 @@ describe('LocalStore', () => {
     s.close()
   })
 
+  it('does not recursively mine dream execution sessions as dream sources', () => {
+    const s = store()
+    s.upsertSession({
+      key: sessionKey('slack', 'C1', 'T1', 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: 'source-session',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    s.upsertSession({
+      key: sessionKey('dream', 'memory', 'drm-1', 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'dream',
+      channel: 'memory',
+      thread: 'drm-1',
+      acpSessionId: 'dream-session',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 2
+    })
+
+    expect(s.dreamSessionSources('bot-a', 20)).toEqual([{ sessionId: 'source-session', channel: 'C1', thread: 'T1' }])
+    s.close()
+  })
+
   it('returns transcript entries strictly after a marker, ordered by ts', () => {
     const s = store()
     s.appendTranscript({ channel: 'C1', thread: '100.1', ts: '100.2', sender: 'U1', kind: 'text', text: 'first' })

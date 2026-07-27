@@ -1540,6 +1540,7 @@ export const MEMBERS: Member[] = [
 export function platName(p: string): string {
   const x = (p || '').toLowerCase()
   if (x.includes('github')) return 'GitHub'
+  if (x.includes('dream')) return 'Memory dream'
   if (x.includes('hook')) return 'Webhook'
   // 'playground' (live sandbox) and 'webchat' (its persisted CP session) are the same
   // surface to a user — label both "Playground".

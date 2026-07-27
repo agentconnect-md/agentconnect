@@ -77,6 +77,30 @@ describe('sessionTriggerKind', () => {
     expect(sessionPlatform({ platform: 'hook', hookKind: 'github' })).toBe('github')
     expect(sessionPlatform({ platform: 'playground' })).toBe('webchat')
   })
+
+  it('labels dream execution sessions without exposing their synthetic routing key', () => {
+    const dream = sessionFromDto(
+      sessionDto({
+        sessionId: 'dream-session-1',
+        sessionKey: { platform: 'dream', channel: 'memory' },
+        title: 'Memory dream',
+        triggeredBy: 'schedule',
+        runtime: 'codex',
+        model: 'gpt-5.6',
+        usage: { totalTokens: 120, costAmount: 0.012, costCurrency: 'USD' }
+      })
+    )
+
+    expect(dream).toMatchObject({
+      platform: 'dream',
+      channel: 'Memory',
+      user: 'Scheduled',
+      runtime: 'codex',
+      model: 'gpt-5.6',
+      tokens: '120',
+      cost: '$0.01'
+    })
+  })
 })
 
 describe('sessionSenderLabel', () => {

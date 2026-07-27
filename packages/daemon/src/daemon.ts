@@ -17,7 +17,8 @@ import {
   type OrchestrationRow,
   type SessionRecord,
   type SubtaskRow,
-  type TranscriptMutation
+  type TranscriptMutation,
+  type StoredUsage
 } from './store/local-store.js'
 import { AcpHost, turnFailureCode, turnFailureReason, type AcpPermissionPolicyEvent } from './acp/acp-host.js'
 import { detectSandbox, SandboxError, type SandboxMechanism } from './acp/sandbox.js'
@@ -51,7 +52,7 @@ import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-
 import { toolsForIntegrations, MEMORY_TOOL_NAMES, ALL_TOOL_NAMES, GITHUB_REVIEW_TOOLS } from './mcp/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, trustedExtractionMode } from './agents/memory-distiller.js'
-import { DreamRunner, DreamStateError } from './agents/dream-runner.js'
+import { DreamRunner, DreamStateError, type DreamLifecycleEvent } from './agents/dream-runner.js'
 import { createDreamReader } from './cp/dream-reader.js'
 import { routeRules, type RouteVia } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
@@ -1130,7 +1131,10 @@ export class Daemon {
   )
   /** Provider-neutral serialized post-turn work. Managed distills; external enqueues capture. */
   private memoryPostTurnChains = new Map<string, Promise<void>>()
-  private memoryExtractionCollectors = new Map<string, string[]>()
+  private memoryExtractionCollectors = new Map<
+    string,
+    { chunks: string[]; sessionKey?: string; runtimeCostReported?: boolean }
+  >()
   /** One isolated extractor session per agent/host lifetime (never shown to users). */
   private memoryExtractionSessions = new Map<string, string>()
   private memoryExtractionDirs = new Map<string, string>()
@@ -3316,7 +3320,7 @@ export class Daemon {
     }
     const key = pendingTurnKey(agentId, sessionId)
     const chunks: string[] = []
-    this.memoryExtractionCollectors.set(key, chunks)
+    this.memoryExtractionCollectors.set(key, { chunks })
     try {
       // Extraction runs read-only and shouldn't touch the config files, but keep
       // the invariant uniform: every host.prompt is preceded by re-materialization.
@@ -3357,8 +3361,17 @@ export class Daemon {
     agentId: string,
     systemPrompt: string,
     prompt: string,
-    signal: AbortSignal
-  ): Promise<{ output: string; trustedChannel: boolean }> {
+    signal: AbortSignal,
+    context: { dreamId: string; trigger: 'manual' | 'schedule' | 'auto'; sessionIds: string[] }
+  ): Promise<{
+    output: string
+    trustedChannel: boolean
+    sessionId: string
+    runtime: string
+    model?: string
+    stopReason: string
+    usage?: StoredUsage
+  }> {
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     const host = await this.ensureHostAsync(agentId)
@@ -3377,11 +3390,59 @@ export class Daemon {
     // launching an uncancellable prompt.
     if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
     const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
+    const selectedModel = host.modelOptions?.(sessionId)?.current
+    const model = selectedModel && selectedModel !== 'default' ? selectedModel : agent.runtimeOverrides?.model
+    const executionKey = sessionKey('dream', 'memory', context.dreamId, agentId)
+    const now = this.clock.now()
+    this.store.upsertSession({
+      key: executionKey,
+      agentId,
+      platform: 'dream',
+      channel: 'memory',
+      thread: context.dreamId,
+      acpSessionId: sessionId,
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: now,
+      triggeredBy: context.trigger,
+      memoryProvider: 'managed'
+    })
+    this.store.setSessionTitle(executionKey, 'Memory dream')
+    const dream = this.store.getDream(agentId, context.dreamId)
+    if (dream) {
+      this.store.updateDream({
+        ...dream,
+        executionSessionId: sessionId,
+        runtime: agent.runtime,
+        ...(model ? { model } : {})
+      })
+    }
+    this.store.appendTranscript({
+      channel: 'memory',
+      thread: context.dreamId,
+      ts: monotonicTs(),
+      sender: agentId,
+      kind: 'text',
+      text: `Memory dream started. ${context.sessionIds.length} source session${context.sessionIds.length === 1 ? '' : 's'} selected.`
+    })
+    this.emitSessionMetadataSnapshot({
+      sessionId,
+      agentId,
+      phase: 'start',
+      platform: 'dream',
+      channel: 'memory',
+      thread: context.dreamId,
+      status: 'running',
+      runtime: agent.runtime,
+      ...(model ? { model } : {})
+    })
     // On cancel, drive the ACP turn-cancel path so a hung/long prompt actually
     // stops instead of pinning the dream's one-in-flight reservation.
     const onAbort = () => void host.cancel(sessionId).catch(() => {})
     if (signal.aborted) onAbort()
     else signal.addEventListener('abort', onAbort, { once: true })
+    let promptCompleted = false
+    let extractionMode: string | undefined
     try {
       if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
       // HARD GATE: require a verified non-mutating mode. Fail closed if the
@@ -3389,6 +3450,7 @@ export class Daemon {
       // injection-exposed extraction with write access.
       const modes = host.permissionModeOptions()?.modes ?? []
       const readOnlyMode = modes.find((mode) => mode === 'read-only') ?? modes.find((mode) => mode === 'plan')
+      extractionMode = readOnlyMode
       if (!readOnlyMode || !(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
         throw new Error('runtime lacks a verified read-only/plan mode; dream extraction cannot run safely')
       }
@@ -3397,7 +3459,8 @@ export class Daemon {
 
       const key = pendingTurnKey(agentId, sessionId)
       const chunks: string[] = []
-      this.memoryExtractionCollectors.set(key, chunks)
+      const collector = { chunks, sessionKey: executionKey, runtimeCostReported: false }
+      this.memoryExtractionCollectors.set(key, collector)
       try {
         this.rematerializeConfigFiles(agentId)
         const text = trusted ? prompt : `${systemPrompt}\n\n${prompt}`
@@ -3405,13 +3468,66 @@ export class Daemon {
         // yields, stop awaiting after DREAM_CANCEL_FORCE_MS from the abort so the
         // `finally` discards the ACP session instead of leaking it. The runner's
         // own grace window already releases the reservation independently.
-        await this.promptWithCancelBackstop(host, sessionId, text, signal)
-        return { output: chunks.join(''), trustedChannel: trusted }
+        const result = await this.promptWithCancelBackstop(host, sessionId, text, signal)
+        promptCompleted = true
+        if (result.usage) {
+          const counts = {
+            totalTokens: result.usage.totalTokens,
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+            thoughtTokens: result.usage.thoughtTokens ?? undefined,
+            cachedReadTokens: result.usage.cachedReadTokens ?? undefined,
+            cachedWriteTokens: result.usage.cachedWriteTokens ?? undefined
+          }
+          this.store.setTokenUsage(executionKey, counts)
+          if (this.isCodexRuntime(agentId) && !collector.runtimeCostReported) {
+            const estimate = estimateOpenAiTurnCost(model, counts)
+            if (estimate.ok) this.store.addCost(executionKey, estimate.amount, estimate.currency)
+          }
+        }
+        const usage = this.store.getUsage(executionKey)
+        return {
+          output: chunks.join(''),
+          trustedChannel: trusted,
+          sessionId,
+          runtime: agent.runtime,
+          ...(model ? { model } : {}),
+          stopReason: String(result.stopReason),
+          ...(Object.keys(usage).length ? { usage } : {})
+        }
       } finally {
         this.memoryExtractionCollectors.delete(key)
       }
     } finally {
       signal.removeEventListener('abort', onAbort)
+      // Report even on failed/canceled prompts: a runtime may have streamed a
+      // native cost/context snapshot before the terminal error. The CP upsert is
+      // latest-wins, so the success path and this failure-safe path share one
+      // idempotent emission point.
+      this.emitStoredUsageReport(sessionId, agentId, 'dream', 'memory', executionKey)
+      this.store.appendTranscript({
+        channel: 'memory',
+        thread: context.dreamId,
+        ts: monotonicTs(),
+        sender: agentId,
+        kind: 'text',
+        text: promptCompleted
+          ? 'Model extraction finished. The dream job is validating and staging the result.'
+          : 'Model extraction stopped before producing a result.'
+      })
+      this.store.setSessionState(executionKey, 'idle', this.clock.now())
+      this.emitSessionMetadataSnapshot({
+        sessionId,
+        agentId,
+        phase: promptCompleted ? 'end' : 'problem',
+        platform: 'dream',
+        channel: 'memory',
+        thread: context.dreamId,
+        status: promptCompleted ? 'completed' : signal.aborted ? 'canceled' : 'failed',
+        runtime: agent.runtime,
+        ...(model ? { model } : {}),
+        ...(extractionMode ? { permissionMode: extractionMode } : {})
+      })
       host.discardSession(sessionId)
     }
   }
@@ -3424,7 +3540,7 @@ export class Daemon {
     sessionId: string,
     text: string,
     signal: AbortSignal
-  ): Promise<void> {
+  ): Promise<Awaited<ReturnType<AcpHost['prompt']>>> {
     const done = host.prompt(sessionId, [{ type: 'text', text }])
     let timer: ReturnType<typeof setTimeout> | undefined
     const backstop = new Promise<never>((_resolve, reject) => {
@@ -3437,10 +3553,68 @@ export class Daemon {
       else signal.addEventListener('abort', arm, { once: true })
     })
     try {
-      await Promise.race([done, backstop])
+      return await Promise.race([done, backstop])
     } finally {
       if (timer) clearTimeout(timer)
     }
+  }
+
+  /** Bridge the dream engine's metadata-only lifecycle into evaluation telemetry
+   *  and the safe transcript of its background execution session. Memory bodies,
+   *  source transcript text, prompts, model output, and error prose never enter
+   *  either surface. */
+  private recordDreamLifecycle(event: DreamLifecycleEvent): void {
+    const { dream } = event
+    this.emitEvaluation({
+      type: event.type,
+      agentId: dream.agentId,
+      ...(dream.executionSessionId ? { sessionId: dream.executionSessionId } : {}),
+      data: {
+        dreamId: dream.dreamId,
+        trigger: dream.trigger,
+        sourceSessionCount: dream.sessionIds.length,
+        ...(dream.runtime ? { runtime: dream.runtime } : {}),
+        ...(dream.model ? { model: dream.model } : {}),
+        ...(dream.stopReason ? { stopReason: dream.stopReason } : {}),
+        ...(dream.usage ? { usage: dream.usage } : {}),
+        ...(dream.error ? { errorType: dream.error.type } : {}),
+        ...(event.skillName ? { skillName: event.skillName } : {})
+      }
+    })
+
+    if (!dream.executionSessionId || event.type === 'memory.dream.started') return
+    const rec = this.store.getSessionByAcpIdForAgent(dream.agentId, dream.executionSessionId)
+    if (!rec) return
+    const message: Partial<Record<DreamLifecycleEvent['type'], string>> = {
+      'memory.dream.completed': 'Dream completed. The staged memory is ready for review.',
+      'memory.dream.failed': 'Dream failed during proposal validation or staging.',
+      'memory.dream.adopted': 'The staged memory was adopted.',
+      'memory.dream.skill_accepted': 'A recommended skill was accepted.',
+      'memory.dream.skill_dismissed': 'A recommended skill was dismissed.'
+    }
+    const text = message[event.type]
+    if (text) {
+      this.store.appendTranscript({
+        channel: rec.channel,
+        thread: rec.thread,
+        ts: monotonicTs(),
+        sender: dream.agentId,
+        kind: 'text',
+        text
+      })
+    }
+    this.store.setSessionState(rec.key, 'idle', this.clock.now())
+    this.emitSessionMetadataSnapshot({
+      sessionId: dream.executionSessionId,
+      agentId: dream.agentId,
+      phase: event.type === 'memory.dream.failed' ? 'problem' : 'end',
+      platform: 'dream',
+      channel: rec.channel,
+      thread: rec.thread,
+      status: dream.status,
+      ...(dream.runtime ? { runtime: dream.runtime } : {}),
+      ...(dream.model ? { model: dream.model } : {})
+    })
   }
 
   /** The daemon's single dream-job engine, built on first use (the local store
@@ -3450,8 +3624,9 @@ export class Daemon {
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
       dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
       store: this.store,
-      extract: (agentId, systemPrompt, prompt, signal) =>
-        this.runDreamExtraction(agentId, systemPrompt, prompt, signal),
+      extract: (agentId, systemPrompt, prompt, signal, context) =>
+        this.runDreamExtraction(agentId, systemPrompt, prompt, signal, context),
+      onEvent: (event) => this.recordDreamLifecycle(event),
       log: this.log
     })
     return this.dreamRunnerInstance
@@ -9243,6 +9418,10 @@ export class Daemon {
     platform: SessionKey['platform']
     channel: string
     thread?: string
+    status?: string
+    runtime?: string
+    model?: string
+    permissionMode?: string
   }): void {
     if (!this.cpClient) return
     const now = new Date(this.clock.now()).toISOString()
@@ -9262,7 +9441,8 @@ export class Daemon {
     const thread = key?.thread ?? input.thread
     if (thread !== undefined) event.thread = thread
     if (row?.title !== undefined) event.title = row.title
-    if (row?.status !== undefined) event.status = row.status
+    if (input.status !== undefined) event.status = input.status
+    else if (row?.status !== undefined) event.status = row.status
     if (row?.triggeredBy !== undefined) event.triggeredBy = row.triggeredBy
     if (row?.channelName !== undefined) event.channelName = row.channelName
     if (row?.triggeredByName !== undefined) event.triggeredByName = row.triggeredByName
@@ -9273,12 +9453,14 @@ export class Daemon {
     // actually ran with — the agent's config can change later without rewriting history.
     const agent = this.agents.get(input.agentId)
     const allowRuntimeChangesInChat = agent?.allowRuntimeChangesInChat === true
-    if (agent?.runtime) event.runtime = agent.runtime
+    if (input.runtime !== undefined) event.runtime = input.runtime
+    else if (agent?.runtime) event.runtime = agent.runtime
     const storeKey = this.store.getSessionByAcpIdForAgent(input.agentId, input.sessionId)?.key
     const model =
       (allowRuntimeChangesInChat && storeKey ? this.store.getModelOverride(storeKey) : undefined) ??
       agent?.runtimeOverrides?.model
-    if (model !== undefined) event.model = model
+    if (input.model !== undefined) event.model = input.model
+    else if (model !== undefined) event.model = model
     const effort =
       (allowRuntimeChangesInChat && storeKey ? this.store.getEffortOverride(storeKey) : undefined) ??
       agent?.reasoningEffort
@@ -9289,7 +9471,8 @@ export class Daemon {
     const permissionMode =
       (allowRuntimeChangesInChat && storeKey ? this.store.getPermissionModeOverride(storeKey) : undefined) ??
       agent?.permissionMode
-    if (permissionMode !== undefined) event.permissionMode = permissionMode
+    if (input.permissionMode !== undefined) event.permissionMode = input.permissionMode
+    else if (permissionMode !== undefined) event.permissionMode = permissionMode
     const outputMode = (storeKey ? this.store.getOutputModeOverride(storeKey) : undefined) ?? agent?.output?.mode
     if (outputMode !== undefined) event.outputMode = outputMode
 
@@ -10477,7 +10660,20 @@ export class Daemon {
     const extraction = this.memoryExtractionCollectors.get(pendingTurnKey(agentId, sessionId))
     if (extraction) {
       if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
-        extraction.push(String(update.content.text ?? ''))
+        extraction.chunks.push(String(update.content.text ?? ''))
+      }
+      // Distillation uses an unlisted cached extractor and therefore has no
+      // sessionKey. A dream does: retain the native context/cost snapshot while
+      // still suppressing every body-bearing ACP update from ordinary transcript
+      // and evaluation surfaces.
+      if (update?.sessionUpdate === 'usage_update' && extraction.sessionKey) {
+        if (update.cost?.amount !== undefined) extraction.runtimeCostReported = true
+        this.store.setUsageSnapshot(extraction.sessionKey, {
+          contextUsed: update.used,
+          contextSize: update.size,
+          costAmount: update.cost?.amount ?? undefined,
+          costCurrency: update.cost?.currency ?? undefined
+        })
       }
       return
     }

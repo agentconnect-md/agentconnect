@@ -138,7 +138,8 @@ export function MemoryPanel({
   memoryDreaming,
   memoryConnectionId,
   memoryRecall,
-  memoryCaptureMode
+  memoryCaptureMode,
+  sessionBasePath
 }: {
   agentId: string
   canEdit: boolean
@@ -148,6 +149,7 @@ export function MemoryPanel({
   memoryConnectionId?: string
   memoryRecall?: ExternalMemoryBindingDraft['recall']
   memoryCaptureMode?: ExternalMemoryBindingDraft['captureMode']
+  sessionBasePath?: string
 }) {
   const { updateAgent } = useConsoleData()
   const [files, setFiles] = useState<MemoryFileEntry[]>([])
@@ -843,7 +845,7 @@ export function MemoryPanel({
               persisted policy is on; otherwise its trigger would be noise. */}
           {persistedSettings.dreaming.enabled ? (
             <div className="mt-4">
-              <DreamPanel key={agentId} agentId={agentId} canEdit={canEdit} />
+              <DreamPanel key={agentId} agentId={agentId} canEdit={canEdit} sessionBasePath={sessionBasePath} />
             </div>
           ) : null}
         </>

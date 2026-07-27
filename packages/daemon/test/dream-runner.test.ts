@@ -5,7 +5,13 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { DreamInfo, MemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { parse as parseYaml } from 'yaml'
-import { DreamRunner, DreamStateError, type DreamStorePort } from '../src/agents/dream-runner.js'
+import {
+  DreamRunner,
+  DreamStateError,
+  type DreamExtractionResult,
+  type DreamLifecycleEvent,
+  type DreamStorePort
+} from '../src/agents/dream-runner.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { appendDistilledMemories } from '../src/agents/memory-distiller.js'
 import {
@@ -74,6 +80,8 @@ async function setup(opts: {
   policy?: MemoryDreamingPolicy
   cancelGraceMs?: number
   trustedExtraction?: boolean
+  extractionResult?: DreamExtractionResult
+  onEvent?: (event: DreamLifecycleEvent) => void
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
   ensureMemory(dir, 'bot')
@@ -86,11 +94,13 @@ async function setup(opts: {
     store,
     extract: async (agentId, systemPrompt, prompt, signal) => {
       prompts.push({ systemPrompt, prompt })
+      if (opts.extractionResult) return opts.extractionResult
       const output = opts.extract ? await opts.extract(agentId, systemPrompt, prompt, signal) : PROPOSAL
       // The producing host's verdict rides WITH the output (a later host swap
       // must not be able to retro-authorize an untrusted proposal).
       return { output, trustedChannel: opts.trustedExtraction ?? false }
     },
+    ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),
     ...(opts.cancelGraceMs !== undefined ? { cancelGraceMs: opts.cancelGraceMs } : {}),
     log: silent
   })
@@ -127,6 +137,50 @@ describe('DreamRunner pipeline', () => {
     expect(staged?.map((f) => f.name)).toEqual(['MEMORY.md', 'prefs.md'])
     const read = await runner.stagedRead('a1', started.dreamId, 'prefs.md')
     expect(read?.content).toContain('2026-07-24')
+  })
+
+  it('keeps extraction correlation, usage, and lifecycle events on the job', async () => {
+    const events: DreamLifecycleEvent[] = []
+    const { store, runner } = await setup({
+      extractionResult: {
+        output: PROPOSAL,
+        trustedChannel: false,
+        sessionId: 'dream-session-1',
+        runtime: 'codex',
+        model: 'gpt-5.6',
+        stopReason: 'end_turn',
+        usage: {
+          totalTokens: 120,
+          inputTokens: 90,
+          outputTokens: 30,
+          costAmount: 0.012,
+          costCurrency: 'USD'
+        }
+      },
+      onEvent: (event) => events.push(event)
+    })
+
+    const started = await runner.start('a1', { trigger: 'manual' })
+    const done = await settle(store, started.dreamId)
+
+    expect(done).toMatchObject({
+      status: 'completed',
+      executionSessionId: 'dream-session-1',
+      runtime: 'codex',
+      model: 'gpt-5.6',
+      stopReason: 'end_turn',
+      usage: {
+        totalTokens: 120,
+        inputTokens: 90,
+        outputTokens: 30,
+        costAmount: 0.012,
+        costCurrency: 'USD'
+      }
+    })
+    expect(done.usage?.inputBytes).toBeGreaterThan(0)
+    expect(done.usage?.outputBytes).toBeGreaterThan(0)
+    expect(events.map((event) => event.type)).toEqual(['memory.dream.started', 'memory.dream.completed'])
+    expect(events[1]?.dream.executionSessionId).toBe('dream-session-1')
   })
 
   it('rejects a second dream while one is in flight and when dreaming is disabled', async () => {
@@ -749,11 +803,29 @@ describe('DreamRunner store + trust binding', () => {
       trigger: 'manual',
       sessionIds: ['s1'],
       snapshotDigest: 'sha256:abc',
+      executionSessionId: 'dream-session-1',
+      runtime: 'codex',
+      model: 'gpt-5.6',
+      stopReason: 'end_turn',
       snapshotWrites: { total: 7, nonDistill: 3 },
+      usage: {
+        inputBytes: 2048,
+        outputBytes: 512,
+        totalTokens: 120,
+        costAmount: 0.012,
+        costCurrency: 'USD'
+      },
       createdAt: '2026-07-24T00:00:00.000Z'
     }
     store.insertDream(dream)
-    expect(store.getDream('a1', 'drm-store-1')?.snapshotWrites).toEqual({ total: 7, nonDistill: 3 })
+    expect(store.getDream('a1', 'drm-store-1')).toMatchObject({
+      executionSessionId: 'dream-session-1',
+      runtime: 'codex',
+      model: 'gpt-5.6',
+      stopReason: 'end_turn',
+      snapshotWrites: { total: 7, nonDistill: 3 },
+      usage: { inputBytes: 2048, outputBytes: 512, totalTokens: 120, costAmount: 0.012 }
+    })
 
     // …and survives the status updates the pipeline makes on the way to adoption.
     store.updateDream({ ...dream, status: 'completed', endedAt: '2026-07-24T00:05:00.000Z' })

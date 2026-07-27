@@ -633,10 +633,14 @@ export class LocalStore {
         triggerKind TEXT NOT NULL,
         sessionIds TEXT NOT NULL,         -- JSON string[]
         snapshotDigest TEXT NOT NULL,
+        executionSessionId TEXT,
+        runtime TEXT,
+        model TEXT,
+        stopReason TEXT,
         snapshotWrites TEXT,              -- JSON {total, nonDistill} write-ledger marks
         instructions TEXT,
         skills TEXT,                      -- JSON DreamSkillInfo[]
-        usage TEXT,                       -- JSON {inputBytes, outputBytes}
+        usage TEXT,                       -- JSON DreamUsage (tokens/cost + bounded byte counts)
         error TEXT,                       -- JSON {type, message}
         createdAt TEXT NOT NULL,
         endedAt TEXT
@@ -645,6 +649,7 @@ export class LocalStore {
     `)
     this.migrateDreamSnapshotWrites()
     this.migrateDreamSupersededStatus()
+    this.migrateDreamObservability()
     this.migrateSessionUsage()
     this.migrateSessionMutes()
     this.migrateInboxLoopGuardCounted()
@@ -746,6 +751,17 @@ export class LocalStore {
     const cols = this.db.prepare('PRAGMA table_info(dreams)').all() as { name: string }[]
     if (!cols.some((c) => c.name === 'snapshotWrites'))
       this.db.exec('ALTER TABLE dreams ADD COLUMN snapshotWrites TEXT')
+  }
+
+  /** Add metadata-only correlation and execution fields without rewriting
+   *  existing dream rows. Usage remains JSON for rolling schema compatibility. */
+  private migrateDreamObservability(): void {
+    const cols = this.db.prepare('PRAGMA table_info(dreams)').all() as { name: string }[]
+    const names = new Set(cols.map((column) => column.name))
+    if (!names.has('executionSessionId')) this.db.exec('ALTER TABLE dreams ADD COLUMN executionSessionId TEXT')
+    if (!names.has('runtime')) this.db.exec('ALTER TABLE dreams ADD COLUMN runtime TEXT')
+    if (!names.has('model')) this.db.exec('ALTER TABLE dreams ADD COLUMN model TEXT')
+    if (!names.has('stopReason')) this.db.exec('ALTER TABLE dreams ADD COLUMN stopReason TEXT')
   }
 
   /** Extend the dream lifecycle without stranding proposals created before the
@@ -1596,6 +1612,10 @@ export class LocalStore {
       triggerKind: dream.trigger,
       sessionIds: JSON.stringify(dream.sessionIds),
       snapshotDigest: dream.snapshotDigest,
+      executionSessionId: dream.executionSessionId ?? null,
+      runtime: dream.runtime ?? null,
+      model: dream.model ?? null,
+      stopReason: dream.stopReason ?? null,
       snapshotWrites: dream.snapshotWrites ? JSON.stringify(dream.snapshotWrites) : null,
       instructions: dream.instructions ?? null,
       skills: dream.skills ? JSON.stringify(dream.skills) : null,
@@ -1614,6 +1634,10 @@ export class LocalStore {
       trigger: row.triggerKind as DreamInfo['trigger'],
       sessionIds: JSON.parse(row.sessionIds as string) as string[],
       snapshotDigest: row.snapshotDigest as string,
+      ...(row.executionSessionId ? { executionSessionId: row.executionSessionId as string } : {}),
+      ...(row.runtime ? { runtime: row.runtime as string } : {}),
+      ...(row.model ? { model: row.model as string } : {}),
+      ...(row.stopReason ? { stopReason: row.stopReason as string } : {}),
       ...(row.snapshotWrites
         ? { snapshotWrites: JSON.parse(row.snapshotWrites as string) as DreamInfo['snapshotWrites'] }
         : {}),
@@ -1630,9 +1654,9 @@ export class LocalStore {
     this.db
       .prepare(
         `INSERT INTO dreams (dreamId, agentId, status, triggerKind, sessionIds, snapshotDigest,
-           snapshotWrites, instructions, skills, usage, error, createdAt, endedAt)
+           executionSessionId, runtime, model, stopReason, snapshotWrites, instructions, skills, usage, error, createdAt, endedAt)
          VALUES (@dreamId, @agentId, @status, @triggerKind, @sessionIds, @snapshotDigest,
-           @snapshotWrites, @instructions, @skills, @usage, @error, @createdAt, @endedAt)`
+           @executionSessionId, @runtime, @model, @stopReason, @snapshotWrites, @instructions, @skills, @usage, @error, @createdAt, @endedAt)`
       )
       .run(this.dreamToRow(dream))
   }
@@ -1645,7 +1669,8 @@ export class LocalStore {
         // named parameter"). triggerKind/createdAt are immutable in practice but
         // are still assigned, so the row shape and the SQL can't drift apart.
         `UPDATE dreams SET status = @status, triggerKind = @triggerKind, sessionIds = @sessionIds,
-           snapshotDigest = @snapshotDigest, snapshotWrites = @snapshotWrites, instructions = @instructions,
+           snapshotDigest = @snapshotDigest, executionSessionId = @executionSessionId, runtime = @runtime,
+           model = @model, stopReason = @stopReason, snapshotWrites = @snapshotWrites, instructions = @instructions,
            skills = @skills, usage = @usage, error = @error, createdAt = @createdAt, endedAt = @endedAt
          WHERE dreamId = @dreamId AND agentId = @agentId`
       )
@@ -1695,7 +1720,7 @@ export class LocalStore {
     return this.db
       .prepare(
         `SELECT acpSessionId AS sessionId, channel, thread FROM sessions
-         WHERE agentId = ? AND acpSessionId IS NOT NULL
+         WHERE agentId = ? AND acpSessionId IS NOT NULL AND platform <> 'dream'
          ORDER BY updatedAt DESC LIMIT ?`
       )
       .all(agentId, limit) as { sessionId: string; channel: string; thread: string }[]

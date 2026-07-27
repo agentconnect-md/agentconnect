@@ -165,10 +165,14 @@ interface DreamRecord {
   trigger: 'manual' | 'schedule' | 'auto'
   sessionIds: string[] // transcripts mined
   snapshotDigest: string // digest of the live store at snapshot time (adoption fence)
+  executionSessionId?: string // session-list/history correlation for the isolated model run
+  runtime?: string
+  model?: string
+  stopReason?: string
   instructions?: string
   /** Candidate skills staged by this dream (§7), with per-skill review state. */
   skills?: { name: string; state: 'proposed' | 'accepted' | 'dismissed' }[]
-  usage?: { inputBytes: number; outputBytes: number }
+  usage?: SessionUsage & { inputBytes: number; outputBytes: number }
   error?: { type: string; message: string }
   createdAt: string
   endedAt?: string
@@ -425,8 +429,13 @@ architecture invariant:
 
 Observability:
 `memory.dream.started|completed|failed|adopted|skill_accepted|skill_dismissed`
-evaluation events, with byte counts; no memory bodies, transcript text, or
-skill bodies in events or logs (same rule as the capture path).
+evaluation events carry correlation, lifecycle, runtime/model, token/cost, and
+bounded byte-count metadata. Every extraction is also represented as a `dream`
+session in the normal Sessions list and usage reports. Its history contains only
+safe lifecycle messages; the memory snapshot, source transcripts, model proposal,
+and skill bodies never enter session history, evaluation events, or logs. The
+Memory Dream list links both the execution session and its source sessions and
+shows model, duration, token/cost, and prompt/output byte metrics.
 
 ## 11. Explicitly out of scope (v1)
 
