@@ -273,6 +273,22 @@ export function buildLinkComponents(link: string, label = '🔗 View session'): 
   return [{ type: 1, components: [{ type: 2, style: 5, label, url: link }] }]
 }
 
+/** A bot-install warning shown after Discord rejects an API call for missing access,
+ * permissions, or OAuth scope. Link buttons open directly and need no interaction
+ * callback. Keep the body as plain content (not an embed) so the warning can still
+ * send when the missing permission is Embed Links. */
+export function buildPermissionUpdateNotice(updateUrl: string): {
+  content: string
+  components: DiscordComponents
+} {
+  return {
+    content:
+      '⚠️ **Permissions update required.** Please re-authorize this Discord app to grant the required server ' +
+      "permissions. If the bot is restricted only in this channel, update the channel's permission overrides instead.",
+    components: buildLinkComponents(updateUrl, 'Update permissions')
+  }
+}
+
 /**
  * Build the per-turn status button row: a Cancel button, an optional Fast on/off
  * toggle (when the model advertises one), and a View-session Link button when a

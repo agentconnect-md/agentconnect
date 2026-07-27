@@ -15,6 +15,7 @@ import type { InteractionActor } from '../slack/connection.js'
 import { normalizeDiscordMessage, type DiscordMessageLike } from './normalize.js'
 import { DISCORD_APP_COMMANDS } from './app-commands.js'
 import {
+  buildPermissionUpdateNotice,
   parseDiscordCallback,
   parseDiscordSelect,
   chunkForDiscord,
@@ -93,9 +94,53 @@ export interface DiscordDeps {
 const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 /** Cap on channels enumerated per listChannels call (bounds the response). */
 const CHANNEL_CAP = 200
+const PERMISSION_NOTICE_RETRY_MS = 5 * 60_000
+
+// Keep this permission set in lock-step with packages/web/src/lib/discord-invite.ts.
+// It covers reactions, channel visibility, messages, embeds/files/history, and public
+// thread creation + replies. Discord permission bitfields exceed 32 bits.
+const DISCORD_BOT_PERMISSIONS = (
+  (1n << 6n) |
+  (1n << 10n) |
+  (1n << 11n) |
+  (1n << 14n) |
+  (1n << 15n) |
+  (1n << 16n) |
+  (1n << 34n) |
+  (1n << 38n)
+).toString()
+
+type DiscordPermissionIssue = 'missing-access' | 'missing-permissions' | 'missing-oauth-scope'
+
+type DiscordErrorLike = {
+  code?: unknown
+  data?: { code?: unknown }
+  rawError?: { code?: unknown }
+}
+
+/** Discord API errors use stable numeric codes even though discord.js may expose the
+ * code on either the wrapper or raw payload. Exact message matching keeps test doubles
+ * and older library shapes compatible without treating every HTTP 403 as reparable. */
+function discordPermissionIssueFrom(err: unknown): DiscordPermissionIssue | null {
+  const e = err && typeof err === 'object' ? (err as DiscordErrorLike) : undefined
+  const candidate = e?.code ?? e?.rawError?.code ?? e?.data?.code
+  const code = typeof candidate === 'number' ? candidate : Number(candidate)
+  if (code === 50001) return 'missing-access'
+  if (code === 50013) return 'missing-permissions'
+  if (code === 50026) return 'missing-oauth-scope'
+
+  const message = err instanceof Error ? err.message : ''
+  if (/\bmissing access\b/i.test(message)) return 'missing-access'
+  if (/\bmissing permissions?\b/i.test(message)) return 'missing-permissions'
+  if (/\bmissing required oauth2 scope\b/i.test(message)) return 'missing-oauth-scope'
+  return null
+}
 
 /** The discord.js message-send payload we use (content + optional components). */
-type SendPayload = { content: string; components?: DiscordComponents }
+type SendPayload = {
+  content?: string
+  components?: DiscordComponents
+}
 type Sendable = Channel & {
   send: (payload: SendPayload) => Promise<Message>
   sendTyping?: () => Promise<void>
@@ -112,6 +157,12 @@ export class DiscordConnection {
   // only channel+message id, not the session key) resolves back to its session.
   // Keyed `${channelId}:${messageId}`.
   private statusKeys = new Map<string, string>()
+  /** Permission failures can repeat for every streamed write. Announce once per bot
+   * connection, with a bounded retry if the bot currently cannot send the notice. */
+  private permissionIssues = new Set<DiscordPermissionIssue>()
+  private permissionNoticeSent = false
+  private permissionNoticeInFlight = false
+  private permissionNoticeRetryAt = 0
   /** The bot token this gateway authenticated with (used to detect a swap). */
   readonly botToken: string
   /** The bot's user id (a numeric snowflake, as string). Discord routes mentions on
@@ -214,6 +265,7 @@ export class DiscordConnection {
         `discord: registered ${DISCORD_APP_COMMANDS.length} slash commands (global) for @${this.botUsername}`
       )
     } catch (err) {
+      this.rememberPermissionIssue(err)
       this.deps.log?.error(
         `discord: slash-command registration failed — is the bot invited with the ` +
           `applications.commands scope? (${(err as Error).message})`
@@ -290,9 +342,69 @@ export class DiscordConnection {
 
   /** Fetch a channel and confirm it can send messages. */
   private async sendableChannel(channelId: string): Promise<Sendable | null> {
-    const ch = await this.client.channels.fetch(channelId).catch(() => null)
-    if (ch && 'send' in ch && typeof (ch as { send?: unknown }).send === 'function') return ch as Sendable
-    return null
+    try {
+      const ch = await this.client.channels.fetch(channelId)
+      if (ch && 'send' in ch && typeof (ch as { send?: unknown }).send === 'function') return ch as Sendable
+      return null
+    } catch (err) {
+      this.rememberPermissionIssue(err)
+      this.deps.log?.debug(`discord: channel fetch failed (ch=${channelId}): ${(err as Error).message}`)
+      return null
+    }
+  }
+
+  private rememberPermissionIssue(err: unknown): boolean {
+    const issue = discordPermissionIssueFrom(err)
+    if (!issue) return false
+    if (!this.permissionIssues.has(issue)) {
+      this.permissionIssues.add(issue)
+      this.deps.log?.warn(`discord: bot permission update required (${issue})`)
+    }
+    return true
+  }
+
+  private permissionUpdateUrl(): string | undefined {
+    const applicationId = this.client.application?.id ?? this.botUserId
+    if (!/^\d{17,20}$/.test(applicationId)) return undefined
+    const params = new URLSearchParams({
+      client_id: applicationId,
+      scope: 'bot applications.commands',
+      permissions: DISCORD_BOT_PERMISSIONS
+    })
+    return `https://discord.com/oauth2/authorize?${params.toString()}`
+  }
+
+  /** Post one Devin-style permission notice. `target` distinguishes an already-failed
+   * channel lookup (`null`) from a caller that has not fetched the channel yet
+   * (`undefined`). The in-flight claim is set before any await so concurrent thread or
+   * chrome failures cannot race into duplicate notices. */
+  private async postPermissionUpdateNotice(channel: string, target?: Sendable | null): Promise<void> {
+    if (
+      this.permissionIssues.size === 0 ||
+      this.permissionNoticeSent ||
+      this.permissionNoticeInFlight ||
+      Date.now() < this.permissionNoticeRetryAt
+    )
+      return
+    const updateUrl = this.permissionUpdateUrl()
+    if (!updateUrl) return
+
+    this.permissionNoticeInFlight = true
+    try {
+      const ch = target === undefined ? await this.sendableChannel(channel) : target
+      if (!ch) {
+        this.permissionNoticeRetryAt = Date.now() + PERMISSION_NOTICE_RETRY_MS
+        return
+      }
+      await ch.send(buildPermissionUpdateNotice(updateUrl))
+      this.permissionNoticeSent = true
+    } catch (err) {
+      this.rememberPermissionIssue(err)
+      this.permissionNoticeRetryAt = Date.now() + PERMISSION_NOTICE_RETRY_MS
+      this.deps.log?.debug(`discord: permission update notice failed (ch=${channel}): ${(err as Error).message}`)
+    } finally {
+      this.permissionNoticeInFlight = false
+    }
   }
 
   /**
@@ -305,13 +417,15 @@ export class DiscordConnection {
    * the bot lacks the Create Public Threads permission (caller then replies in-channel).
    */
   async createThread(channelId: string, messageId: string, name: string): Promise<string | undefined> {
+    let ch: Sendable | null = null
     try {
-      const ch = await this.sendableChannel(channelId)
+      ch = await this.sendableChannel(channelId)
       if (!ch?.messages) return undefined
       const message = await ch.messages.fetch(messageId)
       const thread = await message.startThread({ name: name.slice(0, 100) || 'Agent thread' })
       return thread.id
     } catch (err) {
+      if (this.rememberPermissionIssue(err)) await this.postPermissionUpdateNotice(channelId, ch)
       this.deps.log?.debug(`discord: createThread failed (ch=${channelId} msg=${messageId}): ${(err as Error).message}`)
       return undefined
     }
@@ -326,15 +440,20 @@ export class DiscordConnection {
   async postMessage(channel: string, text: string, _threadTs?: string): Promise<string | undefined> {
     return this.queue.enqueue(async () => {
       const ch = await this.sendableChannel(channel)
-      if (!ch) return undefined
+      if (!ch) {
+        await this.postPermissionUpdateNotice(channel, ch)
+        return undefined
+      }
       let firstId: string | undefined
       for (const chunk of chunkForDiscord(text)) {
         const sent = await ch.send({ content: chunk }).catch((err: Error) => {
+          this.rememberPermissionIssue(err)
           this.deps.log?.debug(`discord: send failed (ch=${channel}): ${err.message}`)
           return null
         })
         if (sent && firstId === undefined) firstId = sent.id
       }
+      await this.postPermissionUpdateNotice(channel, ch)
       return firstId
     })
   }
@@ -353,15 +472,22 @@ export class DiscordConnection {
     opts: { threadTs?: string; keyboard?: DiscordComponents; sessionKey?: string } = {}
   ): Promise<string | undefined> {
     return this.queue.enqueue(async () => {
+      let ch: Sendable | null = null
       try {
-        const ch = await this.sendableChannel(channel)
-        if (!ch) return undefined
+        ch = await this.sendableChannel(channel)
+        if (!ch) {
+          await this.postPermissionUpdateNotice(channel, ch)
+          return undefined
+        }
         const payload: SendPayload = { content: chunkForDiscord(text)[0] ?? '' }
         if (opts.keyboard) payload.components = opts.keyboard
         const sent = await ch.send(payload)
         if (sent && opts.sessionKey) this.statusKeys.set(`${channel}:${sent.id}`, opts.sessionKey)
+        await this.postPermissionUpdateNotice(channel, ch)
         return sent?.id
       } catch (err) {
+        this.rememberPermissionIssue(err)
+        await this.postPermissionUpdateNotice(channel, ch)
         this.deps.log?.debug(`discord: send (chrome) failed (ch=${channel}): ${(err as Error).message}`)
         return undefined
       }
@@ -377,28 +503,37 @@ export class DiscordConnection {
     opts: { keyboard?: DiscordComponents } = {}
   ): Promise<void> {
     await this.queue.enqueue(async () => {
+      let ch: Sendable | null = null
       try {
-        const ch = await this.sendableChannel(channel)
-        if (!ch?.messages) return
+        ch = await this.sendableChannel(channel)
+        if (!ch?.messages) {
+          await this.postPermissionUpdateNotice(channel, ch)
+          return
+        }
         const msg = await ch.messages.fetch(messageId)
         const payload: SendPayload = { content: chunkForDiscord(text)[0] ?? '' }
         if (opts.keyboard) payload.components = opts.keyboard
         await msg.edit(payload)
       } catch (err) {
+        this.rememberPermissionIssue(err)
         this.deps.log?.debug(`discord: edit failed (ch=${channel} id=${messageId}): ${(err as Error).message}`)
       }
+      await this.postPermissionUpdateNotice(channel, ch)
     })
   }
 
   /** Best-effort transient "typing…" indicator (Discord's analog of a status bar).
    *  Not queued — a fire-and-forget hint that expires on its own (~10s). */
   async sendChatAction(channel: string): Promise<void> {
+    let ch: Sendable | null = null
     try {
-      const ch = await this.sendableChannel(channel)
+      ch = await this.sendableChannel(channel)
       if (ch?.sendTyping) await ch.sendTyping()
     } catch (err) {
+      this.rememberPermissionIssue(err)
       this.deps.log?.debug(`discord: sendTyping failed (ch=${channel}): ${(err as Error).message}`)
     }
+    await this.postPermissionUpdateNotice(channel, ch)
   }
 
   /**

@@ -26,7 +26,9 @@ function fakeFeishuConn(appId: string, region: 'feishu' | 'lark', botOpenId: str
   const handle: FeishuClientHandle = {
     api: {
       createText: async () => ({}),
+      createCard: async () => ({}),
       replyText: async () => ({}),
+      replyCard: async () => ({}),
       patchText: async () => {},
       downloadResource: async () => {},
       getChat: async (id: string) => ({ id }),
