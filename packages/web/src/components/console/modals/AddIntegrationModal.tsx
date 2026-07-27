@@ -158,10 +158,9 @@ const GUIDE: Record<
     tokenPlaceholder: '123456789:AAE…'
   },
   discord: {
-    linkHref: 'https://discord.com/developers/applications',
-    linkLabel: 'Open Developer Portal',
-    step1:
-      'Create an application, add a Bot, and enable the Message Content intent (Bot → Privileged Gateway Intents), then copy its token.',
+    linkHref: 'https://discord.com/developers/applications?new_application=true',
+    linkLabel: 'Create Discord app',
+    step1: 'Name and create the application. In Bot, reset and copy the token, then enable Message Content Intent.',
     tokenPlaceholder: 'Bot token from the Developer Portal'
   }
 }
