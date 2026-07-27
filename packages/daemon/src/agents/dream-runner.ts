@@ -958,6 +958,7 @@ export class DreamRunner {
       await fsp.cp(staged, target, { recursive: true, dereference: false, errorOnExist: false })
 
       const next = this.setSkillState(agentId, dreamId, name, 'accepted')
+      this.emitLifecycle({ type: 'memory.dream.skill_accepted', dream: next, skillName: name })
       await this.sweepReviewedStaging(agentId, next)
       this.deps.log.info(`dream ${dreamId}: accepted skill "${name}" for agent ${agentId}`)
       return next

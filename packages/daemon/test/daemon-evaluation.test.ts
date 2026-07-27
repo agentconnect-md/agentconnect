@@ -211,6 +211,22 @@ describe('Daemon evaluation surface', () => {
     expect(collector.events().map((event) => event.type)).toEqual(['memory.dream.started', 'memory.dream.completed'])
     expect(host.discardSession).toHaveBeenCalledWith('dream-session-1')
 
+    ;(daemon as any).recordDreamLifecycle({
+      type: 'memory.dream.skill_accepted',
+      dream: { ...dream, skills: [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'accepted' }] },
+      skillName: 'deploy-staging'
+    })
+    expect(collector.events().at(-1)).toMatchObject({
+      type: 'memory.dream.skill_accepted',
+      sessionId: 'dream-session-1',
+      data: { dreamId: started.dreamId, skillName: 'deploy-staging' }
+    })
+    const reviewedHistory = (daemon as any).store
+      .threadTranscript('memory', started.dreamId)
+      .map((row: { text: string }) => row.text)
+      .join('\n')
+    expect(reviewedHistory).toContain('A recommended skill was accepted.')
+
     await daemon.stop()
     collector.assertValid()
   }, 15_000)

@@ -953,7 +953,11 @@ describe('DreamRunner skill mining (D-3)', () => {
     ]
   })
 
-  async function mining(proposal: string, store = new TwoSessionStore()) {
+  async function mining(
+    proposal: string,
+    store = new TwoSessionStore(),
+    onEvent?: (event: DreamLifecycleEvent) => void
+  ) {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
     ensureMemory(dir, 'bot')
     const runner = new DreamRunner({
@@ -961,6 +965,7 @@ describe('DreamRunner skill mining (D-3)', () => {
       dreamingPolicyFor: () => ({ enabled: true, mineSkills: true }),
       store,
       extract: async () => ({ output: proposal, trustedChannel: false }),
+      ...(onEvent ? { onEvent } : {}),
       log: silent
     })
     const started = await runner.start('a1', { trigger: 'manual' })
@@ -1011,16 +1016,23 @@ describe('DreamRunner skill mining (D-3)', () => {
   })
 
   it('accept copies the skill into the agent-owned tree and marks it accepted', async () => {
-    const { dir, runner, dreamId } = await mining(grounded)
+    const events: DreamLifecycleEvent[] = []
+    const { dir, runner, dreamId } = await mining(grounded, new TwoSessionStore(), (event) => events.push(event))
     const after = await runner.skillAccept('a1', dreamId, 'deploy-staging')
     expect(after.skills?.[0]).toMatchObject({ state: 'accepted' })
+    expect(events.at(-1)).toMatchObject({
+      type: 'memory.dream.skill_accepted',
+      dream: { dreamId, skills: [{ name: 'deploy-staging', state: 'accepted' }] },
+      skillName: 'deploy-staging'
+    })
 
     // The canonical copy lands under the agent root — daemon-owned, outside the
     // workspace. Session prep materializes it into the runtime's skill root
     // under symlink containment (see dream-skill-install.test.ts).
     expect(await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')).toContain('name: deploy-staging')
-    // Idempotent.
+    // Idempotent — no duplicate lifecycle decision.
     await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).resolves.toMatchObject({})
+    expect(events.filter((event) => event.type === 'memory.dream.skill_accepted')).toHaveLength(1)
   })
 
   it('an accepted skill survives discarding the dream it came from', async () => {
