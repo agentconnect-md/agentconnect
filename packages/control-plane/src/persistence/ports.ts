@@ -2613,7 +2613,9 @@ export interface WaitlistRepo {
    * `redeemedEmail`). Conditional email binding: a BOUND entry (email set) must match
    * `verifiedEmail` (already normalized) or the redeem fails `email_mismatch`; a
    * BEARER entry (email null) skips the match and any verified identity may redeem it
-   * once. Idempotent: a repeat by the SAME user returns `activated`.
+   * once — except an ALREADY-ACTIVATED account, which is admitted WITHOUT consuming
+   * the link (nothing to grant, so the one-time invite stays available).
+   * Idempotent: a repeat by the SAME user returns `activated`.
    */
   redeem(tokenHash: string, userId: string, verifiedEmail: string, now: Date): Promise<WaitlistRedeemResult>
 }

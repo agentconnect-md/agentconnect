@@ -91,7 +91,14 @@ const isP2002 = (err: unknown): boolean => (err as { code?: string }).code === '
  * one). Extracted as a free function so the waitlist redeem transaction can create
  * the personal org at ACTIVATION time (waitlist-and-login.md §6) sharing the exact
  * same slug-allocation logic as signup. `db` may be an interactive transaction
- * client. Slug collisions retry with a numeric suffix, then a userId-derived slug.
+ * client. Slug collisions fall back to a numeric suffix, then a userId-derived slug.
+ *
+ * The free slug is chosen with a READ, never by catching the unique violation of a
+ * failed INSERT: this may run inside an interactive transaction (the waitlist redeem),
+ * and in Postgres ANY failed statement aborts the WHOLE transaction — a caught P2002
+ * would poison every following query with 25P02 and surface as a 500. The last
+ * candidate is derived from the (unique) user id, so it is free unless this user
+ * already owns an org — which the early return above already handled.
  */
 export async function ensurePersonalOrg(
   db: PrismaLike,
@@ -105,23 +112,20 @@ export async function ensurePersonalOrg(
   const name = `${base.charAt(0).toUpperCase()}${base.slice(1)}'s organization`
   const baseSlug = slugify(base)
   const candidates = [baseSlug, `${baseSlug}-2`, `${baseSlug}-3`, `org-${userId.slice(-8).toLowerCase()}`]
-  for (const slug of candidates) {
-    let org
-    try {
-      org = await db.org.create({ data: { name, slug } })
-    } catch (err) {
-      if (isP2002(err)) continue // slug taken — try the next
-      throw err
-    }
-    try {
-      await db.membership.create({ data: { orgId: org.id, userId, role: 'owner' } })
-    } catch (err) {
-      await db.org.delete({ where: { id: org.id } }).catch(() => {}) // don't leak an empty org
-      throw err
-    }
-    return
+  const taken = new Set(
+    (await db.org.findMany({ where: { slug: { in: candidates } }, select: { slug: true } })).map((o) => o.slug)
+  )
+  const slug = candidates.find((c) => !taken.has(c))
+  if (!slug) throw new Error('could not allocate a unique slug for the personal org')
+  const org = await db.org.create({ data: { name, slug } })
+  try {
+    await db.membership.create({ data: { orgId: org.id, userId, role: 'owner' } })
+  } catch (err) {
+    // Outside a transaction this keeps an empty org from leaking; inside one the
+    // rollback does it (and this delete is itself a no-op on the aborted tx).
+    await db.org.delete({ where: { id: org.id } }).catch(() => {})
+    throw err
   }
-  throw new Error('could not allocate a unique slug for the personal org')
 }
 
 export class PgUserRepo implements UserRepo {

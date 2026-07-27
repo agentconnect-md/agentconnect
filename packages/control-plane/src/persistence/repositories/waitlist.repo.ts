@@ -108,12 +108,21 @@ export class PgWaitlistRepo implements WaitlistRepo {
         select: { displayName: true, email: true, activatedAt: true }
       })
       if (!user) return { status: 'invalid' }
+      const realEmail = isSyntheticEmail(user.email) ? normalizedEmail : user.email
+
+      // An ALREADY-ACTIVATED account gains nothing from a BEARER link, so don't burn
+      // one: report success (they may enter the app) and leave the one-time link for
+      // someone who still needs it. A BOUND link is minted for this exact person, so
+      // it still records its redemption below (audit).
+      if (entry.email === null && user.activatedAt) {
+        await ensurePersonalOrg(tx, userId, user.displayName, realEmail) // idempotent
+        return { status: 'activated' }
+      }
 
       // Activate (idempotent) + create the personal org (idempotent) + stamp the
       // redemption. All within this locked transaction. `redeemedByUserId` is null
       // here (the same-user short-circuit and different-user reject are both above).
       if (!user.activatedAt) await tx.user.update({ where: { id: userId }, data: { activatedAt: now } })
-      const realEmail = isSyntheticEmail(user.email) ? normalizedEmail : user.email
       await ensurePersonalOrg(tx, userId, user.displayName, realEmail)
       await tx.waitlistEntry.update({
         where: { tokenHash },
