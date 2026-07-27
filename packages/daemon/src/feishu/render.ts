@@ -7,13 +7,15 @@ import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
  * DiscordAction). The daemon's applyAction resolves these against a live
  * FeishuConnection.
  *
- * FORMATTING: Feishu v1 is TEXT-ONLY. A text message (`msg_type:'text'`) has no
- * HTML/MarkdownV2 parse mode and no interactive cards or buttons — markup renders
- * literally — so BOTH the agent's reply (`post`) and daemon "chrome" (progress /
- * reasoning / plan / tool-output) are emitted as PLAIN text with no escaping and no
- * parse_mode (unlike Telegram's HTML). The only hard constraint is a per-message
- * length cap, so long output is chunked (see chunkForFeishu). Fenced code blocks
- * (```) are kept for tool output — they render harmlessly as literal fences.
+ * FORMATTING: ordinary Feishu v1 output is TEXT-ONLY. A text message
+ * (`msg_type:'text'`) has no HTML/MarkdownV2 parse mode — markup renders literally —
+ * so BOTH the agent's reply (`post`) and daemon "chrome" (progress / reasoning / plan /
+ * tool-output) are emitted as PLAIN text with no escaping and no parse_mode (unlike
+ * Telegram's HTML). The only card is the static platform-permission notice built below;
+ * it has an open-URL button and does not enter this action model. The text-message hard
+ * constraint is a per-message length cap, so long output is chunked (see
+ * chunkForFeishu). Fenced code blocks (```) are kept for tool output — they render
+ * harmlessly as literal fences.
  *
  * Kinds mirror TelegramAction/DiscordAction so the daemon's dispatch stays parallel:
  *  - `post`        the agent's reply (recorded into the transcript).
@@ -26,10 +28,10 @@ import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
  *  - `tool-output` a finished tool's output as a fenced code block (high only), not recorded.
  *
  * There is deliberately NO per-turn `status-bar` action (unlike Slack/Discord):
- * Feishu v1 has no interactive cards, so session state and controls are exposed on
- * demand via typed /commands instead (`/status`, `/stop`, `/cancel`, `/fast` — see
- * commands/commands.ts + daemon.handleCommand). The `/status` reply reuses
- * {@link renderStatusReply}.
+ * Feishu v1 has no interactive session controls, so session state and controls are
+ * exposed on demand via typed /commands instead (`/status`, `/stop`, `/cancel`,
+ * `/fast` — see commands/commands.ts + daemon.handleCommand). The `/status` reply
+ * reuses {@link renderStatusReply}.
  */
 export type FeishuAction =
   // `recordOnly: true` writes to the transcript without sending — minimal mode keeps the
@@ -48,6 +50,41 @@ export type FeishuAction =
 /** Feishu single-text-message chunk cap. Feishu's real limit is generous; we chunk
  *  to a safe cap like Telegram (4096) / Discord (2000). */
 export const FEISHU_MESSAGE_LIMIT = 4000
+
+/** Static JSON 2.0 card used only for platform permission/configuration failures.
+ * The button opens app settings directly, so no card callback or public endpoint is
+ * required. Ordinary agent output remains plain text. */
+export function buildPermissionUpdateCard(
+  updateUrl: string,
+  description: string,
+  buttonLabel = 'Update permissions'
+): Record<string, unknown> {
+  return {
+    schema: '2.0',
+    config: { update_multi: true },
+    body: {
+      direction: 'vertical',
+      padding: '12px 12px 12px 12px',
+      elements: [
+        { tag: 'markdown', content: description },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: buttonLabel },
+          type: 'primary',
+          width: 'default',
+          size: 'medium',
+          behaviors: [{ type: 'open_url', default_url: updateUrl }],
+          margin: '8px 0px 0px 0px'
+        }
+      ]
+    },
+    header: {
+      title: { tag: 'plain_text', content: '⚠️ Permissions update required' },
+      template: 'orange',
+      padding: '12px 12px 12px 12px'
+    }
+  }
+}
 
 const MAX_LABEL = 100
 const MAX_REASONING = 2800

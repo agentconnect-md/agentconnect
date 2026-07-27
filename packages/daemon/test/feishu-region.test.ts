@@ -26,7 +26,9 @@ function feishuAgent(id: string, appId: string, region: FeishuRegion): Agent {
 function fakeHandle(): FeishuClientHandle {
   const api = {
     createText: async () => ({}),
+    createCard: async () => ({}),
     replyText: async () => ({}),
+    replyCard: async () => ({}),
     patchText: async () => {},
     downloadResource: async () => {},
     getChat: async (id: string) => ({ id }),
