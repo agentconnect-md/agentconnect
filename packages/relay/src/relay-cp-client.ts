@@ -189,9 +189,9 @@ export class RelayCpClient {
     return rep.payload.allowed
   }
 
-  /** Resolve a signature-verified Check Run rerequest to the informational
-   * projection and hook that created it. Single-shot: GitHub redelivery keeps
-   * the same delivery key and the daemon/hook stores provide the retry fence. */
+  /** Resolve a signature-verified Check run or suite rerequest to current
+   * informational projection targets. Single-shot: GitHub redelivery keeps the
+   * same delivery key and the daemon/hook stores provide the retry fence. */
   async authorizeGithubRerequest(request: RcGithubRerequest): Promise<RcGithubRerequestResult> {
     if (this.state !== 'READY' || !this.transport) {
       throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)

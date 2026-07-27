@@ -1657,6 +1657,14 @@ export interface HookRepo {
   /** Reverse-map a GitHub `check_run.rerequested` action to the projection this
    *  App created. The remote id is opaque and stored as text. */
   findReviewProjectionByCheckRunId(checkRunId: string): Promise<HookReviewProjectionRecord | null>
+  /** Infer the current Check Runs covered by an App-owned suite rerequest. GitHub
+   * groups one App's runs by repository revision; installation identity prevents
+   * an old or replacement App installation from crossing that boundary. */
+  listReviewProjectionsForSuiteRerequest(
+    repoId: bigint,
+    headSha: string,
+    installationId: bigint
+  ): Promise<HookReviewProjectionRecord[]>
   listReviewProjectionsForAgentRepo(agentId: AgentId, repoId: bigint): Promise<HookReviewProjectionRecord[]>
   wakeReviewProjectionsForInstallation(installationId: bigint, at: Date): Promise<number>
   wakeReviewProjectionsForOrg(orgId: OrgId, at: Date): Promise<number>

@@ -20,8 +20,9 @@ describe('githubProjectionIntent', () => {
     }
   )
 
-  it('opens a new revision-style generation for an explicit Check Run rerequest', () => {
+  it('opens a new revision-style generation for an explicit Check rerequest', () => {
     expect(githubProjectionIntent('check_run:rerequested', { subjectKind: 'pull_request' })).toBe('revision_event')
+    expect(githubProjectionIntent('check_suite:rerequested', { subjectKind: 'pull_request' })).toBe('revision_event')
     expect(githubProjectionIntent('check_run:requested_action', { subjectKind: 'pull_request' })).toBe('revision_event')
     expect(githubProjectionIntent('pull_request:review_requested', { subjectKind: 'pull_request' })).toBe(
       'revision_event'

@@ -84,6 +84,7 @@ const GITHUB_REVISION_REVIEW_EVENTS = new Set([
   'pull_request:ready_for_review',
   'pull_request:review_requested',
   'check_run:rerequested',
+  'check_suite:rerequested',
   'check_run:requested_action'
 ])
 
