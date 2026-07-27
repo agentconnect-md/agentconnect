@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { DiscordConnection } from '../src/discord/connection.js'
 
-function connectionWith(channel: unknown): DiscordConnection {
+function connectionWith(channel: unknown | ((id: string) => unknown | Promise<unknown>)): DiscordConnection {
   const conn = new DiscordConnection({
     group: { botToken: 'token', integrations: [] },
     onMessage: () => {},
@@ -11,7 +11,9 @@ function connectionWith(channel: unknown): DiscordConnection {
   conn.botUserId = '123456789012345678'
   ;(conn as unknown as { client: unknown }).client = {
     application: null,
-    channels: { fetch: vi.fn(async () => channel) }
+    channels: {
+      fetch: vi.fn(async (id: string) => (typeof channel === 'function' ? await channel(id) : channel))
+    }
   }
   return conn
 }
@@ -72,5 +74,34 @@ describe('Discord permission update notice', () => {
 
     await expect(conn.createThread('channel-1', 'message-1', 'Archived')).resolves.toBeUndefined()
     expect(send).not.toHaveBeenCalled()
+  })
+
+  it('does not deliver a failed channel-specific notice in another channel', async () => {
+    const missingPermission = Object.assign(new Error('Missing Permissions'), { code: 50013 })
+    const sendA = vi.fn(async () => {
+      throw missingPermission
+    })
+    const sendB = vi.fn(async () => ({ id: 'unexpected-notice' }))
+    const conn = connectionWith((id) =>
+      id === 'A'
+        ? {
+            send: sendA,
+            messages: {
+              fetch: vi.fn(async () => ({
+                startThread: async () => {
+                  throw missingPermission
+                }
+              }))
+            }
+          }
+        : { send: sendB, sendTyping: vi.fn(async () => {}) }
+    )
+
+    await conn.createThread('A', 'message-1', 'Thread')
+    expect(sendA).toHaveBeenCalledOnce()
+    ;(conn as unknown as { permissionNoticeRetryAt: number }).permissionNoticeRetryAt = 0
+
+    await conn.sendChatAction('B')
+    expect(sendB).not.toHaveBeenCalled()
   })
 })

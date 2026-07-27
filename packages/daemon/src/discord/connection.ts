@@ -111,6 +111,7 @@ const DISCORD_BOT_PERMISSIONS = (
 ).toString()
 
 type DiscordPermissionIssue = 'missing-access' | 'missing-permissions' | 'missing-oauth-scope'
+type DiscordPermissionState = { issue: DiscordPermissionIssue; channel?: string }
 
 type DiscordErrorLike = {
   code?: unknown
@@ -159,7 +160,8 @@ export class DiscordConnection {
   private statusKeys = new Map<string, string>()
   /** Permission failures can repeat for every streamed write. Announce once per bot
    * connection, with a bounded retry if the bot currently cannot send the notice. */
-  private permissionIssues = new Set<DiscordPermissionIssue>()
+  private permissionIssue?: DiscordPermissionState
+  private loggedPermissionIssues = new Set<DiscordPermissionIssue>()
   private permissionNoticeSent = false
   private permissionNoticeInFlight = false
   private permissionNoticeRetryAt = 0
@@ -347,19 +349,30 @@ export class DiscordConnection {
       if (ch && 'send' in ch && typeof (ch as { send?: unknown }).send === 'function') return ch as Sendable
       return null
     } catch (err) {
-      this.rememberPermissionIssue(err)
+      this.rememberPermissionIssue(err, channelId)
       this.deps.log?.debug(`discord: channel fetch failed (ch=${channelId}): ${(err as Error).message}`)
       return null
     }
   }
 
-  private rememberPermissionIssue(err: unknown): boolean {
+  private rememberPermissionIssue(err: unknown, channel?: string): boolean {
     const issue = discordPermissionIssueFrom(err)
     if (!issue) return false
-    if (!this.permissionIssues.has(issue)) {
-      this.permissionIssues.add(issue)
+    if (!this.loggedPermissionIssues.has(issue)) {
+      this.loggedPermissionIssues.add(issue)
       this.deps.log?.warn(`discord: bot permission update required (${issue})`)
     }
+    const next: DiscordPermissionState = {
+      issue,
+      // OAuth scope is application-wide. Access/permission errors discovered during a
+      // channel operation must stay on that channel so a healthy guild cannot consume
+      // a stale retry. Calls without a channel (command registration) remain global.
+      ...(issue !== 'missing-oauth-scope' && channel ? { channel } : {})
+    }
+    if (this.permissionIssue?.issue !== next.issue || this.permissionIssue.channel !== next.channel) {
+      this.permissionNoticeRetryAt = 0
+    }
+    this.permissionIssue = next
     return true
   }
 
@@ -379,8 +392,10 @@ export class DiscordConnection {
    * (`undefined`). The in-flight claim is set before any await so concurrent thread or
    * chrome failures cannot race into duplicate notices. */
   private async postPermissionUpdateNotice(channel: string, target?: Sendable | null): Promise<void> {
+    const permission = this.permissionIssue
     if (
-      this.permissionIssues.size === 0 ||
+      !permission ||
+      (permission.channel !== undefined && permission.channel !== channel) ||
       this.permissionNoticeSent ||
       this.permissionNoticeInFlight ||
       Date.now() < this.permissionNoticeRetryAt
@@ -399,7 +414,7 @@ export class DiscordConnection {
       await ch.send(buildPermissionUpdateNotice(updateUrl))
       this.permissionNoticeSent = true
     } catch (err) {
-      this.rememberPermissionIssue(err)
+      this.rememberPermissionIssue(err, channel)
       this.permissionNoticeRetryAt = Date.now() + PERMISSION_NOTICE_RETRY_MS
       this.deps.log?.debug(`discord: permission update notice failed (ch=${channel}): ${(err as Error).message}`)
     } finally {
@@ -425,7 +440,7 @@ export class DiscordConnection {
       const thread = await message.startThread({ name: name.slice(0, 100) || 'Agent thread' })
       return thread.id
     } catch (err) {
-      if (this.rememberPermissionIssue(err)) await this.postPermissionUpdateNotice(channelId, ch)
+      if (this.rememberPermissionIssue(err, channelId)) await this.postPermissionUpdateNotice(channelId, ch)
       this.deps.log?.debug(`discord: createThread failed (ch=${channelId} msg=${messageId}): ${(err as Error).message}`)
       return undefined
     }
@@ -447,7 +462,7 @@ export class DiscordConnection {
       let firstId: string | undefined
       for (const chunk of chunkForDiscord(text)) {
         const sent = await ch.send({ content: chunk }).catch((err: Error) => {
-          this.rememberPermissionIssue(err)
+          this.rememberPermissionIssue(err, channel)
           this.deps.log?.debug(`discord: send failed (ch=${channel}): ${err.message}`)
           return null
         })
@@ -486,7 +501,7 @@ export class DiscordConnection {
         await this.postPermissionUpdateNotice(channel, ch)
         return sent?.id
       } catch (err) {
-        this.rememberPermissionIssue(err)
+        this.rememberPermissionIssue(err, channel)
         await this.postPermissionUpdateNotice(channel, ch)
         this.deps.log?.debug(`discord: send (chrome) failed (ch=${channel}): ${(err as Error).message}`)
         return undefined
@@ -515,7 +530,7 @@ export class DiscordConnection {
         if (opts.keyboard) payload.components = opts.keyboard
         await msg.edit(payload)
       } catch (err) {
-        this.rememberPermissionIssue(err)
+        this.rememberPermissionIssue(err, channel)
         this.deps.log?.debug(`discord: edit failed (ch=${channel} id=${messageId}): ${(err as Error).message}`)
       }
       await this.postPermissionUpdateNotice(channel, ch)
@@ -530,7 +545,7 @@ export class DiscordConnection {
       ch = await this.sendableChannel(channel)
       if (ch?.sendTyping) await ch.sendTyping()
     } catch (err) {
-      this.rememberPermissionIssue(err)
+      this.rememberPermissionIssue(err, channel)
       this.deps.log?.debug(`discord: sendTyping failed (ch=${channel}): ${(err as Error).message}`)
     }
     await this.postPermissionUpdateNotice(channel, ch)

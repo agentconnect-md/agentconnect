@@ -262,7 +262,7 @@ const PERMISSION_NOTICE_RETRY_MS = 5 * 60_000
 type FeishuPermissionIssue = 'app-permissions' | 'bot-capability' | 'app-availability' | 'chat-access'
 
 type UnknownRecord = Record<string, unknown>
-type FeishuPermissionState = { issue: FeishuPermissionIssue; scopes: string[] }
+type FeishuPermissionState = { issue: FeishuPermissionIssue; scopes: string[]; channel?: string }
 
 function asRecord(value: unknown): UnknownRecord | undefined {
   return value && typeof value === 'object' ? (value as UnknownRecord) : undefined
@@ -395,6 +395,7 @@ export class FeishuConnection {
   /** App-level permission failures repeat across streamed writes. Announce once per
    * connection, with a bounded retry when the bot currently cannot send the card. */
   private permissionIssue?: FeishuPermissionState
+  private loggedPermissionIssues = new Set<string>()
   private permissionNoticeSent = false
   private permissionNoticeInFlight = false
   private permissionNoticeRetryAt = 0
@@ -534,19 +535,32 @@ export class FeishuConnection {
       : this.handle.api.createCard(channel, card)
   }
 
-  private rememberPermissionIssue(err: unknown): boolean {
+  private rememberPermissionIssue(err: unknown, channel?: string): boolean {
     const issue = feishuPermissionIssueFrom(err)
     if (!issue) return false
     const scopes = issue === 'app-permissions' ? feishuRequiredScopes(err, this.appId, this.region) : []
-    const changed = this.permissionIssue?.issue !== issue || this.permissionIssue.scopes.join(',') !== scopes.join(',')
-    this.permissionIssue = { issue, scopes }
-    if (changed) {
+    const logKey = `${issue}:${scopes.join(',')}`
+    if (!this.loggedPermissionIssues.has(logKey)) {
+      this.loggedPermissionIssues.add(logKey)
       const code = feishuErrorCode(err)
       this.deps.log?.warn(
         `feishu: bot permission update required${code === undefined ? '' : ` (code ${code})`}; ` +
           FEISHU_PERMISSION_NOTICE[issue].hint
       )
     }
+    // Chat access is target-specific. Without a concrete chat there is nowhere
+    // accurate to display "add the bot to this chat", so keep only the diagnostic log.
+    if (issue === 'chat-access' && !channel) return true
+
+    const next: FeishuPermissionState = { issue, scopes, ...(issue === 'chat-access' ? { channel } : {}) }
+    if (
+      this.permissionIssue?.issue !== next.issue ||
+      this.permissionIssue.scopes.join(',') !== next.scopes.join(',') ||
+      this.permissionIssue.channel !== next.channel
+    ) {
+      this.permissionNoticeRetryAt = 0
+    }
+    this.permissionIssue = next
     return true
   }
 
@@ -571,6 +585,7 @@ export class FeishuConnection {
     const permission = this.permissionIssue
     if (
       !permission ||
+      (permission.channel !== undefined && permission.channel !== channel) ||
       this.permissionNoticeSent ||
       this.permissionNoticeInFlight ||
       Date.now() < this.permissionNoticeRetryAt
@@ -589,7 +604,7 @@ export class FeishuConnection {
       )
       this.permissionNoticeSent = true
     } catch (err) {
-      this.rememberPermissionIssue(err)
+      this.rememberPermissionIssue(err, channel)
       this.permissionNoticeRetryAt = Date.now() + PERMISSION_NOTICE_RETRY_MS
       this.deps.log?.debug(`feishu: permission update card failed (ch=${channel}): ${(err as Error).message}`)
     } finally {
@@ -608,7 +623,7 @@ export class FeishuConnection {
       let firstId: string | undefined
       for (const chunk of chunkForFeishu(text)) {
         const res = await this.sendChunk(channel, threadAnchor, chunk).catch((err: Error) => {
-          this.rememberPermissionIssue(err)
+          this.rememberPermissionIssue(err, channel)
           this.deps.log?.debug(`feishu: send failed (ch=${channel}): ${err.message}`)
           return null
         })
@@ -632,7 +647,7 @@ export class FeishuConnection {
         await this.postPermissionUpdateCard(channel, opts.threadTs)
         return res.messageId
       } catch (err) {
-        this.rememberPermissionIssue(err)
+        this.rememberPermissionIssue(err, channel)
         await this.postPermissionUpdateCard(channel, opts.threadTs)
         this.deps.log?.debug(`feishu: send (chrome) failed (ch=${channel}): ${(err as Error).message}`)
         return undefined
@@ -652,7 +667,7 @@ export class FeishuConnection {
       try {
         await this.handle.api.patchText(messageId, chunkForFeishu(text)[0] ?? '')
       } catch (err) {
-        this.rememberPermissionIssue(err)
+        this.rememberPermissionIssue(err, channel)
         this.deps.log?.debug(`feishu: patch failed (id=${messageId}): ${(err as Error).message}`)
       }
       await this.postPermissionUpdateCard(channel)
@@ -715,7 +730,7 @@ export class FeishuConnection {
         isPrivate: false
       }
     } catch (err) {
-      this.rememberPermissionIssue(err)
+      this.rememberPermissionIssue(err, channel)
       this.deps.log?.debug(`feishu: getChat failed (ch=${channel}): ${(err as Error).message}`)
       return { id: channel }
     }
@@ -725,7 +740,7 @@ export class FeishuConnection {
     try {
       return await this.handle.api.listChatMembers(channel, MEMBER_CAP)
     } catch (err) {
-      this.rememberPermissionIssue(err)
+      this.rememberPermissionIssue(err, channel)
       this.deps.log?.debug(`feishu: listMembers failed (ch=${channel}): ${(err as Error).message}`)
       return []
     }

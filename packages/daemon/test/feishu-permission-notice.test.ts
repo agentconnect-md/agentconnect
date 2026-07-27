@@ -109,6 +109,24 @@ describe('Feishu/Lark permission update notice', () => {
     expect(url.searchParams.get('q')).not.toContain('im:message')
   })
 
+  it('does not deliver a failed chat-specific card in another chat', async () => {
+    const chatAccessError = permissionError(230002)
+    const { conn, createCard } = connectionFor('feishu', async () => {
+      throw chatAccessError
+    })
+    createCard.mockImplementation(async (chatId) => {
+      if (chatId === 'A') throw chatAccessError
+      return { messageId: 'unexpected-notice' }
+    })
+
+    await conn.updateMessage('A', 'om_progress', 'first')
+    expect(createCard.mock.calls.map(([chatId]) => chatId)).toEqual(['A'])
+    ;(conn as unknown as { permissionNoticeRetryAt: number }).permissionNoticeRetryAt = 0
+
+    await conn.postMessage('B', 'healthy')
+    expect(createCard.mock.calls.map(([chatId]) => chatId)).toEqual(['A'])
+  })
+
   it('does not post a permission card for an unrelated request error', async () => {
     const { conn, createCard } = connectionFor('lark', async () => {
       throw permissionError(230001)
