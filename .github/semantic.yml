@@ -1,0 +1,4 @@
+# Require Conventional Commits syntax in pull request titles and at least one commit.
+enabled: true
+titleAndCommits: true
+anyCommit: true
