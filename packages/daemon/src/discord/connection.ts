@@ -376,7 +376,7 @@ export class DiscordConnection {
   }
 
   private pendingPermissionKey(channel: string): string | undefined {
-    if (this.hasGlobalPermissionIssue) return `global:${channel}`
+    if (this.hasGlobalPermissionIssue) return 'global'
     return this.permissionIssueChannels.has(channel) ? `channel:${channel}` : undefined
   }
 

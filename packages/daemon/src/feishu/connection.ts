@@ -565,9 +565,7 @@ export class FeishuConnection {
     const oldScopeCount = this.permissionScopes.size
     for (const scope of scopes) this.permissionScopes.add(scope)
     if (wasNewIssue || this.permissionScopes.size !== oldScopeCount) {
-      for (const key of this.permissionNoticeRetryAt.keys()) {
-        if (key.startsWith('global:')) this.permissionNoticeRetryAt.delete(key)
-      }
+      this.permissionNoticeRetryAt.delete('global')
     }
     return true
   }
@@ -583,7 +581,7 @@ export class FeishuConnection {
 
   private pendingPermission(channel: string): { permission: FeishuPermissionState; key: string } | undefined {
     const global = this.pendingGlobalPermission()
-    if (global) return { permission: global, key: `global:${channel}` }
+    if (global) return { permission: global, key: 'global' }
     return this.permissionIssueChannels.has(channel)
       ? { permission: { issue: 'chat-access', scopes: [] }, key: `channel:${channel}` }
       : undefined

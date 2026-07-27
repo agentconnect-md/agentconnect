@@ -105,7 +105,7 @@ describe('Discord permission update notice', () => {
     expect(sendB).not.toHaveBeenCalled()
   })
 
-  it('preserves a global OAuth repair when a channel-specific notice fails', async () => {
+  it('rate-limits a global OAuth repair across channels without losing it', async () => {
     const missingScope = Object.assign(new Error('Missing required OAuth2 scope'), { code: 50026 })
     const missingPermission = Object.assign(new Error('Missing Permissions'), { code: 50013 })
     const sendA = vi.fn(async () => {
@@ -134,6 +134,10 @@ describe('Discord permission update notice', () => {
 
     await conn.createThread('A', 'message-1', 'Thread')
     expect(sendA).toHaveBeenCalledOnce()
+
+    await conn.sendChatAction('B')
+    expect(sendB).not.toHaveBeenCalled()
+
     ;(conn as unknown as { permissionNoticeRetryAt: Map<string, number> }).permissionNoticeRetryAt.clear()
 
     await conn.sendChatAction('B')

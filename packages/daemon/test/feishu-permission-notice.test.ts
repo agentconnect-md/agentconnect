@@ -144,9 +144,13 @@ describe('Feishu/Lark permission update notice', () => {
     await conn.getUserProfile('ou_user')
     await conn.postMessage('A', 'blocked')
     expect(createCard).toHaveBeenCalledOnce()
+
+    await conn.postMessage('B', 'still cooling down')
+    expect(createCard).toHaveBeenCalledOnce()
+
     ;(conn as unknown as { permissionNoticeRetryAt: Map<string, number> }).permissionNoticeRetryAt.clear()
 
-    await conn.postMessage('B', 'repaired')
+    await conn.postMessage('C', 'repaired')
     expect(createCard).toHaveBeenCalledTimes(2)
     const card = createCard.mock.calls[1]![1] as {
       body: { elements: { behaviors?: { default_url: string }[] }[] }
