@@ -80,6 +80,8 @@ export function pickChannelOwner(
 }
 
 export class SharedBotOrchestrator {
+  private readonly channelMutationChains = new Map<string, Promise<unknown>>()
+
   constructor(
     private readonly bots: BotRepo,
     private readonly botSecret: BotSecretStore,
@@ -372,47 +374,55 @@ export class SharedBotOrchestrator {
   async updateChannel(
     botId: string,
     channelId: string,
-    patch: { agentId?: string; trigger?: ChannelTrigger }
+    patch: { agentId?: string; trigger?: ChannelTrigger },
+    options: { expectedOwnerAgentId?: string; source?: 'console' | 'slack' } = {}
   ): Promise<IntegrationChannelRecord | null> {
-    const bot = await this.bots.get(BotId(botId))
-    if (bot?.transport !== 'http') {
-      this.log.warn({ botId }, 'shared-bot: update-channel for a non-http/unknown bot — ignored')
-      return null
-    }
-    const installs = await this.integrations.listForBot(bot.id)
-    if (installs.length === 0) return null
-    const rows = (await this.channels.listForBot(bot.id)).filter(
-      (row) => row.kind === 'channel' && row.channelId === channelId
-    )
-    const currentOwner = pickChannelOwner(installs, rows)
-    const owner = patch.agentId ? installs.find((i) => i.agentId === patch.agentId) : currentOwner
-    if (!owner) {
-      this.log.warn({ botId, agentId: patch.agentId }, 'shared-bot: update-channel for a non-member agent — ignored')
-      return null
-    }
+    return this.serializeChannelMutation(botId, channelId, async () => {
+      const bot = await this.bots.get(BotId(botId))
+      if (bot?.transport !== 'http') {
+        this.log.warn({ botId }, 'shared-bot: update-channel for a non-http/unknown bot — ignored')
+        return null
+      }
+      const installs = await this.integrations.listForBot(bot.id)
+      if (installs.length === 0) return null
+      const rows = (await this.channels.listForBot(bot.id)).filter(
+        (row) => row.kind === 'channel' && row.channelId === channelId
+      )
+      const currentOwner = pickChannelOwner(installs, rows)
+      if (options.expectedOwnerAgentId && currentOwner?.agentId !== options.expectedOwnerAgentId) {
+        this.log.warn(
+          { botId, channelId, expectedOwnerAgentId: options.expectedOwnerAgentId },
+          'shared-bot: channel owner changed before update — ignored'
+        )
+        return null
+      }
+      const owner = patch.agentId ? installs.find((i) => i.agentId === patch.agentId) : currentOwner
+      if (!owner) {
+        this.log.warn({ botId, agentId: patch.agentId }, 'shared-bot: update-channel for a non-member agent — ignored')
+        return null
+      }
 
-    const currentRow = currentOwner
-      ? (rows.find((row) => row.agentId === currentOwner.agentId) ??
-        rows.find((row) => row.integrationId === currentOwner.id))
-      : undefined
-    const trigger = patch.trigger ?? currentRow?.trigger ?? rows[0]?.trigger
-    let updated = await this.persistChannelOwner(installs, channelId, owner)
-    if (trigger !== undefined) {
+      const currentRow = currentOwner
+        ? (rows.find((row) => row.agentId === currentOwner.agentId) ??
+          rows.find((row) => row.integrationId === currentOwner.id))
+        : undefined
+      const targetAgent = options.source === 'slack' ? await this.agents.get(owner.agentId) : null
+      let updated = await this.persistChannelOwner(installs, channelId, owner)
+      const trigger =
+        targetAgent && isGatedAgent(targetAgent)
+          ? ('off' as const)
+          : (patch.trigger ?? currentRow?.trigger ?? rows[0]?.trigger ?? updated.trigger)
       await this.syncChannelTrigger(installs, channelId, trigger, rows)
       updated = { ...updated, trigger }
-    }
-    await this.syncRoutes(botId)
-    return updated
+      await this.syncRoutes(botId)
+      return updated
+    })
   }
 
   /** The in-Slack config modal changes only the owner. A workspace user must
    * never enable a restricted agent, so that target always starts Off. */
   async setChannelAgent(botId: string, channelId: string, agentId: string): Promise<void> {
-    const target = await this.agents.get(AgentId(agentId))
-    await this.updateChannel(botId, channelId, {
-      agentId,
-      ...(target && isGatedAgent(target) ? { trigger: 'off' as const } : {})
-    })
+    await this.updateChannel(botId, channelId, { agentId }, { source: 'slack' })
   }
 
   /** Preserve bot-scoped channel state before an owner integration is deleted. */
@@ -424,6 +434,24 @@ export class SharedBotOrchestrator {
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
+
+  /** Serialize the owner check and write per channel. Console authorization
+   * happens before this boundary and supplies the owner it authorized; a queued
+   * Slack move therefore makes that Console mutation fail closed. */
+  private serializeChannelMutation<T>(botId: string, channelId: string, run: () => Promise<T>): Promise<T> {
+    const key = `${botId}\u0000${channelId}`
+    const previous = this.channelMutationChains.get(key) ?? Promise.resolve()
+    const result = previous.then(run, run)
+    const settled = result.then(
+      () => undefined,
+      () => undefined
+    )
+    this.channelMutationChains.set(key, settled)
+    void settled.finally(() => {
+      if (this.channelMutationChains.get(key) === settled) this.channelMutationChains.delete(key)
+    })
+    return result
+  }
 
   /** Store one canonical owner row and clear every sibling install's copy. */
   private async persistChannelOwner(
@@ -448,8 +476,10 @@ export class SharedBotOrchestrator {
     return updated
   }
 
-  /** Keep the effective trigger on every surviving membership row. Ownership is
-   * canonical, but the repeated trigger lets owner deletion preserve channel state. */
+  /** Keep the effective trigger on every active membership row, creating a
+   * missing sibling from the best available channel metadata. Ownership is
+   * canonical, but complete repeated state lets owner deletion preserve the
+   * channel and trigger even before a new install reports its own snapshot. */
   private async syncChannelTrigger(
     installs: IntegrationRecord[],
     channelId: string,
@@ -457,8 +487,23 @@ export class SharedBotOrchestrator {
     knownRows: IntegrationChannelRecord[]
   ): Promise<void> {
     const known = new Map(knownRows.map((row) => [row.integrationId, row]))
+    const template = knownRows.find((row) => row.name !== null) ?? knownRows[0]
     for (const integration of installs) {
-      if (known.get(integration.id)?.trigger === trigger) continue
+      const row = known.get(integration.id)
+      if (row?.trigger === trigger) continue
+      if (!row) {
+        const backfilled = await this.channels.upsertConversation(
+          integration.id,
+          {
+            id: channelId,
+            ...(template?.name ? { name: template.name } : {}),
+            isPrivate: template?.isPrivate ?? false,
+            kind: 'channel'
+          },
+          { defaultTrigger: trigger }
+        )
+        if (backfilled.trigger === trigger) continue
+      }
       await this.channels.setTrigger(integration.id, channelId, trigger)
     }
   }

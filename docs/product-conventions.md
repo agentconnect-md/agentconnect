@@ -76,8 +76,8 @@ observed or ownerless channel converges to the bot's earliest active agent, and 
 the current owner immediately transfers ownership to the earliest remaining agent.
 Console surfaces must show the same effective owner and trigger from every member
 agent's integration; they must not expose a `No default` state. The trigger is
-replicated across the channel's membership rows so removing the owner does not
-discard it.
+replicated across every active membership row, backfilling a missing sibling, so
+removing the owner does not discard the channel or its trigger.
 
 A Console owner change preserves the channel's trigger. An in-Slack owner change or
 automatic fallback to a restricted agent instead leaves the channel Off, because only

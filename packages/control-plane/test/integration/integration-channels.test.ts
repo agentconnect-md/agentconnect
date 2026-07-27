@@ -459,11 +459,11 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
     })
     expect(cleared.statusCode).toBe(400)
 
-    // Simulate a stale legacy sibling, then remove the canonical owner. The
-    // pre-delete convergence must copy the effective trigger to the survivor.
-    await prisma.integrationChannel.update({
-      where: { integrationId_channelId: { integrationId: aliceIntegration, channelId: 'C1' } },
-      data: { trigger: 'mention' }
+    // Simulate a new install whose membership snapshot has not arrived, then
+    // remove the sole-row owner. Pre-delete convergence must backfill the
+    // survivor with both channel metadata and the effective trigger.
+    await prisma.integrationChannel.delete({
+      where: { integrationId_channelId: { integrationId: aliceIntegration, channelId: 'C1' } }
     })
     const removed = await running.app.inject({
       method: 'DELETE',

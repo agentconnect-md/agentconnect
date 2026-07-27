@@ -705,10 +705,25 @@ export function integrationRoutes(deps: HttpDeps) {
           let updated: IntegrationChannelRecord | null = null
           let routesSynced = false
           if (botScopedChannel) {
-            updated = await deps.sharedBot.updateChannel(bot.id, req.params.channelId, {
-              ...(req.body.agentId !== undefined ? { agentId: req.body.agentId } : {}),
-              ...(req.body.trigger !== undefined ? { trigger: req.body.trigger } : {})
-            })
+            updated = await deps.sharedBot.updateChannel(
+              bot.id,
+              req.params.channelId,
+              {
+                ...(req.body.agentId !== undefined ? { agentId: req.body.agentId } : {}),
+                ...(req.body.trigger !== undefined ? { trigger: req.body.trigger } : {})
+              },
+              {
+                expectedOwnerAgentId: effectiveOwner!.id,
+                source: 'console'
+              }
+            )
+            if (!updated) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: 'channel owner changed; refresh and retry the integration change'
+              })
+            }
             routesSynced = true
           } else {
             if (req.body.agentId !== undefined) {

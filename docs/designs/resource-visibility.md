@@ -896,7 +896,9 @@ agents.
   rights on its parent agent. A shared bot's channel state is bot-scoped, so the
   route additionally requires edit rights on the effective owner and on a newly
   selected owner; changing a visible sibling cannot enable a hidden restricted
-  owner.
+  owner. Mutations are serialized per bot/channel and fenced to the owner that
+  passed authorization, so a concurrent in-Slack owner move makes the Console
+  request retry instead of applying its trigger to the new owner.
 - `gated` is **derived** from `agent.visibility === 'restricted'` at spec
   assembly; there is no separate stored toggle (see §14.7).
 - Web `IntegrationChannelList`: tri-state segmented control per channel row
