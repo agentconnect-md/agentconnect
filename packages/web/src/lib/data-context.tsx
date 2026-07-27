@@ -451,6 +451,116 @@ const MOCK_BOTS: BotDto[] = [
   }
 ]
 
+// Demo MCP-provider registry (MOCK_MODE only) — covers both kinds so the Tools &
+// Skills tiles show the connector icon path and the plain plug, and both access
+// scopes (org-wide vs restricted, which renders the avatar stack). `service` slugs
+// are real catalog names so the icons resolve when the CP serves a catalog; with no
+// CP they fall back to the plug glyph. No urls/secrets here — headerNames only.
+const MOCK_MCP_PROVIDERS: McpProviderDto[] = [
+  {
+    id: 'mcp_grafana',
+    name: 'grafana',
+    kind: 'custom',
+    transport: 'http',
+    visibility: 'org',
+    sharedWith: [],
+    createdBy: 'u_dana',
+    canManageSharing: true,
+    url: 'https://mcp.example.test/grafana/sse',
+    headerNames: ['Authorization'],
+    createdAt: '2026-07-14T00:00:00Z'
+  },
+  {
+    id: 'mcp_linear',
+    name: 'linear',
+    kind: 'open_connector',
+    transport: 'http',
+    service: 'linear',
+    visibility: 'org',
+    sharedWith: [],
+    createdBy: 'u_sam',
+    canManageSharing: true,
+    url: 'https://connectors.example.test/mcp',
+    headerNames: ['x-oomol-connector-id'],
+    createdAt: '2026-07-16T00:00:00Z'
+  },
+  {
+    id: 'mcp_notion',
+    name: 'team-notion',
+    kind: 'open_connector',
+    transport: 'http',
+    service: 'notion',
+    visibility: 'restricted',
+    sharedWith: ['u_sam', 'u_ana'],
+    createdBy: 'u_dana',
+    canManageSharing: true,
+    url: 'https://connectors.example.test/mcp',
+    headerNames: ['x-oomol-connector-id'],
+    createdAt: '2026-07-18T00:00:00Z'
+  },
+  {
+    id: 'mcp_deepseek',
+    name: 'my-deepseek',
+    kind: 'custom',
+    transport: 'http',
+    visibility: 'restricted',
+    sharedWith: ['u_noah'],
+    createdBy: 'u_leo',
+    canManageSharing: true,
+    url: 'https://mcp.example.test/deepseek',
+    headerNames: [],
+    createdAt: '2026-07-16T00:00:00Z'
+  }
+]
+
+// Demo skill-source registry (MOCK_MODE only) — one plain GitHub repo, one pinned
+// to a ref with a subdir, one non-GitHub git URL (exercises the branch glyph and the
+// unlinked source line), one restricted. Names double as the agent enable-list keys.
+const MOCK_SKILL_SOURCES: SkillSourceDto[] = [
+  {
+    id: 'skill_ai_kit',
+    name: 'example-ai-kit',
+    source: 'example-org/example-ai-kit',
+    githubRepoId: null,
+    ref: null,
+    subDir: null,
+    skills: [],
+    visibility: 'org',
+    sharedWith: [],
+    createdBy: 'u_dana',
+    canManageSharing: true,
+    createdAt: '2026-07-24T00:00:00Z'
+  },
+  {
+    id: 'skill_platform',
+    name: 'platform-skills',
+    source: 'https://github.com/example-org/example-platform',
+    githubRepoId: null,
+    ref: 'v1.2.0',
+    subDir: 'skills',
+    skills: [],
+    visibility: 'org',
+    sharedWith: [],
+    createdBy: 'u_sam',
+    canManageSharing: true,
+    createdAt: '2026-06-30T00:00:00Z'
+  },
+  {
+    id: 'skill_internal',
+    name: 'internal-runbooks',
+    source: 'git@git.example.test:ops/runbooks.git',
+    githubRepoId: null,
+    ref: 'main',
+    subDir: null,
+    skills: ['safe-deploy', 'rollback'],
+    visibility: 'restricted',
+    sharedWith: ['u_noah', 'u_priya'],
+    createdBy: 'u_leo',
+    canManageSharing: true,
+    createdAt: '2026-05-11T00:00:00Z'
+  }
+]
+
 export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const { activeOrg, orgs, loading: orgLoading, error: orgError } = useOrgs()
   const { mutate: mutateCache } = useSWRConfig()
@@ -505,12 +615,12 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     mutate: mutateBots
   } = useSWR<BotDto[]>(consoleKeys.bots(orgKey), ([, orgId]) => fetchBots(orgId as string))
   const {
-    data: mcpProviders = [],
+    data: realMcpProviders = [],
     isLoading: mcpProvidersIsLoading,
     mutate: mutateMcpProviders
   } = useSWR<McpProviderDto[]>(consoleKeys.mcpProviders(orgKey), ([, orgId]) => fetchMcpProviders(orgId as string))
   const {
-    data: skillSources = [],
+    data: realSkillSources = [],
     isLoading: skillSourcesIsLoading,
     mutate: mutateSkillSources
   } = useSWR<SkillSourceDto[]>(consoleKeys.skillSources(orgKey), ([, orgId]) => fetchSkillSources(orgId as string))
@@ -680,6 +790,18 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   // bots: live rows, plus the demo roster in mock mode — so the Settings platform
   // cards + the Add-integration reuse picker are populated with no CP running.
   const bots = useMemo(() => (MOCK_MODE ? [...realBots, ...MOCK_BOTS] : realBots), [realBots])
+
+  // mcp providers / skill sources: live rows, plus the demo registries in mock mode —
+  // so the Tools & Skills tiles (and the per-agent enable-lists that read the same
+  // candidate set) render populated with no CP running.
+  const mcpProviders = useMemo(
+    () => (MOCK_MODE ? [...realMcpProviders, ...MOCK_MCP_PROVIDERS] : realMcpProviders),
+    [realMcpProviders]
+  )
+  const skillSources = useMemo(
+    () => (MOCK_MODE ? [...realSkillSources, ...MOCK_SKILL_SOURCES] : realSkillSources),
+    [realSkillSources]
+  )
 
   // integrations: live rows (daemon resolved via the owning agent), plus the demo
   // rows in mock mode — so the view is populated even with no CP running (as with agents).
@@ -1029,8 +1151,10 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const sessionsLoading = waitingForOrg || sessionsIsLoading || sessionFacetsIsLoading
   const daemonsLoading = waitingForOrg || daemonsIsLoading
   const cronsLoading = waitingForOrg || cronsIsLoading
-  const mcpProvidersLoading = waitingForOrg || mcpProvidersIsLoading
-  const skillSourcesLoading = waitingForOrg || skillSourcesIsLoading
+  // Mock mode never waits: the demo registries are always there, so the tiles render
+  // immediately instead of sitting on a spinner while a CP that isn't running fails.
+  const mcpProvidersLoading = !MOCK_MODE && (waitingForOrg || mcpProvidersIsLoading)
+  const skillSourcesLoading = !MOCK_MODE && (waitingForOrg || skillSourcesIsLoading)
   const connectorsEnabled = connectorsConfig?.enabled ?? false
   const loading =
     waitingForOrg ||

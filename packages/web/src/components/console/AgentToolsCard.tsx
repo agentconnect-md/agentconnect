@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { fetchAgentDto } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
-import type { DaemonRow } from '@/lib/data'
+import { MOCK_MODE, type DaemonRow } from '@/lib/data'
 import { mcpCandidates, mcpCapsFor, mcpServerMeta, mcpServersForRuntime } from '@/components/console/McpServersField'
+import { ProviderMark, ToolTile, ToolTileGrid, useConnectorIcons } from '@/components/console/ToolTile'
 import { Icon, Toggle } from '@/components/ui'
 
 /**
@@ -37,11 +38,28 @@ export function AgentToolsCard({
   daemon: DaemonRow | undefined
   canEdit: boolean
 }) {
-  const { updateAgent, mcpProviders } = useConsoleData()
+  const { updateAgent, mcpProviders, connectorsEnabled } = useConsoleData()
   // Candidate list = daemon-configured servers ∪ org-registry provider names, gated
   // by the runtime's transport support (registry providers are http-proxied).
   const registryNames = useMemo(() => mcpProviders.map((p) => p.name), [mcpProviders])
-  const candidates = daemon ? mcpCandidates(daemon.mcpServers, registryNames) : []
+  // Same catalog icons the registry card's tiles use, keyed here by provider NAME
+  // (that's all a candidate row carries). Names off the registry get the plug glyph.
+  const serviceByName = useMemo(
+    () => new Map(mcpProviders.flatMap((p) => (p.service ? [[p.name, p.service] as const] : []))),
+    [mcpProviders]
+  )
+  const iconByService = useConnectorIcons(connectorsEnabled && serviceByName.size > 0)
+  const iconFor = (name: string) => {
+    const service = serviceByName.get(name)
+    return service ? iconByService.get(service) : undefined
+  }
+  // A demo agent has no live daemon, so mock mode falls back to the org registry
+  // alone — enough to render the tiles with no CP running.
+  const candidates = daemon
+    ? mcpCandidates(daemon.mcpServers, registryNames)
+    : MOCK_MODE
+      ? mcpCandidates([], registryNames)
+      : []
   const caps = daemon ? mcpCapsFor(daemon.runtimeModels, runtime) : null
   const servers = mcpServersForRuntime(candidates, caps)
   // The persisted allow-list, once the raw spec loads; null ⇒ not loaded yet.
@@ -56,7 +74,13 @@ export function AgentToolsCard({
   // Tools card offers no way to clear a stale name. Mock agents (canEdit false)
   // have no spec to fetch.
   useEffect(() => {
-    if (fetched.current || !canEdit) return
+    if (fetched.current) return
+    // Demo agents (canEdit false) have no spec to fetch — mock mode seeds a plausible
+    // saved set instead so the toggles aren't uniformly off.
+    if (!canEdit) {
+      if (MOCK_MODE) setEnabled(['grafana', 'linear'])
+      return
+    }
     fetched.current = true
     fetchAgentDto(agentId).then(
       // The saved allow-list IS the effective set (empty ⇒ no servers), so the
@@ -91,27 +115,22 @@ export function AgentToolsCard({
   const unknownMeta = (n: string) =>
     candidateNames.has(n) ? 'Not supported by this runtime' : 'Not reported by this daemon'
 
-  // One MCP row. Eligible servers toggle freely; an ineligible saved name stays
-  // interactive only while ON, so it can be turned off but not re-enabled here.
-  const row = (name: string, meta: string, eligible: boolean) => {
+  // One MCP tile — the same ToolTile the registry card renders, with the enable toggle
+  // in place of its edit/delete action. Eligible servers toggle freely; an ineligible
+  // saved name stays interactive only while ON, so it can be turned off but not
+  // re-enabled here.
+  const tile = (name: string, meta: string, eligible: boolean) => {
     const on = enabled ? enabled.includes(name) : false // mirror the saved set; off until it loads
     const interactive = canEdit && enabled !== null && !saving && (eligible || on)
     return (
-      <div
+      <ToolTile
         key={name}
-        className="flex items-center gap-[11px] border-t border-(--border-subtle) px-4 py-[11px] first:border-t-0 desktop:py-3"
-      >
-        <Icon name="plug" size={16} color="var(--text-tertiary)" />
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-mono text-[12.5px] font-medium leading-normal text-(--text-primary)">
-            {name}
-          </div>
-          <div className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-            {meta}
-          </div>
-        </div>
-        <Toggle checked={on} disabled={!interactive} onChange={(next) => toggle(name, next)} />
-      </div>
+        mark={<ProviderMark iconUrl={iconFor(name)} />}
+        name={name}
+        subtitle={meta}
+        dimmed={!eligible}
+        action={<Toggle checked={on} disabled={!interactive} onChange={(next) => toggle(name, next)} />}
+      />
     )
   }
 
@@ -121,10 +140,10 @@ export function AgentToolsCard({
         Tools
       </div>
       {servers.length > 0 || unknown.length > 0 ? (
-        <div>
-          {servers.map((s) => row(s.name, mcpServerMeta(s), true))}
-          {unknown.map((n) => row(n, unknownMeta(n), false))}
-        </div>
+        <ToolTileGrid columns={2}>
+          {servers.map((s) => tile(s.name, mcpServerMeta(s), true))}
+          {unknown.map((n) => tile(n, unknownMeta(n), false))}
+        </ToolTileGrid>
       ) : (
         <div className="flex items-center gap-2 px-4 py-[13px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) desktop:py-3">
           <Icon name="plug" size={14} />
