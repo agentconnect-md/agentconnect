@@ -125,6 +125,44 @@ describe('materializeAcceptedDreamSkills', () => {
     expect(existsSync(join(cwd, '.claude/skills', 'hand-written', 'SKILL.md'))).toBe(true) // not ours
   })
 
+  it('REFUSES a planted .agentconnect symlink instead of writing the marker through it', async () => {
+    // The marker is a daemon-authority write under the agent-writable cwd too —
+    // a plain writeFile followed `.agentconnect -> outside` and clobbered a file
+    // there.
+    const { dir, cwd } = await fixture()
+    const outside = await mkdtemp(join(tmpdir(), 'ac-outside-'))
+    await writeFile(join(outside, 'dream-skills-install.json'), 'CANARY', 'utf8')
+    await symlink(outside, join(cwd, '.agentconnect'), 'dir')
+
+    const warnings: string[] = []
+    await materializeAcceptedDreamSkills({ dir, runtime: 'claude' }, cwd, { warn: (m) => warnings.push(m) })
+
+    // The canary is intact and the refusal was reported as a security event.
+    expect(await readFile(join(outside, 'dream-skills-install.json'), 'utf8')).toBe('CANARY')
+    expect(warnings.join(' ')).toContain('refused to write the dream-skill marker')
+  })
+
+  it('serializes concurrent preparation so neither agent’s ownership is lost', async () => {
+    // Both agents read the same prior marker, both install, and each overwrites
+    // the other's record — leaving one skill on disk that no later pass can
+    // reconcile away. The transaction must be serialized per canonical cwd.
+    const { dir: dirA, cwd, name: nameA } = await fixture('skill-a')
+    const { dir: dirB, name: nameB } = await fixture('skill-b')
+
+    await Promise.all([
+      materializeAcceptedDreamSkills({ dir: dirA, runtime: 'claude' }, cwd),
+      materializeAcceptedDreamSkills({ dir: dirB, runtime: 'claude' }, cwd)
+    ])
+
+    // A third agent with nothing accepted must be able to clear the root: that
+    // only works if the marker recorded whichever set actually survived.
+    const dirC = await mkdtemp(join(tmpdir(), 'ac-agent-c-'))
+    await materializeAcceptedDreamSkills({ dir: dirC, runtime: 'claude' }, cwd)
+
+    expect(existsSync(join(cwd, '.claude/skills', nameA))).toBe(false)
+    expect(existsSync(join(cwd, '.claude/skills', nameB))).toBe(false)
+  })
+
   it('skips a malformed accepted skill without failing the others', async () => {
     const { dir, cwd } = await fixture()
     await mkdir(join(dir, 'skills', 'broken'), { recursive: true })

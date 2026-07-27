@@ -59,23 +59,62 @@ function isOwnedSkillDir(rel: string): boolean {
   return m !== null
 }
 
+/** The marker is ALSO a daemon-authority write beneath the agent-writable cwd,
+ *  so it gets the same no-follow treatment as the skill files — a planted
+ *  `.agentconnect` symlink must not redirect it out of the workspace. */
 async function readMarker(cwd: string): Promise<Marker> {
   try {
-    const raw = await fsp.readFile(join(cwd, MARKER_DIR, MARKER_FILE), 'utf8')
-    const parsed = JSON.parse(raw) as Marker
+    const target = await containedTarget(cwd, join(cwd, MARKER_DIR), join(cwd, MARKER_DIR, MARKER_FILE), {
+      create: false,
+      label: 'skill marker'
+    })
+    if (!target) return { installed: [] }
+    const parsed = JSON.parse(await fsp.readFile(target, 'utf8')) as Marker
     return { installed: Array.isArray(parsed.installed) ? parsed.installed.filter(isOwnedSkillDir) : [] }
   } catch {
+    // Unreadable, absent, or refused: treat as "nothing recorded". A refusal is
+    // reported by the write side, which is where the damage would be.
     return { installed: [] }
   }
 }
 
-async function writeMarker(cwd: string, marker: Marker): Promise<void> {
+async function writeMarker(cwd: string, marker: Marker, warn?: (msg: string) => void): Promise<void> {
   try {
-    await fsp.mkdir(join(cwd, MARKER_DIR), { recursive: true })
-    await fsp.writeFile(join(cwd, MARKER_DIR, MARKER_FILE), JSON.stringify(marker), 'utf8')
-  } catch {
-    // best-effort: a lost marker costs a stale dir, never a failed session
+    await publish(cwd, join(cwd, MARKER_DIR), join(cwd, MARKER_DIR, MARKER_FILE), Buffer.from(JSON.stringify(marker)))
+  } catch (err) {
+    // A containment refusal here is a security event, like a refused skill path.
+    warn?.(
+      err instanceof ContainedPathError
+        ? `skills: refused to write the dream-skill marker — ${err.message}`
+        : `skills: could not write the dream-skill marker — ${err instanceof Error ? err.message : ''}`
+    )
   }
+}
+
+/**
+ * Serial mutex per CANONICAL cwd. Ownership is a read → reconcile → copy →
+ * publish transaction over one marker; two agents prepared concurrently in a
+ * shared checkout would otherwise both read the same prior marker, both install,
+ * and each overwrite the other's record — leaving one agent's skill on disk with
+ * nothing recording it, so no later pass could ever reconcile it away.
+ *
+ * Keyed by the REAL path so two spellings of the same directory serialize
+ * together. In-process only, which matches the scope: one daemon prepares the
+ * sessions that share a checkout.
+ */
+const cwdLocks = new Map<string, Promise<unknown>>()
+
+function withCwdLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = cwdLocks.get(key) ?? Promise.resolve()
+  const result = prev.then(fn, fn)
+  cwdLocks.set(
+    key,
+    result.then(
+      () => {},
+      () => {}
+    )
+  )
+  return result
 }
 
 export interface MaterializeResult {
@@ -114,9 +153,20 @@ export async function materializeAcceptedDreamSkills(
   acpCwd: string,
   opts: { warn?: (msg: string) => void } = {}
 ): Promise<MaterializeResult> {
-  const result: MaterializeResult = { installed: [], removed: [], errors: [] }
   const rootRel = skillRootFor(agent.runtime)
-  if (!rootRel) return result // no mapping for this runtime; nothing to do
+  if (!rootRel) return { installed: [], removed: [], errors: [] } // unmapped runtime
+  // Canonical key so `/tmp/x` and `/private/tmp/x` share one lock.
+  const key = await fsp.realpath(acpCwd).catch(() => acpCwd)
+  return withCwdLock(key, () => materialize(agent, acpCwd, rootRel, opts))
+}
+
+async function materialize(
+  agent: { dir: string; runtime: string },
+  acpCwd: string,
+  rootRel: string,
+  opts: { warn?: (msg: string) => void }
+): Promise<MaterializeResult> {
+  const result: MaterializeResult = { installed: [], removed: [], errors: [] }
 
   const names = await acceptedDreamSkillNames({ dir: agent.dir })
   const skillsRoot = join(acpCwd, ...rootRel.split('/'))
@@ -137,7 +187,7 @@ export async function materializeAcceptedDreamSkills(
     }
   }
   if (names.length === 0) {
-    await writeMarker(acpCwd, { installed: [] })
+    await writeMarker(acpCwd, { installed: [] }, opts.warn)
     return result
   }
 
@@ -189,6 +239,6 @@ export async function materializeAcceptedDreamSkills(
       )
     }
   }
-  await writeMarker(acpCwd, { installed: result.installed })
+  await writeMarker(acpCwd, { installed: result.installed }, opts.warn)
   return result
 }
