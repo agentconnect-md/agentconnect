@@ -1137,8 +1137,8 @@ export default function AddIntegrationModal({
       (ghReportingMode === 'check' &&
         (!hasChecksWritePermission(ghSelectedInstallation) || !hasPullRequestsReadPermission(ghSelectedInstallation))))
 
-  // 'existing' | 'create'; until the user picks, default to reuse when there is
-  // anything to reuse (bots load async, so this is derived, not initial state).
+  // Reusing a bot is an advanced path; every platform opens on the create flow
+  // until the user explicitly chooses an existing identity.
   const [modePick, setModePick] = useState<'existing' | 'create' | null>(null)
   const [botPick, setBotPick] = useState<string | null>(null)
   // Shared-bot opt-in (shared-bot-relay.md §4.1): one bot, many agents, inbound via a
@@ -1202,7 +1202,7 @@ export default function AddIntegrationModal({
   // A bot serves one agent at a time; freed (or prebuilt, never-installed) bots of
   // THIS platform are offered for reuse instead of forcing a re-create.
   const freeBots = bots.filter((b) => b.platform === platform && !b.inUseByAgentId)
-  const mode = modePick ?? (freeBots.length > 0 ? 'existing' : 'create')
+  const mode = modePick ?? 'create'
   const selectedBotId = freeBots.some((b) => b.id === botPick) ? botPick : (freeBots[0]?.id ?? null)
   const selectedBot = freeBots.find((b) => b.id === selectedBotId) ?? null
   // The effective Slack transport for the CREATE path: an explicit pick, else the
