@@ -439,6 +439,13 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS display_names (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, updatedAt INTEGER
       );
+      -- Where a conversation id SITS: its enclosing channel (a Discord thread's parent
+      -- channel — a session keys on the thread id, so the reachable channel it belongs
+      -- to is otherwise unrecoverable). Backs observed-channel collapsing: threads fold
+      -- onto their channel, whose snowflake is the uniqueness key of a reported row.
+      CREATE TABLE IF NOT EXISTS channel_scopes (
+        id TEXT PRIMARY KEY, parentId TEXT, updatedAt INTEGER
+      );
       CREATE TABLE IF NOT EXISTS permission_requests (
         id TEXT PRIMARY KEY,
         agentId TEXT NOT NULL,
@@ -2134,6 +2141,31 @@ export class LocalStore {
       .prepare(`SELECT id, name FROM display_names WHERE id IN (${unique.map(() => '?').join(',')})`)
       .all(...unique) as unknown as { id: string; name: string }[]
     for (const r of rows) if (r.name) out.set(r.id, r.name)
+    return out
+  }
+
+  /** Record where a conversation id sits — the channel enclosing it. Latest-wins; an
+   *  empty note writes nothing. */
+  setChannelScope(id: string, scope: { parentId?: string }, updatedAt: number): void {
+    if (scope.parentId === undefined) return
+    this.db
+      .prepare(
+        `INSERT INTO channel_scopes (id, parentId, updatedAt) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET parentId = excluded.parentId, updatedAt = excluded.updatedAt`
+      )
+      .run(id, scope.parentId, updatedAt)
+  }
+
+  /** Scopes for a set of conversation ids — only the ids that have one. One batched
+   *  `IN (…)` query, not a round-trip per id (mirrors getDisplayNames). */
+  getChannelScopes(ids: string[]): Map<string, { parentId?: string }> {
+    const out = new Map<string, { parentId?: string }>()
+    const unique = [...new Set(ids)]
+    if (unique.length === 0) return out
+    const rows = this.db
+      .prepare(`SELECT id, parentId FROM channel_scopes WHERE id IN (${unique.map(() => '?').join(',')})`)
+      .all(...unique) as unknown as { id: string; parentId: string | null }[]
+    for (const r of rows) if (r.parentId) out.set(r.id, { parentId: r.parentId })
     return out
   }
 

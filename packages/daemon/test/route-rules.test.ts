@@ -170,6 +170,40 @@ describe('routeRules platform isolation', () => {
     const rules = [rule({ agentId: 'tg', match: { kind: 'auto' }, platform: 'telegram' })]
     expect(routeRules(msg({ platform: 'slack' }), rules, noOwner)).toBeNull()
   })
+
+  it("a channel-scoped rule serves that channel's threads (Discord keys a session on the thread)", () => {
+    const rules = [rule({ agentId: 'a', scope: { channel: 'C1' }, match: { kind: 'auto' }, platform: 'discord' })]
+    const inThread = msg({ platform: 'discord', channel: 'T9', thread: 'T9', parentChannel: 'C1' })
+    expect(routeRules(inThread, rules, noOwner)?.agentId).toBe('a')
+    // Another channel's thread is still out of scope.
+    expect(routeRules({ ...inThread, parentChannel: 'C2' }, rules, noOwner)).toBeNull()
+  })
+
+  it('a CP rule scoped to the enclosing channel still overrides a local rule in a thread', () => {
+    // The CP-override check uses the same channel-scope predicate as the scope filter,
+    // so a parent-scoped CP rule wins even when the local rule is listed first.
+    const rules = [
+      rule({ agentId: 'local', source: 'config', scope: { channel: 'C1' }, match: { kind: 'auto' } }),
+      rule({ agentId: 'cpAgent', source: 'cp', scope: { channel: 'C1' }, match: { kind: 'auto' } })
+    ]
+    const inThread = msg({ platform: 'discord', channel: 'T1', thread: 'T1', parentChannel: 'C1' })
+    expect(routeRules(inThread, rules, noOwner)?.agentId).toBe('cpAgent')
+  })
+
+  it('an UNSCOPED cp rule does not claim the channel layer (local scoped rule still wins)', () => {
+    const rules = [
+      rule({
+        agentId: 'local',
+        source: 'config',
+        scope: { channel: 'C1' },
+        match: { kind: 'keyword', value: 'hello' }
+      }),
+      rule({ agentId: 'cpGlobal', source: 'cp', scope: {}, match: { kind: 'auto' } })
+    ]
+    // Keyword outranks auto within the merged layer; a global CP rule must not promote
+    // the CP layer just because it matched.
+    expect(routeRules(msg(), rules, noOwner)?.agentId).toBe('local')
+  })
 })
 
 const tgAgent = (over: Partial<Agent> = {}): Agent =>

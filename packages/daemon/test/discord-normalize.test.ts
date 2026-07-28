@@ -12,6 +12,7 @@ import {
   buildDiscordSelectComponents,
   buildLinkComponents
 } from '../src/discord/render.js'
+import { collapseDiscordChannels, collapseNameLookupIds } from '../src/discord/channels.js'
 
 const base: DiscordMessageLike = {
   id: '111',
@@ -73,6 +74,27 @@ describe('normalizeDiscordMessage', () => {
   it('marks a bot author', () => {
     expect(normalizeDiscordMessage({ ...base, authorIsBot: true }, { traceId: 't' }).sender.isBot).toBe(true)
   })
+
+  it('carries the enclosing channel of a thread message', () => {
+    const m = normalizeDiscordMessage(
+      { ...base, channelId: 'T555', isThread: true, parentChannelId: 'C777' },
+      { traceId: 't' }
+    )
+    // The session still keys on the thread; `parentChannel` is the reachable channel it
+    // belongs to (channel-scoped triggers + channel discovery both key on it).
+    expect(m.channel).toBe('T555')
+    expect(m.parentChannel).toBe('C777')
+  })
+
+  it('leaves parentChannel unset outside a thread (the channel IS the conversation)', () => {
+    const m = normalizeDiscordMessage({ ...base, parentChannelId: 'C777' }, { traceId: 't' })
+    expect(m.parentChannel).toBeUndefined()
+  })
+
+  it('renders a mention with the gateway-supplied handle, so a derived title reads a name', () => {
+    const m = normalizeDiscordMessage({ ...base, mentionUserNames: { '999': 'acp-tester' } }, { traceId: 't' })
+    expect(m.text).toBe('hello @acp-tester')
+  })
 })
 
 describe('humanizeDiscordText', () => {
@@ -84,6 +106,81 @@ describe('humanizeDiscordText', () => {
 
   it('rewrites a <t:unix> timestamp to ISO-8601 and leaves plain markdown untouched', () => {
     expect(humanizeDiscordText('at <t:0:F> **bold**')).toBe('at 1970-01-01T00:00:00.000Z **bold**')
+  })
+
+  it('uses supplied handles for user mentions and keeps the id when one is unknown', () => {
+    expect(humanizeDiscordText('hi <@12> and <@!34>', { '12': 'alice' })).toBe('hi @alice and @34')
+  })
+})
+
+describe('collapseDiscordChannels', () => {
+  it('folds every thread of a channel onto one row (the duplicate-"#general" bug)', () => {
+    const observed = [
+      { id: 'T3', name: 'general' },
+      { id: 'T2', name: 'general' },
+      { id: 'T1', name: 'general' }
+    ]
+    const scopes = new Map([
+      ['T1', { parentId: 'C1' }],
+      ['T2', { parentId: 'C1' }],
+      ['T3', { parentId: 'C1' }]
+    ])
+    expect(collapseDiscordChannels(observed, scopes, new Map([['C1', 'general']]))).toEqual([
+      { id: 'C1', name: 'general' }
+    ])
+  })
+
+  it('keeps two same-named channels of ONE guild apart (Discord allows duplicate names)', () => {
+    // Identity is the snowflake, never the label: merging these would hide a real
+    // conversation and make its trigger unconfigurable.
+    const observed = [
+      { id: 'T1', name: 'general' },
+      { id: 'T2', name: 'general' },
+      { id: 'C3', name: 'general' }
+    ]
+    const scopes = new Map([
+      ['T1', { parentId: 'C1' }],
+      ['T2', { parentId: 'C2' }]
+    ])
+    expect(collapseDiscordChannels(observed, scopes, new Map())).toEqual([
+      { id: 'C1', name: 'general' },
+      { id: 'C2', name: 'general' },
+      { id: 'C3', name: 'general' }
+    ])
+  })
+
+  it('keeps an unresolved id distinct from the channel it may belong to', () => {
+    // A thread whose parent isn't known yet stays its own row until the lookup resolves
+    // it — a transient duplicate is recoverable, a hidden channel is not.
+    const observed = [
+      { id: 'C1', name: 'general' },
+      { id: 'T9', name: 'general' }
+    ]
+    expect(collapseDiscordChannels(observed, new Map(), new Map())).toEqual([
+      { id: 'C1', name: 'general' },
+      { id: 'T9', name: 'general' }
+    ])
+  })
+
+  it('dedupes repeated ids (DM conversations keep one row each)', () => {
+    const observed = [
+      { id: 'D1', name: '@dana' },
+      { id: 'D2', name: '@dana' },
+      { id: 'D1', name: '@dana' }
+    ]
+    expect(collapseDiscordChannels(observed, new Map(), new Map())).toEqual([
+      { id: 'D1', name: '@dana' },
+      { id: 'D2', name: '@dana' }
+    ])
+  })
+
+  it('passes an unresolved row through id-only (the console falls back to the id)', () => {
+    expect(collapseDiscordChannels([{ id: '900456' }], new Map(), new Map())).toEqual([{ id: '900456' }])
+  })
+
+  it('lists the ids whose names the collapse needs — observed plus enclosing channels', () => {
+    const scopes = new Map([['T1', { parentId: 'C1' }]])
+    expect(collapseNameLookupIds([{ id: 'T1' }, { id: 'C2' }], scopes)).toEqual(['T1', 'C1', 'C2'])
   })
 })
 

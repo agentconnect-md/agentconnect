@@ -110,4 +110,41 @@ describe('ChannelNameResolver', () => {
     await flush()
     expect(saved.get('C1')).toBe('general')
   })
+
+  it('reports a thread scope (its enclosing channel) and names the channel itself', async () => {
+    const saved = new Map<string, string>()
+    const scopes = new Map<string, { parentId?: string }>()
+    const r = new ChannelNameResolver((id, name) => saved.set(id, name), {
+      saveScope: (id, scope) => scopes.set(id, scope)
+    })
+    r.noteChannel(source({ id: 'T1', name: 'deploy the docs', parentId: 'C1', parentName: 'general' }), 'T1')
+    await flush()
+    expect(scopes.get('T1')).toEqual({ parentId: 'C1' })
+    // The enclosing channel is a reportable conversation of its own.
+    expect(saved.get('C1')).toBe('general')
+    // A non-thread channel has no scope to report.
+    r.noteChannel(source({ id: 'C9', name: 'ops' }), 'C9')
+    await flush()
+    expect(scopes.has('C9')).toBe(false)
+  })
+
+  it('noteMessage caches the human sender and the users they mentioned', async () => {
+    const saved = new Map<string, string>()
+    const src = source({ id: 'C1', name: 'general' })
+    const r = new ChannelNameResolver((id, name) => saved.set(id, name))
+    r.noteMessage(src, { channel: 'C1', sender: { id: 'U9', isBot: false }, mentionedUserIds: ['U7'] })
+    await flush()
+    expect(saved.get('U9')).toBe('Dana Reyes')
+    expect(saved.get('U7')).toBe('Dana Reyes')
+  })
+
+  it('noteMessage skips a bot sender (agent frames are labelled by agentId upstream)', async () => {
+    const saved = new Map<string, string>()
+    const src = source({ id: 'C1', name: 'general' })
+    const r = new ChannelNameResolver((id, name) => saved.set(id, name))
+    r.noteMessage(src, { channel: 'C1', sender: { id: 'B1', isBot: true } })
+    await flush()
+    expect(src.getUserProfile).not.toHaveBeenCalled()
+    expect(saved.has('B1')).toBe(false)
+  })
 })

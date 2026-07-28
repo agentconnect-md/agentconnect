@@ -551,6 +551,37 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord discovery)', () => {
     await daemon.stop()
   })
 
+  it('folds observed Discord threads onto their enclosing channel (one row per channel)', async () => {
+    const root = root1()
+    const { daemon } = makeStubDaemon(root)
+    await daemon.start()
+
+    const emit = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    ;(daemon as any).agents = new Map([
+      ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', discord: { botToken: 'dc' } }] }]
+    ])
+    // Three turns in #general ⇒ three thread channels, each labelled with the enclosing
+    // channel — the console showed "#general" three times before the fold.
+    const store = (daemon as any).store
+    for (const t of ['900001', '900002', '900003']) {
+      store.setChannelScope(t, { parentId: '900123' }, 1)
+    }
+    store.setDisplayName('900123', 'general', 1)
+    vi.spyOn(store, 'observedChannels').mockReturnValue([
+      { id: '900003', name: 'general' },
+      { id: '900002', name: 'general' },
+      { id: '900001', name: 'general' }
+    ])
+
+    ;(daemon as any).refreshObservedChannels()
+
+    const channels = [{ id: '900123', name: 'general' }]
+    expect(emit).toHaveBeenCalledWith({ integrationId: 'dc-int', channels, authoritative: false })
+    expect((daemon as any).channelSnapshots.get('dc-int')).toEqual({ channels, authoritative: false })
+    await daemon.stop()
+  })
+
   it('skips an agent with multiple Telegram bots (observed set is not per-bot)', async () => {
     const root = root1()
     const { daemon } = makeStubDaemon(root)
