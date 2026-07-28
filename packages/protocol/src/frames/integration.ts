@@ -191,10 +191,16 @@ export type IntegrationRemove = z.infer<typeof IntegrationRemove>
  * visibility.md §14.3): absent = 'channel' for wire compatibility. DM rows
  * (`kind: 'im'`, Slack "D…" ids) are reported only for gated integrations, on
  * first inbound DM; their `name` is the counterpart's display name.
+ *
+ * `space` names the container the conversation lives in — a Discord GUILD, whose
+ * name a bot in several servers needs for the channel to be identifiable at all
+ * (every server has a "#general"). Absent on platforms with one implicit container
+ * per bot (Slack workspace, Telegram, Feishu tenant) and on DM rows.
  */
 export const IntegrationChannel = z.object({
   id: z.string(), // platform conversation id (Slack "C…" / DM "D…")
   name: z.string().optional(), // "#deploys" without the hash (or DM counterpart); absent if lookup failed
+  space: z.string().optional(), // enclosing Discord guild/server name; absent until resolved
   isPrivate: z.boolean().optional(),
   kind: z.enum(['channel', 'im']).optional() // absent = 'channel'
 })

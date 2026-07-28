@@ -16,6 +16,10 @@ export interface ChannelInfoSource {
     parentId?: string
     /** Enclosing channel name when `channel` is itself a thread (Discord). */
     parentName?: string
+    /** Enclosing space the conversation lives in — the Discord guild id. */
+    spaceId?: string
+    /** That space's display name (the Discord server name). */
+    spaceName?: string
   }>
   getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }>
 }
@@ -44,9 +48,11 @@ const FAIL_TTL_MS = 10 * 60 * 1000 // retry failed lookups (rate limit / outage)
 const MAX_TRACKED_IDS = 5000 // attempt-cache cap (oldest-evicted)
 
 /** Where a conversation sits — reported alongside its name so the daemon can fold a
- *  thread onto the enclosing channel it belongs to (see discord/channels.ts). */
+ *  thread onto the enclosing channel it belongs to (see discord/channels.ts), and so
+ *  a reported channel can name the space (Discord guild) that encloses it. */
 export interface ResolvedChannelScope {
   parentId?: string
+  spaceId?: string
 }
 
 export interface ChannelNameResolverOpts {
@@ -120,10 +126,20 @@ export class ChannelNameResolver {
       // Where the conversation sits: a thread folds onto its enclosing channel in
       // channel discovery. Saved before the name so a nameless lookup still contributes
       // the scope.
-      if (info.parentId) this.saveScope?.(channel, { parentId: info.parentId })
+      if (info.parentId || info.spaceId)
+        this.saveScope?.(channel, {
+          ...(info.parentId ? { parentId: info.parentId } : {}),
+          ...(info.spaceId ? { spaceId: info.spaceId } : {})
+        })
       // The enclosing channel is a reportable conversation of its own (channel discovery
-      // labels the folded row from it) — cache its name under ITS id too.
+      // labels the folded row from it) — cache its name, and the space both of them sit
+      // in, under THEIR ids too.
       if (info.parentId && info.parentName) this.save(info.parentId, info.parentName)
+      if (info.parentId && info.spaceId) this.saveScope?.(info.parentId, { spaceId: info.spaceId })
+      // The space's own name lands in the same id → name cache (a guild snowflake never
+      // collides with a channel or user id), so a reported channel can be labelled with
+      // the server it belongs to without a second live lookup.
+      if (info.spaceId && info.spaceName) this.save(info.spaceId, info.spaceName)
       // A named channel/group is saved bare (the console prefixes "#"); a DM that carries
       // its own handle (a Telegram @username) is saved "@name" so readers can tell it apart.
       // A Discord session keys on the THREAD id, whose own name is the turn's title — label

@@ -366,6 +366,7 @@ function toChannelRecord(c: IntegrationChannel): IntegrationChannelRecord {
     integrationId: IntegrationId(c.integrationId),
     channelId: c.channelId,
     name: c.name,
+    space: c.space,
     isPrivate: c.isPrivate,
     kind: c.kind as ConversationKind,
     trigger: c.trigger as ChannelTrigger,
@@ -400,6 +401,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
           integrationId,
           channelId: c.id,
           name: c.name ?? null,
+          space: c.space ?? null,
           isPrivate: c.isPrivate ?? false,
           kind: c.kind ?? 'channel',
           ...(opts?.defaultTrigger ? { trigger: opts.defaultTrigger } : {})
@@ -408,6 +410,9 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         // re-report must never downgrade an established 'im' row (§14.3).
         update: {
           ...(authoritative || c.name !== undefined ? { name: c.name ?? null } : {}),
+          // The space resolves lazily (one guild lookup per channel, TTL-cached at the
+          // edge), so a report that carries none must not blank a known server name.
+          ...(c.space !== undefined ? { space: c.space } : {}),
           ...(authoritative || c.isPrivate !== undefined ? { isPrivate: c.isPrivate ?? false } : {}),
           ...(c.kind ? { kind: c.kind } : {})
         }
@@ -426,6 +431,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         integrationId,
         channelId: conversation.id,
         name: conversation.name ?? null,
+        space: conversation.space ?? null,
         isPrivate: conversation.isPrivate ?? false,
         kind: conversation.kind ?? 'channel',
         ...(opts?.defaultTrigger ? { trigger: opts.defaultTrigger } : {}),
@@ -433,7 +439,10 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       },
       // Refresh only a KNOWN name — a nameless re-report must not clobber a
       // previously resolved counterpart name; trigger/agentId stay operator-owned.
-      update: conversation.name ? { name: conversation.name } : {}
+      update: {
+        ...(conversation.name ? { name: conversation.name } : {}),
+        ...(conversation.space ? { space: conversation.space } : {})
+      }
     })
     return toChannelRecord(row)
   }

@@ -2229,6 +2229,9 @@ export interface IntegrationChannelRecord {
   integrationId: IntegrationId
   channelId: string
   name: string | null
+  /** Enclosing space (Discord guild/server) name; null on single-container
+   *  platforms, on DM rows, and until the daemon has resolved it. */
+  space: string | null
   isPrivate: boolean
   kind: ConversationKind
   /** Repeated across shared-channel sibling rows; integration-scoped for DMs. */
@@ -2241,6 +2244,8 @@ export interface IntegrationChannelRecord {
 export interface ReportedChannel {
   id: string
   name?: string
+  /** Enclosing Discord guild/server name; absent elsewhere and until resolved. */
+  space?: string
   isPrivate?: boolean
   /** Absent = 'channel' (wire compatibility). */
   kind?: ConversationKind

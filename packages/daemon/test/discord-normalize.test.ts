@@ -178,9 +178,49 @@ describe('collapseDiscordChannels', () => {
     expect(collapseDiscordChannels([{ id: '900456' }], new Map(), new Map())).toEqual([{ id: '900456' }])
   })
 
-  it('lists the ids whose names the collapse needs — observed plus enclosing channels', () => {
-    const scopes = new Map([['T1', { parentId: 'C1' }]])
-    expect(collapseNameLookupIds([{ id: 'T1' }, { id: 'C2' }], scopes)).toEqual(['T1', 'C1', 'C2'])
+  it('labels each row with the server it sits in (one bot, a "#general" per guild)', () => {
+    const observed = [
+      { id: 'T1', name: 'general' },
+      { id: 'C2', name: 'general' }
+    ]
+    const scopes = new Map([
+      ['T1', { parentId: 'C1' }],
+      ['C1', { spaceId: 'G1' }],
+      ['C2', { spaceId: 'G2' }]
+    ])
+    const names = new Map([
+      ['C1', 'general'],
+      ['C2', 'general'],
+      ['G1', 'Acme HQ'],
+      ['G2', 'Side Project']
+    ])
+    expect(collapseDiscordChannels(observed, scopes, names)).toEqual([
+      { id: 'C1', name: 'general', space: 'Acme HQ' },
+      { id: 'C2', name: 'general', space: 'Side Project' }
+    ])
+  })
+
+  it('takes the guild off the thread when the enclosing channel has no scope of its own', () => {
+    const scopes = new Map([['T1', { parentId: 'C1', spaceId: 'G1' }]])
+    expect(collapseDiscordChannels([{ id: 'T1', name: 'general' }], scopes, new Map([['G1', 'Acme HQ']]))).toEqual([
+      { id: 'C1', name: 'general', space: 'Acme HQ' }
+    ])
+  })
+
+  it('omits the space until its name is resolved (never a raw guild snowflake)', () => {
+    const scopes = new Map([['C1', { spaceId: 'G1' }]])
+    expect(collapseDiscordChannels([{ id: 'C1', name: 'general' }], scopes, new Map())).toEqual([
+      { id: 'C1', name: 'general' }
+    ])
+  })
+
+  it('lists the ids whose names the collapse needs — observed, enclosing channels, guilds', () => {
+    const scopes = new Map([
+      ['T1', { parentId: 'C1' }],
+      ['C1', { spaceId: 'G1' }],
+      ['C2', { spaceId: 'G2' }]
+    ])
+    expect(collapseNameLookupIds([{ id: 'T1' }, { id: 'C2' }], scopes)).toEqual(['T1', 'C1', 'G1', 'C2', 'G2'])
   })
 })
 

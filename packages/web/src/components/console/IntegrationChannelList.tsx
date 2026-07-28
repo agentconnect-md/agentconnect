@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { agentLabel, type IntegrationChannelRow, type IntegrationRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
@@ -95,6 +95,42 @@ function TriggerToggle({
         {segs.map(([trigger, label, hint]) => seg(trigger, label, hint))}
       </div>
     </span>
+  )
+}
+
+/**
+ * Bucket channel rows by the space (Discord server) they sit in.
+ *
+ * A Discord bot is usually in several servers, each with its own "#general", so the
+ * channel name alone doesn't say which row an operator is configuring — the rows are
+ * banded under their server, alphabetically. Platforms with one implicit container per
+ * bot (Slack, Telegram, Feishu) report no space and stay one flat, unheaded list; so do
+ * the Discord rows whose server name hasn't resolved yet, which lead the list rather
+ * than hiding under a header that doesn't apply to them.
+ *
+ * Exported for its unit test.
+ */
+export function groupBySpace(rows: IntegrationChannelRow[]): [string, IntegrationChannelRow[]][] {
+  const spaces = new Map<string, IntegrationChannelRow[]>()
+  for (const c of rows) {
+    const key = c.space ?? ''
+    const group = spaces.get(key)
+    if (group) group.push(c)
+    else spaces.set(key, [c])
+  }
+  return [...spaces.entries()].sort(([a], [b]) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)))
+}
+
+/** The band that names a run of rows — a Discord server, or the DM section. */
+function groupHeader(label: string, padX: number) {
+  return (
+    <div
+      className="border-t border-(--border-subtle) bg-(--surface-sunken) font-sans text-[11px] font-semibold leading-normal text-(--text-tertiary) uppercase"
+      style={{ padding: `6px ${padX}px` }}
+      title={label}
+    >
+      <span className="block truncate">{label}</span>
+    </div>
   )
 }
 
@@ -326,6 +362,7 @@ export function IntegrationChannelList({
   }
   const channelRows = channels.filter((c) => c.kind !== 'im')
   const dmRows = channels.filter((c) => c.kind === 'im')
+  const grouped = groupBySpace(channelRows)
   const row = (c: IntegrationChannelRow) => {
     const def = c.kind !== 'im' && shareable ? defaultAgent(c) : undefined
     return (
@@ -387,15 +424,13 @@ export function IntegrationChannelList({
           </span>
         </div>
       )}
-      {channelRows.map(row)}
-      {dmRows.length > 0 && (
-        <div
-          className="border-t border-(--border-subtle) bg-(--surface-sunken) font-sans text-[11px] font-semibold leading-normal text-(--text-tertiary) uppercase"
-          style={{ padding: `6px ${padX}px` }}
-        >
-          Direct messages
-        </div>
-      )}
+      {grouped.map(([space, rows]) => (
+        <Fragment key={space || '(unscoped)'}>
+          {space && groupHeader(space, padX)}
+          {rows.map(row)}
+        </Fragment>
+      ))}
+      {dmRows.length > 0 && groupHeader('Direct messages', padX)}
       {dmRows.map(row)}
       <div
         className="flex items-center gap-2 border-t border-(--border-subtle) bg-(--surface-app) font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"

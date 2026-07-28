@@ -441,10 +441,12 @@ export class LocalStore {
       );
       -- Where a conversation id SITS: its enclosing channel (a Discord thread's parent
       -- channel — a session keys on the thread id, so the reachable channel it belongs
-      -- to is otherwise unrecoverable). Backs observed-channel collapsing: threads fold
-      -- onto their channel, whose snowflake is the uniqueness key of a reported row.
+      -- to is otherwise unrecoverable) and its enclosing space (the Discord guild, whose
+      -- name a reported channel row carries so a bot in several servers stays legible).
+      -- Backs observed-channel collapsing: threads fold onto their channel, whose
+      -- snowflake is the uniqueness key of a reported row.
       CREATE TABLE IF NOT EXISTS channel_scopes (
-        id TEXT PRIMARY KEY, parentId TEXT, updatedAt INTEGER
+        id TEXT PRIMARY KEY, parentId TEXT, spaceId TEXT, updatedAt INTEGER
       );
       CREATE TABLE IF NOT EXISTS permission_requests (
         id TEXT PRIMARY KEY,
@@ -682,6 +684,7 @@ export class LocalStore {
     this.migrateTranscriptRevision()
     this.migrateInboxHookContext()
     this.migrateRuntimeCatalogDefaultMode()
+    this.migrateChannelScopeSpace()
     // A daemon restart loses the in-memory ACP resolver. Retain the audit row but
     // never present it as actionable after recovery.
     this.db
@@ -689,6 +692,14 @@ export class LocalStore {
         "UPDATE permission_requests SET status = 'expired', resolvedAt = COALESCE(resolvedAt, ?) WHERE status = 'pending'"
       )
       .run(Date.now())
+  }
+
+  /** Add `channel_scopes.spaceId` (the Discord guild a conversation sits in) to a
+   *  pre-existing DB. Legacy rows have NULL — the next name lookup for that channel
+   *  fills it in, so a reported row is space-less only until the resolver's TTL. */
+  private migrateChannelScopeSpace(): void {
+    const cols = this.db.prepare('PRAGMA table_info(channel_scopes)').all() as { name: string }[]
+    if (!cols.some((c) => c.name === 'spaceId')) this.db.exec('ALTER TABLE channel_scopes ADD COLUMN spaceId TEXT')
   }
 
   /** Add the `transcript.recipient` column (the agent a row was delivered to) to a
@@ -2144,28 +2155,36 @@ export class LocalStore {
     return out
   }
 
-  /** Record where a conversation id sits — the channel enclosing it. Latest-wins; an
-   *  empty note writes nothing. */
-  setChannelScope(id: string, scope: { parentId?: string }, updatedAt: number): void {
-    if (scope.parentId === undefined) return
+  /** Record where a conversation id sits — the channel and/or space enclosing it.
+   *  Latest-wins per supplied dimension; an empty note writes nothing, and a note that
+   *  carries only one dimension leaves the other as it was (the message path knows the
+   *  parent channel immediately, the space arrives with the later name lookup). */
+  setChannelScope(id: string, scope: { parentId?: string; spaceId?: string }, updatedAt: number): void {
+    if (scope.parentId === undefined && scope.spaceId === undefined) return
     this.db
       .prepare(
-        `INSERT INTO channel_scopes (id, parentId, updatedAt) VALUES (?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET parentId = excluded.parentId, updatedAt = excluded.updatedAt`
+        `INSERT INTO channel_scopes (id, parentId, spaceId, updatedAt) VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           parentId = COALESCE(excluded.parentId, channel_scopes.parentId),
+           spaceId = COALESCE(excluded.spaceId, channel_scopes.spaceId),
+           updatedAt = excluded.updatedAt`
       )
-      .run(id, scope.parentId, updatedAt)
+      .run(id, scope.parentId ?? null, scope.spaceId ?? null, updatedAt)
   }
 
   /** Scopes for a set of conversation ids — only the ids that have one. One batched
    *  `IN (…)` query, not a round-trip per id (mirrors getDisplayNames). */
-  getChannelScopes(ids: string[]): Map<string, { parentId?: string }> {
-    const out = new Map<string, { parentId?: string }>()
+  getChannelScopes(ids: string[]): Map<string, { parentId?: string; spaceId?: string }> {
+    const out = new Map<string, { parentId?: string; spaceId?: string }>()
     const unique = [...new Set(ids)]
     if (unique.length === 0) return out
     const rows = this.db
-      .prepare(`SELECT id, parentId FROM channel_scopes WHERE id IN (${unique.map(() => '?').join(',')})`)
-      .all(...unique) as unknown as { id: string; parentId: string | null }[]
-    for (const r of rows) if (r.parentId) out.set(r.id, { parentId: r.parentId })
+      .prepare(`SELECT id, parentId, spaceId FROM channel_scopes WHERE id IN (${unique.map(() => '?').join(',')})`)
+      .all(...unique) as unknown as { id: string; parentId: string | null; spaceId: string | null }[]
+    for (const r of rows) {
+      if (!r.parentId && !r.spaceId) continue
+      out.set(r.id, { ...(r.parentId ? { parentId: r.parentId } : {}), ...(r.spaceId ? { spaceId: r.spaceId } : {}) })
+    }
     return out
   }
 

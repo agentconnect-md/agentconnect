@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { channelOwners, placePopover } from './IntegrationChannelList'
+import { channelOwners, groupBySpace, placePopover } from './IntegrationChannelList'
 import type { IntegrationChannelRow, IntegrationRow } from '@/lib/data'
 
 // A shared bot fans its membership snapshot out to one integration per member
@@ -83,5 +83,34 @@ describe('placePopover', () => {
     // A short viewport with the button near the top: neither side fits, and
     // below is the one that keeps the button visible.
     expect(placePopover(btn(300, 40), 1280, 200).style).toEqual({ left: 300, top: 74 })
+  })
+})
+
+// One Discord bot commonly spans several servers, each with a "#general" of its own.
+describe('groupBySpace', () => {
+  const chan = (channelId: string, space?: string): IntegrationChannelRow => ({
+    channelId,
+    name: 'general',
+    kind: 'channel',
+    trigger: 'mention',
+    ...(space ? { space } : {})
+  })
+
+  it('bands the rows under their server, alphabetically', () => {
+    expect(groupBySpace([chan('C2', 'Side Project'), chan('C1', 'Acme HQ')])).toEqual([
+      ['Acme HQ', [chan('C1', 'Acme HQ')]],
+      ['Side Project', [chan('C2', 'Side Project')]]
+    ])
+  })
+
+  it('keeps a space-less platform one flat, unheaded list', () => {
+    expect(groupBySpace([chan('C1'), chan('C2')])).toEqual([['', [chan('C1'), chan('C2')]]])
+  })
+
+  it('leads with rows whose server has not resolved yet rather than mislabelling them', () => {
+    expect(groupBySpace([chan('C1', 'Acme HQ'), chan('C2')])).toEqual([
+      ['', [chan('C2')]],
+      ['Acme HQ', [chan('C1', 'Acme HQ')]]
+    ])
   })
 })

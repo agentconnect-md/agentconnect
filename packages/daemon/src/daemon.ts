@@ -2932,9 +2932,14 @@ export class Daemon {
           const fromSessions: IntegrationChannel[] = observed.map((c) => {
             const previous = priorById.get(c.id)
             const name = c.name ?? names.get(c.id)
+            // The enclosing Discord server. Keep the last known label when this pass
+            // can't resolve it (the guild name lands with the channel's name lookup),
+            // so the console never flickers back to a bare "#general".
+            const space = c.space ?? previous?.space
             return {
               id: c.id,
               ...(name ? { name } : {}),
+              ...(space ? { space } : {}),
               ...(previous?.isPrivate !== undefined ? { isPrivate: previous.isPrivate } : {}),
               ...(previous?.kind ? { kind: previous.kind } : {})
             }
@@ -2943,7 +2948,11 @@ export class Daemon {
             .filter((c) => !observedIds.has(c.id))
             .map((c) => {
               const name = names.get(c.id)
-              return name && name !== c.name ? { ...c, name } : c
+              // A retained row has no session behind it (a gated Off channel), so its
+              // space is looked up directly rather than coming out of the collapse.
+              const space = (platform === 'discord' ? this.spaceNameFor(c.id) : undefined) ?? c.space
+              const next = { ...c, ...(name ? { name } : {}), ...(space ? { space } : {}) }
+              return next.name === c.name && next.space === c.space ? c : next
             })
           const channels = [...fromSessions, ...retained]
           this.channelSnapshots.set(integ.id, { channels, authoritative: false })
@@ -2990,19 +2999,32 @@ export class Daemon {
     }
   }
 
+  /** Cached name of the space (Discord guild) a channel sits in — the label that keeps
+   *  one bot's several "#general" rows apart. Undefined until the channel's name lookup
+   *  has recorded its guild. */
+  private spaceNameFor(channelId: string): string | undefined {
+    const spaceId = this.store.getChannelScopes([channelId]).get(channelId)?.spaceId
+    return spaceId ? this.store.getDisplayNames([spaceId]).get(spaceId) : undefined
+  }
+
   /**
    * Fold the observed conversations of one platform onto the channel set the console
    * should offer. Discord sessions key on a THREAD channel (the daemon opens one off
    * every top-level mention), so the raw observed set repeats the same channel once per
-   * thread — collapse each row onto its enclosing channel and dedupe on
-   * (space, channel name). Telegram chats have neither notion; they pass through.
+   * thread — collapse each row onto its enclosing channel and dedupe on the channel
+   * snowflake, labelling each row with the guild it sits in (a bot in several servers
+   * reaches a "#general" in each). Telegram chats have neither notion; they pass through.
    */
   private collapseObserved(
     observed: { id: string; name?: string }[],
     platform: 'telegram' | 'discord'
-  ): { id: string; name?: string }[] {
+  ): { id: string; name?: string; space?: string }[] {
     if (platform !== 'discord') return observed
+    // Two-step: the observed (thread) ids first, then the channels they fold onto —
+    // whose OWN scope carries the guild, which a thread row may never have recorded.
     const scopes = this.store.getChannelScopes(observed.map((c) => c.id))
+    const parents = [...scopes.values()].map((s) => s.parentId).filter((id): id is string => !!id)
+    for (const [id, scope] of this.store.getChannelScopes(parents)) scopes.set(id, scope)
     const names = this.store.getDisplayNames(collapseNameLookupIds(observed, scopes))
     return collapseDiscordChannels(observed, scopes, names)
   }
@@ -11482,12 +11504,16 @@ export class Daemon {
     const current = existing.find((c) => c.id === channel)
     const kind = isDm ? ('im' as const) : ('channel' as const)
     const known = this.store.getDisplayNames([channel]).get(channel)
-    if (current?.kind === kind && (!known || current.name === known)) return
+    // Which Discord server the channel belongs to — see spaceNameFor. DM rows have none.
+    const space = !isDm && msg.platform === 'discord' ? this.spaceNameFor(channel) : undefined
+    if (current?.kind === kind && (!known || current.name === known) && (!space || current.space === space)) return
     // A previously-observed DM (Telegram/Discord session snapshots are kind-less)
     // is upgraded to 'im' rather than skipped after an org→restricted flip.
     const next = current
-      ? existing.map((c) => (c.id === channel ? { ...c, ...(known ? { name: known } : {}), kind } : c))
-      : [...existing, { id: channel, ...(known ? { name: known } : {}), kind }]
+      ? existing.map((c) =>
+          c.id === channel ? { ...c, ...(known ? { name: known } : {}), ...(space ? { space } : {}), kind } : c
+        )
+      : [...existing, { id: channel, ...(known ? { name: known } : {}), ...(space ? { space } : {}), kind }]
     this.channelSnapshots.set(integrationId, {
       channels: next,
       authoritative: cached?.authoritative ?? false
