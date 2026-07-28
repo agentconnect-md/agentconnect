@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import { transcriptChannelKey, type TranscriptEntry } from '../src/store/local-store.js'
+import { stableTurnId } from '../src/messages/normalized.js'
 
 const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
 const TRANSCRIPT_CHANNEL = transcriptChannelKey('C1', TRANSPORT_SCOPE)
@@ -171,7 +172,7 @@ describe('Daemon transcript records the agent reply', () => {
     expect(recordTurn).toHaveBeenCalledWith(
       { agentId: 'bot-a', sessionId: 'acp-1' },
       {
-        turnId: 'bot-a:slack:C1:100',
+        turnId: stableTurnId('bot-a', dm('100', 'question?')),
         sessionId: 'acp-1',
         input: 'question?',
         output: 'here is my answer'

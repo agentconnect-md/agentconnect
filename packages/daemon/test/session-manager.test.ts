@@ -124,12 +124,13 @@ describe('SessionManager', () => {
     const keyB = sessionKey('slack', 'C1', '100.1', 'bot-a', scopeB)
 
     const firstA = await sm.handle('bot-a', msg({ ts: '100.1', text: 'A1', transportScope: scopeA }))
-    const firstB = await sm.handle('bot-a', msg({ ts: '100.2', text: 'B1', transportScope: scopeB }))
+    const firstB = await sm.handle('bot-a', msg({ ts: '100.1', text: 'B1', transportScope: scopeB }))
     store.setModelOverride(keyA, 'model-a')
     store.setSessionMuted(keyA, true)
     const secondA = await sm.handle('bot-a', msg({ ts: '100.3', text: 'A2', transportScope: scopeA }))
 
     expect([firstA.sessionId, firstB.sessionId, secondA.sessionId]).toEqual(['acp-a', 'acp-b', 'acp-a'])
+    expect(firstA.turnId).not.toBe(firstB.turnId)
     expect(host.newSession).toHaveBeenCalledTimes(2)
     expect(store.getSession(keyA)?.acpSessionId).toBe('acp-a')
     expect(store.getSession(keyB)?.acpSessionId).toBe('acp-b')

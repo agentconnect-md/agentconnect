@@ -9,7 +9,7 @@ import { recalledMemoryBlock, recallQueryFromBlocks, sanitizeRecallRecords } fro
 import type { AcpHost } from '../acp/acp-host.js'
 import type { Agent } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
-import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
+import { stableTurnId, type Attachment, type NormalizedMessage } from '../messages/normalized.js'
 import { buildAttachmentBlocks, attachmentMention, transcriptImageAttachments } from './attachment-block.js'
 import { EXPLICIT_MENTION_REMINDER, NO_RESPONSE_RULE, NO_RESPONSE_REMINDER } from './no-response.js'
 
@@ -755,10 +755,11 @@ export class SessionManager {
     // prompt exists. Its result is appended as a trailing, explicitly untrusted
     // reference block — never as the first user block/title seed (#398).
     const captureInput = recallQueryFromBlocks(blocks)
-    // Platform message ids are stable across redelivery and therefore make a
-    // durable operation fence. Webchat deliberately reuses one msgId for the
-    // whole conversation, so use its per-turn trace id instead.
-    const turnId = `${agentId}:${msg.platform === 'webchat' ? msg.traceId : msg.msgId}`
+    // Platform message ids are stable across redelivery within one physical bot
+    // and therefore make a durable operation fence once bot-scoped. Webchat
+    // deliberately reuses one msgId for the whole conversation, so use its
+    // per-turn trace id instead.
+    const turnId = stableTurnId(agentId, msg)
     const recallScope = { agentId, sessionId: rec.acpSessionId! }
     const recallPolicy = memoryEnabled ? this.deps.memory.recallPolicy(recallScope) : undefined
     if (captureInput && recallPolicy?.mode === 'auto') {

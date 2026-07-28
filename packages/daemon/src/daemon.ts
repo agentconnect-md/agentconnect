@@ -205,7 +205,7 @@ import type {
   RequestPermissionResponse
 } from '@agentclientprotocol/sdk'
 import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
-import type { NormalizedMessage } from './messages/normalized.js'
+import { stableMessageId, stableTurnId, type NormalizedMessage } from './messages/normalized.js'
 import type {
   RegisterReq,
   RegisterOk,
@@ -1499,7 +1499,7 @@ export class Daemon {
   }
 
   private evaluationTurnIdFor(agentId: string, msg: NormalizedMessage): string {
-    return `${agentId}:${msg.platform === 'webchat' ? msg.traceId : msg.msgId}`
+    return stableTurnId(agentId, msg)
   }
 
   /** Drive a real daemon turn through the same SessionManager, ACP host, memory,
@@ -7060,15 +7060,16 @@ export class Daemon {
    * nothing. WEBCHAT turns are skipped (§6.9 #367): their `sink` is a live in-memory transport
    * that can't be restored across a restart and a dead browser socket can't be resumed, so a
    * durable row would be un-replayable. Sets `entry.inboxId` so every terminal path can delete
-   * the row. The row id is the message's stable deliveryId/msgId (§6.3) — idempotent re-append.
+   * the row. Its id is the stable deliveryId or bot-scoped platform message id (§6.3), making
+   * same-bot re-appends idempotent without colliding across physical bots.
    */
   private persistInbox(
     entry: QueueEntry,
     key: string,
-    options: { required?: boolean; adoptExisting?: boolean } = {}
+    options: { required?: boolean; adoptExisting?: boolean; existingId?: string } = {}
   ): 'inserted' | 'adopted' | 'existing' | 'skipped' | 'failed' {
     if (entry.webchat) return 'skipped' // non-persistable live sink — see §6.9 #367
-    const id = entry.callMeta?.deliveryId ?? entry.msg.msgId
+    const id = options.existingId ?? entry.callMeta?.deliveryId ?? stableMessageId(entry.msg)
     try {
       const inserted = this.store.appendInbox({
         id,
@@ -7597,7 +7598,8 @@ export class Daemon {
         try {
           persistence = this.persistInbox(entry, key, {
             required: opts?.requireDurable,
-            adoptExisting: opts?.adoptExistingInbox
+            adoptExisting: opts?.adoptExistingInbox,
+            existingId: opts?.inboxReplayId
           })
         } catch (err) {
           settleAdmission({ accepted: false, reason: 'durability' })
@@ -7630,7 +7632,8 @@ export class Daemon {
       try {
         persistence = this.persistInbox(entry, key, {
           required: opts?.requireDurable,
-          adoptExisting: opts?.adoptExistingInbox
+          adoptExisting: opts?.adoptExistingInbox,
+          existingId: opts?.inboxReplayId
         })
       } catch (err) {
         settleAdmission({ accepted: false, reason: 'durability' })
@@ -8470,7 +8473,7 @@ export class Daemon {
       this.queueMemoryPostTurn(
         agentId,
         sessionId,
-        p.webchat?.turnId ?? handled.turnId ?? `${agentId}:${msg.msgId}`,
+        p.webchat?.turnId ?? handled.turnId ?? stableTurnId(agentId, msg),
         handled.captureInput ?? msg.text,
         p.replyText,
         agent.memory,

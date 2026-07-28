@@ -2200,8 +2200,9 @@ export class LocalStore {
   }
 
   /** §6.9 #353 durable inbox: persist an admitted message BEFORE its admission ACK. Keyed
-   *  by the stable id (deliveryId/msgId). A re-append preserves the original payload/FIFO
-   *  position and may only advance the durable loop-accounting marker from 0 to 1. */
+   *  by the stable delivery id (agent deliveryId or bot-scoped platform message id).
+   *  A re-append preserves the original payload/FIFO position and may only advance
+   *  the durable loop-accounting marker from 0 to 1. */
   appendInbox(row: InboxRow): boolean {
     const inserted = this.db
       .prepare(

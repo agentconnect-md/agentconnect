@@ -91,3 +91,17 @@ export interface NormalizedMessage {
   // synthetic key, not a real platform channel.
   headless?: boolean
 }
+
+type MessageIdentityFields = Pick<NormalizedMessage, 'msgId' | 'platform' | 'traceId' | 'transportScope'>
+
+/** Stable daemon-local delivery identity. Platform ids are only unique within
+ * one physical bot; webchat instead needs its per-turn trace id. */
+export function stableMessageId(msg: MessageIdentityFields): string {
+  const sourceId = msg.platform === 'webchat' ? msg.traceId : msg.msgId
+  return msg.transportScope ? `${msg.transportScope}\u001f${sourceId}` : sourceId
+}
+
+/** Stable operation fence shared by evaluation and memory lifecycle events. */
+export function stableTurnId(agentId: string, msg: MessageIdentityFields): string {
+  return `${agentId}:${stableMessageId(msg)}`
+}
