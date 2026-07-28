@@ -1,13 +1,12 @@
 /**
- * `integration/channels` handler (per-channel trigger config).
+ * `integration/channels` handler (per-conversation trigger config).
  *
- * A fire-and-forget EVT (no reply). The daemon reports the FULL set of channels
- * an integration's bot is currently a member of (on socket start + every invite/
- * remove); the CP converges `integration_channel` to that snapshot (latest-wins,
- * idempotent), PRESERVING each stored channel's operator-chosen trigger. Channel
- * ids/names are control metadata — never message content (§1/§12). Every accepted
- * replacement also hot-pushes the derived collaboration routes so joins and
- * removals converge without waiting for reconnect.
+ * A fire-and-forget EVT (no reply). Slack reports the full membership set; a
+ * platform that cannot enumerate its chats reports `authoritative:false`, which
+ * upserts observed conversations without deleting older rows. Both forms
+ * PRESERVE each stored conversation's operator-chosen trigger. Channel ids/names
+ * are control metadata — never message content (§1/§12). Every accepted report
+ * also hot-pushes the derived collaboration routes without waiting for reconnect.
  *
  * Scope check: the integration's owning agent must be placed on the REPORTING
  * daemon (the same daemon-scoped join as `register/ok.integrations[]`) — a daemon
@@ -43,15 +42,20 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     await deps.integrationChannel.replaceSnapshot(
       integration.id,
       p.channels,
-      defaultTrigger ? { defaultTrigger } : undefined
+      defaultTrigger || p.authoritative === false
+        ? {
+            ...(defaultTrigger ? { defaultTrigger } : {}),
+            ...(p.authoritative === false ? { authoritative: false } : {})
+          }
+        : undefined
     )
   } finally {
     release()
   }
 
-  // Membership is part of the effective agent-call edge. Refresh both relay and
-  // daemon full-replace snapshots immediately after accepting a join/removal so
-  // the data plane does not wait for an unrelated policy edit or reconnect.
+  // Conversation availability is part of the effective agent-call edge. Refresh
+  // relay and daemon collaboration snapshots immediately after accepting a report
+  // so the data plane does not wait for an unrelated policy edit or reconnect.
   // Register baselines remain the durable backstop if this best-effort push fails.
   try {
     await deps.collabRoutes.broadcast(integration.orgId)

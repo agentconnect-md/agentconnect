@@ -1406,11 +1406,11 @@ enum ConversationKind {
   im
 }
 
-// One conversation the integration's bot participates in (daemon-reported snapshot
-// via `integration/channels`, latest-wins for kind=channel; DM rows are reported on
-// first inbound DM and never dropped by the membership snapshot) + the operator's
-// per-conversation trigger choice. Channel id/name are control metadata — never
-// message content (§1/§12).
+// One conversation the integration's bot participates in. `integration/channels`
+// carries either an authoritative membership snapshot or a partial observed-
+// conversation report; DM rows and rows absent from partial reports are retained.
+// The operator's per-conversation trigger survives both forms. Channel id/name are
+// control metadata — never message content (§1/§12).
 model IntegrationChannel {
   integrationId String           @db.Uuid
   channelId     String // platform conversation id (Slack "C…" / DM "D…")

@@ -1,10 +1,10 @@
 /**
  * Per-channel trigger config, end to end on the CP side:
  *
- *  - `integration/channels` (D→C EVT) converges `integration_channel` to the
- *    daemon's membership snapshot — new channels default to '@-mention', names
- *    refresh, channels the bot left are dropped, and the operator's trigger
- *    choice SURVIVES re-reports (latest-wins on membership, never on trigger).
+ *  - `integration/channels` (D→C EVT) converges `integration_channel` to either
+ *    an authoritative membership snapshot or a partial observed-conversation
+ *    report. New channels default to '@-mention', authoritative omissions drop
+ *    channels, and the operator's trigger choice SURVIVES every re-report.
  *  - The handler is daemon-scoped: a report from a daemon that does not own the
  *    integration's agent is dropped.
  *  - `PATCH /integrations/:id/channels/:channelId {trigger}` persists the choice,
@@ -74,14 +74,15 @@ async function report(
   integrationId: string,
   channels: IntegrationChannel[],
   agentMutations = new AgentMutationGate(),
-  collabRoutes = { broadcast: async () => undefined } as unknown as CollabRoutesService
+  collabRoutes = { broadcast: async () => undefined } as unknown as CollabRoutesService,
+  authoritative?: boolean
 ): Promise<void> {
   const frame = {
     v: 1,
     id: randomUUID(),
     ts: new Date().toISOString(),
     type: 'integration/channels',
-    payload: { integrationId, channels }
+    payload: { integrationId, channels, ...(authoritative === undefined ? {} : { authoritative }) }
   } as AnyFrame
   const deps = {
     integration: new PgIntegrationRepo(prisma),
@@ -246,6 +247,22 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     await report(DAEMON, id, [{ id: 'C1', name: 'ship' }])
     rows = await channels.listForIntegration(IntegrationId(id))
     expect(rows.map((c) => c.channelId)).toEqual(['C1']) // C2 dropped
+  })
+
+  it('a non-authoritative observed-conversation report upserts without deleting missing channels', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const channels = new PgIntegrationChannelRepo(prisma)
+
+    await report(DAEMON, id, [{ id: '-1001', name: 'First group' }], undefined, undefined, false)
+    await report(DAEMON, id, [{ id: '-1002', name: 'Second group' }], undefined, undefined, false)
+    await report(DAEMON, id, [{ id: '-1001' }], undefined, undefined, false)
+
+    const rows = await channels.listForIntegration(IntegrationId(id))
+    expect(rows.map((c) => c.channelId).sort()).toEqual(['-1001', '-1002'])
+    expect(rows.find((c) => c.channelId === '-1001')?.name).toBe('First group')
   })
 
   it('hot-pushes collaboration routes after both channel joins and removals', async () => {

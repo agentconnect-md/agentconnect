@@ -1326,9 +1326,9 @@ export class Daemon {
   private cpClient?: CpClient
   private relays?: RelayManager
   private cpCrons?: CpCronRegistry
-  // Latest channel-membership snapshot per integrationId (from users.conversations),
-  // re-emitted to the CP on each (re)connect (emit is a no-op while disconnected).
-  private channelSnapshots = new Map<string, IntegrationChannel[]>()
+  // Latest channel report per integrationId plus whether it came from a complete
+  // membership listing. Replayed with the same authority on each CP (re)connect.
+  private channelSnapshots = new Map<string, { channels: IntegrationChannel[]; authoritative: boolean }>()
   private cpAgents?: CpAgentRegistry
   private cpIntegrations?: CpIntegrationRegistry
   private botUserIds: Record<string, string> = {}
@@ -2844,48 +2844,56 @@ export class Daemon {
   }
 
   /**
-   * Approach-A channel discovery for Telegram and Discord: the bot cannot cheaply
-   * enumerate the chats/channels it actually participates in (Telegram's API can't
-   * list them at all, and Discord's ready-cache enumeration would surface every text
-   * channel in a guild rather than the ones the bot is engaged in), so the observed
-   * session history IS the reachable set. Build a membership-style snapshot from
-   * stored sessions + cached display names and report it to the CP over the same
-   * `integration/channels` path Slack uses (refreshChannels), so the console lists
-   * these chats under the integration. Idempotent + latest-wins: safe to call on
-   * every reconcile, on a newly-created session, and whenever a channel name resolves
-   * (re-emitted from ChannelNameResolver's save sink — names fill in lazily and the
-   * console falls back to the raw chat id until then). The emit is a no-op while the
-   * CP is down; the cached snapshot re-asserts on the next reconnect.
+   * Observed-conversation discovery for Telegram and Discord. These platforms do
+   * not give us an authoritative set of chats the bot is engaged in, so stored
+   * session history is merged with explicitly-addressed Off conversations already
+   * cached for the integration. Reports carry `authoritative:false`: the CP upserts
+   * what we know but never treats an absent row as a leave.
+   *
+   * Names fill in lazily through ChannelNameResolver. Re-merging the cached rows
+   * here is important for Off conversations: they have no session row, so without
+   * preserving and enriching the cached entry an async Telegram getChat result
+   * could never replace the console's raw numeric id.
    */
   private refreshObservedChannels(): void {
     for (const agent of this.agents.values()) {
       for (const platform of ['telegram', 'discord'] as const) {
-        const [integ, ...rest] = agent.integrations.filter((i) => i.platform === platform)
+        const integrations = agent.integrations.filter((i) => i.platform === platform)
+        if (integrations.length === 0) continue
         // observedChannels is agent+platform-scoped, not per-bot (the sessions table
         // carries no integrationId). With several bots of the same platform on one
-        // agent we can't tell which bot saw which chat, so fanning the same set out to
-        // every integration would attribute chats to the wrong bot. Only report when
-        // there's exactly one — the common case — and skip the ambiguous multi-bot agent.
-        if (!integ || rest.length > 0) continue
-        // The sessions table can't tell a DM chat from a group, so observed rows are
-        // kind-less. Preserve previously established `im` kinds (§14.3): re-mark
-        // overlapping ids and keep im-only entries, otherwise a refresh would
-        // downgrade a reported DM row back to 'channel' on the CP.
-        const priorIms = new Set(
-          (this.channelSnapshots.get(integ.id) ?? []).filter((x) => x.kind === 'im').map((x) => x.id)
-        )
-        const observed: IntegrationChannel[] = this.store.observedChannels(agent.id, platform).map((c) => ({
-          id: c.id,
-          ...(c.name ? { name: c.name } : {}),
-          ...(priorIms.has(c.id) ? { kind: 'im' as const } : {})
-        }))
-        const observedIds = new Set(observed.map((x) => x.id))
-        const keptIms = (this.channelSnapshots.get(integ.id) ?? []).filter(
-          (x) => x.kind === 'im' && !observedIds.has(x.id)
-        )
-        const channels = [...observed, ...keptIms]
-        this.channelSnapshots.set(integ.id, channels)
-        this.cpClient?.emitIntegrationChannels({ integrationId: integ.id, channels })
+        // agent we can't tell which bot saw which session. Only merge session history
+        // in the common single-integration case; integration-attributed Off rows can
+        // still be refreshed safely when several bots share the agent.
+        const observed = integrations.length === 1 ? this.store.observedChannels(agent.id, platform) : []
+        for (const integ of integrations) {
+          const prior = this.channelSnapshots.get(integ.id)?.channels ?? []
+          if (observed.length === 0 && prior.length === 0) continue
+          const priorById = new Map(prior.map((c) => [c.id, c]))
+          const observedIds = new Set(observed.map((c) => c.id))
+          const names = this.store.getDisplayNames([...new Set([...observedIds, ...prior.map((c) => c.id)])])
+          // The sessions table cannot distinguish DMs from groups. Preserve the kind
+          // established by explicit gated-conversation discovery for overlapping ids.
+          const fromSessions: IntegrationChannel[] = observed.map((c) => {
+            const previous = priorById.get(c.id)
+            const name = c.name ?? names.get(c.id)
+            return {
+              id: c.id,
+              ...(name ? { name } : {}),
+              ...(previous?.isPrivate !== undefined ? { isPrivate: previous.isPrivate } : {}),
+              ...(previous?.kind ? { kind: previous.kind } : {})
+            }
+          })
+          const retained = prior
+            .filter((c) => !observedIds.has(c.id))
+            .map((c) => {
+              const name = names.get(c.id)
+              return name && name !== c.name ? { ...c, name } : c
+            })
+          const channels = [...fromSessions, ...retained]
+          this.channelSnapshots.set(integ.id, { channels, authoritative: false })
+          this.cpClient?.emitIntegrationChannels({ integrationId: integ.id, channels, authoritative: false })
+        }
       }
     }
   }
@@ -2914,9 +2922,9 @@ export class Daemon {
         // only, but a gated integration's snapshot also holds DM conversations — a
         // refresh must not wipe them (the CP protects them too; this keeps the
         // in-memory snapshot honest for the reconnect re-assert).
-        const ims = (this.channelSnapshots.get(integrationId) ?? []).filter((x) => x.kind === 'im')
+        const ims = (this.channelSnapshots.get(integrationId)?.channels ?? []).filter((x) => x.kind === 'im')
         const merged = [...channels, ...ims]
-        this.channelSnapshots.set(integrationId, merged)
+        this.channelSnapshots.set(integrationId, { channels: merged, authoritative: true })
         this.cpClient?.emitIntegrationChannels({ integrationId, channels: merged })
         this.maybeIntroduceOnJoin(integrationId, channels)
       }
@@ -3762,12 +3770,12 @@ export class Daemon {
     // continues it). No-op on other platforms.
     this.canonicalizeTelegramThread(msg)
 
-    // §14.3: gated-DM ROW discovery must precede command interception AND routing —
-    // an Off DM whose first inbound is a control command is refused by command
-    // authz but still needs its pending row, and on a consolidated connection
-    // EVERY Off gated integration needs its own row. Report-only: the notice stays
-    // conditional on the message actually resolving to no admitted target.
-    this.discoverGatedDms(msg, srcIntegrationIds ?? [])
+    // §14.3: gated-conversation discovery must precede command interception AND
+    // routing. An Off DM whose first inbound is a command still needs its row; an
+    // explicitly-mentioned Off channel likewise needs a pending row even though no
+    // session will be created. Report-only: the notice remains conditional on the
+    // message actually resolving to no admitted target.
+    this.discoverGatedConversations(msg, srcIntegrationIds ?? [])
 
     // In-conversation control commands (`!stop` / `!queue …`) act on the running
     // agent and never reach it as a prompt — intercept before routing/dispatch.
@@ -11084,26 +11092,25 @@ export class Daemon {
   /**
    * §14: an explicitly-addressed message (a mention of a gated integration's bot, or
    * a DM to it) that routed nowhere gets a ONE-TIME per-conversation notice — the
-   * bot must never look silently broken — and a gated DM conversation is reported to
+   * bot must never look silently broken — and the Off conversation is reported to
    * the CP so the console can offer enabling it. Bot senders are never noticed.
    */
-  /** §14.3 DM ROW discovery, report-only: fan the pending-row report across EVERY
-   *  gated src integration whose conversation is Off. Runs before command
-   *  interception and routing for each inbound DM. No notice and no early return —
-   *  on a consolidated connection an Off sibling must not post a misleading lock
-   *  while another integration goes on to handle the DM, and every Off gated
-   *  integration needs its own row. */
-  private discoverGatedDms(msg: NormalizedMessage, srcIntegrationIds: string[]): void {
+  /** §14.3 pending-conversation discovery, report-only: fan an Off DM across every
+   *  gated source integration, and report an Off channel when the message explicitly
+   *  mentions that integration's bot. This runs before commands/routing so discovery
+   *  is independent of which sibling integration ultimately handles the message. */
+  private discoverGatedConversations(msg: NormalizedMessage, srcIntegrationIds: string[]): void {
     if (msg.sender.isBot || msg.source !== 'user') return
     const isDm = msg.isDm || (msg.platform === 'slack' && msg.channel.startsWith('D'))
-    if (!isDm) return
     for (const integrationId of srcIntegrationIds) {
       const int = this.integrationConfigById(integrationId)
       if (!int || int.platform !== msg.platform) continue
       const routing = integrationRouting(int)
       if (!routing.gated) continue
       if (routing.bindRules.some((r) => r.channel === msg.channel)) continue // enabled
-      this.reportGatedDm(integrationId, msg)
+      const botUserId = this.botUserIds[integrationId] ?? routing.staticBotUserId ?? ''
+      if (!isDm && (botUserId === '' || !msg.mentionedBots.includes(botUserId))) continue
+      this.reportGatedConversation(integrationId, msg, isDm)
     }
   }
 
@@ -11122,7 +11129,7 @@ export class Daemon {
       const botUserId = this.botUserIds[integrationId] ?? routing.staticBotUserId ?? ''
       const addressed = isDm || (botUserId !== '' && msg.mentionedBots.includes(botUserId))
       if (!addressed) continue
-      if (isDm) this.reportGatedDm(integrationId, msg)
+      if (isDm) this.reportGatedConversation(integrationId, msg, true)
       const latch = `${integrationId}:${msg.channel}`
       if (this.gatedNoticesSent.has(latch)) return
       this.gatedNoticesSent.add(latch)
@@ -11143,24 +11150,31 @@ export class Daemon {
     }
   }
 
-  /** §14.3: surface a gated DM conversation as a `kind:'im'` row (latest-wins
-   *  snapshot merge) so the console lists it for enablement. Name resolution is
-   *  best-effort: the display-name store first, then a Slack profile lookup that
-   *  re-reports when it lands. */
-  private reportGatedDm(integrationId: string, msg: NormalizedMessage): void {
-    const existing = this.channelSnapshots.get(integrationId) ?? []
+  /** §14.3: surface an explicitly-addressed Off conversation as a pending row so
+   *  the console can enable it. This is an observed/incremental report, not a full
+   *  membership snapshot: Telegram cannot enumerate all chats, and the conversation
+   *  deliberately creates no session while Off.
+   *
+   *  Name resolution is best-effort. Telegram/Discord getChat results land through
+   *  refreshObservedChannels; Slack DMs retain the existing profile fallback below. */
+  private reportGatedConversation(integrationId: string, msg: NormalizedMessage, isDm: boolean): void {
+    const cached = this.channelSnapshots.get(integrationId)
+    const existing = cached?.channels ?? []
     const current = existing.find((c) => c.id === msg.channel)
-    if (current?.kind === 'im') return
+    const kind = isDm ? ('im' as const) : ('channel' as const)
     const known = this.store.getDisplayNames([msg.channel]).get(msg.channel)
-    // A previously-observed DM (telegram/discord observed-channel snapshots are
-    // kind-less) is UPGRADED to 'im' rather than skipped — e.g. after an
-    // org→restricted flip the chat already sits in the snapshot as 'channel'.
+    if (current?.kind === kind && (!known || current.name === known)) return
+    // A previously-observed DM (Telegram/Discord session snapshots are kind-less)
+    // is upgraded to 'im' rather than skipped after an org→restricted flip.
     const next = current
-      ? existing.map((c) => (c.id === msg.channel ? { ...c, kind: 'im' as const } : c))
-      : [...existing, { id: msg.channel, ...(known ? { name: known } : {}), kind: 'im' as const }]
-    this.channelSnapshots.set(integrationId, next)
-    this.cpClient?.emitIntegrationChannels({ integrationId, channels: next })
-    if (known || current?.name) return
+      ? existing.map((c) => (c.id === msg.channel ? { ...c, ...(known ? { name: known } : {}), kind } : c))
+      : [...existing, { id: msg.channel, ...(known ? { name: known } : {}), kind }]
+    this.channelSnapshots.set(integrationId, {
+      channels: next,
+      authoritative: cached?.authoritative ?? false
+    })
+    this.cpClient?.emitIntegrationChannels({ integrationId, channels: next, authoritative: false })
+    if (!isDm || known || current?.name) return
     const conn = this.connForIntegration(integrationId)
     if (!(conn instanceof SlackConnection)) return
     void conn
@@ -11168,12 +11182,28 @@ export class Daemon {
       .then((prof) => {
         const name = prof.realName || prof.name
         if (!name) return
-        const snap = this.channelSnapshots.get(integrationId) ?? []
+        const cached = this.channelSnapshots.get(integrationId)
+        const snap = cached?.channels ?? []
         const updated = snap.map((c) => (c.id === msg.channel && !c.name ? { ...c, name: `@${name}` } : c))
-        this.channelSnapshots.set(integrationId, updated)
-        this.cpClient?.emitIntegrationChannels({ integrationId, channels: updated })
+        this.channelSnapshots.set(integrationId, {
+          channels: updated,
+          authoritative: cached?.authoritative ?? false
+        })
+        this.cpClient?.emitIntegrationChannels({ integrationId, channels: updated, authoritative: false })
       })
       .catch(() => {})
+  }
+
+  /** Re-assert cached reports after a CP reconnect without upgrading a partial
+   *  observation (including Slack gated-conversation discovery) to a full snapshot. */
+  private replayChannelSnapshots(): void {
+    for (const [integrationId, snapshot] of this.channelSnapshots) {
+      this.cpClient?.emitIntegrationChannels({
+        integrationId,
+        channels: snapshot.channels,
+        ...(snapshot.authoritative ? {} : { authoritative: false })
+      })
+    }
   }
 
   /** The live platform connection serving `integrationId`, any platform. */
@@ -12838,8 +12868,7 @@ export class Daemon {
         this.cpClient?.emitMemoryConnectionFacts(this.memoryConnections?.facts() ?? [])
         this.hookReportConnectionId = randomUUID()
         this.replayHookTerminalReports()
-        for (const [integrationId, channels] of this.channelSnapshots)
-          this.cpClient?.emitIntegrationChannels({ integrationId, channels })
+        this.replayChannelSnapshots()
         // ...and each CP cron's stored last-run stamp — fires while the CP was
         // unreachable would otherwise never land (latest-wins upsert, so
         // re-asserting an already-known stamp is a no-op).

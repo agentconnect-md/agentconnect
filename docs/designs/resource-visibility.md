@@ -853,12 +853,14 @@ identities.
 
 **Conversation reporting.** The `integration/channels` D→C EVT and
 `IntegrationChannel` protocol shape gain `kind: 'channel' | 'im'` (absent =
-`'channel'` for wire compatibility). Channel rows keep coming from membership
-events as today; the membership snapshot must never delete `im` rows (they are
-reported incrementally). DM rows are reported on first inbound DM to a gated
-integration, carrying the counterpart's display name; an optional boot-time
-sweep (`conversations.list types=im`) can backfill DMs opened while the daemon
-was down.
+`'channel'` for wire compatibility). Slack channel rows keep coming from
+authoritative membership events. Platforms that cannot enumerate every
+conversation send `authoritative: false`; these reports upsert observed rows
+without deleting absent ones. An explicitly addressed Off group is reported
+before routing, because it deliberately creates no session. DM rows are likewise
+reported on first inbound DM to a gated integration, carrying the counterpart's
+display name. An optional boot-time sweep (`conversations.list types=im`) can
+backfill DMs opened while the daemon was down.
 
 _Shared bots:_ the relay's membership snapshot drops IMs, so DM rows take the
 incremental path there too — an unrouted DM to a bot backing ≥1 gated agent

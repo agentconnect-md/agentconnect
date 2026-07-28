@@ -571,11 +571,13 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     const r = decodeEnvelope(
       envelope('integration/channels', {
         integrationId: INTEGRATION_ID,
-        channels: [{ id: 'D111', name: '@alice', kind: 'im' }, { id: 'C123' }]
+        channels: [{ id: 'D111', name: '@alice', kind: 'im' }, { id: 'C123' }],
+        authoritative: false
       })
     )
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('integration/channels')(r.frame)) throw new Error('expected integration/channels')
+    expect(r.frame.payload.authoritative).toBe(false)
     expect(r.frame.payload.channels[0]).toEqual({ id: 'D111', name: '@alice', kind: 'im' })
     expect(r.frame.payload.channels[1]).toEqual({ id: 'C123' }) // absent kind = channel
   })

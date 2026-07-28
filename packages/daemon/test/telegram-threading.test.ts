@@ -65,6 +65,29 @@ function makeTelegramRoutable(daemon: Daemon) {
   return conn
 }
 
+/** Attach a fail-closed Telegram integration with no enabled conversations. */
+function makeTelegramGated(daemon: Daemon) {
+  const a = (daemon as any).agents.get('bot-a')
+  a.integrations = [
+    {
+      id: 'i-tg',
+      platform: 'telegram',
+      telegram: {
+        botToken: '123:abc',
+        allowedUserIds: [],
+        bindRules: [],
+        gated: true
+      }
+    }
+  ]
+  const conn = {
+    postChrome: vi.fn(async () => 'notice-1')
+  }
+  ;(daemon as any).tgConnByIntegration.set('i-tg', conn)
+  ;(daemon as any).botUserIds['i-tg'] = 'mybot'
+  return conn
+}
+
 /** A normalized Telegram message as it arrives from the connection (thread unset — the
  *  daemon derives it). `id` is the Telegram message id; chat is the group -100 unless a
  *  DM is requested. */
@@ -85,6 +108,28 @@ function tg(id: number, over: Partial<NormalizedMessage> = {}): NormalizedMessag
 }
 
 const owner = (daemon: Daemon) => (c: string, t: string) => (daemon as any).sessions.threadOwner(c, t)
+
+describe('gated Telegram conversation discovery', () => {
+  it('reports an explicitly mentioned Off group before routing drops the message', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    await daemon.start()
+    const conn = makeTelegramGated(daemon)
+    const emitIntegrationChannels = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels, stop: vi.fn().mockResolvedValue(undefined) }
+
+    ;(daemon as any).onInbound(tg(90, { mentionedBots: ['mybot'] }), ['i-tg'])
+
+    const channels = [{ id: '-100', kind: 'channel' }]
+    expect(emitIntegrationChannels).toHaveBeenCalledWith({
+      integrationId: 'i-tg',
+      channels,
+      authoritative: false
+    })
+    expect((daemon as any).channelSnapshots.get('i-tg')).toEqual({ channels, authoritative: false })
+    expect(conn.postChrome).toHaveBeenCalledOnce()
+    await daemon.stop()
+  })
+})
 
 describe('canonicalizeTelegramThread', () => {
   it('roots a fresh group @mention at its own message (tg:<id>)', async () => {
