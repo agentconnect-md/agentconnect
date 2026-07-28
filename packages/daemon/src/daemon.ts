@@ -551,6 +551,25 @@ function pendingTurnKey(agentId: string, acpSessionId: string): string {
  *  would push the outgoing hopCount past this, so an A↔B wake loop can't run away. */
 const MAX_AGENT_CALL_HOPS = 8
 
+/** Poll interval for the deferred background-task wake (background-task-aware-reclaim.md
+ *  §5.1). Claude re-enters a `running` cycle of its own to drain a settled task; the wake
+ *  waits that cycle out rather than firing into it, because a turn injected mid-cycle would
+ *  race the runtime's own work. It does NOT stand down for it — that cycle carries no
+ *  `Pending`, so everything it emits is dropped at `onAcpUpdate` and the user sees nothing. */
+const BG_TASK_WAKE_GRACE_MS = 4_000
+
+/** How many times the wake may re-arm while the runtime's self-drain cycle is still
+ *  `running` (≈1 minute at {@link BG_TASK_WAKE_GRACE_MS}). A cycle that never returns to
+ *  `idle` is either a genuinely long piece of work — which will produce its own turn-end —
+ *  or a wedged runtime; either way, stop re-arming instead of polling forever. */
+const MAX_BG_TASK_WAKE_REARMS = 15
+
+/** Per-session budget for background-task wakes. Unlike an agent call these carry no
+ *  hopCount to bound, and a woken turn may spawn further background tasks, so the
+ *  budget is the only backstop against a self-feeding wake loop. Counted over the
+ *  lease's life (i.e. until the host is reclaimed), not per turn. */
+const MAX_BG_TASK_WAKES_PER_SESSION = 20
+
 /**
  * DAEMON-PRIVATE trusted metadata for an agent→agent (`messageAgent`) turn. Authoritative
  * (never derived from model output or platform text): the caller identity the target can
@@ -1214,8 +1233,19 @@ export class Daemon {
   // See docs/designs/background-task-aware-reclaim.md.
   private sdkLease = new Map<
     string,
-    { agentId: string; tasks: Map<string, { description?: string; isSubagent: boolean }>; sdkState: 'idle' | 'running' }
+    {
+      agentId: string
+      tasks: Map<string, { description?: string; isSubagent: boolean }>
+      sdkState: 'idle' | 'running'
+      /** Background-task wakes already spent on this session — see
+       *  {@link MAX_BG_TASK_WAKES_PER_SESSION}. */
+      bgWakes: number
+    }
   >()
+  /** Armed background-task wake checks (one per settled non-subagent task), tracked so
+   *  daemon drain cannot leave a timer behind. The callback re-validates everything it
+   *  needs, so a lease dropped by stopHost simply makes the wake a no-op. */
+  private bgWakeTimers = new Set<TimerHandle>()
   private connections: SlackConnection[] = []
   // Telegram long-poll connections (one per bot token). Kept parallel to `connections`
   // (Slack) — the Slack socket layer (appToken keying, retry, refreshChannels) is
@@ -11985,18 +12015,33 @@ export class Daemon {
       tasks?: unknown
     } | null
     if (!m || m.type !== 'system' || typeof m.subtype !== 'string') return
+    // The lease's decisions (reclaim deferral, §5.1 wake) are only as good as this feed, and
+    // the feed is the one thing we cannot reproduce offline — log the accepted edges so a
+    // stranded session can be diagnosed from the daemon log alone.
+    this.log.debug(
+      `bg-task lifecycle: ${m.subtype} ${JSON.stringify({
+        task: m.task_id,
+        state: m.state,
+        status: m.patch?.status,
+        live: Array.isArray(m.tasks) ? m.tasks.length : undefined
+      })} on ${acpSessionId}`
+    )
     const lease = this.sdkLease.get(acpSessionId) ?? {
       agentId,
       tasks: new Map<string, { description?: string; isSubagent: boolean }>(),
-      sdkState: 'idle' as const
+      sdkState: 'idle' as const,
+      bgWakes: 0
     }
     // Release a task from the lease and, if it's a real background task (not an
-    // internal subagent), announce its completion when the agent is verbose enough.
+    // internal subagent), announce its completion when the agent is verbose enough
+    // and hand the completion back to the model so the work is not stranded.
     const settle = (taskId: string, status?: string) => {
       const rec = lease.tasks.get(taskId)
       if (!rec) return // already settled — dedup the near-simultaneous edges
       lease.tasks.delete(taskId)
-      if (!rec.isSubagent) this.announceBackgroundTaskDone(agentId, acpSessionId, rec.description, status)
+      if (rec.isSubagent) return
+      this.announceBackgroundTaskDone(agentId, acpSessionId, rec.description, status)
+      this.scheduleBackgroundTaskWake(agentId, acpSessionId, taskId, rec.description, status)
     }
     switch (m.subtype) {
       case 'session_state_changed':
@@ -12064,6 +12109,134 @@ export class Daemon {
     const text = `🔔 Background task finished: ${what}${status ? ` (${status})` : ''}`
     void Promise.resolve(conn.postMessage(rec.channel, text, rec.thread || undefined)).catch((err) =>
       this.log.warn(`bg-task announce failed for "${agentId}": ${(err as Error).message}`)
+    )
+  }
+
+  /** Arm the deferred wake for a settled background task. Deliberately NOT immediate: the
+   *  runtime re-enters a `running` cycle of its own to drain the completion, and a turn
+   *  injected into that window would race it. `attempt` counts the re-arms spent waiting
+   *  for that cycle to end (see {@link MAX_BG_TASK_WAKE_REARMS}). */
+  private scheduleBackgroundTaskWake(
+    agentId: string,
+    acpSessionId: string,
+    taskId: string,
+    description?: string,
+    status?: string,
+    attempt = 0
+  ): void {
+    if (this.draining) return
+    const handle = this.clock.setTimeout(() => {
+      this.bgWakeTimers.delete(handle)
+      try {
+        this.wakeOnBackgroundTaskDone(agentId, acpSessionId, taskId, description, status, attempt)
+      } catch (err) {
+        this.log.error(`bg-task wake failed for "${agentId}": ${formatErr(err)}`)
+      }
+    }, BG_TASK_WAKE_GRACE_MS)
+    this.bgWakeTimers.add(handle)
+  }
+
+  /**
+   * Hand a completed background task back to the model as a fresh turn.
+   *
+   * The `run_in_background` contract the runtime shows its model ("you will be notified when
+   * it completes") is a HARNESS promise, not an SDK one: interactive Claude Code re-invokes
+   * the model when the task exits. Under ACP the foreground turn has already returned
+   * `end_turn` by then, so without this the completion is stranded — the model reasonably
+   * ends its turn expecting a notification that never arrives, and anything it owed (a
+   * `needsParentReply` report, a deferred answer) is silently dropped.
+   *
+   * The runtime's OWN self-drain cycle is not a substitute and must not be waited out
+   * indefinitely: it carries no `Pending`, so `onAcpUpdate` drops every chunk, tool render,
+   * and transcript row it produces (verified end-to-end — the model answered, the user got
+   * nothing). The wake therefore defers to it only for as long as it runs, then delivers
+   * anyway. Its MCP tool calls DO land (that socket is not Pending-gated), so the wake text
+   * tells the model not to repeat a report it already sent.
+   *
+   * Everything is re-validated here rather than captured at schedule time, so a session that
+   * moved on during the grace window is simply left alone:
+   *  - no lease ⇒ the host was reclaimed (leases are dropped in `stopHost`); the ACP session
+   *    is gone with it and there is nothing to wake.
+   *  - `sdkState === 'running'` ⇒ re-arm and let that cycle finish first (bounded).
+   *  - a live task in the lease ⇒ a later completion will carry the session forward; wake on
+   *    the last one instead of once per task.
+   *  - session missing / not `idle` ⇒ closed, or a real turn is already running (which will
+   *    observe the task itself).
+   */
+  private wakeOnBackgroundTaskDone(
+    agentId: string,
+    acpSessionId: string,
+    taskId: string,
+    description?: string,
+    status?: string,
+    attempt = 0
+  ): void {
+    if (this.draining) return
+    const lease = this.sdkLease.get(acpSessionId)
+    const what = description?.trim() || 'background task'
+    const skip = (why: string): void => this.log.debug(`bg-task wake skipped (${why}): "${what}" on ${acpSessionId}`)
+    if (!lease) return skip('host reclaimed')
+    if (lease.sdkState === 'running') {
+      if (attempt >= MAX_BG_TASK_WAKE_REARMS) {
+        this.log.warn(
+          `bg-task wake gave up after ${MAX_BG_TASK_WAKE_REARMS} re-arms — runtime cycle on ` +
+            `${acpSessionId} never returned to idle ("${what}")`
+        )
+        return
+      }
+      this.scheduleBackgroundTaskWake(agentId, acpSessionId, taskId, description, status, attempt + 1)
+      return skip(`runtime cycle still running, re-armed ${attempt + 1}/${MAX_BG_TASK_WAKE_REARMS}`)
+    }
+    if (lease.tasks.size > 0) return skip('other background tasks still live')
+    if (lease.bgWakes >= MAX_BG_TASK_WAKES_PER_SESSION) {
+      this.log.warn(
+        `bg-task wake budget exhausted (${MAX_BG_TASK_WAKES_PER_SESSION}) on ${acpSessionId} — ` +
+          `not waking for "${what}"`
+      )
+      return
+    }
+    const rec = this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+    if (!rec) return skip('no session row')
+    if (rec.state !== 'idle') return skip(`session is ${rec.state}`)
+
+    const platform = this.narrowPlatform(rec.platform)
+    // Reply transport resolved from the SESSION's scope, not the agent's default integration —
+    // a multi-platform agent would otherwise answer through integrations[0]'s client (mirrors
+    // replyToSession). A scoped session whose integration is gone has nowhere to answer.
+    const integrationId = this.integrationIdForTransportScope(agentId, platform, rec.transportScope)
+    if (rec.transportScope && !integrationId) return skip('integration for the session scope is gone')
+
+    // No CallMeta: this is not an agent call, it carries no hop chain, and it must not look
+    // like one. A child woken this way still reaches its parent — `replyToSession` falls back
+    // to the origin PERSISTED on the session for exactly this kind of turn (§5.3), and the
+    // report-back obligation is sticky on `needsParentReply`.
+    const msg: NormalizedMessage = {
+      // Stable in the task id so a duplicated settle edge cannot dispatch twice.
+      msgId: `bgtask:${rec.channel}:${taskId}`,
+      // A monotonic "now" so the wake orders as new content in the session (see replyToSession).
+      transcriptTs: monotonicTs(),
+      traceId: `bgtask:${taskId}`,
+      source: 'agent',
+      platform,
+      channel: rec.channel,
+      ...(rec.thread ? { thread: rec.thread } : {}),
+      ...(rec.transportScope ? { transportScope: rec.transportScope } : {}),
+      sender: { id: `background-task:${taskId}`, isBot: true },
+      text:
+        `[background task finished] ${what}${status ? ` — ${status}` : ''}\n\n` +
+        `This is a daemon notification, not a message from anyone. A background task you started ` +
+        `settled after your turn had already ended, so nothing you said about it reached anyone. Read its ` +
+        `output now (its task id is \`${taskId}\`) and finish what you were waiting on it for — this turn ` +
+        `is the one that is actually delivered. If you owe a report to another session, send it, unless ` +
+        `you already sent it after the task finished; do not report the same result twice. If the result ` +
+        `needs no action at all, stay silent.`,
+      mentionedBots: integrationId && this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : [],
+      isDm: false
+    }
+    lease.bgWakes += 1
+    this.log.info(`bg-task wake: "${what}" → agent "${agentId}" session ${acpSessionId} (${rec.key})`)
+    void this.dispatch(agentId, msg, integrationId).catch((err) =>
+      this.log.error(`bg-task wake dispatch failed for "${agentId}": ${formatErr(err)}`)
     )
   }
 
@@ -13949,6 +14122,8 @@ export class Daemon {
       this.clock.clearTimeout(this.runtimeProbeTimer)
       this.runtimeProbeTimer = undefined
     }
+    for (const t of this.bgWakeTimers) this.clock.clearTimeout(t)
+    this.bgWakeTimers.clear()
     // Cancel in-flight catalog discoveries and kill their child processes.
     await this.modelCatalogSvc?.stop().catch(() => {})
     for (const t of this.cancelTimers.values()) this.clock.clearTimeout(t)

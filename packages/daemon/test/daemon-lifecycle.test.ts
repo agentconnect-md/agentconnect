@@ -751,6 +751,138 @@ describe('Daemon idle sweep — background-task lease', () => {
     await daemon.stop()
   }, 15_000)
 
+  // The `run_in_background` "you will be notified when it completes" contract is a HARNESS
+  // promise, not an SDK one. Under ACP the foreground turn has already returned end_turn by
+  // the time the task settles, so the daemon has to deliver the completion itself or the work
+  // (and anything the model owed on the back of it) is stranded.
+  describe('waking the session when a background task settles', () => {
+    it('wakes the idle session with a fresh turn once the grace period passes', async () => {
+      const clock = new FakeClock()
+      const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+      ;(daemon as any).store.setOutputModeOverride(KEY, 'low') // a wake is NOT gated on output mode
+      expect(host.prompt).toHaveBeenCalledTimes(1) // just the human turn so far
+
+      ;(daemon as any).onSdkLifecycle(
+        'bot-a',
+        'acp-1',
+        evt('task_started', { task_id: 't1', description: 'Sleep 30s then print the time' })
+      )
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      expect(host.prompt).toHaveBeenCalledTimes(1) // deferred, not immediate
+
+      clock.advance(4000)
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2))
+      const woken = JSON.stringify((host.prompt as any).mock.calls[1])
+      expect(woken).toContain('background task finished')
+      expect(woken).toContain('Sleep 30s then print the time')
+      expect(woken).toContain('t1')
+      await daemon.stop()
+    }, 15_000)
+
+    // The runtime's own self-drain cycle produces NOTHING a user can see (no Pending ⇒
+    // onAcpUpdate drops it), so the wake waits it out but must never stand down for it.
+    it('waits out the runtime self-drain cycle, then wakes anyway', async () => {
+      const clock = new FakeClock()
+      const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      // Claude self-woke a followup cycle to drain it.
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
+
+      clock.advance(4000) // re-armed, not abandoned
+      await vi.waitFor(() => expect((daemon as any).bgWakeTimers.size).toBe(1))
+      expect(host.prompt).toHaveBeenCalledTimes(1)
+
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
+      clock.advance(4000)
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2))
+      await daemon.stop()
+    }, 15_000)
+
+    it('gives up re-arming if the runtime cycle never returns to idle', async () => {
+      const clock = new FakeClock()
+      const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
+
+      // 15 re-arms then nothing left armed — a wedged cycle must not be polled forever.
+      for (let i = 0; i < 16; i++) {
+        clock.advance(4000)
+        await new Promise((r) => setImmediate(r))
+      }
+      expect((daemon as any).bgWakeTimers.size).toBe(0)
+      expect(host.prompt).toHaveBeenCalledTimes(1)
+      await daemon.stop()
+    }, 15_000)
+
+    it('wakes once for the last task, not once per task', async () => {
+      const clock = new FakeClock()
+      const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't2' }))
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      clock.advance(4000) // t2 is still live — t1's wake must stand down
+      await new Promise((r) => setImmediate(r))
+      expect(host.prompt).toHaveBeenCalledTimes(1)
+
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't2' }))
+      clock.advance(4000)
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2))
+      await daemon.stop()
+    }, 15_000)
+
+    it('does not wake for an internal subagent task', async () => {
+      const clock = new FakeClock()
+      const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+
+      ;(daemon as any).onSdkLifecycle(
+        'bot-a',
+        'acp-1',
+        evt('task_started', { task_id: 's1', subagent_type: 'general' })
+      )
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 's1' }))
+      clock.advance(4000)
+      await new Promise((r) => setImmediate(r))
+      expect(host.prompt).toHaveBeenCalledTimes(1)
+      await daemon.stop()
+    }, 15_000)
+
+    it('does not wake a session whose host was already reclaimed', async () => {
+      const clock = new FakeClock()
+      const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      await (daemon as any).stopHost('bot-a') // drops the lease with the ACP session
+
+      clock.advance(4000)
+      await new Promise((r) => setImmediate(r))
+      expect(host.prompt).toHaveBeenCalledTimes(1)
+      await daemon.stop()
+    }, 15_000)
+
+    it('stops waking once the per-session budget is exhausted', async () => {
+      const clock = new FakeClock()
+      const { daemon } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+
+      // 25 settle→wake cycles against a budget of 20: the extras must be refused, so a wake
+      // that keeps re-spawning background tasks cannot feed itself forever. The counter is
+      // the assertion (not host.prompt) because these turns are queued, never drained.
+      for (let i = 0; i < 25; i++) {
+        ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: `t${i}` }))
+        ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: `t${i}` }))
+        clock.advance(4000)
+        await vi.waitFor(() => expect((daemon as any).bgWakeTimers.size).toBe(0))
+      }
+      expect((daemon as any).sdkLease.get('acp-1')?.bgWakes).toBe(20)
+      await daemon.stop()
+    }, 30_000)
+  })
+
   it('drops an agent lease when its host is torn down', async () => {
     const clock = new FakeClock()
     const { daemon } = await bootWithTurn(clock, {
