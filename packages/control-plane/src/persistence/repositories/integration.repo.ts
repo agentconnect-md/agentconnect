@@ -392,6 +392,15 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   // ordinary 'mention' default would therefore let a newly-private agent keep answering
   // a DM that no operator ever enabled. Created DM rows, and channel rows converting to
   // DM, are pinned Off; an operator's later choice is untouched.
+  //
+  // The channel→DM transition is decided INSIDE the write, off the row's committed kind,
+  // never off a prior read. Channel reports are fire-and-forget and their handlers run
+  // concurrently — the daemon's own startup emits a kind-less snapshot and the resolver's
+  // later `saveScope` emits the same conversation as `im`. Two such writes racing with a
+  // read-then-write would both see "no row": the first creates channel/mention, the
+  // second flips the kind and inherits that trigger, landing exactly on the fail-open
+  // state above. `ON CONFLICT … DO UPDATE` re-reads the row under the write's own lock,
+  // so the conversion cannot be missed however the reports interleave.
   async replaceSnapshot(
     integrationId: IntegrationId,
     channels: ReportedChannel[],
@@ -402,50 +411,44 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         where: { integrationId, kind: 'channel', channelId: { notIn: channels.map((c) => c.id) } }
       })
     }
-    // The stored kind decides whether a reported DM is a conversion (fail closed) or an
-    // established row (operator-owned) — one read, not a round-trip per channel.
-    const stored = new Map(
-      (
-        await this.db.integrationChannel.findMany({
-          where: { integrationId },
-          select: { channelId: true, kind: true }
-        })
-      ).map((r) => [r.channelId, r.kind])
-    )
+    const authoritative = opts?.authoritative !== false
     for (const c of channels) {
-      const authoritative = opts?.authoritative !== false
-      const convertedToIm = c.kind === 'im' && stored.get(c.id) === 'channel'
-      await this.db.integrationChannel.upsert({
-        where: { integrationId_channelId: { integrationId, channelId: c.id } },
-        create: {
-          integrationId,
-          channelId: c.id,
-          name: c.name ?? null,
-          spaceId: c.spaceId ?? null,
-          space: c.space ?? null,
-          isPrivate: c.isPrivate ?? false,
-          kind: c.kind ?? 'channel',
-          ...(c.kind === 'im'
-            ? { trigger: 'off' as const }
-            : opts?.defaultTrigger
-              ? { trigger: opts.defaultTrigger }
-              : {})
-        },
-        // kind updates only when explicitly reported: a kind-less membership/observed
-        // re-report must never downgrade an established 'im' row (§14.3).
-        update: {
-          ...(authoritative || c.name !== undefined ? { name: c.name ?? null } : {}),
-          // The space resolves lazily (one guild lookup per channel, TTL-cached at the
-          // edge), so a report that carries none must not blank a known server.
-          ...(c.spaceId !== undefined ? { spaceId: c.spaceId } : {}),
-          ...(c.space !== undefined ? { space: c.space } : {}),
-          ...(authoritative || c.isPrivate !== undefined ? { isPrivate: c.isPrivate ?? false } : {}),
-          ...(c.kind ? { kind: c.kind } : {}),
-          // A row misclassified as a channel carried a channel's trigger. It is not an
-          // operator's DM choice, so the conversion resets it rather than inheriting it.
-          ...(convertedToIm ? { trigger: 'off' as const } : {})
-        }
-      })
+      // Which columns a re-report is allowed to overwrite. An absent name/isPrivate is
+      // authoritative-only (a partial report must not blank them); an absent space keeps
+      // the known server (it resolves lazily at the edge); an absent kind must never
+      // downgrade an established 'im' row.
+      const setName = authoritative || c.name !== undefined
+      const setPrivate = authoritative || c.isPrivate !== undefined
+      const createTrigger = c.kind === 'im' ? 'off' : (opts?.defaultTrigger ?? 'mention')
+      await this.db.$executeRaw`
+        INSERT INTO "integration_channel"
+          ("integrationId", "channelId", "name", "spaceId", "space", "isPrivate", "kind", "trigger",
+           "firstSeenAt", "updatedAt")
+        VALUES (
+          ${integrationId}::uuid, ${c.id}, ${c.name ?? null}, ${c.spaceId ?? null}, ${c.space ?? null},
+          ${c.isPrivate ?? false}, ${c.kind ?? 'channel'}::"ConversationKind",
+          ${createTrigger}::"ChannelTrigger", NOW(), NOW()
+        )
+        ON CONFLICT ("integrationId", "channelId") DO UPDATE SET
+          "name" = CASE WHEN ${setName}::boolean THEN EXCLUDED."name" ELSE "integration_channel"."name" END,
+          "spaceId" = CASE WHEN ${c.spaceId !== undefined}::boolean THEN EXCLUDED."spaceId"
+                           ELSE "integration_channel"."spaceId" END,
+          "space" = CASE WHEN ${c.space !== undefined}::boolean THEN EXCLUDED."space"
+                         ELSE "integration_channel"."space" END,
+          "isPrivate" = CASE WHEN ${setPrivate}::boolean THEN EXCLUDED."isPrivate"
+                             ELSE "integration_channel"."isPrivate" END,
+          "kind" = CASE WHEN ${c.kind !== undefined}::boolean THEN EXCLUDED."kind"
+                        ELSE "integration_channel"."kind" END,
+          -- The fail-closed conversion, resolved against the COMMITTED kind: a row that
+          -- was a channel carried a channel's trigger, which is not an operator's DM
+          -- choice. An already-'im' row keeps whatever the operator set.
+          "trigger" = CASE
+            WHEN ${c.kind === 'im'}::boolean AND "integration_channel"."kind" <> 'im'::"ConversationKind"
+              THEN 'off'::"ChannelTrigger"
+            ELSE "integration_channel"."trigger"
+          END,
+          "updatedAt" = NOW()
+      `
     }
   }
 

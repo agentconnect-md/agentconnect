@@ -113,6 +113,26 @@ describe('groupBySpace', () => {
     expect(groups.map((g) => g.label)).toEqual(['Acme · 1111', 'Acme · 2222'])
   })
 
+  it('treats labels that READ alike as a clash — the header is uppercased', () => {
+    const groups = groupBySpace([chan('C1', '90000001111', 'acme'), chan('C2', '90000002222', 'ACME')])
+    expect(groups.map((g) => g.label)).toEqual(['acme · 1111', 'ACME · 2222'])
+  })
+
+  it('widens the id tail until the suffixes themselves differ', () => {
+    // Snowflakes of one shard share their low bits, so a fixed 4-char tail can collide —
+    // which would hand two distinct servers the same visible header.
+    const groups = groupBySpace([chan('C1', '11110000', 'Acme'), chan('C2', '22220000', 'Acme')])
+    // The 4-char tails are both "0000"; widening by one is enough here.
+    expect(groups.map((g) => g.label)).toEqual(['Acme · 10000', 'Acme · 20000'])
+  })
+
+  it('breaks a tie between a real name and a synthesized one', () => {
+    // A server can be NAMED like the header an unresolved one gets; only the real label
+    // can take a suffix, so that is the one that moves.
+    const groups = groupBySpace([chan('C1', '90000009999', 'server 2222'), chan('C2', '90000002222')])
+    expect(groups.map((g) => g.label)).toEqual(['server 2222', 'server 2222 · 9999'].sort())
+  })
+
   it('keeps a space-less platform one flat, unheaded list', () => {
     expect(groupBySpace([chan('C1'), chan('C2')])).toEqual([{ key: '', rows: [chan('C1'), chan('C2')] }])
   })

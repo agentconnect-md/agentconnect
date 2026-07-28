@@ -106,9 +106,24 @@ export interface SpaceGroup {
   rows: IntegrationChannelRow[]
 }
 
-/** Discord servers may share a NAME, so two same-named bands are told apart by a tail
- *  of the server id — enough to distinguish them without printing a whole snowflake. */
-const spaceDiscriminator = (spaceId: string) => spaceId.slice(-4)
+/** How a band's header will actually READ once the CSS uppercases it — the form two
+ *  labels must differ in to be distinguishable on screen. "acme" and "Acme" collide. */
+const asDisplayed = (label: string) => label.toLocaleUpperCase().replace(/\s+/g, ' ').trim()
+
+/**
+ * Shortest tails of `ids` that are unique among them — the suffix that tells two
+ * same-named bands apart. Grows from 4 characters until no two ids share a tail (a fixed
+ * width is not collision-free: Discord snowflakes of one shard share their low bits),
+ * and falls back to the whole id when even that is exhausted.
+ */
+function spaceDiscriminators(ids: string[]): Map<string, string> {
+  const longest = Math.max(0, ...ids.map((id) => id.length))
+  for (let width = 4; width <= longest; width++) {
+    const tails = ids.map((id) => id.slice(-width))
+    if (new Set(tails).size === ids.length) return new Map(ids.map((id, i) => [id, tails[i]!]))
+  }
+  return new Map(ids.map((id) => [id, id]))
+}
 
 /**
  * Bucket channel rows by the space (Discord server) they sit in.
@@ -119,9 +134,10 @@ const spaceDiscriminator = (spaceId: string) => spaceId.slice(-4)
  *
  * Grouping keys on the server ID, never the label: Discord permits two distinct servers
  * to carry the same name, and banding those together would merge exactly the rows this
- * is here to separate. When two bands do end up with the same label they are suffixed
- * with a tail of their id, so the duplication is visible rather than silent. A server
- * whose name hasn't resolved yet still gets its own band, headed by that id tail alone.
+ * is here to separate. When two bands would READ alike — compared as the header renders
+ * them, uppercased, so "acme" and "Acme" count as a clash — both are suffixed with a
+ * tail of their id, widened until the tails themselves differ. A server whose name
+ * hasn't resolved yet still gets its own band, headed by that id tail alone.
  *
  * Platforms with one implicit container per bot (Slack, Telegram, Feishu) report no
  * space at all and stay one flat, unheaded list, which leads.
@@ -138,16 +154,24 @@ export function groupBySpace(rows: IntegrationChannelRow[]): SpaceGroup[] {
       group.label ??= c.space
     } else spaces.set(key, { ...(c.space ? { label: c.space } : {}), rows: [c] })
   }
-  const byLabel = new Map<string, number>()
-  for (const { label } of spaces.values()) if (label) byLabel.set(label, (byLabel.get(label) ?? 0) + 1)
+  const keyed = [...spaces.entries()].filter(([key]) => key)
+  const discriminator = spaceDiscriminators(keyed.map(([key]) => key))
+  // An unnamed server is headed by its discriminator alone — it is still a distinct
+  // server, and leaving it unheaded would silently pool it with the flat group. Those
+  // synthesized headers join the collision count too: a server could be NAMED "server
+  // 2222", and only a real label can take a suffix to break such a tie.
+  const proposed = (key: string, label?: string) => label ?? `server ${discriminator.get(key) ?? key}`
+  const seen = new Map<string, number>()
+  for (const [key, { label }] of keyed) {
+    const as = asDisplayed(proposed(key, label))
+    seen.set(as, (seen.get(as) ?? 0) + 1)
+  }
   return [...spaces.entries()]
     .map(([key, { label, rows }]) => {
       if (!key) return { key, rows }
-      // An unnamed server is headed by its discriminator alone — it is still a distinct
-      // server, and leaving it unheaded would silently pool it with the flat group.
-      const collides = label !== undefined && (byLabel.get(label) ?? 0) > 1
-      const suffix = spaceDiscriminator(key)
-      return { key, label: label === undefined ? `server ${suffix}` : collides ? `${label} · ${suffix}` : label, rows }
+      const clash = (seen.get(asDisplayed(proposed(key, label))) ?? 0) > 1
+      const suffix = discriminator.get(key) ?? key
+      return { key, label: clash && label !== undefined ? `${label} · ${suffix}` : proposed(key, label), rows }
     })
     .sort((a, b) => (!a.key ? -1 : !b.key ? 1 : (a.label ?? '').localeCompare(b.label ?? '')))
 }

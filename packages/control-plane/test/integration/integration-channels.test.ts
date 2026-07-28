@@ -94,6 +94,51 @@ async function report(
   await handleIntegrationChannels(frame, { daemonId } as DaemonConnection, deps)
 }
 
+/**
+ * Wrap a Prisma client so the FIRST channel-row read is held until `release()` — letting
+ * a test pin down the interleaving a pair of fire-and-forget reports can produce: reader
+ * takes a stale snapshot, a second writer commits, and only then does the reader write.
+ * `taken` resolves when that read is intercepted; a caller that classifies inside its
+ * write never takes one, so `taken` simply never resolves (callers race it with a
+ * timeout) and `release()` is a no-op.
+ */
+function holdFirstRead(db: typeof prisma): { db: typeof prisma; taken: Promise<void>; release: () => void } {
+  let held = false
+  let markTaken = () => {}
+  let release = () => {}
+  const taken = new Promise<void>((resolve) => {
+    markTaken = resolve
+  })
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const channelProxy = new Proxy(db.integrationChannel, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver)
+      if (prop !== 'findMany' || typeof value !== 'function') {
+        return typeof value === 'function' ? value.bind(target) : value
+      }
+      return async (...args: unknown[]) => {
+        const rows = await (value as (...a: unknown[]) => Promise<unknown>).apply(target, args)
+        if (!held) {
+          held = true
+          markTaken()
+          await gate
+        }
+        return rows
+      }
+    }
+  })
+  const proxied = new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === 'integrationChannel') return channelProxy
+      const value = Reflect.get(target, prop, receiver)
+      return typeof value === 'function' ? value.bind(target) : value
+    }
+  })
+  return { db: proxied, taken, release }
+}
+
 describe('integration/channels EVT → integration_channel convergence', () => {
   it('inserts reported channels with the default @-mention trigger', async () => {
     await seedDaemon(prisma, DAEMON)
@@ -243,6 +288,51 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     const [dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
     expect(dto!.channels).toEqual([expect.objectContaining({ channelId: 'D1', kind: 'im', trigger: 'off' })])
+
+    spy.upserts.length = 0
+    await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${integration.agentId}/sharing`,
+      payload: { visibility: 'restricted', sharedWith: [] }
+    })
+    const u0 = spy.upserts[0]!.u
+    if (u0.platform !== 'slack') throw new Error('expected slack integration')
+    expect(u0.slack.bindRules).toEqual([])
+  })
+
+  it('keeps the DM conversion fail-closed when a kind-less and an IM report OVERLAP (§14.3)', async () => {
+    // Channel reports are fire-and-forget and their handlers run concurrently: a daemon
+    // start emits a kind-less observed snapshot, and the resolver's later verdict emits
+    // the same conversation as a DM. Deciding the conversion from a read taken BEFORE the
+    // write loses that race — the reader sees no row, the kind-less report then creates
+    // channel/mention, and the DM write flips only the kind, inheriting a trigger no
+    // operator ever chose for a DM. A later gate would honour it.
+    //
+    // The sequence is pinned rather than left to the scheduler: the DM report's pre-write
+    // read is held, the kind-less report commits underneath it, then the DM write lands.
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
+
+    const gate = holdFirstRead(prisma)
+    const dmReport = new PgIntegrationChannelRepo(gate.db).replaceSnapshot(
+      IntegrationId(id),
+      [{ id: 'D1', name: '@alice', kind: 'im' }],
+      { authoritative: false }
+    )
+    // Resolves as soon as a pre-write read is taken; an implementation that takes none
+    // is let through by the timeout (its write may land in either order — both are safe).
+    await Promise.race([gate.taken, new Promise((r) => setTimeout(r, 300))])
+    await new PgIntegrationChannelRepo(prisma).replaceSnapshot(IntegrationId(id), [{ id: 'D1', name: '@alice' }], {
+      authoritative: false
+    })
+    gate.release()
+    await dmReport
+
+    const [row] = await new PgIntegrationChannelRepo(prisma).listForIntegration(IntegrationId(id))
+    expect(row).toMatchObject({ channelId: 'D1', kind: 'im', trigger: 'off' })
 
     spy.upserts.length = 0
     await running.app.inject({
