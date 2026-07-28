@@ -102,7 +102,7 @@ const BOT_PLATFORMS = [
   { platform: 'slack', label: 'Slack', noun: 'app' },
   { platform: 'discord', label: 'Discord', noun: 'bot' },
   { platform: 'telegram', label: 'Telegram', noun: 'bot' },
-  { platform: 'feishu', label: 'Feishu', noun: 'bot' }
+  { platform: 'feishu', label: 'Lark', noun: 'bot' }
 ] as const
 type BotPlatform = (typeof BOT_PLATFORMS)[number]['platform']
 
