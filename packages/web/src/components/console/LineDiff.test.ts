@@ -104,4 +104,29 @@ describe('diffLines', () => {
     expect(rows.filter((row) => row.kind === 'add').map((row) => row.text)).toEqual(['b', 'y'])
     expect(rows.filter((row) => row.kind === 'meta')).toHaveLength(2)
   })
+
+  it('simplifies a large changed middle while preserving both complete files', () => {
+    const before = [
+      'head',
+      ...Array.from({ length: 2_300 }, (_, index) => [`same-${index}`, `old-${index}`]).flat(),
+      'tail'
+    ].join('\n')
+    const after = [
+      'head',
+      ...Array.from({ length: 2_300 }, (_, index) => [`same-${index}`, `new-${index}`]).flat(),
+      'tail'
+    ].join('\n')
+
+    const rows = diffLines(before, after)
+
+    expect(rows.filter((row) => row.kind === 'context').map((row) => row.text)).toEqual(['head', 'same-0', 'tail'])
+    expect(rows).toContainEqual(
+      expect.objectContaining({
+        kind: 'meta',
+        text: expect.stringContaining('Large diff simplified')
+      })
+    )
+    expect(rebuild(rows, 'old')).toBe(before)
+    expect(rebuild(rows, 'new')).toBe(after)
+  })
 })

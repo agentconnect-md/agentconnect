@@ -33,6 +33,11 @@ interface LineMatch {
   newIndex: number
 }
 
+/** Hirschberg is memory-linear but still quadratic in time. History snapshots
+ * are capped at 4 KB, while dream review can compare a complete 256 KB memory
+ * file, so bound exact work before the shared renderer is used there. */
+const MAX_EXACT_DIFF_CELLS = 20_000_000
+
 function prefixLcsLengths(
   oldLines: LineToken[],
   oldStart: number,
@@ -159,6 +164,8 @@ function addEofMarkers(rows: LineDiffRow[], oldLines: LineToken[], newLines: Lin
 /**
  * Exact line diff for bounded text snapshots. Hirschberg keeps working memory
  * linear even when a valid 4 KB snapshot contains thousands of tiny lines.
+ * For a larger changed middle, retain exact common edges and render the middle
+ * as one delete/add block instead of freezing the browser on quadratic work.
  */
 export function diffLines(before: string, after: string): LineDiffRow[] {
   const oldLines = splitLines(before)
@@ -176,8 +183,13 @@ export function diffLines(before: string, after: string): LineDiffRow[] {
     suffix += 1
   }
 
+  const oldMiddleLength = oldLines.length - prefix - suffix
+  const newMiddleLength = newLines.length - prefix - suffix
+  const simplified = oldMiddleLength * newMiddleLength > MAX_EXACT_DIFF_CELLS
   const matches: LineMatch[] = oldLines.slice(0, prefix).map((_text, index) => ({ oldIndex: index, newIndex: index }))
-  collectLcsMatches(oldLines, prefix, oldLines.length - suffix, newLines, prefix, newLines.length - suffix, matches)
+  if (!simplified) {
+    collectLcsMatches(oldLines, prefix, oldLines.length - suffix, newLines, prefix, newLines.length - suffix, matches)
+  }
   for (let index = 0; index < suffix; index += 1) {
     matches.push({
       oldIndex: oldLines.length - suffix + index,
@@ -213,6 +225,12 @@ export function diffLines(before: string, after: string): LineDiffRow[] {
   while (newIndex < newLines.length) {
     rows.push({ kind: 'add', text: newLines[newIndex]!.text, newLine: newIndex + 1 })
     newIndex += 1
+  }
+  if (simplified) {
+    rows.splice(prefix, 0, {
+      kind: 'meta',
+      text: 'Large diff simplified; unchanged lines inside this block may appear removed and added.'
+    })
   }
   return addEofMarkers(rows, oldLines, newLines)
 }

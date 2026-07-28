@@ -8,7 +8,7 @@
 //      the copy says so, and the button reflects the one-in-flight rule rather
 //      than letting the user hit a raw 409.
 //   2. The job list, polled while anything is pending/running.
-//   3. Review — the staged store a completed dream produced, side by side with
+//   3. Review — the staged store a completed dream produced, diffed against
 //      what is live now, plus Adopt / Discard. A dream is STAGED by design, so
 //      the trigger without this review surface would be a dead end.
 //
@@ -37,6 +37,7 @@ import {
 import { Icon, Button } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
+import { LineDiff } from '@/components/console/LineDiff'
 
 /** While a dream is in flight the list changes fast. */
 const POLL_MS = 4000
@@ -418,7 +419,7 @@ export function DreamPanel({
   )
 }
 
-/** Side-by-side of one staged file and what is live now, for a completed dream. */
+/** Line diff of one staged file against what is live now, for a completed dream. */
 function DreamReview({
   agentId,
   dreamId,
@@ -495,7 +496,6 @@ function DreamReview({
     })()
   }, [agentId, dreamId, selected])
 
-  const current = paths?.find((p) => p.name === selected)
   const deleting = (paths ?? []).filter((p) => p.live && !p.staged)
 
   return (
@@ -547,28 +547,7 @@ function DreamReview({
           <Spinner /> Loading…
         </div>
       ) : selected ? (
-        <div className="grid grid-cols-1 gap-3 desktop:grid-cols-2">
-          <div className="flex flex-col gap-1">
-            <span className="font-sans text-[11px] font-semibold leading-normal text-(--text-tertiary)">Live now</span>
-            <pre className="m-0 max-h-[320px] overflow-auto rounded-sm border border-(--border-subtle) bg-(--surface-card) p-2 font-mono text-[11.5px] leading-[1.5] whitespace-pre-wrap text-(--text-secondary)">
-              {live || '(this file does not exist yet)'}
-            </pre>
-          </div>
-          <div className="flex flex-col gap-1">
-            <span
-              className={
-                current && current.live && !current.staged
-                  ? 'font-sans text-[11px] font-semibold leading-normal text-(--status-error)'
-                  : 'font-sans text-[11px] font-semibold leading-normal text-(--brand-soft-text)'
-              }
-            >
-              {current && current.live && !current.staged ? 'Deleted by this dream' : 'Staged by this dream'}
-            </span>
-            <pre className="m-0 max-h-[320px] overflow-auto rounded-sm border border-(--border-subtle) bg-(--surface-card) p-2 font-mono text-[11.5px] leading-[1.5] whitespace-pre-wrap text-(--text-primary)">
-              {current && current.live && !current.staged ? '(removed — this file will be deleted)' : staged}
-            </pre>
-          </div>
-        </div>
+        <LineDiff before={live} after={staged} />
       ) : null}
     </div>
   )

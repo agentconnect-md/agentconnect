@@ -425,8 +425,9 @@ architecture invariant:
   `DreamRecord` metadata (including per-skill review states) for listing when
   the daemon is offline.
 - **Console** — the Background memory section (§3) plus, per dream: a review
-  screen showing current-vs-staged store files (reusing the file browser
-  components) with Adopt / Discard, and a "Recommended skills" list rendering
+  screen showing a current-to-staged line diff for each store file (reusing the
+  managed-memory history diff and file browser components) with Adopt / Discard,
+  and a "Recommended skills" list rendering
   each candidate's `SKILL.md` and scripts with Accept / Dismiss. Accepted
   skills also surface on the Tools & Skills page alongside imported sources.
   Both branches of the mobile/desktop split follow the existing
