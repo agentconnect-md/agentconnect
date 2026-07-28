@@ -2751,9 +2751,12 @@ export function joinWaitlist(intake: WaitlistIntake): Promise<{ status: 'pending
 }
 
 /** Redeem a waitlist activation link (POST /waitlist/redeem) → become a formal user.
- *  Root-scoped: the caller may not belong to any org yet. */
-export function redeemWaitlistLink(token: string): Promise<{ activated: true }> {
-  return apiPost<{ activated: true }>('/waitlist/redeem', { token })
+ *  Root-scoped: the caller may not belong to any org yet. `expectSubject` asserts
+ *  WHICH signed-in identity the caller means: the CP refuses (409 IDENTITY_CHANGED)
+ *  if the verified bearer belongs to someone else, so a tab that switched accounts
+ *  mid-flow cannot get its own account activated by this link. */
+export function redeemWaitlistLink(token: string, expectSubject?: string): Promise<{ activated: true }> {
+  return apiPost<{ activated: true }>('/waitlist/redeem', { token, ...(expectSubject ? { expectSubject } : {}) })
 }
 
 // ── personal API keys (the caller's own credentials; identity-scoped `/me/keys`) ──

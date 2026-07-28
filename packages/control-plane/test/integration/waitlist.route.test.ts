@@ -316,6 +316,43 @@ describe('waitlist admission — POST /waitlist/redeem', () => {
     }
   })
 
+  it('refuses to redeem as an identity the client did not mean (expectSubject)', async () => {
+    const { token, tokenHash } = await mintOpenLink()
+    const { app, close } = buildApp()
+    try {
+      // The browser prepared the flow as `wl-expected`, but by the time the request
+      // goes out another tab has swapped the session to `wl-swapped`. A bearer link
+      // takes any verified identity, so without the assertion this would silently
+      // activate the WRONG account.
+      const swapped = await headers('wl-swapped', 'swapped@acme.dev')
+      const redeem = await app.inject({
+        method: 'POST',
+        url: '/api/v1/waitlist/redeem',
+        headers: swapped,
+        payload: { token, expectSubject: 'wl-expected' }
+      })
+      expect(redeem.statusCode).toBe(409)
+      expect(redeem.json()).toMatchObject({ code: 'IDENTITY_CHANGED' })
+      // Nothing was activated and the one-use link was not consumed.
+      expect(await prisma.user.findUnique({ where: { oidcSubject: 'wl-swapped' } })).toMatchObject({
+        activatedAt: null
+      })
+      expect((await prisma.waitlistEntry.findUnique({ where: { tokenHash } }))!.redeemedByUserId).toBeNull()
+
+      // The same request with the identity it actually holds goes through.
+      const ok = await app.inject({
+        method: 'POST',
+        url: '/api/v1/waitlist/redeem',
+        headers: swapped,
+        payload: { token, expectSubject: 'wl-swapped' }
+      })
+      expect(ok.statusCode).toBe(200)
+      expect(ok.json()).toEqual({ activated: true })
+    } finally {
+      await close()
+    }
+  })
+
   it('a bearer link is one-use — a second, different user is refused', async () => {
     const { token } = await mintOpenLink()
     const { app, close } = buildApp()

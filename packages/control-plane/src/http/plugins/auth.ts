@@ -98,6 +98,10 @@ declare module 'fastify' {
   }
   interface FastifyRequest {
     principal?: HumanPrincipal
+    /** The verified OIDC `sub` behind this request. Set only on the real-OIDC path
+     *  (never devAuth or an API key). Identity confirmation only — routes use it to
+     *  check the caller is who the client thought it was, never as a lookup key. */
+    oidcSubject?: string
     /** Set only when the caller authenticated with a personal API key (not OIDC/dev):
      *  the key's row id (audit / self-mint guard) and the org it is bound to. The
      *  org-scope guard asserts this equals the URL org, so a key acts only in its org. */
@@ -316,6 +320,7 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
       // Identity only — which org the request acts on is the URL's business
       // (`/orgs/:orgId/…`, verified by the org-scope guard).
       req.principal = { userId: identity.userId, email: email ?? headerEmail }
+      req.oidcSubject = sub
     } catch (err) {
       // Surface WHY verification failed — expiry vs. audience/issuer vs. signature.
       // jose tags each with a stable `code` (ERR_JWT_EXPIRED,

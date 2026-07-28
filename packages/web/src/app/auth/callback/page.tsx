@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { completeLogin, isAuthConfigured } from '@/lib/auth'
+import { completeLogin, currentSubject, isAuthConfigured } from '@/lib/auth'
 import { takeFlowState } from '@/lib/flow-state'
 import { promoteActivationProof } from '@/lib/activation-handshake'
 import { Spinner } from '@/components/marks'
@@ -20,11 +20,12 @@ export default function AuthCallback() {
       return
     }
     completeLogin()
-      .then(() => {
+      .then(async () => {
         // A sign-in has now actually completed, which is the ONLY thing that turns a
         // pending activation into proof that this browser re-authenticated for that
-        // link (see lib/activation-handshake). No pending activation ⇒ no-op.
-        promoteActivationProof()
+        // link (see lib/activation-handshake). Bound to the subject that just signed
+        // in, so a later identity swap invalidates it. No pending activation ⇒ no-op.
+        promoteActivationProof(await currentSubject())
         // Return to a stashed same-origin destination (e.g. the OAuth consent page
         // that bounced the user through login), else the console home.
         let dest = '/'

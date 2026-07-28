@@ -13,7 +13,7 @@ import { useRouter } from 'next/navigation'
 import { Button, Icon } from '@/components/ui'
 import { Spinner, Wordmark } from '@/components/marks'
 import { redeemWaitlistLink, ApiError } from '@/lib/api'
-import { getUser, isAuthConfigured, resetSession } from '@/lib/auth'
+import { currentSubject, isAuthConfigured, resetSession } from '@/lib/auth'
 import { writeFlowState } from '@/lib/flow-state'
 import { abandonActivation, beginActivation, claimActivationProof } from '@/lib/activation-handshake'
 
@@ -44,9 +44,11 @@ export default function ActivateAccount({ token }: { token: string }) {
           // A residual console session belongs to whoever signed in last — possibly
           // a different account, or one an admin has since deleted. Redeeming under
           // it activates the wrong user, so redemption requires PROOF that this
-          // browser signed in for this link (minted by the OIDC callback, never
-          // here). Without it: sign the old session out and go get that proof.
-          if (!claimActivationProof(token)) {
+          // browser signed in for this link, AS the identity signed in right now
+          // (minted by the OIDC callback, never here). Without it: sign the old
+          // session out and go get that proof.
+          const subject = await currentSubject()
+          if (!claimActivationProof(token, subject)) {
             // Both writes must stick or the round trip cannot be resumed, and
             // resuming is what keeps the redemption off the old session. Logto keeps
             // a completed session in localStorage while this state needs
@@ -75,11 +77,13 @@ export default function ActivateAccount({ token }: { token: string }) {
             return
           }
 
-          if (!(await getUser())) {
-            writeFlowState('returnTo', window.location.pathname)
-            if (!cancelled) router.replace('/login')
-            return
-          }
+          // Proof matched the identity signed in HERE, so `subject` is defined —
+          // claimActivationProof rejects an undefined one. Assert it to the CP too:
+          // a tab switching accounts between this check and the request would
+          // otherwise redeem as that account (409 IDENTITY_CHANGED instead).
+          await redeemWaitlistLink(token, subject)
+          if (!cancelled) router.replace('/')
+          return
         }
 
         await redeemWaitlistLink(token)

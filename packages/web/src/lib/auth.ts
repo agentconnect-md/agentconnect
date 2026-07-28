@@ -224,6 +224,22 @@ export async function getUser(): Promise<AuthUser | null> {
   return cachedUser
 }
 
+/**
+ * The signed-in OIDC subject (`sub`), or undefined when signed out / auth off.
+ * The stable identity key — unlike the email or display name it never changes for
+ * an account — so flows that must act as ONE identity across a redirect (activation
+ * links) can bind their state to it and detect a swap.
+ */
+export async function currentSubject(): Promise<string | undefined> {
+  const c = getClient()
+  if (!c || !(await c.isAuthenticated())) return undefined
+  try {
+    return (await c.getIdTokenClaims()).sub
+  } catch {
+    return undefined
+  }
+}
+
 /** The raw signed id token — forwarded to the CP (`x-ac-id-token`) as a
  *  verifiable identity hint (email/name) for JIT provisioning. */
 export async function getIdTokenRaw(): Promise<string | undefined> {
