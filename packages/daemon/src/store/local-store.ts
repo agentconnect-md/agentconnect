@@ -2067,41 +2067,6 @@ export class LocalStore {
    * session that bot message was posted in. Undefined when the id was never recorded
    * as text (e.g. a reply to transient chrome, or an unknown message).
    */
-  /**
-   * The conversational row at one exact platform coordinate, or undefined. Keyed on the
-   * `(channel, thread, ts)` unique index, so it answers "is THIS message part of THIS
-   * thread's log, and who wrote it" without any ordering assumption — `ts` is a TEXT
-   * column, and platform ids (Telegram's ascending integers in particular) do not compare
-   * correctly as text, so callers deciding what an agent has already seen must not infer
-   * it from a cursor comparison.
-   */
-  transcriptTextEntryAt(channel: string, thread: string, ts: string): { sender: string } | undefined {
-    return this.db
-      .prepare("SELECT sender FROM transcript WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' LIMIT 1")
-      .get(channel, thread, ts) as { sender: string } | undefined
-  }
-
-  /**
-   * Whether one conversational message was recorded as DELIVERED to `agentId` — the durable,
-   * order-free answer to "has this agent received this message". Checks both the row's own
-   * `recipient` (the first agent it reached) and the `transcript_recipient` side table (every
-   * later agent, which the text-row dedup would otherwise hide), exactly like the scoped
-   * transcript reads.
-   */
-  wasDeliveredToAgent(channel: string, thread: string, ts: string, agentId: string): boolean {
-    const row = this.db
-      .prepare(
-        `SELECT 1 AS hit FROM transcript
-          WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND recipient = ?
-         UNION ALL
-         SELECT 1 AS hit FROM transcript_recipient
-          WHERE channel = ? AND thread = ? AND ts = ? AND agentId = ?
-         LIMIT 1`
-      )
-      .get(channel, thread, ts, agentId, channel, thread, ts, agentId) as { hit: number } | undefined
-    return row !== undefined
-  }
-
   telegramThreadForMessage(channel: string, messageId: string): string | undefined {
     const row = this.db
       .prepare("SELECT thread FROM transcript WHERE channel = ? AND ts = ? AND kind = 'text' ORDER BY seq DESC LIMIT 1")

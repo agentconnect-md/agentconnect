@@ -1570,10 +1570,43 @@ describe('SessionManager — quoted reply source', () => {
     store.close()
   })
 
-  it('does not re-inject a quoted message already delivered to the SAME continuing session', async () => {
+  it('does not duplicate a quoted row THIS prompt already replays', async () => {
     const store = newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', tgMsg({ ts: '10', text: 'kicking off the migration' }))
+    // Recorded but never delivered, so it is unread and rides this turn's catch-up context.
+    store.appendTranscript({
+      channel: transcriptChannelKey('-100123'),
+      thread: 'tg:10',
+      ts: '11',
+      sender: 'U2',
+      kind: 'text',
+      text: 'the deploy failed with ECONNRESET'
+    })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '12',
+        text: '@bot-a look at this',
+        replyTo: '11',
+        quoted: { messageId: '11', sender: '@bob', text: 'the deploy failed with ECONNRESET' }
+      })
+    )
+    const texts = blocks.map((b: any) => b.text as string)
+    // Present exactly once — as replayed context, not also as a quote block.
+    expect(texts.some((t) => t.includes('this reply quotes'))).toBe(false)
+    expect(texts.filter((t) => t.includes('the deploy failed with ECONNRESET'))).toHaveLength(1)
+    store.close()
+  })
+
+  it('still delivers the quoted source when only a delivery RECEIPT says the agent has it', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    // Turn 1 records the row with `recipient: bot-a` and advances the cursor — but a receipt is
+    // written at the top of handle(), before any prompt, and dispatchOne can still bail in
+    // between (readyGate). It is not proof the runtime saw it, so it must not suppress.
     await sm.handle('bot-a', tgMsg({ ts: '10', text: 'the deploy failed with ECONNRESET' }))
     const { blocks } = await sm.handle(
       'bot-a',
@@ -1584,23 +1617,15 @@ describe('SessionManager — quoted reply source', () => {
         quoted: { messageId: '10', sender: '@bob', text: 'the deploy failed with ECONNRESET' }
       })
     )
-    const texts = blocks.map((b: any) => b.text as string)
-    expect(texts.some((t) => t.includes('the message this reply quotes'))).toBe(false)
-    // It is still visible — as ordinary thread catch-up context, recorded once.
-    // …and it is NOT repeated as catch-up context either: turn 1 already delivered it, so it
-    // lives in the agent's ACP session context. Suppression here is what prevents duplication.
-    expect(texts.join('\n')).not.toContain('the deploy failed with ECONNRESET')
+    expect(blocks.map((b: any) => b.text as string).join('\n')).toContain('the deploy failed with ECONNRESET')
     store.close()
   })
 
-  it('does not duplicate the agent OWN reply it is quoted back, though replay filters it out', async () => {
+  it('still delivers the agent OWN reply quoted back (past authorship ≠ present context)', async () => {
     const store = newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
     await sm.handle('bot-a', tgMsg({ ts: '10', text: 'why is staging down?' }))
-    // The bot answers AFTER that read cursor, so its row is in the next unread window yet is
-    // filtered from replay as an own message. The continuing runtime authored it, so it is in
-    // context regardless — quoting it back must add nothing.
     store.appendTranscript({
       channel: transcriptChannelKey('-100123'),
       thread: 'tg:10',
@@ -1609,6 +1634,8 @@ describe('SessionManager — quoted reply source', () => {
       kind: 'text',
       text: 'because the migration job is stuck'
     })
+    // Own authorship only says SOME past session produced this. It also says which of several
+    // bot messages the user means — the reason they reply-quoted rather than just typing.
     const { blocks } = await sm.handle(
       'bot-a',
       tgMsg({
@@ -1618,9 +1645,7 @@ describe('SessionManager — quoted reply source', () => {
         quoted: { messageId: '11', sender: '@mybot', text: 'because the migration job is stuck' }
       })
     )
-    const texts = blocks.map((b: any) => b.text as string)
-    expect(texts.some((t) => t.includes('this reply quotes'))).toBe(false)
-    expect(texts.join('\n')).not.toContain('because the migration job is stuck')
+    expect(blocks.map((b: any) => b.text as string).join('\n')).toContain('because the migration job is stuck')
     store.close()
   })
 

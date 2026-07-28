@@ -230,58 +230,44 @@ export class SessionManager {
   }
 
   /**
-   * The prompt block carrying what an inbound reply is QUOTING, or undefined when the agent
-   * demonstrably already has that content. Telegram nests the replied-to message in the
-   * update (`reply_to_message`, plus `quote` for a user-selected passage) and the Bot API
-   * cannot fetch it later, so this is the daemon's only chance to keep it: an @mention that
-   * quotes a message the daemon never recorded otherwise reaches the agent as the mention
-   * text alone (unlike Slack, Telegram has no `fetchThreadHistory` backfill).
+   * The prompt block carrying what an inbound reply is QUOTING. Telegram nests the replied-to
+   * message in the update (`reply_to_message`, plus `quote` for a user-selected passage) and
+   * the Bot API cannot fetch it later, so this is the daemon's only chance to keep it: an
+   * @mention that quotes a message the daemon never recorded otherwise reaches the agent as
+   * the mention text alone (unlike Slack, Telegram has no `fetchThreadHistory` backfill).
    *
-   * Suppression must key on what actually REACHES the runtime, not on what the daemon merely
-   * stored — a transcript row is not proof the model can see it. It also must not be inferred
-   * from cursor ORDER: `ts` is text, and Telegram's ascending integer ids do not compare
-   * correctly as text (`"100" > "99"` is false), so an unread-window test both misses rows
-   * that were never delivered and mistakes rows that were. Only three order-free states prove
-   * the content is present:
-   *   - the quoted row is in `replayed`, so this very prompt already carries it;
-   *   - on a CONTINUING runtime session, the quoted row was AUTHORED by this agent, so the
-   *     model produced it (the common "reply to the agent" case, which the own-message filter
-   *     keeps out of replay — hence not covered by `replayed`); and
-   *   - on a CONTINUING runtime session, the quoted row is recorded as DELIVERED to this
-   *     agent, the durable per-message receipt every inbound append writes.
-   * Anything else is injected. In particular a `freshSession` turn suppresses nothing: when a
-   * persisted ACP session cannot be resumed, `handle` mints a new one whose context is empty,
-   * so past authorship and past delivery say nothing about what the model can still see.
-   *
-   * A user-selected passage (`quoted.selection`) is never suppressed: it states WHICH part
-   * of the source the reply is about, which having the full source in context cannot supply.
+   * It is emitted whenever the reply carries one, with a single exception: the quoted row is
+   * among the rows THIS prompt already replays, where it would be verbatim duplication inside
+   * one message. Deliberately nothing cleverer, because the daemon records no fact that
+   * implies "the current ACP session has seen this message", and each available proxy is
+   * demonstrably weaker than it looks:
+   *   - cursor order — `ts` is TEXT, so Telegram's ascending ids miscompare (`"100" > "99"`
+   *     is false), which both hides delivered rows and invents undelivered ones;
+   *   - a delivery receipt (`recipient` / `transcript_recipient`) — written at the TOP of
+   *     `handle`, before any prompt; `dispatchOne` can still bail between the two (the
+   *     `readyGate` cancel), leaving a receipt and an advanced cursor for a message the
+   *     runtime never saw; and
+   *   - own authorship — only tells us some PAST session produced it. A recreated session
+   *     starts empty, and `freshSession` describes this turn alone, not earlier recreations.
+   * Getting that wrong drops the subject of the reply and leaves a bare "what about this?",
+   * so this errs the other way. Echoing back a message the model does have is cheap (one
+   * bounded, labeled block) and, on Telegram specifically, informative: reply-quoting is how
+   * a user disambiguates WHICH earlier message they mean, and after a context compaction the
+   * agent may genuinely no longer hold even its own words.
    */
   private quotedSourceBlock(
     msg: NormalizedMessage,
     ctx: {
-      agentId: string
-      transcriptChannel: string
-      thread: string
       /** The rows this prompt actually replays to the model. */
       replayed: readonly { ts: string }[]
-      /** A brand-new runtime session was minted this turn — no prior context survives. */
-      freshSession: boolean
     }
   ): string | undefined {
     const quoted = msg.quoted
     if (!quoted?.text) return undefined
-    // Without an id the quote cannot be matched against what was delivered — inject it and
-    // accept a possible duplicate over silently dropping the reply's subject.
+    // A user-selected passage stays even against replay: it states WHICH part of the source
+    // the reply is about, which the full source sitting in context cannot supply.
     if (quoted.messageId !== undefined && !quoted.selection) {
-      const id = quoted.messageId
-      if (ctx.replayed.some((e) => e.ts === id)) return undefined
-      if (!ctx.freshSession) {
-        const row = this.deps.store.transcriptTextEntryAt(ctx.transcriptChannel, ctx.thread, id)
-        if (row?.sender === ctx.agentId) return undefined
-        if (row && this.deps.store.wasDeliveredToAgent(ctx.transcriptChannel, ctx.thread, id, ctx.agentId)) {
-          return undefined
-        }
-      }
+      if (ctx.replayed.some((e) => e.ts === quoted.messageId)) return undefined
     }
     // Framed as context, never as instruction: the quoted author is a third party whose text
     // the agent should reason about, not obey. Same `[sender] text` shape as thread context.
@@ -796,13 +782,7 @@ export class SessionManager {
           const ctxText = context.map((e) => `[${e.sender}] ${e.text}`).join('\n')
           blocks.push({ type: 'text', text: `${head}\n${ctxText}` })
         }
-        const quotedBlock = this.quotedSourceBlock(msg, {
-          agentId,
-          transcriptChannel,
-          thread,
-          replayed: context,
-          freshSession: created
-        })
+        const quotedBlock = this.quotedSourceBlock(msg, { replayed: context })
         if (quotedBlock) blocks.push({ type: 'text', text: quotedBlock })
         blocks.push({ type: 'text', text: msg.text })
       }
