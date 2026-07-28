@@ -9,6 +9,9 @@ export interface CuratedRuntimeEntry {
  * Reviewed native ACP stdio commands that are not guaranteed to exist in the
  * public ACP registry. This is a launch catalog, not an installer: host
  * discovery still requires the executable and initialized local state.
+ *
+ * Display marks for these ids live web-side in the /api/acp-registry route
+ * (packages/web) — the console is their only consumer. Keep the ids in sync.
  */
 export const CURATED_RUNTIME_CATALOG: Readonly<Record<string, CuratedRuntimeEntry>> = Object.freeze({
   'hermes-agent': {

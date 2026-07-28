@@ -25,15 +25,29 @@ describe('ACP Registry metadata', () => {
 
     const response = await GET()
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({
-      agents: {
-        'claude-acp': {
-          name: 'Claude Agent',
-          icon: 'https://cdn.agentclientprotocol.com/registry/v1/latest/claude-acp.svg'
-        },
-        custom: { name: 'Custom', icon: null }
-      }
+    const { agents } = (await response.json()) as { agents: Record<string, { name: string; icon: string | null }> }
+    // Upstream icons keep only the direct ACP CDN url; others are dropped to null.
+    expect(agents['claude-acp']).toEqual({
+      name: 'Claude Agent',
+      icon: 'https://cdn.agentclientprotocol.com/registry/v1/latest/claude-acp.svg'
     })
+    expect(agents.custom).toEqual({ name: 'Custom', icon: null })
+    // Curated marks are merged in and bypass the CDN filter (our own trusted urls).
+    expect(agents['kiro-cli']).toEqual({
+      name: 'Kiro CLI',
+      icon: 'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/kiro-color.svg'
+    })
+  })
+
+  it('serves curated marks even when the upstream registry fetch fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('nope', { status: 500 }))
+    )
+    const response = await GET()
+    expect(response.status).toBe(200)
+    const { agents } = (await response.json()) as { agents: Record<string, unknown> }
+    expect(agents['kiro-cli']).toBeDefined()
   })
 
   it('resolves legacy runtime ids and applies the product-name exception', () => {

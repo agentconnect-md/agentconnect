@@ -920,7 +920,7 @@
      overlapped left edge needs it, and only marks that sit on top of another
      get the class (see IntegrationMarks), so a single mark stays borderless. */
   .imark.imark-overlap {
-    box-shadow: -2px 0 0 0 var(--surface-card);
+    box-shadow: -1px 0 0 0 var(--surface-card);
   }
   .lnk {
     display: inline-flex;
