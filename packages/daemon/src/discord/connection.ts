@@ -1,6 +1,7 @@
 import {
   Client,
   GatewayIntentBits,
+  Partials,
   Events,
   MessageFlags,
   type Message,
@@ -185,7 +186,10 @@ export class DiscordConnection {
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent, // privileged: needed to read message text
         GatewayIntentBits.DirectMessages
-      ]
+      ],
+      // Discord does not cache DM channels. Without this partial, discord.js drops
+      // MESSAGE_CREATE events from DMs before they reach our MessageCreate handler.
+      partials: [Partials.Channel]
     })
   }
 
