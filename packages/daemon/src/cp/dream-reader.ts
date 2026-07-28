@@ -58,7 +58,12 @@ export function createDreamReader(runner: DreamRunner): DreamReader {
     },
 
     async list(req) {
-      return { agentId: req.agentId, dreams: runner.list(req.agentId, req.limit) }
+      return {
+        agentId: req.agentId,
+        dreams: req.pendingSkills
+          ? runner.listPendingSkills(req.agentId, req.limit)
+          : runner.list(req.agentId, req.limit)
+      }
     },
 
     async get(req) {

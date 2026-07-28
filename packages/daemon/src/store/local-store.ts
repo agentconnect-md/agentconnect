@@ -1784,6 +1784,22 @@ export class LocalStore {
     ).map((row) => this.dreamFromRow(row))
   }
 
+  /** Dreams still holding an unreviewed skill candidate, newest first. Scanned
+   *  independently of the public history page: a proposal survives adoption and
+   *  discard until it is reviewed, so it must not age out behind newer runs. */
+  pendingSkillDreams(agentId: string, limit: number): DreamInfo[] {
+    return (
+      this.db
+        .prepare(
+          'SELECT * FROM dreams WHERE agentId = ? AND skills IS NOT NULL ORDER BY createdAt DESC, dreamId DESC LIMIT 500'
+        )
+        .all(agentId) as Record<string, unknown>[]
+    )
+      .map((row) => this.dreamFromRow(row))
+      .filter((dream) => (dream.skills ?? []).some((skill) => skill.state === 'proposed'))
+      .slice(0, limit)
+  }
+
   /** Non-terminal dreams — the boot-time crash-recovery sweep. */
   openDreams(): DreamInfo[] {
     return (

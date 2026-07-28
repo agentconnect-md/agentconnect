@@ -335,6 +335,8 @@ describe('DreamPanel', () => {
     const skills = [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
     api.listDreams.mockResolvedValue([dream({ skills })])
     const host = await render()
+    // Pending proposals come from their OWN query, not the history page.
+    expect(api.listDreams).toHaveBeenCalledWith(AGENT, 50, { pendingSkills: true })
 
     expect(host.textContent).toContain('Suggested skills')
     expect(host.textContent).toContain('deploy-staging')
@@ -386,19 +388,68 @@ describe('DreamPanel', () => {
     expect(host.textContent).not.toContain('Suggested skills')
   })
 
-  it('keeps a pending candidate reachable behind newer dreams', async () => {
-    // Proposed skills survive adoption/discard until reviewed, so an old pending
-    // candidate must not fall off the list behind newer runs.
+  it('reaches a pending candidate that has aged out of the history page entirely', async () => {
+    // Beyond the route's real cap: the history page is FULL of newer dreams and
+    // does not contain the pending one at all. It must still be offered, because
+    // its own query does not depend on history depth.
     const older = dream({
       dreamId: 'drm-old',
       status: 'adopted',
       skills: [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
     })
-    const newer = Array.from({ length: 25 }, (_, i) => dream({ dreamId: `drm-${i}`, status: 'adopted' }))
-    api.listDreams.mockResolvedValue([...newer, older])
+    const fullPage = Array.from({ length: 50 }, (_, i) => dream({ dreamId: `drm-${i}`, status: 'adopted' }))
+    api.listDreams.mockImplementation(async (_a: string, _l: number, opts?: { pendingSkills?: boolean }) =>
+      opts?.pendingSkills ? [older] : fullPage
+    )
     const host = await render()
-    expect(api.listDreams).toHaveBeenCalledWith(AGENT, 50)
     expect(host.textContent).toContain('deploy-staging')
+  })
+
+  it('keeps Accept disabled while the body is loading, and on error or missing staging', async () => {
+    const skills = [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
+    api.listDreams.mockResolvedValue([dream({ skills })])
+
+    // 1. Never-resolving fetch: opening the disclosure must NOT enable Accept.
+    api.fetchDreamSkill.mockReturnValue(new Promise(() => {}))
+    let host = await render()
+    let details = host.querySelector<HTMLDetailsElement>('details')!
+    await act(async () => {
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+    })
+    expect(button(host, 'Accept')?.disabled).toBe(true)
+    await act(async () => root?.unmount())
+    container?.remove()
+
+    // 2. Error.
+    api.fetchDreamSkill.mockRejectedValue(new Error('nope'))
+    host = await render()
+    details = host.querySelector<HTMLDetailsElement>('details')!
+    await act(async () => {
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(button(host, 'Accept')?.disabled).toBe(true)
+    await act(async () => root?.unmount())
+    container?.remove()
+
+    // 3. Staging vanished.
+    api.fetchDreamSkill.mockResolvedValue({ name: 'deploy-staging', exists: false, skill: null, scripts: [] })
+    host = await render()
+    details = host.querySelector<HTMLDetailsElement>('details')!
+    await act(async () => {
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(button(host, 'Accept')?.disabled).toBe(true)
+    expect(host.textContent).toContain('no longer staged')
+    expect(api.acceptDreamSkill).not.toHaveBeenCalled()
   })
 
   it('keeps recommendations actionable for a viewer but disabled', async () => {

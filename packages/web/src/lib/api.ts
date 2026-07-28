@@ -1979,8 +1979,15 @@ export async function startDream(
   return apiPost<DreamDto>(dreamBase(agentId), opts)
 }
 
-export async function listDreams(agentId: string, limit?: number): Promise<DreamDto[]> {
-  const q = limit ? `?limit=${limit}` : ''
+export async function listDreams(
+  agentId: string,
+  limit?: number,
+  opts: { pendingSkills?: boolean } = {}
+): Promise<DreamDto[]> {
+  const params = new URLSearchParams()
+  if (limit) params.set('limit', String(limit))
+  if (opts.pendingSkills) params.set('pendingSkills', '1')
+  const q = params.toString() ? `?${params.toString()}` : ''
   return (await apiGet<{ dreams: DreamDto[] }>(`${dreamBase(agentId)}${q}`)).dreams
 }
 

@@ -113,6 +113,9 @@ export function DreamPanel({
   sessionBasePath?: string
 }) {
   const [dreams, setDreams] = useState<DreamDto[] | null>(null)
+  // Fetched separately: a proposal outlives the store lifecycle, so it must not
+  // depend on how deep the newest-first history has grown.
+  const [pendingSkillDreams, setPendingSkillDreams] = useState<DreamDto[]>([])
   const [listError, setListError] = useState<string | null>(null)
   // 409 DAEMON_FEATURE_MISSING — this agent's daemon predates dreaming. Not an
   // error the user can act on except by upgrading, so it gets its own state.
@@ -131,7 +134,11 @@ export function DreamPanel({
       // Proposed skills deliberately survive adoption/discard until reviewed, so a
       // pending candidate must not fall off the list behind newer runs. Ask for
       // the full window the CP allows rather than one screen's worth.
-      const rows = await listDreams(agentId, DREAM_PAGE)
+      const [rows, pending] = await Promise.all([
+        listDreams(agentId, DREAM_PAGE),
+        listDreams(agentId, DREAM_PAGE, { pendingSkills: true }).catch(() => [] as DreamDto[])
+      ])
+      setPendingSkillDreams(pending)
       if (request !== listRequest.current) return
       setDreams(rows)
       setListError(null)
@@ -373,7 +380,7 @@ export function DreamPanel({
             block: a skill's review lifecycle is independent of the store
             proposal (§7), so they stay actionable whether or not the store was
             adopted, and after the store staging is gone. */}
-        {(dreams ?? []).map((dream) => {
+        {pendingSkillDreams.map((dream) => {
           const proposed = (dream.skills ?? []).filter((skill) => skill.state === 'proposed')
           if (proposed.length === 0) return null
           return (
@@ -689,9 +696,13 @@ function SkillBody({
       className="w-full"
       onToggle={(e) => {
         if (!(e.currentTarget as HTMLDetailsElement).open || content) return
-        onRead()
         void fetchDreamSkill(agentId, dreamId, name)
-          .then(setContent)
+          .then((body) => {
+            setContent(body)
+            // Only a body that actually rendered counts as reviewed — a pending
+            // request, an error, or vanished staging must all keep Accept off.
+            if (body.exists && body.skill) onRead()
+          })
           .catch((err) => setError(err instanceof Error ? err.message : 'Could not load this skill.'))
       }}
     >

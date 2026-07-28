@@ -401,7 +401,14 @@ export type DreamCancelReq = z.infer<typeof DreamCancelReq>
 
 /** C→D REQ: list dream jobs for one agent (newest first; bounded). */
 export const DreamListReq = z
-  .object({ agentId: z.string().min(1), limit: z.number().int().positive().max(50).default(20) })
+  .object({
+    agentId: z.string().min(1),
+    limit: z.number().int().positive().max(50).default(20),
+    /** Only dreams still holding an unreviewed skill candidate. These deliberately
+     *  outlive store adoption/discard, so they must be reachable independently of
+     *  how deep the newest-first history has grown. */
+    pendingSkills: z.boolean().optional()
+  })
   .strict()
 export type DreamListReq = z.infer<typeof DreamListReq>
 

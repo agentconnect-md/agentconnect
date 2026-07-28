@@ -3012,7 +3012,12 @@ export function agentRoutes(deps: HttpDeps) {
             "List the agent's memory dream jobs (newest first), proxied from the owning daemon. 409 when the owning daemon is too old to support dreaming (code DAEMON_FEATURE_MISSING).",
           operationId: 'listAgentMemoryDreams',
           params: IdParam,
-          querystring: z.object({ limit: z.coerce.number().int().positive().max(50).optional() }),
+          querystring: z.object({
+            limit: z.coerce.number().int().positive().max(50).optional(),
+            // Pending skill proposals outlive the store lifecycle, so they need a
+            // path that does not age out behind newer history.
+            pendingSkills: z.coerce.boolean().optional()
+          }),
           response: { 200: DreamListDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
@@ -3021,7 +3026,11 @@ export function agentRoutes(deps: HttpDeps) {
         if (!agent) return
         try {
           return toDreamListDto(
-            await deps.control.dreamList(agent.daemonId, { agentId: agent.id, limit: req.query.limit ?? 20 })
+            await deps.control.dreamList(agent.daemonId, {
+              agentId: agent.id,
+              limit: req.query.limit ?? 20,
+              ...(req.query.pendingSkills ? { pendingSkills: true } : {})
+            })
           )
         } catch (err) {
           if (sendDreamFailure(reply, err)) return
