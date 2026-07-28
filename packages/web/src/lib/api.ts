@@ -2548,6 +2548,8 @@ export interface HookRunDto {
 export interface CreateHookInput {
   agentId: string
   name: string
+  /** Add X-AC-Signature verification on top of the capability URL. */
+  hmac?: boolean
 }
 
 // github kind: the repo must sit inside one of the org's GitHub App
@@ -2574,9 +2576,10 @@ export async function fetchAgentHooks(agentId: string, orgId?: string): Promise<
   return apiGet<HookDto[]>(`${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/hooks`)
 }
 
-// Always mints a signing secret (`hmac: true`) — the create modal reveals it once.
+// The capability URL is sufficient by default. HMAC is an optional second
+// factor, with its signing secret revealed once by the create response.
 export async function createHook(input: CreateHookInput): Promise<CreatedHookDto> {
-  const hook = await apiPost<CreatedHookDto>(`${orgBase()}/hooks`, { kind: 'webhook', hmac: true, ...input })
+  const hook = await apiPost<CreatedHookDto>(`${orgBase()}/hooks`, { kind: 'webhook', ...input })
   track('hook_created', { org_id: apiOrgId, agent_id: hook.agentId, hook_kind: hook.kind, hook_id: hook.id })
   return hook
 }
