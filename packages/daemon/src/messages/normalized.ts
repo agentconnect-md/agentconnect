@@ -34,6 +34,14 @@ export interface NormalizedMessage {
   platform: 'slack' | 'telegram' | 'webchat' | 'discord' | 'feishu' | 'hook'
   channel: string
   thread?: string
+  /**
+   * Opaque identity of the physical platform bot/connection that received this
+   * message. Platform channel ids are only unique within one bot installation
+   * (Telegram DMs in particular reuse the user's numeric id across bots), so the
+   * daemon uses this scope for private transcript and session lookup boundaries.
+   * It is internal metadata: user-facing channel/thread coordinates stay unchanged.
+   */
+  transportScope?: string
   sender: {
     id: string
     isBot: boolean
@@ -82,4 +90,18 @@ export interface NormalizedMessage {
   // output suppressed (transcript/session bookkeeping only). `channel` is then a
   // synthetic key, not a real platform channel.
   headless?: boolean
+}
+
+type MessageIdentityFields = Pick<NormalizedMessage, 'msgId' | 'platform' | 'traceId' | 'transportScope'>
+
+/** Stable daemon-local delivery identity. Platform ids are only unique within
+ * one physical bot; webchat instead needs its per-turn trace id. */
+export function stableMessageId(msg: MessageIdentityFields): string {
+  const sourceId = msg.platform === 'webchat' ? msg.traceId : msg.msgId
+  return msg.transportScope ? `${msg.transportScope}\u001f${sourceId}` : sourceId
+}
+
+/** Stable operation fence shared by evaluation and memory lifecycle events. */
+export function stableTurnId(agentId: string, msg: MessageIdentityFields): string {
+  return `${agentId}:${stableMessageId(msg)}`
 }

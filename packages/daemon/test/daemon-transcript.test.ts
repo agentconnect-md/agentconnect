@@ -1,9 +1,14 @@
 import { describe, it, expect, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
-import type { TranscriptEntry } from '../src/store/local-store.js'
+import { transcriptChannelKey, type TranscriptEntry } from '../src/store/local-store.js'
+import { stableTurnId } from '../src/messages/normalized.js'
+
+const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
+const TRANSCRIPT_CHANNEL = transcriptChannelKey('C1', TRANSPORT_SCOPE)
 
 function scaffold(mode: 'minimal' | 'low' | 'medium' | 'high', agentExtra: Record<string, unknown> = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-tx-'))
@@ -93,6 +98,7 @@ const dm = (ts: string, text: string) => ({
   platform: 'slack' as const,
   channel: 'C1',
   thread: 'T1',
+  transportScope: TRANSPORT_SCOPE,
   sender: { id: 'U1', isBot: false },
   text,
   mentionedBots: [] as string[],
@@ -101,13 +107,13 @@ const dm = (ts: string, text: string) => ({
 })
 
 function transcript(daemon: Daemon): TranscriptEntry[] {
-  return (daemon as any).store.transcriptSince('C1', 'T1', null)
+  return (daemon as any).store.transcriptSince(TRANSCRIPT_CHANNEL, 'T1', null)
 }
 
 /** Full activity log (all kinds), insertion order — what the Web UI reads. */
 function activity(daemon: Daemon): { kind: string; sender: string; text: string }[] {
   return (daemon as any).store
-    .threadTranscript('C1', 'T1')
+    .threadTranscript(TRANSCRIPT_CHANNEL, 'T1')
     .map((r: any) => ({ kind: r.kind, sender: r.sender, text: r.text }))
 }
 
@@ -166,7 +172,7 @@ describe('Daemon transcript records the agent reply', () => {
     expect(recordTurn).toHaveBeenCalledWith(
       { agentId: 'bot-a', sessionId: 'acp-1' },
       {
-        turnId: 'bot-a:slack:C1:100',
+        turnId: stableTurnId('bot-a', dm('100', 'question?')),
         sessionId: 'acp-1',
         input: 'question?',
         output: 'here is my answer'
@@ -590,7 +596,7 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
 
     // A *different* agent replaying the thread sees conversational text only — never
     // bot-a's tool calls or reasoning fed back as "context you may have missed".
-    const gap = (daemon as any).store.transcriptSince('C1', 'T1', null)
+    const gap = (daemon as any).store.transcriptSince(TRANSCRIPT_CHANNEL, 'T1', null)
     expect(gap.every((r: TranscriptEntry) => r.kind === 'text')).toBe(true)
     expect(gap.map((r: TranscriptEntry) => r.text)).toEqual(['go', 'here is the answer'])
     await daemon.stop()
@@ -627,7 +633,7 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
 
     await (daemon as any).dispatch('bot-a', dm('100', 'is TestSA in the env?'), 'int-a')
 
-    const rows = (daemon as any).store.threadTranscript('C1', 'T1')
+    const rows = (daemon as any).store.threadTranscript(TRANSCRIPT_CHANNEL, 'T1')
     expect(JSON.stringify(rows)).not.toContain('s3cret-value')
     const reply = rows.find((r: any) => r.kind === 'text' && r.sender === 'bot-a')
     expect(reply.text).toBe('yes, TestSA is set to [secret:TestSA]')

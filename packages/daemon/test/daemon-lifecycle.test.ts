@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -6,6 +7,8 @@ import { Daemon } from '../src/daemon.js'
 import { configFilesDir } from '../src/agents/config-file-env.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { FakeClock } from './cp/fake-clock.js'
+
+const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
 
 /** A daemon root with one DM-less agent (we attach routing + a fake conn by hand,
  *  exactly like daemon-commands.test.ts). `limits` overrides the lifecycle tunables. */
@@ -130,6 +133,7 @@ const dm = (ts: string, text: string, thread = 'T1') => ({
   platform: 'slack' as const,
   channel: 'C1',
   thread,
+  transportScope: TRANSPORT_SCOPE,
   sender: { id: 'U1', isBot: false },
   text,
   mentionedBots: [] as string[],
@@ -137,7 +141,7 @@ const dm = (ts: string, text: string, thread = 'T1') => ({
   trigger: 'dm' as const
 })
 
-const KEY = sessionKey('slack', 'C1', 'T1', 'bot-a')
+const KEY = sessionKey('slack', 'C1', 'T1', 'bot-a', TRANSPORT_SCOPE)
 
 function pendingFor(daemon: Daemon, acpSessionId: string): any {
   return [...(daemon as any).pending.values()].find(
@@ -211,7 +215,7 @@ describe('Daemon session lifecycle (#118)', () => {
       username: 'Review Bot',
       icon_url: 'https://console.example.test/icons/review-bot'
     })
-    const key = sessionKey('slack', 'C1', '100.100000', 'bot-a')
+    const key = sessionKey('slack', 'C1', '100.100000', 'bot-a', TRANSPORT_SCOPE)
     expect((daemon as any).store.getSession(key)?.lastDeliveredTs).toBe('100.100000')
 
     await (daemon as any).dispatch(
@@ -305,7 +309,7 @@ describe('Daemon session lifecycle (#118)', () => {
     const second = (daemon as any).dispatch('bot-a', dm('200', 'second', 'T2'))
     await vi.waitFor(() => expect((daemon as any).pending.size).toBe(2))
     const queued = (daemon as any).dispatch('bot-a', dm('300', 'queued', 'T1'))
-    expect((daemon as any).serialQueue.get(sessionKey('slack', 'C1', 'T1', 'bot-a'))).toHaveLength(1)
+    expect((daemon as any).serialQueue.get(KEY)).toHaveLength(1)
 
     writePause(root, true)
     await daemon.reconcile()

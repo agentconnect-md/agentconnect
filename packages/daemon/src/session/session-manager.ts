@@ -1,5 +1,5 @@
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
-import { LocalStore, sessionKey } from '../store/local-store.js'
+import { LocalStore, sessionKey, transcriptChannelKey } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { prepareWorkspace } from '../workspace/workspace-manager.js'
 import { memoryKindOf, type MemoryProvider } from '../agents/memory-provider.js'
@@ -9,7 +9,7 @@ import { recalledMemoryBlock, recallQueryFromBlocks, sanitizeRecallRecords } fro
 import type { AcpHost } from '../acp/acp-host.js'
 import type { Agent } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
-import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
+import { stableTurnId, type Attachment, type NormalizedMessage } from '../messages/normalized.js'
 import { buildAttachmentBlocks, attachmentMention, transcriptImageAttachments } from './attachment-block.js'
 import { EXPLICIT_MENTION_REMINDER, NO_RESPONSE_RULE, NO_RESPONSE_REMINDER } from './no-response.js'
 
@@ -178,6 +178,7 @@ export class SessionManager {
         channel: string
         thread: string
         integrationId?: string
+        transportScope?: string
         isDm: boolean
       }) => McpServer[]
       /**
@@ -214,8 +215,8 @@ export class SessionManager {
   private readonly turnsSinceReminder = new Map<string, number>()
   private readonly lastContextUsed = new Map<string, number>()
 
-  threadOwner(channel: string, thread: string): string | null {
-    const owners = this.deps.store.openSessionAgents(channel, thread)
+  threadOwner(channel: string, thread: string, transportScope?: string | null): string | null {
+    const owners = this.deps.store.openSessionAgents(channel, thread, transportScope)
     // 2+ live owners actively share the thread → ambiguous, fall through to
     // mention-gating (§8.2). Exactly one → thread continuity.
     if (owners.length > 0) return owners.length === 1 ? owners[0]! : null
@@ -224,7 +225,7 @@ export class SessionManager {
     // the sole agent that previously owned this thread — SessionManager.handle then
     // recreates/resumes its ACP session. Still gated at exactly one, and the `!stop`
     // mute check downstream (onInbound) keeps a muted thread suppressed regardless.
-    const dormant = this.deps.store.closedSessionAgents(channel, thread)
+    const dormant = this.deps.store.closedSessionAgents(channel, thread, transportScope)
     return dormant.length === 1 ? dormant[0]! : null
   }
 
@@ -266,14 +267,24 @@ export class SessionManager {
     // daemon.ts, so the user message and its reply never collide on the same ms) — the
     // whole conversation is recorded, and thread stays stable → one session.
     const ts = msg.platform === 'webchat' ? monotonicTs() : coordTs
-    const key = sessionKey(msg.platform, msg.channel, thread, agentId)
+    const transportScope = msg.transportScope
+    const legacyKey = sessionKey(msg.platform, msg.channel, thread, agentId)
+    const key = sessionKey(msg.platform, msg.channel, thread, agentId, transportScope)
+    let rec = this.deps.store.getSession(key)
+    if (!rec && transportScope) {
+      // A pre-scope session may already contain traffic admitted through another
+      // physical bot. The store moves it onto the attributable key and discards
+      // unsafe runtime context when its old bot scope is unknown.
+      rec = this.deps.store.adoptLegacySessionScope(legacyKey, key, transportScope, Date.now())
+    }
+    const transcriptChannel = transcriptChannelKey(msg.channel, transportScope)
 
     // record the triggering message in the transcript (with an attachment mention
     // for prompt replay; bounded inline webchat images remain daemon-local for UI replay)
     const mention = attachmentMention(msg.attachments)
     const transcriptAttachments = transcriptImageAttachments(msg.attachments)
     this.deps.store.appendTranscript({
-      channel: msg.channel,
+      channel: transcriptChannel,
       thread,
       ts,
       sender: msg.sender.id,
@@ -285,22 +296,28 @@ export class SessionManager {
       ...(transcriptAttachments.length ? { attachments: transcriptAttachments } : {})
     })
 
-    let rec = this.deps.store.getSession(key)
     const isNewLogicalSession = rec === undefined
     if (rec) {
       const persistedMemoryProvider = rec.memoryProvider ?? 'managed'
-      if (persistedMemoryProvider !== currentMemoryProvider) {
+      // Defensive corruption fence: a scoped key and its stored scope must agree.
+      const transportChanged = transportScope != null && rec.transportScope !== transportScope
+      if (persistedMemoryProvider !== currentMemoryProvider || transportChanged) {
         rec = {
           ...rec,
           acpSessionId: null,
           memoryProvider: currentMemoryProvider,
+          transportScope: transportScope ?? null,
           state: rec.state === 'closed' ? 'closed' : 'idle',
           lastDeliveredTs: null,
           updatedAt: Date.now()
         }
         this.deps.store.upsertSession(rec)
-      } else if (rec.memoryProvider == null) {
-        rec = { ...rec, memoryProvider: currentMemoryProvider }
+      } else if (rec.memoryProvider == null || rec.transportScope == null) {
+        rec = {
+          ...rec,
+          memoryProvider: currentMemoryProvider,
+          ...(transportScope !== undefined ? { transportScope } : {})
+        }
         this.deps.store.upsertSession(rec)
       }
     }
@@ -521,6 +538,7 @@ export class SessionManager {
           channel: msg.channel,
           thread,
           ...(integrationId !== undefined ? { integrationId } : {}),
+          ...(transportScope !== undefined ? { transportScope } : {}),
           isDm: msg.isDm
         }) ?? []
       const acpSessionId = await newRuntimeSession(cwd, mcpServers, metaContext)
@@ -531,6 +549,7 @@ export class SessionManager {
         platform: msg.platform,
         channel: msg.channel,
         thread,
+        transportScope: transportScope ?? null,
         acpSessionId,
         state: 'idle',
         lastDeliveredTs: null,
@@ -566,6 +585,7 @@ export class SessionManager {
           channel: msg.channel,
           thread,
           ...(integrationId !== undefined ? { integrationId } : {}),
+          ...(transportScope !== undefined ? { transportScope } : {}),
           isDm: msg.isDm
         }) ?? []
       let resumed = false
@@ -635,7 +655,7 @@ export class SessionManager {
         // them (low/medium/high record at the send boundary WITH the Slack ts, so they dedup).
         if (h.sender === agentId) continue
         this.deps.store.appendTranscript({
-          channel: msg.channel,
+          channel: transcriptChannel,
           thread,
           ts: h.ts,
           sender: h.sender,
@@ -654,7 +674,7 @@ export class SessionManager {
     const blocks: ContentBlock[] = []
     {
       const gap = this.deps.store
-        .transcriptSince(msg.channel, thread, markerBefore)
+        .transcriptSince(transcriptChannel, thread, markerBefore)
         .filter(
           (e) =>
             snapshotCutoffTs === undefined ||
@@ -735,10 +755,11 @@ export class SessionManager {
     // prompt exists. Its result is appended as a trailing, explicitly untrusted
     // reference block — never as the first user block/title seed (#398).
     const captureInput = recallQueryFromBlocks(blocks)
-    // Platform message ids are stable across redelivery and therefore make a
-    // durable operation fence. Webchat deliberately reuses one msgId for the
-    // whole conversation, so use its per-turn trace id instead.
-    const turnId = `${agentId}:${msg.platform === 'webchat' ? msg.traceId : msg.msgId}`
+    // Platform message ids are stable across redelivery within one physical bot
+    // and therefore make a durable operation fence once bot-scoped. Webchat
+    // deliberately reuses one msgId for the whole conversation, so use its
+    // per-turn trace id instead.
+    const turnId = stableTurnId(agentId, msg)
     const recallScope = { agentId, sessionId: rec.acpSessionId! }
     const recallPolicy = memoryEnabled ? this.deps.memory.recallPolicy(recallScope) : undefined
     if (captureInput && recallPolicy?.mode === 'auto') {

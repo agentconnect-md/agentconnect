@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { LocalStore, sessionKey } from '../src/store/local-store.js'
+import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { SessionManager, isStandingContextTitleEcho } from '../src/session/session-manager.js'
 import { createManagedMemoryProvider } from '../src/agents/memory-provider.js'
 import { writeMemoryFile, MEMORY_INDEX } from '../src/agents/memory.js'
@@ -68,6 +68,76 @@ describe('SessionManager', () => {
     expect(created).toBe(true) // brand-new ACP session → daemon emits event/session start
     expect(host.newSession).toHaveBeenCalledOnce()
     expect(blocks.map((b: any) => b.text).join('')).toContain('first')
+    store.close()
+  })
+
+  it('does not replay transcript context from another physical bot with the same channel coordinates', async () => {
+    const store = newStore()
+    const agentB = { ...agent, id: 'bot-b', name: 'bot-b' }
+    const hosts = new Map([
+      ['bot-a', { newSession: vi.fn(async () => 'acp-a') } as any],
+      ['bot-b', { newSession: vi.fn(async () => 'acp-b') } as any]
+    ])
+    const sm = new SessionManager({
+      store,
+      hostFor: async (agentId) => hosts.get(agentId)!,
+      agentById: (agentId) => (agentId === 'bot-a' ? agent : agentId === 'bot-b' ? agentB : undefined),
+      memory
+    })
+    store.upsertSession({
+      key: sessionKey('slack', 'C1', '100.1', 'bot-b'),
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'legacy-acp-b',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'private text for bot A', transportScope: 'slack:scope-a' }))
+    const turnB = await sm.handle('bot-b', msg({ ts: '100.2', text: 'hello bot B', transportScope: 'slack:scope-b' }))
+
+    expect(turnB.sessionId).toBe('acp-b')
+    expect(hosts.get('bot-b')?.newSession).toHaveBeenCalledOnce()
+    expect(JSON.stringify(turnB.blocks)).not.toContain('private text for bot A')
+    expect(JSON.stringify(turnB.blocks)).toContain('hello bot B')
+    expect(store.threadTranscript(transcriptChannelKey('C1', 'slack:scope-a'), '100.1')).toHaveLength(1)
+    expect(store.threadTranscript(transcriptChannelKey('C1', 'slack:scope-b'), '100.1')).toHaveLength(1)
+    expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-b', 'slack:scope-b'))?.transportScope).toBe(
+      'slack:scope-b'
+    )
+    store.close()
+  })
+
+  it('reuses independent ACP and sticky state when one agent serves identical coordinates on two bots', async () => {
+    const store = newStore()
+    const host = {
+      newSession: vi.fn().mockResolvedValueOnce('acp-a').mockResolvedValueOnce('acp-b'),
+      hasSession: vi.fn(() => true)
+    } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const scopeA = 'slack:scope-a'
+    const scopeB = 'slack:scope-b'
+    const keyA = sessionKey('slack', 'C1', '100.1', 'bot-a', scopeA)
+    const keyB = sessionKey('slack', 'C1', '100.1', 'bot-a', scopeB)
+
+    const firstA = await sm.handle('bot-a', msg({ ts: '100.1', text: 'A1', transportScope: scopeA }))
+    const firstB = await sm.handle('bot-a', msg({ ts: '100.1', text: 'B1', transportScope: scopeB }))
+    store.setModelOverride(keyA, 'model-a')
+    store.setSessionMuted(keyA, true)
+    const secondA = await sm.handle('bot-a', msg({ ts: '100.3', text: 'A2', transportScope: scopeA }))
+
+    expect([firstA.sessionId, firstB.sessionId, secondA.sessionId]).toEqual(['acp-a', 'acp-b', 'acp-a'])
+    expect(firstA.turnId).not.toBe(firstB.turnId)
+    expect(host.newSession).toHaveBeenCalledTimes(2)
+    expect(store.getSession(keyA)?.acpSessionId).toBe('acp-a')
+    expect(store.getSession(keyB)?.acpSessionId).toBe('acp-b')
+    expect(store.getModelOverride(keyA)).toBe('model-a')
+    expect(store.getModelOverride(keyB)).toBeUndefined()
+    expect(store.isSessionMuted(keyA)).toBe(true)
+    expect(store.isSessionMuted(keyB)).toBe(false)
     store.close()
   })
 
@@ -1089,13 +1159,14 @@ describe('SessionManager', () => {
 })
 
 describe('SessionManager.threadOwner (§7.3 idle→closed thread-affinity revival)', () => {
-  const seed = (store: LocalStore, agentId: string, state: 'idle' | 'closed', thread = 'T1') =>
+  const seed = (store: LocalStore, agentId: string, state: 'idle' | 'closed', thread = 'T1', transportScope?: string) =>
     store.upsertSession({
-      key: sessionKey('slack', 'C1', thread, agentId),
+      key: sessionKey('slack', 'C1', thread, agentId, transportScope),
       agentId,
       platform: 'slack',
       channel: 'C1',
       thread,
+      ...(transportScope ? { transportScope } : {}),
       acpSessionId: `acp-${agentId}`,
       state,
       lastDeliveredTs: null,
@@ -1147,6 +1218,15 @@ describe('SessionManager.threadOwner (§7.3 idle→closed thread-affinity reviva
   it('is null for a thread nobody ever owned', () => {
     const store = newStore()
     expect(sm(store).threadOwner('C1', 'T1')).toBeNull()
+    store.close()
+  })
+
+  it('does not make equal coordinates on another physical bot ambiguous', () => {
+    const store = newStore()
+    seed(store, 'bot-a', 'idle', 'T1', 'slack:scope-a')
+    seed(store, 'bot-b', 'idle', 'T1', 'slack:scope-b')
+    expect(sm(store).threadOwner('C1', 'T1', 'slack:scope-a')).toBe('bot-a')
+    expect(sm(store).threadOwner('C1', 'T1', 'slack:scope-b')).toBe('bot-b')
     store.close()
   })
 })
