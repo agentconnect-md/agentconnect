@@ -231,6 +231,11 @@ with the same injection posture and a five-phase pipeline:
   least two distinct sessions, never one-off task steps.
 - Unlike distillation, rewriting and deleting are **allowed** — that is the
   point — but only inside the returned proposal.
+- Existing topic boundaries, filenames, and byte-identical content are
+  preserved by default. Small wording, formatting, ordering, or consistency
+  edits do not justify renaming a topic. A rename, merge, or split is proposed
+  only when a material content change makes the existing structure misleading;
+  equally faithful proposals prefer the smallest diff.
 - Output is JSON only:
   `{"files":[{"path":"topic.md","content":"..."}], "index":"...",
 "skills":[{"name":"...","description":"...","skill":"<SKILL.md body>",
