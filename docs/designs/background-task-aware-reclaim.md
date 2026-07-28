@@ -40,14 +40,19 @@ plane WebSocket.
 
 ## 3. Lease State
 
-The daemon stores one lease per ACP session:
+The daemon stores one lease per **(agent, ACP session)** — keyed by `sdkLeaseKey`,
+never by the session id alone. ACP session ids are runtime-local, so two agents
+can each expose an `acp-1`; a shared entry would let one agent's task overwrite
+the other's record under a colliding task id, suppress its completion wake
+through `tasks`/`sdkState`, or spend its wake budget.
 
 ```text
 {
   agentId,
   tasks: Map<taskId, { description?, isSubagent }>,
   sdkState: "idle" | "running",
-  bgWakes  // wakes already spent on this session, see §5.1
+  bgWakes,    // wakes already spent on this session, see §5.1
+  armedWakes  // wakes armed but not yet admitted, see §5.1
 }
 ```
 
@@ -70,11 +75,17 @@ repairs missed completion edges for tasks already observed through
 A session is SDK-quiescent when:
 
 ```text
-tasks.size == 0 && sdkState == "idle"
+tasks.size == 0 && armedWakes == 0 && sdkState == "idle"
 ```
 
 No lease means quiescent. Host reclamation separately requires that the daemon
 has no foreground prompt pending for the agent.
+
+`armedWakes` is part of the predicate because settling a task removes it from
+`tasks` **before** its completion wake is armed (§5.1). Without it, a task that
+outlived the session's idle TTL would leave the session quiescent for the whole
+grace window, and a sweep landing there would close the session and drop the
+lease — losing exactly the completion the wake exists to deliver.
 
 ### Logical waiting state
 
@@ -186,10 +197,16 @@ is re-checked when it fires, never captured when it is armed:
 | Condition at fire time      | Behavior                                                                                  |
 | --------------------------- | ----------------------------------------------------------------------------------------- |
 | No lease                    | Host was reclaimed; the ACP session is gone. Skip.                                        |
+| Another wake still armed    | Several tasks settled on one edge; let the LAST one deliver for all. Skip.                |
 | `sdkState == "running"`     | The runtime's self-drain cycle is in flight. **Re-arm**, up to `MAX_BG_TASK_WAKE_REARMS`. |
 | `tasks.size > 0`            | Another task is still live; its completion carries the session forward. Skip.             |
 | Session missing or not idle | Closed, or a real turn is already running and will observe the task. Skip.                |
 | Budget exhausted            | Warn and skip (see below).                                                                |
+
+Arming takes `armedWakes`; the fire path releases it before deciding anything, so
+every outcome — delivered, skipped, given up — leaves the count balanced, and the
+re-arm path takes it again. That is also what makes the "another wake still armed"
+row safe: the fence is held continuously across the hand-off.
 
 The `running` case is a **wait, not a stand-down**. The self-drain cycle delivers
 nothing (see §5), so treating it as the delivery is what strands the session; the

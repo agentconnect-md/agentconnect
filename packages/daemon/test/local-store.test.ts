@@ -847,7 +847,7 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
     seed(s, 'busy', 'bot-a', 'idle', 100) // idle + past TTL, but has live background work
     seed(s, 'done', 'bot-a', 'idle', 100) // idle + past TTL, quiescent
     // Exempt the one whose acpSessionId is still working.
-    const closed = s.closeIdleSessions(1000, 500, (acpSessionId) => acpSessionId === 'acp-busy')
+    const closed = s.closeIdleSessions(1000, 500, (_agentId, acpSessionId) => acpSessionId === 'acp-busy')
     expect(closed.map((r) => r.key)).toEqual(['done'])
     expect(s.getSession('busy')?.state).toBe('idle') // spared
     expect(s.getSession('done')?.state).toBe('closed') // closed as usual

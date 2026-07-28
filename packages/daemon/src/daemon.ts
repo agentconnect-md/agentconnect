@@ -547,6 +547,13 @@ function pendingTurnKey(agentId: string, acpSessionId: string): string {
   return JSON.stringify([agentId, acpSessionId])
 }
 
+/** Background-task leases are per (agent, ACP session) for the same reason turns are: two
+ *  agents can each expose an `acp-1`. Sharing one entry would let one agent's live task
+ *  suppress the other's completion wake, or overwrite its task record under a colliding id. */
+function sdkLeaseKey(agentId: string, acpSessionId: string): string {
+  return pendingTurnKey(agentId, acpSessionId)
+}
+
 /** Cap on agent→agent hop depth (design §2.4/§4.5) — reject a `messageAgent` that
  *  would push the outgoing hopCount past this, so an A↔B wake loop can't run away. */
 const MAX_AGENT_CALL_HOPS = 8
@@ -1231,6 +1238,7 @@ export class Daemon {
   // AcpHost.prompt() is NOT the end of work. Absent (non-Claude runtime, or an
   // adapter that doesn't forward the feed) ⇒ treated as quiescent ⇒ plain-TTL behavior.
   // See docs/designs/background-task-aware-reclaim.md.
+  // Keyed by {@link sdkLeaseKey} — NOT by bare acpSessionId, which is runtime-local.
   private sdkLease = new Map<
     string,
     {
@@ -1240,6 +1248,11 @@ export class Daemon {
       /** Background-task wakes already spent on this session — see
        *  {@link MAX_BG_TASK_WAKES_PER_SESSION}. */
       bgWakes: number
+      /** Wakes armed but not yet admitted. `settle()` removes the task BEFORE arming the
+       *  timer, so without counting these the session would read as quiescent during the
+       *  grace/re-arm window and an idle sweep could close it (and drop the lease) out from
+       *  under a completion that is about to be delivered. */
+      armedWakes: number
     }
   >()
   /** Armed background-task wake checks (one per settled non-subagent task), tracked so
@@ -12026,11 +12039,13 @@ export class Daemon {
         live: Array.isArray(m.tasks) ? m.tasks.length : undefined
       })} on ${acpSessionId}`
     )
-    const lease = this.sdkLease.get(acpSessionId) ?? {
+    const leaseKey = sdkLeaseKey(agentId, acpSessionId)
+    const lease = this.sdkLease.get(leaseKey) ?? {
       agentId,
       tasks: new Map<string, { description?: string; isSubagent: boolean }>(),
       sdkState: 'idle' as const,
-      bgWakes: 0
+      bgWakes: 0,
+      armedWakes: 0
     }
     // Release a task from the lease and, if it's a real background task (not an
     // internal subagent), announce its completion when the agent is verbose enough
@@ -12085,7 +12100,7 @@ export class Daemon {
         return
     }
     lease.agentId = agentId
-    this.sdkLease.set(acpSessionId, lease)
+    this.sdkLease.set(leaseKey, lease)
   }
 
   /** Proactively announce a completed background task to its session's channel/thread
@@ -12115,7 +12130,12 @@ export class Daemon {
   /** Arm the deferred wake for a settled background task. Deliberately NOT immediate: the
    *  runtime re-enters a `running` cycle of its own to drain the completion, and a turn
    *  injected into that window would race it. `attempt` counts the re-arms spent waiting
-   *  for that cycle to end (see {@link MAX_BG_TASK_WAKE_REARMS}). */
+   *  for that cycle to end (see {@link MAX_BG_TASK_WAKE_REARMS}).
+   *
+   *  Arming bumps `armedWakes`, which keeps the session out of quiescence for the whole
+   *  wait — the task is already gone from `tasks`, so otherwise an idle sweep could close
+   *  the session and drop the lease before the timer fires. {@link wakeOnBackgroundTaskDone}
+   *  releases the count on every exit path. */
   private scheduleBackgroundTaskWake(
     agentId: string,
     acpSessionId: string,
@@ -12125,6 +12145,8 @@ export class Daemon {
     attempt = 0
   ): void {
     if (this.draining) return
+    const armed = this.sdkLease.get(sdkLeaseKey(agentId, acpSessionId))
+    if (armed) armed.armedWakes += 1
     const handle = this.clock.setTimeout(() => {
       this.bgWakeTimers.delete(handle)
       try {
@@ -12172,10 +12194,18 @@ export class Daemon {
     attempt = 0
   ): void {
     if (this.draining) return
-    const lease = this.sdkLease.get(acpSessionId)
+    const lease = this.sdkLease.get(sdkLeaseKey(agentId, acpSessionId))
     const what = description?.trim() || 'background task'
     const skip = (why: string): void => this.log.debug(`bg-task wake skipped (${why}): "${what}" on ${acpSessionId}`)
     if (!lease) return skip('host reclaimed')
+    // This attempt is no longer armed. Release the fence FIRST so every exit below — deliver,
+    // skip, give up — leaves it balanced; the re-arm path re-takes it via schedule().
+    lease.armedWakes = Math.max(0, lease.armedWakes - 1)
+    // Several tasks can settle on the SAME edge (an empty `background_tasks_changed` snapshot
+    // settles all of them), arming a timer each. The `tasks.size` guard below does not catch
+    // that — they are all already out of `tasks` — so let the LAST armed wake deliver and drop
+    // the rest: one turn covers every completion, and the fence stays held meanwhile.
+    if (lease.armedWakes > 0) return skip('a later wake for this session is already armed')
     if (lease.sdkState === 'running') {
       if (attempt >= MAX_BG_TASK_WAKE_REARMS) {
         this.log.warn(
@@ -12240,20 +12270,23 @@ export class Daemon {
     )
   }
 
-  /** A session is SDK-quiescent when it has no live background tasks and the SDK's
-   *  top-level cycle is idle. Absent lease ⇒ quiescent (plain-TTL behavior). */
-  private sessionSdkQuiescent(acpSessionId: string | null | undefined): boolean {
+  /** A session is SDK-quiescent when it has no live background tasks, no armed completion
+   *  wake, and the SDK's top-level cycle is idle. Absent lease ⇒ quiescent (plain-TTL
+   *  behavior). An armed wake counts: the task it will deliver is already out of `tasks`,
+   *  so without it a long-running task's session could be TTL-closed inside the grace
+   *  window and the completion lost — the very thing §5.1 exists to prevent. */
+  private sessionSdkQuiescent(agentId: string, acpSessionId: string | null | undefined): boolean {
     if (!acpSessionId) return true
-    const l = this.sdkLease.get(acpSessionId)
-    return !l || (l.tasks.size === 0 && l.sdkState === 'idle')
+    const l = this.sdkLease.get(sdkLeaseKey(agentId, acpSessionId))
+    return !l || (l.tasks.size === 0 && l.armedWakes === 0 && l.sdkState === 'idle')
   }
 
   /** Whether any of an agent's sessions has in-flight background work — a live
-   *  background task, or a running SDK cycle (a self-initiated followup turn that
-   *  carries no `this.pending` entry). Gates idle host reclaim. */
+   *  background task, an armed completion wake, or a running SDK cycle (a self-initiated
+   *  followup turn that carries no `this.pending` entry). Gates idle host reclaim. */
   private agentHasLiveSdkWork(agentId: string): boolean {
     for (const l of this.sdkLease.values())
-      if (l.agentId === agentId && (l.tasks.size > 0 || l.sdkState === 'running')) return true
+      if (l.agentId === agentId && (l.tasks.size > 0 || l.armedWakes > 0 || l.sdkState === 'running')) return true
     return false
   }
 
@@ -12281,11 +12314,15 @@ export class Daemon {
     const maxLifetime = this.cfg.limits.agentMaxLifetimeMs
     // §7.3 idle→closed: a thread untouched past the TTL stops catching up — UNLESS it
     // still has in-flight background work (the SDK lease), which keeps it open.
-    const closed = this.store.closeIdleSessions(now, ttl, (acpSessionId) => !this.sessionSdkQuiescent(acpSessionId))
+    const closed = this.store.closeIdleSessions(
+      now,
+      ttl,
+      (agentId, acpSessionId) => !this.sessionSdkQuiescent(agentId, acpSessionId)
+    )
     if (closed.length) this.log.info(`idle: TTL-closed ${closed.length} session(s) (>${Math.round(ttl / 1000)}s)`)
     for (const row of closed) {
       if (!row.acpSessionId) continue
-      this.sdkLease.delete(row.acpSessionId) // the session is gone — drop its lease
+      this.sdkLease.delete(sdkLeaseKey(row.agentId, row.acpSessionId)) // the session is gone — drop its lease
       this.emitSessionMetadataSnapshot({
         sessionId: row.acpSessionId,
         agentId: row.agentId,
