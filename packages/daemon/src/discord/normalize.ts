@@ -47,6 +47,14 @@ export interface DiscordMessageLike {
   isThread: boolean
   /** Ids of every user mentioned (`<@id>` / `<@!id>`). */
   mentionUserIds: string[]
+  /** Display name per mentioned user id, from the gateway message's own mention cache
+   *  — so the humanized text (and the session title derived from it) reads "@alice"
+   *  rather than the raw snowflake. Ids missing here stay as `@id`. */
+  mentionUserNames?: Record<string, string>
+  /** Enclosing channel id when `channelId` is a thread (null/absent otherwise). */
+  parentChannelId?: string | null
+  /** Guild ("server") display name; absent in a DM. */
+  guildName?: string | null
   attachments: DiscordAttachmentLike[]
 }
 
@@ -66,22 +74,23 @@ export function toAttachment(a: DiscordAttachmentLike | null | undefined): Attac
 /**
  * Humanize Discord's inline entity tokens so the agent sees readable text rather
  * than raw markup — the analog of the leading '@' / entity handling Telegram does
- * via message entities. Pure (no user/role/channel name cache), so ids that can't
- * be resolved to names are left as compact `@id` / `#id` / `:name:` forms:
- *   `<@id>` / `<@!id>`     → `@id`      (user mention)
+ * via message entities. Pure: user mentions resolve through the caller-supplied
+ * `userNames` (the gateway message's own mention cache), and anything unresolved is
+ * left as a compact `@id` / `#id` / `:name:` form:
+ *   `<@id>` / `<@!id>`     → `@alice`   (user mention; `@id` when the name is unknown)
  *   `<@&roleid>`           → `@&roleid` (role mention)
  *   `<#chanid>`            → `#chanid`  (channel mention)
  *   `<a?:name:id>`         → `:name:`   (custom / animated emoji)
  *   `<t:unix(:style)?>`    → ISO-8601   (Discord timestamp)
  */
-export function humanizeDiscordText(text: string): string {
+export function humanizeDiscordText(text: string, userNames?: Record<string, string>): string {
   return text
     .replace(/<a?:(\w+):\d+>/g, ':$1:')
     .replace(/<t:(\d+)(?::[a-zA-Z])?>/g, (_m, unix: string) => {
       const d = new Date(Number(unix) * 1000)
       return Number.isFinite(d.getTime()) ? d.toISOString() : _m
     })
-    .replace(/<@!?(\d+)>/g, '@$1')
+    .replace(/<@!?(\d+)>/g, (_m, id: string) => `@${userNames?.[id] ?? id}`)
     .replace(/<@&(\d+)>/g, '@&$1')
     .replace(/<#(\d+)>/g, '#$1')
 }
@@ -99,10 +108,15 @@ export function normalizeDiscordMessage(msg: DiscordMessageLike, ctx: { traceId:
     // Discord channel (incl. a thread channel) == conversation == session (see header).
     thread: msg.channelId,
     sender: { id: msg.authorId, isBot: msg.authorIsBot },
-    text: humanizeDiscordText(msg.content),
+    text: humanizeDiscordText(msg.content, msg.mentionUserNames),
     mentionedBots: msg.mentionUserIds,
     ...(attachments.length ? { attachments } : {}),
     isDm,
+    // The enclosing channel of a thread message: the reachable CHANNEL this
+    // conversation belongs to, where the session keys on the thread (see header).
+    // Channel-scoped routing/gating and channel discovery both key on it.
+    ...(msg.isThread && msg.parentChannelId ? { parentChannel: msg.parentChannelId } : {}),
+    ...(msg.guildName ? { spaceName: msg.guildName } : {}),
     // Top-level guild message → the daemon opens a thread off it and re-keys the turn.
     ...(!isDm && !msg.isThread ? { discordTopLevel: true } : {})
   }

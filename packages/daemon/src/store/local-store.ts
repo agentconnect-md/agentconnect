@@ -439,6 +439,14 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS display_names (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, updatedAt INTEGER
       );
+      -- Where a conversation id SITS: its enclosing channel (a Discord thread's parent
+      -- channel — a session keys on the thread id, so the reachable channel it belongs
+      -- to is otherwise unrecoverable) and its space (the Discord guild / "server"
+      -- name). Backs observed-channel collapsing: threads fold into their channel, and
+      -- (space, name) is the uniqueness key of a reported channel row.
+      CREATE TABLE IF NOT EXISTS channel_scopes (
+        id TEXT PRIMARY KEY, parentId TEXT, spaceName TEXT, updatedAt INTEGER
+      );
       CREATE TABLE IF NOT EXISTS permission_requests (
         id TEXT PRIMARY KEY,
         agentId TEXT NOT NULL,
@@ -2134,6 +2142,40 @@ export class LocalStore {
       .prepare(`SELECT id, name FROM display_names WHERE id IN (${unique.map(() => '?').join(',')})`)
       .all(...unique) as unknown as { id: string; name: string }[]
     for (const r of rows) if (r.name) out.set(r.id, r.name)
+    return out
+  }
+
+  /** Record where a conversation id sits — its enclosing channel and/or its space
+   *  (guild) name. Field-wise latest-wins: a partial note (only a parent, only a
+   *  space) never clears what another lookup already established. */
+  setChannelScope(id: string, scope: { parentId?: string; spaceName?: string }, updatedAt: number): void {
+    if (scope.parentId === undefined && scope.spaceName === undefined) return
+    this.db
+      .prepare(
+        `INSERT INTO channel_scopes (id, parentId, spaceName, updatedAt) VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           parentId = COALESCE(excluded.parentId, channel_scopes.parentId),
+           spaceName = COALESCE(excluded.spaceName, channel_scopes.spaceName),
+           updatedAt = excluded.updatedAt`
+      )
+      .run(id, scope.parentId ?? null, scope.spaceName ?? null, updatedAt)
+  }
+
+  /** Scopes for a set of conversation ids — only the ids that have one. One batched
+   *  `IN (…)` query, not a round-trip per id (mirrors getDisplayNames). */
+  getChannelScopes(ids: string[]): Map<string, { parentId?: string; spaceName?: string }> {
+    const out = new Map<string, { parentId?: string; spaceName?: string }>()
+    const unique = [...new Set(ids)]
+    if (unique.length === 0) return out
+    const rows = this.db
+      .prepare(`SELECT id, parentId, spaceName FROM channel_scopes WHERE id IN (${unique.map(() => '?').join(',')})`)
+      .all(...unique) as unknown as { id: string; parentId: string | null; spaceName: string | null }[]
+    for (const r of rows) {
+      out.set(r.id, {
+        ...(r.parentId ? { parentId: r.parentId } : {}),
+        ...(r.spaceName ? { spaceName: r.spaceName } : {})
+      })
+    }
     return out
   }
 

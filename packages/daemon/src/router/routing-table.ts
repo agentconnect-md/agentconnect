@@ -10,7 +10,11 @@ function scopeMatches(r: RoutingRule, msg: NormalizedMessage): boolean {
   // `dm`/`auto` rule can't route a Telegram message (and vice-versa). Undefined
   // platform (legacy/tests) matches any.
   if (r.platform !== undefined && r.platform !== msg.platform) return false
-  if (r.scope.channel !== undefined && r.scope.channel !== msg.channel) return false
+  // A channel-scoped rule also serves the threads INSIDE that channel: a Discord
+  // session keys on the thread's own channel id, so a trigger the operator set on
+  // "#general" would otherwise stop applying the moment the bot opens a thread there.
+  if (r.scope.channel !== undefined && r.scope.channel !== msg.channel && r.scope.channel !== msg.parentChannel)
+    return false
   if (r.scope.thread !== undefined && r.scope.thread !== msg.thread) return false
   return true
 }

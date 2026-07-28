@@ -170,6 +170,14 @@ describe('routeRules platform isolation', () => {
     const rules = [rule({ agentId: 'tg', match: { kind: 'auto' }, platform: 'telegram' })]
     expect(routeRules(msg({ platform: 'slack' }), rules, noOwner)).toBeNull()
   })
+
+  it("a channel-scoped rule serves that channel's threads (Discord keys a session on the thread)", () => {
+    const rules = [rule({ agentId: 'a', scope: { channel: 'C1' }, match: { kind: 'auto' }, platform: 'discord' })]
+    const inThread = msg({ platform: 'discord', channel: 'T9', thread: 'T9', parentChannel: 'C1' })
+    expect(routeRules(inThread, rules, noOwner)?.agentId).toBe('a')
+    // Another channel's thread is still out of scope.
+    expect(routeRules({ ...inThread, parentChannel: 'C2' }, rules, noOwner)).toBeNull()
+  })
 })
 
 const tgAgent = (over: Partial<Agent> = {}): Agent =>

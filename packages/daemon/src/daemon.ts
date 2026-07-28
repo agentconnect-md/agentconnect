@@ -81,6 +81,7 @@ import {
   type InlineButton
 } from './telegram/connection.js'
 import { consolidateDiscord, DiscordConnection } from './discord/connection.js'
+import { collapseDiscordChannels, collapseNameLookupIds } from './discord/channels.js'
 import { consolidateFeishu, FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
 import { splitIntoSections } from './slack/formatter.js'
@@ -1777,14 +1778,25 @@ export class Daemon {
       this.emitSessionMetadataSnapshotsForDisplayName(id)
     }, this.log)
     // Same cache-then-emit sink for Discord/Telegram channel-name resolution.
-    this.channelNameResolver = new ChannelNameResolver((id, name) => {
-      this.store.setDisplayName(id, name, Date.now())
-      this.emitSessionMetadataSnapshotsForDisplayName(id)
-      // A freshly-resolved Telegram/Discord channel name should also refresh that
-      // integration's observed-channel snapshot (approach-A discovery) so the console
-      // shows the human name rather than the raw chat/channel id.
-      this.refreshObservedChannels()
-    }, this.log)
+    this.channelNameResolver = new ChannelNameResolver(
+      (id, name) => {
+        this.store.setDisplayName(id, name, Date.now())
+        this.emitSessionMetadataSnapshotsForDisplayName(id)
+        // A freshly-resolved Telegram/Discord channel name should also refresh that
+        // integration's observed-channel snapshot (approach-A discovery) so the console
+        // shows the human name rather than the raw chat/channel id.
+        this.refreshObservedChannels()
+      },
+      {
+        // A newly-learnt scope changes which rows the observed set collapses onto (a
+        // Discord thread folds into its channel), so re-emit the snapshot with it.
+        saveScope: (id, scope) => {
+          this.store.setChannelScope(id, scope, Date.now())
+          this.refreshObservedChannels()
+        },
+        log: this.log
+      }
+    )
     this.cpRouting = new CpRoutingLayer({
       load: () => {
         const row = this.store.getCpRouting()
@@ -2713,7 +2725,14 @@ export class Daemon {
         group,
         newTraceId: () => randomUUID(),
         onMessage: (msg) => {
-          this.channelNameResolver?.noteChannel(conn, msg.channel, msg.sender.id)
+          // The gateway message already knows where it sits — record it before the
+          // (async, TTL-cached) name lookup so channel discovery can fold this thread
+          // onto its channel on the very first turn.
+          this.noteChannelScope(msg)
+          // Unlike Telegram, Discord CAN resolve an arbitrary user id — collect the
+          // sender's (and mentioned users') display names so session read-back labels
+          // them by name the way Slack does.
+          this.channelNameResolver?.noteMessage(conn, { ...msg, mentionedUserIds: msg.mentionedBots })
           this.onInbound(msg, this.srcIntegrationIds(conn))
         },
         onStatusAction: (a) => this.handleStatusAction(a),
@@ -2862,6 +2881,30 @@ export class Daemon {
   }
 
   /**
+   * Record where an inbound conversation sits (its enclosing channel and space name)
+   * straight from the message, which already carries both — no platform call, and no
+   * waiting on the TTL-cached name lookup. Channel discovery folds a thread onto the
+   * channel it belongs to with it; a message that carries neither is a no-op.
+   */
+  private noteChannelScope(msg: NormalizedMessage): void {
+    if (!msg.parentChannel && !msg.spaceName) return
+    this.store.setChannelScope(
+      msg.channel,
+      {
+        ...(msg.parentChannel ? { parentId: msg.parentChannel } : {}),
+        ...(msg.spaceName ? { spaceName: msg.spaceName } : {})
+      },
+      this.clock.now()
+    )
+    // The enclosing channel is itself a reportable conversation — carry the space onto
+    // it so its own row dedupes on (space, name) too.
+    if (msg.parentChannel && msg.spaceName) {
+      this.store.setChannelScope(msg.parentChannel, { spaceName: msg.spaceName }, this.clock.now())
+    }
+    this.refreshObservedChannels()
+  }
+
+  /**
    * Observed-conversation discovery for Telegram and Discord. These platforms do
    * not give us an authoritative set of chats the bot is engaged in, so stored
    * session history is merged with explicitly-addressed Off conversations already
@@ -2872,6 +2915,9 @@ export class Daemon {
    * here is important for Off conversations: they have no session row, so without
    * preserving and enriching the cached entry an async Telegram getChat result
    * could never replace the console's raw numeric id.
+   *
+   * Discord rows are folded onto the channel they belong to first (a session keys on
+   * the thread, so raw history repeats one channel per thread) — see collapseObserved.
    */
   private refreshObservedChannels(): void {
     for (const agent of this.agents.values()) {
@@ -2883,7 +2929,10 @@ export class Daemon {
         // agent we can't tell which bot saw which session. Only merge session history
         // in the common single-integration case; integration-attributed Off rows can
         // still be refreshed safely when several bots share the agent.
-        const observed = integrations.length === 1 ? this.store.observedChannels(agent.id, platform) : []
+        const observed =
+          integrations.length === 1
+            ? this.collapseObserved(this.store.observedChannels(agent.id, platform), platform)
+            : []
         for (const integ of integrations) {
           const prior = this.channelSnapshots.get(integ.id)?.channels ?? []
           if (observed.length === 0 && prior.length === 0) continue
@@ -2951,6 +3000,23 @@ export class Daemon {
       this.channelSnapshots.set(integrationId, { channels, authoritative: false })
       this.cpClient?.emitIntegrationChannels({ integrationId, channels, authoritative: false })
     }
+  }
+
+  /**
+   * Fold the observed conversations of one platform onto the channel set the console
+   * should offer. Discord sessions key on a THREAD channel (the daemon opens one off
+   * every top-level mention), so the raw observed set repeats the same channel once per
+   * thread — collapse each row onto its enclosing channel and dedupe on
+   * (space, channel name). Telegram chats have neither notion; they pass through.
+   */
+  private collapseObserved(
+    observed: { id: string; name?: string }[],
+    platform: 'telegram' | 'discord'
+  ): { id: string; name?: string }[] {
+    if (platform !== 'discord') return observed
+    const scopes = this.store.getChannelScopes(observed.map((c) => c.id))
+    const names = this.store.getDisplayNames(collapseNameLookupIds(observed, scopes))
+    return collapseDiscordChannels(observed, scopes, names)
   }
 
   /**
@@ -3937,9 +4003,18 @@ export class Daemon {
     const threadId = conn ? await conn.createThread(msg.channel, messageId, discordThreadName(msg.text)) : undefined
     if (threadId) {
       this.log.info(`discord: opened thread ${threadId} for ch=${msg.channel} msg=${messageId}`)
+      // The session is about to key on the thread; record the channel it belongs to (and
+      // its space) NOW, while `msg.channel` still names the parent — channel discovery
+      // then reports this one channel instead of a row per thread we open under it.
+      this.store.setChannelScope(
+        threadId,
+        { parentId: msg.channel, ...(msg.spaceName ? { spaceName: msg.spaceName } : {}) },
+        this.clock.now()
+      )
       // Re-key the turn onto the thread channel (channel == thread == session; see
       // discord/normalize.ts). msgId keeps the original message id → its `ts`, which
       // equals the thread id, so the session treats this message as the thread root.
+      msg.parentChannel = msg.channel
       msg.channel = threadId
       msg.thread = threadId
       // The session now keys on the thread id, not the parent channel the inbound
@@ -6464,7 +6539,8 @@ export class Daemon {
     // Conversation gating (§14): control commands resolve their target OUTSIDE
     // routeRules' scope filter (latest-session fallbacks), so they must repeat the
     // admission check — an Off conversation of a gated integration takes no commands.
-    if (routing.gated && !routing.bindRules.some((r) => r.channel === msg.channel)) return false
+    if (routing.gated && !routing.bindRules.some((r) => r.channel === msg.channel || r.channel === msg.parentChannel))
+      return false
     const allowed = routing.allowedUserIds
     return allowed.length === 0 || allowed.includes(msg.sender.id)
   }
@@ -11338,7 +11414,7 @@ export class Daemon {
     const int = this.integrationConfigById(integrationId)
     if (!int) return true // unknown here — agent/integration existence is checked separately
     const routing = integrationRouting(int)
-    return !routing.gated || routing.bindRules.some((r) => r.channel === msg.channel)
+    return !routing.gated || routing.bindRules.some((r) => r.channel === msg.channel || r.channel === msg.parentChannel)
   }
 
   /**
@@ -11359,7 +11435,9 @@ export class Daemon {
       if (!int || int.platform !== msg.platform) continue
       const routing = integrationRouting(int)
       if (!routing.gated) continue
-      if (routing.bindRules.some((r) => r.channel === msg.channel)) continue // enabled
+      // Enabled — including a thread of an enabled channel (the rule is scoped to the
+      // enclosing channel, which is what the console offers).
+      if (routing.bindRules.some((r) => r.channel === msg.channel || r.channel === msg.parentChannel)) continue
       const botUserId = this.botUserIds[integrationId] ?? routing.staticBotUserId ?? ''
       if (!isDm && (botUserId === '' || !msg.mentionedBots.includes(botUserId))) continue
       this.reportGatedConversation(integrationId, msg, isDm)
@@ -11376,8 +11454,9 @@ export class Daemon {
       const routing = integrationRouting(int)
       if (!routing.gated) continue
       // An ENABLED conversation never gets a report/notice — this guard makes the
-      // helper safe from the pre-command call site, which sees every DM.
-      if (routing.bindRules.some((r) => r.channel === msg.channel)) continue
+      // helper safe from the pre-command call site, which sees every DM. A thread of an
+      // enabled channel is enabled too (the rule is scoped to the enclosing channel).
+      if (routing.bindRules.some((r) => r.channel === msg.channel || r.channel === msg.parentChannel)) continue
       const botUserId = this.botUserIds[integrationId] ?? routing.staticBotUserId ?? ''
       const addressed = isDm || (botUserId !== '' && msg.mentionedBots.includes(botUserId))
       if (!addressed) continue
@@ -11412,15 +11491,19 @@ export class Daemon {
   private reportGatedConversation(integrationId: string, msg: NormalizedMessage, isDm: boolean): void {
     const cached = this.channelSnapshots.get(integrationId)
     const existing = cached?.channels ?? []
-    const current = existing.find((c) => c.id === msg.channel)
+    // A channel row is reported as the ENCLOSING channel when the message arrived in a
+    // thread: that is the conversation an operator enables, and the one observed
+    // discovery reports (a per-thread row would be a duplicate of it).
+    const channel = (!isDm && msg.parentChannel) || msg.channel
+    const current = existing.find((c) => c.id === channel)
     const kind = isDm ? ('im' as const) : ('channel' as const)
-    const known = this.store.getDisplayNames([msg.channel]).get(msg.channel)
+    const known = this.store.getDisplayNames([channel]).get(channel)
     if (current?.kind === kind && (!known || current.name === known)) return
     // A previously-observed DM (Telegram/Discord session snapshots are kind-less)
     // is upgraded to 'im' rather than skipped after an org→restricted flip.
     const next = current
-      ? existing.map((c) => (c.id === msg.channel ? { ...c, ...(known ? { name: known } : {}), kind } : c))
-      : [...existing, { id: msg.channel, ...(known ? { name: known } : {}), kind }]
+      ? existing.map((c) => (c.id === channel ? { ...c, ...(known ? { name: known } : {}), kind } : c))
+      : [...existing, { id: channel, ...(known ? { name: known } : {}), kind }]
     this.channelSnapshots.set(integrationId, {
       channels: next,
       authoritative: cached?.authoritative ?? false
@@ -11436,7 +11519,7 @@ export class Daemon {
         if (!name) return
         const cached = this.channelSnapshots.get(integrationId)
         const snap = cached?.channels ?? []
-        const updated = snap.map((c) => (c.id === msg.channel && !c.name ? { ...c, name: `@${name}` } : c))
+        const updated = snap.map((c) => (c.id === channel && !c.name ? { ...c, name: `@${name}` } : c))
         this.channelSnapshots.set(integrationId, {
           channels: updated,
           authoritative: cached?.authoritative ?? false

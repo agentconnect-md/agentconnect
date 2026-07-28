@@ -478,6 +478,24 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     s.close()
   })
 
+  it('channel scopes: field-wise latest-wins, batch lookup returns only known ids', () => {
+    const s = store()
+    s.setChannelScope('T1', { parentId: 'C1' }, 1)
+    // A later note carrying only the space must not clear the parent (and vice-versa).
+    s.setChannelScope('T1', { spaceName: 'Acme' }, 2)
+    s.setChannelScope('C1', { spaceName: 'Acme' }, 2)
+    s.setChannelScope('T1', { parentId: 'C2' }, 3)
+    const scopes = s.getChannelScopes(['T1', 'C1', 'unknown'])
+    expect(scopes.get('T1')).toEqual({ parentId: 'C2', spaceName: 'Acme' })
+    expect(scopes.get('C1')).toEqual({ spaceName: 'Acme' })
+    expect(scopes.has('unknown')).toBe(false)
+    // An empty note writes no row at all.
+    s.setChannelScope('T9', {}, 4)
+    expect(s.getChannelScopes(['T9']).size).toBe(0)
+    expect(s.getChannelScopes([]).size).toBe(0)
+    s.close()
+  })
+
   it('observedChannels/observedUsers: distinct per agent+platform, newest-first, name-joined', () => {
     const s = store()
     const sess = (key: string, platform: string, channel: string, triggeredBy: string, updatedAt: number) =>
