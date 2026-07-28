@@ -92,7 +92,11 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
   void app.register(humanAuthPlugin, {
     ...deps.config,
     resolveUser: (input) => deps.repos.user.provisionOidcUser(input),
-    verifyApiKey: (token) => deps.apiKeys.authenticateUser(token)
+    verifyApiKey: (token) => deps.apiKeys.authenticateUser(token),
+    // Lets the plane notice an account deleted underneath a live session (→ 401
+    // ACCOUNT_GONE, which drives the console to sign out) instead of serving
+    // requests for an identity that is no longer there.
+    principalExists: (userId) => deps.repos.user.exists(userId)
   })
 
   // Map zod validation/serialization failures + Prisma "record not found" to

@@ -17,7 +17,7 @@ import type {
 import { isSelfSender, MOCK_MODE } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
-import { getToken, getIdTokenRaw, getUser } from '@/lib/auth'
+import { getToken, getIdTokenRaw, getUser, signOutDeletedAccount } from '@/lib/auth'
 import { track } from '@/lib/analytics'
 import { createSseParser } from '@/lib/sse'
 import { isUpgradeAvailable } from '@/lib/version'
@@ -1074,7 +1074,12 @@ async function apiErrorFromResponse(method: string, path: string, res: Response)
     typeof body.message === 'string' && body.message.length > 0
       ? body.message
       : `${method} ${path} → ${res.status} ${res.statusText}`
-  return new ApiError(message, res.status, typeof body.code === 'string' ? body.code : undefined)
+  const code = typeof body.code === 'string' ? body.code : undefined
+  // The token is still valid but its account was deleted (admin action): nothing in
+  // the console can work, and no retry helps, so sign out instead of surfacing the
+  // failure on every panel. The error is still thrown for the in-flight caller.
+  if (res.status === 401 && code === 'ACCOUNT_GONE') void signOutDeletedAccount()
+  return new ApiError(message, res.status, code)
 }
 
 async function apiPatch<T>(path: string, body: unknown): Promise<T> {

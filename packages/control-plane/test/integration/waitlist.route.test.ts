@@ -584,6 +584,35 @@ describe('waitlist admission — auth boundaries', () => {
     }
   })
 
+  it('rejects the session with ACCOUNT_GONE once the account is deleted', async () => {
+    const { app, close } = buildApp()
+    try {
+      const h = await headers('wl-deleted', 'wl-deleted@acme.dev')
+      // First call provisions the user AND memoizes sub → userId inside the auth plane.
+      const before = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      expect(before.statusCode).toBe(200)
+      expect(before.json()).toMatchObject({ email: 'wl-deleted@acme.dev' })
+
+      // The external admin app deletes the account under the live session.
+      await prisma.user.delete({ where: { email: 'wl-deleted@acme.dev' } })
+
+      // Same (still valid) bearer, same process, same memo: the plane must notice the
+      // row is gone and tell the client to sign out — never serve a dangling identity
+      // and never silently re-provision one.
+      const after = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      expect(after.statusCode).toBe(401)
+      expect(after.json()).toMatchObject({ code: 'ACCOUNT_GONE' })
+      expect(await prisma.user.findUnique({ where: { email: 'wl-deleted@acme.dev' } })).toBeNull()
+
+      // The dead mapping is dropped, so a fresh sign-in is a fresh signup.
+      const reSignIn = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      expect(reSignIn.statusCode).toBe(200)
+      expect(reSignIn.json()).toMatchObject({ email: 'wl-deleted@acme.dev', activated: false })
+    } finally {
+      await close()
+    }
+  })
+
   it('/me/access reads the email from persistence, ignoring x-ac-user-email', async () => {
     const { app, close } = buildApp()
     try {

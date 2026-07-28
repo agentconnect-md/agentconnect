@@ -259,6 +259,12 @@ export class PgUserRepo implements UserRepo {
     await ensurePersonalOrg(this.db, userId, displayName, email)
   }
 
+  async exists(userId: string): Promise<boolean> {
+    // Primary-key probe, selecting nothing but the key — this runs on every
+    // authenticated request, so it must stay a single index lookup.
+    return (await this.db.user.findUnique({ where: { id: userId }, select: { id: true } })) != null
+  }
+
   async healPersonalOrg(userId: string): Promise<void> {
     // Also gated by the signup flag: under WAITLIST_MODE a bare `GET /orgs` must not
     // self-heal an org into existence (that would flip a Stranger to orgCount=1 =

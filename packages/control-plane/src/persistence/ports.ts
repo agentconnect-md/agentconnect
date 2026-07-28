@@ -2473,6 +2473,15 @@ export interface UserRepo {
   provisionOidcUser(input: ProvisionOidcUserInput): Promise<{ userId: string }>
 
   /**
+   * Does this user row still exist? The human-auth plane asks per authenticated
+   * request, because an admin can delete an account out from under a live browser
+   * session (and under the auth plane's `sub → userId` memo). False ⇒ the caller's
+   * identity is gone: the session is rejected so the client signs out, rather than
+   * silently re-provisioning a new account behind the old session.
+   */
+  exists(userId: string): Promise<boolean>
+
+  /**
    * Restore a membership-less user's personal org (an interrupted signup must
    * not brick the account). No-op when the user already owns an org or the
    * user row is gone. `GET /orgs` calls this when the list comes back empty.

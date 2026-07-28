@@ -69,10 +69,24 @@ export type VerifyApiKey = (
   token: string
 ) => Promise<{ userId: string; orgId: string; apiKeyId: string; scopes: string[] } | null>
 
+/**
+ * Does the resolved local user row still exist? An admin can delete an account
+ * while a browser still holds a valid OIDC session — and while this plane's
+ * `sub → userId` memo still points at the deleted row. Without this check the
+ * session limps on against a dangling identity (reads come back empty, writes
+ * fail obscurely); with it the request is refused as `ACCOUNT_GONE` so the client
+ * signs out. Deliberately NOT a "re-provision the row" hook: an account an admin
+ * removed must not come back to life under the old session — the user signs in
+ * again and JIT signup then treats them as the new account they are. Absent ⇒ no
+ * check (the identity is trusted for the process lifetime).
+ */
+export type PrincipalExists = (userId: string) => Promise<boolean>
+
 /** Registration options: the config plus the optional JIT resolver + API-key verifier. */
 export type HumanAuthOptions = HumanAuthConfig & {
   resolveUser?: ResolveOidcUser
   verifyApiKey?: VerifyApiKey
+  principalExists?: PrincipalExists
 }
 
 declare module 'fastify' {
@@ -98,6 +112,18 @@ declare module 'fastify' {
 
 function unauthorized(reply: FastifyReply, message: string): FastifyReply {
   return reply.code(401).send({ error: 'Unauthorized', statusCode: 401, message })
+}
+
+/** The token is valid but the account behind it was deleted. A distinct `code` so
+ *  the console can tell this apart from an expired/invalid token and force a
+ *  sign-out instead of retrying with the same (now identity-less) session. */
+function accountGone(reply: FastifyReply): FastifyReply {
+  return reply.code(401).send({
+    error: 'Unauthorized',
+    statusCode: 401,
+    message: 'this account no longer exists — sign in again',
+    code: 'ACCOUNT_GONE'
+  })
 }
 
 /** Build the devAuth stub preHandler — admits every request with a fixed principal. */
@@ -222,6 +248,24 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
         pending.catch(() => resolved.delete(sub))
       }
       const identity = await pending
+      // The memo (and the token) can outlive the account: an admin deleting a user
+      // leaves this subject mapped to a row that no longer exists. Confirm it, drop
+      // the dead mapping, and refuse the session so the client signs out — the next
+      // sign-in provisions a genuinely new account instead of resurrecting the old
+      // session. Fail-OPEN on a store error: a DB blip must not sign everyone out.
+      if (cfg.principalExists) {
+        let alive = true
+        try {
+          alive = await cfg.principalExists(identity.userId)
+        } catch (err) {
+          req.log.warn({ err }, 'humanAuth: could not confirm the principal still exists — admitting')
+        }
+        if (!alive) {
+          resolved.delete(sub)
+          req.log.warn({ userId: identity.userId }, 'humanAuth: account no longer exists — session rejected')
+          return accountGone(reply)
+        }
+      }
       // Identity only — which org the request acts on is the URL's business
       // (`/orgs/:orgId/…`, verified by the org-scope guard).
       req.principal = { userId: identity.userId, email: email ?? headerEmail }
