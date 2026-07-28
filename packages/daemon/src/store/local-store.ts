@@ -1712,7 +1712,9 @@ export class LocalStore {
   closeIdleSessions(
     now: number,
     ttlMs: number,
-    isExempt?: (acpSessionId: string | null) => boolean
+    // Both ids: ACP session ids are runtime-local, so an exemption that keys off one alone
+    // (e.g. the daemon's background-task lease) would confuse two agents' `acp-1`.
+    isExempt?: (agentId: string, acpSessionId: string | null) => boolean
   ): {
     key: string
     agentId: string
@@ -1734,7 +1736,7 @@ export class LocalStore {
       thread: string
       acpSessionId: string | null
     }[]
-    const rows = isExempt ? candidates.filter((r) => !isExempt(r.acpSessionId)) : candidates
+    const rows = isExempt ? candidates.filter((r) => !isExempt(r.agentId, r.acpSessionId)) : candidates
     if (rows.length) {
       const close = this.db.prepare("UPDATE sessions SET state = 'closed' WHERE key = ? AND state = 'idle'")
       this.db.exec('BEGIN')

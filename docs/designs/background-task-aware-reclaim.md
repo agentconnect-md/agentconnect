@@ -40,13 +40,20 @@ plane WebSocket.
 
 ## 3. Lease State
 
-The daemon stores one lease per ACP session:
+The daemon stores one lease per **(agent, ACP session)** — keyed by `sdkLeaseKey`,
+never by the session id alone. ACP session ids are runtime-local, so two agents
+can each expose an `acp-1`; a shared entry would let one agent's task overwrite
+the other's record under a colliding task id, suppress its completion wake
+through `tasks`/`sdkState`, or spend its wake budget.
 
 ```text
 {
   agentId,
   tasks: Map<taskId, { description?, isSubagent }>,
-  sdkState: "idle" | "running"
+  sdkState: "idle" | "running",
+  bgWakes,         // wakes already spent on this session, see §5.1
+  armedWakes,      // wake timers armed or deferred, see §5.1
+  deliveringWakes  // wake dispatches in flight, see §5.1
 }
 ```
 
@@ -69,11 +76,19 @@ repairs missed completion edges for tasks already observed through
 A session is SDK-quiescent when:
 
 ```text
-tasks.size == 0 && sdkState == "idle"
+tasks.size == 0 && armedWakes == 0 && deliveringWakes == 0 && sdkState == "idle"
 ```
 
 No lease means quiescent. Host reclamation separately requires that the daemon
 has no foreground prompt pending for the agent.
+
+`armedWakes` is part of the predicate because settling a task removes it from
+`tasks` **before** its completion wake is armed (§5.1). Without it, a task that
+outlived the session's idle TTL would leave the session quiescent for the whole
+grace window, and a sweep landing there would close the session and drop the
+lease — losing exactly the completion the wake exists to deliver. `deliveringWakes`
+extends the same fence past the injected dispatch, until the woken turn is itself
+visible to the sweep; §5.1 covers why both counters exist separately.
 
 ### Logical waiting state
 
@@ -140,8 +155,125 @@ Delivery follows these rules:
   status uses the description alone.
 
 The message is daemon-authored system output, not an agent reply, so it has no
-agent-attribution footer. The runtime's own unsolicited follow-up narration is
-not routed as a reply when no foreground turn is pending.
+agent-attribution footer.
+
+The runtime's own unsolicited follow-up narration is not routed when no
+foreground turn is pending. This is not a stylistic choice — `onAcpUpdate`
+returns early on `!pending`, so **every** content-bearing update from such a
+cycle (message chunks, tool renders, transcript rows, the webchat sink) is
+discarded. Its MCP tool calls are unaffected: that socket is not `Pending`-gated,
+so side effects a self-drain performs — including a `sendMessage` report — do
+land. §5.1 depends on both halves of this.
+
+### 5.1 Waking the session
+
+The notification above tells the human. The model needs the completion too.
+
+`run_in_background` promises the model that it "will be notified when the task
+completes" — a **harness** guarantee, not an SDK one. Interactive Claude Code
+re-invokes the model when the task exits. Under ACP the foreground turn has
+already returned `end_turn` by then, so nothing delivers the result: the model
+reasonably ends its turn expecting a notification, and any obligation riding on
+that task (a `needsParentReply` report to a parent session, a deferred answer to
+the human) is silently dropped.
+
+The daemon therefore delivers it, as a new turn into the same session:
+
+- The turn is `source: "agent"` with sender `background-task:<task_id>`. Its text
+  states plainly that it is a daemon notification rather than a message from
+  anyone, names the task id to read output from, says that THIS turn is the one
+  actually delivered, tells the model not to repeat a report it already sent after
+  the task finished, and permits silence when the result needs no action.
+- It carries **no** `CallMeta`. It is not an agent call and must not look like
+  one. A child woken this way still reaches its parent, because
+  `replyToSession` authorizes against the origin persisted on the session
+  (session-concept §5.3) and `needsParentReply` is sticky.
+- `msgId` is `bgtask:<channel>:<task_id>` — stable in the task id, so a
+  duplicated settle edge cannot dispatch the wake twice. `transcriptTs` is a
+  monotonic "now" so the wake orders as new content.
+- The reply transport is resolved from the **session's** transport scope, not the
+  agent's default integration.
+
+The wake is armed on a `BG_TASK_WAKE_GRACE_MS` (4s) delay and every precondition
+is re-checked when it fires, never captured when it is armed:
+
+| Condition at fire time      | Behavior                                                                                  |
+| --------------------------- | ----------------------------------------------------------------------------------------- |
+| No lease                    | Host was reclaimed; the ACP session is gone. Skip.                                        |
+| Another timer still armed   | Several tasks settled on one edge; the last one delivers for all. Skip.                   |
+| `sdkState == "running"`     | The runtime's self-drain cycle is in flight. **Re-arm**, up to `MAX_BG_TASK_WAKE_REARMS`. |
+| `tasks.size > 0`            | Another task is still live; its completion carries the session forward. Skip.             |
+| Budget exhausted            | Warn and skip (see below).                                                                |
+| A turn is in flight         | **Defer** — retry this attempt once the active dispatch settles.                          |
+| Session missing or not idle | Closed. Skip.                                                                             |
+
+Coalescing and deferring are **not** the same case, and conflating them loses
+results:
+
+- **Another timer still armed** is safely coalescible because none of those wakes
+  has run yet — an empty `background_tasks_changed` snapshot settles every task on
+  one edge, arming a timer each, and all of them then see an empty `tasks`. One turn
+  covers them all.
+- **A turn is in flight** is not. `sdkState` is already `idle` by this point, so
+  `host.prompt()` has returned and the model cannot observe the task in-turn — yet
+  the dispatch stays pending through renderer/finalization. Folding the new
+  completion into that finishing delivery discards it permanently. So the wake
+  defers instead: it retries the same attempt once
+  `activeDispatchDoneByKey` for the session resolves, holding a fence slot across
+  the hand-off. Aggregate progress is bounded by the wake budget, which caps
+  deliveries.
+
+The fence is two counters, and every outcome releases exactly one slot:
+
+| Counter           | Taken                    | Released                          |
+| ----------------- | ------------------------ | --------------------------------- |
+| `armedWakes`      | arming a timer / a defer | that timer firing                 |
+| `deliveringWakes` | just before `dispatch()` | when the dispatch promise settles |
+
+The two are separate precisely so the coalescing decision above can tell "armed"
+from "delivering". Re-arm and defer take the replacement slot **before** releasing
+the current one, so the total never dips to zero while a completion is owed.
+
+Delivery releases at dispatch-promise settle — turn completion, not admission.
+Releasing at dispatch time is not enough: `dispatch()` claims the serial gate
+synchronously, but `dispatchOne` then awaits thread history, attachments, and
+managed-memory recall before `SessionManager` writes `state = 'prompting'`. Through
+that window the row is still `idle` and has no `Pending`, so an already-expired
+session would read quiescent and a sweep landing there would TTL-close it and stop
+the host mid-initialization.
+
+A wake turn that never settles keeps the fence indefinitely; the absolute
+`agentMaxLifetimeMs` ceiling (§4) remains the backstop, as it is for a hung task.
+
+The `running` case is a **wait, not a stand-down**. The self-drain cycle delivers
+nothing (see §5), so treating it as the delivery is what strands the session; the
+wake only defers to it so an injected turn does not race the runtime's own work,
+then delivers regardless. `MAX_BG_TASK_WAKE_REARMS` (15, ≈1 minute) bounds that
+wait so a cycle that never returns to `idle` is not polled forever.
+
+Observed sequence for a `sleep 30` in `run_in_background` (Claude
+claude-agent-acp 0.63.0), which is what this design is calibrated against:
+
+```text
+task_started {t}
+session_state_changed {idle}        # turn returned end_turn, task still live
+background_tasks_changed {live: 0}  # settles the task (arrives first)
+task_updated {completed}            # already settled — deduped
+task_notification                   # already settled — deduped
+session_state_changed {running}     # runtime's self-drain cycle
+session_state_changed {idle}        # ...which produced nothing observable
+```
+
+Internal subagent tasks never wake a session — the SDK joins them itself.
+
+Unlike an agent call, a wake carries no `hopCount` to bound, and a woken turn may
+start further background tasks. `MAX_BG_TASK_WAKES_PER_SESSION` (20, counted over
+the lease's life) is therefore the only backstop against a self-feeding loop;
+exhausting it logs a warning and leaves the completion undelivered.
+
+A wake is **not** gated on output mode. The channel notification in §5 is for the
+human and stays gated at `medium`; the wake is for the model and must happen at
+every output mode, including `low` and `none`.
 
 ## 6. Fallback and Runtime Limits
 
