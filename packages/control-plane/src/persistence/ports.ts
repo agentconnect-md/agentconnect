@@ -973,12 +973,22 @@ export interface AgentUsageAggregate {
   costAmount: number
 }
 
+/** One spend-over-time bucket: total cost of sessions whose last activity fell in
+ *  `[start, start + one bucket)`. `start` is a UTC-aligned ISO instant. */
+export interface SpendBucket {
+  start: string
+  costAmount: number
+}
+
 /** Org-wide usage aggregate for a range: workspace totals + the per-agent breakdown.
  *  `costCurrency` is the single distinct currency across the range, or null when
- *  none/mixed (amounts are summed as-is). */
+ *  none/mixed (amounts are summed as-is).
+ *  `series` is the spend-over-time chart data: cost bucketed by hour (d1) or day
+ *  (longer ranges), with empty buckets filled to 0 across the whole window. */
 export interface UsageAggregate {
   totals: { sessions: number; totalTokens: number; costAmount: number; costCurrency: string | null }
   agents: AgentUsageAggregate[]
+  series: { bucket: 'hour' | 'day'; points: SpendBucket[] }
 }
 
 export interface SessionUsageRepo {
@@ -989,8 +999,10 @@ export interface SessionUsageRepo {
   /** Aggregate usage for an org over sessions active at/after `since` (range window).
    *  When a `viewer` is supplied, sessions of restricted agents they can't see are
    *  excluded from both the totals and the per-agent breakdown (derived visibility,
-   *  via the `agent` relation — owner/undefined ⇒ unfiltered). */
-  aggregate(orgId: OrgId, since: Date, viewer?: ViewCtx): Promise<UsageAggregate>
+   *  via the `agent` relation — owner/undefined ⇒ unfiltered).
+   *  `tzOffsetMin` (UTC − local, as `getTimezoneOffset()` reports) aligns the spend
+   *  `series` buckets to the viewer's local day/hour; 0 (default) ⇒ UTC. */
+  aggregate(orgId: OrgId, since: Date, viewer?: ViewCtx, tzOffsetMin?: number): Promise<UsageAggregate>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

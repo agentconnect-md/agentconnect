@@ -2220,10 +2220,16 @@ export interface UsageDto {
   range: UsageRange
   totals: { sessions: number; totalTokens: number; costAmount: number; costCurrency: string | null }
   agents: UsageAgentDto[]
+  // Spend-over-time chart: cost bucketed by hour (d1) or day (longer ranges),
+  // empty buckets filled to 0. `start` is a UTC-aligned ISO instant.
+  series: { bucket: 'hour' | 'day'; points: { start: string; costAmount: number }[] }
 }
 
 export async function fetchUsage(range: UsageRange, orgId?: string): Promise<UsageDto> {
-  return apiGet<UsageDto>(`${orgBase(orgId)}/usage?range=${range}`)
+  // Send the viewer's tz offset so the CP buckets the spend series to local
+  // day/hour (getTimezoneOffset ⇒ UTC − local; stable per client, not in the key).
+  const tz = new Date().getTimezoneOffset()
+  return apiGet<UsageDto>(`${orgBase(orgId)}/usage?range=${range}&tz=${tz}`)
 }
 
 // Edit an agent's spec (PATCH /agents/:id). The CP persists it and hot-syncs the

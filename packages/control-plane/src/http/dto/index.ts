@@ -2253,7 +2253,13 @@ export const WorkspaceGitPullDto = z.object({
 
 // ── usage dashboard (aggregated from the persisted per-session usage store) ──
 export const UsageRange = z.enum(['d1', 'd7', 'd30', 'd90'])
-export const UsageQueryDto = z.object({ range: UsageRange.default('d30') })
+export const UsageQueryDto = z.object({
+  range: UsageRange.default('d30'),
+  // Client timezone offset in minutes, as `Date.prototype.getTimezoneOffset()`
+  // reports it (UTC − local; e.g. UTC-8 ⇒ 480). Aligns the spend-over-time
+  // buckets to the viewer's local day/hour instead of UTC. Defaults to 0 (UTC).
+  tz: z.coerce.number().int().min(-900).max(900).default(0)
+})
 
 /** Per-agent rollup over the selected range (summed tokens/cost + session count). */
 export const UsageAgentDto = z.object({
@@ -2275,7 +2281,13 @@ export const UsageDto = z.object({
     costAmount: z.number(),
     costCurrency: z.string().nullable()
   }),
-  agents: z.array(UsageAgentDto)
+  agents: z.array(UsageAgentDto),
+  // Spend-over-time chart: cost bucketed by hour (d1) or day (longer ranges),
+  // empty buckets filled to 0. `start` is a UTC-aligned ISO instant.
+  series: z.object({
+    bucket: z.enum(['hour', 'day']),
+    points: z.array(z.object({ start: z.string(), costAmount: z.number() }))
+  })
 })
 
 // ── shared ────────────────────────────────────────────────────────────────

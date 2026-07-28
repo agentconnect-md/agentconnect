@@ -1,9 +1,10 @@
 'use client'
 
+import { useState } from 'react'
 import useSWR from 'swr'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { fetchUsage, fmtCost, fmtCountCompact as fmtCompact, type UsageRange } from '@/lib/api'
-import { agentLabel } from '@/lib/data'
+import { agentLabel, runtimeLabel } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { AgentIconView, Spinner } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
@@ -28,6 +29,26 @@ const MOBILE_RANGES: { key: UsageRange; label: string }[] = [
 const GRID = 'grid-cols-[2fr_1fr_1fr_1fr_1.4fr]'
 const USAGE_REFRESH_MS = 30_000
 
+// How the by-agent table is rolled up. `agent` is the raw per-agent breakdown
+// (rows tap through to the agent); `type` sums agents sharing a runtime (bot
+// type) — grouped rows are inert. Both roll up the same per-agent aggregate
+// client-side, so adding a dimension is just another case here.
+type GroupBy = 'agent' | 'type'
+const GROUPS: { key: GroupBy; label: string }[] = [
+  { key: 'agent', label: 'By agent' },
+  { key: 'type', label: 'By type' }
+]
+
+// Buckets are aligned to the viewer's local day/hour (the CP flooring uses the
+// tz offset we send), so `start` is the UTC instant of a local boundary — label
+// it in local time to read as that local date/hour.
+function bucketLabel(iso: string, bucket: 'hour' | 'day'): string {
+  const d = new Date(iso)
+  return bucket === 'hour'
+    ? `${String(d.getHours()).padStart(2, '0')}:00`
+    : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
 export default function UsageView() {
   const { orgPath, activeOrg, orgs, loading: orgLoading, error: orgError } = useOrgs()
   // Behavior-only mobile check (layout differences are CSS-gated below): the
@@ -40,6 +61,8 @@ export default function UsageView() {
   const raw = params.get('range')
   const parsed: UsageRange = raw === 'd1' || raw === 'd7' || raw === 'd90' ? raw : 'd30'
   const range: UsageRange = isMobile && parsed === 'd90' ? 'd30' : parsed
+
+  const [groupBy, setGroupBy] = useState<GroupBy>('agent')
 
   const { agents } = useConsoleData()
   const waitingForOrg = orgLoading || (!activeOrg && orgs.length > 0)
@@ -55,6 +78,9 @@ export default function UsageView() {
   const selectRange = (k: UsageRange) => router.replace(orgPath(`/usage?range=${k}`))
 
   const rangeLabel = RANGES.find((r) => r.key === range)?.label ?? '30 days'
+  // Skeleton bar count = the range's real bucket count, so placeholder bar widths
+  // match the incoming chart and swapping skeleton→data causes no layout shift.
+  const skelBars = range === 'd1' ? 24 : range === 'd7' ? 7 : range === 'd90' ? 90 : 30
   const totalTokens = data?.totals.totalTokens ?? 0
   const totalSpend = data?.totals.costAmount ?? 0
   const totalSessions = data?.totals.sessions ?? 0
@@ -65,27 +91,72 @@ export default function UsageView() {
   const avgLabel = totalSessions > 0 ? `${fmtCost(totalSpend / totalSessions, currency)} avg / session` : '—'
 
   // Join the CP aggregate (agentId + numbers) with the console's agent list for
-  // the display name/model; fall back to a short id if the agent isn't loaded.
-  // Two bar geometries from one map: `pct` is the desktop share (percent of the
-  // range TOTAL, shown with a % label); `barPct` is the mobile bar, normalized
-  // to the busiest agent (percent of MAX) so the leader always fills the track —
-  // matching the design.
-  const maxTok = Math.max(...(data?.agents ?? []).map((a) => a.totalTokens), 1)
-  const rows = (data?.agents ?? []).map((a) => {
+  // the display name/runtime; fall back to a short id if the agent isn't loaded.
+  const enriched = (data?.agents ?? []).map((a) => {
     const meta = agents.find((x) => x.id === a.agentId)
     return {
       agentId: a.agentId,
       name: meta ? agentLabel(meta) : a.agentId.length > 12 ? a.agentId.slice(0, 8) : a.agentId,
       icon: meta?.icon,
-      model: meta?.model || meta?.runtime || '',
       runtime: meta?.runtime || meta?.model || '',
-      sessions: a.sessions.toLocaleString('en-US'),
-      tokens: fmtCompact(a.totalTokens),
-      spend: fmtCost(a.costAmount, currency),
-      pct: totalTokens > 0 ? Math.round((a.totalTokens / totalTokens) * 100) : 0,
-      barPct: Math.round((a.totalTokens / maxTok) * 100)
+      totalTokens: a.totalTokens,
+      sessions: a.sessions,
+      costAmount: a.costAmount
     }
   })
+
+  // Roll up to the selected grouping. `agent` is the raw list; `type` sums agents
+  // sharing a runtime and drops the per-agent icon/nav (`navId` absent) so grouped
+  // rows are inert and show the runtime glyph.
+  type Entry = {
+    key: string
+    navId?: string
+    name: string
+    icon?: (typeof enriched)[number]['icon']
+    runtime: string
+    totalTokens: number
+    sessions: number
+    costAmount: number
+  }
+  let entries: Entry[]
+  if (groupBy === 'type') {
+    const byType = new Map<string, Entry>()
+    for (const e of enriched) {
+      const rt = e.runtime || 'unknown'
+      const g = byType.get(rt) ?? {
+        key: `type:${rt}`,
+        name: runtimeLabel(rt),
+        runtime: rt,
+        totalTokens: 0,
+        sessions: 0,
+        costAmount: 0
+      }
+      g.totalTokens += e.totalTokens
+      g.sessions += e.sessions
+      g.costAmount += e.costAmount
+      byType.set(rt, g)
+    }
+    entries = [...byType.values()].sort((a, b) => b.totalTokens - a.totalTokens)
+  } else {
+    entries = enriched.map((e) => ({ ...e, key: e.agentId, navId: e.agentId }))
+  }
+
+  // Two bar geometries from one map: `pct` is the desktop share (percent of the
+  // range TOTAL, shown with a % label); `barPct` is the mobile bar, normalized to
+  // the busiest row (percent of MAX) so the leader always fills the track.
+  const maxTok = Math.max(...entries.map((e) => e.totalTokens), 1)
+  const rows = entries.map((e) => ({
+    key: e.key,
+    navId: e.navId,
+    name: e.name,
+    icon: e.icon,
+    runtime: e.runtime,
+    sessions: e.sessions.toLocaleString('en-US'),
+    tokens: fmtCompact(e.totalTokens),
+    spend: fmtCost(e.costAmount, currency),
+    pct: totalTokens > 0 ? Math.round((e.totalTokens / totalTokens) * 100) : 0,
+    barPct: Math.round((e.totalTokens / maxTok) * 100)
+  }))
 
   // Mobile (≤768px) renders only the scroll-body — the Shell provides the app
   // bar (title "Analytics") + bottom nav, so the desktop page header is CSS-hidden
@@ -165,19 +236,104 @@ export default function UsageView() {
         </div>
       </div>
 
+      {/* Spend over time. Pure-CSS bar chart (flex columns), matching the design —
+          no chart library needed. Bars are max-normalized; empty buckets render as
+          the 4px baseline. Hidden by graceful fallback if the CP predates `series`. */}
+
+      {/* First-load skeleton: same card + 180px body footprint as the real chart so
+          the swap to data causes no layout shift. Deterministic bar heights (no
+          random → SSR-safe). */}
+      {loading && !data && (
+        <div className="card mb-[18px] max-desktop:mx-4 max-desktop:mb-3 max-desktop:rounded-lg">
+          <div className="cardhead">
+            <span className="cardtitle">Spend over time</span>
+            <span className="ml-auto h-[11px] w-12 rounded-full bg-(--surface-active)" />
+          </div>
+          <div
+            className="flex h-[180px] animate-pulse items-end px-[18px] pb-[14px] pt-5"
+            style={{ gap: skelBars > 40 ? 2 : skelBars > 14 ? 4 : 10 }}
+          >
+            {Array.from({ length: skelBars }, (_, i) => (
+              <div key={i} className="flex h-full min-w-0 flex-1 flex-col items-center justify-end">
+                <div
+                  className="w-full max-w-[46px] rounded-t-[5px] bg-(--surface-active)"
+                  style={{ height: `${28 + ((i * 23 + 13) % 60)}%` }}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {data?.series &&
+        (() => {
+          const pts = data.series.points
+          const maxSpend = Math.max(...pts.map((p) => p.costAmount), 0)
+          const labelEvery = Math.max(1, Math.ceil(pts.length / 8))
+          const gap = pts.length > 40 ? 2 : pts.length > 14 ? 4 : 10
+          const unit = (currency ?? 'USD').toUpperCase()
+          // Full IANA zone name (e.g. "Asia/Shanghai") — the buckets are aligned to
+          // this zone, so tell the viewer. Client-only: the chart never renders on
+          // the server (data is client-fetched), so no hydration mismatch.
+          const tzName = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+          return (
+            <div className="card mb-[18px] max-desktop:mx-4 max-desktop:mb-3 max-desktop:rounded-lg">
+              <div className="cardhead">
+                <span className="cardtitle">Spend over time</span>
+                <span className="mono text-[11px] text-(--text-tertiary)">{tzName}</span>
+                <span className="mono ml-auto text-[11px] text-(--text-tertiary)">
+                  {unit} / {data.series.bucket}
+                </span>
+              </div>
+              <div className="flex h-[180px] items-end px-[18px] pb-[14px] pt-5" style={{ gap }}>
+                {pts.map((p, i) => {
+                  const label = bucketLabel(p.start, data.series.bucket)
+                  return (
+                    <div
+                      key={p.start}
+                      className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-2"
+                      title={`${label} · ${fmtCost(p.costAmount, currency)}`}
+                    >
+                      <div
+                        className="w-full max-w-[46px] rounded-t-[5px] bg-(--brand)"
+                        style={{ height: `${maxSpend > 0 ? (p.costAmount / maxSpend) * 100 : 0}%`, minHeight: 4 }}
+                      />
+                      <span
+                        className={`mono whitespace-nowrap text-[10.5px] leading-none text-(--text-tertiary) ${
+                          i % labelEvery === 0 ? '' : 'select-none'
+                        }`}
+                      >
+                        {i % labelEvery === 0 ? label : ' '}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })()}
+
       {/* By-agent card. `card` supplies the desktop chrome; the mobile design is
           the same surface with a 12px radius, side margins and corner clipping
           (the utilities out-layer the `.card:has(.row)` overflow-x hack). */}
       <div className="card max-desktop:mx-4 max-desktop:overflow-hidden max-desktop:rounded-lg">
-        {/* Mobile list header */}
-        <div className="flex items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:hidden">
-          <span className="font-sans text-[14px] font-semibold leading-normal">By agent</span>
-          <span className="font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">tokens share</span>
+        {/* Group-by toolbar (both form factors): switch the rollup dimension. */}
+        <div className="flex items-center justify-between gap-3 border-b border-(--border-subtle) px-4 py-3 desktop:px-[18px] desktop:py-[10px]">
+          <div className="pillbar">
+            {GROUPS.map((g) => (
+              <button key={g.key} className={groupBy === g.key ? 'pill on' : 'pill'} onClick={() => setGroupBy(g.key)}>
+                {g.label}
+              </button>
+            ))}
+          </div>
+          <span className="font-mono text-[11px] font-normal leading-normal text-(--text-tertiary) desktop:hidden">
+            tokens share
+          </span>
         </div>
 
         {/* Desktop table header */}
         <div className={`row h hidden desktop:grid ${GRID}`}>
-          <span>Agent</span>
+          <span>{groupBy === 'type' ? 'Type' : 'Agent'}</span>
           <span className="text-right">Sessions</span>
           <span className="text-right">Tokens</span>
           <span className="text-right">Spend</span>
@@ -202,15 +358,16 @@ export default function UsageView() {
           </div>
         )}
 
-        {/* Mobile stacked rows: tappable (→ agent detail), max-normalized bar. */}
+        {/* Mobile stacked rows: max-normalized bar. Per-agent rows tap through to
+            the agent detail; grouped (type) rows are inert (no navId). */}
         {data &&
           rows.map((r, i) => (
             <button
-              key={r.agentId}
-              onClick={() => router.push(orgPath(`/agents/${r.agentId}`))}
-              className={`flex w-full cursor-pointer flex-col gap-[7px] bg-(--surface-card) px-4 py-3 text-left desktop:hidden ${
-                i === 0 ? '' : 'border-t border-(--border-subtle)'
-              }`}
+              key={r.key}
+              onClick={r.navId ? () => router.push(orgPath(`/agents/${r.navId}`)) : undefined}
+              className={`flex w-full flex-col gap-[7px] bg-(--surface-card) px-4 py-3 text-left desktop:hidden ${
+                r.navId ? 'cursor-pointer' : 'cursor-default'
+              } ${i === 0 ? '' : 'border-t border-(--border-subtle)'}`}
             >
               <span className="flex w-full items-center gap-[10px]">
                 <span className="flex h-6 w-6 flex-none items-center justify-center overflow-hidden rounded-sm">
@@ -238,7 +395,7 @@ export default function UsageView() {
             border, exactly as in the desktop-only tree. */}
         {data &&
           rows.map((r) => (
-            <div key={r.agentId} className={`row hidden desktop:grid ${GRID}`}>
+            <div key={r.key} className={`row hidden desktop:grid ${GRID}`}>
               <div className="flex items-center gap-[10px]">
                 <span className="av h-7 w-7 rounded-[7px]">
                   <AgentIconView icon={r.icon} runtime={r.runtime} size={28} />

@@ -39,8 +39,8 @@ export function usageRoutes(deps: HttpDeps) {
         const since = new Date(Date.now() - RANGE_DAYS[req.query.range] * DAY_MS)
         // Viewer-scoped: a restricted agent the caller can't see drops out of both
         // the totals and the per-agent breakdown (owner ⇒ full org rollup).
-        const agg = await deps.repos.sessionUsage.aggregate(orgOf(req), since, ctxOf(req))
-        return { range: req.query.range, totals: agg.totals, agents: agg.agents }
+        const agg = await deps.repos.sessionUsage.aggregate(orgOf(req), since, ctxOf(req), req.query.tz)
+        return { range: req.query.range, totals: agg.totals, agents: agg.agents, series: agg.series }
       }
     )
   }
