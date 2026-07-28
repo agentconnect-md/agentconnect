@@ -182,7 +182,8 @@ type MessageTarget = {
   platform?: 'slack' | 'telegram' | 'discord' | 'feishu' | ... // Defaults to current session; narrowed to installed platforms
   channel?: string   // Channel ID or name; omitted means no visible channel post
   toUser?: string    // Platform user ID to mention or direct-message
-  toAgent?: string   // AgentConnect agent ID to wake
+  // AgentConnect agent ID to wake. The object form adds delivery options; see section 5.4.
+  toAgent?: string | { agentId: string; needsReply?: boolean }
   thread?: string    // Existing thread in which the receiver should reply
 }
 ```
@@ -386,7 +387,88 @@ implements the same-thread form, and unified `sendMessage` reuses it.
      plane through `routeAgentMsgCrossDaemon` at `daemon.ts:3623`, never the
      Control Plane.
 
-### 5.4 Two reply shapes
+### 5.4 Following the child: `childSessionId`, `viewSessionStatus`, `needsReply`
+
+A wake is admission, not a result: `sendMessage` returns as soon as the child is
+admitted, and the child runs its turn in its own time. A parent that delegated
+work therefore needs a handle on the child and a way to ask how it is going.
+
+- **The handle.** An admitted peer wake returns `childSessionId` alongside
+  `wake` — the child's logical session key, the same value as
+  `wake.targetSession`. A refused wake opened nothing, so the field is absent
+  and `wake.reason` explains why.
+- **Polling: `viewSessionStatus(sessionId)`.** The read counterpart of a
+  SessionTarget reply, and authorized as its mirror image: a child may reply
+  **up** its lineage, a parent may read **down** it, and neither may reach
+  sideways. The tool takes the `childSessionId` and returns
+  `{ sessionId, agentId, status, state, updatedAt }`, where `status`
+  collapses the section 7.3 lifecycle plus the last turn's outcome:
+
+  | `status`      | When                                                                     |
+  | ------------- | ------------------------------------------------------------------------ |
+  | `in-progress` | admitted but not yet open, a turn in flight, or no turn has finished yet |
+  | `done`        | the last turn ended cleanly                                              |
+  | `failed`      | the last turn ended in a problem phase (spawn/ACP failure, loop breaker) |
+
+  Authorization comes from the child's durable `originSessionId`, with an
+  in-memory admission-time link covering the window before the child's session
+  row exists. Anything else — an unknown id, a sibling, the caller's own
+  session — is refused with one indistinguishable error, so a caller cannot
+  probe for sessions it may not read. Only the returned logical key is
+  addressable: an ACP session id is not accepted, because ACP ids are minted per
+  runtime and are not unique across agents. `done` means the child's turn ended,
+  not that it reported anything back.
+
+  A turn that is queued, running, or admitted-but-not-yet-started all report
+  `in-progress`. That matters for a RE-delegation: until the child picks the new
+  wake up, its row still holds the previous turn's outcome, so the daemon fences
+  the window by snapshotting the child row's `updatedAt` at admission.
+
+- **Children on another daemon.** A peer wake may be admitted on a different
+  daemon, and that child is followable too. Daemons cannot address each other —
+  the relay carries message delivery, not queries — so the read goes
+  daemon → CP → owning daemon (`session/child-status` → `session/child-status/probe`),
+  which is the same bounded-metadata proxy shape the BFF reads use. Authorization
+  is **two-sided and neither half suffices**: the CP proves the asking daemon
+  actually reported the parent session it claims (a daemon cannot name someone
+  else's parent), and the owning daemon re-checks the real lineage rule against
+  the child's `originSessionId`, because that rule belongs where the session
+  lives. An unreachable owning daemon or a disconnected CP is reported as a
+  retryable transport failure, never as "not your child" — the two must stay
+  distinguishable to the agent.
+
+  The handle itself must come from the owning daemon. A session key includes a
+  transport scope derived from the reply integration the **relay** chose, which
+  the calling daemon never sees — so the target returns the canonical child key on
+  the admission ACK, and that is the `childSessionId` the agent receives. The
+  target also records the lineage before ACKing, so a probe that lands in the
+  window before its session row exists is still answered (`starting`) and still
+  authorized.
+
+- **A child may have more than one parent.** The same logical session can be woken
+  by different parents over its life. Both the durable first-wins
+  `originSessionId` and the most recent waker recorded at admission are authorized
+  to read it — denying the second would refuse a parent the child it just started.
+  The write side matches: the report-back directive names the current waker.
+
+- **Push: `toAgent.needsReply`.** Polling tells the parent _that_ the child
+  stopped, never _what_ it produced. `needsReply: true` asks for the result
+  instead: the daemon carries the flag as trusted `CallMeta` (never in the
+  delivered text) and prompt assembly turns it into a standing directive in the
+  child's system-prompt append, naming `originSessionId` as the reply target.
+  It travels cross-daemon on the `rd/agentmsg` frames, so a remote child takes on
+  the same obligation. The obligation is persisted on the child session and
+  therefore sticky — it survives resume and later human-triggered turns — and it
+  does **not** cascade: a grandchild is obliged only if its own parent asks.
+  Prefer this over a tight polling loop.
+
+  A session may be woken by more than one parent. The directive always names the
+  parent **this turn** may actually reply to (the turn's wake origin, which is
+  what the SessionTarget authorizer accepts), and is restated as a turn-scoped
+  block when the standing context named a previous one — the durable link itself
+  stays first-wins.
+
+### 5.5 Two reply shapes
 
 - **Cross-agent reply, cases 2b and 3b:** child owner B inserts
   `{ type: system, from: agentB }` into agent A's origin. This is the
@@ -612,3 +694,9 @@ waking B in a Slack session.
 10. **Session platform differs from target platform:** a session's platform is
     where it lives. `sendMessage.to.platform` may differ, and the two sides of
     agent-to-agent delivery may live on different platforms.
+11. **Lineage is readable in exactly one direction:** an admitted wake returns
+    the child's `childSessionId`, and `viewSessionStatus` accepts only a session
+    whose parent is the calling session. Unknown and unauthorized ids are
+    indistinguishable. `status: done` means the child's turn ended, not that it
+    reported back — `toAgent.needsReply` is what obliges it to report, as a
+    sticky standing directive on the child, never as delivered message text.

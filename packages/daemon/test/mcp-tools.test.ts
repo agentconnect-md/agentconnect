@@ -124,6 +124,22 @@ describe('toolsForIntegrations', () => {
     expect(tool.description).toContain('{"to":{"sessionId":"<Parent session>"},"message":"..."}')
   })
 
+  it('`toAgent` accepts the bare agent id OR an {agentId, needsReply} object', () => {
+    const branches = (sendTargetBranch([slackInt], 'toAgent').properties.toAgent as { oneOf: unknown[] }).oneOf as {
+      type?: string
+      properties?: Record<string, unknown>
+      required?: string[]
+      additionalProperties?: boolean
+    }[]
+    // The bare-string form stays FIRST: it is what every warm session's descriptor and every
+    // published example teaches, and the object form only layers delivery options onto it.
+    expect(branches).toHaveLength(2)
+    expect(branches[0]!.type).toBe('string')
+    expect(Object.keys(branches[1]!.properties!)).toEqual(['agentId', 'needsReply'])
+    expect(branches[1]!.required).toEqual(['agentId'])
+    expect(branches[1]!.additionalProperties).toBe(false)
+  })
+
   it('still injects the unified send tool for an agent with no integrations, but no platform read tools', () => {
     // The unified sendMessage tool is ALWAYS present (a memory-only agent can wake a peer /
     // reply to its origin) — but the platform read helpers only appear with ≥1 integration.
@@ -143,6 +159,7 @@ describe('toolsForIntegrations', () => {
       'readMemory',
       'writeMemory',
       'listChannelAgents',
+      'viewSessionStatus',
       'startOrchestration',
       'getOrchestration',
       'cancelOrchestration',

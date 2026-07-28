@@ -318,7 +318,11 @@ export class SessionManager {
     originSessionId?: string,
     /** A chat-selected effort needed by session/new metadata before the session row exists.
      *  The daemon revalidates current Agent authority before persisting or prompting. */
-    initialEffort?: string
+    initialEffort?: string,
+    /** session-concept §5.3: the parent woke this session with `toAgent.needsReply`, so it must
+     *  be told to report back into `originSessionId` when it finishes or fails. Persisted on the
+     *  session (sticky) so the directive survives resume and later turns. */
+    needsParentReply?: boolean
   ): Promise<{
     sessionId: string
     blocks: ContentBlock[]
@@ -404,7 +408,32 @@ export class SessionManager {
     // first spawns the session carries it). This value both drives the `Parent session` line and,
     // once persisted, is what authorizes SessionTarget replies to the parent on later
     // human-triggered turns that have no per-turn CallMeta.
-    const effectiveOriginSessionId = rec?.originSessionId ?? originSessionId
+    // PRECEDENCE MATTERS: this must agree with what `replyToSession` will actually authorize on
+    // this turn, which prefers the turn's CallMeta origin over the persisted one. A session can be
+    // woken by more than one parent; if we named the first-wins persisted parent while the
+    // authorizer accepted the current waker, the agent would be told to reply somewhere its reply
+    // is then refused. A turn with no wake origin (human follow-up) falls back to the persisted
+    // link, which is what the authorizer also falls back to. The DURABLE link itself stays
+    // first-wins — the store COALESCEs it — so this only changes who the current turn addresses.
+    const effectiveOriginSessionId = originSessionId ?? rec?.originSessionId
+    // The report-back directive is sticky the same way: once a parent asked for a reply the
+    // session keeps the obligation, so later (human-triggered) turns and resumes re-assert it
+    // instead of quietly dropping it. Only meaningful with a parent to report to.
+    const needsReplyToParent =
+      effectiveOriginSessionId !== undefined && (rec?.needsParentReply === 1 || needsParentReply === true)
+    // When an already-open session's STANDING context does not (or no longer) states the right
+    // obligation, this turn has to carry it as a turn-scoped block instead. Two causes:
+    //   • the obligation was just added — the session opened without it; or
+    //   • a DIFFERENT parent woke the session than the one its standing context named. That
+    //     context is fixed for the ACP session's life (Claude sets it at session/new, other
+    //     runtimes inline it once), so a second parent's wake would otherwise leave the agent
+    //     addressing the first parent — which `replyToSession` refuses on this turn.
+    const restateParentReply =
+      needsReplyToParent &&
+      (rec?.needsParentReply !== 1 ||
+        (originSessionId !== undefined &&
+          rec?.originSessionId !== undefined &&
+          originSessionId !== rec.originSessionId))
     // Prepare the workspace (clone/pull + skill install) BEFORE acquiring the host,
     // but ONLY when the runtime process is COLD — that's when hostFor spawns it, so
     // skills must be on disk first (design §6). This covers both a brand-new session
@@ -587,6 +616,20 @@ export class SessionManager {
           `does, how to reach it) so you know who to delegate to later. Then just acknowledge briefly; do NOT re-introduce ` +
           `yourself back or broadcast to everyone.`
 
+    // The parent asked to be told how this session ends (`toAgent.needsReply`). Standing, not a
+    // user turn — the obligation outlives the waking turn, so it belongs beside the collaboration
+    // guidance rather than in the delivered text (which the model may summarize away). Deliberately
+    // scoped to a terminal report: nothing here asks for progress narration, which would turn every
+    // delegated task into channel chatter.
+    const parentReplyAppend = needsReplyToParent
+      ? `# Reporting back to your parent session\n` +
+        `Another session delegated this work to you and is waiting on the outcome. When you finish — or when you ` +
+        `cannot finish — reply to it with ` +
+        `\`sendMessage\` \`{"to":{"sessionId":"${effectiveOriginSessionId}"},"message":"..."}\`, saying whether you ` +
+        `succeeded or failed and what the result was (on failure, what went wrong). Send it exactly once, at the ` +
+        `end; do not report progress along the way, and do not skip it because the task was small or unsuccessful.`
+      : ''
+
     // Standing response-choice rule for EVERY agent session and delivery scenario. Direct
     // messages and direct agent calls are explicitly described as addressed; shared
     // conversations are where the silent branch is normally useful. Keeping one contract
@@ -597,7 +640,9 @@ export class SessionManager {
     // the memory index. Claude carries this via `_meta.systemPrompt`; session/load re-asserts
     // the durable standing rules in a fresh runtime process without treating them as a user
     // turn. Other runtimes inline the fresh-session form as the first block below.
-    const resumeSystemContext = [agentMeta, collabAppend, NO_RESPONSE_RULE].filter(Boolean).join('\n\n')
+    const resumeSystemContext = [agentMeta, collabAppend, parentReplyAppend, NO_RESPONSE_RULE]
+      .filter(Boolean)
+      .join('\n\n')
     const sessionContext = [resumeSystemContext, memoryAppend].filter(Boolean).join('\n\n')
     const usesMeta = host.usesMetaSystemPrompt?.() ?? false
     const metaContext = usesMeta ? sessionContext || undefined : undefined
@@ -637,7 +682,9 @@ export class SessionManager {
         triggeredBy: msg.sender.id,
         memoryProvider: currentMemoryProvider,
         // Durable parent link, set once at spawn (first-wins in the store).
-        ...(effectiveOriginSessionId ? { originSessionId: effectiveOriginSessionId } : {})
+        ...(effectiveOriginSessionId ? { originSessionId: effectiveOriginSessionId } : {}),
+        // Durable report-back obligation (sticky-true in the store).
+        ...(needsReplyToParent ? { needsParentReply: 1 } : {})
       }
       this.deps.store.upsertSession(rec)
       if (isNewLogicalSession && msg.initialSessionTitle?.trim()) {
@@ -787,6 +834,9 @@ export class SessionManager {
           rec.lastDeliveredTs = deliveredThrough
           rec.state = 'idle'
           rec.updatedAt = Date.now()
+          // A skipped activation still took on the obligation — persist it so the next real turn
+          // (and any resume) carries the directive.
+          if (needsReplyToParent) rec.needsParentReply = 1
           this.deps.store.upsertSession(rec)
           return { sessionId: rec.acpSessionId!, blocks: [], created, skipped: true }
         }
@@ -939,6 +989,12 @@ export class SessionManager {
       // new session just received (inline or via `_meta.systemPrompt`).
       this.turnsSinceReminder.set(key, 0)
       if (!usesMeta && sessionContext) promptPrelude.push({ type: 'text', text: sessionContext })
+    } else if (restateParentReply) {
+      // An ALREADY-OPEN session whose standing context does not state the current obligation —
+      // it was composed before the obligation existed, or it names a previous parent. This session
+      // is not being recreated, so there is no system-prompt channel to update; state the
+      // directive as a turn-scoped block naming the parent THIS turn may actually reply to.
+      promptPrelude.push({ type: 'text', text: parentReplyAppend })
     } else if (this.shouldRemind(key)) {
       // Long-running (or just-compacted) session: re-assert the no-response
       // rule as a compact system reminder so it stays salient. A brand-new session already
@@ -962,6 +1018,9 @@ export class SessionManager {
     // messageAgent, cron, or hook.
     rec.state = 'prompting'
     rec.updatedAt = Date.now()
+    // Sticky in the store, so this only ever adds the obligation — an ordinary turn on a session
+    // that already has it passes 1 straight back through.
+    if (needsReplyToParent) rec.needsParentReply = 1
     this.deps.store.upsertSession(rec)
 
     return { sessionId: rec.acpSessionId!, blocks, created, captureInput, turnId }

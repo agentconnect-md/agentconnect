@@ -27,6 +27,7 @@ import { handleIntegrationChannels } from './integration-channels.js'
 import { handleCronReport } from './cron-report.js'
 import { handleHookReport } from './hook-report.js'
 import { handleChannelAgents } from './channel-agents.js'
+import { handleChildSessionStatus } from './child-session-status.js'
 import { handleEventSession } from './event-session.js'
 import { handleSessionActivity } from './event-session-activity.js'
 import { handleGitCredRequest } from './gitcred.js'
@@ -55,6 +56,7 @@ export class FrameRouter {
       'github/review-authorize': handleGithubReviewAuthorize,
       'github/review-result': handleGithubReviewResult,
       'channel/agents': handleChannelAgents,
+      'session/child-status': handleChildSessionStatus,
       'event/session': handleEventSession,
       'event/session-activity': handleSessionActivity,
       'gitcred/request': handleGitCredRequest,
@@ -84,6 +86,7 @@ export {
   handleGithubReviewAuthorize,
   handleGithubReviewResult,
   handleChannelAgents,
+  handleChildSessionStatus,
   handleEventSession,
   handleSessionActivity
 }

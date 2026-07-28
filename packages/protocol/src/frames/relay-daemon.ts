@@ -302,7 +302,13 @@ export const RdAgentMsg = z.object({
       channel: z.string().min(1),
       thread: z.string().optional()
     })
-    .optional()
+    .optional(),
+  // session-concept §5.4: the caller asked the woken session to report its outcome back into
+  // `originSessionId` (`sendMessage`'s `toAgent.needsReply`). The target daemon turns this into a
+  // standing directive on the child; it is never part of the delivered `text`. Meaningless without
+  // an origin to report to, so the target ignores it when `originSessionId` is absent. Optional —
+  // an ordinary fire-and-forget wake and any older daemon omit it.
+  needsReply: z.boolean().optional()
 })
 export type RdAgentMsg = z.infer<typeof RdAgentMsg>
 
@@ -343,7 +349,11 @@ export const RdAgentMsgFwd = z.object({
       channel: z.string().min(1),
       thread: z.string().optional()
     })
-    .optional()
+    .optional(),
+  // Forwarded verbatim from RdAgentMsg (session-concept §5.4): the caller's request that the woken
+  // session report its outcome back into `originSessionId`. Opaque to the relay — it is the
+  // caller's own instruction about its own lineage, not a claim the relay mints or validates.
+  needsReply: z.boolean().optional()
 })
 export type RdAgentMsgFwd = z.infer<typeof RdAgentMsgFwd>
 
@@ -356,7 +366,14 @@ export type RdAgentMsgReason = z.infer<typeof RdAgentMsgReason>
 export const RdAgentMsgAck = z.object({
   deliveryId: z.string().min(1),
   delivered: z.boolean(),
-  reason: RdAgentMsgReason.optional()
+  reason: RdAgentMsgReason.optional(),
+  // session-concept §5.4: the CANONICAL logical session key the target computed for the woken
+  // child. The source cannot derive this itself — the target's key includes a transport scope
+  // derived from the reply integration the RELAY chose, which the source never sees — so without
+  // it a `childSessionId` handed to the caller could never match the child's real row. Returned on
+  // admission (before the row exists), and optional so an older target daemon simply yields no
+  // followable handle rather than a wrong one.
+  childSessionId: z.string().min(1).optional()
 })
 export type RdAgentMsgAck = z.infer<typeof RdAgentMsgAck>
 

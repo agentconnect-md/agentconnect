@@ -85,11 +85,43 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
     ...obj(
       {
         toAgent: {
-          type: 'string',
-          minLength: 1,
           description:
-            'AgentConnect agent id from listChannelAgents or the [agent-id] sender envelope. Never a platform ' +
-            'member id such as Slack `U…`.'
+            'The peer to wake. Either the bare AgentConnect agent id, or an object ' +
+            '`{"agentId":"<agent id>","needsReply":true}` when you need the peer to report back to you. Use ' +
+            '`needsReply` for delegated work you will wait on: the peer’s session is opened with a standing ' +
+            'instruction to reply into YOUR session when it finishes or fails, and you can poll it meanwhile with ' +
+            '`viewSessionStatus` on the returned `childSessionId`.',
+          oneOf: [
+            {
+              type: 'string',
+              minLength: 1,
+              title: 'Agent id',
+              description:
+                'AgentConnect agent id from listChannelAgents or the [agent-id] sender envelope. Never a platform ' +
+                'member id such as Slack `U…`.'
+            },
+            {
+              title: 'Agent id with delivery options',
+              ...obj(
+                {
+                  agentId: {
+                    type: 'string',
+                    minLength: 1,
+                    description:
+                      'AgentConnect agent id from listChannelAgents or the [agent-id] sender envelope. Never a ' +
+                      'platform member id such as Slack `U…`.'
+                  },
+                  needsReply: {
+                    type: 'boolean',
+                    description:
+                      'When true, the woken session is told to report back into this session (done or failed) when ' +
+                      'it completes. Defaults to false — a plain fire-and-forget wake.'
+                  }
+                },
+                ['agentId']
+              )
+            }
+          ]
         },
         channel: {
           type: 'string',
@@ -166,7 +198,11 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
       ? 'Send one message to exactly one target. Choose one form:\n' +
         '- Peer agent (direct wake): `{"to":{"toAgent":"<agent id>"},"message":"..."}` is a postless wake. Add a ' +
         '`channel` (and optional `thread`) to also post a visible message and thread the peer’s reply there. Get the ' +
-        'id from listChannelAgents and send one call per peer; never substitute a platform member id.\n' +
+        'id from listChannelAgents and send one call per peer; never substitute a platform member id. When the wake ' +
+        'opens a session for the peer, the result carries its `childSessionId` — pass that to `viewSessionStatus` to ' +
+        'check whether the peer is still working. Use ' +
+        '`{"to":{"toAgent":{"agentId":"<agent id>","needsReply":true}},"message":"..."}` to also instruct that ' +
+        'session to report back to you when it is done or has failed.\n' +
         '- Channel or human (visible post): `{"to":{"channel":"<channel id>"},"message":"..."}`. Add `toUser` only ' +
         'to address an actual human, or `platform` to use another connected platform.\n' +
         '- Parent session (direct reply): `{"to":{"sessionId":"<Parent session>"},"message":"..."}`. Use the id ' +
@@ -510,6 +546,28 @@ export const COLLABORATION_TOOLS: ToolDescriptor[] = [
         description: 'Channel/chat id to list agents for. Defaults to the current channel.'
       }
     })
+  },
+  {
+    name: 'viewSessionStatus',
+    description:
+      'Check whether a session YOU started is still working. Pass the `childSessionId` a `sendMessage` peer wake ' +
+      'returned. Returns `{ sessionId, agentId, status, … }` where `status` is "in-progress" (queued or a turn is ' +
+      'running), "done" (its last turn finished cleanly), or "failed" (its last turn ended in an error). This is ' +
+      'scoped to YOUR children: sessions you did not start — including your own and unrelated agents’ — cannot be ' +
+      'read, and asking for one is an error. `done` means the child ended its turn, not that it reported anything ' +
+      'back; wake it with `needsReply` if you want its result delivered to you. Works for a peer on another machine ' +
+      'too, where a transient "not reachable" error means retry, not that the session is gone. Poll sparingly, and ' +
+      'prefer waiting for the child’s reply over a tight polling loop.',
+    inputSchema: obj(
+      {
+        sessionId: {
+          type: 'string',
+          minLength: 1,
+          description: 'The `childSessionId` returned by the `sendMessage` call that started the session.'
+        }
+      },
+      ['sessionId']
+    )
   },
   {
     name: 'startOrchestration',

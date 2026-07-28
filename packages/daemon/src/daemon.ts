@@ -36,6 +36,8 @@ import type {
   MessageAgentResult,
   ReplyToSessionReq,
   ReplyToSessionResult,
+  SessionStatusReq,
+  SessionStatusResult,
   StartOrchestrationReq,
   StartOrchestrationResult,
   OrchestrationOwnerReq,
@@ -261,7 +263,9 @@ import type {
   GithubReviewAuthorized,
   HookReviewResult,
   FeishuRegion,
-  MemoryDreamingPolicy
+  MemoryDreamingPolicy,
+  ChildSessionStatus,
+  ChildSessionStatusProbe
 } from '@agentconnect.md/protocol'
 
 /** Format an error for logs, surfacing a JSON-RPC/ACP RequestError's `code` and
@@ -578,6 +582,12 @@ interface CallMeta {
    *  with no channel output. Set only by the self-introduce-on-join fan-out; does
    *  NOT cascade (the peer's own callMeta doesn't carry it). */
   deliverHeadless?: boolean
+  /** session-concept §5.3: the waking parent asked this session to report back when it is done
+   *  or has failed (`sendMessage`'s `toAgent.needsReply`). Handed to prompt assembly, which turns
+   *  it into a standing directive on the child naming `originSessionId` as the reply target.
+   *  Like `deliverHeadless` it does NOT cascade — a grandchild is only obliged if its own parent
+   *  asks. Absent ⇒ an ordinary fire-and-forget wake. */
+  needsReply?: boolean
 }
 
 type TurnInterruptReason = 'pause' | 'loop protection' | 'stop' | 'cancel' | 'shutdown'
@@ -1894,6 +1904,7 @@ export class Daemon {
       messageAgent: (req) => this.messageAgent(req),
       preflightWake: (req) => this.wakeRejectionReason(req),
       replyToSession: (req) => this.replyToSession(req),
+      viewSessionStatus: (req) => Promise.resolve(this.viewSessionStatus(req)),
       spawnChannelRootSession: (req) => this.spawnChannelRootSession(req),
       startOrchestration: (req) => this.startOrchestration(req),
       getOrchestration: (req) => Promise.resolve(this.getOrchestrationForOwner(req)),
@@ -4488,6 +4499,29 @@ export class Daemon {
   // (no double-wake). Bounded like `relayMsgAcks`. Local path only; cross-daemon dedup is P2.
   private readonly agentCallDeliveries = new Map<string, MessageAgentResult>()
 
+  // Parent→child links recorded at wake ADMISSION, keyed by the child's logical sessionKey
+  // (== the `childSessionId` handed back by `sendMessage`), valued by the waking session's stable
+  // acpSessionId. Authorizes `viewSessionStatus` during the window where the child has been
+  // admitted but its session row does not exist yet — dispatch is fire-and-forget, so the parent
+  // can legitimately poll before the child's first turn reaches SessionManager. Once that row
+  // exists its durable `originSessionId` is the authority, so this is a startup shim, not the
+  // record: it is in-memory (a restart kills the in-flight wake it covers anyway) and bounded.
+  //
+  // `rowUpdatedAtAtAdmission` additionally fences a RE-wake of an already-finished child: the row
+  // still reads `idle` + the PREVIOUS turn's `lastTurnOutcome` until SessionManager flips it to
+  // `prompting`, so a parent polling right after re-delegating would otherwise be handed the old
+  // `done`. Comparing the row's own `updatedAt` against its value at admission is clock-source
+  // independent (the store stamps `Date.now()`, the daemon reads `this.clock`), so an unchanged
+  // value means "has not acted on our wake yet" without comparing two clocks.
+  //
+  // `remote:true` marks a child admitted on ANOTHER daemon. Its row will never appear in this
+  // store, so the link is the only record that the wake happened and who may follow it; the status
+  // read for those is routed through the CP (§5.4) instead of the local store.
+  private readonly childSessionLinks = new Map<
+    string,
+    { parentSessionId: string; agentId: string; rowUpdatedAtAtAdmission: number | null; remote?: boolean }
+  >()
+
   // §3.4/§6.8 orchestration deadline timers, keyed by orchestrationId. Held HERE
   // (daemon-owned), NOT in the Scheduler's per-agent map — Scheduler.sync is replace-all
   // and would wipe a per-orchestration one-shot on the next agent reconcile. The durable
@@ -4777,13 +4811,35 @@ export class Daemon {
       // §5.3: preserve the remote caller's origin lineage so a child woken here can reply
       // back across the relay to a parent session that lives on the caller's daemon.
       ...(msg.originSessionId !== undefined ? { originSessionId: msg.originSessionId } : {}),
-      ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {})
+      ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {}),
+      // §5.4: the remote caller asked this child to report its outcome back. Same gate as the
+      // local path — the directive names `originSessionId`, so it is meaningless without one.
+      ...(msg.needsReply === true && msg.originSessionId !== undefined ? { needsReply: true } : {})
     }
     const narrowed = this.narrowPlatform(platform)
     const resolved = this.resolveCpAgent(msg.toAgentId)
     const integrationId = msg.integrationId ?? resolved?.integrationId
+    // §5.4: the CANONICAL child session key, computed with the same inputs `dispatch` will use —
+    // crucially including the transport scope derived from the reply integration the RELAY chose.
+    // The source daemon cannot derive this (it never sees that integration), so we hand it back on
+    // the ACK; without it the `childSessionId` the calling agent receives could never match this
+    // row. Recording the link here also covers the pre-row window: dispatch is fire-and-forget and
+    // we ACK immediately, so a CP status probe can arrive before SessionManager creates the row.
+    const childTransportScope =
+      integrationId !== undefined ? this.transportScopeForIntegrationIds([integrationId]) : undefined
+    // Mirror `transcriptCoords` exactly: an absent thread resolves to the msgId, NOT ''.
+    const childMsgId = `agentcall:${channel}:${msg.deliveryId}`
+    const childSessionId = sessionKey(narrowed, channel, thread ?? childMsgId, msg.toAgentId, childTransportScope)
+    if (msg.originSessionId !== undefined) {
+      if (this.childSessionLinks.size >= 2000) this.childSessionLinks.clear()
+      this.childSessionLinks.set(childSessionId, {
+        parentSessionId: msg.originSessionId,
+        agentId: msg.toAgentId,
+        rowUpdatedAtAtAdmission: this.store.getSession(childSessionId)?.updatedAt ?? null
+      })
+    }
     const normalized: NormalizedMessage = {
-      msgId: `agentcall:${channel}:${msg.deliveryId}`,
+      msgId: childMsgId,
       traceId: msg.deliveryId,
       source: 'agent',
       platform: narrowed,
@@ -4810,7 +4866,7 @@ export class Daemon {
       this.log.error(`relay agentmsg dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
     )
     this.log.info(`relay: rd/agentmsg/fwd ${msg.trustedFromAgentId} → ${msg.toAgentId} delivery=${msg.deliveryId}`)
-    return record({ deliveryId: msg.deliveryId, delivered: true })
+    return record({ deliveryId: msg.deliveryId, delivered: true, childSessionId })
   }
 
   /** An agent's channel-directory display name, used to name the caller in the
@@ -5039,22 +5095,35 @@ export class Daemon {
     // decides whether the target is allowed to be woken by this caller.
     if (!target) {
       const coordPlatform = platform === 'hook' ? 'slack' : platform
-      return record(
-        await this.routeAgentMsgCrossDaemon(
-          { ...req, text: event.text, thread: event.thread },
-          {
-            platform: coordPlatform,
-            channel: req.channel,
-            thread: event.thread,
-            deliveryId,
-            targetSession,
-            sourceHopCount,
-            correlationId,
-            ...(originSessionId !== undefined ? { originSessionId } : {}),
-            originCoords
-          }
-        )
+      const remote = await this.routeAgentMsgCrossDaemon(
+        { ...req, text: event.text, thread: event.thread },
+        {
+          platform: coordPlatform,
+          channel: req.channel,
+          thread: event.thread,
+          deliveryId,
+          targetSession,
+          sourceHopCount,
+          correlationId,
+          ...(originSessionId !== undefined ? { originSessionId } : {}),
+          originCoords
+        }
       )
+      // §5.4: an ADMITTED remote wake is still a child this session may follow — its row lives on
+      // the owning daemon, so mark the link remote and let viewSessionStatus route through the CP.
+      if (remote.delivered && originSessionId !== undefined) {
+        if (this.childSessionLinks.size >= 2000) this.childSessionLinks.clear()
+        // Key it by the CANONICAL key the target returned (`remote.targetSession`), not our
+        // pre-ACK guess — that canonical value is what we hand the agent, so it is what a later
+        // `viewSessionStatus` will look up.
+        this.childSessionLinks.set(remote.targetSession, {
+          parentSessionId: originSessionId,
+          agentId: req.toAgentId,
+          rowUpdatedAtAtAdmission: null,
+          remote: true
+        })
+      }
+      return record(remote)
     }
 
     // Trusted call metadata for the target's turn (§3.3a/§6.6/§6.7): kept daemon-private
@@ -5077,7 +5146,10 @@ export class Daemon {
       deliveryId,
       // §5.3: hand the child its origin so it can reply back with `sendMessage({sessionId})`.
       ...(originSessionId !== undefined ? { originSessionId } : {}),
-      originCoords
+      originCoords,
+      // §5.3: `toAgent.needsReply` — tell the child to report its outcome back to that origin.
+      // Meaningless without an origin to reply into, so it rides the same condition.
+      ...(req.needsReply === true && originSessionId !== undefined ? { needsReply: true } : {})
     }
 
     const normalized: NormalizedMessage = {
@@ -5107,6 +5179,18 @@ export class Daemon {
     // the peer's reply. dispatch() drops the turn (returns null) if the target is paused/
     // draining; that still counts as admitted for P1 (a reason-typed NAK on those gates is
     // P2's admission protocol, §6.4).
+    // Record the lineage BEFORE the fire-and-forget dispatch, so a parent that polls
+    // `viewSessionStatus` the instant sendMessage returns is already authorized.
+    if (originSessionId !== undefined) {
+      if (this.childSessionLinks.size >= 2000) this.childSessionLinks.clear()
+      this.childSessionLinks.set(targetSession, {
+        parentSessionId: originSessionId,
+        agentId: req.toAgentId,
+        // Snapshot the child row as it stands BEFORE the wake runs (null when it has never run),
+        // so a re-wake of a finished child can't be reported with its previous turn's outcome.
+        rowUpdatedAtAtAdmission: this.store.getSession(targetSession)?.updatedAt ?? null
+      })
+    }
     void this.dispatch(req.toAgentId, normalized, integrationId, undefined, callMeta).catch((err) =>
       this.log.error(`messageAgent dispatch failed for agent "${req.toAgentId}": ${formatErr(err)}`)
     )
@@ -5263,6 +5347,164 @@ export class Daemon {
   }
 
   /**
+   * Read the progress of a session the caller STARTED (backs the `viewSessionStatus` tool). The
+   * read counterpart of {@link replyToSession}: a child may reply UP its lineage, a parent may
+   * read DOWN it, and neither can reach sideways into an unrelated session.
+   *
+   * AUTHORIZATION (child-only, fail-closed): `sessionId` must name a session whose parent is the
+   * CALLING session. Two sources, in order — the child's DURABLE `originSessionId` (authoritative
+   * once the child's row exists), else the in-memory {@link childSessionLinks} entry written at
+   * wake admission (covers the window before the child's first turn creates that row). Anything
+   * else — an unknown id, a sibling, the caller's own session, a grandchild — returns null, which
+   * the tool surfaces as one indistinguishable error so the caller cannot probe for sessions it
+   * may not read.
+   *
+   * The reported `status` collapses the §7.3 lifecycle plus the last turn's outcome: a turn in
+   * flight (or admitted-but-not-yet-open) is `in-progress`; otherwise the last completed turn's
+   * outcome decides `done` vs `failed`. Note `done` means "its turn ended", not "it reported
+   * back" — that is what `needsReply` is for.
+   */
+  private async viewSessionStatus(req: SessionStatusReq): Promise<SessionStatusResult | null> {
+    const platform = this.narrowPlatform(req.platform)
+    const callerKey = sessionKey(
+      platform,
+      req.callerChannel,
+      req.callerThread,
+      req.callerAgentId,
+      req.callerTransportScope
+    )
+    const callerSessionId = this.store.getSession(callerKey)?.acpSessionId ?? undefined
+    // A caller with no session id of its own has no lineage to check against — refuse rather than
+    // fall through to a link lookup that could match an `undefined` parent.
+    if (!callerSessionId) return null
+    // Addressed ONLY by the logical sessionKey `sendMessage` handed back. An ACP-id lookup is
+    // deliberately not offered: ACP ids are minted per runtime and are not unique across agents,
+    // so `getSessionByAcpId` can return a row belonging to a different agent — an ambiguous status
+    // read for no benefit, since the parent always has the key we gave it.
+    const child = this.store.getSession(req.sessionId)
+    if (!child) {
+      // No local row. Either the wake was admitted and dispatch is still in flight, or the child
+      // lives on another daemon. Both are only answerable to the parent that actually woke it.
+      const link = this.childSessionLinks.get(req.sessionId)
+      if (!link || link.parentSessionId !== callerSessionId) return null
+      if (link.remote) return await this.remoteChildStatus(req.sessionId, callerSessionId, link.agentId)
+      return { sessionId: req.sessionId, agentId: link.agentId, status: 'in-progress', state: 'starting' }
+    }
+    if (!this.isAuthorizedChildParent(child, callerSessionId)) return null
+    // A session cannot be its own child; guard the degenerate case where a caller passes its own
+    // id and a stale link would otherwise vouch for it.
+    if (child.key === callerKey) return null
+    const collapsed = this.collapseChildStatus(child)
+    return { sessionId: req.sessionId, ...collapsed }
+  }
+
+  /**
+   * Collapse one child session row into the coarse §5.4 progress triple. Shared by the local
+   * `viewSessionStatus` and the CP-forwarded {@link childSessionStatusProbe} so a parent gets the
+   * same answer whichever daemon its child landed on.
+   *
+   * Work is outstanding when a turn is running, queued behind one, or admitted by a wake the child
+   * has not picked up yet (its row has not moved since we admitted it — see the
+   * `rowUpdatedAtAtAdmission` note on childSessionLinks). Reporting the previous turn's outcome in
+   * any of those windows would tell the parent its NEW delegation had already finished.
+   */
+  private collapseChildStatus(child: SessionRecord): {
+    agentId: string
+    status: SessionStatusResult['status']
+    state: SessionStatusResult['state']
+    updatedAt: number
+  } {
+    const link = this.childSessionLinks.get(child.key)
+    const queuedOrRunning = this.activeGateEntries.has(child.key) || (this.serialQueue.get(child.key)?.length ?? 0) > 0
+    const admittedNotStarted = link !== undefined && child.updatedAt === link.rowUpdatedAtAtAdmission
+    const inFlight = child.state === 'prompting' || child.state === 'cancelling' || child.state === 'resuming'
+    const status: SessionStatusResult['status'] =
+      inFlight || queuedOrRunning || admittedNotStarted
+        ? 'in-progress'
+        : child.lastTurnOutcome === 'failed'
+          ? 'failed'
+          : child.lastTurnOutcome === 'done'
+            ? 'done'
+            : // Idle/closed with no recorded outcome: the row exists but its first turn has not
+              // finished (or predates outcome tracking) — treat as still working, never as done.
+              'in-progress'
+    return { agentId: child.agentId, status, state: child.state, updatedAt: child.updatedAt }
+  }
+
+  /**
+   * §5.4 cross-daemon leg: ask the CP for the status of a child that lives on ANOTHER daemon.
+   * The daemon has no way to address another daemon directly (the relay carries message delivery,
+   * not queries), and the CP is the placement authority — so it resolves the owning daemon and
+   * forwards the lineage pair there. This is a bounded metadata read: no message bodies, and the
+   * CP persists nothing.
+   *
+   * Distinguishes three outcomes for the caller: a status, `null` (unknown / not your child — one
+   * indistinguishable verdict, as locally), or a THROWN error for a transport problem, so the tool
+   * says "temporarily unavailable" instead of implying the parent has no such child.
+   */
+  private async remoteChildStatus(
+    childSessionId: string,
+    parentSessionId: string,
+    childAgentId: string
+  ): Promise<SessionStatusResult | null> {
+    const client = this.cpClient
+    // Degraded mode (§ graceful degradation): established sessions keep running with no CP, but a
+    // cross-daemon lookup genuinely cannot be answered — say so rather than deny the lineage.
+    if (!client)
+      throw new Error(
+        'the status of a session on another daemon is unavailable while the control plane is disconnected'
+      )
+    const res = await client.childSessionStatus({ parentSessionId, childSessionId, childAgentId })
+    if (res.reason === 'offline') {
+      throw new Error(`the daemon running ${childSessionId} is not currently reachable — try again shortly`)
+    }
+    if (!res.found) return null
+    return {
+      sessionId: childSessionId,
+      agentId: res.agentId ?? childAgentId,
+      status: res.status ?? 'in-progress',
+      state: res.state ?? 'starting',
+      ...(res.updatedAt !== undefined ? { updatedAt: res.updatedAt } : {})
+    }
+  }
+
+  /**
+   * §5.4 owning-daemon leg: answer a CP-forwarded status probe for a child WE own. This is where
+   * the real lineage rule is enforced — exactly the same check as the local path, deliberately
+   * duplicated here rather than trusted from the CP: the CP proves the asking daemon owns the
+   * claimed parent session, and this proves the child is actually that parent's child.
+   *
+   * Returns the wire shape. `found:false` covers unknown-session AND not-your-child so a caller
+   * cannot probe for sessions it may not read.
+   */
+  childSessionStatusProbe(probe: ChildSessionStatusProbe): ChildSessionStatus {
+    const child = this.store.getSession(probe.childSessionId)
+    if (!child) {
+      // Pre-row window: we ACKed admission immediately and dispatch is fire-and-forget, so a probe
+      // can legitimately arrive before SessionManager creates the row. The admission link recorded
+      // at ACK time is the only record — and the only authority — until then.
+      const link = this.childSessionLinks.get(probe.childSessionId)
+      if (!link || link.parentSessionId !== probe.parentSessionId) return { found: false }
+      return { found: true, agentId: link.agentId, status: 'in-progress', state: 'starting' }
+    }
+    if (!this.isAuthorizedChildParent(child, probe.parentSessionId)) return { found: false }
+    return { found: true, ...this.collapseChildStatus(child) }
+  }
+
+  /**
+   * Whether `parentSessionId` is a parent this child may be reported to. A logical child session
+   * can be woken by MORE THAN ONE parent over its life, and both are legitimate: the durable
+   * first-wins `originSessionId`, and the most recent waker recorded at admission (the one whose
+   * `sendMessage` just handed that caller the handle). Accepting only the durable link would deny a
+   * second parent the child it just started — the read-side mirror of naming the current waker in
+   * the report-back directive.
+   */
+  private isAuthorizedChildParent(child: SessionRecord, parentSessionId: string): boolean {
+    if (child.originSessionId === parentSessionId) return true
+    return this.childSessionLinks.get(child.key)?.parentSessionId === parentSessionId
+  }
+
+  /**
    * session-concept case 2a: an agent's channel-ROOT post seeds a NEW session owned by the same
    * agent. The post already happened (ops.ts); here the daemon dispatches a fresh turn into the
    * new-thread session (keyed by the post's ts) so the top-level message starts its own context,
@@ -5391,9 +5633,16 @@ export class Daemon {
         // canonical read cursor — same guarantee as the same-daemon path.
         ...(req.transcriptTs !== undefined ? { transcriptTs: req.transcriptTs } : {}),
         ...(ctx.originSessionId !== undefined ? { originSessionId: ctx.originSessionId } : {}),
-        ...(ctx.originCoords !== undefined ? { originCoords: ctx.originCoords } : {})
+        ...(ctx.originCoords !== undefined ? { originCoords: ctx.originCoords } : {}),
+        // §5.4: ask the remote child to report its outcome back into our origin session. Gated on
+        // having an origin for exactly the reason the local path is — there is nothing to report to
+        // without one, and the target ignores it in that case anyway.
+        ...(req.needsReply === true && ctx.originSessionId !== undefined ? { needsReply: true } : {})
       })
-      if (ack.delivered) return { delivered: true, targetSession: ctx.targetSession }
+      // §5.4: prefer the CANONICAL key the target computed — its transport scope depends on the
+      // reply integration the relay chose, which we cannot derive. Fall back to our own guess only
+      // for an older target daemon that returns none (it then simply won't be followable).
+      if (ack.delivered) return { delivered: true, targetSession: ack.childSessionId ?? ctx.targetSession }
       return { delivered: false, targetSession: ctx.targetSession, ...(ack.reason ? { reason: ack.reason } : {}) }
     } catch (err) {
       // No READY relay / forward failed → undeliverable (offline). Retransmit is a follow-up.
@@ -8152,7 +8401,10 @@ export class Daemon {
         entry.initAbort.signal,
         integrationId,
         callMeta?.originSessionId,
-        agent.allowRuntimeChangesInChat ? webchat?.runtime?.effort : undefined
+        agent.allowRuntimeChangesInChat ? webchat?.runtime?.effort : undefined,
+        // §5.3: the parent asked to be told how this session ends — prompt assembly turns it into
+        // a standing directive naming the origin as the reply target.
+        callMeta?.needsReply
       )
     } catch (err) {
       this.finishSessionInitialization(agentId)
@@ -8162,6 +8414,10 @@ export class Daemon {
       const interrupted = this.dispatchGateReason(entry)
       try {
         this.store.setSessionState(key, 'idle', this.clock.now())
+        // The turn died during initialization (agent spawn / ACP handshake), so it never reaches
+        // the main finally that records an outcome. A parent polling this child must see `failed`,
+        // not a session that looks idle-and-fine. An interrupt is not a failure of the work.
+        if (!interrupted) this.store.setSessionTurnOutcome(key, 'failed', this.clock.now())
         if (interrupted) {
           this.terminateQueuedSink(entry, interrupted)
           this.showActivity(replyConn, msg.channel, statusThread, '')
@@ -8760,6 +9016,10 @@ export class Daemon {
       // cancelled), so the session is idle again. Without this the row stayed
       // `prompting` forever — the thread never went idle and TTL-close never fired.
       this.store.setSessionState(key, 'idle', this.clock.now())
+      // Record HOW it ended alongside the state, so a parent polling `viewSessionStatus` can tell
+      // a finished child from a broken one. `problem` is the same phase the CP snapshot below
+      // reports, so the two never disagree.
+      this.store.setSessionTurnOutcome(key, finalPhase === 'problem' ? 'failed' : 'done', this.clock.now())
       this.emitSessionMetadataSnapshot({
         sessionId,
         agentId,
@@ -13211,6 +13471,9 @@ export class Daemon {
       degradedScopes: () => this.cpDegradedScopes(),
       configApply: this.cpConfigApply(),
       sessionRead: createSessionReader(this.store, (agentId) => this.replyConnFor(agentId)?.workspaceUrl),
+      // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is
+      // re-done here (the lineage rule lives where the session lives), not trusted from the CP.
+      childSessionStatusProbe: (probe) => this.childSessionStatusProbe(probe),
       workspaceRead: createWorkspaceReader(
         (id) => {
           const workspace = this.agents.get(id)?.workspace

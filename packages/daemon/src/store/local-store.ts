@@ -92,6 +92,17 @@ export interface SessionRecord {
   // it authorizes this session's SessionTarget replies back to the parent on EVERY turn, not just
   // the waking one — a human-triggered follow-up turn carries no per-turn CallMeta. NULL for roots.
   originSessionId?: string | null
+  // Outcome of the LAST completed turn of this session: 'done' when the turn ended cleanly,
+  // 'failed' when it ended in a problem phase (agent start failure, ACP/prompt rejection, loop
+  // protection). NULL until the session has completed a turn. `state` still decides whether a
+  // turn is in flight; this only distinguishes a finished-well from a finished-badly session —
+  // it is what `viewSessionStatus` reports as `failed`.
+  lastTurnOutcome?: 'done' | 'failed' | null
+  // session-concept §5.3 companion of {@link originSessionId}: 1 when the parent woke this
+  // session with `toAgent.needsReply`, so the session carries a standing directive to report
+  // back into its parent when it finishes or fails. STICKY (never cleared by a later wake that
+  // omits it), so the directive survives resume and later human-triggered turns.
+  needsParentReply?: number | null
 }
 
 export type PermissionRequestStatus = 'pending' | 'allowed' | 'denied' | 'expired'
@@ -426,7 +437,8 @@ export class LocalStore {
         transportScope TEXT, acpSessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
         usage TEXT, muted INTEGER, triggeredBy TEXT, title TEXT, modelOverride TEXT,
         effortOverride TEXT, permissionModeOverride TEXT, fastModeOverride INTEGER,
-        outputModeOverride TEXT, statusBarTs TEXT, memoryProvider TEXT
+        outputModeOverride TEXT, statusBarTs TEXT, memoryProvider TEXT,
+        originSessionId TEXT, lastTurnOutcome TEXT, needsParentReply INTEGER
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -925,6 +937,10 @@ export class LocalStore {
       this.db.exec('ALTER TABLE sessions ADD COLUMN memoryProvider TEXT')
     if (!cols.some((c) => c.name === 'originSessionId'))
       this.db.exec('ALTER TABLE sessions ADD COLUMN originSessionId TEXT')
+    if (!cols.some((c) => c.name === 'lastTurnOutcome'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN lastTurnOutcome TEXT')
+    if (!cols.some((c) => c.name === 'needsParentReply'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN needsParentReply INTEGER')
     if (!cols.some((c) => c.name === 'transportScope'))
       this.db.exec('ALTER TABLE sessions ADD COLUMN transportScope TEXT')
   }
@@ -1397,11 +1413,11 @@ export class LocalStore {
     this.db
       .prepare(
         `INSERT INTO sessions
-           (key, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, memoryProvider, originSessionId)
+           (key, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, memoryProvider, originSessionId, needsParentReply)
          VALUES
            (@key, @agentId, @platform, @channel, @thread, @transportScope, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
             CASE WHEN EXISTS (SELECT 1 FROM session_mutes WHERE key = @key) THEN 1 ELSE NULL END,
-            @triggeredBy, @memoryProvider, @originSessionId)
+            @triggeredBy, @memoryProvider, @originSessionId, @needsParentReply)
          ON CONFLICT(key) DO UPDATE SET
            acpSessionId=excluded.acpSessionId, state=excluded.state,
            lastDeliveredTs=excluded.lastDeliveredTs, updatedAt=excluded.updatedAt,
@@ -1414,7 +1430,14 @@ export class LocalStore {
            memoryProvider=excluded.memoryProvider,
            -- Parent link is first-wins: set once when the session is spawned, never cleared by a
            -- later (human-triggered) turn that carries no origin.
-           originSessionId=COALESCE(sessions.originSessionId, excluded.originSessionId)`
+           originSessionId=COALESCE(sessions.originSessionId, excluded.originSessionId),
+           -- The report-back directive is STICKY-TRUE: a parent that asked for a reply keeps it
+           -- for the session's lifetime, and an ordinary turn (which carries no flag) never
+           -- clears it. lastTurnOutcome is deliberately absent — setSessionTurnOutcome owns it.
+           needsParentReply=CASE
+             WHEN excluded.needsParentReply = 1 THEN 1
+             ELSE sessions.needsParentReply
+           END`
       )
       .run({
         key: rec.key,
@@ -1429,8 +1452,17 @@ export class LocalStore {
         updatedAt: rec.updatedAt,
         triggeredBy: rec.triggeredBy ?? null,
         memoryProvider: rec.memoryProvider ?? null,
-        originSessionId: rec.originSessionId ?? null
+        originSessionId: rec.originSessionId ?? null,
+        needsParentReply: rec.needsParentReply === 1 ? 1 : null
       })
+  }
+
+  /** Record how the turn that just ended went (§7.3 companion of {@link setSessionState}):
+   *  'done' for a clean finish, 'failed' for a problem phase. Read back by
+   *  `viewSessionStatus` so a parent session can tell a finished child from a broken one.
+   *  No-op if the key is unknown (a turn that failed before the row existed). */
+  setSessionTurnOutcome(key: string, outcome: 'done' | 'failed', updatedAt: number): void {
+    this.db.prepare('UPDATE sessions SET lastTurnOutcome = ?, updatedAt = ? WHERE key = ?').run(outcome, updatedAt, key)
   }
 
   /** Targeted state transition for an existing session (§7.3), stamping `updatedAt`

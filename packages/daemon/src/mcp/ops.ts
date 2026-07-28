@@ -130,6 +130,10 @@ export interface MessageAgentReq {
    *  {@link spawnChannelRootSession}). Absent for a postless wake. */
   transcriptTs?: string
   correlationId?: string
+  /** session-concept §5.3: the caller asked the woken session to report back when it is done or
+   *  has failed (`toAgent.needsReply`). The daemon turns this into a standing directive on the
+   *  child's session — it is NOT part of the delivered message text. */
+  needsReply?: boolean
 }
 
 /** The result of an agent→agent delivery. `delivered:false` carries a typed `reason`
@@ -139,6 +143,42 @@ export interface MessageAgentResult {
   delivered: boolean
   targetSession: string
   reason?: string
+}
+
+/**
+ * A trusted request to read the status of a session the caller STARTED. Everything except
+ * `sessionId` comes from the trusted {@link SessionContext}; the caller coords let the daemon
+ * recompute the caller's own session and verify that `sessionId` really is one of its children
+ * (the mirror image of {@link ReplyToSessionReq}'s origin-only rule — a parent may read down
+ * its own lineage, a child may reply up it, and nobody may reach sideways).
+ */
+export interface SessionStatusReq {
+  /** Trusted caller identity (== `ctx.agentId`). Never a tool input. */
+  callerAgentId: string
+  /** Trusted source platform / caller session coords (== the caller's {@link SessionContext}). */
+  platform: string
+  callerChannel: string
+  callerThread: string
+  /** Trusted physical-bot scope of the caller's session, when it has one. Part of the caller's
+   *  logical session key, so it must travel for the lineage lookup to find the right row. */
+  callerTransportScope?: string
+  /** The ONLY untrusted field: the child session's id, as handed back by `sendMessage`. */
+  sessionId: string
+}
+
+/** A child session's coarse progress, collapsed from the §7.3 lifecycle state plus the last
+ *  completed turn's outcome. `in-progress` covers "queued but not started yet" too. */
+export interface SessionStatusResult {
+  /** Echo of the requested id, so a polling caller can match up concurrent children. */
+  sessionId: string
+  /** The agent that owns the child session. */
+  agentId: string
+  status: 'in-progress' | 'failed' | 'done'
+  /** The underlying lifecycle state, for a caller that wants the detail: one of the §7.3
+   *  states, or 'starting' when the wake was admitted but the session has not opened yet. */
+  state: 'starting' | 'idle' | 'prompting' | 'cancelling' | 'resuming' | 'closed'
+  /** Epoch ms of the last state change; absent while the session is still 'starting'. */
+  updatedAt?: number
 }
 
 /**
@@ -268,6 +308,13 @@ export interface OpsDeps {
    *  origin turn's correlationId, and inserts a {type:system, from:<caller>} message —
    *  routing local or cross-daemon. Backs `sendMessage`'s SessionTarget. */
   replyToSession: (req: ReplyToSessionReq) => Promise<ReplyToSessionResult>
+  /** Read the progress of a session the caller started (backs `viewSessionStatus`). The daemon
+   *  fills the trusted caller identity from the session context and authorizes `sessionId`
+   *  against the caller's own children, fail-closed. Returns null when the id is unknown or is
+   *  not a child of the calling session — the tool surfaces both as the same error, so a caller
+   *  cannot probe for the existence of sessions it may not read. Absent in the chat CLI / tests
+   *  with no daemon ⇒ the tool reports that status is unavailable. */
+  viewSessionStatus?: (req: SessionStatusReq) => Promise<SessionStatusResult | null>
   /** session-concept case 2a: an agent's channel-ROOT post seeds a NEW session owned by the same
    *  agent (origin = the current session), so a deliberate top-level post starts its own context.
    *  Only called for a root post (no thread) with no toAgent. Fire-and-forget; the daemon delivers
@@ -593,7 +640,7 @@ export async function executeTool(
     // visible post. Branch-specific validation below keeps ignored/mixed fields out even when a
     // caller bypasses the advertised JSON Schema (as unit tests and older clients can).
     const channel = optionalString(to, 'channel')
-    const toAgent = optionalString(to, 'toAgent')
+    const { toAgent, needsReply } = parseAgentTarget(to.toAgent)
     const toUser = optionalString(to, 'toUser')
     if (channel === undefined && toAgent === undefined) {
       throw new Error(`sendMessage: \`to\` does not select a target. ${SEND_MESSAGE_TARGET_HELP}`)
@@ -615,7 +662,8 @@ export async function executeTool(
             callerThread: ctx.thread,
             toAgentId: toAgent,
             text: message,
-            channel: channel ?? ctx.channel
+            channel: channel ?? ctx.channel,
+            ...(needsReply ? { needsReply: true } : {})
           }
         : undefined
     // PREFLIGHT (side-effect-free): would messageAgent refuse this wake for a locally-decidable
@@ -710,7 +758,43 @@ export async function executeTool(
       })
     }
 
-    return { ok: true, ...(wake !== undefined ? { wake } : {}), ...(post !== undefined ? { post } : {}) }
+    // The woken peer runs in its OWN session, keyed by the coords the wake landed on. Hand that
+    // id back at the top level so the caller can follow the work it just delegated
+    // (`viewSessionStatus`) without having to reconstruct the key. Only for an ADMITTED wake: a
+    // rejected one opened nothing, and `wake.reason` explains why.
+    const childSessionId = wake?.delivered === true ? wake.targetSession : undefined
+    return {
+      ok: true,
+      ...(wake !== undefined ? { wake } : {}),
+      ...(post !== undefined ? { post } : {}),
+      ...(childSessionId !== undefined ? { childSessionId } : {})
+    }
+  }
+
+  // Read the progress of a session THIS session started (session-concept §5.3, the read
+  // counterpart of a SessionTarget reply). SECURITY: the caller identity + coords come from the
+  // trusted session context; `sessionId` is the only tool input and the daemon authorizes it
+  // against the caller's own children — an agent cannot inspect an arbitrary session.
+  if (name === 'viewSessionStatus') {
+    const sessionId = requireString(args, 'sessionId')
+    if (!deps.viewSessionStatus) throw new Error('session status is unavailable on this daemon')
+    const status = await deps.viewSessionStatus({
+      callerAgentId: ctx.agentId,
+      platform: ctx.platform,
+      callerChannel: ctx.channel,
+      callerThread: ctx.thread,
+      ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
+      sessionId
+    })
+    // Unknown and not-yours are deliberately ONE message: distinguishing them would let a
+    // caller probe for sessions it is not allowed to read.
+    if (!status) {
+      throw new Error(
+        `viewSessionStatus: ${sessionId} is not a session started by this session. You can only check sessions you ` +
+          'opened yourself — use the `childSessionId` returned by the `sendMessage` call that started it.'
+      )
+    }
+    return status
   }
 
   // Main-agent orchestration (§3.4/§6.8), daemon→daemon-local — handled before the
@@ -907,6 +991,30 @@ function optionalString(args: Record<string, unknown>, key: string): string | un
   if (v === undefined || v === null) return undefined
   if (typeof v !== 'string') throw new Error(`argument ${key} must be a string`)
   return v
+}
+
+/**
+ * Normalize `to.toAgent`, which accepts either the bare agent id or
+ * `{ agentId, needsReply }`. The bare-string form stays supported indefinitely: it is what
+ * every published example and every warm ACP session's tool descriptor teaches, and the object
+ * form only adds delivery options on top of it. `undefined` ⇒ this is not an agent target.
+ */
+function parseAgentTarget(value: unknown): { toAgent?: string; needsReply?: boolean } {
+  if (value === undefined || value === null) return {}
+  if (typeof value === 'string') {
+    if (value.length === 0) throw new Error('sendMessage: `to.toAgent` must be a non-empty agent id')
+    return { toAgent: value }
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('sendMessage: `to.toAgent` must be an agent id string or {"agentId":"…","needsReply":bool}')
+  }
+  const target = value as Record<string, unknown>
+  assertOnlyKeys(target, ['agentId', 'needsReply'], 'agent target `toAgent`')
+  const needsReply = target.needsReply
+  if (needsReply !== undefined && needsReply !== null && typeof needsReply !== 'boolean') {
+    throw new Error('sendMessage: `to.toAgent.needsReply` must be a boolean')
+  }
+  return { toAgent: requireString(target, 'agentId'), ...(needsReply === true ? { needsReply: true } : {}) }
 }
 
 function assertOnlyKeys(args: Record<string, unknown>, allowed: readonly string[], target: string): void {

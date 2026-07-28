@@ -121,7 +121,10 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
         // Origin lineage (session-concept §5.3) is the caller's own, forwarded opaquely —
         // the relay neither mints nor validates it; it only lets the woken child reply back.
         ...(msg.originSessionId !== undefined ? { originSessionId: msg.originSessionId } : {}),
-        ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {})
+        ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {}),
+        // §5.4 report-back request, forwarded opaquely for the same reason: it is an instruction
+        // about the caller's OWN lineage, so the relay carries it without minting or validating it.
+        ...(msg.needsReply !== undefined ? { needsReply: msg.needsReply } : {})
       })
     } catch (err) {
       // Forward timed out / socket dropped mid-flight → treat as offline (retransmit is

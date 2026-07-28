@@ -1032,6 +1032,47 @@ describe('workspace file access frames (console live proxy)', () => {
 })
 
 describe('channel agent directory frames (agent collaboration)', () => {
+  it('session/child-status legs round-trip, and reject an unknown status value', () => {
+    const req = decodeEnvelope(
+      envelope('session/child-status', {
+        parentSessionId: 'acp-parent-1',
+        childSessionId: 'slack:C1:100.1:peer',
+        childAgentId: AGENT_ID
+      })
+    )
+    expect(req.ok).toBe(true)
+    if (!req.ok || !isFrame('session/child-status')(req.frame)) throw new Error('expected session/child-status')
+    expect(req.frame.payload.childAgentId).toBe(AGENT_ID)
+
+    // The forwarded leg drops childAgentId — placement is already resolved by the CP.
+    const probe = decodeEnvelope(
+      envelope('session/child-status/probe', {
+        parentSessionId: 'acp-parent-1',
+        childSessionId: 'slack:C1:100.1:peer'
+      })
+    )
+    expect(probe.ok).toBe(true)
+
+    const ok = decodeEnvelope(
+      envelope('session/child-status/ok', {
+        found: true,
+        agentId: AGENT_ID,
+        status: 'in-progress',
+        state: 'prompting',
+        updatedAt: 17
+      })
+    )
+    expect(ok.ok).toBe(true)
+    if (!ok.ok || !isFrame('session/child-status/ok')(ok.frame)) throw new Error('expected session/child-status/ok')
+    expect(ok.frame.payload.status).toBe('in-progress')
+
+    // A negative verdict carries nothing but `found` (plus a transport reason when applicable).
+    expect(decodeEnvelope(envelope('session/child-status/ok', { found: false })).ok).toBe(true)
+    expect(decodeEnvelope(envelope('session/child-status/ok', { found: false, reason: 'offline' })).ok).toBe(true)
+    // The status vocabulary is closed — a typo must not reach an agent as a valid state.
+    expect(decodeEnvelope(envelope('session/child-status/ok', { found: true, status: 'finished' })).ok).toBe(false)
+  })
+
   it('channel/agents REQ + channel/agents/ok REP round-trip the roster', () => {
     const req = decodeEnvelope(
       envelope('channel/agents', { platform: 'slack', channel: 'C123', requesterAgentId: AGENT_ID })
