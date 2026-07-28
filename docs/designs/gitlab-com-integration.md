@@ -129,7 +129,7 @@ GitHub modes.
 | Required run gate                      | Not in the current GitHub delivery contract                                    | Not introduced                                                 |
 
 Ordinary final replies and formal reviews remain mutually exclusive. The
-status note is separate control-plane output and may coexist with either.
+status note is a separate daemon-owned projection and may coexist with either.
 
 ## 5. GitLab Tier Contract
 
@@ -169,11 +169,9 @@ flowchart LR
   GitLabHook["GitLab.com webhook"] -->|"signed raw payload"| Relay["Relay"]
   CP -->|"rules + signing key; no message body"| Relay
   Relay -->|"verified rd/msg"| Daemon["Owning daemon"]
-  CP <-->|"authorization and body-free run metadata"| Daemon
-  Daemon -->|"Git + read API + controlled effects"| GitLabAPI
+  CP <-->|"authorization + body-free run/projection metadata"| Daemon
+  Daemon -->|"Git + read API + controlled effects + status note"| GitLabAPI
   Daemon -->|"ACP"| Agent["Agent runtime"]
-
-  CP -->|"fixed status-note projection only"| GitLabAPI
 ```
 
 ### 6.1 Control Plane
@@ -185,14 +183,14 @@ The Control Plane owns:
 - encrypted OAuth, webhook, and service-account credentials;
 - project-service-account and webhook reconciliation;
 - repository authorization and action-time policy decisions;
-- body-free hook run and status-note projection metadata; and
+- body-free hook run and desired/observed status-note projection metadata; and
 - feature negotiation and daemon/relay assignment.
 
 The Control Plane does not receive or persist issue bodies, merge-request
-bodies, note bodies, diff comments, agent replies, or review text. Its status
-reporter may construct a fixed machine-generated status note from enums,
-timestamps, identifiers, and Console links, matching the existing
-metadata-only GitHub Check exception.
+bodies, note bodies, diff comments, agent replies, or review text. It stores
+and sends only the fixed projection fields and fences described in Section 16;
+it never calls the GitLab Notes API or writes into a merge-request
+conversation.
 
 ### 6.2 Relay
 
@@ -201,7 +199,8 @@ The relay owns public webhook ingress. It:
 - receives the raw request under a bounded body limit;
 - selects the candidate project binding from minimal untrusted JSON;
 - verifies the signing-token HMAC and timestamp before full decoding;
-- deduplicates by `webhook-id`;
+- maps `webhook-id` to the stable downstream delivery identity without owning
+  authoritative deduplication;
 - applies provider-specific event, bot, mention, label, and collaborator gates;
 - routes the bounded, explicitly untrusted context directly to the owning
   daemon; and
@@ -216,6 +215,7 @@ The daemon owns:
 - workspace materialization and host-scoped Git credential injection;
 - read-only GitLab CLI/API access for the agent;
 - the ordinary final-answer poster;
+- the single status-note projection writer;
 - controlled issue, merge-request, pipeline, and formal-review effects;
 - exact active-turn and revision fencing; and
 - prompt fencing for untrusted GitLab content.
@@ -291,11 +291,11 @@ competing bots, credentials, and webhooks in the same project.
 
 ### 7.3 Three Credential Purposes
 
-| Purpose     | Service-account PAT scopes    | Consumer                                                                                                | Agent-visible                       |
-| ----------- | ----------------------------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| `read`      | `read_api`, `read_repository` | Git helper for clone/fetch and read-only provider wrapper                                               | Only per invocation/helper response |
-| `git_write` | `write_repository`            | Git helper for push                                                                                     | Only per Git operation              |
-| `effect`    | `api`                         | Trusted daemon/Control Plane brokers for comments, reviews, approvals, pipelines, and status projection | Never                               |
+| Purpose     | Service-account PAT scopes    | Consumer                                                                                               | Agent-visible                       |
+| ----------- | ----------------------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------- |
+| `read`      | `read_api`, `read_repository` | Git helper for clone/fetch and read-only provider wrapper                                              | Only per invocation/helper response |
+| `git_write` | `write_repository`            | Git helper for push                                                                                    | Only per Git operation              |
+| `effect`    | `api`                         | Trusted daemon broker for external effects; Control Plane broker for allowlisted metadata/policy reads | Never                               |
 
 The separation matters because a service-account personal access token with
 `api` can perform broad API operations within the project and can also access
@@ -588,8 +588,14 @@ The relay:
 8. only then fully decodes and matches the payload.
 
 `webhook-id` is the delivery key and remains stable across retries. The relay
-deduplicates `(project binding, webhook-id)` while preserving fan-out to
-multiple matching AgentConnect hooks.
+has no database and does not own authoritative deduplication. It preserves
+fan-out to every matching AgentConnect hook and emits the same `deliveryKey`
+and `${hookId}:${deliveryKey}` message ID on each provider retry. The daemon's
+durable `(sessionKey, msgId)` inbox absorbs the repeated turn, and the Control
+Plane's unique `(hookId, deliveryKey)` `HookRun` absorbs repeated delivery
+reports. An optional relay-local cache may suppress obvious same-process
+repeats, but correctness never depends on it and a retry landing on another
+relay remains safe.
 
 Verified unmatched deliveries return success without starting an agent.
 Invalid signatures, stale timestamps, unknown projects, and malformed bodies
@@ -672,8 +678,16 @@ generation starts.
 GitLab hooks always use `perThread`. A rename-stable key is derived from:
 
 ```text
-gitlab:<numeric-project-id>:<issue-or-merge-request>:<iid>
+issue or merge request: gitlab:<numeric-project-id>:<issue-or-merge-request>:<iid>
+push:                   gitlab:<numeric-project-id>:push:<ref>
 ```
+
+Issue and merge-request events require a positive numeric IID and the exact
+subject discriminator. Standalone push events instead require the non-empty
+canonical Git ref from the signed payload, such as `refs/heads/main`. Missing
+or wrong-branch identity is rejected before constructing `RdMsgHook`; the
+adapter never substitutes `undefined`, a display path, or a delivery ID into a
+session key.
 
 The relay sends only bounded excerpts. The daemon wraps them in the same
 explicit untrusted-content boundary used for GitHub. The agent reads current
@@ -963,13 +977,24 @@ The note contains only fixed control information:
 The link is an ordinary authenticated Console URL and never contains a bearer
 token, webhook secret, or capability query parameter.
 
-The reporter updates the same note in place. It never copies agent output,
+The Control Plane records the desired projection generation and sends its
+fixed fields plus the hook, project, MR, head, placement, and credential fences
+to the owning daemon. The daemon renders and updates the same note in place
+through its trusted effect broker, then reports only the observed note ID,
+generation, normalized result, and timestamps. It never copies agent output,
 review text, issue/MR content, logs, or tool bodies into the projection.
+
+The daemon is the only GitLab Notes API writer for this surface. The Control
+Plane never posts or updates the note, and an offline daemon leaves the desired
+projection pending rather than creating a second provider egress path.
 
 The durable projection reuses the existing generation, lease, pending-intent,
 write-marker, tombstone, and out-of-order completion rules. If a create/update
-response is ambiguous, it lists notes and reconciles by the hidden marker
-before retrying.
+response is ambiguous, the owning daemon lists notes and reconciles by the
+hidden marker before retrying. Projection ownership may move only when no
+provider mutation is in flight or every started mutation has a deterministic,
+reconciled outcome. An ambiguous mutation remains fail-closed on the old
+writer; daemon loss or lease expiry alone cannot authorize another writer.
 
 ### 16.1 Re-request
 
@@ -1021,9 +1046,10 @@ provider.
 Provider-specific trusted metadata is a discriminated union:
 
 - GitHub keeps its existing repository, installation, PR, and SHA fields;
-- GitLab carries numeric project ID, current path, subject kind, IID, source
-  project ID, base/head refs, draft state, reviewer request facts, and current
-  webhook ID.
+- GitLab carries numeric project ID, current path, current webhook ID, and a
+  discriminated target: issue/MR subject kind plus IID and applicable
+  source-project, base/head, draft, and reviewer facts, or a standalone push
+  ref.
 
 `RcHookAssign` and `RdMsgHook` gain `gitlab` members. Common configuration and
 dispatch fields remain unchanged. Membership checks use a metadata-only
@@ -1031,13 +1057,21 @@ provider-neutral authorization request. Formal review authorization/result
 frames become provider-neutral while preserving the existing GitHub frame
 until every active daemon supports the replacement.
 
+Status projection adds a body-free desired/result frame pair. The desired
+frame carries only fixed state, timestamps, normalized reason, identifiers,
+link, generation, and the complete placement/effect fence. The result returns
+the provider note ID, observed generation, normalized outcome, and timestamps.
+Neither frame can carry an agent reply, review body, issue/MR text, or arbitrary
+Markdown.
+
 ### 17.3 Feature Negotiation
 
 New capabilities are gated by explicit features, including:
 
 - `gitlab-com-v1`;
 - `gitcred-provider-v2`; and
-- `codehost-review-v1`.
+- `codehost-review-v1`; and
+- `codehost-note-projection-v1`.
 
 The Console permits a GitLab hook only when its selected daemon and every live
 relay eligible to receive public ingress advertise the required features.
@@ -1175,7 +1209,7 @@ an administrator must remove if cleanup is abandoned.
 | Credential leakage through Git                    | Hidden helper, host/path scoping, helper reset, no token in URL/argv/config                           |
 | Cross-project token confusion                     | Provider-qualified numeric project identity echoed and verified on every grant                        |
 | Webhook spoofing or body tampering                | Raw-body Standard Webhooks HMAC with timing-safe comparison                                           |
-| Webhook replay                                    | Recent timestamp requirement plus `webhook-id` deduplication                                          |
+| Webhook replay                                    | Recent timestamp plus stable delivery identity; daemon inbox and unique `HookRun` absorb retries      |
 | Project rename or path reuse                      | Numeric project ID is authoritative; path is display only                                             |
 | Self-trigger loop                                 | Service-account user-ID veto plus generated-marker veto                                               |
 | Untrusted issue/MR prompt injection               | Bounded excerpts, explicit prompt fence, source-of-truth read path                                    |
@@ -1228,6 +1262,8 @@ Use focused unit tests for pure boundaries only:
 - Standard Webhooks signature, timestamp, and multi-signature verification;
 - event normalization, mention targeting, bot veto, labels, and membership
   gates;
+- disjoint issue, merge-request, and push session-key derivation with missing
+  target/ref rejection;
 - provider-qualified repository authorization and grant mismatch rejection;
 - review-policy and exact-head fencing;
 - review-publication lease, fence, attempt ownership, and reconciliation state
@@ -1239,8 +1275,12 @@ Use integration tests for:
 - secret-store sealing and metadata-only DTOs;
 - project provisioning saga recovery after every external side effect;
 - daemon/relay feature negotiation and mixed-version rejection;
+- two-relay redelivery with the same `webhook-id`, preserving per-hook fan-out
+  while the daemon inbox and unique `HookRun` absorb retries;
 - credential epoch invalidation on role, token, project, agent-placement, and
   disconnect changes;
+- daemon-only status-note creation/update, offline pending intent, and
+  fail-closed writer transfer after an ambiguous provider mutation;
 - durable review-publication serialization and non-transferable ambiguous
   ownership after a simulated daemon loss, including a permit issued
   immediately before the broker pauses; and
@@ -1253,8 +1293,8 @@ projects and covers:
 2. project discovery, nested namespaces, rename, and permission loss;
 3. service-account creation, Free quota failure, membership, PAT rotation, and
    cleanup;
-4. signed webhook creation, test, retry deduplication, drift repair, and
-   deletion;
+4. signed webhook creation, test, cross-relay retry deduplication, drift
+   repair, and deletion;
 5. private clone, pull, push, additional repositories, and unauthorized path
    rejection;
 6. issue/MR created, updated, comment, diff comment, push, mention, label,
@@ -1269,7 +1309,8 @@ projects and covers:
     ownership and prevent a newer attempt until its request is positively
     classified;
 11. Free advisory versus Premium blocking behavior; and
-12. queued/running/terminal status-note convergence and authorized rerun.
+12. queued/running/terminal daemon-owned status-note convergence, daemon
+    failover fencing, and authorized rerun.
 
 Validation must also scan source, generated examples, fixtures, logs, and PR
 prose for real deployment addresses, account identifiers, OAuth application
