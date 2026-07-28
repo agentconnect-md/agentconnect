@@ -338,10 +338,12 @@ export class SharedBotOrchestrator {
   }
 
   /**
-   * §14.3: fan an INCREMENTAL DM-conversation report across the bot's GATED installs
-   * as `kind:'im'` rows (default Off, owned by each install's agent) so console
-   * editors can enable the DM. Non-gated installs are untouched — their DMs already
-   * route via `defaultAgentId`. Idempotent, and no route recompile: an Off row
+   * §14.3: fan an INCREMENTAL direct-conversation report across the bot's GATED
+   * installs as `kind:'im'` / `kind:'mpim'` rows (default Off, owned by each install's
+   * agent) so console editors can enable it. The reported kind is preserved: a group DM
+   * stays mention-gated, and stamping it 'im' would compile an `auto` route that answers
+   * every message in a room full of people. Non-gated installs are untouched — their DMs
+   * already route via `defaultAgentId`. Idempotent, and no route recompile: an Off row
    * compiles nothing; the recompile happens when an editor enables it.
    */
   async reportConversation(botId: string, conversation: ReportedChannel): Promise<void> {
@@ -356,7 +358,7 @@ export class SharedBotOrchestrator {
       if (!agent || !isGatedAgent(agent)) continue
       await this.channels.upsertConversation(
         install.id,
-        { ...conversation, kind: 'im' },
+        { ...conversation, kind: conversation.kind === 'mpim' ? 'mpim' : 'im' },
         { agentId: AgentId(install.agentId), defaultTrigger: 'off' }
       )
     }

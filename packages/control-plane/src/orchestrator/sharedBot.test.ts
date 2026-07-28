@@ -398,6 +398,26 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       expect(ch.sends.filter((s) => s.type === 'rc/routes')).toHaveLength(0)
     })
 
+    // A group DM must survive the fan-out as itself. Stamping it 'im' would compile an
+    // `auto` route once enabled — the agent answering every message in a room full of
+    // people — instead of the mention rule a channel-like conversation gets.
+    it('reportConversation preserves a group DM and compiles a MENTION route once enabled', async () => {
+      gatedAgents = new Set([ALICE])
+      channels = []
+      const orch = makeOrch()
+      await orch.reportConversation(BOT, { id: 'G42', name: 'mpim-alice--bob-1', kind: 'mpim' })
+      const row = channels.find((c) => c.integrationId === INT_A && c.channelId === 'G42')
+      expect(row).toMatchObject({ kind: 'mpim', trigger: 'off', agentId: ALICE })
+
+      ch.sends.length = 0
+      row!.trigger = 'mention'
+      await orch.syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      const compiled = assign.routes.filter((r) => r.scope?.channel === 'G42')
+      // A mention rule, and none of the `auto` / slug-keyword pair an 'im' row gets.
+      expect(compiled).toEqual([expect.objectContaining({ agentId: ALICE, match: { kind: 'mention' } })])
+    })
+
     it('recordNoticePosted re-stamps the pool with the DELIVERED conversation', async () => {
       gatedAgents = new Set([ALICE])
       const orch = makeOrch()

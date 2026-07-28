@@ -89,15 +89,27 @@ restricted agents may independently enable or disable their own DM conversation 
 A Slack multi-person DM is a conversation between people that the agent happens to sit
 in, not a room addressed to the agent. It therefore follows a channel's rule, not a
 DM's: the agent answers when explicitly @-mentioned, and follow-ups in a thread it has
-joined need no further mention. "Every message" stays an operator's opt-in.
+joined need no further mention. A group DM never activates on an unmentioned message the
+way a DM does.
 
 Slack never reports a group DM as bot membership, so one is surfaced the way a DM is —
 on observation, when an inbound message names the bot — and never through a membership
-snapshot. A restricted agent's group DM therefore starts Off and stays unroutable until
-a Console editor enables it, exactly like its DM rows. A conversation first mistaken for
-a channel converts to a group DM once resolved, and that conversion returns it to Off:
-the trigger it carried was a channel's default, never an operator's choice for this
-conversation.
+snapshot. Conversation rows therefore exist only where observation creates them, which
+gives the two visibilities different surfaces, matching how DMs already behave:
+
+- An **org-visible** agent answers a group DM whenever it is @-mentioned, with no
+  per-conversation row and nothing to configure — the same way it always answers its
+  DMs.
+- A **restricted** agent's group DM is surfaced as a row that starts Off and stays
+  unroutable until a Console editor enables it, exactly like its DM rows. Because the
+  conversation is channel-like, that row carries a channel's trigger choice, so an
+  editor may also opt it into every message.
+
+A conversation first mistaken for a channel converts to a group DM once resolved, and
+that conversion returns it to Off: the trigger it carried was a channel's default, never
+an operator's choice for this conversation. The resolved classification is durable — it
+lives on the conversation row, not in daemon memory, so a daemon restart that re-reports
+the conversation provisionally as a channel cannot flip an enabled group DM back to Off.
 
 ## No-response control marker
 

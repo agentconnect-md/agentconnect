@@ -442,8 +442,22 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
                          ELSE "integration_channel"."space" END,
           "isPrivate" = CASE WHEN ${setPrivate}::boolean THEN EXCLUDED."isPrivate"
                              ELSE "integration_channel"."isPrivate" END,
-          "kind" = CASE WHEN ${c.kind !== undefined}::boolean THEN EXCLUDED."kind"
-                        ELSE "integration_channel"."kind" END,
+          -- A committed direct kind is never downgraded back to 'channel'. Slack
+          -- classifies a group DM late, so a daemon that has lost its cache (a restart,
+          -- a snapshot refresh) re-reports the conversation as a provisional 'channel'
+          -- before conversations.info corrects it. Accepting that would flip the row
+          -- twice and, through the fail-closed conversion below, silently reset an
+          -- operator's enabled trigger to Off on every restart. The classification lives
+          -- here, not in daemon memory.
+          "kind" = CASE
+            WHEN ${c.kind !== undefined}::boolean
+              AND NOT (
+                "integration_channel"."kind" IN ('im'::"ConversationKind", 'mpim'::"ConversationKind")
+                AND EXCLUDED."kind" = 'channel'::"ConversationKind"
+              )
+              THEN EXCLUDED."kind"
+            ELSE "integration_channel"."kind"
+          END,
           -- The fail-closed conversion, resolved against the COMMITTED kind: a row that
           -- was a channel carried a channel's trigger, which is not an operator's choice
           -- for a direct conversation. A row already of the reported kind keeps whatever
