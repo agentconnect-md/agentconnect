@@ -10,6 +10,7 @@
 // default org, so the page is fully editable with no picker.
 
 import { Fragment, useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import { Avatar, Button, Icon, Toggle } from '@/components/ui'
 import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
@@ -400,6 +401,7 @@ function InviteLinksCard({ orgId }: { orgId: string }) {
 }
 
 export default function SettingsView() {
+  const targetBotId = useSearchParams().get('bot')
   const { me } = useProfile()
   const { activeOrg, myRole, refreshOrgs, error: orgError } = useOrgs()
   const { openModal } = useModal()
@@ -548,7 +550,7 @@ export default function SettingsView() {
           channel roster (a SHARED bot's channels each get an active-agent picker).
           Slack rows deep-link to the app's settings; Discord rows offer a ready-made
           "Add to Discord" invite built from the persisted application id. */}
-      <BotsCard canWrite={canWrite} me={me} onDelete={setDeletingBot} />
+      <BotsCard canWrite={canWrite} me={me} targetBotId={targetBotId} onDelete={setDeletingBot} />
 
       <GithubCard canWrite={canWrite} isOwner={isOwner} />
 
@@ -582,7 +584,17 @@ export default function SettingsView() {
 // are always shown together. Each row carries the Sharable toggle (PATCH
 // /bots/:id; the CP's 409 reason renders inline) + installed-agent stack and
 // expands to the bot's channel roster.
-function BotsCard({ canWrite, me, onDelete }: { canWrite: boolean; me: MeDto | null; onDelete: (b: BotDto) => void }) {
+function BotsCard({
+  canWrite,
+  me,
+  targetBotId,
+  onDelete
+}: {
+  canWrite: boolean
+  me: MeDto | null
+  targetBotId: string | null
+  onDelete: (b: BotDto) => void
+}) {
   const { bots, integrations, getAgent, setBotShareable, setChannelAgent, loading: dataLoading } = useConsoleData()
   const [platform, setPlatform] = useState<BotPlatform>('slack')
   // Bot row expanded to its channel roster (one at a time), the bot whose
@@ -594,8 +606,22 @@ function BotsCard({ canWrite, me, onDelete }: { canWrite: boolean; me: MeDto | n
   const [slackRefreshBusyId, setSlackRefreshBusyId] = useState<string | null>(null)
   const [slackRefresh, setSlackRefresh] = useState<Record<string, { result?: SlackBotRefreshDto; error?: string }>>({})
 
+  const targetBotPlatform = BOT_PLATFORMS.find(
+    (item) => item.platform === bots.find((bot) => bot.id === targetBotId)?.platform
+  )?.platform
   const { label, noun } = BOT_PLATFORMS.find((item) => item.platform === platform)!
   const platformBots = bots.filter((b) => b.platform === platform)
+
+  useEffect(() => {
+    if (!targetBotId || !targetBotPlatform) return
+    setPlatform(targetBotPlatform)
+    setOpenBotId(targetBotId)
+  }, [targetBotId, targetBotPlatform])
+
+  useEffect(() => {
+    if (!targetBotId || openBotId !== targetBotId) return
+    document.getElementById(`settings-bot-${targetBotId}`)?.scrollIntoView({ block: 'start' })
+  }, [openBotId, targetBotId])
 
   const flipShareable = async (b: BotDto, next: boolean) => {
     if (botBusyId) return
@@ -688,6 +714,7 @@ function BotsCard({ canWrite, me, onDelete }: { canWrite: boolean; me: MeDto | n
         return (
           <Fragment key={b.id}>
             <div
+              id={`settings-bot-${b.id}`}
               className={`row click ${BOT_GRID} items-center gap-[11px]`}
               onClick={() => setOpenBotId(open ? null : b.id)}
             >
