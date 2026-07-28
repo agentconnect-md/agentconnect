@@ -213,6 +213,11 @@ not justify renaming a topic. A rename, merge, or split is appropriate only when
 material content change makes the existing structure misleading; equally faithful
 proposals prefer the smallest diff.
 
+Reviewing a completed dream shows each file as the same live-to-proposed line diff
+used by managed-memory history. Added and deleted files use an empty live or proposed
+side respectively, so their entire contents are visibly marked as additions or
+removals before adoption.
+
 Each dream model run appears in Sessions with its runtime, model, token/cost usage,
 and a lifecycle-only history. Dream history and evaluation events must never copy
 memory bodies, source transcript text, model proposals, or mined skill bodies. The
