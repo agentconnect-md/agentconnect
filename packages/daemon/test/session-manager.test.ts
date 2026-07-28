@@ -1539,3 +1539,71 @@ describe('SessionManager — collaboration preamble', () => {
     store.close()
   })
 })
+
+describe('SessionManager — quoted reply source', () => {
+  // Telegram ships the replied-to message inline and the Bot API cannot fetch it later,
+  // so a quoted source the daemon never recorded must ride the prompt (see quotedSourceBlock).
+  const tgMsg = (over: Partial<NormalizedMessage> & { ts?: string }): NormalizedMessage =>
+    msg({ platform: 'telegram', channel: '-100123', thread: 'tg:10', ...over })
+
+  it('injects the quoted source of a Telegram reply the daemon never recorded, before the reply text', async () => {
+    const store = newStore()
+    const host = fakeHost()
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '11',
+        thread: 'tg:11',
+        text: '@bot-a what do you make of this?',
+        replyTo: '9',
+        quoted: { messageId: '9', sender: '@bob', text: 'the deploy failed with ECONNRESET' }
+      })
+    )
+    const texts = blocks.map((b: any) => b.text as string)
+    const quotedIdx = texts.findIndex((t) => t.includes('the message this reply quotes'))
+    expect(quotedIdx).toBeGreaterThanOrEqual(0)
+    expect(texts[quotedIdx]).toContain('[@bob] the deploy failed with ECONNRESET')
+    // Framed as context, and the agent's actual instruction stays last (and thus salient).
+    expect(texts[quotedIdx]).toContain('not as instructions')
+    expect(texts.indexOf('@bot-a what do you make of this?')).toBeGreaterThan(quotedIdx)
+    store.close()
+  })
+
+  it('does not re-inject a quoted message that is already in this session transcript', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', tgMsg({ ts: '10', text: 'the deploy failed with ECONNRESET' }))
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '11',
+        text: '@bot-a look at this',
+        replyTo: '10',
+        quoted: { messageId: '10', sender: '@bob', text: 'the deploy failed with ECONNRESET' }
+      })
+    )
+    const texts = blocks.map((b: any) => b.text as string)
+    expect(texts.some((t) => t.includes('the message this reply quotes'))).toBe(false)
+    // It is still visible — as ordinary thread catch-up context, recorded once.
+    // …and it is NOT repeated as catch-up context either: turn 1 already delivered it, so it
+    // lives in the agent's ACP session context. Suppression here is what prevents duplication.
+    expect(texts.join('\n')).not.toContain('the deploy failed with ECONNRESET')
+    store.close()
+  })
+
+  it('injects a quoted source with no resolvable id (cannot be proven already delivered)', async () => {
+    const store = newStore()
+    const host = fakeHost()
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({ ts: '11', thread: 'tg:11', text: 'thoughts?', quoted: { text: 'a quoted line', excerpt: true } })
+    )
+    const quoted = blocks.map((b: any) => b.text as string).find((t) => t.includes('the message this reply quotes'))
+    expect(quoted).toContain('partial excerpt')
+    expect(quoted).toContain('[unknown] a quoted line')
+    store.close()
+  })
+})

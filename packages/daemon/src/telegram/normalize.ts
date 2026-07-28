@@ -1,4 +1,5 @@
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
+import { attachmentMention } from '../session/attachment-block.js'
 
 /**
  * The subset of the Telegram Bot API `Message` we read during normalization. Kept
@@ -49,6 +50,29 @@ export interface TelegramDocument {
   file_size?: number
 }
 
+/**
+ * The replied-to message, as Telegram nests it inside the reply. Telegram ships the
+ * full source message here (text/caption/media), which is the only way the daemon can
+ * see what a reply is about — the Bot API cannot fetch history after the fact. Kept to
+ * the fields normalization reads; the nesting is one level deep only (Telegram does not
+ * recurse `reply_to_message`).
+ */
+export interface TelegramReplyToMessage {
+  message_id: number
+  from?: TelegramUser
+  text?: string
+  caption?: string
+  photo?: TelegramPhotoSize[]
+  document?: TelegramDocument
+}
+
+/** Bot API 6.9+ `quote`: the part of `reply_to_message` the replying user actually
+ *  selected. When present it is the more precise signal of intent than the full source. */
+export interface TelegramTextQuote {
+  text: string
+  is_manual?: boolean
+}
+
 export interface TelegramMessage {
   message_id: number
   message_thread_id?: number // forum-topic id (supergroups only)
@@ -56,7 +80,8 @@ export interface TelegramMessage {
   from?: TelegramUser
   chat: TelegramChat
   date?: number
-  reply_to_message?: { message_id: number }
+  reply_to_message?: TelegramReplyToMessage
+  quote?: TelegramTextQuote
   text?: string
   caption?: string // photos/documents carry their text here, not in `text`
   entities?: TelegramMessageEntity[]
@@ -105,6 +130,53 @@ export function photoToAttachment(sizes: TelegramPhotoSize[] | null | undefined)
     mimeType: 'image/jpeg',
     ...(typeof largest.file_size === 'number' ? { size: largest.file_size } : {}),
     sourceUrl: largest.file_id
+  }
+}
+
+/** Cap on the quoted source text carried into the prompt. Generous enough for a normal
+ *  message being replied to, small enough that quoting a wall of text can't dominate the
+ *  turn (the agent still has the reply itself, and can ask). */
+const MAX_QUOTED_TEXT_CHARS = 1000
+
+/** Display label for a quoted author: `@username` when Telegram supplies one (the useful,
+ *  human-recognizable form), else the numeric id so the author is at least distinguishable. */
+function quotedSenderLabel(from: TelegramUser | undefined): string | undefined {
+  if (!from) return undefined
+  return from.username ? `@${from.username}` : String(from.id)
+}
+
+/**
+ * The content of the message a Telegram reply is replying to, or undefined when there is
+ * nothing usable to carry. Prefers the user's `quote` selection over the full source
+ * message — a manual quote is an explicit statement of which part the reply is about.
+ * Media-only sources still yield an `[attached: …]` mention so the agent knows the reply
+ * points at a file rather than at nothing.
+ */
+export function quotedFromTelegramReply(msg: TelegramMessage): NormalizedMessage['quoted'] | undefined {
+  const source = msg.reply_to_message
+  if (!source) return undefined
+
+  const selection = msg.quote?.text?.trim()
+  const full = (source.text ?? source.caption ?? '').trim()
+  const attachments: Attachment[] = []
+  const photo = photoToAttachment(source.photo)
+  if (photo) attachments.push(photo)
+  const doc = documentToAttachment(source.document)
+  if (doc) attachments.push(doc)
+  // A selection is already scoped to text the user picked, so it never needs the
+  // source's attachment mention folded in; a full source does.
+  const mention = selection ? '' : attachmentMention(attachments)
+  const body = [selection || full, mention].filter(Boolean).join(' ')
+  if (!body) return undefined
+
+  const truncated = body.length > MAX_QUOTED_TEXT_CHARS
+  return {
+    messageId: String(source.message_id),
+    ...(quotedSenderLabel(source.from) !== undefined ? { sender: quotedSenderLabel(source.from)! } : {}),
+    text: truncated ? `${body.slice(0, MAX_QUOTED_TEXT_CHARS)}…` : body,
+    // A truncated full source is as partial as a manual selection — say so either way,
+    // so the agent knows it is not looking at the complete quoted message.
+    ...(selection || truncated ? { excerpt: true } : {})
   }
 }
 
@@ -158,6 +230,7 @@ export function normalizeTelegramMessage(msg: TelegramMessage, ctx: { traceId: s
   const threadId = telegramThread(msg)
   const isForumTopic = msg.is_topic_message === true
   const replyTo = msg.reply_to_message?.message_id != null ? String(msg.reply_to_message.message_id) : undefined
+  const quoted = quotedFromTelegramReply(msg)
 
   return {
     msgId: `telegram:${msg.chat.id}:${msg.message_id}`,
@@ -168,6 +241,7 @@ export function normalizeTelegramMessage(msg: TelegramMessage, ctx: { traceId: s
     ...(isForumTopic && threadId !== undefined ? { telegramTopicId: threadId } : {}),
     ...(!isForumTopic && threadId !== undefined ? { telegramThreadRoot: threadId } : {}),
     ...(replyTo !== undefined ? { replyTo } : {}),
+    ...(quoted !== undefined ? { quoted } : {}),
     sender: { id: msg.from ? String(msg.from.id) : 'unknown', isBot: Boolean(msg.from?.is_bot) },
     text,
     mentionedBots,

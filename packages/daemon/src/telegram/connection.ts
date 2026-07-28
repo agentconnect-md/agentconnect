@@ -256,6 +256,7 @@ export class TelegramConnection {
       log?.debug(
         `telegram: inbound ch=${msg.channel} user=${msg.sender.id} isBot=${msg.sender.isBot} isDm=${msg.isDm} ` +
           `topic=${msg.telegramTopicId ?? '-'} root=${msg.telegramThreadRoot ?? '-'} replyTo=${msg.replyTo ?? '-'} ` +
+          `quoted=${msg.quoted ? `${msg.quoted.text.length}c${msg.quoted.excerpt ? ' excerpt' : ''}` : '-'} ` +
           `mentions=[${msg.mentionedBots.join(',')}] text=${JSON.stringify(msg.text.slice(0, 80))}`
       )
       this.deps.onMessage(msg)
