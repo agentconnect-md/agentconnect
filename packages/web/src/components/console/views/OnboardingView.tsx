@@ -12,6 +12,8 @@ import { skipOnboarding } from '@/lib/onboarding'
 import { daemonCommands } from '@/lib/daemon-commands'
 import type { DaemonConnectDto } from '@/lib/api'
 
+type DaemonCommand = Pick<DaemonConnectDto, 'daemonId' | 'command'>
+
 // Onboarding wizard (design: "AgentConnect Onboarding") — a 3-step guided setup rendered
 // directly in the console content area: Welcome → Add a Daemon → Create an agent → Set up
 // integration → live. The daemon step is inline and functional (mints a real join command
@@ -39,16 +41,25 @@ const WELCOME_CARDS = [
 export default function OnboardingView() {
   const router = useRouter()
   const params = useParams()
-  const { agents, daemons, integrations, agentsLoading, daemonsLoading, provisionDaemon, deleteDaemon, refresh } =
-    useConsoleData()
+  const {
+    agents,
+    daemons,
+    integrations,
+    agentsLoading,
+    daemonsLoading,
+    provisionDaemon,
+    reconnectDaemon,
+    deleteDaemon,
+    refresh
+  } = useConsoleData()
   const { openModal } = useModal()
   const { orgPath } = useOrgs()
   const orgKey = typeof params.slug === 'string' ? params.slug : '-'
 
-  // Presence drives resume/initialization (an org with any daemon + agents is already set
-  // up, even if the daemon is momentarily offline). `daemonOnline` is the stricter signal
-  // that gates leaving the daemon step — you can't create an agent until one is connected.
-  const hasDaemon = daemons.length > 0
+  // Only a serving daemon completes step 1. An offline row may be a provisioned daemon
+  // whose one-time command was lost on reload; the daemon step reconnects it below.
+  const daemonOnline = daemons.some((d) => d.status === 'online')
+  const offlineDaemonId = daemons.find((d) => d.status !== 'online')?.daemonId
   const hasAgent = agents.length > 0
   const hasIntegration = integrations.length > 0 || agents.some((a) => (a.hookKinds ?? []).length > 0)
 
@@ -63,25 +74,33 @@ export default function OnboardingView() {
   useEffect(() => {
     if (didInit.current || loading) return
     didInit.current = true
-    const s = !hasDaemon ? 0 : !hasAgent ? 1 : !hasIntegration ? 2 : 3
+    const s = !daemonOnline ? 0 : !hasAgent ? 1 : !hasIntegration ? 2 : 3
     setStep(s)
     setEntered(s > 0)
-  }, [loading, hasDaemon, hasAgent, hasIntegration])
+  }, [loading, daemonOnline, hasAgent, hasIntegration])
 
   // --- Daemon provisioning (step 0), mirrors AddDaemonModal --------------------------
-  const [connect, setConnect] = useState<DaemonConnectDto | null>(null)
+  const [connect, setConnect] = useState<DaemonCommand | null>(null)
   const [mintErr, setMintErr] = useState<string | null>(null)
   const provisioned = useRef(false)
+  const commandPending = useRef<Promise<DaemonCommand> | null>(null)
+  const createdByWizard = useRef(false)
   useEffect(() => {
-    if (!entered || step !== 0 || hasDaemon || provisioned.current) return
+    if (!entered || step !== 0 || daemonOnline || provisioned.current) return
     provisioned.current = true
-    provisionDaemon()
-      .then(setConnect)
-      .catch((e) => setMintErr(e instanceof Error ? e.message : String(e)))
-  }, [entered, step, hasDaemon, provisionDaemon])
+    setMintErr(null)
+    createdByWizard.current = !offlineDaemonId
+    const command: Promise<DaemonCommand> = offlineDaemonId
+      ? reconnectDaemon(offlineDaemonId).then((minted) => ({
+          daemonId: offlineDaemonId,
+          command: minted.command
+        }))
+      : provisionDaemon()
+    commandPending.current = command
+    command.then(setConnect).catch((e) => setMintErr(e instanceof Error ? e.message : String(e)))
+  }, [entered, step, daemonOnline, offlineDaemonId, provisionDaemon, reconnectDaemon])
 
   const provisionedRow = connect ? daemons.find((d) => d.daemonId === connect.daemonId) : undefined
-  const daemonOnline = daemons.some((d) => d.status === 'online')
   useEffect(() => {
     if (!connect || provisionedRow?.status === 'online') return
     const id = setInterval(refresh, 3000)
@@ -89,12 +108,24 @@ export default function OnboardingView() {
   }, [connect, provisionedRow?.status, refresh])
 
   // Drop an unclaimed provisioned row when leaving the daemon step before it connects.
-  const cleanupPending = () => {
-    if (connect && provisionedRow && provisionedRow.status !== 'online')
-      void deleteDaemon(connect.daemonId).catch(() => {})
+  const cleanupPending = async () => {
+    const pendingConnect = connect ?? (await commandPending.current?.catch(() => null))
+    const pendingRow = pendingConnect ? daemons.find((d) => d.daemonId === pendingConnect.daemonId) : undefined
+    if (pendingRow?.status === 'online') return
+    try {
+      if (pendingConnect && createdByWizard.current) await deleteDaemon(pendingConnect.daemonId)
+    } catch {
+      /* best-effort cleanup — an unclaimed provisioned row is harmless */
+    } finally {
+      setConnect(null)
+      setMintErr(null)
+      provisioned.current = false
+      commandPending.current = null
+      createdByWizard.current = false
+    }
   }
   const goConsole = () => {
-    cleanupPending()
+    void cleanupPending()
     skipOnboarding(orgKey)
     router.push(orgPath('/agents'))
   }
@@ -162,13 +193,13 @@ export default function OnboardingView() {
           {step === 0 && (
             <StepBody
               title="Add a Daemon"
-              sub="Run this on the host where your agents should run. It launches a Daemon that connects to the Control Plane and keeps running."
+              sub="Run this on the host where your agents should run. It launches a Daemon that connects to AgentConnect and stays available."
               footer={
                 <>
                   <Button
                     variant="ghost"
-                    onClick={() => {
-                      cleanupPending()
+                    onClick={async () => {
+                      await cleanupPending()
                       setEntered(false)
                     }}
                   >
@@ -188,7 +219,7 @@ export default function OnboardingView() {
                 name={provisionedRow?.name}
                 host={provisionedRow?.host}
                 version={provisionedRow?.version}
-                resumed={!provisionedRow && hasDaemon}
+                resumed={daemonOnline && !provisionedRow}
                 resumedName={daemons.find((d) => d.status === 'online')?.name ?? daemons[0]?.name}
               />
               <div className="mt-[14px] flex items-start gap-2 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
@@ -369,7 +400,7 @@ function StepRail({ current }: { current: number }) {
 
 // Dark terminal block with Run / Install-as-service tabs + copy — the real minted join
 // command (or a minting/error placeholder), matching AddDaemonModal's CommandBox.
-function Terminal({ connect, err }: { connect: DaemonConnectDto | null; err: string | null }) {
+function Terminal({ connect, err }: { connect: DaemonCommand | null; err: string | null }) {
   const cmds = connect ? daemonCommands(connect.command) : null
   const tabs = [
     { key: 'run', label: 'Run', command: cmds?.run ?? null },
