@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { LocalStore, sessionKey, type InboxRow } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
 import { Daemon } from '../src/daemon.js'
+import { stableMessageId } from '../src/messages/normalized.js'
 import type { WebchatOutput, WebchatDone } from '@agentconnect.md/protocol'
 
 /**
@@ -396,6 +397,35 @@ describe('daemon durable inbox', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('namespaces durable message identity per physical bot and deduplicates within one bot', async () => {
+    const g = gatedHost()
+    g.host.newSession = vi.fn().mockResolvedValueOnce('acp-a').mockResolvedValueOnce('acp-b')
+    const root = scaffold()
+    const daemon = await boot(root, g.host)
+    const botA = { ...msg('100', 'from A'), transportScope: 'slack:scope-a' }
+    const botB = { ...msg('100', 'from B'), transportScope: 'slack:scope-b' }
+
+    const pA = (daemon as any).dispatch('bot-a', botA, 'int-a')
+    const pB = (daemon as any).dispatch('bot-a', botB, 'int-b')
+    await vi.waitFor(() => expect(g.blockedCount()).toBe(2))
+    expect((daemon as any).evaluationTurnIdFor('bot-a', botA)).not.toBe(
+      (daemon as any).evaluationTurnIdFor('bot-a', botB)
+    )
+    expect(
+      inbox(root)
+        .map((row) => row.id)
+        .sort()
+    ).toEqual([stableMessageId(botA), stableMessageId(botB)].sort())
+
+    await expect((daemon as any).dispatch('bot-a', { ...botA }, 'int-a')).resolves.toBeNull()
+    expect(inbox(root)).toHaveLength(2)
+
+    g.releaseAll()
+    await Promise.all([pA, pB])
+    expect(inbox(root)).toHaveLength(0)
+    await daemon.stop()
+  }, 15_000)
+
   it('a fail-stopped queued rest has its rows removed too', async () => {
     const g = gatedHost()
     g.failNext(1)
@@ -420,14 +450,16 @@ describe('daemon durable inbox', () => {
   it('startup replay: pre-seeded rows for a sessionKey are re-admitted through the gate in FIFO order', async () => {
     const g = gatedHost()
     const root = scaffold()
-    const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
+    const transportScope = 'slack:scope-a'
+    const key = sessionKey('slack', 'C1', 'T1', 'bot-a', transportScope)
+    const replayMsg = (ts: string, text: string) => ({ ...msg(ts, text), transportScope })
     // Pre-seed the durable inbox out of enqueuedAt order to prove FIFO ordering on replay.
     const s = new LocalStore(statePath(root))
     s.appendInbox({
       id: 'slack:C1:300',
       sessionKey: key,
       agentId: 'bot-a',
-      msg: JSON.stringify(msg('300', 'third')),
+      msg: JSON.stringify(replayMsg('300', 'third')),
       integrationId: 'int-a',
       callMeta: null,
       isQueueCmd: null,
@@ -437,7 +469,7 @@ describe('daemon durable inbox', () => {
       id: 'slack:C1:100',
       sessionKey: key,
       agentId: 'bot-a',
-      msg: JSON.stringify(msg('100', 'first')),
+      msg: JSON.stringify(replayMsg('100', 'first')),
       integrationId: 'int-a',
       callMeta: null,
       isQueueCmd: null,
@@ -447,7 +479,7 @@ describe('daemon durable inbox', () => {
       id: 'slack:C1:200',
       sessionKey: key,
       agentId: 'bot-a',
-      msg: JSON.stringify(msg('200', 'second')),
+      msg: JSON.stringify(replayMsg('200', 'second')),
       integrationId: 'int-a',
       callMeta: null,
       isQueueCmd: null,
@@ -460,6 +492,8 @@ describe('daemon durable inbox', () => {
     await vi.waitFor(() => expect(g.started.length).toBe(1))
     expect(g.started[0]).toContain('first')
     expect((daemon as any).serialQueue.get(key)).toHaveLength(2)
+    // Adopt the legacy raw ids instead of duplicating them under the new scoped identity.
+    expect(inbox(root).map((row) => row.id)).toEqual(['slack:C1:100', 'slack:C1:200', 'slack:C1:300'])
     // Every migrated row is marked only after its replay admission was charged.
     expect(inbox(root).every((row) => row.loopGuardCounted === 1)).toBe(true)
 

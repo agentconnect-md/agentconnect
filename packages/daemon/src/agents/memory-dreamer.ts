@@ -98,6 +98,10 @@ Rebuild the memory store in four phases:
 
 Rules:
 - Unlike per-turn distillation, you MAY rewrite, merge, and delete entries — but only inside the returned proposal.
+- Preserve the existing topic boundaries, filenames, and content by default. A dream is consolidation, not a taxonomy redesign.
+- If an existing topic still covers substantially the same subject, keep its exact filename even when updating its content.
+- Copy an existing file byte-for-byte when it needs no substantive change. Do not rename or rewrite files merely to improve wording, formatting, naming style, ordering, or consistency.
+- Rename, merge, or split files only when a material content change makes the existing structure misleading. Prefer the smallest diff when multiple proposals are equally faithful.
 - Every memory must be self-contained and understandable without the conversation.
 - Topic filenames are lowercase kebab-case .md names.
 - Never include credentials, tokens, or other secrets.

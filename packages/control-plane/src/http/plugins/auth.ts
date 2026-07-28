@@ -69,10 +69,41 @@ export type VerifyApiKey = (
   token: string
 ) => Promise<{ userId: string; orgId: string; apiKeyId: string; scopes: string[] } | null>
 
+/**
+ * Does the resolved local user row still exist? An admin can delete an account
+ * while a browser still holds a valid OIDC session — and while this plane's
+ * `sub → userId` memo still points at the deleted row. Without this check the
+ * session limps on against a dangling identity (reads come back empty, writes
+ * fail obscurely); with it the request is refused as `ACCOUNT_GONE` so the client
+ * signs out. Deliberately NOT a "re-provision the row" hook: an account an admin
+ * removed must not come back to life under the old session — the user signs in
+ * again and JIT signup then treats them as the new account they are. Absent ⇒ no
+ * check (the identity is trusted for the process lifetime).
+ */
+export type PrincipalExists = (userId: string) => Promise<boolean>
+
+/**
+ * The durable half of the deleted-account boundary (see the cutoff map in
+ * `oidcAuth`). `read` is consulted the FIRST time a process sees a subject —
+ * precisely the post-restart case, where an in-memory cutoff is gone but a
+ * pre-deletion bearer may still be live. The rows it reads are written by a database
+ * trigger on the deletion itself (see the `deleted_identity_trigger` migration), so
+ * the boundary exists even when NO process ever observed the deletion; `record` adds
+ * what this process observes, covering a row that vanished without the trigger.
+ * Both are expiry-limited: a boundary around one deletion, not a ban on the identity.
+ * Absent ⇒ the cutoff is process-local only.
+ */
+export interface DeletedIdentityStore {
+  read: (oidcSubject: string, now: Date) => Promise<Date | null>
+  record: (oidcSubject: string, cutoffAt: Date, expiresAt: Date) => Promise<void>
+}
+
 /** Registration options: the config plus the optional JIT resolver + API-key verifier. */
 export type HumanAuthOptions = HumanAuthConfig & {
   resolveUser?: ResolveOidcUser
   verifyApiKey?: VerifyApiKey
+  principalExists?: PrincipalExists
+  deletedIdentities?: DeletedIdentityStore
 }
 
 declare module 'fastify' {
@@ -84,6 +115,10 @@ declare module 'fastify' {
   }
   interface FastifyRequest {
     principal?: HumanPrincipal
+    /** The verified OIDC `sub` behind this request. Set only on the real-OIDC path
+     *  (never devAuth or an API key). Identity confirmation only — routes use it to
+     *  check the caller is who the client thought it was, never as a lookup key. */
+    oidcSubject?: string
     /** Set only when the caller authenticated with a personal API key (not OIDC/dev):
      *  the key's row id (audit / self-mint guard) and the org it is bound to. The
      *  org-scope guard asserts this equals the URL org, so a key acts only in its org. */
@@ -98,6 +133,18 @@ declare module 'fastify' {
 
 function unauthorized(reply: FastifyReply, message: string): FastifyReply {
   return reply.code(401).send({ error: 'Unauthorized', statusCode: 401, message })
+}
+
+/** The token is valid but the account behind it was deleted. A distinct `code` so
+ *  the console can tell this apart from an expired/invalid token and force a
+ *  sign-out instead of retrying with the same (now identity-less) session. */
+function accountGone(reply: FastifyReply): FastifyReply {
+  return reply.code(401).send({
+    error: 'Unauthorized',
+    statusCode: 401,
+    message: 'this account no longer exists — sign in again',
+    code: 'ACCOUNT_GONE'
+  })
 }
 
 /** Build the devAuth stub preHandler — admits every request with a fixed principal. */
@@ -153,6 +200,69 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
   // per request so org switches (x-ac-org-id), role edits and removals take
   // effect immediately.
   const resolved = new Map<string, Promise<{ userId: string }>>()
+  // Subjects whose local account was found deleted, and WHEN (epoch seconds) — a
+  // cutoff: every token issued at or before it is refused, for good. The memo
+  // eviction alone would let the very next request with the same bearer re-run JIT
+  // provisioning and recreate the account the admin just removed — a retry or a
+  // parallel console poll would resurrect it before the client finishes signing out.
+  // Only a token issued AFTER the deletion (a new authentication) may provision
+  // again, and admitting one does NOT lift the cutoff, so the old bearer never
+  // becomes valid against the replacement row.
+  //
+  // This map is the fast path; `cfg.deletedIdentities` is its durable twin, read the
+  // first time a process sees a subject and written whenever a deletion is observed,
+  // so a restart does not forget the boundary while a pre-deletion bearer is still
+  // live. Both are expiry-limited (TOMBSTONE_TTL_SECONDS, far beyond any access-token
+  // lifetime): a boundary around one deletion, NOT a ban on the identity. Once it
+  // expires, a deleted user signing in again is ordinary open signup — a fresh, gated
+  // account with nothing inherited — and whether that is allowed at all is the
+  // deleting application's policy, not this plane's.
+  const tombstoned = new Map<string, number>()
+  const TOMBSTONE_TTL_SECONDS = 24 * 60 * 60
+  async function tombstone(
+    sub: string,
+    issuedAt: number | undefined,
+    nowSeconds: number,
+    log: FastifyRequest['log']
+  ): Promise<void> {
+    for (const [key, at] of tombstoned) if (nowSeconds - at > TOMBSTONE_TTL_SECONDS) tombstoned.delete(key)
+    // At least the offending token's own `iat`, so an issuer clock running ahead of
+    // ours cannot mint a token that reads as "issued after the deletion".
+    const cutoff = Math.max(nowSeconds, issuedAt ?? 0)
+    tombstoned.set(sub, cutoff)
+    try {
+      await cfg.deletedIdentities?.record(
+        sub,
+        new Date(cutoff * 1000),
+        new Date((cutoff + TOMBSTONE_TTL_SECONDS) * 1000)
+      )
+    } catch (err) {
+      // The in-memory cutoff still holds for this process; only restart durability
+      // is lost, and refusing the request is the important part.
+      log.warn({ err }, 'humanAuth: could not persist the deleted-account cutoff')
+    }
+  }
+
+  /** The cutoff for `sub`: the in-memory one, or — the first time this process sees
+   *  the subject — whatever a previous process durably recorded. Fail-open on a store
+   *  error: a blip must not lock people out. */
+  async function cutoffFor(sub: string, log: FastifyRequest['log']): Promise<number | undefined> {
+    const known = tombstoned.get(sub)
+    if (known !== undefined) return known
+    // Only on first sight: once the subject is resolved (or tombstoned) in this
+    // process, the maps answer and this never runs again — so it stays off the hot path.
+    if (!cfg.deletedIdentities || resolved.has(sub)) return undefined
+    try {
+      const at = await cfg.deletedIdentities.read(sub, new Date())
+      if (!at) return undefined
+      const seconds = Math.floor(at.getTime() / 1000)
+      tombstoned.set(sub, seconds)
+      return seconds
+    } catch (err) {
+      log.warn({ err }, 'humanAuth: could not read the deleted-account cutoff — admitting')
+      return undefined
+    }
+  }
   return async (req: FastifyRequest, reply: FastifyReply) => {
     const header = req.headers.authorization
     if (!header?.startsWith('Bearer ')) {
@@ -166,6 +276,25 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
       })
       if (!payload.sub) return unauthorized(reply, 'token missing subject')
       const sub = payload.sub
+      // Was this subject's account deleted? Anything issued at or before that moment
+      // — including the bearer that was live when it happened — stays rejected, so no
+      // amount of retrying re-provisions it. A token with no `iat` cannot prove it is
+      // newer, so it is refused too. A demonstrably newer one clears the tombstone
+      // and signs up afresh. (A silent refresh also mints a newer `iat`; a bearer
+      // alone cannot distinguish that from a re-login, and the console drops its
+      // tokens on ACCOUNT_GONE, so this is the achievable line.)
+      const tombstonedAt = await cutoffFor(sub, req.log)
+      if (tombstonedAt !== undefined) {
+        const issuedAt = typeof payload.iat === 'number' ? payload.iat : undefined
+        if (issuedAt === undefined || issuedAt <= tombstonedAt) {
+          req.log.warn('humanAuth: token predates the account deletion — session rejected')
+          return accountGone(reply)
+        }
+        // The cutoff is KEPT, not cleared, when a newer token is admitted: clearing it
+        // would let the pre-deletion bearer through again (it would then resolve to the
+        // replacement row and pass the existence check), quietly reviving the very
+        // session the deletion ended. It only ages out via TOMBSTONE_TTL_SECONDS.
+      }
       // The creator identity we surface is the user's real EMAIL. A Logto access
       // token minted for an API resource omits the `email` claim, so we also accept
       // it from the browser (which has it from the id token) via `x-ac-user-email`.
@@ -222,9 +351,37 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
         pending.catch(() => resolved.delete(sub))
       }
       const identity = await pending
+      // The memo (and the token) can outlive the account: an admin deleting a user
+      // leaves this subject mapped to a row that no longer exists. Confirm it, drop
+      // the dead mapping, and refuse the session so the client signs out — the next
+      // sign-in provisions a genuinely new account instead of resurrecting the old
+      // session. Fail-OPEN on a store error: a DB blip must not sign everyone out.
+      if (cfg.principalExists) {
+        let alive = true
+        try {
+          alive = await cfg.principalExists(identity.userId)
+        } catch (err) {
+          req.log.warn({ err }, 'humanAuth: could not confirm the principal still exists — admitting')
+        }
+        if (!alive) {
+          resolved.delete(sub)
+          // Tombstone the subject as well, so this bearer (and every concurrent
+          // request already holding it) cannot fall through to JIT provisioning and
+          // recreate the account the admin just deleted.
+          await tombstone(
+            sub,
+            typeof payload.iat === 'number' ? payload.iat : undefined,
+            Math.floor(Date.now() / 1000),
+            req.log
+          )
+          req.log.warn({ userId: identity.userId }, 'humanAuth: account no longer exists — session rejected')
+          return accountGone(reply)
+        }
+      }
       // Identity only — which org the request acts on is the URL's business
       // (`/orgs/:orgId/…`, verified by the org-scope guard).
       req.principal = { userId: identity.userId, email: email ?? headerEmail }
+      req.oidcSubject = sub
     } catch (err) {
       // Surface WHY verification failed — expiry vs. audience/issuer vs. signature.
       // jose tags each with a stable `code` (ERR_JWT_EXPIRED,

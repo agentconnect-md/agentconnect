@@ -12,6 +12,8 @@ export interface ChannelInfoSource {
     name?: string
     isIm?: boolean
     isPrivate?: boolean
+    /** Enclosing channel id when `channel` is itself a thread (Discord). */
+    parentId?: string
     /** Enclosing channel name when `channel` is itself a thread (Discord). */
     parentName?: string
   }>
@@ -41,15 +43,34 @@ const OK_TTL_MS = 6 * 60 * 60 * 1000 // re-check successful lookups (renames) ev
 const FAIL_TTL_MS = 10 * 60 * 1000 // retry failed lookups (rate limit / outage) after 10min
 const MAX_TRACKED_IDS = 5000 // attempt-cache cap (oldest-evicted)
 
+/** Where a conversation sits — reported alongside its name so the daemon can fold a
+ *  thread onto the enclosing channel it belongs to (see discord/channels.ts). */
+export interface ResolvedChannelScope {
+  parentId?: string
+}
+
+export interface ChannelNameResolverOpts {
+  /** Sink for the conversation's scope, saved next to its display name. */
+  saveScope?: (id: string, scope: ResolvedChannelScope) => void
+  log?: Logger
+  now?: () => number
+}
+
 export class ChannelNameResolver {
   /** channel id → epoch ms until which we won't re-attempt a lookup. */
   private nextAttemptAt = new Map<string, number>()
+  private saveScope?: (id: string, scope: ResolvedChannelScope) => void
+  private log?: Logger
+  private now: () => number
 
   constructor(
     private save: (id: string, name: string) => void,
-    private log?: Logger,
-    private now: () => number = Date.now
-  ) {}
+    opts: ChannelNameResolverOpts = {}
+  ) {
+    this.saveScope = opts.saveScope
+    this.log = opts.log
+    this.now = opts.now ?? Date.now
+  }
 
   /**
    * Kick off (cached) resolution for one channel id against its owning connection.
@@ -58,6 +79,22 @@ export class ChannelNameResolver {
    */
   noteChannel(src: ChannelInfoSource, channel: string, triggeredBy?: string): void {
     void this.resolveChannel(src, channel, triggeredBy)
+  }
+
+  /**
+   * Kick off (cached) resolution for a whole inbound message: its channel plus the
+   * human sender and everyone they mentioned — so session read-back can label the
+   * triggering user by name instead of a raw platform id (Slack-parity, where
+   * SlackNameResolver.noteMessage does the same over the Web API). Bot senders are
+   * skipped: agent-authored frames are labelled by agentId upstream.
+   */
+  noteMessage(
+    src: ChannelInfoSource,
+    msg: { channel: string; sender: { id: string; isBot: boolean }; mentionedUserIds?: string[] }
+  ): void {
+    void this.resolveChannel(src, msg.channel, msg.sender.id)
+    if (!msg.sender.isBot) void this.resolveUser(src, msg.sender.id)
+    for (const id of msg.mentionedUserIds ?? []) void this.resolveUser(src, id)
   }
 
   private claim(id: string): boolean {
@@ -80,6 +117,13 @@ export class ChannelNameResolver {
     if (!this.claim(channel)) return
     try {
       const info = await src.getChannelInfo(channel)
+      // Where the conversation sits: a thread folds onto its enclosing channel in
+      // channel discovery. Saved before the name so a nameless lookup still contributes
+      // the scope.
+      if (info.parentId) this.saveScope?.(channel, { parentId: info.parentId })
+      // The enclosing channel is a reportable conversation of its own (channel discovery
+      // labels the folded row from it) — cache its name under ITS id too.
+      if (info.parentId && info.parentName) this.save(info.parentId, info.parentName)
       // A named channel/group is saved bare (the console prefixes "#"); a DM that carries
       // its own handle (a Telegram @username) is saved "@name" so readers can tell it apart.
       // A Discord session keys on the THREAD id, whose own name is the turn's title — label
@@ -101,6 +145,21 @@ export class ChannelNameResolver {
     } catch (err) {
       this.nextAttemptAt.set(channel, this.now() + FAIL_TTL_MS)
       this.log?.debug(`name lookup failed for channel ${channel}: ${(err as Error).message}`)
+    }
+  }
+
+  /** Cache one user id's display name (Slack-parity `resolveUser`). Platforms whose bot
+   *  API can't resolve arbitrary users just return a nameless profile — the attempt is
+   *  still cached, so the miss costs one call per TTL. */
+  private async resolveUser(src: ChannelInfoSource, user: string): Promise<void> {
+    if (!this.claim(user)) return
+    try {
+      const p = await src.getUserProfile(user)
+      const name = p.realName || p.name
+      if (name) this.save(user, name)
+    } catch (err) {
+      this.nextAttemptAt.set(user, this.now() + FAIL_TTL_MS)
+      this.log?.debug(`name lookup failed for user ${user}: ${(err as Error).message}`)
     }
   }
 }

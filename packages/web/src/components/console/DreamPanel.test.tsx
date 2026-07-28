@@ -195,7 +195,7 @@ describe('DreamPanel', () => {
     expect(button(host, 'Cancel')).toBeTruthy()
   })
 
-  it('shows the live store beside the staged one when reviewing, then adopts', async () => {
+  it('shows the shared line diff from the live store to the staged one, then adopts', async () => {
     api.listDreams.mockResolvedValue([dream()])
     const host = await render()
 
@@ -203,9 +203,9 @@ describe('DreamPanel', () => {
     await act(async () => {
       await Promise.resolve()
     })
-    // Both sides are visible — the point of a staged dream.
-    expect(host.textContent).toContain('# Memory (old)')
-    expect(host.textContent).toContain('# Memory (rebuilt)')
+    const lineDiff = host.querySelector('table[aria-label="Line changes"]')
+    expect(lineDiff?.querySelector('[data-diff-kind="delete"]')?.textContent).toContain('# Memory (old)')
+    expect(lineDiff?.querySelector('[data-diff-kind="add"]')?.textContent).toContain('# Memory (rebuilt)')
 
     // Adopt is confirmed first (it replaces live memory) — nothing is called
     // until the user confirms in the dialog.
@@ -276,8 +276,9 @@ describe('DreamPanel', () => {
     // Named up front, and the live-only file is selectable and marked.
     expect(host.textContent).toContain('Adopting removes 1 file')
     expect(host.textContent).toContain('stale.md')
-    expect(host.textContent).toContain('Deleted by this dream')
-    expect(host.textContent).toContain('- an obsolete note')
+    const lineDiff = host.querySelector('table[aria-label="Line changes"]')
+    expect(lineDiff?.querySelector('[data-diff-kind="delete"]')?.textContent).toContain('- an obsolete note')
+    expect(lineDiff?.querySelector('[data-diff-kind="add"]')).toBeNull()
   })
 
   it('keeps revalidating once settled, so an externally started dream appears', async () => {

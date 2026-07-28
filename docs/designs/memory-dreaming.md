@@ -231,6 +231,11 @@ with the same injection posture and a five-phase pipeline:
   least two distinct sessions, never one-off task steps.
 - Unlike distillation, rewriting and deleting are **allowed** — that is the
   point — but only inside the returned proposal.
+- Existing topic boundaries, filenames, and byte-identical content are
+  preserved by default. Small wording, formatting, ordering, or consistency
+  edits do not justify renaming a topic. A rename, merge, or split is proposed
+  only when a material content change makes the existing structure misleading;
+  equally faithful proposals prefer the smallest diff.
 - Output is JSON only:
   `{"files":[{"path":"topic.md","content":"..."}], "index":"...",
 "skills":[{"name":"...","description":"...","skill":"<SKILL.md body>",
@@ -420,8 +425,9 @@ architecture invariant:
   `DreamRecord` metadata (including per-skill review states) for listing when
   the daemon is offline.
 - **Console** — the Background memory section (§3) plus, per dream: a review
-  screen showing current-vs-staged store files (reusing the file browser
-  components) with Adopt / Discard, and a "Recommended skills" list rendering
+  screen showing a current-to-staged line diff for each store file (reusing the
+  managed-memory history diff and file browser components) with Adopt / Discard,
+  and a "Recommended skills" list rendering
   each candidate's `SKILL.md` and scripts with Accept / Dismiss. Accepted
   skills also surface on the Tools & Skills page alongside imported sources.
   Both branches of the mobile/desktop split follow the existing

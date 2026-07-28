@@ -161,6 +161,37 @@ async function clearInvalidGrantSession(c: LogtoClient): Promise<void> {
   await invalidGrantCleanup
 }
 
+// Many in-flight calls can hit the same ACCOUNT_GONE reply at once; share one
+// sign-out so they do not race several redirects (mirrors invalidGrantCleanup).
+let accountGoneSignOut: Promise<void> | undefined
+
+/**
+ * Sign out because the CP says this session's account is gone (401
+ * `ACCOUNT_GONE` — an admin deleted it). Ends the Logto session too, so the
+ * next sign-in is a deliberate one: whatever is signed in now maps to nothing
+ * and every further request would fail the same way.
+ */
+export async function signOutDeletedAccount(): Promise<void> {
+  const c = getClient()
+  if (!c) return
+  accountGoneSignOut ??= (async () => {
+    clearLocalSessionMetadata()
+    try {
+      await c.signOut(`${window.location.origin}/login`)
+    } catch {
+      // End-session unreachable — drop the local tokens at least, so the console
+      // cannot keep replaying a session that has no account behind it.
+      try {
+        await c.clearAllTokens()
+      } catch {
+        /* storage failure — the redirect below still leaves the console */
+      }
+      window.location.replace('/login')
+    }
+  })()
+  await accountGoneSignOut
+}
+
 /** The cached signed-in user (see `cachedUser`); null when signed out / auth off. */
 export function currentUser(): AuthUser | null {
   return cachedUser
@@ -193,6 +224,22 @@ export async function getUser(): Promise<AuthUser | null> {
   return cachedUser
 }
 
+/**
+ * The signed-in OIDC subject (`sub`), or undefined when signed out / auth off.
+ * The stable identity key — unlike the email or display name it never changes for
+ * an account — so flows that must act as ONE identity across a redirect (activation
+ * links) can bind their state to it and detect a swap.
+ */
+export async function currentSubject(): Promise<string | undefined> {
+  const c = getClient()
+  if (!c || !(await c.isAuthenticated())) return undefined
+  try {
+    return (await c.getIdTokenClaims()).sub
+  } catch {
+    return undefined
+  }
+}
+
 /** The raw signed id token — forwarded to the CP (`x-ac-id-token`) as a
  *  verifiable identity hint (email/name) for JIT provisioning. */
 export async function getIdTokenRaw(): Promise<string | undefined> {
@@ -222,6 +269,37 @@ export async function getToken(): Promise<string | undefined> {
     }
   }
   return (await c.getIdToken()) ?? undefined
+}
+
+/**
+ * Drop whatever session this browser holds so the next sign-in starts clean.
+ * Used by flows that must NOT inherit the last signed-in identity (activation
+ * links: the residual session may belong to another — or a since-deleted —
+ * account, and redeeming under it activates the wrong user).
+ *
+ * Returns `'redirecting'` when an active session was ended through Logto (the
+ * browser is already leaving for the end-session endpoint and lands on
+ * `/login`, so the caller must stop), or `'cleared'` when there was nothing to
+ * end and only local token storage was wiped (the caller keeps driving).
+ */
+export async function resetSession(): Promise<'redirecting' | 'cleared'> {
+  const c = getClient()
+  if (!c) return 'cleared'
+  clearLocalSessionMetadata()
+  if (await c.isAuthenticated()) {
+    // Ends the Logto SSO session too — a local-only wipe would silently sign the
+    // same account straight back in, which is the bug this exists to avoid.
+    // `/login` (not the caller's path) because Logto only accepts a registered
+    // post-logout redirect URI; the caller stashes where to resume.
+    await c.signOut(`${window.location.origin}/login`)
+    return 'redirecting'
+  }
+  try {
+    await c.clearAllTokens()
+  } catch {
+    /* storage failure — a fresh sign-in replaces the stale state anyway */
+  }
+  return 'cleared'
 }
 
 /** Clear the local session and redirect to Logto's end-session endpoint. */

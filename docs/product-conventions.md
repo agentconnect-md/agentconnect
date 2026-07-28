@@ -207,6 +207,17 @@ Automatic acceptance remains a safe best-effort path: a runtime without a truste
 extraction channel, an adoption fence conflict, or another failed swap leaves the
 completed result available for manual review instead of replacing live memory.
 
+Dream proposals preserve existing topic boundaries, filenames, and byte-identical
+content by default. Small wording, formatting, ordering, or consistency changes do
+not justify renaming a topic. A rename, merge, or split is appropriate only when a
+material content change makes the existing structure misleading; equally faithful
+proposals prefer the smallest diff.
+
+Reviewing a completed dream shows each file as the same live-to-proposed line diff
+used by managed-memory history. Added and deleted files use an empty live or proposed
+side respectively, so their entire contents are visibly marked as additions or
+removals before adoption.
+
 Each dream model run appears in Sessions with its runtime, model, token/cost usage,
 and a lifecycle-only history. Dream history and evaluation events must never copy
 memory bodies, source transcript text, model proposals, or mined skill bodies. The

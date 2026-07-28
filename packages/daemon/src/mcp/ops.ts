@@ -61,6 +61,9 @@ export interface SessionContext {
   /** The exact platform integration that delivered this session. Absent for a
    *  platform-free session; daemon-local universal tools still work there. */
   integrationId?: string
+  /** Opaque physical-bot identity captured by the daemon. Platform coordinates
+   *  can overlap across bots, so daemon-local session lookups include this scope. */
+  transportScope?: string
   /** Whether the trusted source conversation is a direct message. Slack native
    *  thread titles are valid only for app-DM sessions. */
   isDm: boolean
@@ -85,6 +88,7 @@ export interface SetSessionTitleReq {
   agentId: string
   platform: string
   integrationId?: string
+  transportScope?: string
   isDm: boolean
   channel: string
   thread: string
@@ -104,6 +108,8 @@ export interface MessageAgentReq {
   /** Trusted source integration. Used to publish the agent's first-class thread
    *  message through the same platform identity as its current session. */
   callerIntegrationId?: string
+  /** Trusted physical-bot scope of the caller session. */
+  callerTransportScope?: string
   /** Trusted caller session coords (== the caller's {@link SessionContext} channel/thread).
    *  Never a tool input. The daemon uses these + `callerAgentId` to recompute the caller's
    *  logical sessionKey and resolve the CURRENT turn's trusted call metadata (§6.7), so a
@@ -186,6 +192,7 @@ export interface ReplyToSessionReq {
   callerAgentId: string
   /** Trusted source platform / caller session coords (== the caller's {@link SessionContext}). */
   platform: string
+  callerTransportScope?: string
   callerChannel: string
   callerThread: string
   /** The ONLY untrusted field: the target session's stable id (the child's `Parent session`).
@@ -226,6 +233,7 @@ export interface StartOrchestrationReq {
   channel: string
   thread: string
   integrationId?: string
+  transportScope?: string
   subtasks: OrchestrationSubtaskInput[]
   deadlineMs?: number
   replyTarget?: string
@@ -244,6 +252,7 @@ export interface OrchestrationOwnerReq {
   platform: string
   channel: string
   thread: string
+  transportScope?: string
   orchestrationId: string
 }
 
@@ -254,6 +263,7 @@ export interface SubmitGithubReviewReq extends SubmitGithubReviewInput {
   platform: string
   channel: string
   thread: string
+  transportScope?: string
 }
 
 export interface OpsDeps {
@@ -319,6 +329,7 @@ export interface OpsDeps {
      *  may be on a DIFFERENT platform than the post (e.g. a Telegram turn posting to Slack),
      *  so its platform must travel too — otherwise the origin session key can't be resolved. */
     originPlatform: string
+    originTransportScope?: string
     originChannel: string
     originThread: string
   }) => void
@@ -339,7 +350,14 @@ export interface OpsDeps {
    *  Universal (every agent has memory), independent of the platform. */
   memory: MemoryProvider
   /** Record an agent-sent message into the session transcript. */
-  recordOutbound: (ctx: SessionContext, channel: string, thread: string | undefined, text: string, ts: string) => void
+  recordOutbound: (
+    ctx: SessionContext,
+    channel: string,
+    thread: string | undefined,
+    text: string,
+    ts: string,
+    integrationId: string
+  ) => void
   /** Monotonic-ish clock for synthesizing a message id when the platform doesn't return one. */
   now: () => number
   /** Byte cap for `read*File` downloads (defaults to 8 MiB). */
@@ -446,6 +464,7 @@ export async function executeTool(
       agentId: ctx.agentId,
       platform: ctx.platform,
       ...(ctx.integrationId !== undefined ? { integrationId: ctx.integrationId } : {}),
+      ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
       isDm: ctx.isDm,
       channel: ctx.channel,
       thread: ctx.thread,
@@ -605,6 +624,7 @@ export async function executeTool(
       return await deps.replyToSession({
         callerAgentId: ctx.agentId,
         platform: ctx.platform,
+        ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
         callerChannel: ctx.channel,
         callerThread: ctx.thread,
         sessionId,
@@ -634,6 +654,7 @@ export async function executeTool(
             callerAgentId: ctx.agentId,
             platform: ctx.platform,
             ...(ctx.integrationId !== undefined ? { callerIntegrationId: ctx.integrationId } : {}),
+            ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
             callerChannel: ctx.channel,
             callerThread: ctx.thread,
             toAgentId: toAgent,
@@ -688,7 +709,7 @@ export async function executeTool(
         (Object.keys(identity).length > 0
           ? await gw.postMessage(channel, body, thread, identity)
           : await gw.postMessage(channel, body, thread)) ?? `local-${deps.now()}`
-      deps.recordOutbound(ctx, channel, thread, body, ts)
+      deps.recordOutbound(ctx, channel, thread, body, ts, targetId)
       post = { platform: wantPlatform, integrationId: targetId, channel, thread: thread ?? null, ts }
       postedThread = thread ?? (ts.startsWith('local-') ? undefined : ts)
       // session-concept case 2a: a ROOT post (no thread) with NO peer wake seeds a NEW session
@@ -704,6 +725,7 @@ export async function executeTool(
           thread: ts,
           text: body,
           originPlatform: ctx.platform,
+          ...(ctx.transportScope !== undefined ? { originTransportScope: ctx.transportScope } : {}),
           originChannel: ctx.channel,
           originThread: ctx.thread
         })
@@ -795,6 +817,7 @@ export async function executeTool(
       channel: ctx.channel,
       thread: ctx.thread,
       ...(ctx.integrationId !== undefined ? { integrationId: ctx.integrationId } : {}),
+      ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
       subtasks,
       ...(deadlineMs !== undefined ? { deadlineMs } : {}),
       ...(replyTarget !== undefined ? { replyTarget } : {})
@@ -808,6 +831,7 @@ export async function executeTool(
       platform: ctx.platform,
       channel: ctx.channel,
       thread: ctx.thread,
+      ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
       orchestrationId
     }
     if (name === 'getOrchestration') {
@@ -834,6 +858,7 @@ export async function executeTool(
       platform: ctx.platform,
       channel: ctx.channel,
       thread: ctx.thread,
+      ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
       event,
       verdict,
       body,

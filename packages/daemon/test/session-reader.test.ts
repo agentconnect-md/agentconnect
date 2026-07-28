@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { LocalStore, sessionKey } from '../src/store/local-store.js'
+import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { createSessionReader } from '../src/cp/session-reader.js'
 
 const AGENT = '11111111-1111-4111-8111-111111111111'
@@ -28,6 +28,48 @@ function seedHistorySession(s: LocalStore, { platform = 'slack', channel = 'C1',
 }
 
 describe('SessionReader', () => {
+  it('reads only the transcript namespace persisted on the session', () => {
+    const s = store()
+    s.upsertSession({
+      key: sessionKey('telegram', '42', 'dm', AGENT),
+      agentId: AGENT,
+      platform: 'telegram',
+      channel: '42',
+      thread: 'dm',
+      transportScope: 'telegram:bot-b',
+      acpSessionId: 'acp-scoped',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    s.appendTranscript({
+      channel: transcriptChannelKey('42', 'telegram:bot-a'),
+      thread: 'dm',
+      ts: '1',
+      sender: 'user-a',
+      recipient: AGENT,
+      kind: 'text',
+      text: 'private to bot A'
+    })
+    s.appendTranscript({
+      channel: transcriptChannelKey('42', 'telegram:bot-b'),
+      thread: 'dm',
+      ts: '1',
+      sender: 'user-b',
+      recipient: AGENT,
+      kind: 'text',
+      text: 'private to bot B'
+    })
+
+    const history = createSessionReader(s).history({
+      agentId: AGENT,
+      sessionId: 'acp-scoped',
+      limit: 20
+    })
+    expect(history.messages.map((message) => message.text)).toEqual(['private to bot B'])
+    s.close()
+  })
+
   it('list joins cached channel/triggeredBy names; unresolved ids omit the fields', () => {
     const s = store()
     s.upsertSession({
