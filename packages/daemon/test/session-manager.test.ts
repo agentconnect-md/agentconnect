@@ -1629,6 +1629,51 @@ describe('SessionManager — quoted reply source', () => {
     store.close()
   })
 
+  // A stale row that merely CONTAINS the quote can mean its opposite, and the lossy
+  // normalizations that make containment look workable each hide a real edit.
+  const replayedThenQuoted = async (replayedText: string, quotedText: string): Promise<string> => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', tgMsg({ ts: '10', text: 'starting' }))
+    store.appendTranscript({
+      channel: transcriptChannelKey('-100123'),
+      thread: 'tg:10',
+      ts: '11',
+      sender: 'U2',
+      kind: 'text',
+      text: replayedText
+    })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '12',
+        text: '@bot-a look at this',
+        replyTo: '11',
+        quoted: { messageId: '11', sender: '@bob', text: quotedText }
+      })
+    )
+    store.close()
+    return blocks.map((b: any) => b.text as string).join('\n')
+  }
+
+  it('delivers an edited source whose stale row CONTAINS it but inverts its meaning', async () => {
+    const prompt = await replayedThenQuoted('do not deploy now', 'deploy now')
+    // Containment would suppress the correction, leaving only the opposite instruction.
+    expect(prompt).toContain('this reply quotes')
+    expect(prompt).toContain('[@bob] deploy now')
+  })
+
+  it('delivers an edited source that differs from the replayed row only by indentation', async () => {
+    const prompt = await replayedThenQuoted('if (x) {\n  return 1\n}', 'if (x) {\n    return 1\n}')
+    expect(prompt).toContain('this reply quotes')
+  })
+
+  it('delivers a short source genuinely ending in an ellipsis that the row does not match', async () => {
+    const prompt = await replayedThenQuoted('waiting for the migration to finish', 'waiting…')
+    expect(prompt).toContain('[@bob] waiting…')
+  })
+
   it('still delivers the quoted source when only a delivery RECEIPT says the agent has it', async () => {
     const store = newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any

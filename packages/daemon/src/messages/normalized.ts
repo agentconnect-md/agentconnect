@@ -65,31 +65,39 @@ export interface NormalizedMessage {
   replyTo?: string
   /**
    * The CONTENT of the message this one replies to, when the platform ships it inline
-   * (Telegram sends the whole `reply_to_message`, plus a narrower `quote` when the user
-   * selected only part of it). Deliberately separate from `replyTo`: that id only stitches
-   * the reply into a session, whereas this is what the reply is ABOUT. Without it, an
-   * @mention that quotes a message the daemon never recorded — someone else's message, or
-   * one from before this thread had a session — reaches the agent as the mention text alone.
-   * Prompt assembly injects it only in exactly that case (see SessionManager.handle).
+   * (Telegram sends the whole `reply_to_message`, plus a narrower `quote` — which may be
+   * either sender-chosen or server-generated, see `selection`). Deliberately separate from
+   * `replyTo`: that id only stitches the reply into a session, whereas this is what the reply
+   * is ABOUT. Without it, an @mention that quotes a message the daemon never recorded —
+   * someone else's message, or one from before this thread had a session — reaches the agent
+   * as the mention text alone.
+   *
+   * Prompt assembly delivers this whenever it is present, and suppresses it only when the same
+   * prompt already replays the identical body; it does NOT try to establish what the runtime
+   * saw on earlier turns, because nothing the daemon records implies that (see
+   * SessionManager.quotedSourceBlock for why each candidate proxy fails).
    */
   quoted?: {
     /** Platform id of the quoted message — the same value as `replyTo` on Telegram.
-     *  Absent when the platform doesn't identify the quoted source; prompt assembly then
-     *  cannot prove the quote is already in the transcript, so it injects it. */
+     *  Absent when the platform doesn't identify the quoted source, which leaves the quote
+     *  unmatchable against the prompt and therefore always delivered. */
     messageId?: string
     /** Display label for the quoted author (`@username` when known, else the platform id). */
     sender?: string
     /** The quoted text — already bounded, with any attachment mention folded in. */
     text: string
     /**
-     * True when the replying user explicitly SELECTED this passage (Telegram `quote`).
-     * The selection is itself the message — it says which part of the source the reply is
-     * about — so prompt assembly delivers it even when the full source is already in the
-     * agent's context, where a "what about this?" would otherwise be ambiguous.
+     * True only when the replying user explicitly CHOSE this passage (Telegram `quote` with
+     * `is_manual`). The choice is itself the message — it says which part of the source the
+     * reply is about — so it is delivered even against an identical replayed body, where a
+     * "what about this?" would otherwise be ambiguous. Never set for a quote the server
+     * generated on its own: claiming otherwise would put an intent the user never expressed
+     * in front of the model.
      */
     selection?: boolean
-    /** True when `text` is only part of the quoted message — a selection, or truncated
-     *  by the ingress cap. Affects how the block is labeled, not whether it is sent. */
+    /** True when `text` is only part of the quoted message — a chosen passage, a server-clipped
+     *  excerpt, or truncated by the ingress cap. Drives the block's label, and marks the quote
+     *  as not comparable to a full transcript row. */
     excerpt?: boolean
   }
   /**
