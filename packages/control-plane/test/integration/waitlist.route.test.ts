@@ -626,6 +626,15 @@ describe('waitlist admission — auth boundaries', () => {
       const reSignIn = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: fresh })
       expect(reSignIn.statusCode).toBe(200)
       expect(reSignIn.json()).toMatchObject({ email, activated: false, orgCount: 0 })
+
+      // Admitting that newer token must NOT revive the old one: replaying the
+      // pre-deletion bearer against the replacement row keeps the ended session
+      // ended (the cutoff is retained, not cleared).
+      const replay = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      expect(replay.statusCode).toBe(401)
+      expect(replay.json()).toMatchObject({ code: 'ACCOUNT_GONE' })
+      // …while the new authentication keeps working.
+      expect((await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: fresh })).statusCode).toBe(200)
     } finally {
       await close()
     }

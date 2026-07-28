@@ -12,7 +12,7 @@
 
 const COOKIE_TTL_SECONDS = 600
 
-type FlowKey = 'returnTo' | 'activate.fresh'
+type FlowKey = 'returnTo' | 'activate.pending' | 'activate.fresh'
 
 // Both stores share the `ac.` namespace — `ac.returnTo` is the key other pages
 // (join, oauth consent, waitlist) already write into sessionStorage directly, so
@@ -24,7 +24,11 @@ function readCookie(key: FlowKey): string | null {
   const prefix = `${cookieName(key)}=`
   try {
     for (const part of document.cookie.split('; ')) {
-      if (part.startsWith(prefix)) return decodeURIComponent(part.slice(prefix.length))
+      if (!part.startsWith(prefix)) continue
+      // An empty value is a deleted cookie (some contexts leave `name=` behind
+      // after an expiry), never a stored one — we only ever write non-empty values.
+      const value = decodeURIComponent(part.slice(prefix.length))
+      return value === '' ? null : value
     }
   } catch {
     /* no cookie access — reads as "nothing stored", never as a throw at the caller */

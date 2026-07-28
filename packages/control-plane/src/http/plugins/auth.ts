@@ -179,14 +179,22 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
   // per request so org switches (x-ac-org-id), role edits and removals take
   // effect immediately.
   const resolved = new Map<string, Promise<{ userId: string }>>()
-  // Subjects whose local account was found deleted, and WHEN (epoch seconds). The
-  // memo eviction alone would let the very next request with the same bearer re-run
-  // JIT provisioning and recreate the account the admin just removed — a retry or a
+  // Subjects whose local account was found deleted, and WHEN (epoch seconds) — a
+  // cutoff: every token issued at or before it is refused, for good. The memo
+  // eviction alone would let the very next request with the same bearer re-run JIT
+  // provisioning and recreate the account the admin just removed — a retry or a
   // parallel console poll would resurrect it before the client finishes signing out.
-  // So the subject stays rejected until a token issued AFTER the deletion arrives:
-  // only a new authentication may provision again. Entries expire (below) so this
-  // cannot grow without bound; the TTL is far longer than any access-token lifetime,
-  // so no token minted before the deletion outlives its tombstone.
+  // Only a token issued AFTER the deletion (a new authentication) may provision
+  // again, and admitting one does NOT lift the cutoff, so the old bearer never
+  // becomes valid against the replacement row.
+  //
+  // Scope, deliberately: this closes the window in which a LIVE pre-deletion session
+  // resurrects the row. It is process-local and expires after TOMBSTONE_TTL_SECONDS,
+  // which outlives any access token by a wide margin — so no token that existed at
+  // deletion time can outlast its cutoff. It is NOT a durable ban on the subject:
+  // after that (or a CP restart) a deleted user signing in again is ordinary open
+  // signup — a fresh, gated account with nothing inherited. Denying re-signup is a
+  // product decision owned by whoever performs the deletion, not by this plane.
   const tombstoned = new Map<string, number>()
   const TOMBSTONE_TTL_SECONDS = 24 * 60 * 60
   function tombstone(sub: string, issuedAt: number | undefined, nowSeconds: number): void {
@@ -222,7 +230,10 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
           req.log.warn('humanAuth: token predates the account deletion — session rejected')
           return accountGone(reply)
         }
-        tombstoned.delete(sub)
+        // The cutoff is KEPT, not cleared, when a newer token is admitted: clearing it
+        // would let the pre-deletion bearer through again (it would then resolve to the
+        // replacement row and pass the existence check), quietly reviving the very
+        // session the deletion ended. It only ages out via TOMBSTONE_TTL_SECONDS.
       }
       // The creator identity we surface is the user's real EMAIL. A Logto access
       // token minted for an API resource omits the `email` claim, so we also accept

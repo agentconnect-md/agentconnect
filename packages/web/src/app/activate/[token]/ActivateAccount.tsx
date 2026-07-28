@@ -2,10 +2,11 @@
 
 // The waitlist activation (join-link redemption) page (waitlist-and-login.md §6).
 // Unlike join/[token], activation NEVER reuses whatever session the browser is
-// already holding: it signs that session out first, then redeems under a freshly
-// established identity (see FRESH_KEY below). On success the user is a formal user
-// with a personal org — enter the console. Lives OUTSIDE the (app) route group so it
-// never triggers the console's admission redirect before it can redeem.
+// already holding: it signs that session out and only redeems once the OIDC
+// callback has proved a sign-in happened for THIS link (lib/activation-handshake).
+// On success the user is a formal user with a personal org — enter the console.
+// Lives OUTSIDE the (app) route group so it never triggers the console's admission
+// redirect before it can redeem.
 
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
@@ -13,12 +14,8 @@ import { Button, Icon } from '@/components/ui'
 import { Spinner, Wordmark } from '@/components/marks'
 import { redeemWaitlistLink, ApiError } from '@/lib/api'
 import { getUser, isAuthConfigured, resetSession } from '@/lib/auth'
-import { takeFlowState, writeFlowState } from '@/lib/flow-state'
-
-// Marker: "the session in this browser was established for THIS activation token".
-// Written before signing the old session out, so the post-sign-in return trip
-// redeems instead of logging out again (an unmarked visit always logs out first).
-const FRESH_KEY = 'activate.fresh'
+import { writeFlowState } from '@/lib/flow-state'
+import { abandonActivation, beginActivation, claimActivationProof } from '@/lib/activation-handshake'
 
 const STORAGE_BLOCKED =
   'This browser is blocking the temporary storage this activation link needs, so it cannot ' +
@@ -32,9 +29,9 @@ export default function ActivateAccount({ token }: { token: string }) {
   // session by hand and re-open the link, which is the manual form of the reset
   // this page normally does for them.
   const [offerSignOut, setOfferSignOut] = useState(false)
-  // The flow below is single-shot: it consumes the freshness marker and can start a
-  // sign-out. A second effect pass (React StrictMode remount) would see its own
-  // marker and redeem under the very session we are trying to discard.
+  // The flow below is single-shot: it consumes the activation proof and can start a
+  // sign-out. A second effect pass (React StrictMode remount) would restart the
+  // handshake mid-sign-out and race the first.
   const started = useRef(false)
 
   useEffect(() => {
@@ -46,24 +43,34 @@ export default function ActivateAccount({ token }: { token: string }) {
         if (isAuthConfigured()) {
           // A residual console session belongs to whoever signed in last — possibly
           // a different account, or one an admin has since deleted. Redeeming under
-          // it activates the wrong user, so always start from a clean slate: sign
-          // out, then come back through a real sign-in for this link.
-          if (takeFlowState(FRESH_KEY) !== token) {
+          // it activates the wrong user, so redemption requires PROOF that this
+          // browser signed in for this link (minted by the OIDC callback, never
+          // here). Without it: sign the old session out and go get that proof.
+          if (!claimActivationProof(token)) {
             // Both writes must stick or the round trip cannot be resumed, and
             // resuming is what keeps the redemption off the old session. Logto keeps
             // a completed session in localStorage while this state needs
             // sessionStorage/cookies, so "no scratch storage" and "already signed
             // in" can coexist — fail CLOSED rather than redeem as that user.
-            if (!writeFlowState('returnTo', window.location.pathname) || !writeFlowState(FRESH_KEY, token)) {
+            if (!writeFlowState('returnTo', window.location.pathname) || !beginActivation(token)) {
+              abandonActivation()
               if (!cancelled) {
                 setError(STORAGE_BLOCKED)
                 setOfferSignOut(true)
               }
               return
             }
-            // 'redirecting' ⇒ the browser is leaving for Logto's end-session
-            // endpoint and lands on /login; nothing left to do here.
-            if ((await resetSession()) === 'redirecting') return
+            try {
+              // 'redirecting' ⇒ the browser is leaving for Logto's end-session
+              // endpoint and lands on /login; nothing left to do here.
+              if ((await resetSession()) === 'redirecting') return
+            } catch (e) {
+              // The sign-out never happened (e.g. OIDC discovery unreachable). Drop
+              // the intent so no later sign-in can be promoted into proof for this
+              // link, and let a reload start the whole handshake over.
+              abandonActivation()
+              throw e
+            }
             if (!cancelled) router.replace('/login')
             return
           }
