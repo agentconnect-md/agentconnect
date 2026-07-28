@@ -443,6 +443,8 @@ export default function AgentDetailView() {
 
   const tabCls = (t: DetailTab) => (tab === t ? 'tab on' : 'tab')
   const tabHref = (t: DetailTab) => orgPath(t === 'integrations' ? `/agents/${da.id}` : `/agents/${da.id}?tab=${t}`)
+  const botSettingsHref = (botId?: string) =>
+    orgPath(botId ? `/settings?bot=${encodeURIComponent(botId)}` : '/settings')
 
   // ── Single responsive tree. Base classes are the mobile (≤768px) push-detail
   // body (the Shell provides the top push bar there); `desktop:` variants restore
@@ -1053,17 +1055,21 @@ export default function AgentDetailView() {
                   {agentInts.map((g, i) => (
                     <div key={i} className={i > 0 ? 'border-t border-(--border-subtle)' : undefined}>
                       <div className="flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3">
-                        <span className="imark h-9 w-9 flex-none rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
-                          <PlatformMark platform={g.platform} />
-                        </span>
-                        <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
-                          <span className="font-sans text-[14px] font-semibold leading-normal">{g.name}</span>
-                          {g.channels[0] && (
-                            <span className="font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                              #{g.channels[0].name}
+                        <Link href={botSettingsHref(g.botId)} className="group flex min-w-0 flex-1 items-center gap-3">
+                          <span className="imark h-9 w-9 flex-none rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
+                            <PlatformMark platform={g.platform} />
+                          </span>
+                          <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                            <span className="truncate font-sans text-[14px] font-semibold leading-normal group-hover:underline">
+                              {g.name}
                             </span>
-                          )}
-                        </span>
+                            {g.channels[0] && (
+                              <span className="font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                                #{g.channels[0].name}
+                              </span>
+                            )}
+                          </span>
+                        </Link>
                         <span className="inline-flex flex-none items-center gap-[5px] rounded-full bg-(--brand-soft) px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal text-(--brand-soft-text)">
                           <span className="h-[6px] w-[6px] rounded-full bg-(--status-online)" />
                           connected
@@ -1159,27 +1165,31 @@ export default function AgentDetailView() {
                   {agentInts.map((g, i) => (
                     <div key={i} className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
                       <div className="flex items-center gap-3 px-[14px] py-3">
-                        <span className="imark h-[34px] w-[34px] rounded-md">
-                          <PlatformMark platform={g.platform} />
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-sans text-[13.5px] font-semibold leading-normal">{g.name}</span>
-                            <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
-                              <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-                              connected
-                            </span>
-                            {g.shareable && (
-                              <span
-                                className="badge bg-(--surface-app) text-(--text-tertiary)"
-                                title="Shared bot — used by multiple agents, inbound via a relay. Each channel dispatches to one of them by default."
-                              >
-                                <Icon name="users" size={11} />
-                                shared · {g.agentCount} {g.agentCount === '1' ? 'agent' : 'agents'}
+                        <Link href={botSettingsHref(g.botId)} className="group flex min-w-0 flex-1 items-center gap-3">
+                          <span className="imark h-[34px] w-[34px] rounded-md">
+                            <PlatformMark platform={g.platform} />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="truncate font-sans text-[13.5px] font-semibold leading-normal group-hover:underline">
+                                {g.name}
                               </span>
-                            )}
+                              <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
+                                <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
+                                connected
+                              </span>
+                              {g.shareable && (
+                                <span
+                                  className="badge bg-(--surface-app) text-(--text-tertiary)"
+                                  title="Shared bot — used by multiple agents, inbound via a relay. Each channel dispatches to one of them by default."
+                                >
+                                  <Icon name="users" size={11} />
+                                  shared · {g.agentCount} {g.agentCount === '1' ? 'agent' : 'agents'}
+                                </span>
+                              )}
+                            </div>
                           </div>
-                        </div>
+                        </Link>
                         {g.platform === 'discord' && g.discordAppId && (
                           <a
                             href={discordBotInviteUrl(g.discordAppId)}
