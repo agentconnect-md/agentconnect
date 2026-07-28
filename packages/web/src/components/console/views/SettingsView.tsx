@@ -111,6 +111,7 @@ type BotPlatform = (typeof BOT_PLATFORMS)[number]['platform']
 interface BotChannelView {
   channelId: string
   name: string
+  kind: 'channel' | 'im'
   /** Effective per-channel owner; null only before legacy state converges. */
   agentId: string | null
   /** Any integration whose snapshot row backs this channel; ownership PATCHes
@@ -131,6 +132,7 @@ function botChannels(bot: BotDto, integrations: IntegrationRow[]): BotChannelVie
         merged.set(c.channelId, {
           channelId: c.channelId,
           name: c.name,
+          kind: c.kind ?? 'channel',
           agentId: explicit,
           integrationId: i.id ?? null
         })
@@ -140,7 +142,10 @@ function botChannels(bot: BotDto, integrations: IntegrationRow[]): BotChannelVie
       }
     }
   }
-  return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name))
+  return [...merged.values()].sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === 'channel' ? -1 : 1
+    return a.name.localeCompare(b.name)
+  })
 }
 
 /** Per-channel default dispatch for a SHARED bot (design: the Bots card's
@@ -694,12 +699,14 @@ function BotsCard({
         const free = b.agentIds.length === 0
         const open = openBotId === b.id
         const channels = open ? botChannels(b, integrations) : []
+        const hasChannelRows = channels.some((c) => c.kind === 'channel')
         const slackState = slackRefresh[b.id]
         const refreshingSlack = slackRefreshBusyId === b.id
         const slackNeedsAttention = slackState?.result
           ? slackRefreshNoticeState(slackState.result).needsAttention
           : false
-        const chanGrid = b.shareable ? 'grid-cols-[1fr_auto]' : 'grid-cols-[1fr]'
+        const showDefaultDispatch = b.shareable && hasChannelRows
+        const chanGrid = showDefaultDispatch ? 'grid-cols-[1fr_auto]' : 'grid-cols-[1fr]'
         // The picker's choices: every agent installed on the bot.
         const agentOptions = b.agentIds.map((id) => {
           const ag = getAgent(id)
@@ -858,28 +865,40 @@ function BotsCard({
                     <div
                       className={`grid ${chanGrid} gap-[11px] px-3 pb-[7px] font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)`}
                     >
-                      <span>Channel</span>
-                      {b.shareable && <span className="justify-self-end">Default dispatch</span>}
+                      <span>Conversation</span>
+                      {showDefaultDispatch && <span className="justify-self-end">Default dispatch</span>}
                     </div>
                     <div className="overflow-visible rounded-lg border border-(--border-subtle) bg-(--surface-card)">
-                      {channels.map((c) => (
-                        <div
-                          key={c.channelId}
-                          className={`grid ${chanGrid} items-center gap-[11px] border-b border-(--border-subtle) px-3 py-2 last:border-b-0`}
-                        >
-                          <span className="mono flex min-w-0 items-center gap-[7px] text-[12px]">
-                            <Icon name="hash" size={12} color="var(--text-tertiary)" className="flex-none" />
-                            <span className="truncate">{c.name}</span>
-                          </span>
-                          {b.shareable && (
-                            <DefaultDispatchPicker
-                              options={agentOptions}
-                              activeId={c.agentId ?? b.agentIds[0] ?? null}
-                              disabled={!canWrite || !c.integrationId}
-                              onPick={(agentId) => setChannelAgent(c.integrationId!, c.channelId, agentId)}
-                            />
+                      {channels.map((c, index) => (
+                        <Fragment key={c.channelId}>
+                          {c.kind === 'im' && channels[index - 1]?.kind !== 'im' && (
+                            <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-[6px] font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
+                              Direct messages
+                            </div>
                           )}
-                        </div>
+                          <div
+                            className={`grid ${chanGrid} items-center gap-[11px] border-b border-(--border-subtle) px-3 py-2 last:border-b-0`}
+                          >
+                            <span className="mono flex min-w-0 items-center gap-[7px] text-[12px]">
+                              <Icon
+                                name={c.kind === 'im' ? 'at-sign' : 'hash'}
+                                size={12}
+                                color="var(--text-tertiary)"
+                                className="flex-none"
+                              />
+                              <span className="sr-only">{c.kind === 'im' ? 'Direct message' : 'Channel'}: </span>
+                              <span className="truncate">{c.kind === 'im' ? c.name.replace(/^@+/, '') : c.name}</span>
+                            </span>
+                            {showDefaultDispatch && c.kind === 'channel' && (
+                              <DefaultDispatchPicker
+                                options={agentOptions}
+                                activeId={c.agentId ?? b.agentIds[0] ?? null}
+                                disabled={!canWrite || !c.integrationId}
+                                onPick={(agentId) => setChannelAgent(c.integrationId!, c.channelId, agentId)}
+                              />
+                            )}
+                          </div>
+                        </Fragment>
                       ))}
                     </div>
                   </>
