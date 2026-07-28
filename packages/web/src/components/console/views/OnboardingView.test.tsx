@@ -128,4 +128,26 @@ describe('daemon onboarding lifecycle', () => {
     await click('Add a Daemon')
     expect(mocks.reconnectDaemon).toHaveBeenCalledTimes(2)
   })
+
+  it('never deletes a claimed daemon that disconnects before Finish', async () => {
+    mocks.provisionDaemon.mockResolvedValue({
+      daemonId: 'new-1',
+      apiKey: 'secret',
+      displayTail: 'tail',
+      command: 'agentconnect run'
+    })
+    await click('Add a Daemon')
+
+    mocks.daemons = [{ daemonId: 'new-1', status: 'online', name: 'edge-1', host: 'edge-1', version: '1.0.0' }]
+    await act(async () => root.render(<OnboardingView />))
+    await click('Create an agent')
+
+    mocks.agents = [{ id: 'agent-1', daemon: 'new-1', hookKinds: [] }]
+    mocks.daemons = [{ daemonId: 'new-1', status: 'offline', name: 'edge-1', host: 'edge-1', version: '1.0.0' }]
+    await act(async () => root.render(<OnboardingView />))
+    await click('Set up integration')
+    await click('Finish')
+
+    expect(mocks.deleteDaemon).not.toHaveBeenCalled()
+  })
 })

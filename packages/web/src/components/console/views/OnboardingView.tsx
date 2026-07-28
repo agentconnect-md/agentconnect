@@ -85,6 +85,7 @@ export default function OnboardingView() {
   const provisioned = useRef(false)
   const commandPending = useRef<Promise<DaemonCommand> | null>(null)
   const createdByWizard = useRef(false)
+  const connectedOnce = useRef(false)
   useEffect(() => {
     if (!entered || step !== 0 || daemonOnline || provisioned.current) return
     provisioned.current = true
@@ -102,18 +103,29 @@ export default function OnboardingView() {
 
   const provisionedRow = connect ? daemons.find((d) => d.daemonId === connect.daemonId) : undefined
   useEffect(() => {
-    if (!connect || provisionedRow?.status === 'online') return
+    if (provisionedRow?.status === 'online') {
+      connectedOnce.current = true
+      return
+    }
+    if (!connect) return
     const id = setInterval(refresh, 3000)
     return () => clearInterval(id)
   }, [connect, provisionedRow?.status, refresh])
 
-  // Drop an unclaimed provisioned row when leaving the daemon step before it connects.
+  // Drop only a wizard-created row that was never claimed. Once it has connected or
+  // hosts an agent, a later disconnect must not turn leaving onboarding into deletion.
   const cleanupPending = async () => {
     const pendingConnect = connect ?? (await commandPending.current?.catch(() => null))
     const pendingRow = pendingConnect ? daemons.find((d) => d.daemonId === pendingConnect.daemonId) : undefined
-    if (pendingRow?.status === 'online') return
+    const hostsAgent = pendingConnect ? agents.some((agent) => agent.daemon === pendingConnect.daemonId) : false
+    const shouldDelete =
+      pendingConnect &&
+      createdByWizard.current &&
+      !connectedOnce.current &&
+      !hostsAgent &&
+      pendingRow?.status !== 'online'
     try {
-      if (pendingConnect && createdByWizard.current) await deleteDaemon(pendingConnect.daemonId)
+      if (shouldDelete) await deleteDaemon(pendingConnect.daemonId)
     } catch {
       /* best-effort cleanup — an unclaimed provisioned row is harmless */
     } finally {
@@ -122,6 +134,7 @@ export default function OnboardingView() {
       provisioned.current = false
       commandPending.current = null
       createdByWizard.current = false
+      connectedOnce.current = false
     }
   }
   const goConsole = () => {

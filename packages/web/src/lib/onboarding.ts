@@ -5,6 +5,15 @@
 // org stays empty.
 const key = (org: string) => `ac:onboarding-skip:${org}`
 
+export function needsOnboarding(
+  agentsLoading: boolean,
+  daemonsLoading: boolean,
+  agentCount: number,
+  hasOnlineDaemon: boolean
+): boolean {
+  return !agentsLoading && !daemonsLoading && agentCount === 0 && !hasOnlineDaemon
+}
+
 export function isOnboardingSkipped(org: string): boolean {
   try {
     return sessionStorage.getItem(key(org)) === '1'

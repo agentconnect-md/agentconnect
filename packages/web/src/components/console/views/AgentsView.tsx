@@ -16,7 +16,7 @@ import { useProfile } from '@/lib/profile'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { AgentReachabilityOverview } from '@/components/console/AgentReachabilityOverview'
-import { isOnboardingSkipped } from '@/lib/onboarding'
+import { isOnboardingSkipped, needsOnboarding } from '@/lib/onboarding'
 
 // Two-letter avatar initials for a creator name — first letters of the first two
 // words, or the first two chars of a single token.
@@ -103,14 +103,23 @@ export default function AgentsView() {
   // clicked; clicking the active column flips direction. Text columns default ascending,
   // numeric columns descending (highest first is the useful default).
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' } | null>(null)
-  // Fresh-workspace onboarding lives on its own /onboarding route. When this org has no
-  // daemon and no agent, redirect there — unless the operator already chose "Explore the
-  // console first" this session (the skip flag), which would otherwise loop right back.
+  // Fresh-workspace onboarding lives on its own /onboarding route. An offline daemon is
+  // recoverable there, so only an online daemon or an agent counts as initialized.
   const router = useRouter()
   const params = useParams()
   const orgKey = typeof params.slug === 'string' ? params.slug : '-'
-  const notInitialized = !agentsLoading && !daemonsLoading && agents.length === 0 && daemons.length === 0
-  const redirectToOnboarding = notInitialized && !isOnboardingSkipped(orgKey)
+  const [skipState, setSkipState] = useState<{ orgKey: string; skipped: boolean } | null>(null)
+  const onboardingSkipped = skipState?.orgKey === orgKey ? skipState.skipped : null
+  useEffect(() => {
+    setSkipState({ orgKey, skipped: isOnboardingSkipped(orgKey) })
+  }, [orgKey])
+  const notInitialized = needsOnboarding(
+    agentsLoading,
+    daemonsLoading,
+    agents.length,
+    daemons.some((daemon) => daemon.status === 'online')
+  )
+  const redirectToOnboarding = notInitialized && onboardingSkipped === false
   useEffect(() => {
     if (redirectToOnboarding) router.replace(`/${orgKey}/onboarding`)
   }, [redirectToOnboarding, router, orgKey])
@@ -199,7 +208,7 @@ export default function AgentsView() {
 
   // While the redirect to /onboarding is in flight, hold a spinner so the empty
   // table/metrics never flash behind it.
-  if (redirectToOnboarding) return <LoadingState fill />
+  if (notInitialized && onboardingSkipped !== true) return <LoadingState fill />
 
   if (view === 'topology') {
     if (isMobile) {
