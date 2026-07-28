@@ -2927,10 +2927,16 @@ export class Daemon {
           const priorById = new Map(prior.map((c) => [c.id, c]))
           const observedIds = new Set(observed.map((c) => c.id))
           const names = this.store.getDisplayNames([...new Set([...observedIds, ...prior.map((c) => c.id)])])
-          // The sessions table cannot distinguish DMs from groups. Preserve the kind
-          // established by explicit gated-conversation discovery for overlapping ids.
+          // The sessions table cannot distinguish DMs from groups, so the kind comes
+          // from the channel lookup's own verdict (`channel_scopes.isIm`), falling back
+          // to the kind explicit gated-conversation discovery established. Without it a
+          // DM surfaces as a configurable channel row named "@someone", which is not a
+          // channel anyone can invite the bot to or set a trigger on.
+          const kinds = this.store.getChannelScopes([...observedIds])
           const fromSessions: IntegrationChannel[] = observed.map((c) => {
             const previous = priorById.get(c.id)
+            const isIm = kinds.get(c.id)?.isIm
+            const kind = isIm === undefined ? previous?.kind : isIm ? ('im' as const) : ('channel' as const)
             const name = c.name ?? names.get(c.id)
             // The enclosing Discord server. Keep the last known label when this pass
             // can't resolve it (the guild name lands with the channel's name lookup),
@@ -2941,7 +2947,7 @@ export class Daemon {
               ...(name ? { name } : {}),
               ...(space ? { space } : {}),
               ...(previous?.isPrivate !== undefined ? { isPrivate: previous.isPrivate } : {}),
-              ...(previous?.kind ? { kind: previous.kind } : {})
+              ...(kind ? { kind } : {})
             }
           })
           const retained = prior

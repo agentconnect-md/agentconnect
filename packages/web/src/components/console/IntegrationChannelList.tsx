@@ -361,7 +361,11 @@ export function IntegrationChannelList({
     return (explicit ? members.find((m) => m.id === explicit) : undefined) ?? members[0]
   }
   const channelRows = channels.filter((c) => c.kind !== 'im')
-  const dmRows = channels.filter((c) => c.kind === 'im')
+  // A DM is not a place the bot can be invited to and has no per-conversation choice
+  // to make unless the agent is gated (resource-visibility.md §14.3) — a non-gated bot
+  // always answers its DMs. The daemon still REPORTS them (that is how a DM previously
+  // mistaken for a channel converts), so hide them here rather than at the source.
+  const dmRows = gated ? channels.filter((c) => c.kind === 'im') : []
   const grouped = groupBySpace(channelRows)
   const row = (c: IntegrationChannelRow) => {
     const def = c.kind !== 'im' && shareable ? defaultAgent(c) : undefined

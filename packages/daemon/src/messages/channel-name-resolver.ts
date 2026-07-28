@@ -53,6 +53,9 @@ const MAX_TRACKED_IDS = 5000 // attempt-cache cap (oldest-evicted)
 export interface ResolvedChannelScope {
   parentId?: string
   spaceId?: string
+  /** The conversation is a 1:1 DM. Session history can't tell a DM from a group, so
+   *  without this observed discovery offers a DM as a configurable channel row. */
+  isIm?: boolean
 }
 
 export interface ChannelNameResolverOpts {
@@ -126,10 +129,11 @@ export class ChannelNameResolver {
       // Where the conversation sits: a thread folds onto its enclosing channel in
       // channel discovery. Saved before the name so a nameless lookup still contributes
       // the scope.
-      if (info.parentId || info.spaceId)
+      if (info.parentId || info.spaceId || info.isIm !== undefined)
         this.saveScope?.(channel, {
           ...(info.parentId ? { parentId: info.parentId } : {}),
-          ...(info.spaceId ? { spaceId: info.spaceId } : {})
+          ...(info.spaceId ? { spaceId: info.spaceId } : {}),
+          ...(info.isIm === undefined ? {} : { isIm: info.isIm })
         })
       // The enclosing channel is a reportable conversation of its own (channel discovery
       // labels the folded row from it) — cache its name, and the space both of them sit

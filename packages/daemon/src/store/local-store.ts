@@ -444,9 +444,11 @@ export class LocalStore {
       -- to is otherwise unrecoverable) and its enclosing space (the Discord guild, whose
       -- name a reported channel row carries so a bot in several servers stays legible).
       -- Backs observed-channel collapsing: threads fold onto their channel, whose
-      -- snowflake is the uniqueness key of a reported row.
+      -- snowflake is the uniqueness key of a reported row. isIm (1/0) records that the
+      -- conversation is a DM: the sessions table cannot tell a DM from a group, so
+      -- without it observed discovery reports a DM as a channel row named "@someone".
       CREATE TABLE IF NOT EXISTS channel_scopes (
-        id TEXT PRIMARY KEY, parentId TEXT, spaceId TEXT, updatedAt INTEGER
+        id TEXT PRIMARY KEY, parentId TEXT, spaceId TEXT, isIm INTEGER, updatedAt INTEGER
       );
       CREATE TABLE IF NOT EXISTS permission_requests (
         id TEXT PRIMARY KEY,
@@ -700,6 +702,8 @@ export class LocalStore {
   private migrateChannelScopeSpace(): void {
     const cols = this.db.prepare('PRAGMA table_info(channel_scopes)').all() as { name: string }[]
     if (!cols.some((c) => c.name === 'spaceId')) this.db.exec('ALTER TABLE channel_scopes ADD COLUMN spaceId TEXT')
+    // `isIm` shares this migration: both columns arrived with the same discovery fix.
+    if (!cols.some((c) => c.name === 'isIm')) this.db.exec('ALTER TABLE channel_scopes ADD COLUMN isIm INTEGER')
   }
 
   /** Add the `transcript.recipient` column (the agent a row was delivered to) to a
@@ -2159,31 +2163,49 @@ export class LocalStore {
    *  Latest-wins per supplied dimension; an empty note writes nothing, and a note that
    *  carries only one dimension leaves the other as it was (the message path knows the
    *  parent channel immediately, the space arrives with the later name lookup). */
-  setChannelScope(id: string, scope: { parentId?: string; spaceId?: string }, updatedAt: number): void {
-    if (scope.parentId === undefined && scope.spaceId === undefined) return
+  setChannelScope(id: string, scope: { parentId?: string; spaceId?: string; isIm?: boolean }, updatedAt: number): void {
+    if (scope.parentId === undefined && scope.spaceId === undefined && scope.isIm === undefined) return
     this.db
       .prepare(
-        `INSERT INTO channel_scopes (id, parentId, spaceId, updatedAt) VALUES (?, ?, ?, ?)
+        `INSERT INTO channel_scopes (id, parentId, spaceId, isIm, updatedAt) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            parentId = COALESCE(excluded.parentId, channel_scopes.parentId),
            spaceId = COALESCE(excluded.spaceId, channel_scopes.spaceId),
+           isIm = COALESCE(excluded.isIm, channel_scopes.isIm),
            updatedAt = excluded.updatedAt`
       )
-      .run(id, scope.parentId ?? null, scope.spaceId ?? null, updatedAt)
+      .run(
+        id,
+        scope.parentId ?? null,
+        scope.spaceId ?? null,
+        scope.isIm === undefined ? null : scope.isIm ? 1 : 0,
+        updatedAt
+      )
   }
 
   /** Scopes for a set of conversation ids — only the ids that have one. One batched
    *  `IN (…)` query, not a round-trip per id (mirrors getDisplayNames). */
-  getChannelScopes(ids: string[]): Map<string, { parentId?: string; spaceId?: string }> {
-    const out = new Map<string, { parentId?: string; spaceId?: string }>()
+  getChannelScopes(ids: string[]): Map<string, { parentId?: string; spaceId?: string; isIm?: boolean }> {
+    const out = new Map<string, { parentId?: string; spaceId?: string; isIm?: boolean }>()
     const unique = [...new Set(ids)]
     if (unique.length === 0) return out
     const rows = this.db
-      .prepare(`SELECT id, parentId, spaceId FROM channel_scopes WHERE id IN (${unique.map(() => '?').join(',')})`)
-      .all(...unique) as unknown as { id: string; parentId: string | null; spaceId: string | null }[]
+      .prepare(
+        `SELECT id, parentId, spaceId, isIm FROM channel_scopes WHERE id IN (${unique.map(() => '?').join(',')})`
+      )
+      .all(...unique) as unknown as {
+      id: string
+      parentId: string | null
+      spaceId: string | null
+      isIm: number | null
+    }[]
     for (const r of rows) {
-      if (!r.parentId && !r.spaceId) continue
-      out.set(r.id, { ...(r.parentId ? { parentId: r.parentId } : {}), ...(r.spaceId ? { spaceId: r.spaceId } : {}) })
+      if (!r.parentId && !r.spaceId && r.isIm === null) continue
+      out.set(r.id, {
+        ...(r.parentId ? { parentId: r.parentId } : {}),
+        ...(r.spaceId ? { spaceId: r.spaceId } : {}),
+        ...(r.isIm === null ? {} : { isIm: r.isIm === 1 })
+      })
     }
     return out
   }
