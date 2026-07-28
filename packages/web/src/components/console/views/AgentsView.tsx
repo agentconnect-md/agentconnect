@@ -1,7 +1,8 @@
 'use client'
 
 import Link from 'next/link'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useParams, useRouter } from 'next/navigation'
 import { agentLabel, agentModelDisplay, effectiveAgentStatus, runtimeLabel, status, type Agent } from '@/lib/data'
 import { creatorLabel, fmtCost, fmtCountCompact, memberDisplayName } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
@@ -15,6 +16,7 @@ import { useProfile } from '@/lib/profile'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { AgentReachabilityOverview } from '@/components/console/AgentReachabilityOverview'
+import { isOnboardingSkipped, needsOnboarding } from '@/lib/onboarding'
 
 // Two-letter avatar initials for a creator name — first letters of the first two
 // words, or the first two chars of a single token.
@@ -47,7 +49,8 @@ function parseCompact(s: string): number {
 export default function AgentsView() {
   const acpRegistry = useAcpRegistry()
   const { orgPath } = useOrgs()
-  const { agents, daemons, integrations, members, getSessions, usage24h, agentsLoading } = useConsoleData()
+  const { agents, daemons, integrations, members, getSessions, usage24h, agentsLoading, daemonsLoading } =
+    useConsoleData()
   const { me } = useProfile()
   const { openModal } = useModal()
   // Agent/Daemon/Repo/Integrations are flex tracks that absorb spare width; Creator is
@@ -100,6 +103,26 @@ export default function AgentsView() {
   // clicked; clicking the active column flips direction. Text columns default ascending,
   // numeric columns descending (highest first is the useful default).
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' } | null>(null)
+  // Fresh-workspace onboarding lives on its own /onboarding route. An offline daemon is
+  // recoverable there, so only an online daemon or an agent counts as initialized.
+  const router = useRouter()
+  const params = useParams()
+  const orgKey = typeof params.slug === 'string' ? params.slug : '-'
+  const [skipState, setSkipState] = useState<{ orgKey: string; skipped: boolean } | null>(null)
+  const onboardingSkipped = skipState?.orgKey === orgKey ? skipState.skipped : null
+  useEffect(() => {
+    setSkipState({ orgKey, skipped: isOnboardingSkipped(orgKey) })
+  }, [orgKey])
+  const notInitialized = needsOnboarding(
+    agentsLoading,
+    daemonsLoading,
+    agents.length,
+    daemons.some((daemon) => daemon.status === 'online')
+  )
+  const redirectToOnboarding = notInitialized && onboardingSkipped === false
+  useEffect(() => {
+    if (redirectToOnboarding) router.replace(`/${orgKey}/onboarding`)
+  }, [redirectToOnboarding, router, orgKey])
   const onSort = (key: SortKey) =>
     setSort((prev) =>
       prev?.key === key
@@ -182,6 +205,10 @@ export default function AgentsView() {
       </button>
     )
   }
+
+  // While the redirect to /onboarding is in flight, hold a spinner so the empty
+  // table/metrics never flash behind it.
+  if (notInitialized && onboardingSkipped !== true) return <LoadingState fill />
 
   if (view === 'topology') {
     if (isMobile) {
