@@ -181,6 +181,39 @@ describe('TelegramConnection.start', () => {
     expect(received).toHaveLength(1)
     expect(received[0]).toMatchObject({ platform: 'telegram', channel: '-100', text: 'hi', sender: { id: '3' } })
   })
+
+  it('observes the chat when this bot is added but never forwards membership service messages', async () => {
+    const onBotAddedToChat = vi.fn()
+    const { conn, state, received } = makeConn({ onBotAddedToChat })
+    await conn.start()
+
+    state.onMessage!({
+      message_id: 5,
+      chat: { id: -100, type: 'supergroup', title: 'private group' },
+      from: { id: 3, username: 'ada' },
+      new_chat_members: [{ id: 99, is_bot: true, username: 'mybot' }]
+    })
+    state.onMessage!({
+      message_id: 6,
+      chat: { id: -100, type: 'supergroup', title: 'private group' },
+      from: { id: 3, username: 'ada' },
+      new_chat_members: [{ id: 4, username: 'grace' }]
+    })
+    state.onMessage!({
+      message_id: 7,
+      chat: { id: -100, type: 'supergroup', title: 'private group' },
+      from: { id: 3, username: 'ada' },
+      left_chat_member: { id: 4, username: 'grace' }
+    })
+
+    expect(received).toHaveLength(0)
+    expect(onBotAddedToChat).toHaveBeenCalledOnce()
+    expect(onBotAddedToChat).toHaveBeenCalledWith({
+      id: '-100',
+      name: 'private group',
+      isPrivate: true
+    })
+  })
 })
 
 describe('TelegramConnection outbound chrome', () => {

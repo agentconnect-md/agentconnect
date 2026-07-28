@@ -3,7 +3,7 @@ import type { Agent } from '../agents/agent-schema.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
 import { SlackSendQueue } from '../slack/send-queue.js'
-import { normalizeTelegramMessage, type TelegramMessage } from './normalize.js'
+import { isTelegramMembershipServiceMessage, normalizeTelegramMessage, type TelegramMessage } from './normalize.js'
 
 /**
  * §Telegram edge unit. Mirrors slack/connection.ts but over grammY long-polling
@@ -71,9 +71,18 @@ export interface TelegramCallback {
   topicId?: string
 }
 
+/** A group/channel learned when Telegram reports that this bot was added. */
+export interface TelegramObservedChat {
+  id: string
+  name?: string
+  isPrivate: boolean
+}
+
 export interface TelegramDeps {
   group: ConsolidatedTelegramGroup
   onMessage: (msg: NormalizedMessage) => void
+  /** Membership service records discover chats but never enter message routing. */
+  onBotAddedToChat?: (chat: TelegramObservedChat) => void
   /** An inline-keyboard button was tapped (session-control cards — /models etc.). */
   onCallback?: (cb: TelegramCallback) => void
   newTraceId: () => string
@@ -227,6 +236,22 @@ export class TelegramConnection {
     log?.debug(`telegram: getMe ok → bot @${this.botUsername || '?'} (id ${this.botUserId || 'n/a'})`)
 
     this.bot.onMessage((message) => {
+      if (isTelegramMembershipServiceMessage(message)) {
+        const botWasAdded = message.new_chat_members?.some((member) => String(member.id) === this.botUserId) === true
+        if (botWasAdded) {
+          const chat = message.chat
+          this.deps.onBotAddedToChat?.({
+            id: String(chat.id),
+            ...(chat.title || chat.username ? { name: chat.title ?? chat.username } : {}),
+            isPrivate: chat.type === 'group' || chat.type === 'supergroup' ? !chat.username : chat.type !== 'channel'
+          })
+        }
+        log?.debug(
+          `telegram: membership service message ignored for routing ch=${message.chat.id}` +
+            (botWasAdded ? ' (bot added; chat observed)' : '')
+        )
+        return
+      }
       const msg = normalizeTelegramMessage(message, { traceId: this.deps.newTraceId() })
       log?.debug(
         `telegram: inbound ch=${msg.channel} user=${msg.sender.id} isBot=${msg.sender.isBot} isDm=${msg.isDm} ` +

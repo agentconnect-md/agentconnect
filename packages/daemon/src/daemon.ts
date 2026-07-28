@@ -77,6 +77,7 @@ import {
   consolidateTelegram,
   TelegramConnection,
   type TelegramCallback,
+  type TelegramObservedChat,
   type InlineButton
 } from './telegram/connection.js'
 import { consolidateDiscord, DiscordConnection } from './discord/connection.js'
@@ -2647,6 +2648,11 @@ export class Daemon {
           this.channelNameResolver?.noteChannel(conn, msg.channel, msg.sender.id)
           this.onInbound(msg, this.srcIntegrationIds(conn))
         },
+        onBotAddedToChat: (chat) => {
+          const integrationIds = new Set(group.integrations.map(({ integrationId }) => integrationId))
+          for (const integrationId of this.srcIntegrationIds(conn)) integrationIds.add(integrationId)
+          this.observeTelegramChat(chat, [...integrationIds])
+        },
         onCallback: (cb) => this.handleTelegramCallback(cb, conn),
         log: this.log
       })
@@ -2907,6 +2913,43 @@ export class Daemon {
           this.cpClient?.emitIntegrationChannels({ integrationId: integ.id, channels, authoritative: false })
         }
       }
+    }
+  }
+
+  /**
+   * Telegram cannot enumerate a bot's chats. Its own `new_chat_members` service
+   * record therefore contributes one non-authoritative observed channel row, but
+   * never enters `onInbound` or creates an agent turn.
+   */
+  private observeTelegramChat(chat: TelegramObservedChat, integrationIds: readonly string[]): void {
+    if (chat.name) {
+      this.store.setDisplayName(chat.id, chat.name, Date.now())
+      this.emitSessionMetadataSnapshotsForDisplayName(chat.id)
+    }
+    for (const integrationId of integrationIds) {
+      const integration = this.integrationConfigById(integrationId)
+      if (!integration || integration.platform !== 'telegram') continue
+      const prior = this.channelSnapshots.get(integrationId)?.channels ?? []
+      const current = prior.find((channel) => channel.id === chat.id)
+      const observed: IntegrationChannel = {
+        ...current,
+        id: chat.id,
+        ...(chat.name ? { name: chat.name } : {}),
+        isPrivate: chat.isPrivate,
+        kind: 'channel'
+      }
+      if (
+        current?.name === observed.name &&
+        current?.isPrivate === observed.isPrivate &&
+        current?.kind === observed.kind
+      ) {
+        continue
+      }
+      const channels = current
+        ? prior.map((channel) => (channel.id === chat.id ? observed : channel))
+        : [...prior, observed]
+      this.channelSnapshots.set(integrationId, { channels, authoritative: false })
+      this.cpClient?.emitIntegrationChannels({ integrationId, channels, authoritative: false })
     }
   }
 
