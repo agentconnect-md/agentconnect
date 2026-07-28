@@ -125,7 +125,7 @@ describe('gated Telegram conversation discovery', () => {
       channels,
       authoritative: false
     })
-    expect((daemon as any).channelSnapshots.get('i-tg')).toEqual(channels)
+    expect((daemon as any).channelSnapshots.get('i-tg')).toEqual({ channels, authoritative: false })
     expect(conn.postChrome).toHaveBeenCalledOnce()
     await daemon.stop()
   })

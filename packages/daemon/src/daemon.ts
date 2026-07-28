@@ -1326,9 +1326,9 @@ export class Daemon {
   private cpClient?: CpClient
   private relays?: RelayManager
   private cpCrons?: CpCronRegistry
-  // Latest channel-membership snapshot per integrationId (from users.conversations),
-  // re-emitted to the CP on each (re)connect (emit is a no-op while disconnected).
-  private channelSnapshots = new Map<string, IntegrationChannel[]>()
+  // Latest channel report per integrationId plus whether it came from a complete
+  // membership listing. Replayed with the same authority on each CP (re)connect.
+  private channelSnapshots = new Map<string, { channels: IntegrationChannel[]; authoritative: boolean }>()
   private cpAgents?: CpAgentRegistry
   private cpIntegrations?: CpIntegrationRegistry
   private botUserIds: Record<string, string> = {}
@@ -2867,7 +2867,7 @@ export class Daemon {
         // still be refreshed safely when several bots share the agent.
         const observed = integrations.length === 1 ? this.store.observedChannels(agent.id, platform) : []
         for (const integ of integrations) {
-          const prior = this.channelSnapshots.get(integ.id) ?? []
+          const prior = this.channelSnapshots.get(integ.id)?.channels ?? []
           if (observed.length === 0 && prior.length === 0) continue
           const priorById = new Map(prior.map((c) => [c.id, c]))
           const observedIds = new Set(observed.map((c) => c.id))
@@ -2891,7 +2891,7 @@ export class Daemon {
               return name && name !== c.name ? { ...c, name } : c
             })
           const channels = [...fromSessions, ...retained]
-          this.channelSnapshots.set(integ.id, channels)
+          this.channelSnapshots.set(integ.id, { channels, authoritative: false })
           this.cpClient?.emitIntegrationChannels({ integrationId: integ.id, channels, authoritative: false })
         }
       }
@@ -2922,9 +2922,9 @@ export class Daemon {
         // only, but a gated integration's snapshot also holds DM conversations — a
         // refresh must not wipe them (the CP protects them too; this keeps the
         // in-memory snapshot honest for the reconnect re-assert).
-        const ims = (this.channelSnapshots.get(integrationId) ?? []).filter((x) => x.kind === 'im')
+        const ims = (this.channelSnapshots.get(integrationId)?.channels ?? []).filter((x) => x.kind === 'im')
         const merged = [...channels, ...ims]
-        this.channelSnapshots.set(integrationId, merged)
+        this.channelSnapshots.set(integrationId, { channels: merged, authoritative: true })
         this.cpClient?.emitIntegrationChannels({ integrationId, channels: merged })
         this.maybeIntroduceOnJoin(integrationId, channels)
       }
@@ -11158,7 +11158,8 @@ export class Daemon {
    *  Name resolution is best-effort. Telegram/Discord getChat results land through
    *  refreshObservedChannels; Slack DMs retain the existing profile fallback below. */
   private reportGatedConversation(integrationId: string, msg: NormalizedMessage, isDm: boolean): void {
-    const existing = this.channelSnapshots.get(integrationId) ?? []
+    const cached = this.channelSnapshots.get(integrationId)
+    const existing = cached?.channels ?? []
     const current = existing.find((c) => c.id === msg.channel)
     const kind = isDm ? ('im' as const) : ('channel' as const)
     const known = this.store.getDisplayNames([msg.channel]).get(msg.channel)
@@ -11168,7 +11169,10 @@ export class Daemon {
     const next = current
       ? existing.map((c) => (c.id === msg.channel ? { ...c, ...(known ? { name: known } : {}), kind } : c))
       : [...existing, { id: msg.channel, ...(known ? { name: known } : {}), kind }]
-    this.channelSnapshots.set(integrationId, next)
+    this.channelSnapshots.set(integrationId, {
+      channels: next,
+      authoritative: cached?.authoritative ?? false
+    })
     this.cpClient?.emitIntegrationChannels({ integrationId, channels: next, authoritative: false })
     if (!isDm || known || current?.name) return
     const conn = this.connForIntegration(integrationId)
@@ -11178,12 +11182,28 @@ export class Daemon {
       .then((prof) => {
         const name = prof.realName || prof.name
         if (!name) return
-        const snap = this.channelSnapshots.get(integrationId) ?? []
+        const cached = this.channelSnapshots.get(integrationId)
+        const snap = cached?.channels ?? []
         const updated = snap.map((c) => (c.id === msg.channel && !c.name ? { ...c, name: `@${name}` } : c))
-        this.channelSnapshots.set(integrationId, updated)
+        this.channelSnapshots.set(integrationId, {
+          channels: updated,
+          authoritative: cached?.authoritative ?? false
+        })
         this.cpClient?.emitIntegrationChannels({ integrationId, channels: updated, authoritative: false })
       })
       .catch(() => {})
+  }
+
+  /** Re-assert cached reports after a CP reconnect without upgrading a partial
+   *  observation (including Slack gated-conversation discovery) to a full snapshot. */
+  private replayChannelSnapshots(): void {
+    for (const [integrationId, snapshot] of this.channelSnapshots) {
+      this.cpClient?.emitIntegrationChannels({
+        integrationId,
+        channels: snapshot.channels,
+        ...(snapshot.authoritative ? {} : { authoritative: false })
+      })
+    }
   }
 
   /** The live platform connection serving `integrationId`, any platform. */
@@ -12848,14 +12868,7 @@ export class Daemon {
         this.cpClient?.emitMemoryConnectionFacts(this.memoryConnections?.facts() ?? [])
         this.hookReportConnectionId = randomUUID()
         this.replayHookTerminalReports()
-        for (const [integrationId, channels] of this.channelSnapshots) {
-          const platform = this.integrationConfigById(integrationId)?.platform
-          this.cpClient?.emitIntegrationChannels({
-            integrationId,
-            channels,
-            ...(platform && platform !== 'slack' ? { authoritative: false } : {})
-          })
-        }
+        this.replayChannelSnapshots()
         // ...and each CP cron's stored last-run stamp — fires while the CP was
         // unreachable would otherwise never land (latest-wins upsert, so
         // re-asserting an already-known stamp is a no-op).
