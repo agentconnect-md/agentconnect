@@ -106,14 +106,21 @@ model User {
   @@map("app_user")
 }
 
-// A deleted account's identity boundary. When the human-auth plane finds that the
-// user row behind a signed-in OIDC subject is gone (an admin deleted the account),
-// it records the moment here and refuses every token issued at or before it — so a
-// still-valid pre-deletion bearer cannot re-run JIT signup and recreate the account
-// it just lost, not even after a CP restart (the in-process cutoff would be
-// forgotten). NOT a ban list: rows are expiry-limited, and once `expiresAt` passes
-// the subject is an ordinary newcomer again. Whether a deleted person may re-apply
-// at all is the deleting app's policy, not this table's.
+// A deleted account's identity boundary: tokens issued at or before `cutoffAt` are
+// refused for that subject, so a still-valid pre-deletion bearer cannot re-run JIT
+// signup and recreate the account it just lost — not even across a CP restart, where
+// the auth plane's in-process cutoff is gone.
+//
+// Two writers, deliberately: an `AFTER DELETE` trigger on app_user (added by the
+// `deleted_identity_trigger` migration) records every deletion as it happens — the CP
+// does not perform account deletion, the external admin app does, and the database is
+// where both meet — and the auth plane also records what it observes, which covers a
+// row that disappeared without the trigger (e.g. a restore from a backup taken before
+// it existed).
+//
+// NOT a ban list: rows are expiry-limited, and once `expiresAt` passes the subject is
+// an ordinary newcomer again. Whether a deleted person may re-apply at all is the
+// deleting app's policy, not this table's.
 model DeletedIdentityCutoff {
   oidcSubject String   @id // the OIDC `sub` whose local row was found missing
   cutoffAt    DateTime @db.Timestamptz(6) // refuse tokens with `iat` <= this

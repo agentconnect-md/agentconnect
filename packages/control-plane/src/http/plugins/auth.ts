@@ -86,10 +86,12 @@ export type PrincipalExists = (userId: string) => Promise<boolean>
  * The durable half of the deleted-account boundary (see the cutoff map in
  * `oidcAuth`). `read` is consulted the FIRST time a process sees a subject —
  * precisely the post-restart case, where an in-memory cutoff is gone but a
- * pre-deletion bearer may still be live — and `record` persists a newly observed
- * deletion so it survives the next restart. Both are expiry-limited: this is a
- * boundary around one deletion, not a ban on the identity. Absent ⇒ the cutoff is
- * process-local only.
+ * pre-deletion bearer may still be live. The rows it reads are written by a database
+ * trigger on the deletion itself (see the `deleted_identity_trigger` migration), so
+ * the boundary exists even when NO process ever observed the deletion; `record` adds
+ * what this process observes, covering a row that vanished without the trigger.
+ * Both are expiry-limited: a boundary around one deletion, not a ban on the identity.
+ * Absent ⇒ the cutoff is process-local only.
  */
 export interface DeletedIdentityStore {
   read: (oidcSubject: string, now: Date) => Promise<Date | null>

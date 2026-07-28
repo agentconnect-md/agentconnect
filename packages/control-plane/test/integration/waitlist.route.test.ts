@@ -677,6 +677,68 @@ describe('waitlist admission — auth boundaries', () => {
     }
   })
 
+  it('the deletion itself records the boundary — no CP need be running to observe it', async () => {
+    const email = 'wl-unobserved@acme.dev'
+    const h = await headers('wl-unobserved', email)
+
+    // Process 1 provisions the account, then goes away entirely.
+    const first = buildApp()
+    try {
+      expect((await first.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })).statusCode).toBe(200)
+    } finally {
+      await first.close()
+    }
+
+    // The admin deletes the account with NOTHING running — no request ever sees it,
+    // so the auth plane cannot be the one to record the boundary. The trigger is.
+    await prisma.user.delete({ where: { email } })
+    expect(await prisma.deletedIdentityCutoff.findUnique({ where: { oidcSubject: 'wl-unobserved' } })).not.toBeNull()
+
+    const second = buildApp()
+    try {
+      // A fresh process, an unknown subject, and a still-valid pre-deletion bearer:
+      // this is the ordering that must NOT hand out a replacement account.
+      const replay = await second.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      expect(replay.statusCode).toBe(401)
+      expect(replay.json()).toMatchObject({ code: 'ACCOUNT_GONE' })
+      expect(await prisma.user.findUnique({ where: { email } })).toBeNull()
+
+      // A genuine new sign-in is still allowed — this is a boundary, not a ban.
+      const fresh = await headers('wl-unobserved', email, Math.floor(Date.now() / 1000) + 5)
+      expect((await second.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: fresh })).statusCode).toBe(
+        200
+      )
+    } finally {
+      await second.close()
+    }
+  })
+
+  it('an unclaimed invited row being merged away does NOT fence anyone', async () => {
+    // upgradeSyntheticEmail deletes the invited (oidcSubject-less) row when a real
+    // verified email arrives for a user holding a placeholder. That deletion must not
+    // write a cutoff — there is no identity behind it, and fencing the wrong subject
+    // would lock out the very person claiming the invite.
+    const repo = new PgUserRepo(prisma, false)
+    const invited = await prisma.user.create({ data: { email: 'wl-merge@acme.dev' } }) // no oidcSubject
+    await repo.provisionOidcUser({ oidcSubject: 'wl-merge', emailVerified: false }) // synthetic placeholder
+    await repo.provisionOidcUser({ oidcSubject: 'wl-merge', email: 'wl-merge@acme.dev', emailVerified: true })
+
+    expect(await prisma.user.findUnique({ where: { id: invited.id } })).toBeNull() // merged away
+    expect(await prisma.deletedIdentityCutoff.count()).toBe(0)
+    const { app, close } = buildApp()
+    try {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/me/access',
+        headers: await headers('wl-merge', 'wl-merge@acme.dev')
+      })
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toMatchObject({ email: 'wl-merge@acme.dev' })
+    } finally {
+      await close()
+    }
+  })
+
   it('the deletion boundary survives a CP restart — a pre-deletion bearer cannot re-provision', async () => {
     const email = 'wl-restart@acme.dev'
     const h = await headers('wl-restart', email)
