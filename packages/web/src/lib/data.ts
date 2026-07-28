@@ -1325,6 +1325,13 @@ export interface IntegrationChannelRow {
   /** Bare channel name, no hash (e.g. "deploys"); the UI renders the leading "#".
    *  For a DM row (kind 'im') the counterpart's name. Falls back to the raw id. */
   name: string
+  /** The Discord server this channel belongs to. One bot spans several servers, each
+   *  with its own "#general", so the rows are grouped under it. `spaceId` is the
+   *  identity — Discord permits two servers to share a NAME, so grouping on the label
+   *  would merge them — and `space` is that label. Absent on platforms with one
+   *  implicit container per bot, on DM rows, and until the daemon resolves them. */
+  spaceId?: string
+  space?: string
   /** 'im' = a DM conversation row (gated/restricted agents only); absent = channel. */
   kind?: 'channel' | 'im'
   trigger: 'off' | 'mention' | 'any'

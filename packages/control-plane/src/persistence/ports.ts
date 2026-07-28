@@ -2229,6 +2229,11 @@ export interface IntegrationChannelRecord {
   integrationId: IntegrationId
   channelId: string
   name: string | null
+  /** Enclosing space (Discord guild) — `spaceId` is the identity (two guilds may
+   *  share a name), `space` the display label. Null on single-container platforms,
+   *  on DM rows, and until the daemon has resolved them. */
+  spaceId: string | null
+  space: string | null
   isPrivate: boolean
   kind: ConversationKind
   /** Repeated across shared-channel sibling rows; integration-scoped for DMs. */
@@ -2241,6 +2246,10 @@ export interface IntegrationChannelRecord {
 export interface ReportedChannel {
   id: string
   name?: string
+  /** Enclosing Discord guild — id (the identity) and display name. Absent on other
+   *  platforms and until resolved. */
+  spaceId?: string
+  space?: string
   isPrivate?: boolean
   /** Absent = 'channel' (wire compatibility). */
   kind?: ConversationKind

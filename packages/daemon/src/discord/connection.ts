@@ -612,6 +612,8 @@ export class DiscordConnection {
     isPrivate?: boolean
     parentId?: string
     parentName?: string
+    spaceId?: string
+    spaceName?: string
   }> {
     const ch = await this.client.channels.fetch(channel).catch(() => null)
     const c = ch as
@@ -620,6 +622,8 @@ export class DiscordConnection {
           isDMBased?: () => boolean
           isThread?: () => boolean
           parentId?: string | null
+          guildId?: string | null
+          guild?: { id: string; name?: string } | null
         })
       | null
     const isIm = typeof c?.isDMBased === 'function' ? c.isDMBased() : false
@@ -628,11 +632,18 @@ export class DiscordConnection {
     const isThread = typeof c?.isThread === 'function' && c.isThread()
     const parentId = isThread && c?.parentId ? c.parentId : undefined
     const parentName = parentId ? await this.channelName(parentId) : undefined
+    // The guild this conversation sits in. A bot in several servers reaches a
+    // "#general" in each of them, so the console can only tell the rows apart by
+    // the server that encloses them. DMs have no guild.
+    const spaceId = c?.guild?.id ?? c?.guildId ?? undefined
+    const spaceName = c?.guild?.name
     return {
       id: channel,
       ...(c?.name ? { name: c.name } : {}),
       ...(parentId ? { parentId } : {}),
       ...(parentName ? { parentName } : {}),
+      ...(spaceId ? { spaceId } : {}),
+      ...(spaceName ? { spaceName } : {}),
       isIm,
       // A guild channel's visibility depends on role overwrites we don't resolve here;
       // treat non-DM guild channels as non-private best-effort.

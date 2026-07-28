@@ -582,6 +582,36 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord discovery)', () => {
     await daemon.stop()
   })
 
+  it('reports an observed DM as a DM row, never as a configurable channel', async () => {
+    // Session history cannot tell a DM from a group, so a Discord DM used to surface as
+    // a channel row labelled "@yulong" — a "channel" nobody can invite the bot to.
+    const root = root1()
+    const { daemon } = makeStubDaemon(root)
+    await daemon.start()
+
+    const emit = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    ;(daemon as any).agents = new Map([
+      ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', discord: { botToken: 'dc' } }] }]
+    ])
+    const store = (daemon as any).store
+    store.setChannelScope('900777', { isIm: true }, 1)
+    store.setChannelScope('900123', { isIm: false }, 1)
+    vi.spyOn(store, 'observedChannels').mockReturnValue([
+      { id: '900777', name: '@yulong' },
+      { id: '900123', name: 'general' }
+    ])
+
+    ;(daemon as any).refreshObservedChannels()
+
+    const channels = [
+      { id: '900777', name: '@yulong', kind: 'im' },
+      { id: '900123', name: 'general', kind: 'channel' }
+    ]
+    expect(emit).toHaveBeenCalledWith({ integrationId: 'dc-int', channels, authoritative: false })
+    await daemon.stop()
+  })
+
   it('skips an agent with multiple Telegram bots (observed set is not per-bot)', async () => {
     const root = root1()
     const { daemon } = makeStubDaemon(root)

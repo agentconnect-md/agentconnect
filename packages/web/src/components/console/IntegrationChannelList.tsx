@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { agentLabel, type IntegrationChannelRow, type IntegrationRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
@@ -95,6 +95,97 @@ function TriggerToggle({
         {segs.map(([trigger, label, hint]) => seg(trigger, label, hint))}
       </div>
     </span>
+  )
+}
+
+/** One band of the channel list: the rows of a single Discord server, with the header
+ *  to print above them (absent ⇒ no header, the flat lead group). */
+export interface SpaceGroup {
+  key: string
+  label?: string
+  rows: IntegrationChannelRow[]
+}
+
+/** How a band's header will actually READ once the CSS uppercases it — the form two
+ *  labels must differ in to be distinguishable on screen. "acme" and "Acme" collide. */
+const asDisplayed = (label: string) => label.toLocaleUpperCase().replace(/\s+/g, ' ').trim()
+
+/**
+ * Shortest tails of `ids` that are unique among them — the suffix that tells two
+ * same-named bands apart. Grows from 4 characters until no two ids share a tail (a fixed
+ * width is not collision-free: Discord snowflakes of one shard share their low bits),
+ * and falls back to the whole id when even that is exhausted.
+ */
+function spaceDiscriminators(ids: string[]): Map<string, string> {
+  const longest = Math.max(0, ...ids.map((id) => id.length))
+  for (let width = 4; width <= longest; width++) {
+    const tails = ids.map((id) => id.slice(-width))
+    if (new Set(tails).size === ids.length) return new Map(ids.map((id, i) => [id, tails[i]!]))
+  }
+  return new Map(ids.map((id) => [id, id]))
+}
+
+/**
+ * Bucket channel rows by the space (Discord server) they sit in.
+ *
+ * A Discord bot is usually in several servers, each with its own "#general", so the
+ * channel name alone doesn't say which row an operator is configuring — the rows are
+ * banded under their server, alphabetically.
+ *
+ * Grouping keys on the server ID, never the label: Discord permits two distinct servers
+ * to carry the same name, and banding those together would merge exactly the rows this
+ * is here to separate. When two bands would READ alike — compared as the header renders
+ * them, uppercased, so "acme" and "Acme" count as a clash — both are suffixed with a
+ * tail of their id, widened until the tails themselves differ. A server whose name
+ * hasn't resolved yet still gets its own band, headed by that id tail alone.
+ *
+ * Platforms with one implicit container per bot (Slack, Telegram, Feishu) report no
+ * space at all and stay one flat, unheaded list, which leads.
+ *
+ * Exported for its unit test.
+ */
+export function groupBySpace(rows: IntegrationChannelRow[]): SpaceGroup[] {
+  const spaces = new Map<string, { label?: string; rows: IntegrationChannelRow[] }>()
+  for (const c of rows) {
+    const key = c.spaceId ?? ''
+    const group = spaces.get(key)
+    if (group) {
+      group.rows.push(c)
+      group.label ??= c.space
+    } else spaces.set(key, { ...(c.space ? { label: c.space } : {}), rows: [c] })
+  }
+  const keyed = [...spaces.entries()].filter(([key]) => key)
+  const discriminator = spaceDiscriminators(keyed.map(([key]) => key))
+  // An unnamed server is headed by its discriminator alone — it is still a distinct
+  // server, and leaving it unheaded would silently pool it with the flat group. Those
+  // synthesized headers join the collision count too: a server could be NAMED "server
+  // 2222", and only a real label can take a suffix to break such a tie.
+  const proposed = (key: string, label?: string) => label ?? `server ${discriminator.get(key) ?? key}`
+  const seen = new Map<string, number>()
+  for (const [key, { label }] of keyed) {
+    const as = asDisplayed(proposed(key, label))
+    seen.set(as, (seen.get(as) ?? 0) + 1)
+  }
+  return [...spaces.entries()]
+    .map(([key, { label, rows }]) => {
+      if (!key) return { key, rows }
+      const clash = (seen.get(asDisplayed(proposed(key, label))) ?? 0) > 1
+      const suffix = discriminator.get(key) ?? key
+      return { key, label: clash && label !== undefined ? `${label} · ${suffix}` : proposed(key, label), rows }
+    })
+    .sort((a, b) => (!a.key ? -1 : !b.key ? 1 : (a.label ?? '').localeCompare(b.label ?? '')))
+}
+
+/** The band that names a run of rows — a Discord server, or the DM section. */
+function groupHeader(label: string, padX: number) {
+  return (
+    <div
+      className="border-t border-(--border-subtle) bg-(--surface-sunken) font-sans text-[11px] font-semibold leading-normal text-(--text-tertiary) uppercase"
+      style={{ padding: `6px ${padX}px` }}
+      title={label}
+    >
+      <span className="block truncate">{label}</span>
+    </div>
   )
 }
 
@@ -325,7 +416,12 @@ export function IntegrationChannelList({
     return (explicit ? members.find((m) => m.id === explicit) : undefined) ?? members[0]
   }
   const channelRows = channels.filter((c) => c.kind !== 'im')
-  const dmRows = channels.filter((c) => c.kind === 'im')
+  // A DM is not a place the bot can be invited to and has no per-conversation choice
+  // to make unless the agent is gated (resource-visibility.md §14.3) — a non-gated bot
+  // always answers its DMs. The daemon still REPORTS them (that is how a DM previously
+  // mistaken for a channel converts), so hide them here rather than at the source.
+  const dmRows = gated ? channels.filter((c) => c.kind === 'im') : []
+  const grouped = groupBySpace(channelRows)
   const row = (c: IntegrationChannelRow) => {
     const def = c.kind !== 'im' && shareable ? defaultAgent(c) : undefined
     return (
@@ -387,15 +483,13 @@ export function IntegrationChannelList({
           </span>
         </div>
       )}
-      {channelRows.map(row)}
-      {dmRows.length > 0 && (
-        <div
-          className="border-t border-(--border-subtle) bg-(--surface-sunken) font-sans text-[11px] font-semibold leading-normal text-(--text-tertiary) uppercase"
-          style={{ padding: `6px ${padX}px` }}
-        >
-          Direct messages
-        </div>
-      )}
+      {grouped.map((g) => (
+        <Fragment key={g.key || '(unscoped)'}>
+          {g.label && groupHeader(g.label, padX)}
+          {g.rows.map(row)}
+        </Fragment>
+      ))}
+      {dmRows.length > 0 && groupHeader('Direct messages', padX)}
       {dmRows.map(row)}
       <div
         className="flex items-center gap-2 border-t border-(--border-subtle) bg-(--surface-app) font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"

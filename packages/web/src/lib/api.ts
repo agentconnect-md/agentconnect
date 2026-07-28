@@ -537,6 +537,8 @@ export type ChannelTrigger = 'off' | 'mention' | 'any'
 export interface IntegrationChannelDto {
   channelId: string
   name: string | null // "deploys" without the hash (or DM counterpart); null if lookup failed
+  spaceId: string | null // enclosing Discord server id — the identity (names are not unique)
+  space: string | null // that server's display name; null elsewhere and until resolved
   isPrivate: boolean
   kind: 'channel' | 'im'
   trigger: ChannelTrigger

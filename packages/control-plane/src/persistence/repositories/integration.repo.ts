@@ -366,6 +366,8 @@ function toChannelRecord(c: IntegrationChannel): IntegrationChannelRecord {
     integrationId: IntegrationId(c.integrationId),
     channelId: c.channelId,
     name: c.name,
+    spaceId: c.spaceId,
+    space: c.space,
     isPrivate: c.isPrivate,
     kind: c.kind as ConversationKind,
     trigger: c.trigger as ChannelTrigger,
@@ -382,6 +384,23 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   // authoritative membership snapshot, drop channel rows that are no longer present.
   // DM rows and rows omitted from a non-authoritative observed-conversation report
   // are retained.
+  //
+  // A DM row is the one exception to `defaultTrigger`, and it is a SECURITY boundary
+  // (resource-visibility.md §14.3). Discovery reports DMs whether or not the owning
+  // agent is gated today, and visibility can flip to restricted later — at which point
+  // `gatedBindRules` enables every non-Off IM row. Storing a discovered DM with the
+  // ordinary 'mention' default would therefore let a newly-private agent keep answering
+  // a DM that no operator ever enabled. Created DM rows, and channel rows converting to
+  // DM, are pinned Off; an operator's later choice is untouched.
+  //
+  // The channel→DM transition is decided INSIDE the write, off the row's committed kind,
+  // never off a prior read. Channel reports are fire-and-forget and their handlers run
+  // concurrently — the daemon's own startup emits a kind-less snapshot and the resolver's
+  // later `saveScope` emits the same conversation as `im`. Two such writes racing with a
+  // read-then-write would both see "no row": the first creates channel/mention, the
+  // second flips the kind and inherits that trigger, landing exactly on the fail-open
+  // state above. `ON CONFLICT … DO UPDATE` re-reads the row under the write's own lock,
+  // so the conversion cannot be missed however the reports interleave.
   async replaceSnapshot(
     integrationId: IntegrationId,
     channels: ReportedChannel[],
@@ -392,26 +411,44 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         where: { integrationId, kind: 'channel', channelId: { notIn: channels.map((c) => c.id) } }
       })
     }
+    const authoritative = opts?.authoritative !== false
     for (const c of channels) {
-      const authoritative = opts?.authoritative !== false
-      await this.db.integrationChannel.upsert({
-        where: { integrationId_channelId: { integrationId, channelId: c.id } },
-        create: {
-          integrationId,
-          channelId: c.id,
-          name: c.name ?? null,
-          isPrivate: c.isPrivate ?? false,
-          kind: c.kind ?? 'channel',
-          ...(opts?.defaultTrigger ? { trigger: opts.defaultTrigger } : {})
-        },
-        // kind updates only when explicitly reported: a kind-less membership/observed
-        // re-report must never downgrade an established 'im' row (§14.3).
-        update: {
-          ...(authoritative || c.name !== undefined ? { name: c.name ?? null } : {}),
-          ...(authoritative || c.isPrivate !== undefined ? { isPrivate: c.isPrivate ?? false } : {}),
-          ...(c.kind ? { kind: c.kind } : {})
-        }
-      })
+      // Which columns a re-report is allowed to overwrite. An absent name/isPrivate is
+      // authoritative-only (a partial report must not blank them); an absent space keeps
+      // the known server (it resolves lazily at the edge); an absent kind must never
+      // downgrade an established 'im' row.
+      const setName = authoritative || c.name !== undefined
+      const setPrivate = authoritative || c.isPrivate !== undefined
+      const createTrigger = c.kind === 'im' ? 'off' : (opts?.defaultTrigger ?? 'mention')
+      await this.db.$executeRaw`
+        INSERT INTO "integration_channel"
+          ("integrationId", "channelId", "name", "spaceId", "space", "isPrivate", "kind", "trigger",
+           "firstSeenAt", "updatedAt")
+        VALUES (
+          ${integrationId}::uuid, ${c.id}, ${c.name ?? null}, ${c.spaceId ?? null}, ${c.space ?? null},
+          ${c.isPrivate ?? false}, ${c.kind ?? 'channel'}::"ConversationKind",
+          ${createTrigger}::"ChannelTrigger", NOW(), NOW()
+        )
+        ON CONFLICT ("integrationId", "channelId") DO UPDATE SET
+          "name" = CASE WHEN ${setName}::boolean THEN EXCLUDED."name" ELSE "integration_channel"."name" END,
+          "spaceId" = CASE WHEN ${c.spaceId !== undefined}::boolean THEN EXCLUDED."spaceId"
+                           ELSE "integration_channel"."spaceId" END,
+          "space" = CASE WHEN ${c.space !== undefined}::boolean THEN EXCLUDED."space"
+                         ELSE "integration_channel"."space" END,
+          "isPrivate" = CASE WHEN ${setPrivate}::boolean THEN EXCLUDED."isPrivate"
+                             ELSE "integration_channel"."isPrivate" END,
+          "kind" = CASE WHEN ${c.kind !== undefined}::boolean THEN EXCLUDED."kind"
+                        ELSE "integration_channel"."kind" END,
+          -- The fail-closed conversion, resolved against the COMMITTED kind: a row that
+          -- was a channel carried a channel's trigger, which is not an operator's DM
+          -- choice. An already-'im' row keeps whatever the operator set.
+          "trigger" = CASE
+            WHEN ${c.kind === 'im'}::boolean AND "integration_channel"."kind" <> 'im'::"ConversationKind"
+              THEN 'off'::"ChannelTrigger"
+            ELSE "integration_channel"."trigger"
+          END,
+          "updatedAt" = NOW()
+      `
     }
   }
 
@@ -426,14 +463,26 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         integrationId,
         channelId: conversation.id,
         name: conversation.name ?? null,
+        spaceId: conversation.spaceId ?? null,
+        space: conversation.space ?? null,
         isPrivate: conversation.isPrivate ?? false,
         kind: conversation.kind ?? 'channel',
-        ...(opts?.defaultTrigger ? { trigger: opts.defaultTrigger } : {}),
+        // Same fail-closed rule as replaceSnapshot: a created DM row starts Off however
+        // it was discovered, so a later flip to restricted cannot grandfather it in.
+        ...(conversation.kind === 'im'
+          ? { trigger: 'off' as const }
+          : opts?.defaultTrigger
+            ? { trigger: opts.defaultTrigger }
+            : {}),
         ...(opts?.agentId !== undefined ? { agentId: opts.agentId } : {})
       },
       // Refresh only a KNOWN name — a nameless re-report must not clobber a
       // previously resolved counterpart name; trigger/agentId stay operator-owned.
-      update: conversation.name ? { name: conversation.name } : {}
+      update: {
+        ...(conversation.name ? { name: conversation.name } : {}),
+        ...(conversation.spaceId ? { spaceId: conversation.spaceId } : {}),
+        ...(conversation.space ? { space: conversation.space } : {})
+      }
     })
     return toChannelRecord(row)
   }

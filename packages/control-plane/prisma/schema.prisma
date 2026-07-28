@@ -1466,6 +1466,13 @@ model IntegrationChannel {
   integrationId String           @db.Uuid
   channelId     String // platform conversation id (Slack "C…" / DM "D…")
   name          String? // "#deploys" without the hash (or DM counterpart); null if lookup failed
+  // Enclosing space the conversation lives in — a Discord guild. One bot spans several
+  // servers, each with its own "#general", so the console needs it to tell the rows
+  // apart. `spaceId` (the guild snowflake) is the identity — two guilds may share a
+  // name — and `space` is the display label. Null on single-container platforms, on DM
+  // rows, and until the daemon resolves them.
+  spaceId       String?
+  space         String?
   isPrivate     Boolean          @default(false)
   kind          ConversationKind @default(channel)
   // Relay-backed channel rows repeat the effective trigger across each active
