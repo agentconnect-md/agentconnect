@@ -1997,6 +1997,22 @@ export async function adoptDream(agentId: string, dreamId: string, force = false
   return apiPost<DreamDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/adopt`, force ? { force } : {})
 }
 
+/** Accept one mined skill candidate — installs it for this agent (design §7). */
+export async function acceptDreamSkill(agentId: string, dreamId: string, name: string): Promise<DreamDto> {
+  return apiPost<DreamDto>(
+    `${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/skills/${encodeURIComponent(name)}/accept`,
+    {}
+  )
+}
+
+/** Dismiss one mined skill candidate — drops its staging and records the call. */
+export async function dismissDreamSkill(agentId: string, dreamId: string, name: string): Promise<DreamDto> {
+  return apiPost<DreamDto>(
+    `${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/skills/${encodeURIComponent(name)}/dismiss`,
+    {}
+  )
+}
+
 export async function discardDream(agentId: string, dreamId: string): Promise<DreamDto> {
   return apiPost<DreamDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/discard`, {})
 }

@@ -18,7 +18,9 @@ const api = vi.hoisted(() => ({
   listDreamFiles: vi.fn(),
   fetchDreamFileFull: vi.fn(),
   fetchAgentMemoryFull: vi.fn(),
-  listAgentMemory: vi.fn()
+  listAgentMemory: vi.fn(),
+  acceptDreamSkill: vi.fn(),
+  dismissDreamSkill: vi.fn()
 }))
 
 vi.mock('@/lib/api', () => ({
@@ -69,6 +71,8 @@ beforeEach(() => {
   api.listAgentMemory.mockResolvedValue({ exists: true, files: [{ name: 'MEMORY.md', size: 10, mtime: 'x' }] })
   api.adoptDream.mockResolvedValue(dream({ status: 'adopted' }))
   api.discardDream.mockResolvedValue(dream({ status: 'discarded' }))
+  api.acceptDreamSkill.mockResolvedValue(dream())
+  api.dismissDreamSkill.mockResolvedValue(dream())
 })
 
 afterEach(async () => {
@@ -318,5 +322,50 @@ describe('DreamPanel', () => {
 
     expect(host.textContent).toContain('rerun the dream')
     expect(host.textContent).not.toContain('already running')
+  })
+
+  it('recommends mined skills and never installs one without an explicit click', async () => {
+    const skills = [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
+    api.listDreams.mockResolvedValue([dream({ skills })])
+    const host = await render()
+
+    expect(host.textContent).toContain('Suggested skills')
+    expect(host.textContent).toContain('deploy-staging')
+    expect(host.textContent).toContain('Deploy to staging')
+    // Nothing happens until the human acts — skills are never auto-installed.
+    expect(api.acceptDreamSkill).not.toHaveBeenCalled()
+
+    await act(async () => button(host, 'Accept')?.click())
+    expect(api.acceptDreamSkill).toHaveBeenCalledWith(AGENT, 'drm-1', 'deploy-staging')
+  })
+
+  it('dismisses a recommendation without installing it', async () => {
+    const skills = [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
+    api.listDreams.mockResolvedValue([dream({ skills })])
+    const host = await render()
+    await act(async () => button(host, 'Dismiss')?.click())
+    expect(api.dismissDreamSkill).toHaveBeenCalledWith(AGENT, 'drm-1', 'deploy-staging')
+    expect(api.acceptDreamSkill).not.toHaveBeenCalled()
+  })
+
+  it('only recommends candidates still awaiting review', async () => {
+    api.listDreams.mockResolvedValue([
+      dream({
+        skills: [
+          { name: 'already-in', description: 'x', state: 'accepted' },
+          { name: 'already-out', description: 'y', state: 'dismissed' }
+        ]
+      })
+    ])
+    const host = await render()
+    expect(host.textContent).not.toContain('Suggested skills')
+  })
+
+  it('keeps recommendations actionable for a viewer but disabled', async () => {
+    const skills = [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
+    api.listDreams.mockResolvedValue([dream({ skills })])
+    const host = await render({ canEdit: false })
+    expect(button(host, 'Accept')?.disabled).toBe(true)
+    expect(button(host, 'Dismiss')?.disabled).toBe(true)
   })
 })

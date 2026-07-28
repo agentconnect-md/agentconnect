@@ -22,6 +22,8 @@ import {
   listDreams,
   adoptDream,
   discardDream,
+  acceptDreamSkill,
+  dismissDreamSkill,
   cancelDream,
   listDreamFiles,
   fetchDreamFileFull,
@@ -360,6 +362,24 @@ export function DreamPanel({
           />
         ) : null}
 
+        {/* Mined skill recommendations. Deliberately OUTSIDE the store-review
+            block: a skill's review lifecycle is independent of the store
+            proposal (§7), so they stay actionable whether or not the store was
+            adopted, and after the store staging is gone. */}
+        {(dreams ?? []).map((dream) => {
+          const proposed = (dream.skills ?? []).filter((skill) => skill.state === 'proposed')
+          if (proposed.length === 0) return null
+          return (
+            <DreamSkills
+              key={`skills-${dream.dreamId}`}
+              proposed={proposed}
+              busy={busy || !canEdit}
+              onAccept={(name) => void run(() => acceptDreamSkill(agentId, dream.dreamId, name))}
+              onDismiss={(name) => void run(() => dismissDreamSkill(agentId, dream.dreamId, name))}
+            />
+          )
+        })}
+
         {pastDreams.length ? (
           <details className="group">
             <summary
@@ -570,6 +590,57 @@ function DreamReview({
           </div>
         </div>
       ) : null}
+    </div>
+  )
+}
+
+/**
+ * Skills this dream mined and is RECOMMENDING. Never auto-installed: a skill is
+ * executable instruction content that steers every later session, so acceptance
+ * is always an explicit human act (design §7) — unlike the memory store, which
+ * can auto-adopt on a trusted runtime.
+ */
+function DreamSkills({
+  proposed,
+  busy,
+  onAccept,
+  onDismiss
+}: {
+  proposed: Array<{ name: string; description: string }>
+  busy: boolean
+  onAccept: (name: string) => void
+  onDismiss: (name: string) => void
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-(--border-subtle) bg-(--surface-sunken) p-3">
+      <span className="font-sans text-[12px] font-semibold leading-normal text-(--text-secondary)">
+        Suggested skills
+      </span>
+      <span className="font-sans text-[11px] font-normal leading-[1.5] text-(--text-tertiary)">
+        Procedures this agent kept repeating. Accepting one installs it for this agent so later sessions can reuse it —
+        it is never installed for you.
+      </span>
+      {proposed.map((skill) => (
+        <div
+          key={skill.name}
+          className="flex flex-wrap items-start justify-between gap-2 border-t border-(--border-subtle) pt-2 first-of-type:border-t-0 first-of-type:pt-0"
+        >
+          <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+            <span className="font-mono text-[12px] font-medium leading-normal text-(--text-primary)">{skill.name}</span>
+            <span className="font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-secondary)">
+              {skill.description}
+            </span>
+          </span>
+          <span className="flex flex-none items-center gap-2">
+            <Button variant="secondary" disabled={busy} onClick={() => onDismiss(skill.name)}>
+              Dismiss
+            </Button>
+            <Button disabled={busy} onClick={() => onAccept(skill.name)}>
+              Accept
+            </Button>
+          </span>
+        </div>
+      ))}
     </div>
   )
 }

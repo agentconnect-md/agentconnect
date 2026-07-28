@@ -24,6 +24,7 @@ import type {
   DreamDiscardReq,
   DreamFilesReq,
   DreamFileReadReq,
+  DreamSkillReviewReq,
   DreamInfo,
   DreamState,
   DreamListPage,
@@ -116,6 +117,16 @@ class SpyControl {
       exists: true,
       entries: [{ name: 'MEMORY.md', size: 12, mtime: '2026-07-24T00:00:00.000Z' }]
     }
+  }
+  skillAcceptCalls: DreamSkillReviewReq[] = []
+  skillDismissCalls: DreamSkillReviewReq[] = []
+  async dreamSkillAccept(_d: string, req: DreamSkillReviewReq): Promise<DreamState> {
+    this.skillAcceptCalls.push(req)
+    return { dream: dream({ status: 'completed' }) }
+  }
+  async dreamSkillDismiss(_d: string, req: DreamSkillReviewReq): Promise<DreamState> {
+    this.skillDismissCalls.push(req)
+    return { dream: dream({ status: 'completed' }) }
   }
   async dreamFileRead(_d: string, req: DreamFileReadReq): Promise<DreamFileReadContent> {
     this.fileCalls.push(req)
@@ -231,6 +242,81 @@ describe('memory dreaming routes — proxy + managed guard', () => {
       payload: {}
     })
     expect(unplaced.statusCode).toBe(503)
+  })
+})
+
+describe('memory dreaming routes — mined skill review', () => {
+  it('forwards accept and dismiss for one candidate', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: DREAMING_CAPS })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const s = new SpyControl()
+    running = buildHttpApp(prisma, undefined, LIVE, s as unknown as ControlSender)
+
+    const accept = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/memory/dreams/drm-1/skills/deploy-staging/accept`,
+      payload: {}
+    })
+    expect(accept.statusCode).toBe(200)
+    expect(s.skillAcceptCalls[0]).toMatchObject({ agentId: AGENT, dreamId: 'drm-1', name: 'deploy-staging' })
+
+    const dismiss = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/memory/dreams/drm-1/skills/deploy-staging/dismiss`,
+      payload: {}
+    })
+    expect(dismiss.statusCode).toBe(200)
+    expect(s.skillDismissCalls[0]).toMatchObject({ name: 'deploy-staging' })
+  })
+
+  it('rejects a traversal-shaped skill name before reaching the daemon', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: DREAMING_CAPS })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const s = new SpyControl()
+    running = buildHttpApp(prisma, undefined, LIVE, s as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/memory/dreams/drm-1/skills/${encodeURIComponent('../escape')}/accept`,
+      payload: {}
+    })
+    expect(res.statusCode).toBe(400)
+    expect(s.skillAcceptCalls).toHaveLength(0)
+  })
+
+  it('refuses a viewer without contacting the daemon', async () => {
+    const viewer = await makeUser('dream-skill-viewer', 'viewer')
+    await seedDaemon(prisma, DAEMON, { capabilities: DREAMING_CAPS })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON, visibility: 'restricted', sharedWith: [viewer] })
+    const s = new SpyControl()
+    running = buildHttpApp(prisma, { DEFAULT_OWNER_ID: viewer }, LIVE, s as unknown as ControlSender)
+
+    for (const action of ['accept', 'dismiss']) {
+      const res = await running.app.inject({
+        method: 'POST',
+        url: `${ORG}/agents/${AGENT}/memory/dreams/drm-1/skills/deploy-staging/${action}`,
+        payload: {}
+      })
+      expect(res.statusCode, action).toBe(403)
+    }
+    expect(s.skillAcceptCalls).toHaveLength(0)
+    expect(s.skillDismissCalls).toHaveLength(0)
+  })
+
+  it('refuses on a daemon that predates dreaming', async () => {
+    await seedDaemon(prisma, DAEMON) // features: []
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const s = new SpyControl()
+    running = buildHttpApp(prisma, undefined, LIVE, s as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/memory/dreams/drm-1/skills/deploy-staging/accept`,
+      payload: {}
+    })
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ code: 'DAEMON_FEATURE_MISSING' })
+    expect(s.skillAcceptCalls).toHaveLength(0)
   })
 })
 

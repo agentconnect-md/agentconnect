@@ -106,6 +106,7 @@ import {
   DreamFilesDto,
   DreamFileDto,
   DreamIdParam,
+  DreamSkillParam,
   StartDreamBody,
   AdoptDreamBody,
   type AgentDtoT,
@@ -3141,6 +3142,69 @@ export function agentRoutes(deps: HttpDeps) {
           const { dream } = await deps.control.dreamDiscard(agent.daemonId, {
             agentId: agent.id,
             dreamId: req.params.dreamId
+          })
+          return toDreamDto(dream)
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Accept one mined skill candidate — installs it for THIS agent (design §7).
+    r.post(
+      '/agents/:id/memory/dreams/:dreamId/skills/:name/accept',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Accept a mined skill',
+          description:
+            "Install one of this dream's mined skill candidates for the agent. Copies the reviewed skill into the agent's own tree, so discarding the dream later does not uninstall it. 409 if the candidate was already dismissed or the daemon predates dreaming.",
+          operationId: 'acceptAgentMemoryDreamSkill',
+          params: DreamSkillParam,
+          response: { 200: DreamDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id, true)
+        if (!agent) return
+        try {
+          const { dream } = await deps.control.dreamSkillAccept(agent.daemonId, {
+            agentId: agent.id,
+            dreamId: req.params.dreamId,
+            name: req.params.name
+          })
+          return toDreamDto(dream)
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Dismiss one mined skill candidate — drops its staging, records the decision
+    // so later dreams can be told not to propose it again.
+    r.post(
+      '/agents/:id/memory/dreams/:dreamId/skills/:name/dismiss',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Dismiss a mined skill',
+          description:
+            "Reject one of this dream's mined skill candidates. Its staging is dropped and the decision recorded, so later dreams are told not to propose it again. 409 if it was already accepted.",
+          operationId: 'dismissAgentMemoryDreamSkill',
+          params: DreamSkillParam,
+          response: { 200: DreamDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id, true)
+        if (!agent) return
+        try {
+          const { dream } = await deps.control.dreamSkillDismiss(agent.daemonId, {
+            agentId: agent.id,
+            dreamId: req.params.dreamId,
+            name: req.params.name
           })
           return toDreamDto(dream)
         } catch (err) {
