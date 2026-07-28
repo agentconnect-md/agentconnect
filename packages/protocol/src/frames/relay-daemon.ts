@@ -366,7 +366,14 @@ export type RdAgentMsgReason = z.infer<typeof RdAgentMsgReason>
 export const RdAgentMsgAck = z.object({
   deliveryId: z.string().min(1),
   delivered: z.boolean(),
-  reason: RdAgentMsgReason.optional()
+  reason: RdAgentMsgReason.optional(),
+  // session-concept §5.4: the CANONICAL logical session key the target computed for the woken
+  // child. The source cannot derive this itself — the target's key includes a transport scope
+  // derived from the reply integration the RELAY chose, which the source never sees — so without
+  // it a `childSessionId` handed to the caller could never match the child's real row. Returned on
+  // admission (before the row exists), and optional so an older target daemon simply yields no
+  // followable handle rather than a wrong one.
+  childSessionId: z.string().min(1).optional()
 })
 export type RdAgentMsgAck = z.infer<typeof RdAgentMsgAck>
 

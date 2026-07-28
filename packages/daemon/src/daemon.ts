@@ -4819,8 +4819,27 @@ export class Daemon {
     const narrowed = this.narrowPlatform(platform)
     const resolved = this.resolveCpAgent(msg.toAgentId)
     const integrationId = msg.integrationId ?? resolved?.integrationId
+    // §5.4: the CANONICAL child session key, computed with the same inputs `dispatch` will use —
+    // crucially including the transport scope derived from the reply integration the RELAY chose.
+    // The source daemon cannot derive this (it never sees that integration), so we hand it back on
+    // the ACK; without it the `childSessionId` the calling agent receives could never match this
+    // row. Recording the link here also covers the pre-row window: dispatch is fire-and-forget and
+    // we ACK immediately, so a CP status probe can arrive before SessionManager creates the row.
+    const childTransportScope =
+      integrationId !== undefined ? this.transportScopeForIntegrationIds([integrationId]) : undefined
+    // Mirror `transcriptCoords` exactly: an absent thread resolves to the msgId, NOT ''.
+    const childMsgId = `agentcall:${channel}:${msg.deliveryId}`
+    const childSessionId = sessionKey(narrowed, channel, thread ?? childMsgId, msg.toAgentId, childTransportScope)
+    if (msg.originSessionId !== undefined) {
+      if (this.childSessionLinks.size >= 2000) this.childSessionLinks.clear()
+      this.childSessionLinks.set(childSessionId, {
+        parentSessionId: msg.originSessionId,
+        agentId: msg.toAgentId,
+        rowUpdatedAtAtAdmission: this.store.getSession(childSessionId)?.updatedAt ?? null
+      })
+    }
     const normalized: NormalizedMessage = {
-      msgId: `agentcall:${channel}:${msg.deliveryId}`,
+      msgId: childMsgId,
       traceId: msg.deliveryId,
       source: 'agent',
       platform: narrowed,
@@ -4847,7 +4866,7 @@ export class Daemon {
       this.log.error(`relay agentmsg dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
     )
     this.log.info(`relay: rd/agentmsg/fwd ${msg.trustedFromAgentId} → ${msg.toAgentId} delivery=${msg.deliveryId}`)
-    return record({ deliveryId: msg.deliveryId, delivered: true })
+    return record({ deliveryId: msg.deliveryId, delivered: true, childSessionId })
   }
 
   /** An agent's channel-directory display name, used to name the caller in the
@@ -5094,7 +5113,10 @@ export class Daemon {
       // the owning daemon, so mark the link remote and let viewSessionStatus route through the CP.
       if (remote.delivered && originSessionId !== undefined) {
         if (this.childSessionLinks.size >= 2000) this.childSessionLinks.clear()
-        this.childSessionLinks.set(targetSession, {
+        // Key it by the CANONICAL key the target returned (`remote.targetSession`), not our
+        // pre-ACK guess — that canonical value is what we hand the agent, so it is what a later
+        // `viewSessionStatus` will look up.
+        this.childSessionLinks.set(remote.targetSession, {
           parentSessionId: originSessionId,
           agentId: req.toAgentId,
           rowUpdatedAtAtAdmission: null,
@@ -5368,9 +5390,7 @@ export class Daemon {
       if (link.remote) return await this.remoteChildStatus(req.sessionId, callerSessionId, link.agentId)
       return { sessionId: req.sessionId, agentId: link.agentId, status: 'in-progress', state: 'starting' }
     }
-    const link = this.childSessionLinks.get(child.key)
-    const parent = child.originSessionId ?? link?.parentSessionId
-    if (parent !== callerSessionId) return null
+    if (!this.isAuthorizedChildParent(child, callerSessionId)) return null
     // A session cannot be its own child; guard the degenerate case where a caller passes its own
     // id and a stale link would otherwise vouch for it.
     if (child.key === callerKey) return null
@@ -5459,11 +5479,29 @@ export class Daemon {
    */
   childSessionStatusProbe(probe: ChildSessionStatusProbe): ChildSessionStatus {
     const child = this.store.getSession(probe.childSessionId)
-    if (!child) return { found: false }
-    const link = this.childSessionLinks.get(child.key)
-    const parent = child.originSessionId ?? link?.parentSessionId
-    if (parent !== probe.parentSessionId) return { found: false }
+    if (!child) {
+      // Pre-row window: we ACKed admission immediately and dispatch is fire-and-forget, so a probe
+      // can legitimately arrive before SessionManager creates the row. The admission link recorded
+      // at ACK time is the only record — and the only authority — until then.
+      const link = this.childSessionLinks.get(probe.childSessionId)
+      if (!link || link.parentSessionId !== probe.parentSessionId) return { found: false }
+      return { found: true, agentId: link.agentId, status: 'in-progress', state: 'starting' }
+    }
+    if (!this.isAuthorizedChildParent(child, probe.parentSessionId)) return { found: false }
     return { found: true, ...this.collapseChildStatus(child) }
+  }
+
+  /**
+   * Whether `parentSessionId` is a parent this child may be reported to. A logical child session
+   * can be woken by MORE THAN ONE parent over its life, and both are legitimate: the durable
+   * first-wins `originSessionId`, and the most recent waker recorded at admission (the one whose
+   * `sendMessage` just handed that caller the handle). Accepting only the durable link would deny a
+   * second parent the child it just started — the read-side mirror of naming the current waker in
+   * the report-back directive.
+   */
+  private isAuthorizedChildParent(child: SessionRecord, parentSessionId: string): boolean {
+    if (child.originSessionId === parentSessionId) return true
+    return this.childSessionLinks.get(child.key)?.parentSessionId === parentSessionId
   }
 
   /**
@@ -5601,7 +5639,10 @@ export class Daemon {
         // without one, and the target ignores it in that case anyway.
         ...(req.needsReply === true && ctx.originSessionId !== undefined ? { needsReply: true } : {})
       })
-      if (ack.delivered) return { delivered: true, targetSession: ctx.targetSession }
+      // §5.4: prefer the CANONICAL key the target computed — its transport scope depends on the
+      // reply integration the relay chose, which we cannot derive. Fall back to our own guess only
+      // for an older target daemon that returns none (it then simply won't be followable).
+      if (ack.delivered) return { delivered: true, targetSession: ack.childSessionId ?? ctx.targetSession }
       return { delivered: false, targetSession: ctx.targetSession, ...(ack.reason ? { reason: ack.reason } : {}) }
     } catch (err) {
       // No READY relay / forward failed → undeliverable (offline). Retransmit is a follow-up.

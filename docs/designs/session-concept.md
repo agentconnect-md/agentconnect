@@ -400,8 +400,8 @@ work therefore needs a handle on the child and a way to ask how it is going.
 - **Polling: `viewSessionStatus(sessionId)`.** The read counterpart of a
   SessionTarget reply, and authorized as its mirror image: a child may reply
   **up** its lineage, a parent may read **down** it, and neither may reach
-  sideways. The tool accepts the `childSessionId` (or the child's stable ACP id)
-  and returns `{ sessionId, agentId, status, state, updatedAt }`, where `status`
+  sideways. The tool takes the `childSessionId` and returns
+  `{ sessionId, agentId, status, state, updatedAt }`, where `status`
   collapses the section 7.3 lifecycle plus the last turn's outcome:
 
   | `status`      | When                                                                     |
@@ -436,6 +436,20 @@ work therefore needs a handle on the child and a way to ask how it is going.
   lives. An unreachable owning daemon or a disconnected CP is reported as a
   retryable transport failure, never as "not your child" — the two must stay
   distinguishable to the agent.
+
+  The handle itself must come from the owning daemon. A session key includes a
+  transport scope derived from the reply integration the **relay** chose, which
+  the calling daemon never sees — so the target returns the canonical child key on
+  the admission ACK, and that is the `childSessionId` the agent receives. The
+  target also records the lineage before ACKing, so a probe that lands in the
+  window before its session row exists is still answered (`starting`) and still
+  authorized.
+
+- **A child may have more than one parent.** The same logical session can be woken
+  by different parents over its life. Both the durable first-wins
+  `originSessionId` and the most recent waker recorded at admission are authorized
+  to read it — denying the second would refuse a parent the child it just started.
+  The write side matches: the report-back directive names the current waker.
 
 - **Push: `toAgent.needsReply`.** Polling tells the parent _that_ the child
   stopped, never _what_ it produced. `needsReply: true` asks for the result

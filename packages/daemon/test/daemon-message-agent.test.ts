@@ -1389,6 +1389,140 @@ describe('viewSessionStatus: cross-daemon children', () => {
   })
 })
 
+/**
+ * The child handle a remote wake returns must identify the target's ACTUAL row. The owning daemon's
+ * key includes a transport scope derived from the reply integration the RELAY picked, which the
+ * source never sees — so the canonical key rides back on the admission ACK.
+ */
+describe('viewSessionStatus: remote child handle identity', () => {
+  it('returns the canonical key from the ACK, not the source’s unscoped guess', async () => {
+    const root = scaffold([{ id: 'bot-a' }])
+    const { daemon, call } = await bootWithDispatchSpy(root)
+    ;(daemon as any).store.upsertSession({
+      key: sessionKey('slack', 'C1', '100.1', 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'acp-parent-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+    const CANON = 'slack:C1:100.1:bot-b:slack:scopehash'
+    ;(daemon as any).relays = {
+      stop: vi.fn(async () => {}),
+      sendAgentMsg: vi.fn(async (p: any) => ({ deliveryId: p.deliveryId, delivered: true, childSessionId: CANON }))
+    }
+    const asks: any[] = []
+    ;(daemon as any).cpClient = {
+      stop: vi.fn(async () => {}),
+      childSessionStatus: async (req: any) => {
+        asks.push(req)
+        return { found: true, agentId: 'bot-b', status: 'in-progress', state: 'prompting', updatedAt: 3 }
+      }
+    }
+
+    const res = await call(baseReq({ toAgentId: 'bot-b' }))
+    // The transport-scoped key the TARGET computed is what the agent gets and what it can follow.
+    expect(res.targetSession).toBe(CANON)
+    expect(
+      (
+        await (daemon as any).viewSessionStatus({
+          callerAgentId: 'bot-a',
+          platform: 'slack',
+          callerChannel: 'C1',
+          callerThread: '100.1',
+          sessionId: CANON
+        })
+      )?.status
+    ).toBe('in-progress')
+    expect(asks[0].childSessionId).toBe(CANON)
+    await daemon.stop()
+  })
+
+  it('falls back to the locally-derived key when an older target returns none', async () => {
+    const root = scaffold([{ id: 'bot-a' }])
+    const { daemon, call } = await bootWithDispatchSpy(root)
+    ;(daemon as any).relays = {
+      stop: vi.fn(async () => {}),
+      sendAgentMsg: vi.fn(async (p: any) => ({ deliveryId: p.deliveryId, delivered: true }))
+    }
+    const res = await call(baseReq({ toAgentId: 'bot-b' }))
+    expect(res.targetSession).toBe('slack:C1:100.1:bot-b')
+    await daemon.stop()
+  })
+})
+
+/** The TARGET side of a remote wake: it must compute the canonical key, record the admission link
+ *  before ACKing, and answer a probe that lands before SessionManager creates the row. */
+describe('handleRelayAgentMsg: admission handle + pre-row probe window', () => {
+  const ORG = '00000000-0000-0000-0000-0000000000a1'
+
+  it('returns a canonical childSessionId on the ACK and answers a probe before the row exists', async () => {
+    const root = scaffold([{ id: 'bot-b' }])
+    const { daemon } = await bootWithDispatchSpy(root)
+    ;(daemon as any).cpCollab.replace({
+      generation: 1,
+      channels: [
+        {
+          orgId: ORG,
+          platform: 'slack',
+          channelId: 'C1',
+          agents: [
+            {
+              agentId: 'bot-a',
+              daemonId: 'd1',
+              callPolicy: 'all',
+              allowedCallerAgentIds: [],
+              outboundPolicy: 'all',
+              allowedTargetAgentIds: []
+            },
+            {
+              agentId: 'bot-b',
+              daemonId: 'd2',
+              callPolicy: 'all',
+              allowedCallerAgentIds: [],
+              outboundPolicy: 'all',
+              allowedTargetAgentIds: []
+            }
+          ]
+        }
+      ]
+    })
+
+    const ack = await (daemon as any).handleRelayAgentMsg({
+      trustedFromAgentId: 'bot-a',
+      orgId: ORG,
+      toAgentId: 'bot-b',
+      text: '@caller: do it',
+      coords: { platform: 'slack', channel: 'C1', thread: '100.1' },
+      hopCount: 1,
+      deliveryId: 'd-canon-1',
+      originSessionId: 'acp-remote-parent'
+    })
+    expect(ack.delivered).toBe(true)
+    // dispatch is stubbed, so no row exists yet — the ACK handle plus the admission link are all
+    // the owning daemon has, and a probe must still be answerable and authorized.
+    expect(ack.childSessionId).toBe('slack:C1:100.1:bot-b')
+    expect((daemon as any).store.getSession(ack.childSessionId)).toBeUndefined()
+    expect(
+      (daemon as any).childSessionStatusProbe({
+        parentSessionId: 'acp-remote-parent',
+        childSessionId: ack.childSessionId
+      })
+    ).toEqual({ found: true, agentId: 'bot-b', status: 'in-progress', state: 'starting' })
+    // …and only to the parent that actually woke it.
+    expect(
+      (daemon as any).childSessionStatusProbe({
+        parentSessionId: 'acp-someone-else',
+        childSessionId: ack.childSessionId
+      })
+    ).toEqual({ found: false })
+    await daemon.stop()
+  })
+})
+
 /** The OWNING side of a §5.4 status read: the lineage rule is re-enforced where the session lives. */
 describe('childSessionStatusProbe: owning-daemon authorization', () => {
   const CHILD_KEY = sessionKey('slack', 'C1', '100.1', 'bot-b')
@@ -1448,6 +1582,70 @@ describe('childSessionStatusProbe: owning-daemon authorization', () => {
       updatedAt: 1_000
     })
     expect(probe('acp-remote-parent', rootKey)).toEqual({ found: false })
+    await daemon.stop()
+  })
+})
+
+/** A logical child can be woken by more than one parent; BOTH may follow it (§5.4). */
+describe('viewSessionStatus: a reused child is readable by the current waking parent', () => {
+  it('authorizes the most recent waker as well as the durable first parent', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }, { id: 'bot-c' }])
+    const { daemon, call } = await bootWithDispatchSpy(root)
+    const CHILD = sessionKey('slack', 'C1', '100.1', 'bot-b')
+    // The child already exists with parent A as its DURABLE origin.
+    ;(daemon as any).store.upsertSession({
+      key: CHILD,
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'acp-child-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1_000,
+      originSessionId: 'acp-parent-a'
+    })
+    ;(daemon as any).store.setSessionTurnOutcome(CHILD, 'done', 2_000)
+    // Parent C (a different session) now wakes it and receives the handle.
+    const cKey = sessionKey('slack', 'C1', '300.3', 'bot-c')
+    ;(daemon as any).store.upsertSession({
+      key: cKey,
+      agentId: 'bot-c',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '300.3',
+      acpSessionId: 'acp-parent-c',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+    const res = await call(
+      baseReq({ callerAgentId: 'bot-c', callerChannel: 'C1', callerThread: '300.3', toAgentId: 'bot-b' })
+    )
+    expect(res.targetSession).toBe(CHILD)
+
+    const askAs = (agentId: string, thread: string) =>
+      (daemon as any).viewSessionStatus({
+        callerAgentId: agentId,
+        platform: 'slack',
+        callerChannel: 'C1',
+        callerThread: thread,
+        sessionId: CHILD
+      })
+    // C just started this work — it must be able to follow it.
+    expect((await askAs('bot-c', '300.3'))?.status).toBe('in-progress')
+    // …and the owning-side probe agrees, so a cross-daemon C sees the same.
+    expect(
+      (daemon as any).childSessionStatusProbe({ parentSessionId: 'acp-parent-c', childSessionId: CHILD }).found
+    ).toBe(true)
+    // The durable first parent A keeps its access too.
+    expect(
+      (daemon as any).childSessionStatusProbe({ parentSessionId: 'acp-parent-a', childSessionId: CHILD }).found
+    ).toBe(true)
+    // An unrelated session still cannot read it.
+    expect(
+      (daemon as any).childSessionStatusProbe({ parentSessionId: 'acp-stranger', childSessionId: CHILD }).found
+    ).toBe(false)
     await daemon.stop()
   })
 })
