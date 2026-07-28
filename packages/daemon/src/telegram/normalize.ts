@@ -63,6 +63,16 @@ export interface TelegramMessage {
   caption_entities?: TelegramMessageEntity[]
   photo?: TelegramPhotoSize[]
   document?: TelegramDocument
+  /** Telegram membership service records. They are conversation metadata, not
+   *  user-authored chat, and must never become an agent turn. */
+  new_chat_members?: TelegramUser[]
+  left_chat_member?: TelegramUser
+}
+
+/** Membership changes arrive through grammY's broad `message` listener but are
+ * Telegram service records rather than user-authored messages. */
+export function isTelegramMembershipServiceMessage(msg: TelegramMessage): boolean {
+  return msg.new_chat_members !== undefined || msg.left_chat_member !== undefined
 }
 
 /**
