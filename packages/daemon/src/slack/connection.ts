@@ -16,6 +16,8 @@ import {
   ELICIT_ACTION_PREFIX,
   ELICIT_DISMISS_ACTION,
   PERMISSION_ACTION_PREFIX,
+  PERMISSION_UPDATE_ACTION,
+  buildPermissionUpdateCard,
   buildStatusModal,
   decodePermValue,
   type StatusBarInfo,
@@ -25,6 +27,8 @@ import {
 export interface ConsolidatedGroup {
   appToken: string
   botToken: string
+  /** Public Slack app id (A…) used only to build the OAuth permission-update URL. */
+  appId?: string
   integrations: { agentId: string; integrationId: string }[]
 }
 
@@ -61,6 +65,14 @@ export interface SlackStatusOptions {
  *  `SlackPostOptions.chrome`). Exported so the backfill can recognize it. */
 export const SLACK_CHROME_EVENT_TYPE = 'agentconnect_chrome'
 
+/** App-level tokens are structured `xapp-1-{APP_ID}-{epoch}-{hex}`. Keep this
+ * local fallback for hand-authored direct integrations; CP-pushed shared specs
+ * carry the same public id explicitly because they intentionally omit xapp. */
+function slackAppIdFromAppToken(appToken: string): string | undefined {
+  const segment = appToken.split('-')[2]
+  return segment && /^A[A-Z0-9]+$/.test(segment) ? segment : undefined
+}
+
 /** §6.1: one Slack Socket Mode connection per unique appToken.
  *  Shared-mode integrations are SKIPPED here — their inbound lives on a relay, so
  *  the daemon opens no socket for them (it reaches them send-only via RelayClient;
@@ -73,7 +85,14 @@ export function consolidate(agents: Agent[]): Map<string, ConsolidatedGroup> {
       if (int.platform !== 'slack') continue
       if (int.slack.mode === 'shared' || !int.slack.appToken) continue
       const k = int.slack.appToken
-      const g = groups.get(k) ?? { appToken: k, botToken: int.slack.botToken, integrations: [] }
+      const appId = int.slack.appId ?? slackAppIdFromAppToken(k)
+      const g = groups.get(k) ?? {
+        appToken: k,
+        botToken: int.slack.botToken,
+        ...(appId ? { appId } : {}),
+        integrations: []
+      }
+      if (!g.appId && appId) g.appId = appId
       g.integrations.push({ agentId: a.id, integrationId: int.id })
       groups.set(k, g)
     }
@@ -90,7 +109,13 @@ export function consolidateShared(agents: Agent[]): Map<string, ConsolidatedGrou
     for (const int of a.integrations) {
       if (int.platform !== 'slack' || int.slack.mode !== 'shared') continue
       const k = int.slack.botToken
-      const g = groups.get(k) ?? { appToken: '', botToken: k, integrations: [] }
+      const g = groups.get(k) ?? {
+        appToken: '',
+        botToken: k,
+        ...(int.slack.appId ? { appId: int.slack.appId } : {}),
+        integrations: []
+      }
+      if (!g.appId && int.slack.appId) g.appId = int.slack.appId
       g.integrations.push({ agentId: a.id, integrationId: int.id })
       groups.set(k, g)
     }
@@ -197,9 +222,16 @@ type AppLike = {
       open: (a: unknown) => Promise<unknown>
       update: (a: unknown) => Promise<unknown>
     }
-    // auth.test also returns `url` — the workspace's base Slack URL
-    // (e.g. "https://acme.slack.com/"), the root for thread permalinks.
-    auth: { test: () => Promise<{ user_id?: string; bot_id?: string; url?: string }> }
+    // auth.test also returns the team id and `url`, the workspace's base Slack
+    // URL (e.g. "https://acme.slack.com/").
+    auth: {
+      test: () => Promise<{
+        user_id?: string
+        bot_id?: string
+        team_id?: string
+        url?: string
+      }>
+    }
     chat: {
       postMessage: (a: unknown) => Promise<{ ts?: string }>
       update: (a: unknown) => Promise<{ ts?: string }>
@@ -300,17 +332,24 @@ function markdownBlock(text: string): { text: string; blocks: { type: 'markdown'
   return { text, blocks: [{ type: 'markdown', text }] }
 }
 
-/** Slack Web API platform errors carry the rejected scope in `data.needed`.
- *  Match that exact capability so a real chat:write/network failure is never
- *  retried and cannot duplicate a message whose first result was ambiguous. */
-function isMissingCustomizeScope(err: unknown): boolean {
-  if (!err || typeof err !== 'object') return false
+/** Slack Web API platform errors carry rejected OAuth scopes in `data.needed`.
+ * Preserve an `unknown` marker when a test/adapter exposes only the error name:
+ * the user-facing card does not print scope names, but should still appear. */
+function missingScopesFrom(err: unknown): string[] {
+  if (!err || typeof err !== 'object') return []
   const data = (err as { data?: unknown }).data
-  if (!data || typeof data !== 'object') return false
-  const record = data as { error?: unknown; needed?: unknown }
-  if (record.error !== 'missing_scope') return false
-  const needed = Array.isArray(record.needed) ? record.needed : String(record.needed ?? '').split(',')
-  return needed.some((scope) => String(scope).trim() === 'chat:write.customize')
+  const record = data && typeof data === 'object' ? (data as { error?: unknown; needed?: unknown }) : undefined
+  const message = err instanceof Error ? err.message : ''
+  if (record?.error !== 'missing_scope' && !/\bmissing_scope\b/.test(message)) return []
+  const needed = Array.isArray(record?.needed) ? record.needed : String(record?.needed ?? '').split(',')
+  const scopes = needed.map((scope) => String(scope).trim()).filter((scope) => /^[a-z0-9._:-]+$/i.test(scope))
+  return scopes.length > 0 ? [...new Set(scopes)] : ['unknown']
+}
+
+/** Match that exact capability so a real chat:write/network failure is never
+ * retried and cannot duplicate a message whose first result was ambiguous. */
+function isMissingCustomizeScope(err: unknown): boolean {
+  return missingScopesFrom(err).includes('chat:write.customize')
 }
 
 // Re-probe periodically so granting chat:write.customize to an existing Slack app
@@ -354,6 +393,12 @@ export class SlackConnection {
   private queue: SlackSendQueue
   /** Cooldown after Slack proves this installation lacks chat:write.customize. */
   private customUsernameRetryAt = 0
+  /** Slack app/workspace ids are public metadata used only for the OAuth settings link. */
+  private appId = ''
+  private teamId = ''
+  /** A workspace-wide missing scope should create one card, not one per streamed write. */
+  private missingScopes = new Set<string>()
+  private permissionUpdateAnnounced = false
   // Slack's Agent/assistant DM surface can announce the real app-thread root via
   // assistant_thread_started, while later message.im payloads may arrive without
   // thread_ts. Keep the active DM thread root so replies stay inside that thread.
@@ -407,6 +452,7 @@ export class SlackConnection {
   ) {
     this.appToken = deps.group.appToken
     this.botToken = deps.group.botToken
+    this.appId = deps.group.appId ?? slackAppIdFromAppToken(deps.group.appToken) ?? ''
     // Send-only: a bare Web-API client (no Socket Mode, no appToken) wrapped in the
     // AppLike send surface. The event/action/start/stop members are inert — nothing
     // ever registers a handler or opens a socket in this mode.
@@ -425,6 +471,7 @@ export class SlackConnection {
     this.botUserId = auth.user_id ?? ''
     this.botId = auth.bot_id ?? ''
     this.workspaceUrl = auth.url ?? ''
+    this.teamId = auth.team_id && /^T[A-Z0-9]+$/.test(auth.team_id) ? auth.team_id : ''
     log?.debug(`slack: auth.test ok → bot user ${this.botUserId} (bot_id ${this.botId || 'n/a'})`)
     // Send-only (shared bot): no Socket Mode socket, no event/action handlers, no
     // app.start(). Identity is resolved above (for mention rendering / echo id); the
@@ -553,6 +600,9 @@ export class SlackConnection {
     this.app.action(STATUS_ACTION.view, async ({ ack }) => {
       await ack() // URL button — the browser follows the link; nothing to do here.
     })
+    this.app.action(PERMISSION_UPDATE_ACTION, async ({ ack }) => {
+      await ack() // URL button — Slack still sends an interaction payload.
+    })
     // Interactive permission card (buildPermissionCard): every option button shares the
     // `ac_perm:<index>` prefix, matched here by RegExp. The chosen requestId+optionId ride
     // the button `value`; the daemon resolves the pending ACP request from them.
@@ -610,12 +660,60 @@ export class SlackConnection {
     return threadTs ? { ...ev, thread_ts: threadTs } : ev
   }
 
+  private rememberMissingScopes(err: unknown): void {
+    const added = missingScopesFrom(err).filter((scope) => {
+      if (this.missingScopes.has(scope)) return false
+      this.missingScopes.add(scope)
+      return true
+    })
+    if (added.length > 0) this.deps.log?.warn(`slack: bot token missing OAuth scope(s): ${added.join(', ')}`)
+  }
+
+  private permissionUpdateUrl(): string | undefined {
+    if (!/^A[A-Z0-9]+$/.test(this.appId)) return undefined
+    const appId = encodeURIComponent(this.appId)
+    return this.teamId
+      ? `https://app.slack.com/app-settings/${encodeURIComponent(this.teamId)}/${appId}/oauth`
+      : `https://api.slack.com/apps/${appId}/install-on-team?`
+  }
+
+  /** Post the Devin-style reauthorization notice once for this connection.
+   * This bypasses `postChatMessage` deliberately: the card must use the Slack App
+   * identity and must not recursively trigger itself. */
+  private async postPermissionUpdateCard(channel: string, threadTs?: string): Promise<void> {
+    if (this.permissionUpdateAnnounced || this.missingScopes.size === 0) return
+    const updateUrl = this.permissionUpdateUrl()
+    if (!updateUrl) return
+    // Claim before the first await so overlapping status/title failures cannot
+    // race into duplicate cards. A failed post releases the claim for a later retry.
+    this.permissionUpdateAnnounced = true
+    const text =
+      'Permissions update required. Please update and re-authorize this Slack app to ensure all features work correctly.'
+    try {
+      await this.app.client.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text,
+        blocks: buildPermissionUpdateCard(updateUrl),
+        unfurl_links: false,
+        unfurl_media: false,
+        metadata: { event_type: SLACK_CHROME_EVENT_TYPE, event_payload: {} }
+      })
+    } catch (err) {
+      this.permissionUpdateAnnounced = false
+      this.rememberMissingScopes(err)
+      this.deps.log?.debug(`slack: permission update card failed (ch=${channel}): ${(err as Error).message}`)
+    }
+  }
+
   /** Shared chat.postMessage boundary for plain/markdown and Block Kit messages.
    *  `username` + `icon_url` are the per-message identity overrides — both gated by
    *  the same `chat:write.customize` scope, so they share one probe/cooldown. A
    *  missing customize scope is safe to retry because Slack rejected the first
    *  request before creating a message; every other error is propagated. */
   private async postChatMessage(
+    channel: string,
+    threadTs: string | undefined,
     payload: Record<string, unknown>,
     options?: SlackPostOptions
   ): Promise<{ ts?: string }> {
@@ -624,17 +722,28 @@ export class SlackConnection {
     const iconUrl = options?.icon_url?.trim()
     if (username) customize.username = username
     if (iconUrl) customize.icon_url = iconUrl
-    if (Object.keys(customize).length === 0 || Date.now() < this.customUsernameRetryAt)
-      return this.app.client.chat.postMessage(payload)
     try {
-      const result = await this.app.client.chat.postMessage({ ...payload, ...customize })
-      this.customUsernameRetryAt = 0
+      let result: { ts?: string }
+      if (Object.keys(customize).length === 0 || Date.now() < this.customUsernameRetryAt) {
+        result = await this.app.client.chat.postMessage(payload)
+      } else {
+        try {
+          result = await this.app.client.chat.postMessage({ ...payload, ...customize })
+          this.customUsernameRetryAt = 0
+        } catch (err) {
+          this.rememberMissingScopes(err)
+          if (!isMissingCustomizeScope(err)) throw err
+          this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
+          this.deps.log?.debug('slack: chat:write.customize missing — retrying with the app default identity')
+          result = await this.app.client.chat.postMessage(payload)
+        }
+      }
+      await this.postPermissionUpdateCard(channel, threadTs)
       return result
     } catch (err) {
-      if (!isMissingCustomizeScope(err)) throw err
-      this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
-      this.deps.log?.debug('slack: chat:write.customize missing — retrying with the app default identity')
-      return this.app.client.chat.postMessage(payload)
+      this.rememberMissingScopes(err)
+      await this.postPermissionUpdateCard(channel, threadTs)
+      throw err
     }
   }
 
@@ -649,6 +758,8 @@ export class SlackConnection {
       const trailing = options?.trailingBlocks
       const agentAuthorId = options?.agentAuthorId?.trim()
       const res = await this.postChatMessage(
+        channel,
+        threadTs,
         {
           channel,
           thread_ts: threadTs,
@@ -711,6 +822,8 @@ export class SlackConnection {
   ): Promise<string | undefined> {
     return this.queue.enqueue(async () => {
       const res = await this.postChatMessage(
+        channel,
+        threadTs,
         {
           channel,
           thread_ts: threadTs,
@@ -988,8 +1101,10 @@ export class SlackConnection {
           ...(iconUrl ? { icon_url: iconUrl } : {})
         })
       } catch (err) {
+        this.rememberMissingScopes(err)
         this.deps.log?.debug(`slack: setStatus failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`)
       }
+      await this.postPermissionUpdateCard(channel, threadTs)
     })
   }
 
@@ -1009,6 +1124,8 @@ export class SlackConnection {
         })
       )
     } catch (err) {
+      this.rememberMissingScopes(err)
+      await this.postPermissionUpdateCard(channel, threadTs)
       this.deps.log?.debug(`slack: setTitle failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`)
     }
   }

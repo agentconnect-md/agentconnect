@@ -17,10 +17,11 @@ import { agentLabel, type Agent } from '@/lib/data'
 import {
   ApiError,
   createAgentRepo,
-  fetchAllGithubRepos,
   fetchGithubInstallations,
   fetchGithubInstallUrl,
+  fetchGithubRepoRoster,
   fetchGithubRepoAccess,
+  invalidateGithubRepoRosterCache,
   syncGithubInstallations,
   type AgentRepoAuthDto,
   type GithubInstallationDto,
@@ -70,9 +71,8 @@ export default function AddAgentRepoModal({
 }) {
   const [gh, setGh] = useState<{ enabled: boolean; installations: GithubInstallationDto[] } | null>(null)
   const [ghSyncing, setGhSyncing] = useState(false)
-  // Repos merged across every installation (page 1 each, filtered client-side —
-  // same contract as the Add-agent picker); each row remembers its installation
-  // so the per-user preflight probes the right one.
+  // Repos merged across every installation; partial pages render immediately
+  // and each row remembers which installation owns its preflight.
   const [repos, setRepos] = useState<Array<GithubRepoDto & { installationId: string }> | null>(null)
   // At least one installation's roster failed to load — the list may be
   // incomplete, which must not read as "no repositories". `denied` = the
@@ -124,23 +124,15 @@ export default function AddAgentRepoModal({
     if (!gh?.enabled || gh.installations.length === 0) return
     let alive = true
     const ctrl = new AbortController()
-    void Promise.all(
-      gh.installations.map(async (ins) => {
-        try {
-          const repos = await fetchAllGithubRepos(ins.id, ctrl.signal)
-          return { page: repos.map((r) => ({ ...r, installationId: ins.id })) }
-        } catch (e) {
-          const denied = e instanceof ApiError && e.code === 'GITHUB_IDENTITY_REQUIRED'
-          return { error: denied ? ('denied' as const) : ('failed' as const) }
-        }
-      })
-    ).then((batches) => {
+    void fetchGithubRepoRoster(gh.installations, ctrl.signal, (partial) => {
+      if (alive) setRepos(partial)
+    }).then(({ repos, denied, failed }) => {
       if (!alive) return
       // A failed roster read (GitHub outage) must not render as an empty
       // list — keep the pages that loaded and surface the gap with a retry.
       // An identity denial outranks a generic failure for messaging.
-      setReposError(batches.find((b) => b.error === 'denied')?.error ?? batches.find((b) => b.error)?.error ?? null)
-      setRepos(batches.flatMap((b) => b.page ?? []))
+      setReposError(denied ? 'denied' : failed ? 'failed' : null)
+      setRepos(repos)
     })
     return () => {
       alive = false
@@ -367,6 +359,7 @@ export default function AddAgentRepoModal({
                             type="button"
                             className="lnk flex-none text-[12px]"
                             onClick={() => {
+                              invalidateGithubRepoRosterCache()
                               setReposError(null)
                               setRepos(null)
                               setReposNonce((n) => n + 1)

@@ -563,7 +563,9 @@ describe('GET /sessions/:id/messages (history pull via the owning agent)', () =>
             attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: 'aW1hZ2U=' }]
           }
         ],
-        nextCursor: 'c-50'
+        nextCursor: 'c-50',
+        liveCursor: '77',
+        liveMore: true
       }
     )
     running = buildHttpApp(prisma, undefined, LIVE, spy as unknown as ControlSender)
@@ -576,12 +578,29 @@ describe('GET /sessions/:id/messages (history pull via the owning agent)', () =>
     const body = res.json() as {
       messages: Array<{ text: string; attachments?: Array<{ name: string }> }>
       nextCursor: string | null
+      liveCursor: string | null
+      liveMore: boolean
     }
     expect(body.messages[0]!.text).toBe('ship it')
     expect(body.messages[0]!.attachments?.[0]?.name).toBe('screen.webp')
     expect(body.nextCursor).toBe('c-50')
+    expect(body.liveCursor).toBe('77')
+    expect(body.liveMore).toBe(true)
     expect(spy.histCalls[0]!.daemonId).toBe(DAEMON)
     expect(spy.histCalls[0]!.req).toEqual({ agentId: AGENT, sessionId: SESSION, cursor: 'c-100', limit: 25 })
+
+    const tail = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions/${SESSION}/messages?after=77&limit=200`
+    })
+    expect(tail.statusCode).toBe(200)
+    expect(spy.histCalls[1]!.req).toEqual({ agentId: AGENT, sessionId: SESSION, after: '77', limit: 200 })
+
+    const conflicting = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions/${SESSION}/messages?cursor=older&after=77`
+    })
+    expect(conflicting.statusCode).toBe(400)
   })
 
   it('404s for an unknown session', async () => {

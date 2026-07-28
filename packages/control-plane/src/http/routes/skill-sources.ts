@@ -41,6 +41,62 @@ import {
   type SkillSourceDtoT
 } from '../dto/index.js'
 
+/**
+ * Serialize reference-sensitive skill-source lifecycle operations (modeled on
+ * `serializeByProvider` in routes/mcp-providers.ts). Agents bind a source by NAME —
+ * every enable-ref is "<source>/<skill>" / "<source>/*" / "<source>" — and DELETE
+ * refuses while any agent still enables it, but that check-then-delete is only safe
+ * if agent enable-list writes can't land inside the window. Chaining the DELETE's
+ * check→drop, the create-side name-capture guard, sharing flips, and every agent
+ * write whose submitted enable-list references this source
+ * (withSubmittedSkillSourceChains in routes/agents.ts) through one per-source
+ * promise chain makes each reference check a critical section.
+ *
+ * Chains are keyed by (orgId, name) — the DURABLE binding key — not the source row
+ * id: agents store the NAME, so lifecycle events on different rows under the same
+ * name (drop A, create B) must serialize with each other and with agent enable-list
+ * writes; an id-keyed chain dies with its row and lets a same-name recreate slip
+ * into the window. ponytail: in-process lock, sufficient because the CP is a single
+ * Fastify process; swap to pg_advisory_xact_lock (see
+ * persistence/repositories/hook.repo.ts) if it goes multi-instance.
+ */
+const sourceChains = new Map<string, Promise<unknown>>()
+
+const sourceChainKey = (orgId: string, name: string) => `${orgId} ${name}`
+
+export function serializeBySkillSource<T>(orgId: string, name: string, run: () => Promise<T>): Promise<T> {
+  const key = sourceChainKey(orgId, name)
+  const prev = sourceChains.get(key) ?? Promise.resolve()
+  const result = prev.then(run, run)
+  const settled = result.then(
+    () => undefined,
+    () => undefined
+  )
+  sourceChains.set(key, settled)
+  void settled.finally(() => {
+    if (sourceChains.get(key) === settled) sourceChains.delete(key)
+  })
+  return result
+}
+
+/**
+ * Serialize one operation across SEVERAL source-name chains — how an agent
+ * enable-list write (routes/agents.ts) joins the chain of every source its
+ * submitted refs name, so it cannot interleave with a DELETE between that delete's
+ * reference check and its row drop, nor with a same-name source create. Names are
+ * chained whether or not they currently resolve to a source row (the name IS the
+ * durable key). Chains are entered in sorted order so two multi-name writers can't
+ * deadlock waiting on each other's tails.
+ */
+export function serializeBySkillSourceNames<T>(
+  orgId: string,
+  names: readonly string[],
+  run: () => Promise<T>
+): Promise<T> {
+  const sorted = [...new Set(names)].sort()
+  return sorted.reduceRight<() => Promise<T>>((inner, n) => () => serializeBySkillSource(orgId, n, inner), run)()
+}
+
 /** Extract `{owner, repo, ref?}` from a source string (shorthand, https, or ssh
  *  GitHub form). Returns null for a non-GitHub / unparseable source. */
 function parseGithubRepo(source: string): { owner: string; repo: string; ref?: string; subDir?: string } | null {
@@ -258,10 +314,10 @@ export function skillSourceRoutes(deps: HttpDeps) {
           tags: [Tag.Skills],
           summary: 'Register a skill source',
           description:
-            'Register an org-level shared-skills source (a repo / git URL / tree path fed to `npx skills`). `skills` empty ⇒ install every skill the source exposes.',
+            'Register an org-level shared-skills source (a repo / git URL / tree path fed to `npx skills`). `skills` empty ⇒ install every skill the source exposes. Rejected with 409 while any agent already enables skills under the requested source name — agents bind by name, so a new source must not silently capture existing selections.',
           operationId: 'createSkillSource',
           body: CreateSkillSourceBody,
-          response: { 201: SkillSourceDto, 400: ErrorDto, 403: ErrorDto }
+          response: { 201: SkillSourceDto, 400: ErrorDto, 403: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -281,19 +337,36 @@ export function skillSourceRoutes(deps: HttpDeps) {
         // A subdir source needs a ref; if we couldn't resolve one (owner has no org
         // installation, non-GitHub source) reject rather than let the daemon assume `main`.
         if (req.body.subDir && !ref) return reply.code(400).send(subdirNeedsRef)
-        const source = await deps.repos.skillSource.create({
-          orgId: orgOf(req),
-          name: req.body.name,
-          source: req.body.source,
-          ...(repoId !== undefined ? { githubRepoId: repoId } : {}),
-          ...(ref !== undefined ? { ref } : {}),
-          ...(req.body.subDir !== undefined ? { subDir: req.body.subDir } : {}),
-          skills: req.body.skills,
-          ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
-          ...(sharedWith ? { sharedWith } : {}),
-          ...(req.principal ? { createdByUserId: req.principal.userId } : {})
+        // Name-capture guard — the mirror image of the delete guard, in the same
+        // (orgId, name) chain: agents bind by NAME, so registering a source under a
+        // name agents already enable would capture their installs onto this new
+        // source without any per-agent consent. Refuse while referenced; the chain
+        // makes check→create atomic against enable-list writes and a same-name delete.
+        const created = await serializeBySkillSource(orgOf(req), req.body.name, async () => {
+          const agents = await deps.repos.agent.list(orgOf(req))
+          if (agents.some((a) => a.skills.some((ref) => parseSkillRef(ref).source === req.body.name))) return null
+          return deps.repos.skillSource.create({
+            orgId: orgOf(req),
+            name: req.body.name,
+            source: req.body.source,
+            ...(repoId !== undefined ? { githubRepoId: repoId } : {}),
+            ...(ref !== undefined ? { ref } : {}),
+            ...(req.body.subDir !== undefined ? { subDir: req.body.subDir } : {}),
+            skills: req.body.skills,
+            ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
+            ...(sharedWith ? { sharedWith } : {}),
+            ...(req.principal ? { createdByUserId: req.principal.userId } : {})
+          })
         })
-        return reply.code(201).send(toDto(source, ctxOf(req)))
+        if (!created) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message:
+              'an agent already enables skills from a source with this name; unselect it there first or pick another name'
+          })
+        }
+        return reply.code(201).send(toDto(created, ctxOf(req)))
       }
     )
 
@@ -375,10 +448,15 @@ export function skillSourceRoutes(deps: HttpDeps) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot change sharing' })
         }
         const sharedWith = await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
-        const source = await deps.repos.skillSource.setSharing(existing.id, {
-          visibility: req.body.visibility,
-          sharedWith
-        })
+        // The write joins the (orgId, name) chain: agent enable-list writes authorize
+        // against source visibility INSIDE that chain (routes/agents.ts), so a sharing
+        // flip must not land between their check and their commit.
+        const source = await serializeBySkillSource(orgOf(req), existing.name, () =>
+          deps.repos.skillSource.setSharing(existing.id, {
+            visibility: req.body.visibility,
+            sharedWith
+          })
+        )
         return toDto(source, ctxOf(req))
       }
     )
@@ -400,16 +478,30 @@ export function skillSourceRoutes(deps: HttpDeps) {
         if (denyViewerWrite(req, reply)) return
         const existing = await deps.repos.skillSource.get(req.params.id)
         if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) return notFound(reply)
-        const agents = await deps.repos.agent.list(orgOf(req))
-        const referenced = agents.some((a) => a.skills.some((ref) => parseSkillRef(ref).source === existing.name))
-        if (referenced) {
+        // Agents bind a source by NAME (their enable-refs), so deleting while
+        // referenced would leave dangling selectors that silently re-bind to any
+        // future source recreated under the same name. The check lives INSIDE the
+        // (orgId, name) chain because agent enable-list writes and same-name source
+        // creates join it too (withSubmittedSkillSourceChains in routes/agents.ts,
+        // the create guard above): a concurrent enable cannot slip a reference in
+        // between this read and the row drop — it either commits first (we 409) or
+        // waits until the source is gone (its in-fence visibility check then refuses
+        // the now-unknown name, and the create guard keeps the name uncapturable
+        // while referenced).
+        const outcome = await serializeBySkillSource(orgOf(req), existing.name, async () => {
+          const agents = await deps.repos.agent.list(orgOf(req))
+          const referenced = agents.some((a) => a.skills.some((ref) => parseSkillRef(ref).source === existing.name))
+          if (referenced) return 'referenced' as const
+          await deps.repos.skillSource.delete(existing.id)
+          return 'deleted' as const
+        })
+        if (outcome === 'referenced') {
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,
             message: 'skill source is still enabled by one or more agents; unselect it there first'
           })
         }
-        await deps.repos.skillSource.delete(existing.id)
         return reply.code(204).send(null)
       }
     )

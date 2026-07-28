@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'
 import { stringify as stringifyYaml } from 'yaml'
-import type { DreamInfo, DreamTrigger, MemoryDreamingPolicy } from '@agentconnect.md/protocol'
+import type { DreamInfo, DreamTrigger, MemoryDreamingPolicy, SessionUsage } from '@agentconnect.md/protocol'
 import {
   MEMORY_INDEX,
   MEMORY_HISTORY_FILENAME,
@@ -82,6 +82,32 @@ export interface DreamStorePort {
   ): { sender: string; text: string; kind?: string; input?: string }[]
 }
 
+export interface DreamExtractionResult {
+  output: string
+  trustedChannel: boolean
+  /** The short-lived ACP id is retained for correlation after the runtime
+   *  session itself is discarded. */
+  sessionId?: string
+  runtime?: string
+  model?: string
+  stopReason?: string
+  usage?: SessionUsage
+}
+
+export type DreamLifecycleEventType =
+  | 'memory.dream.started'
+  | 'memory.dream.completed'
+  | 'memory.dream.failed'
+  | 'memory.dream.adopted'
+  | 'memory.dream.skill_accepted'
+  | 'memory.dream.skill_dismissed'
+
+export interface DreamLifecycleEvent {
+  type: DreamLifecycleEventType
+  dream: DreamInfo
+  skillName?: string
+}
+
 export interface DreamRunnerDeps {
   agentDirByAgent(agentId: string): string | undefined
   /** The agent's dreaming policy, or undefined when dreaming is not enabled
@@ -97,8 +123,12 @@ export interface DreamRunnerDeps {
     agentId: string,
     systemPrompt: string,
     prompt: string,
-    signal: AbortSignal
-  ): Promise<{ output: string; trustedChannel: boolean }>
+    signal: AbortSignal,
+    context: { dreamId: string; trigger: DreamTrigger; sessionIds: string[] }
+  ): Promise<DreamExtractionResult>
+  /** Metadata-only lifecycle tap. Observer failures are contained by the
+   *  runner and can never change the job outcome. */
+  onEvent?(event: DreamLifecycleEvent): void
   log: { info(msg: string): void; warn(msg: string): void }
   now?(): Date
   /** Grace period after a cancel before the runner ABANDONS the extraction and
@@ -180,12 +210,14 @@ export class DreamRunner {
     // never complete (its extraction session is gone). Fail it, keep the staging
     // for inspection.
     for (const dream of this.deps.store.openDreams()) {
-      this.deps.store.updateDream({
+      const failed: DreamInfo = {
         ...dream,
         status: 'failed',
         error: { type: 'daemon_restart', message: 'the daemon restarted while this dream was in flight' },
         endedAt: this.nowIso()
-      })
+      }
+      this.deps.store.updateDream(failed)
+      this.emitLifecycle({ type: 'memory.dream.failed', dream: failed })
     }
     // The LocalStore migration marks proposals stranded by adoptions made on an
     // older daemon. Their metadata is already safe; sweep the corresponding
@@ -203,6 +235,14 @@ export class DreamRunner {
 
   private nowIso(): string {
     return (this.deps.now?.() ?? new Date()).toISOString()
+  }
+
+  private emitLifecycle(event: DreamLifecycleEvent): void {
+    try {
+      this.deps.onEvent?.(event)
+    } catch (err) {
+      this.deps.log.warn(`dream lifecycle observer failed (${err instanceof Error ? err.name : 'unknown'})`)
+    }
   }
 
   private dirFor(agentId: string): string {
@@ -266,6 +306,7 @@ export class DreamRunner {
         createdAt: this.nowIso()
       }
       this.deps.store.insertDream(dream)
+      this.emitLifecycle({ type: 'memory.dream.started', dream })
       this.active.set(agentId, dream.dreamId)
       const aborter = new AbortController()
       this.aborters.set(dream.dreamId, aborter)
@@ -334,13 +375,24 @@ export class DreamRunner {
       // A cancel that landed before extraction wins: skip the expensive call.
       if (this.deps.store.getDream(agentId, dreamId)?.status !== 'running') return
 
-      const extracted = await this.extractWithBackstop(agentId, prompt, signal, mineSkills)
+      const extracted = await this.extractWithBackstop(dream, prompt, signal, mineSkills)
 
       // A cancel that landed mid-extraction wins: drop the output unstaged. This
       // also covers the backstop firing (extraction ignored the cancel and never
       // settled within the grace window) — the reservation is released either way.
       if (this.deps.store.getDream(agentId, dreamId)?.status !== 'running' || extracted.abandoned) return
       const output = extracted.output
+      const execution = {
+        ...(extracted.sessionId ? { executionSessionId: extracted.sessionId } : {}),
+        ...(extracted.runtime ? { runtime: extracted.runtime } : {}),
+        ...(extracted.model ? { model: extracted.model } : {}),
+        ...(extracted.stopReason ? { stopReason: extracted.stopReason } : {})
+      }
+      const usage = {
+        inputBytes: Buffer.byteLength(prompt),
+        outputBytes: Buffer.byteLength(output),
+        ...(extracted.usage ?? {})
+      }
       // Bind auto-adopt's gate to the host that ACTUALLY produced this proposal.
       // Re-reading the agent's current host later would let a host replacement
       // between extraction and adoption authorize an untrusted proposal.
@@ -353,7 +405,8 @@ export class DreamRunner {
         this.finish(agentId, dreamId, {
           status: 'failed',
           error: { type: 'unparseable_proposal', message: 'the dream reply carried no valid store proposal' },
-          usage: { inputBytes: Buffer.byteLength(prompt), outputBytes: Buffer.byteLength(output) }
+          ...execution,
+          usage
         })
         return
       }
@@ -369,6 +422,7 @@ export class DreamRunner {
       }
       this.finish(agentId, dreamId, {
         status: 'completed',
+        ...execution,
         // Candidates start `proposed`; nothing installs them until a human
         // accepts each one individually (design §7).
         ...(proposal.skills.length
@@ -380,7 +434,7 @@ export class DreamRunner {
               }))
             }
           : {}),
-        usage: { inputBytes: Buffer.byteLength(prompt), outputBytes: Buffer.byteLength(output) }
+        usage
       })
       this.deps.log.info(`dream ${dreamId} completed for agent ${agentId} (${proposal.files.length + 1} staged files)`)
     } catch (err) {
@@ -409,21 +463,19 @@ export class DreamRunner {
    * session is discarded daemon-side.)
    */
   private async extractWithBackstop(
-    agentId: string,
+    dream: DreamInfo,
     prompt: string,
     signal: AbortSignal,
     mineSkills = false
-  ): Promise<
-    | { abandoned: false; output: string; trustedChannel: boolean }
-    | { abandoned: true; output: ''; trustedChannel: false }
-  > {
+  ): Promise<({ abandoned: false } & DreamExtractionResult) | { abandoned: true; output: ''; trustedChannel: false }> {
     const graceMs = this.deps.cancelGraceMs ?? 30_000
-    const extraction = this.deps.extract(agentId, dreamSystemPrompt(mineSkills), prompt, signal).then(
-      (result) => ({ abandoned: false as const, output: result.output, trustedChannel: result.trustedChannel }),
-      (err) => {
-        throw err
-      }
-    )
+    const extraction = this.deps
+      .extract(dream.agentId, dreamSystemPrompt(mineSkills), prompt, signal, {
+        dreamId: dream.dreamId,
+        trigger: dream.trigger,
+        sessionIds: dream.sessionIds
+      })
+      .then((result) => ({ abandoned: false as const, ...result }))
     let timer: ReturnType<typeof setTimeout> | undefined
     const backstop = new Promise<{ abandoned: true; output: ''; trustedChannel: false }>((resolve) => {
       const arm = () => {
@@ -500,7 +552,10 @@ export class DreamRunner {
 
   private finish(agentId: string, dreamId: string, patch: Partial<DreamInfo>): void {
     const dream = this.getDream(agentId, dreamId)
-    this.deps.store.updateDream({ ...dream, ...patch, endedAt: this.nowIso() })
+    const next = { ...dream, ...patch, endedAt: this.nowIso() }
+    this.deps.store.updateDream(next)
+    if (next.status === 'completed') this.emitLifecycle({ type: 'memory.dream.completed', dream: next })
+    if (next.status === 'failed') this.emitLifecycle({ type: 'memory.dream.failed', dream: next })
   }
 
   cancel(agentId: string, dreamId: string): DreamInfo {
@@ -679,6 +734,7 @@ export class DreamRunner {
           const adoptedAt = this.nowIso()
           const adopted: DreamInfo = { ...this.getDream(agentId, dreamId), status: 'adopted', endedAt: adoptedAt }
           this.deps.store.updateDream(adopted)
+          this.emitLifecycle({ type: 'memory.dream.adopted', dream: adopted })
           const superseded = await this.supersedeCompletedDreams(agentId, dreamId, adoptedAt)
           this.deps.log.info(
             `dream ${dreamId} adopted for agent ${agentId} (${staged.length} files, ${superseded} competing proposal(s) superseded)`
@@ -885,11 +941,28 @@ export class DreamRunner {
    * review metadata, and dismissal all work; only acceptance waits.
    */
   async skillAccept(agentId: string, dreamId: string, name: string): Promise<DreamInfo> {
-    this.dirFor(agentId)
-    this.skillCandidate(agentId, dreamId, name) // 404 an unknown candidate first
-    throw new DreamStateError(
-      'accepting a mined skill is not available yet — it needs containment-safe runtime registration'
-    )
+    const dir = this.dirFor(agentId)
+    return this.withLock(agentId, async () => {
+      const { dream, skill } = this.skillCandidate(agentId, dreamId, name)
+      if (skill.state === 'accepted') return dream // idempotent
+      if (skill.state === 'dismissed') throw new DreamStateError('this skill candidate was already dismissed')
+
+      // COPY into the agent's own skills tree rather than referencing the dream
+      // staging, so discarding the dream later cannot uninstall a skill the user
+      // already accepted. Session prep materializes it into the runtime's skill
+      // root (skills/dream-skill-install.ts) under symlink-safe containment.
+      const staged = join(this.dreamDir(agentId, dreamId), 'skills', name)
+      const target = join(dir, AGENT_SKILLS_DIRNAME, name)
+      await fsp.mkdir(join(dir, AGENT_SKILLS_DIRNAME), { recursive: true })
+      await fsp.rm(target, { recursive: true, force: true })
+      await fsp.cp(staged, target, { recursive: true, dereference: false, errorOnExist: false })
+
+      const next = this.setSkillState(agentId, dreamId, name, 'accepted')
+      this.emitLifecycle({ type: 'memory.dream.skill_accepted', dream: next, skillName: name })
+      await this.sweepReviewedStaging(agentId, next)
+      this.deps.log.info(`dream ${dreamId}: accepted skill "${name}" for agent ${agentId}`)
+      return next
+    })
   }
 
   /** Dismiss one candidate: drop its staging and record the decision, so later
@@ -902,6 +975,7 @@ export class DreamRunner {
       if (skill.state === 'accepted') throw new DreamStateError('this skill candidate was already accepted')
       await fsp.rm(join(this.dreamDir(agentId, dreamId), 'skills', name), { recursive: true, force: true })
       const next = this.setSkillState(agentId, dreamId, name, 'dismissed')
+      this.emitLifecycle({ type: 'memory.dream.skill_dismissed', dream: next, skillName: name })
       await this.sweepReviewedStaging(agentId, next)
       return next
     })

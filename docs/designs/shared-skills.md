@@ -217,6 +217,46 @@ Every route follows `openapi.ts` requirements for tags, summary, and
 | `PUT /skill-sources/:id/sharing` | Set `ResourceVisibility`, matching MCP providers.                                                                                                                                                                                                                                                                                |
 | `DELETE /skill-sources/:id`      | Delete a source. Return 409 while agents reference it, or support `?force=` to detach it from each agent and repush them.                                                                                                                                                                                                        |
 
+#### Sharing hides a source from the registry, never from the agent that runs it
+
+Sharing governs the **registry**: `GET /skill-sources` and
+`GET /skill-sources/:id` apply `canView` on the source, so a restricted source is
+invisible to a collaborator it was not shared with. It does **not** govern what an
+agent already installs. The definition rides inline on that agent's `AgentSpec`
+regardless, so hiding it from the agent's own page buys no confidentiality (skill
+sources are public repositories with no grant and no secret side-table) and only
+leaves an unexplained row on the Tools & Skills tab.
+
+`GET /agents/:id/skill-sources` therefore resolves the agent's enable-list refs
+gated on **viewing the agent**, returning a slimmer DTO without the source's own
+`visibility`/`sharedWith` (seeing an agent does not entitle the caller to the
+source's share set). Refs to a source that no longer exists resolve to nothing and
+the console renders no tile for them — they install nothing either
+(`resolveAgentSkillEntries` drops unknown names), so there is nothing truthful for
+a placeholder row to say.
+
+Crossing that boundary requires the source string to be **secret-free**, which is
+now enforced rather than assumed. `SkillSourceArg` rejects a scheme URL that embeds
+userinfo (`https://<token>@host/repo`, `https://user:pw@host/repo`, including a
+password containing `@`) and any query or fragment (`?access_token=…`), which
+`npx skills` has no use for. The scp-like `git@github.com:owner/repo` form has no
+userinfo and `ssh://git@host/repo` names a role, so both still pass.
+
+Rows stored before that guard are redacted at the agent-scoped response boundary by
+`redactSourceCredentials`, which delegates to the protocol's **`redactGitUrlSecrets`**
+rather than re-deriving the rules — that codec is total and already handles the last
+authority `@`, query/fragment stripping, backslash authority ambiguity, and
+malformed historical values. Bare `owner/repo` shorthand is passed through verbatim
+(it cannot carry a secret, and the codec would expand it to a full URL). The
+registry response and the `AgentSpec` the daemon clones from are untouched — the
+daemon needs the real URL.
+
+Writes are unchanged: adding a ref is still gated on seeing the **source**
+(`enablingUnseenSkillDenied`, §9). A tile the caller reaches only through the agent
+is therefore **off-only** and offers no per-skill picker — it can be turned off,
+not back on, the same rule `AgentToolsCard` applies to a saved MCP name the runtime
+can't attach.
+
 ### Distribution inline with `agent/upsert`, without a dedicated frame
 
 There is **no `skillsource/*` frame and no `RegisterOk.skillSources`**. Source

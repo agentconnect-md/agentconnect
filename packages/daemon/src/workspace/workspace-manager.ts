@@ -21,6 +21,7 @@ import {
 import type { Agent } from '../agents/agent-schema.js'
 import { makeLogger } from '../log.js'
 import { installSkills } from '../skills/install-skills.js'
+import { materializeAcceptedDreamSkills } from '../skills/dream-skill-install.js'
 import {
   assertSafeWorkspaceGitConfig,
   cloneGitEnv,
@@ -54,6 +55,17 @@ async function withSkills(agent: Agent, acpCwd: string): Promise<string> {
     },
     warn: (msg) => skillsLog.warn(msg)
   })
+  // Skills the user ACCEPTED from a dream are daemon-owned (they live under the
+  // agent root, not in `agent.skills`), so they get their own materialization
+  // pass — one that treats every path in the agent-writable cwd as hostile.
+  // Runs AFTER installSkills so its reconciliation cannot remove these copies.
+  // `dir` is present on every discovered agent (LoadedAgent); a bare spec has none.
+  const agentRoot = (agent as { dir?: string }).dir
+  if (agentRoot) {
+    await materializeAcceptedDreamSkills({ dir: agentRoot, runtime: agent.runtime }, acpCwd, {
+      warn: (msg) => skillsLog.warn(msg)
+    })
+  }
   return acpCwd
 }
 

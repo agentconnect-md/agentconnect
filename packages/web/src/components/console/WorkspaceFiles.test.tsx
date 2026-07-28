@@ -168,7 +168,7 @@ it('keeps an inline new-file draft across the desktop-to-mobile breakpoint', asy
   mobile.value = true
   await rerenderWorkspace()
 
-  const editor = container?.querySelector('form[aria-label="New workspace file"]')
+  const editor = container?.querySelector('form[aria-label="New file"]')
   const mobilePath = container?.querySelector<HTMLInputElement>('input[aria-label="New file path"]')
   const mobileContent = container?.querySelector<HTMLTextAreaElement>('textarea[aria-label="New file content"]')
   expect(editor?.closest('.card')).not.toBeNull()

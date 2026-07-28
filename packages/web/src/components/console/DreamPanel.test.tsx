@@ -23,6 +23,8 @@ const api = vi.hoisted(() => ({
 
 vi.mock('@/lib/api', () => ({
   ...api,
+  fmtCountCompact: (value: number) => (value >= 1000 ? `${Math.round(value / 1000)}K` : String(value)),
+  fmtCost: (amount: number) => `$${amount.toFixed(2)}`,
   isDreamTerminal: (s: string) => s !== 'pending' && s !== 'running'
 }))
 
@@ -44,6 +46,10 @@ const dream = (over: Partial<Record<string, unknown>> = {}) => ({
   trigger: 'manual',
   sessionIds: ['s1', 's2'],
   snapshotDigest: 'sha256:x',
+  executionSessionId: null,
+  runtime: null,
+  model: null,
+  stopReason: null,
   instructions: null,
   skills: null,
   usage: null,
@@ -73,12 +79,12 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
-async function render(props: { canEdit?: boolean } = {}) {
+async function render(props: { canEdit?: boolean; sessionBasePath?: string } = {}) {
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
   await act(async () => {
-    root?.render(<DreamPanel agentId={AGENT} canEdit={props.canEdit ?? true} />)
+    root?.render(<DreamPanel agentId={AGENT} canEdit={props.canEdit ?? true} sessionBasePath={props.sessionBasePath} />)
   })
   return container
 }
@@ -122,6 +128,44 @@ describe('DreamPanel', () => {
     expect(card).not.toBeNull()
     expect(header?.querySelector('.cardtitle')?.textContent).toBe('Dreams')
     expect(button(header as HTMLElement, 'Dream now')).toBeTruthy()
+  })
+
+  it('marks older completed runs without token metering as unavailable', async () => {
+    api.listDreams.mockResolvedValue([dream()])
+    const host = await render()
+    expect(host.textContent).toContain('Tokens unavailable')
+    expect(host.textContent).not.toContain('sessions mined')
+  })
+
+  it('leads with this run’s token/cost usage and links its execution session', async () => {
+    api.listDreams.mockResolvedValue([
+      dream({
+        executionSessionId: 'dream-session-1',
+        runtime: 'codex',
+        model: 'gpt-5.6',
+        stopReason: 'end_turn',
+        usage: {
+          inputBytes: 2048,
+          outputBytes: 512,
+          totalTokens: 12_400,
+          inputTokens: 10_000,
+          outputTokens: 2_400,
+          costAmount: 0.12,
+          costCurrency: 'USD'
+        }
+      })
+    ])
+
+    const host = await render({ sessionBasePath: '/acme/sessions' })
+    expect(host.textContent).toContain('gpt-5.6')
+    expect(host.textContent).toContain('5m')
+    expect(host.textContent).toContain('12K tokens')
+    expect(host.textContent).toContain('$0.12')
+    expect(host.textContent).toContain('2.0 KB prompt')
+    expect(host.querySelector('a[href="/acme/sessions/dream-session-1"]')?.textContent).toContain('Open session')
+    expect(host.textContent).not.toContain('sessions mined')
+    expect(host.textContent).not.toContain('Sources')
+    expect(host.querySelector('a[href="/acme/sessions/s1"]')).toBeNull()
   })
 
   it('blocks the trigger for a viewer, with the reason', async () => {

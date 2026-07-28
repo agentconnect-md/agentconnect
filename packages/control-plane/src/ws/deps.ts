@@ -53,13 +53,13 @@ export interface DaemonWsDeps {
   events: SessionEventSink
   /** Ownership check for the `integration/channels` EVT (integration → daemon scope). */
   integration: IntegrationRepo
-  /** Persists channel-membership snapshots from the `integration/channels` EVT. */
+  /** Persists authoritative membership snapshots and partial conversation reports. */
   integrationChannel: IntegrationChannelRepo
-  /** Shares the HTTP agent-move boundary with daemon-originated channel snapshots. */
+  /** Shares the HTTP agent-move boundary with daemon-originated conversation reports. */
   agentMutations: AgentMutationGate
   /** Resumes durable move tombstones advertised by a reconnecting daemon. */
   recoverStagedAgent: (agentId: AgentId, daemonId: DaemonId, moveId: string) => Promise<void>
-  /** Refreshes relay and daemon collaboration snapshots after accepted membership changes. */
+  /** Refreshes relay and daemon collaboration snapshots after accepted conversation changes. */
   collabRoutes: CollabRoutesService
   /** Stamps `lastRunAt` from the `cron/report` EVT (daemon-scoped, latest-wins). */
   cron: CronRepo

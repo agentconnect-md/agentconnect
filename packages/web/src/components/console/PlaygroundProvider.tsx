@@ -10,9 +10,10 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { agentLabel, type Agent, type Session, type SessionImage, type SessionStep } from '@/lib/data'
-import { webchatWsUrl, fmtCountCompact, fmtCost, ApiError } from '@/lib/api'
+import { webchatWsUrl, fmtCountCompact, fmtCost, ApiError, type SessionMessageDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { sessionAfterModelSelection } from '@/lib/session-runtime-controls'
+import { reconcilePersistedLiveSteps } from '@/lib/session-transcript'
 import {
   acceptWebchatDone,
   acceptWebchatOutput,
@@ -51,10 +52,8 @@ interface PlaygroundData {
    *  below its fetched history. Empty until you send. Synthetic 'pg_' sessions don't use
    *  this (their whole transcript lives in the session's own `steps`). */
   getLiveSteps: (id: string) => SessionStep[]
-  /** Drop the optimistic live tail for a session — call when authoritative history is
-   *  (re)fetched, since those turns are now baked into the fetched transcript (else a
-   *  remount would render them twice: once from history, once from the stale tail). */
-  clearLiveSteps: (id: string) => void
+  /** Retire only optimistic turns confirmed by authoritative transcript rows. */
+  reconcileLiveSteps: (id: string, persisted: SessionMessageDto[], agentId: string) => void
 }
 
 // Synthetic playground session ids start with `pg_`; real CP session ids do not.
@@ -710,11 +709,15 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const getPgImage = useCallback((id: string) => pgImageBy[id], [pgImageBy])
   const isPgBusy = useCallback((id: string) => !!pgBusyBy[id], [pgBusyBy])
   const getLiveSteps = useCallback((id: string) => wcSteps[id] ?? NO_STEPS, [wcSteps])
-  const clearLiveSteps = useCallback((id: string): void => {
+  const reconcileLiveSteps = useCallback((id: string, persisted: SessionMessageDto[], agentId: string): void => {
     setWcSteps((cur) => {
-      if (!(id in cur)) return cur
+      const live = cur[id]
+      if (!live) return cur
+      const reconciled = reconcilePersistedLiveSteps(live, persisted, agentId)
+      if (reconciled === live) return cur
       const next = { ...cur }
-      delete next[id]
+      if (reconciled.length === 0) delete next[id]
+      else next[id] = reconciled
       return next
     })
   }, [])
@@ -737,7 +740,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       getPgSession,
       pgSessionList,
       getLiveSteps,
-      clearLiveSteps
+      reconcileLiveSteps
     }),
     [
       getPgInput,
@@ -755,7 +758,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       getPgSession,
       pgSessionList,
       getLiveSteps,
-      clearLiveSteps
+      reconcileLiveSteps
     ]
   )
 

@@ -114,6 +114,13 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
   if (x.includes('hook')) {
     return <IconifyIcon icon={webhooksLogoFillIcon} style={s} color="var(--brand)" aria-hidden />
   }
+  if (x.includes('dream')) {
+    return (
+      <span style={{ width: s.width, height: s.height }} className="flex items-center justify-center" aria-hidden>
+        <Icon name="moon" className="h-full w-full text-(--brand-soft-text)" />
+      </span>
+    )
+  }
   // 'playground' (live) and 'webchat' (its persisted session) share the sandbox mark.
   if (x.includes('play') || x.includes('web')) {
     return (

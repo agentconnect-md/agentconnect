@@ -7,14 +7,14 @@ import { EvaluationEventCollector } from '../src/evaluation/index.js'
 
 const AGENT_ID = 'evaluation-agent'
 
-function scaffold(): string {
+function scaffold(opts: { runtimeCommand?: string; model?: string } = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-evaluation-daemon-'))
   writeFileSync(
     join(root, 'config.json'),
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
-      runtimes: { test: { command: 'node', args: ['unused'] } }
+      runtimes: { test: { command: opts.runtimeCommand ?? 'node', args: ['unused'] } }
     })
   )
   const agentDir = join(root, 'agents', AGENT_ID)
@@ -28,7 +28,8 @@ function scaffold(): string {
       runtime: 'test',
       workspace: { mode: 'from-scratch', path: join(agentDir, 'workspace') },
       integrations: [],
-      output: { mode: 'medium' }
+      output: { mode: 'medium' },
+      ...(opts.model ? { runtimeOverrides: { model: opts.model } } : {})
     })
   )
   return root
@@ -135,6 +136,213 @@ describe('Daemon evaluation surface', () => {
     ).toEqual([`${AGENT_ID}:turn-1`, `${AGENT_ID}:turn-1`])
 
     await daemon.stop()
+    collector.assertValid()
+  }, 15_000)
+
+  it('records a dream as a metered session with lifecycle-only history', async () => {
+    const collector = new EvaluationEventCollector()
+    let onUpdate!: (sessionId: string, update: unknown) => void
+    const proposal = JSON.stringify({ index: '# Memory', files: [] })
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'dream-session-1'),
+      hasSession: vi.fn(() => true),
+      usesMetaSystemPrompt: vi.fn(() => false),
+      modelOptions: vi.fn(() => ({ current: 'test-model', models: ['test-model'] })),
+      permissionModeOptions: vi.fn(() => ({ modes: ['read-only'] })),
+      setSessionPermissionMode: vi.fn(async () => true),
+      prompt: vi.fn(async (sessionId: string) => {
+        onUpdate(sessionId, {
+          sessionUpdate: 'usage_update',
+          used: 12,
+          size: 128_000,
+          cost: { amount: 0.05, currency: 'USD' }
+        })
+        onUpdate(sessionId, {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: proposal }
+        })
+        return { stopReason: 'end_turn', usage: { totalTokens: 12, inputTokens: 8, outputTokens: 4 } }
+      }),
+      discardSession: vi.fn(),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return host as any
+      },
+      evaluation: { observer: collector, runId: 'eval-run-dream' }
+    })
+    await daemon.start()
+
+    const started = await (daemon as any).dreamRunner().start(AGENT_ID, { trigger: 'manual' })
+    let dream
+    await vi.waitFor(() => {
+      dream = (daemon as any).store.getDream(AGENT_ID, started.dreamId)
+      expect(dream?.status).toBe('completed')
+    })
+
+    expect(dream).toMatchObject({
+      executionSessionId: 'dream-session-1',
+      runtime: 'test',
+      model: 'test-model',
+      stopReason: 'end_turn',
+      usage: { totalTokens: 12, inputTokens: 8, outputTokens: 4, costAmount: 0.05, costCurrency: 'USD' }
+    })
+    const session = (daemon as any).store.getSessionByAcpIdForAgent(AGENT_ID, 'dream-session-1')
+    expect(session).toMatchObject({ platform: 'dream', channel: 'memory', thread: started.dreamId, state: 'idle' })
+    expect((daemon as any).store.getUsage(session.key)).toMatchObject({
+      totalTokens: 12,
+      contextUsed: 12,
+      contextSize: 128_000,
+      costAmount: 0.05,
+      costCurrency: 'USD'
+    })
+    const history = (daemon as any).store
+      .threadTranscript('memory', started.dreamId)
+      .map((row: { text: string }) => row.text)
+      .join('\n')
+    expect(history).toContain('Memory dream started.')
+    expect(history).not.toContain('source session')
+    expect(history).toContain('Dream completed.')
+    expect(history).not.toContain(proposal)
+    expect(collector.events().map((event) => event.type)).toEqual(['memory.dream.started', 'memory.dream.completed'])
+    expect(host.discardSession).toHaveBeenCalledWith('dream-session-1')
+
+    ;(daemon as any).recordDreamLifecycle({
+      type: 'memory.dream.skill_accepted',
+      dream: { ...dream, skills: [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'accepted' }] },
+      skillName: 'deploy-staging'
+    })
+    expect(collector.events().at(-1)).toMatchObject({
+      type: 'memory.dream.skill_accepted',
+      sessionId: 'dream-session-1',
+      data: { dreamId: started.dreamId, skillName: 'deploy-staging' }
+    })
+    const reviewedHistory = (daemon as any).store
+      .threadTranscript('memory', started.dreamId)
+      .map((row: { text: string }) => row.text)
+      .join('\n')
+    expect(reviewedHistory).toContain('A recommended skill was accepted.')
+
+    await daemon.stop()
+    collector.assertValid()
+  }, 15_000)
+
+  it('does not attribute or price a configured model when the runtime still reports default', async () => {
+    const collector = new EvaluationEventCollector()
+    let onUpdate!: (sessionId: string, update: unknown) => void
+    const proposal = JSON.stringify({ index: '# Memory', files: [] })
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'dream-default-model'),
+      hasSession: vi.fn(() => true),
+      usesMetaSystemPrompt: vi.fn(() => false),
+      modelOptions: vi.fn(() => ({ current: 'default', models: ['default', 'gpt-5.6'] })),
+      permissionModeOptions: vi.fn(() => ({ modes: ['read-only'] })),
+      setSessionPermissionMode: vi.fn(async () => true),
+      prompt: vi.fn(async (sessionId: string) => {
+        onUpdate(sessionId, {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: proposal }
+        })
+        return { stopReason: 'end_turn', usage: { totalTokens: 12, inputTokens: 8, outputTokens: 4 } }
+      }),
+      discardSession: vi.fn(),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      root: scaffold({ runtimeCommand: 'codex-acp', model: 'gpt-5.6' }),
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return host as any
+      },
+      evaluation: { observer: collector, runId: 'eval-run-dream-default-model' }
+    })
+    await daemon.start()
+
+    const started = await (daemon as any).dreamRunner().start(AGENT_ID, { trigger: 'manual' })
+    let dream
+    await vi.waitFor(() => {
+      dream = (daemon as any).store.getDream(AGENT_ID, started.dreamId)
+      expect(dream?.status).toBe('completed')
+    })
+
+    expect(dream).not.toHaveProperty('model')
+    expect(dream?.usage).not.toHaveProperty('costAmount')
+    const session = (daemon as any).store.getSessionByAcpIdForAgent(AGENT_ID, 'dream-default-model')
+    expect((daemon as any).store.getUsage(session.key)).not.toHaveProperty('costAmount')
+
+    await daemon.stop()
+    collector.assertValid()
+  }, 15_000)
+
+  it('quarantines late Dream output when a runtime ignores cancellation', async () => {
+    const collector = new EvaluationEventCollector()
+    let onUpdate!: (sessionId: string, update: unknown) => void
+    let promptStarted!: () => void
+    let settlePrompt!: (value: { stopReason: string }) => void
+    const startedPrompt = new Promise<void>((resolve) => {
+      promptStarted = resolve
+    })
+    const promptResult = new Promise<{ stopReason: string }>((resolve) => {
+      settlePrompt = resolve
+    })
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'dream-ignored-cancel'),
+      hasSession: vi.fn(() => true),
+      usesMetaSystemPrompt: vi.fn(() => false),
+      modelOptions: vi.fn(() => ({ current: 'test-model', models: ['test-model'] })),
+      permissionModeOptions: vi.fn(() => ({ modes: ['read-only'] })),
+      setSessionPermissionMode: vi.fn(async () => true),
+      prompt: vi.fn(() => {
+        promptStarted()
+        return promptResult
+      }),
+      discardSession: vi.fn(),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return host as any
+      },
+      evaluation: { observer: collector, runId: 'eval-run-dream-ignored-cancel' }
+    })
+    await daemon.start()
+
+    try {
+      vi.useFakeTimers()
+      const runner = (daemon as any).dreamRunner()
+      const started = await runner.start(AGENT_ID, { trigger: 'manual' })
+      await startedPrompt
+      runner.cancel(AGENT_ID, started.dreamId)
+      await vi.advanceTimersByTimeAsync(15_000)
+
+      expect((daemon as any).memoryExtractionCollectors.size).toBe(0)
+      expect((daemon as any).memoryExtractionQuarantines.size).toBe(1)
+      onUpdate('dream-ignored-cancel', {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'PRIVATE DREAM PROPOSAL' }
+      })
+      expect(JSON.stringify(collector.events())).not.toContain('PRIVATE DREAM PROPOSAL')
+      expect(collector.events().some((event) => event.type === 'acp.update')).toBe(false)
+
+      settlePrompt({ stopReason: 'end_turn' })
+      await vi.advanceTimersByTimeAsync(0)
+      expect((daemon as any).memoryExtractionQuarantines.size).toBe(0)
+    } finally {
+      settlePrompt({ stopReason: 'end_turn' })
+      vi.useRealTimers()
+      await daemon.stop()
+    }
     collector.assertValid()
   }, 15_000)
 

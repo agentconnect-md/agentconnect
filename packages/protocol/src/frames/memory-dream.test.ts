@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { AnyFrame } from '../frame.js'
-import { AgentMemoryBinding, MemoryDreamingPolicy } from './memory-connection.js'
+import {
+  AgentMemoryBinding,
+  DEFAULT_MEMORY_DREAMING_POLICY,
+  effectiveMemoryDreamingPolicy,
+  MemoryDreamingPolicy
+} from './memory-connection.js'
 import { DreamInfo, DreamStartReq, DreamFileReadReq, DreamAdoptReq } from './memory.js'
 
 const ID = '11111111-1111-4111-8111-111111111111'
@@ -46,6 +51,25 @@ describe('memory dreaming policy (agent binding)', () => {
     expect(() => MemoryDreamingPolicy.parse({ enabled: true, instructions: 'x'.repeat(4097) })).toThrow()
     expect(() => MemoryDreamingPolicy.parse({ enabled: true, unknown: 1 })).toThrow()
   })
+
+  it('defaults managed memory to a daily auto-adopting dream while preserving opt-outs', () => {
+    expect(effectiveMemoryDreamingPolicy(undefined)).toEqual(DEFAULT_MEMORY_DREAMING_POLICY)
+    expect(effectiveMemoryDreamingPolicy({ provider: 'managed' })).toEqual(DEFAULT_MEMORY_DREAMING_POLICY)
+
+    // An explicit policy with no schedule is manual-only, but auto-adoption now
+    // defaults on unless the user explicitly disables it.
+    expect(effectiveMemoryDreamingPolicy({ provider: 'managed', dreaming: { enabled: true } })).toEqual({
+      enabled: true,
+      autoAdopt: true
+    })
+    expect(
+      effectiveMemoryDreamingPolicy({
+        provider: 'managed',
+        dreaming: { enabled: false, autoAdopt: false }
+      })
+    ).toEqual({ enabled: false, autoAdopt: false })
+    expect(effectiveMemoryDreamingPolicy({ provider: 'none' })).toBeUndefined()
+  })
 })
 
 describe('memory dreaming frames', () => {
@@ -76,6 +100,34 @@ describe('memory dreaming frames', () => {
       DreamInfo.parse({ ...dream, skills: [{ name: 'Bad Name', description: '', state: 'proposed' }] })
     ).toThrow()
     expect(() => DreamInfo.parse({ ...dream, sessionIds: Array.from({ length: 101 }, (_, i) => `s${i}`) })).toThrow()
+  })
+
+  it('preserves execution correlation and token/cost usage', () => {
+    expect(
+      DreamInfo.parse({
+        ...dream,
+        executionSessionId: 'dream-session-1',
+        runtime: 'codex',
+        model: 'gpt-5.6',
+        stopReason: 'end_turn',
+        usage: {
+          inputBytes: 2048,
+          outputBytes: 512,
+          totalTokens: 120,
+          inputTokens: 90,
+          outputTokens: 30,
+          cachedReadTokens: 20,
+          costAmount: 0.012,
+          costCurrency: 'USD'
+        }
+      })
+    ).toMatchObject({
+      executionSessionId: 'dream-session-1',
+      runtime: 'codex',
+      model: 'gpt-5.6',
+      stopReason: 'end_turn',
+      usage: { totalTokens: 120, cachedReadTokens: 20, costAmount: 0.012 }
+    })
   })
 
   it('round-trips dream frames through the wire union', () => {

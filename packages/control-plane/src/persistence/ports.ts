@@ -637,10 +637,21 @@ export interface AgentRecord {
   lastModifiedBy: AgentCreator | null // WebUI user who last edited it; null ⇒ never edited by a human
 }
 
+export interface AgentUpdateOpts {
+  authorizeMcpServers?: (currentlyHeld: readonly string[]) => void
+  authorizeSkills?: (currentlyHeld: readonly string[]) => void
+}
+
 export interface AgentRepo {
   create(input: CreateAgentInput): Promise<AgentRecord>
   get(agentId: AgentId): Promise<AgentRecord | null>
-  update(agentId: AgentId, patch: UpdateAgentInput): Promise<AgentRecord>
+  /** `opts.authorizeMcpServers` / `opts.authorizeSkills` (only meaningful when
+   *  the patch includes `mcpServers` / `skills`) run INSIDE the row-locked
+   *  transaction, right after the committed runtimeOverrides read, with the
+   *  agent's currently-held MCP list / skill-ref list — the one atomic point
+   *  where an enable-list authorization decision and the write it guards cannot
+   *  be separated by a concurrent removal. A throw aborts the transaction. */
+  update(agentId: AgentId, patch: UpdateAgentInput, opts?: AgentUpdateOpts): Promise<AgentRecord>
   /** Compare-and-set a workspace edit. The caller has already drained/proved
    *  an owning daemon when one exists. */
   setWorkspace(
@@ -925,6 +936,8 @@ export interface WebchatConversationRepo {
 
 /** The token/cost snapshot carried by a `usage/report` EVT (protocol `SessionUsage`). */
 export interface SessionUsageCounts {
+  /** Daemon timestamp of the cumulative snapshot; orders competing list/detail reads. */
+  reportedAt?: string
   totalTokens?: number
   inputTokens?: number
   outputTokens?: number
@@ -981,6 +994,8 @@ export interface UsageAggregate {
 export interface SessionUsageRepo {
   /** Upsert a session's cumulative usage (idempotent on `(agentId, sessionId)`). */
   record(input: SessionUsageInput): Promise<void>
+  /** Read one session's latest cumulative usage snapshot. */
+  get(agentId: AgentId, sessionId: string): Promise<SessionUsageCounts | null>
   /** Aggregate usage for an org over sessions active at/after `since` (range window).
    *  When a `viewer` is supplied, sessions of restricted agents they can't see are
    *  excluded from both the totals and the per-agent breakdown (derived visibility,
@@ -1991,7 +2006,12 @@ export interface AgentConfigWriter {
   create(input: CreateAgentInput, secrets?: Record<string, string>): Promise<AgentRecord>
   /** Apply a PATCH: secret merge (see {@link AgentSecretStore.merge} semantics)
    *  + row update in one transaction. */
-  update(agentId: AgentId, patch: UpdateAgentInput, secrets?: Record<string, string | null>): Promise<AgentRecord>
+  update(
+    agentId: AgentId,
+    patch: UpdateAgentInput,
+    secrets?: Record<string, string | null>,
+    opts?: AgentUpdateOpts
+  ): Promise<AgentRecord>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -2211,8 +2231,9 @@ export interface IntegrationChannelRecord {
   name: string | null
   isPrivate: boolean
   kind: ConversationKind
+  /** Repeated across shared-channel sibling rows; integration-scoped for DMs. */
   trigger: ChannelTrigger
-  /** Per-channel default/owning agent for a shared bot (§10.1); null ⇒ unset. */
+  /** Per-channel owner for a shared bot (§10.1); null on sibling non-owner rows. */
   agentId: AgentId | null
 }
 
@@ -2227,18 +2248,19 @@ export interface ReportedChannel {
 
 export interface IntegrationChannelRepo {
   /**
-   * Converge to the daemon's membership snapshot (latest-wins): upsert every
-   * reported conversation (refreshing name/isPrivate, PRESERVING the stored
-   * trigger), delete kind='channel' rows the bot is no longer a member of. DM
-   * (kind='im') rows are NEVER deleted by the snapshot — they are reported
-   * incrementally on first inbound DM (§14.3), so a membership-only report must
-   * not wipe them. `defaultTrigger` seeds NEW rows only ('off' for a gated
-   * integration, 'mention' otherwise); existing rows keep their trigger.
+   * Converge to the daemon's channel report (latest-wins): upsert every reported
+   * conversation (refreshing name/isPrivate, PRESERVING the stored trigger).
+   * Authoritative membership snapshots delete kind='channel' rows the bot is no
+   * longer a member of; non-authoritative observed-conversation reports retain
+   * missing rows because platforms such as Telegram cannot enumerate all chats.
+   * DM (kind='im') rows are always retained. `defaultTrigger` seeds NEW rows only
+   * ('off' for a gated integration, 'mention' otherwise); existing rows keep
+   * their trigger.
    */
   replaceSnapshot(
     integrationId: IntegrationId,
     channels: ReportedChannel[],
-    opts?: { defaultTrigger?: ChannelTrigger }
+    opts?: { defaultTrigger?: ChannelTrigger; authoritative?: boolean }
   ): Promise<void>
   listForIntegration(integrationId: IntegrationId): Promise<IntegrationChannelRecord[]>
   /** Incremental conversation upsert (§14.3, DM rows): create the row (kind, name,
@@ -2258,8 +2280,8 @@ export interface IntegrationChannelRepo {
     channelId: string,
     trigger: ChannelTrigger
   ): Promise<IntegrationChannelRecord | null>
-  /** Per-channel default/owning agent (shared bot, §10.1); null clears it. Returns
-   *  null when the channel row doesn't exist. */
+  /** Set or clear this integration row's owner marker. The orchestrator keeps
+   *  exactly one row marked per shared channel. Returns null when missing. */
   setAgent(
     integrationId: IntegrationId,
     channelId: string,
@@ -2614,14 +2636,19 @@ export interface WaitlistRepo {
    * and an approved/pending one is not disturbed); returns the resulting status.
    * `note` is the applicant's self-submitted intake (opaque JSON string, written
    * only on the CREATE path) — context for the admin app, never the email source.
+   * `name` is the intake display name, mirrored into the `name` column on CREATE.
    */
-  addSelf(email: string, note?: string): Promise<WaitlistEntryStatus>
+  addSelf(email: string, note?: string, name?: string): Promise<WaitlistEntryStatus>
   /**
    * Redeem an admin-minted join link for a signed-in user (single transaction,
    * row-level `FOR UPDATE`, waitlist-and-login.md §6). On success sets
-   * `User.activatedAt`, creates the personal org, and stamps `redeemed*`. The
-   * `verifiedEmail` (already normalized) must equal the entry's email or the redeem
-   * fails `email_mismatch`. Idempotent: a repeat by the SAME user returns `activated`.
+   * `User.activatedAt`, creates the personal org, and stamps `redeemed*` (including
+   * `redeemedEmail`). Conditional email binding: a BOUND entry (email set) must match
+   * `verifiedEmail` (already normalized) or the redeem fails `email_mismatch`; a
+   * BEARER entry (email null) skips the match and any verified identity may redeem it
+   * once — except an ALREADY-ACTIVATED account, which is admitted WITHOUT consuming
+   * the link (nothing to grant, so the one-time invite stays available).
+   * Idempotent: a repeat by the SAME user returns `activated`.
    */
   redeem(tokenHash: string, userId: string, verifiedEmail: string, now: Date): Promise<WaitlistRedeemResult>
 }

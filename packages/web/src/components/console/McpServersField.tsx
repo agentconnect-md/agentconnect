@@ -45,11 +45,13 @@ export function mcpServersForRuntime(
   return servers.filter((s) => mcpTransportSupported(s.transport, caps))
 }
 
-/** One MCP server's definition line — its transport. Shared so every surface
- *  labels a server identically. A registry-only candidate the daemon hasn't
- *  reported yet is labelled by origin. */
-export function mcpServerMeta(s: McpServerInfo): string {
-  return s.registry ? `${s.transport} · org registry` : s.transport
+/** One MCP server's definition line — what KIND of server it is, worded exactly
+ *  as the org registry tiles word it (Tools & Skills page) so the same server
+ *  reads identically on both surfaces. Transport is an implementation detail and
+ *  lives in the edit dialog. A server the org registry doesn't know (daemon-local
+ *  definition) is a custom server by definition. */
+export function mcpKindLabel(kind: string | undefined): string {
+  return kind === 'open_connector' ? 'Open connector' : 'Custom MCP server'
 }
 
 /** Candidate MCP servers an agent can enable: the daemon-configured servers plus

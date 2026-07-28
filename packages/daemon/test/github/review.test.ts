@@ -140,7 +140,7 @@ describe('GithubReviewClient', () => {
     const body = (JSON.parse(String(init?.body)) as { body: string }).body
     const footerAt = body.indexOf('sent by [review-bot]')
     const markerAt = body.indexOf('<!-- agentconnect-review:')
-    expect(body).toContain(`const answer = 42\n${fence}\n\nsent by `)
+    expect(body).toContain(`const answer = 42\n${fence}\n\n<sub>sent by `)
     expect(body.split(fence)).toHaveLength(3)
     expect(markerAt).toBeGreaterThan(footerAt)
   })

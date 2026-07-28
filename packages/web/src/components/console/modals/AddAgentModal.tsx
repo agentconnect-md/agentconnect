@@ -24,13 +24,13 @@ import {
   supportsModes
 } from '@/lib/data'
 import {
-  ApiError,
-  fetchAllGithubRepos,
   fetchGithubBranches,
   fetchGithubInstallations,
   fetchGithubInstallationRepo,
   fetchGithubInstallUrl,
+  fetchGithubRepoRoster,
   fetchGithubRepoAccess,
+  invalidateGithubRepoRosterCache,
   type AgentWorkspaceDto,
   type GithubInstallationDto,
   type GithubRepoAccess,
@@ -409,9 +409,9 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
 
   const usingPicker = wsMode === 'github' && ghEnabled === true && ghInstalls.length > 0
 
-  // Installations loaded or refreshed → merge every installation's complete
-  // repo roster. GitHub has no server-side search here, so the dropdown filters
-  // locally. Refreshing this roster must not reset an in-progress agent setup.
+  // Installations loaded or refreshed → merge repository pages as they arrive.
+  // GitHub has no server-side search here, so the dropdown filters locally.
+  // Refreshing this roster must not reset an in-progress agent setup.
   useEffect(() => {
     if (!usingPicker) return
     let alive = true
@@ -419,43 +419,35 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     setGhLoading(true)
     setGhListDenied(false)
     setGhReposFailed(false)
-    Promise.all(
-      ghInstalls.map((ins) =>
-        fetchAllGithubRepos(ins.id, ctrl.signal).then(
-          (repos) => ({ ins, repos: repos as GithubRepoDto[] | null, denied: false }),
-          (e: unknown) => ({
-            ins,
-            repos: null as GithubRepoDto[] | null,
-            denied: e instanceof ApiError && e.code === 'GITHUB_IDENTITY_REQUIRED'
-          })
-        )
-      )
-    )
-      .then((batches) => {
+    const applyRoster = (refreshed: Array<GithubRepoDto & { installationId: string }>) => {
+      if (!alive) return
+      setGhRepos((current) => {
+        // Keep an exact App-backed selection through a failed or stale
+        // metadata refresh so it remains associated with the installation
+        // for later branch and access checks.
+        const selected = current.find((repo) => repo.fullName === ghRepo)
+        if (
+          !selected ||
+          !ghInstalls.some((installation) => installation.id === selected.installationId) ||
+          refreshed.some(
+            (repo) =>
+              repo.installationId === selected.installationId &&
+              repo.fullName.toLowerCase() === selected.fullName.toLowerCase()
+          )
+        ) {
+          return refreshed
+        }
+        return [...refreshed, selected]
+      })
+    }
+    void fetchGithubRepoRoster(ghInstalls, ctrl.signal, applyRoster)
+      .then(({ repos, denied, failed }) => {
         if (!alive) return
-        if (batches.some((b) => b.denied)) setGhListDenied(true)
+        setGhListDenied(denied)
         // A failed roster read (GitHub outage) must not render as an empty
         // list — keep the pages that loaded and surface the gap with a retry.
-        setGhReposFailed(batches.some((b) => b.repos === null && !b.denied))
-        const refreshed = batches.flatMap((b) => (b.repos ?? []).map((repo) => ({ ...repo, installationId: b.ins.id })))
-        setGhRepos((current) => {
-          // Keep an exact App-backed selection through a failed or stale
-          // metadata refresh so it remains associated with the installation
-          // for later branch and access checks.
-          const selected = current.find((repo) => repo.fullName === ghRepo)
-          if (
-            !selected ||
-            !ghInstalls.some((installation) => installation.id === selected.installationId) ||
-            refreshed.some(
-              (repo) =>
-                repo.installationId === selected.installationId &&
-                repo.fullName.toLowerCase() === selected.fullName.toLowerCase()
-            )
-          ) {
-            return refreshed
-          }
-          return [...refreshed, selected]
-        })
+        setGhReposFailed(failed)
+        applyRoster(repos)
       })
       .finally(() => alive && setGhLoading(false))
     return () => {
@@ -535,8 +527,12 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       setGhInstalledExactRepo(null)
       setGhPublicExactRepo(null)
       setGhExactRepoState('checking')
+      const matchingInstallations = ghInstalls.filter(
+        (installation) => installation.accountLogin.toLowerCase() === owner.toLowerCase()
+      )
+      const candidates = matchingInstallations.length > 0 ? matchingInstallations : ghInstalls
       void Promise.all(
-        ghInstalls.map(async (installation) => {
+        candidates.map(async (installation) => {
           const found = await fetchGithubInstallationRepo(installation.id, owner, repo, ctrl.signal).catch(() => null)
           return found ? { ...found, installationId: installation.id } : null
         })
@@ -1162,7 +1158,10 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                         ? 'Couldn’t load repositories from GitHub — the list may be incomplete.'
                         : undefined
                     }
-                    onRetry={() => setGhReposNonce((value) => value + 1)}
+                    onRetry={() => {
+                      invalidateGithubRepoRosterCache()
+                      setGhReposNonce((value) => value + 1)
+                    }}
                     note={
                       <>
                         {ghDenied && (

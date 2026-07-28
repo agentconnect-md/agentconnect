@@ -286,6 +286,7 @@ export class SessionManager {
     })
 
     let rec = this.deps.store.getSession(key)
+    const isNewLogicalSession = rec === undefined
     if (rec) {
       const persistedMemoryProvider = rec.memoryProvider ?? 'managed'
       if (persistedMemoryProvider !== currentMemoryProvider) {
@@ -542,6 +543,9 @@ export class SessionManager {
         ...(effectiveOriginSessionId ? { originSessionId: effectiveOriginSessionId } : {})
       }
       this.deps.store.upsertSession(rec)
+      if (isNewLogicalSession && msg.initialSessionTitle?.trim()) {
+        this.deps.store.setSessionTitle(key, msg.initialSessionTitle.trim())
+      }
     } else if (host.hasSession?.(rec.acpSessionId) === false) {
       const persistedSessionId = rec.acpSessionId
       // Persisted, but unknown to THIS agent process (daemon restart / host eviction):

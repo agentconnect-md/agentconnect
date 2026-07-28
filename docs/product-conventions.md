@@ -69,6 +69,21 @@ best-effort edge: a target on another daemon whose call policy terminally reject
 caller can still leave a visible post, because that policy verdict is only known on the
 target's daemon after the post is made.
 
+## Shared-bot channel ownership
+
+Every active channel served by a shared bot has exactly one default agent. A newly
+observed or ownerless channel converges to the bot's earliest active agent, and removing
+the current owner immediately transfers ownership to the earliest remaining agent.
+Console surfaces must show the same effective owner and trigger from every member
+agent's integration; they must not expose a `No default` state. The trigger is
+replicated across every active membership row, backfilling a missing sibling, so
+removing the owner does not discard the channel or its trigger.
+
+A Console owner change preserves the channel's trigger. An in-Slack owner change or
+automatic fallback to a restricted agent instead leaves the channel Off, because only
+an authorized Console editor may enable it. Direct messages remain separate:
+restricted agents may independently enable or disable their own DM conversation rows.
+
 ## No-response control marker
 
 Every agent session receives the same standing response-choice instruction, independent
@@ -181,6 +196,23 @@ unbound while its previous connection is still in use; the user must choose anot
 connection or explicitly switch to a different backend or Off. Server-side schema and
 daemon admission remain fail-closed even when the console validates the draft first.
 
+## Managed-memory dreaming defaults
+
+Managed memory defaults to dreaming once per day at 04:00 in the owning daemon's
+timezone and automatically accepting the completed store proposal. Users can turn
+dreaming off, remove its schedule to keep only manual runs, or turn automatic acceptance
+off independently.
+
+Automatic acceptance remains a safe best-effort path: a runtime without a trusted
+extraction channel, an adoption fence conflict, or another failed swap leaves the
+completed result available for manual review instead of replacing live memory.
+
+Each dream model run appears in Sessions with its runtime, model, token/cost usage,
+and a lifecycle-only history. Dream history and evaluation events must never copy
+memory bodies, source transcript text, model proposals, or mined skill bodies. The
+Memory page links the execution session; source-session selection remains input
+metadata and must not displace that run's own usage in the history presentation.
+
 ## GitHub informational review checks
 
 An Agent failure is not a code-review finding. When a GitHub review turn ends without a
@@ -249,6 +281,14 @@ file-browser header shows the current workspace-relative breadcrumb on the left
 and `Add file`, `Edit`, and `Delete` actions on the right. New-file naming happens
 in that breadcrumb; completed slash-separated directory names become breadcrumb
 segments. The preview pane does not repeat the file name, path, or workspace label.
+
+The managed and native Memory file browser uses the same shared inline file editor,
+breadcrumb naming field, and header actions as Workspace. It must not introduce a
+separate prompt or modal flow for adding or editing files; only the persistence API
+and Memory's flat Markdown filename validation differ. File-specific capabilities
+belong in the preview summary row: managed Memory exposes `History` there today, and
+repository-backed Workspace history must reuse the same action slot and history pane
+when it is added.
 
 For a GitHub workspace, show the effective `read` or `write` access beside the
 repository. The editor may switch freely between scratch and GitHub, choose another

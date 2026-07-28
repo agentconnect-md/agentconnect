@@ -10,7 +10,7 @@
  * Idempotent: re-sending `register` re-runs reconcile and yields the same
  * snapshot (CP wins all conflicts) — reconnect is convergence, not replay.
  */
-import { isFrame } from '@agentconnect.md/protocol'
+import { isFrame, SESSION_LIVE_TAIL_FEATURE } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId } from '../../domain/ids.js'
 import type { Handler } from './index.js'
 
@@ -42,7 +42,7 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
     ...snap,
     relays,
     ...(gitCommitIdentity ? { gitCommitIdentity } : {}),
-    serverFeatures: ['hook-report-ack-v1', 'gitcred-actions-v1']
+    serverFeatures: ['hook-report-ack-v1', 'gitcred-actions-v1', SESSION_LIVE_TAIL_FEATURE]
   })
   deps.connReg.markReady(conn.daemonId, conn)
 

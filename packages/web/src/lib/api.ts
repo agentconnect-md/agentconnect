@@ -141,7 +141,7 @@ export interface MemoryDreamingConfig {
   timezone?: string // IANA zone the schedule is evaluated in (absent ⇒ daemon local)
   instructions?: string // operator steering text (≤4096 chars)
   mineSkills?: boolean // also mine reusable procedures (D-3)
-  autoAdopt?: boolean // adopt automatically on completion (trusted runtimes only)
+  autoAdopt?: boolean // adopt automatically on completion; absent defaults on (trusted runtimes only)
 }
 
 export type AgentMemoryConfig =
@@ -220,6 +220,7 @@ export interface AgentCallPolicyInput {
 // session-cumulative; context/cost are the latest snapshot. All fields optional —
 // a runtime that reports no usage yields absent fields.
 export interface SessionUsageDto {
+  reportedAt?: string
   totalTokens?: number
   inputTokens?: number
   outputTokens?: number
@@ -331,6 +332,7 @@ export interface SessionDetailDto {
   title: string | null
   status: string | null
   lastActivityAt: string
+  usage: SessionUsageDto | null
   triggeredBy: string | null
   channelName: string | null
   triggeredByName: string | null
@@ -383,6 +385,8 @@ export interface SessionHistoryDto {
   sessionId: string
   messages: SessionMessageDto[]
   nextCursor: string | null
+  liveCursor: string | null
+  liveMore: boolean
 }
 
 // A scheduled trigger (`/crons`): every `schedule` tick the owning agent is
@@ -536,7 +540,7 @@ export interface IntegrationChannelDto {
   isPrivate: boolean
   kind: 'channel' | 'im'
   trigger: ChannelTrigger
-  agentId: string | null // per-channel default agent for a shared bot; null ⇒ unset
+  agentId: string | null // effective shared-channel owner; null before convergence / when not applicable
 }
 
 // `/integrations` list/create row — control-plane metadata only, NEVER tokens.
@@ -860,6 +864,7 @@ let apiOrgId: string | null = null
 
 /** Set by the OrgProvider whenever the active org (from the URL) resolves. */
 export function setApiOrgId(orgId: string | null): void {
+  if (apiOrgId !== orgId) invalidateGithubRepoRosterCache()
   apiOrgId = orgId
 }
 
@@ -942,7 +947,18 @@ async function apiGet<T>(path: string): Promise<T> {
   return (await res.json()) as T
 }
 
-type SessionInvalidationHandler = () => void
+export interface SessionActivityDto {
+  sessionId: string
+  agentId: string
+  revision: string
+  ts: string
+}
+
+export interface SessionEventHandlers {
+  onConnect: () => void
+  onSession: () => void
+  onActivity: (activity: SessionActivityDto) => void
+}
 
 function waitBeforeReconnect(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -960,7 +976,7 @@ function waitBeforeReconnect(ms: number, signal: AbortSignal): Promise<void> {
 async function readSessionEventStream(
   orgId: string,
   signal: AbortSignal,
-  onInvalidate: SessionInvalidationHandler
+  handlers: SessionEventHandlers
 ): Promise<void> {
   const path = `/orgs/${encodeURIComponent(orgId)}/stream`
   const res = await fetch(`${cpBase()}${path}`, {
@@ -974,12 +990,29 @@ async function readSessionEventStream(
   // The sink has no replay/event ids, so every successful (re)connect invalidates
   // the list once. This closes both a disconnect gap and the initial GET→subscribe
   // race without requiring a polling cache layer.
-  onInvalidate()
+  handlers.onConnect()
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   const parser = createSseParser((event) => {
-    if (event.event === 'session') onInvalidate()
+    if (event.event === 'session') {
+      handlers.onSession()
+      return
+    }
+    if (event.event !== 'session-activity') return
+    try {
+      const activity = (JSON.parse(event.data) as { activity?: SessionActivityDto }).activity
+      if (
+        activity &&
+        typeof activity.sessionId === 'string' &&
+        typeof activity.agentId === 'string' &&
+        /^\d+$/.test(activity.revision) &&
+        typeof activity.ts === 'string'
+      )
+        handlers.onActivity(activity)
+    } catch {
+      // A malformed optional invalidation is ignored; reconnect/fallback polling heals it.
+    }
   })
 
   try {
@@ -995,13 +1028,13 @@ async function readSessionEventStream(
 }
 
 /**
- * Subscribe to the org's session-milestone SSE feed with the same auth headers
- * as REST calls. The callback is an invalidation signal (on connect and on each
- * session event), not an authoritative event payload. Returns an abort cleanup.
+ * Subscribe to the org's session SSE feed with the same auth headers as REST.
+ * Lifecycle events invalidate lists; activity events identify the transcript
+ * that should pull its daemon-local tail. Returns an abort cleanup.
  */
 export function subscribeSessionEvents(
   orgId: string,
-  onInvalidate: SessionInvalidationHandler,
+  handlers: SessionEventHandlers,
   onError?: (error: unknown) => void
 ): () => void {
   const ctrl = new AbortController()
@@ -1010,7 +1043,7 @@ export function subscribeSessionEvents(
   void (async () => {
     while (!ctrl.signal.aborted) {
       try {
-        await readSessionEventStream(orgId, ctrl.signal, onInvalidate)
+        await readSessionEventStream(orgId, ctrl.signal, handlers)
         retryMs = 1000
       } catch (error) {
         if (ctrl.signal.aborted) return
@@ -1387,6 +1420,7 @@ function sessionChannelLabel(
   // "Playground" label (matching platName + the live playground session), and keep the raw
   // id in channelId so the detail view can RESUME it (reconnect with `?conversation_id=`).
   const isWebchat = platform === 'webchat'
+  const isDream = platform === 'dream'
   // A headless webhook's `channel` is the hook id (and `thread` may be the delivery key),
   // so render the CP-enriched hook name when present and otherwise hide the raw UUID.
   const isHook = platform === 'hook'
@@ -1399,13 +1433,15 @@ function sessionChannelLabel(
   const dmFallback = isSlackDm ? (triggeredByName ? `@${triggeredByName}` : 'DM') : null
   return isWebchat
     ? 'Playground'
-    : isHook
-      ? hookLabel
-      : channelName
-        ? channelName.startsWith('@')
-          ? channelName
-          : `#${channelName}`
-        : (dmFallback ?? (rawChannel || PLACEHOLDER))
+    : isDream
+      ? 'Memory'
+      : isHook
+        ? hookLabel
+        : channelName
+          ? channelName.startsWith('@')
+            ? channelName
+            : `#${channelName}`
+          : (dmFallback ?? (rawChannel || PLACEHOLDER))
 }
 
 export function sessionFromDto(d: SessionDto): Session {
@@ -1414,11 +1450,17 @@ export function sessionFromDto(d: SessionDto): Session {
   const platform = d.sessionKey.platform || 'slack'
   const isWebchat = platform === 'webchat'
   const isHook = platform === 'hook'
+  const isDream = platform === 'dream'
   const channel = sessionChannelLabel(platform, rawChannel, d.channelName, d.triggeredByName)
   const isSlackDm = platform === 'slack' && /^D/.test(rawChannel)
   const dmFallback = isSlackDm ? (d.triggeredByName ? `@${d.triggeredByName}` : 'DM') : null
-  const user =
-    d.triggeredByName || (isHook && d.triggeredBy?.startsWith('hook:') ? 'Webhook' : d.triggeredBy) || PLACEHOLDER
+  const user = isDream
+    ? d.triggeredBy === 'schedule'
+      ? 'Scheduled'
+      : d.triggeredBy === 'auto'
+        ? 'Automatic'
+        : 'Manual'
+    : d.triggeredByName || (isHook && d.triggeredBy?.startsWith('hook:') ? 'Webhook' : d.triggeredBy) || PLACEHOLDER
   return {
     id: d.sessionId,
     title: d.title || `Session ${d.sessionId.slice(0, 8)}`,
@@ -1457,8 +1499,8 @@ export function sessionFromDto(d: SessionDto): Session {
 }
 
 /** Hydrate a session detail that was not present in the currently loaded list
- *  pages. Usage stays unknown until its list page is loaded, but navigation and
- *  transcript pull have the same metadata as an ordinary list-derived session. */
+ *  pages. Detail carries its own latest usage snapshot so a direct link can show
+ *  this session's token/cost accounting without depending on list pagination. */
 export function sessionFromDetailDto(d: SessionDetailDto): Session {
   return sessionFromDto({
     sessionId: d.id,
@@ -1471,7 +1513,7 @@ export function sessionFromDetailDto(d: SessionDetailDto): Session {
     title: d.title,
     status: d.status,
     lastActivityAt: d.lastActivityAt,
-    usage: null,
+    usage: d.usage,
     triggeredBy: d.triggeredBy,
     channelName: d.channelName,
     triggeredByName: d.triggeredByName,
@@ -1484,6 +1526,28 @@ export function sessionFromDetailDto(d: SessionDetailDto): Session {
     outputMode: d.outputMode,
     daemonId: d.daemonId
   })
+}
+
+/** Keep local/live session fields while refreshing usage from the independently
+ *  polled detail endpoint. This closes the race where the list row arrived just
+ *  before the daemon's final cumulative usage report. */
+export function mergeSessionDetailUsage(local: Session, detail: Session | null): Session {
+  if (!detail?.usage) return local
+  if (local.usage) {
+    const localReportedAt = local.usage.reportedAt ? Date.parse(local.usage.reportedAt) : Number.NaN
+    const detailReportedAt = detail.usage.reportedAt ? Date.parse(detail.usage.reportedAt) : Number.NaN
+    // A live session can have usage without a persisted timestamp. Preserve that
+    // state unless the detail snapshot proves it is newer; never let a cached
+    // detail response move cumulative token/cost totals backward.
+    if (!Number.isFinite(detailReportedAt)) return local
+    if (!Number.isFinite(localReportedAt) || detailReportedAt <= localReportedAt) return local
+  }
+  return {
+    ...local,
+    usage: detail.usage,
+    tokens: detail.tokens,
+    cost: detail.cost
+  }
 }
 
 export function daemonFromDto(d: DaemonViewDto): DaemonRow {
@@ -1602,9 +1666,13 @@ export function fetchSessionDetail(sessionId: string, orgId?: string): Promise<S
 // One page of a session's transcript, proxied live from the owning daemon. The
 // CP resolves the owner and daemon from its SessionMeta row; 503 if that daemon
 // is offline or the owning agent is unplaced.
-export async function fetchSessionMessages(sessionId: string, cursor?: string, limit = 50): Promise<SessionHistoryDto> {
-  const q = new URLSearchParams({ limit: String(limit) })
-  if (cursor) q.set('cursor', cursor)
+export async function fetchSessionMessages(
+  sessionId: string,
+  options: { cursor?: string; after?: string; limit?: number } = {}
+): Promise<SessionHistoryDto> {
+  const q = new URLSearchParams({ limit: String(options.limit ?? 50) })
+  if (options.cursor) q.set('cursor', options.cursor)
+  if (options.after) q.set('after', options.after)
   return apiGet<SessionHistoryDto>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/messages?${q.toString()}`)
 }
 
@@ -1879,9 +1947,13 @@ export interface DreamDto {
   trigger: 'manual' | 'schedule' | 'auto'
   sessionIds: string[]
   snapshotDigest: string
+  executionSessionId: string | null
+  runtime: string | null
+  model: string | null
+  stopReason: string | null
   instructions: string | null
   skills: { name: string; description: string; state: 'proposed' | 'accepted' | 'dismissed' }[] | null
-  usage: { inputBytes: number; outputBytes: number } | null
+  usage: (SessionUsageDto & { inputBytes: number; outputBytes: number }) | null
   error: { type: string; message: string } | null
   createdAt: string
   endedAt: string | null
@@ -2533,7 +2605,7 @@ export async function fetchHookRuns(id: string, orgId?: string): Promise<HookRun
 export async function updateIntegrationChannel(
   integrationId: string,
   channelId: string,
-  patch: { trigger?: ChannelTrigger; agentId?: string | null }
+  patch: { trigger?: ChannelTrigger; agentId?: string }
 ): Promise<IntegrationChannelDto> {
   return apiPatch<IntegrationChannelDto>(
     `${orgBase()}/integrations/${encodeURIComponent(integrationId)}/channels/${encodeURIComponent(channelId)}`,
@@ -3007,6 +3079,22 @@ export async function fetchSkillSourceSkills(id: string): Promise<SkillSourceSki
   return apiGet<SkillSourceSkillsDto>(`${orgBase()}/skill-sources/${encodeURIComponent(id)}/skills`)
 }
 
+// The sources an agent's enable-list references, resolved server-side from the refs.
+// Gated on viewing the AGENT, so a source that sharing hides from the org registry
+// list still resolves here — the agent card can show what it actually installs
+// instead of a bare name. Sources that no longer exist are simply omitted.
+export interface AgentSkillSourceDto {
+  id: string
+  name: string
+  source: string
+  ref: string | null
+  subDir: string | null
+  skills: string[]
+}
+export async function fetchAgentSkillSources(agentId: string): Promise<AgentSkillSourceDto[]> {
+  return apiGet<AgentSkillSourceDto[]>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/skill-sources`)
+}
+
 export async function previewSkillSource(input: PreviewSkillSourceInput): Promise<SkillSourcePreviewDto> {
   return apiPost<SkillSourcePreviewDto>(`${orgBase()}/skill-sources/preview`, input)
 }
@@ -3123,6 +3211,8 @@ export interface GithubRepoDto {
   updatedAt: string | null // last push — the picker row's "updated 3d ago"
 }
 
+export type GithubInstalledRepoDto = GithubRepoDto & { installationId: string }
+
 /** Installations list doubles as the enabled-probe: it is viewer-readable (the
  *  install-link route is not — minting a state is a write), and 404 ⇒ the
  *  feature is off on this deployment. */
@@ -3156,17 +3246,23 @@ export async function fetchGithubInstallUrl(): Promise<string | null> {
 /** Reconcile claims against GitHub — the fallback for a lost setup callback /
  *  pending admin approval. Returns the refreshed list. */
 export async function syncGithubInstallations(): Promise<GithubInstallationDto[]> {
-  return apiPost<GithubInstallationDto[]>(`${orgBase()}/github/installations/sync`, {})
+  const installations = await apiPost<GithubInstallationDto[]>(`${orgBase()}/github/installations/sync`, {})
+  invalidateGithubRepoRosterCache()
+  return installations
 }
 
 /** Remove the GitHub App from one account and revoke this installation's
  *  repository access. Owner-only; the CP also retires the local installation. */
 export async function uninstallGithubInstallation(id: string): Promise<void> {
   await apiDelete<void>(`${orgBase()}/github/installations/${encodeURIComponent(id)}`)
+  invalidateGithubRepoRosterCache(id)
 }
 
-const GITHUB_REPO_PAGE_SIZE = 100
+// Smaller pages make the first permission-filtered results visible sooner;
+// later pages stream in under the shared request limiter.
+const GITHUB_REPO_PAGE_SIZE = 50
 const GITHUB_REPO_REQUEST_CONCURRENCY = 4
+const GITHUB_REPO_ROSTER_CACHE_MS = 5 * 60_000
 // GitHub-side 5xx/429 blips are common during incidents; a page read gets two
 // quick retries so a transient failure heals before the picker surfaces it.
 const GITHUB_REPO_RETRY_DELAYS_MS = [250, 750] as const
@@ -3180,6 +3276,12 @@ type GithubRepoRequestWaiter = {
 
 let activeGithubRepoRequests = 0
 const githubRepoRequestWaiters: GithubRepoRequestWaiter[] = []
+const githubRepoRosterCache = new Map<string, { repos: GithubRepoDto[]; expiresAt: number }>()
+
+export function invalidateGithubRepoRosterCache(installationId?: string): void {
+  if (installationId) githubRepoRosterCache.delete(installationId)
+  else githubRepoRosterCache.clear()
+}
 
 function githubRepoAbortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException('The operation was aborted.', 'AbortError')
@@ -3243,7 +3345,8 @@ async function withGithubRepoRequestLimit<T>(run: () => Promise<T>, signal?: Abo
 }
 
 /** One page of installation repositories. GitHub offers no server-side search
- *  on this listing, so picker callers should normally use fetchAllGithubRepos. */
+ *  on this listing; picker components should normally use
+ *  fetchGithubRepoRoster. */
 export async function fetchGithubRepos(
   installationId: string,
   page = 1,
@@ -3269,29 +3372,98 @@ export async function fetchGithubRepos(
   }, signal)
 }
 
-/** Load the complete App-visible repository roster for client-side searching.
- *  GitHub exposes only pagination here, so fetch the remaining pages after the
- *  first response reveals the installation's total repository count. */
-export async function fetchAllGithubRepos(installationId: string, signal?: AbortSignal): Promise<GithubRepoDto[]> {
-  const first = await fetchGithubRepos(installationId, 1, signal)
-  const pageCount = Math.ceil(first.totalCount / GITHUB_REPO_PAGE_SIZE)
-  const pages = [
-    first,
-    ...(await Promise.all(
-      Array.from({ length: Math.max(0, pageCount - 1) }, (_, index) =>
-        fetchGithubRepos(installationId, index + 2, signal)
-      )
-    ))
-  ]
-
-  // The roster can change between page requests. Keep the first occurrence so
-  // callers never render duplicate rows if page boundaries shift mid-fetch.
+function mergeGithubRepoPages(
+  pages: Array<{ repos: GithubRepoDto[]; totalCount: number } | undefined>
+): GithubRepoDto[] {
   const unique = new Map<string, GithubRepoDto>()
-  for (const repo of pages.flatMap((page) => page.repos)) {
+  for (const repo of pages.flatMap((page) => page?.repos ?? [])) {
     const key = repo.fullName.toLowerCase()
     if (!unique.has(key)) unique.set(key, repo)
   }
   return [...unique.values()]
+}
+
+/** Load the complete App-visible repository roster for client-side searching.
+ *  Page 1 and every later page are published as soon as they arrive, while the
+ *  completed roster is cached across picker components for five minutes. */
+export async function fetchAllGithubRepos(
+  installationId: string,
+  signal?: AbortSignal,
+  onProgress?: (repos: GithubRepoDto[]) => void
+): Promise<GithubRepoDto[]> {
+  const cached = githubRepoRosterCache.get(installationId)
+  if (cached && cached.expiresAt > Date.now()) {
+    onProgress?.(cached.repos)
+    return cached.repos
+  }
+  if (cached) githubRepoRosterCache.delete(installationId)
+
+  const first = await fetchGithubRepos(installationId, 1, signal)
+  const pageCount = Math.ceil(first.totalCount / GITHUB_REPO_PAGE_SIZE)
+  const pages: Array<{ repos: GithubRepoDto[]; totalCount: number } | undefined> = Array.from({
+    length: Math.max(1, pageCount)
+  })
+  pages[0] = first
+  onProgress?.(mergeGithubRepoPages(pages))
+  await Promise.all(
+    Array.from({ length: Math.max(0, pageCount - 1) }, (_, index) =>
+      fetchGithubRepos(installationId, index + 2, signal).then((page) => {
+        pages[index + 1] = page
+        onProgress?.(mergeGithubRepoPages(pages))
+      })
+    )
+  )
+
+  const repos = mergeGithubRepoPages(pages)
+  githubRepoRosterCache.set(installationId, { repos, expiresAt: Date.now() + GITHUB_REPO_ROSTER_CACHE_MS })
+  return repos
+}
+
+function mergeGithubInstallationRosters(
+  installations: readonly Pick<GithubInstallationDto, 'id'>[],
+  rosters: ReadonlyMap<string, GithubRepoDto[]>
+): GithubInstalledRepoDto[] {
+  const unique = new Map<string, GithubInstalledRepoDto>()
+  for (const installation of installations) {
+    for (const repo of rosters.get(installation.id) ?? []) {
+      const key = repo.fullName.toLowerCase()
+      if (!unique.has(key)) unique.set(key, { ...repo, installationId: installation.id })
+    }
+  }
+  return [...unique.values()]
+}
+
+/** Merge every installation while retaining partial pages and per-installation
+ * failures. Pickers can render the first available page instead of waiting for
+ * the slowest organization. */
+export async function fetchGithubRepoRoster(
+  installations: readonly Pick<GithubInstallationDto, 'id'>[],
+  signal?: AbortSignal,
+  onProgress?: (repos: GithubInstalledRepoDto[]) => void
+): Promise<{ repos: GithubInstalledRepoDto[]; denied: boolean; failed: boolean }> {
+  const rosters = new Map<string, GithubRepoDto[]>()
+  const publish = (installationId: string, repos: GithubRepoDto[]) => {
+    rosters.set(installationId, repos)
+    onProgress?.(mergeGithubInstallationRosters(installations, rosters))
+  }
+  const errors = await Promise.all(
+    installations.map(async (installation) => {
+      try {
+        const repos = await fetchAllGithubRepos(installation.id, signal, (partial) => publish(installation.id, partial))
+        publish(installation.id, repos)
+        return null
+      } catch (error) {
+        return error
+      }
+    })
+  )
+  return {
+    repos: mergeGithubInstallationRosters(installations, rosters),
+    denied: errors.some((error) => error instanceof ApiError && error.code === 'GITHUB_IDENTITY_REQUIRED'),
+    failed: errors.some(
+      (error) => error !== null && !(error instanceof ApiError && error.code === 'GITHUB_IDENTITY_REQUIRED')
+    )
+  }
 }
 
 /** Resolve one repository through an App installation. Unlike the paged roster,

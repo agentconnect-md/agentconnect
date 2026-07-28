@@ -33,8 +33,8 @@ import {
 
 const SessionFilterQueryDto = z.object({
   agentId: z.string().optional(),
-  platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook']).optional(),
-  integration: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'github']).optional(),
+  platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream']).optional(),
+  integration: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'github', 'dream']).optional(),
   channel: z.string().optional(),
   triggeredBy: z.string().optional(),
   githubRepoId: z
@@ -257,10 +257,19 @@ function sessionDto(s: SessionPageRow, hookMetadata: Map<string, HookSessionMeta
   }
 }
 
-const SessionHistoryQueryDto = z.object({
-  cursor: z.string().optional(),
-  limit: z.coerce.number().int().positive().max(200).optional()
-})
+const SessionHistoryQueryDto = z
+  .object({
+    cursor: z.string().optional(),
+    after: z
+      .string()
+      .regex(/^\d+$/)
+      .refine((value) => Number.isSafeInteger(Number(value)))
+      .optional(),
+    limit: z.coerce.number().int().positive().max(200).optional()
+  })
+  .refine(({ cursor, after }) => cursor === undefined || after === undefined, {
+    message: 'cursor and after are mutually exclusive'
+  })
 
 export function sessionRoutes(deps: HttpDeps) {
   return async function sessionRoutesPlugin(app: FastifyInstance): Promise<void> {
@@ -408,9 +417,10 @@ export function sessionRoutes(deps: HttpDeps) {
         // is indistinguishable from no parent; hidden children are omitted.
         const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((a) => a.id)
         const visibleAgentIdSet = new Set<string>(visibleAgentIds)
-        const [parent, children] = await Promise.all([
+        const [parent, children, usage] = await Promise.all([
           s.parentSessionId ? deps.repos.session.get(s.parentSessionId) : Promise.resolve(null),
-          deps.repos.session.listChildren(SessionId(s.id), visibleAgentIds)
+          deps.repos.session.listChildren(SessionId(s.id), visibleAgentIds),
+          deps.repos.sessionUsage.get(s.agentId, s.id)
         ])
         return {
           id: s.id,
@@ -427,6 +437,7 @@ export function sessionRoutes(deps: HttpDeps) {
           title: s.title,
           status: s.status,
           lastActivityAt: s.lastActivityAt.toISOString(),
+          usage,
           triggeredBy: s.triggeredBy,
           channelName: s.channelName,
           triggeredByName: s.triggeredByName,
@@ -479,9 +490,16 @@ export function sessionRoutes(deps: HttpDeps) {
             agentId: session.agentId,
             sessionId: session.id,
             ...(req.query.cursor !== undefined ? { cursor: req.query.cursor } : {}),
+            ...(req.query.after !== undefined ? { after: req.query.after } : {}),
             limit: req.query.limit ?? 50
           })
-          return { sessionId: page.sessionId, messages: page.messages, nextCursor: page.nextCursor ?? null }
+          return {
+            sessionId: page.sessionId,
+            messages: page.messages,
+            nextCursor: page.nextCursor ?? null,
+            liveCursor: page.liveCursor ?? null,
+            liveMore: page.liveMore ?? false
+          }
         } catch (err) {
           if (err instanceof NoConnection) {
             return reply

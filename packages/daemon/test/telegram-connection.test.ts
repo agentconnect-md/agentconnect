@@ -234,6 +234,21 @@ describe('TelegramConnection gateway', () => {
     expect(info).toEqual({ id: '-100', name: 'devs', isIm: false, isPrivate: false })
   })
 
+  it('getChannelInfo labels a private chat from first/last name when there is no username', async () => {
+    const { conn } = makeConn(
+      {},
+      fakeApi({
+        getChat: vi.fn(async () => ({ id: 42, type: 'private', first_name: 'Ada', last_name: 'Lovelace' }))
+      })
+    )
+    expect(await conn.getChannelInfo('42')).toEqual({
+      id: '42',
+      name: 'Ada Lovelace',
+      isIm: true,
+      isPrivate: true
+    })
+  })
+
   it('listMembers returns administrators (id/name/isBot), best-effort []', async () => {
     const { conn } = makeConn()
     expect(await conn.listMembers('-100')).toEqual([

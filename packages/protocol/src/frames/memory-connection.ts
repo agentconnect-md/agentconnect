@@ -62,11 +62,24 @@ export const MemoryDreamingPolicy = z
     /** Also mine reusable procedures into candidate skills (never auto-installed). */
     mineSkills: z.boolean().optional(),
     /** Adopt the staged store automatically on completion. Admissible only on
-     *  runtimes with a trusted extraction channel; the daemon enforces that. */
+     *  runtimes with a trusted extraction channel; the daemon enforces that.
+     *  Absent defaults to true for effective managed-memory policies. */
     autoAdopt: z.boolean().optional()
   })
   .strict()
 export type MemoryDreamingPolicy = z.infer<typeof MemoryDreamingPolicy>
+
+/** Product default for managed memory with no explicit dreaming policy.
+ *
+ * The schedule is evaluated in the daemon host's timezone because no timezone
+ * is set. Keeping this as an explicit policy lets a saved policy distinguish
+ * manual-only dreaming (enabled with no schedule) from the default daily run.
+ */
+export const DEFAULT_MEMORY_DREAMING_POLICY = {
+  enabled: true,
+  schedule: '0 4 * * *',
+  autoAdopt: true
+} as const satisfies MemoryDreamingPolicy
 
 const BuiltInMemoryBinding = z
   .object({
@@ -100,6 +113,22 @@ export type ExternalMemoryBinding = z.infer<typeof ExternalMemoryBinding>
 /** Agent-facing provider selection. External bindings carry policy, never endpoints or secrets. */
 export const AgentMemoryBinding = z.union([BuiltInMemoryBinding, ExternalMemoryBinding])
 export type AgentMemoryBinding = z.infer<typeof AgentMemoryBinding>
+
+/** Resolve the managed-memory dreaming policy used by the daemon.
+ *
+ * No memory binding means the managed provider, and no explicit dreaming policy
+ * means the daily auto-adopting product default. Once a policy exists its absent
+ * schedule remains meaningful (manual-only), while absent `autoAdopt` follows
+ * the new default; an explicit false is the opt-out.
+ */
+export function effectiveMemoryDreamingPolicy(
+  binding: AgentMemoryBinding | undefined
+): MemoryDreamingPolicy | undefined {
+  if (binding && binding.provider !== 'managed') return undefined
+  const policy = binding?.dreaming
+  if (!policy) return { ...DEFAULT_MEMORY_DREAMING_POLICY }
+  return policy.autoAdopt === undefined ? { ...policy, autoAdopt: true } : policy
+}
 
 /** Reviewed mapping from a logical secret field to the header the relay injects. */
 export const MemoryPluginSecretHeaderPin = z

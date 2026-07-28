@@ -115,21 +115,37 @@ export const SessionMessage = z.object({
 export type SessionMessage = z.infer<typeof SessionMessage>
 
 /** C→D REQ: fetch one page of a session's history from the owning daemon. */
-export const SessionHistoryReq = z.object({
-  // Optional only for rolling compatibility with an older CP. A current CP always
-  // sends the authorized owner and the daemon re-checks the session binding.
-  agentId: z.string().uuid().optional(),
-  sessionId: z.string(), // opaque ACP session id (agent-assigned; NOT a wire UUID)
-  cursor: z.string().optional(), // opaque; omit ⇒ newest page
-  limit: z.number().int().positive().max(200).default(50)
-})
+export const SessionHistoryReq = z
+  .object({
+    // Optional only for rolling compatibility with an older CP. A current CP always
+    // sends the authorized owner and the daemon re-checks the session binding.
+    agentId: z.string().uuid().optional(),
+    sessionId: z.string(), // opaque ACP session id (agent-assigned; NOT a wire UUID)
+    cursor: z.string().optional(), // opaque; omit ⇒ newest page
+    // Monotonic daemon-local transcript revision. Mutually exclusive with the
+    // backward-pagination cursor; used by an open console view to pull inserts
+    // and same-seq tool updates without replaying the whole transcript.
+    after: z
+      .string()
+      .regex(/^\d+$/)
+      .refine((value) => Number.isSafeInteger(Number(value)))
+      .optional(),
+    limit: z.number().int().positive().max(200).default(50)
+  })
+  .refine(({ cursor, after }) => cursor === undefined || after === undefined, {
+    message: 'cursor and after are mutually exclusive'
+  })
 export type SessionHistoryReq = z.infer<typeof SessionHistoryReq>
 
 /** D→C REP (corr = the req id): a page of messages + the cursor for the next page. */
 export const SessionHistoryPage = z.object({
   sessionId: z.string(), // opaque ACP session id (agent-assigned; NOT a wire UUID)
   messages: z.array(SessionMessage), // chronological oldest→newest within the page (seq breaks equal-time ties)
-  nextCursor: z.string().optional() // absent ⇒ no older messages
+  nextCursor: z.string().optional(), // absent ⇒ no older messages
+  // Optional for rolling compatibility. `liveCursor` is the next `after`
+  // watermark; `liveMore` means another forward page is immediately available.
+  liveCursor: z.string().optional(),
+  liveMore: z.boolean().optional()
 })
 export type SessionHistoryPage = z.infer<typeof SessionHistoryPage>
 

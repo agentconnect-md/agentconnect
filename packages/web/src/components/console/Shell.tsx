@@ -39,7 +39,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/crons', label: 'Schedules', icon: 'calendar-clock' },
   { href: '/daemons', label: 'Daemons', icon: 'server' },
   { href: '/tools', label: 'Tools & Skills', icon: 'book-open' },
-  { href: '/usage', label: 'Usage', icon: 'circle-gauge' }
+  { href: '/usage', label: 'Analytics', icon: 'circle-gauge' }
 ]
 
 // Bottom tab bar (mobile only) — exactly the design's 5-slot bar: the 4 primary
@@ -52,12 +52,12 @@ const MOBILE_NAV: NavItem[] = [
   { href: '/daemons', label: 'Daemons', icon: 'server' }
 ]
 
-// The "More" sheet's destinations — Usage / Tools & Skills / Settings (the desktop rail
+// The "More" sheet's destinations — Analytics / Tools & Skills / Settings (the desktop rail
 // items beyond the 4 primary tabs). Profile is NOT here: it lives in the mobile app
 // bar as a top-right avatar (mirroring the desktop top bar). The org switcher is
 // prepended separately, in the sheet itself.
 const MORE_ROWS: NavItem[] = [
-  { href: '/usage', label: 'Usage', icon: 'circle-gauge' },
+  { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
   { href: '/tools', label: 'Tools & Skills', icon: 'book-open' },
   { href: '/settings', label: 'Settings', icon: 'settings' }
 ]
@@ -86,7 +86,7 @@ const SECTIONS: { prefix: string; label: string }[] = [
   { prefix: '/crons', label: 'Schedules' },
   { prefix: '/daemons', label: 'Daemons' },
   { prefix: '/tools', label: 'Tools & Skills' },
-  { prefix: '/usage', label: 'Usage' },
+  { prefix: '/usage', label: 'Analytics' },
   { prefix: '/settings', label: 'Settings' },
   { prefix: '/profile', label: 'Profile' }
 ]
@@ -422,7 +422,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
   // Mobile push-screen title: resolve the entity name from the route id (so the
   // back-button app bar reads "deploy-bot" / "edge-1" / the session title, matching
   // the design), falling back to the section crumb for top-level push pages
-  // (Profile / Usage / Tools & Skills / Settings) or before the entity has loaded.
+  // (Profile / Analytics / Tools & Skills / Settings) or before the entity has loaded.
   const seg = barePath.split('/').filter(Boolean)
   const pushTitle = (() => {
     if (seg.length < 2) return crumb
@@ -843,7 +843,7 @@ function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
 }
 
 // Mobile-only bottom sheets reachable from the nav's "More" tab: the app's overflow
-// destinations (Profile/Usage/Tools & Skills/Settings) + the org switcher — the sole
+// destinations (Profile/Analytics/Tools & Skills/Settings) + the org switcher — the sole
 // mobile entry point for switching / creating orgs (the rail picker is hidden).
 function MobileSheets({
   which,

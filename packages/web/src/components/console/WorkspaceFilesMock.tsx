@@ -139,10 +139,16 @@ function MockPreview({
         actions={
           isMd && file.content ? (
             <span className="pillbar flex-none">
-              <button className={mode === 'preview' ? 'pill on' : 'pill'} onClick={() => setMode('preview')}>
+              <button
+                className={mode === 'preview' ? 'pill on py-[3px]' : 'pill py-[3px]'}
+                onClick={() => setMode('preview')}
+              >
                 Preview
               </button>
-              <button className={mode === 'code' ? 'pill on' : 'pill'} onClick={() => setMode('code')}>
+              <button
+                className={mode === 'code' ? 'pill on py-[3px]' : 'pill py-[3px]'}
+                onClick={() => setMode('code')}
+              >
                 Code
               </button>
             </span>

@@ -5,7 +5,10 @@ import {
   GH_DEFAULT_TRIGGER_MODE,
   GH_FAMILIES,
   GH_TRIGGER_LABEL,
+  GH_TRIGGER_MODES,
+  GH_TRIGGER_PILL,
   githubHookNeedsNormalization,
+  githubTriggerTooltip,
   THREAD_COMMENT_EVENT
 } from './github-events'
 
@@ -17,6 +20,28 @@ describe('GH_TRIGGER_LABEL', () => {
 
   it('makes the restrictive mention mode explicit', () => {
     expect(GH_TRIGGER_LABEL.mention).toBe('mention only')
+  })
+})
+
+describe('GH_TRIGGER_PILL', () => {
+  it('keeps mention as the last segment, worded like the IM bar', () => {
+    expect(GH_TRIGGER_MODES[GH_TRIGGER_MODES.length - 1]).toBe('mention')
+    expect(GH_TRIGGER_PILL.mention).toBe('@-mention')
+  })
+
+  it('names the agent in the per-segment hover copy', () => {
+    expect(githubTriggerTooltip('first', 'reviewer')).toContain('@reviewer')
+    expect(githubTriggerTooltip('mention', 'reviewer')).toContain('@reviewer')
+    expect(githubTriggerTooltip('every', 'reviewer')).toBe(
+      'Runs when an issue or PR is opened and on supported updates and replies (close, reopen and edits are ignored).'
+    )
+  })
+
+  it('mention-mode copy admits the App broadcast and explicit App review requests, without an absolute "only"', () => {
+    const copy = githubTriggerTooltip('mention', 'reviewer')
+    expect(copy).toContain('GitHub App')
+    expect(copy).toContain('review request')
+    expect(copy).not.toMatch(/\bonly\b/)
   })
 })
 

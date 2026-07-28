@@ -159,7 +159,7 @@ export default function UsageView() {
   }))
 
   // Mobile (≤768px) renders only the scroll-body — the Shell provides the app
-  // bar (title "Usage") + bottom nav, so the desktop page header is CSS-hidden
+  // bar (title "Analytics") + bottom nav, so the desktop page header is CSS-hidden
   // there rather than removed.
   return (
     <div className="wrap">

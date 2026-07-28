@@ -16,6 +16,7 @@
 // expected state (503 → a friendly notice), not an error.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import Link from 'next/link'
 import {
   startDream,
   listDreams,
@@ -27,6 +28,8 @@ import {
   fetchAgentMemoryFull,
   listAgentMemory,
   isDreamTerminal,
+  fmtCountCompact,
+  fmtCost,
   ApiError,
   type DreamDto,
   type MemoryFileEntry
@@ -78,7 +81,31 @@ function when(iso: string): string {
   return new Date(iso).toLocaleString()
 }
 
-export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boolean }) {
+function elapsed(createdAt: string, endedAt: string | null): string | null {
+  if (!endedAt) return null
+  const ms = Date.parse(endedAt) - Date.parse(createdAt)
+  if (!Number.isFinite(ms) || ms < 0) return null
+  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}s`
+  const minutes = Math.floor(ms / 60_000)
+  const seconds = Math.round((ms % 60_000) / 1000)
+  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`
+}
+
+function fmtBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+export function DreamPanel({
+  agentId,
+  canEdit,
+  sessionBasePath
+}: {
+  agentId: string
+  canEdit: boolean
+  sessionBasePath?: string
+}) {
   const [dreams, setDreams] = useState<DreamDto[] | null>(null)
   const [listError, setListError] = useState<string | null>(null)
   // 409 DAEMON_FEATURE_MISSING — this agent's daemon predates dreaming. Not an
@@ -205,54 +232,83 @@ export function DreamPanel({ agentId, canEdit }: { agentId: string; canEdit: boo
 
   const renderDreamRows = (rows: DreamDto[]) => (
     <ul className="flex list-none flex-col gap-0 p-0">
-      {rows.map((dream) => (
-        <li
-          key={dream.dreamId}
-          className="flex flex-wrap items-center justify-between gap-2 border-t border-(--border-subtle) py-2 first:border-t-0 first:pt-0 last:pb-0"
-        >
-          <span
-            className="mt-[6px] h-2 w-2 flex-none self-start rounded-full"
-            style={{ background: STATUS_DOT[dream.status] }}
-          />
-          <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
-            <span className={`font-sans text-[12.5px] font-semibold leading-normal ${statusTone(dream.status)}`}>
-              {STATUS_LABEL[dream.status]}
-              {dream.trigger === 'schedule' ? ' · scheduled' : ''}
+      {rows.map((dream) => {
+        const duration = elapsed(dream.createdAt, dream.endedAt)
+        const usage = dream.usage
+        const metrics = [
+          usage?.totalTokens !== undefined
+            ? `${fmtCountCompact(usage.totalTokens)} tokens`
+            : isDreamTerminal(dream.status)
+              ? 'Tokens unavailable'
+              : null,
+          usage?.costAmount !== undefined ? fmtCost(usage.costAmount, usage.costCurrency) : null,
+          dream.model,
+          duration
+        ].filter((value): value is string => Boolean(value))
+        const byteMetrics = usage
+          ? `${fmtBytes(usage.inputBytes)} prompt · ${fmtBytes(usage.outputBytes)} output`
+          : null
+        return (
+          <li
+            key={dream.dreamId}
+            className="flex flex-wrap items-center justify-between gap-2 border-t border-(--border-subtle) py-2 first:border-t-0 first:pt-0 last:pb-0"
+          >
+            <span
+              className="mt-[6px] h-2 w-2 flex-none self-start rounded-full"
+              style={{ background: STATUS_DOT[dream.status] }}
+            />
+            <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+              <span className={`font-sans text-[12.5px] font-semibold leading-normal ${statusTone(dream.status)}`}>
+                {STATUS_LABEL[dream.status]}
+                {dream.trigger === 'schedule' ? ' · scheduled' : ''}
+              </span>
+              <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                {when(dream.createdAt)}
+                {dream.error ? ` · ${dream.error.message}` : ''}
+              </span>
+              {metrics.length || byteMetrics ? (
+                <span className="font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
+                  {[...metrics, ...(byteMetrics ? [byteMetrics] : [])].join(' · ')}
+                </span>
+              ) : null}
             </span>
-            <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-              {when(dream.createdAt)} · {dream.sessionIds.length} session
-              {dream.sessionIds.length === 1 ? '' : 's'} mined
-              {dream.error ? ` · ${dream.error.message}` : ''}
+            <span className="flex flex-none items-center gap-2">
+              {sessionBasePath && dream.executionSessionId ? (
+                <Link
+                  href={`${sessionBasePath}/${encodeURIComponent(dream.executionSessionId)}`}
+                  className="lnk font-sans text-[11.5px] font-semibold leading-normal"
+                >
+                  Open session
+                </Link>
+              ) : null}
+              {dream.status === 'completed' ? (
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  onClick={() => setReviewing(reviewing === dream.dreamId ? null : dream.dreamId)}
+                >
+                  {reviewing === dream.dreamId ? 'Hide' : 'Review'}
+                </Button>
+              ) : null}
+              {dream.status === 'completed' && canEdit ? (
+                <Button variant="secondary" size="xs" disabled={busy} onClick={() => discard(dream.dreamId)}>
+                  Discard
+                </Button>
+              ) : null}
+              {!isDreamTerminal(dream.status) && canEdit ? (
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  disabled={busy}
+                  onClick={() => void run(() => cancelDream(agentId, dream.dreamId))}
+                >
+                  Cancel
+                </Button>
+              ) : null}
             </span>
-          </span>
-          <span className="flex flex-none items-center gap-2">
-            {dream.status === 'completed' ? (
-              <Button
-                variant="secondary"
-                size="xs"
-                onClick={() => setReviewing(reviewing === dream.dreamId ? null : dream.dreamId)}
-              >
-                {reviewing === dream.dreamId ? 'Hide' : 'Review'}
-              </Button>
-            ) : null}
-            {dream.status === 'completed' && canEdit ? (
-              <Button variant="secondary" size="xs" disabled={busy} onClick={() => discard(dream.dreamId)}>
-                Discard
-              </Button>
-            ) : null}
-            {!isDreamTerminal(dream.status) && canEdit ? (
-              <Button
-                variant="secondary"
-                size="xs"
-                disabled={busy}
-                onClick={() => void run(() => cancelDream(agentId, dream.dreamId))}
-              >
-                Cancel
-              </Button>
-            ) : null}
-          </span>
-        </li>
-      ))}
+          </li>
+        )
+      })}
     </ul>
   )
 

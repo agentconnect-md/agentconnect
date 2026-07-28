@@ -853,12 +853,14 @@ identities.
 
 **Conversation reporting.** The `integration/channels` D→C EVT and
 `IntegrationChannel` protocol shape gain `kind: 'channel' | 'im'` (absent =
-`'channel'` for wire compatibility). Channel rows keep coming from membership
-events as today; the membership snapshot must never delete `im` rows (they are
-reported incrementally). DM rows are reported on first inbound DM to a gated
-integration, carrying the counterpart's display name; an optional boot-time
-sweep (`conversations.list types=im`) can backfill DMs opened while the daemon
-was down.
+`'channel'` for wire compatibility). Slack channel rows keep coming from
+authoritative membership events. Platforms that cannot enumerate every
+conversation send `authoritative: false`; these reports upsert observed rows
+without deleting absent ones. An explicitly addressed Off group is reported
+before routing, because it deliberately creates no session. DM rows are likewise
+reported on first inbound DM to a gated integration, carrying the counterpart's
+display name. An optional boot-time sweep (`conversations.list types=im`) can
+backfill DMs opened while the daemon was down.
 
 _Shared bots:_ the relay's membership snapshot drops IMs, so DM rows take the
 incremental path there too — an unrouted DM to a bot backing ≥1 gated agent
@@ -892,9 +894,13 @@ agents.
   membership report derives the default trigger from gating: `off` when gated,
   `mention` otherwise (today's default).
 - The existing per-channel trigger PATCH route accepts `off` and reuses the
-  existing recompute-bindRules-and-push flow. Authorization is unchanged — the
-  route already requires edit rights on the agent, which for a restricted agent
-  means the private group.
+  existing recompute-bindRules-and-push flow. A direct integration requires edit
+  rights on its parent agent. A shared bot's channel state is bot-scoped, so the
+  route additionally requires edit rights on the effective owner and on a newly
+  selected owner; changing a visible sibling cannot enable a hidden restricted
+  owner. Mutations are serialized per bot/channel and fenced to the owner that
+  passed authorization, so a concurrent in-Slack owner move makes the Console
+  request retry instead of applying its trigger to the new owner.
 - `gated` is **derived** from `agent.visibility === 'restricted'` at spec
   assembly; there is no separate stored toggle (see §14.7).
 - Web `IntegrationChannelList`: tri-state segmented control per channel row

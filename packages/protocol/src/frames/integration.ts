@@ -60,6 +60,7 @@ export const IntegrationSlackConfig = z
     mode: z.enum(['direct', 'shared']).default('direct'),
     botToken: z.string(), // xoxb-…  (plaintext — never log) — always present (send path)
     appToken: z.string().optional(), // xapp-… (plaintext — never log) — direct only (Socket Mode)
+    appId: z.string().optional(), // A… public metadata — permission-update deep link (especially shared mode)
     // Multi-agent opt-in — the bot backs MANY agents, so an in-thread "Switch agent"
     // control is meaningful. ONLY ever true in `shared` mode (an http/relay bot); a
     // non-shareable http bot is still `shared` for routing but has one agent, so the
@@ -200,13 +201,16 @@ export const IntegrationChannel = z.object({
 export type IntegrationChannel = z.infer<typeof IntegrationChannel>
 
 /**
- * D→C EVT — the FULL set of channels the integration's bot is a member of
- * (fire-and-forget, latest-wins). Emitted on socket start and whenever the bot
- * is invited to / removed from a channel, so the console can offer per-channel
- * trigger config. Channel names are control metadata, never message content.
+ * D→C EVT — channels observed by an integration's bot (fire-and-forget,
+ * latest-wins). Slack reports an authoritative membership snapshot; platforms
+ * such as Telegram that cannot enumerate every chat set `authoritative:false`,
+ * so the CP upserts what was observed without deleting older rows that are
+ * absent from this report. An absent flag means authoritative for wire
+ * compatibility. Channel names are control metadata, never message content.
  */
 export const IntegrationChannels = z.object({
   integrationId: z.string().uuid(),
-  channels: z.array(IntegrationChannel)
+  channels: z.array(IntegrationChannel),
+  authoritative: z.boolean().optional()
 })
 export type IntegrationChannels = z.infer<typeof IntegrationChannels>

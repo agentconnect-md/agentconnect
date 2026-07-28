@@ -119,7 +119,7 @@ export const MemoryDreamingPolicy = z
     instructions: z.string().max(4096).optional(),
     /** Also mine reusable procedures into candidate skills (§7). Default false. */
     mineSkills: z.boolean().optional(),
-    /** Adopt the memory store automatically on completion. Honored only when the
+    /** Adopt the memory store automatically on completion. Default true. Honored only when the
      *  extraction ran on a trusted-channel runtime — the config still saves, but
      *  an untrusted run leaves the dream reviewable instead of adopting it.
      *  Never applies to skills (§7). */
@@ -136,6 +136,12 @@ export const BuiltInMemoryBinding = z
   .strict()
   .superRefine(/* dreaming ⇒ provider === 'managed' */)
 ```
+
+With managed memory, an absent `dreaming` policy resolves to `{ enabled: true,
+schedule: '0 4 * * *', autoAdopt: true }`. The cron uses daemon-local time when
+no timezone is set. An explicit policy preserves an absent schedule as
+manual-only, while `autoAdopt: false` is the durable opt-out from automatic
+acceptance.
 
 `memory-settings.ts` (console) grows a **Background memory** section rendered
 only when the Managed provider is selected, presenting the two mechanisms as
@@ -159,10 +165,14 @@ interface DreamRecord {
   trigger: 'manual' | 'schedule' | 'auto'
   sessionIds: string[] // transcripts mined
   snapshotDigest: string // digest of the live store at snapshot time (adoption fence)
+  executionSessionId?: string // session-list/history correlation for the isolated model run
+  runtime?: string
+  model?: string
+  stopReason?: string
   instructions?: string
   /** Candidate skills staged by this dream (§7), with per-skill review state. */
   skills?: { name: string; state: 'proposed' | 'accepted' | 'dismissed' }[]
-  usage?: { inputBytes: number; outputBytes: number }
+  usage?: SessionUsage & { inputBytes: number; outputBytes: number }
   error?: { type: string; message: string }
   createdAt: string
   endedAt?: string
@@ -419,8 +429,14 @@ architecture invariant:
 
 Observability:
 `memory.dream.started|completed|failed|adopted|skill_accepted|skill_dismissed`
-evaluation events, with byte counts; no memory bodies, transcript text, or
-skill bodies in events or logs (same rule as the capture path).
+evaluation events carry correlation, lifecycle, runtime/model, token/cost, and
+bounded byte-count metadata. Every extraction is also represented as a `dream`
+session in the normal Sessions list and usage reports. Its history contains only
+safe lifecycle messages; the memory snapshot, source transcripts, model proposal,
+and skill bodies never enter session history, evaluation events, or logs. The
+Memory Dream list links the execution session and shows that run's model,
+duration, token/cost, and prompt/output byte metrics. Source-session selection is
+input metadata, not the Dream session's history or usage.
 
 ## 11. Explicitly out of scope (v1)
 

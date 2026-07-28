@@ -1,10 +1,17 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
-import { fetchAgentDto, fetchSkillSourceSkills, type SkillSourceSkillsDto } from '@/lib/api'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  fetchAgentDto,
+  fetchAgentSkillSources,
+  fetchSkillSourceSkills,
+  type AgentSkillSourceDto,
+  type SkillSourceSkillsDto
+} from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { MOCK_MODE } from '@/lib/data'
 import { SkillMark, SkillSourceLine, ToolTile, ToolTileGrid } from '@/components/console/ToolTile'
+import { VisibilityValue } from '@/components/console/VisibilityField'
 import { Icon, Toggle } from '@/components/ui'
 
 /**
@@ -14,8 +21,13 @@ import { Icon, Toggle } from '@/components/ui'
  * (`<source>/<skill>`). The agent stores the explicit ref list and the CP resolves
  * it into installable entries.
  *
- * A source enabled on the agent but no longer in the org registry still renders (as
- * a whole-source row) so it can be turned OFF, mirroring the MCP tools card.
+ * The tiles are the org registry the caller can see, PLUS whatever this agent
+ * already enables — `GET /agents/:id/skill-sources` resolves the agent's refs
+ * regardless of the source's own sharing, so a source restricted away from the
+ * caller still shows its name and repo rather than a bare, unexplained row. A ref
+ * whose source is genuinely gone resolves to nothing and is not rendered: it
+ * installs nothing (the CP resolver drops it) and there is nothing truthful to say
+ * about it.
  */
 
 const sourceOf = (ref: string) => (ref.includes('/') ? ref.slice(0, ref.indexOf('/')) : ref)
@@ -29,8 +41,9 @@ function selectionFor(enabled: string[], name: string): { all: boolean; skills: 
 }
 
 export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit: boolean }) {
-  const { updateAgent, skillSources } = useConsoleData()
+  const { updateAgent, skillSources, skillSourcesLoading } = useConsoleData()
   const [enabled, setEnabled] = useState<string[] | null>(null) // saved refs; null ⇒ not loaded
+  const [own, setOwn] = useState<AgentSkillSourceDto[] | null>(null) // sources this agent enables
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -49,6 +62,13 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
     fetchAgentDto(agentId).then(
       (dto) => setEnabled(dto.skills ?? []),
       (e) => setErr(e instanceof Error ? e.message : String(e))
+    )
+    // Resolving the agent's own refs is best-effort decoration: it only ADDS tiles
+    // for sources missing from the registry list, so a failure degrades to the
+    // registry view rather than blocking the toggles.
+    fetchAgentSkillSources(agentId).then(
+      (rows) => setOwn(rows),
+      () => setOwn([])
     )
   }, [agentId, canEdit])
 
@@ -106,8 +126,24 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
     }
   }
 
-  const known = new Set(skillSources.map((s) => s.name))
-  const orphaned = [...new Set((enabled ?? []).map(sourceOf))].filter((n) => !known.has(n))
+  // Registry rows the caller can see, then the agent's own sources that sharing keeps
+  // out of that list. The second group is `registry: false` — the CP still gates
+  // ADDING a ref on seeing the source (`enablingUnseenSkillDenied`), so those tiles
+  // are off-only and offer no per-skill picker; they exist to say what the agent
+  // installs and to let it be turned off, like the MCP card's ineligible names.
+  const tiles = useMemo(() => {
+    const known = new Set(skillSources.map((s) => s.name))
+    // `registry` is a literal so it discriminates the union: only the registry arm
+    // carries the sharing fields the footer reads.
+    return [
+      ...skillSources.map((s) => ({ ...s, registry: true as const })),
+      ...(own ?? []).filter((s) => !known.has(s.name)).map((s) => ({ ...s, registry: false as const }))
+    ]
+  }, [skillSources, own])
+
+  // Nothing is known yet while either list is in flight; rendering the empty state
+  // then would claim the org has no sources when we simply haven't asked.
+  const loading = skillSourcesLoading || (canEdit && own === null)
 
   const interactive = canEdit && enabled !== null && !saving
 
@@ -117,14 +153,20 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
         Skills
       </div>
 
-      {skillSources.length === 0 && orphaned.length === 0 ? (
+      {tiles.length === 0 ? (
         <div className="flex items-center gap-2 px-4 py-[13px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) desktop:py-3">
-          <Icon name="book-open" size={14} />
-          No skill sources in your organization yet.
+          {loading ? (
+            'Loading skill sources…'
+          ) : (
+            <>
+              <Icon name="book-open" size={14} />
+              No skill sources in your organization yet.
+            </>
+          )}
         </div>
       ) : (
         <ToolTileGrid columns={2}>
-          {skillSources.map((s) => {
+          {tiles.map((s) => {
             const sel = enabled ? selectionFor(enabled, s.name) : { all: false, skills: new Set<string>() }
             const on = sel.all || sel.skills.size > 0
             const manifest = manifests[s.id]
@@ -144,24 +186,48 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
                   ) : undefined
                 }
                 subtitle={<SkillSourceLine source={s.source} subDir={s.subDir} />}
+                // Who the source belongs to, worded exactly as its registry tile words it.
+                // Only the registry rows carry a share set — the agent-scoped resolution
+                // deliberately omits it (seeing an agent isn't seeing the source).
+                footer={
+                  s.registry ? (
+                    <VisibilityValue visibility={s.visibility} sharedWith={s.sharedWith} createdBy={s.createdBy} />
+                  ) : undefined
+                }
                 action={
                   <>
-                    <button
-                      type="button"
-                      className="iconbtn h-6 w-6"
-                      onClick={() => expand(s.id)}
-                      aria-label="Show skills"
-                      title="Show skills"
-                    >
-                      <Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={13} />
-                    </button>
+                    {/* Expanding is a secondary move, so the chevron only surfaces on
+                        hover/keyboard focus (and stays put once open). Its box is always
+                        reserved, so revealing it never shifts the toggle. Touch has no
+                        hover, so below the desktop breakpoint it stays visible. */}
+                    {s.registry && (
+                      <button
+                        type="button"
+                        className={`iconbtn h-6 w-6 transition-opacity focus-visible:opacity-100 group-hover:opacity-100 max-desktop:opacity-100 ${isOpen ? 'opacity-100' : 'opacity-0'}`}
+                        onClick={() => expand(s.id)}
+                        aria-label="Show skills"
+                        aria-expanded={isOpen}
+                        title="Show skills"
+                      >
+                        <Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={13} />
+                      </button>
+                    )}
+                    {/* No picker for an agent-scoped source, but keep its slot so the
+                        toggles line up with the registry tiles beside it. */}
+                    {!s.registry && <span className="block h-6 w-6" />}
                     <span className="ml-[6px]">
-                      <Toggle checked={on} disabled={!interactive} onChange={(next) => toggleSource(s.name, next)} />
+                      <Toggle
+                        checked={on}
+                        // Off-only for a non-registry source: the CP would reject
+                        // re-adding a ref to a source this caller can't see.
+                        disabled={!interactive || (!s.registry && !on)}
+                        onChange={(next) => toggleSource(s.name, next)}
+                      />
                     </span>
                   </>
                 }
               >
-                {isOpen && (
+                {isOpen && s.registry && (
                   <div className="border-t border-(--border-subtle) bg-(--surface-sunken) px-[14px] py-2">
                     {manifest === 'loading' || manifest === undefined ? (
                       <div className="py-1 font-sans text-[12px] text-(--text-tertiary)">Loading skills…</div>
@@ -204,17 +270,6 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
               </ToolTile>
             )
           })}
-
-          {orphaned.map((name) => (
-            <ToolTile
-              key={name}
-              mark={<SkillMark />}
-              name={name}
-              subtitle="No longer in the org registry"
-              dimmed
-              action={<Toggle checked disabled={!interactive} onChange={() => toggleSource(name, false)} />}
-            />
-          ))}
         </ToolTileGrid>
       )}
 

@@ -43,6 +43,9 @@ export interface NormalizedMessage {
     appId?: string
   }
   text: string
+  /** Ingress-derived title applied only when this message creates a logical
+   *  session. A later runtime title remains authoritative and replaces it. */
+  initialSessionTitle?: string
   mentionedBots: string[]
   attachments?: Attachment[]
   isDm: boolean

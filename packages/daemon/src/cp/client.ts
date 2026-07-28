@@ -12,6 +12,7 @@ import type {
   FactsMcpServer,
   UsageReport,
   EventSession,
+  SessionActivity,
   IntegrationChannels,
   CronReport,
   HookReport,
@@ -64,7 +65,13 @@ import type {
   DreamFileReadReq,
   DreamSkillReviewReq
 } from '@agentconnect.md/protocol'
-import { buildEnvelope, decodeEnvelope, encode, MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
+import {
+  buildEnvelope,
+  decodeEnvelope,
+  encode,
+  MAX_FRAME_BYTES,
+  SESSION_LIVE_TAIL_FEATURE
+} from '@agentconnect.md/protocol'
 import type { SessionReader } from './session-reader.js'
 import { WorkspaceConflictError, WorkspaceViolationError, type WorkspaceReader } from './workspace-reader.js'
 import {
@@ -384,11 +391,19 @@ export class CpClient {
     this.transport?.send(encode(buildEnvelope('event/session', event)))
   }
 
+  /** Signal a durable transcript mutation without putting message content on the control WS. */
+  emitSessionActivity(activity: SessionActivity): void {
+    if (this.state !== 'READY' && this.state !== 'DRAINING') return
+    if (!this.supportsServerFeature(SESSION_LIVE_TAIL_FEATURE)) return
+    this.transport?.send(encode(buildEnvelope('event/session-activity', activity)))
+  }
+
   /**
-   * Report an integration's channel-membership snapshot (D→C `integration/channels`
-   * EVT, fire-and-forget, latest-wins). No-op unless READY/DRAINING — the daemon
-   * re-emits its cached snapshots on each (re)connect (see onReady in daemon.ts),
-   * so a dropped report only delays the console's channel list, never loses it.
+   * Report an integration's channels (D→C `integration/channels` EVT,
+   * fire-and-forget, latest-wins). Slack sends an authoritative membership
+   * snapshot; non-enumerable platforms send observed rows with
+   * `authoritative:false`. No-op unless READY/DRAINING — the daemon re-emits its
+   * cached reports on each (re)connect (see onReady in daemon.ts).
    */
   emitIntegrationChannels(snapshot: IntegrationChannels): void {
     if (this.state !== 'READY' && this.state !== 'DRAINING') return

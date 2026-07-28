@@ -61,15 +61,16 @@ import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
+import { useSessionList } from '@/lib/use-session-list'
 import {
   GH_FAMILIES,
-  GH_TRIGGER_LABEL,
   GH_TRIGGER_MODES,
+  GH_TRIGGER_PILL,
   commentFamiliesForFamilies,
   eventsForFamilies,
   famCovered,
   githubHookNeedsNormalization,
-  githubMentionUsage,
+  githubTriggerTooltip,
   triggerModeOf,
   type GhFamily,
   type GhTriggerMode
@@ -87,7 +88,7 @@ import {
   type HookReviewPolicy
 } from '@/lib/github-review-settings'
 
-type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'api' | 'knowledge'
+type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'api' | 'tools'
 const HOOK_REFRESH_MS = 30_000
 
 // One-liners for the empty-integrations tiles. The tile SET is derived from the
@@ -121,6 +122,7 @@ export default function AgentDetailView() {
     useConsoleData()
   const { openPlayground } = usePlayground()
   const { openModal } = useModal()
+  const { total: agentSessionTotal } = useSessionList(MOCK_MODE ? null : activeOrg?.id, { agentId: id })
   // Which webhook row has its recent-deliveries panel expanded (one at a time).
   const [hookRunsFor, setHookRunsFor] = useState<string | null>(null)
   // Hooks are agent-scoped (no org-wide list). Keep a stable resource key so a
@@ -250,13 +252,9 @@ export default function AgentDetailView() {
   }
 
   // Edit one github subscription in place (PUT re-sends the whole block); the
-  // SWR row is patched — no full revalidation. Families and the "when
-  // created/updated" cadence both ride the stored event patterns.
+  // SWR row is patched — no full revalidation. Families and the
+  // create/update/@-mention trigger both ride the stored event patterns.
   const [hookBusy, setHookBusy] = useState<string | null>(null)
-  const [hookCadenceFor, setHookCadenceFor] = useState<string | null>(null)
-  // Viewport anchor for the cadence menu: it renders position:fixed so no
-  // ancestor overflow-hidden (the group card, the Integrations card) clips it.
-  const [cadenceAnchor, setCadenceAnchor] = useState<{ top: number; right: number } | null>(null)
   const saveHookEvents = async (h: HookDto, fams: GhFamily[], mode: GhTriggerMode) => {
     if (hookBusy || !h.agentId || !h.repoFullName) return
     setHookBusy(h.id)
@@ -290,7 +288,6 @@ export default function AgentDetailView() {
     await saveHookEvents(h, fams, mode)
   }
   const setHookCadence = async (h: HookDto, mode: GhTriggerMode) => {
-    setHookCadenceFor(null)
     if (mode === triggerModeOf(h) && !githubHookNeedsNormalization(h)) return
     const fams = GH_FAMILIES.map((f) => f.fam).filter((f) => famCovered(h.events, f))
     await saveHookEvents(h, fams, mode)
@@ -313,7 +310,7 @@ export default function AgentDetailView() {
   // Integrations is the default landing tab (first, no `?tab=`); everything else
   // is `?tab=<id>`.
   const tab: DetailTab =
-    rawTab === 'config' || rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'api' || rawTab === 'knowledge'
+    rawTab === 'config' || rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'api' || rawTab === 'tools'
       ? rawTab
       : 'integrations'
 
@@ -403,7 +400,7 @@ export default function AgentDetailView() {
       ? (da.hookKinds ?? [])
       : [...new Set(agentHooks.filter((hook) => hook.enabled).map((hook) => hook.kind))]
   const hasIntegrationMarks = agentInts.length > 0 || integrationHookKinds.length > 0
-  const sessionCount = getSessions(da.id).length
+  const sessionCount = MOCK_MODE ? getSessions(da.id).length : agentSessionTotal
   // Icon upload is available only when the object store is configured (org flag) — the
   // picker hides Upload otherwise. On success the CP has persisted the new icon; refetch.
   const onUploadIcon = activeOrg?.iconUploadEnabled
@@ -445,7 +442,7 @@ export default function AgentDetailView() {
   }
 
   const tabCls = (t: DetailTab) => (tab === t ? 'tab on' : 'tab')
-  const tabHref = (t: DetailTab) => (t === 'integrations' ? `/agents/${da.id}` : `/agents/${da.id}?tab=${t}`)
+  const tabHref = (t: DetailTab) => orgPath(t === 'integrations' ? `/agents/${da.id}` : `/agents/${da.id}?tab=${t}`)
 
   // ── Single responsive tree. Base classes are the mobile (≤768px) push-detail
   // body (the Shell provides the top push bar there); `desktop:` variants restore
@@ -624,7 +621,7 @@ export default function AgentDetailView() {
             ['workspace', 'Workspace'],
             ['memory', 'Memory'],
             ['api', 'API'],
-            ['knowledge', 'Tools & Skills']
+            ['tools', 'Tools & Skills']
           ] as [DetailTab, string][]
         ).map(([t, label]) => {
           const on = tab === t
@@ -1089,6 +1086,7 @@ export default function AgentDetailView() {
                         integrationId={g.id}
                         channels={g.channels}
                         botId={g.botId}
+                        agentId={da.id}
                         shareable={g.shareable}
                         gated={da.visibility === 'restricted'}
                         padX={16}
@@ -1174,10 +1172,10 @@ export default function AgentDetailView() {
                             {g.shareable && (
                               <span
                                 className="badge bg-(--surface-app) text-(--text-tertiary)"
-                                title="Shared bot — used by multiple agents, inbound via a relay"
+                                title="Shared bot — used by multiple agents, inbound via a relay. Each channel dispatches to one of them by default."
                               >
                                 <Icon name="users" size={11} />
-                                shared
+                                shared · {g.agentCount} {g.agentCount === '1' ? 'agent' : 'agents'}
                               </span>
                             )}
                           </div>
@@ -1207,6 +1205,7 @@ export default function AgentDetailView() {
                         integrationId={g.id}
                         channels={g.channels}
                         botId={g.botId}
+                        agentId={da.id}
                         shareable={g.shareable}
                         gated={da.visibility === 'restricted'}
                         padX={14}
@@ -1309,65 +1308,31 @@ export default function AgentDetailView() {
                                   )
                                 })}
                               </div>
-                              <span className="inline-flex flex-none items-center gap-[5px]">
-                                <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                                  when
+                              {/* Trigger bar — same ⚡ + segmented control as the IM
+                                    channel rows, mention last, hover copy per segment. */}
+                              <span className="inline-flex flex-none items-center gap-[7px]">
+                                <span title="Trigger — when this agent runs" className="flex-none leading-none">
+                                  <Icon name="zap" size={14} color="var(--text-tertiary)" />
                                 </span>
-                                <div className="relative">
-                                  <button
-                                    title={
-                                      triggerModeOf(h) === 'mention'
-                                        ? githubMentionUsage(da.name)
-                                        : `Choose when this agent runs: when created (plus later @${da.name} mentions), on updates, or only when @${da.name} is mentioned.`
-                                    }
-                                    className={`flex h-[26px] cursor-pointer items-center gap-[5px] rounded-[7px] border bg-(--surface-card) px-[9px] font-sans text-[11.5px] font-medium leading-normal text-(--text-primary) transition-[background-color,border-color] hover:bg-(--surface-hover) ${
-                                      hookCadenceFor === h.id
-                                        ? 'border-(--brand)'
-                                        : 'border-(--border-default) hover:border-(--border-strong)'
-                                    } ${hookBusy === h.id ? 'pointer-events-none opacity-60' : ''}`}
-                                    onClick={(e) => {
-                                      if (hookCadenceFor === h.id) {
-                                        setHookCadenceFor(null)
-                                        return
-                                      }
-                                      const r = e.currentTarget.getBoundingClientRect()
-                                      setCadenceAnchor({ top: r.bottom + 5, right: window.innerWidth - r.right })
-                                      setHookCadenceFor(h.id)
-                                    }}
-                                  >
-                                    {GH_TRIGGER_LABEL[triggerModeOf(h)]}
-                                    <Icon name="chevron-down" size={12} color="var(--text-tertiary)" />
-                                  </button>
-                                  {hookCadenceFor === h.id && (
-                                    <>
-                                      <div className="fscrim" onClick={() => setHookCadenceFor(null)} />
-                                      <div
-                                        className="fmenu z-40 min-w-[130px] rounded-lg p-1 shadow-(--shadow-xl)"
-                                        style={{
-                                          position: 'fixed',
-                                          left: 'auto',
-                                          top: cadenceAnchor?.top,
-                                          right: cadenceAnchor?.right
-                                        }}
+                                <div className="inline-flex gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[2px]">
+                                  {GH_TRIGGER_MODES.map((mode) => {
+                                    const active = triggerModeOf(h) === mode
+                                    return (
+                                      <button
+                                        key={mode}
+                                        onClick={() => void setHookCadence(h, mode)}
+                                        disabled={hookBusy === h.id}
+                                        title={githubTriggerTooltip(mode, da.name)}
+                                        className={`cursor-pointer rounded-[7px] border-0 px-3 py-[5px] font-sans text-[12.5px] leading-normal ${
+                                          active
+                                            ? 'bg-(--surface-card) font-semibold text-(--text-primary) shadow-[0_1px_2px_rgba(0,0,0,0.08)]'
+                                            : 'bg-transparent font-normal text-(--text-tertiary)'
+                                        } ${hookBusy === h.id ? 'opacity-60' : ''}`}
                                       >
-                                        {GH_TRIGGER_MODES.map((mode) => (
-                                          <button
-                                            key={mode}
-                                            title={mode === 'mention' ? githubMentionUsage(da.name) : undefined}
-                                            className="fopt items-center gap-2 px-2 py-[7px]"
-                                            onClick={() => void setHookCadence(h, mode)}
-                                          >
-                                            <span className="flex-1 text-left font-sans text-[12.5px] font-medium leading-normal">
-                                              {GH_TRIGGER_LABEL[mode]}
-                                            </span>
-                                            {triggerModeOf(h) === mode && (
-                                              <Icon name="check" size={14} color="var(--brand)" />
-                                            )}
-                                          </button>
-                                        ))}
-                                      </div>
-                                    </>
-                                  )}
+                                        {GH_TRIGGER_PILL[mode]}
+                                      </button>
+                                    )
+                                  })}
                                 </div>
                               </span>
                               <span className="inline-flex flex-none gap-[2px]">
@@ -1458,7 +1423,7 @@ export default function AgentDetailView() {
                             <GithubMark />
                           </span>
                         ) : (
-                          <span className="imark h-[26px] w-[26px] border-0 bg-transparent">
+                          <span className="flex h-[26px] w-[26px] flex-none items-center justify-center">
                             <PlatformMark platform={p.key} fillPct={100} />
                           </span>
                         )}
@@ -1526,6 +1491,7 @@ export default function AgentDetailView() {
           memoryConnectionId={da.memoryConnectionId}
           memoryRecall={da.memoryRecall}
           memoryCaptureMode={da.memoryCaptureMode}
+          sessionBasePath={orgPath('/sessions')}
         />
       )}
 
@@ -1534,7 +1500,7 @@ export default function AgentDetailView() {
 
       {/* Tools & Skills tab — leads with the daemon runtime's MCP servers (Tools),
           then the workspace-indexed knowledge below it. */}
-      {tab === 'knowledge' && (
+      {tab === 'tools' && (
         <div className="flex flex-col gap-4 p-4 desktop:gap-[18px] desktop:p-0">
           <AgentToolsCard
             agentId={da.id}

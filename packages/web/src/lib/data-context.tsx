@@ -113,6 +113,10 @@ interface ConsoleData {
   allSessions: Session[]
   sessionFacets: SessionFacets
   sessionsNextCursor: string | null
+  /** Per-session body-free SSE invalidation counter for open transcript views. */
+  sessionActivityVersionById: Record<string, number>
+  /** Advances on every SSE (re)connect so views close any disconnect gap. */
+  sessionStreamGeneration: number
   crons: CronDto[]
   integrations: IntegrationRow[]
   /** Durable bot identities (freed + in-use) — Add-integration picker + Settings Bots card. */
@@ -190,8 +194,8 @@ interface ConsoleData {
   deleteHook: (id: string, agentId?: string | null) => Promise<void>
   /** Per-channel trigger choice (PATCH), applied to the local row on success. */
   setChannelTrigger: (integrationId: string, channelId: string, trigger: ChannelTrigger) => Promise<void>
-  /** Per-channel default agent for a shared bot (PATCH; null clears), applied locally. */
-  setChannelAgent: (integrationId: string, channelId: string, agentId: string | null) => Promise<void>
+  /** Per-channel default agent for a shared bot (PATCH), applied locally. */
+  setChannelAgent: (integrationId: string, channelId: string, agentId: string) => Promise<void>
   /** Flip a bot's shared-bot opt-in (PATCH /bots/:id), then re-pull. */
   setBotShareable: (botId: string, shareable: boolean) => Promise<void>
   /** Create-or-update a cron (PUT upsert; null id ⇒ mint a fresh UUID), then re-pull. */
@@ -569,6 +573,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const sessionRefreshGenerationRef = useRef(0)
   const sessionRefreshInFlightRef = useRef(false)
   const sessionRefreshDirtyRef = useRef(false)
+  const [sessionActivityVersionById, setSessionActivityVersionById] = useState<Record<string, number>>({})
+  const [sessionStreamGeneration, setSessionStreamGeneration] = useState(0)
 
   // Every cache key carries the org id. Unlike `keepPreviousData`, separate keys
   // never paint one org's stale rows under another org while the new pull starts.
@@ -732,6 +738,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     const generation = ++sessionRefreshGenerationRef.current
     sessionRefreshInFlightRef.current = false
     sessionRefreshDirtyRef.current = false
+    setSessionActivityVersionById({})
     if (orgLoading || !activeOrg) return
 
     const scheduleSessionRefresh = () => {
@@ -741,7 +748,18 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
         void drainSessionRefreshes(generation)
       }, SESSION_EVENT_REFRESH_DEBOUNCE_MS)
     }
-    const unsubscribe = subscribeSessionEvents(activeOrg.id, scheduleSessionRefresh)
+    const unsubscribe = subscribeSessionEvents(activeOrg.id, {
+      onConnect: () => {
+        scheduleSessionRefresh()
+        setSessionStreamGeneration((current) => current + 1)
+      },
+      onSession: scheduleSessionRefresh,
+      onActivity: ({ sessionId }) =>
+        setSessionActivityVersionById((current) => ({
+          ...current,
+          [sessionId]: (current[sessionId] ?? 0) + 1
+        }))
+    })
     return () => {
       sessionRefreshGenerationRef.current++
       sessionRefreshDirtyRef.current = false
@@ -1022,45 +1040,64 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateSkillSources]
   )
 
-  // Flip one channel's trigger (@-mention vs any message). Update the local row
-  // immediately (the PATCH response is authoritative but identical), no full re-pull —
-  // a toggle shouldn't flash every other view.
+  // Flip one conversation's trigger. Shared channels project bot-wide; gated DMs
+  // remain integration-scoped. Avoid a full re-pull so the toggle does not flash.
   const setChannelTrigger = useCallback(
     async (integrationId: string, channelId: string, trigger: ChannelTrigger) => {
       await apiUpdateIntegrationChannel(integrationId, channelId, { trigger })
       settleInBackground(
         mutateIntegrations(
-          (rows) =>
-            rows?.map((r) =>
-              r.id === integrationId
-                ? { ...r, channels: r.channels.map((c) => (c.channelId === channelId ? { ...c, trigger } : c)) }
-                : r
-            ),
+          (rows) => {
+            const source = rows?.find((row) => row.id === integrationId)
+            if (!rows || !source) return rows
+            const channel = source.channels.find((item) => item.channelId === channelId)
+            const botWide =
+              channel?.kind === 'channel' && realBots.some((bot) => bot.id === source.botId && bot.shareable)
+            return rows.map((row) =>
+              (botWide ? row.botId === source.botId : row.id === integrationId)
+                ? {
+                    ...row,
+                    channels: row.channels.map((channel) =>
+                      channel.channelId === channelId ? { ...channel, trigger } : channel
+                    )
+                  }
+                : row
+            )
+          },
           { revalidate: false }
         )
       )
     },
-    [mutateIntegrations]
+    [mutateIntegrations, realBots]
   )
 
-  // Set (or clear, with null) a channel's default agent for a shared bot. Optimistic
-  // local update, no full re-pull — mirrors setChannelTrigger.
+  // Set a shared channel's sole owner. The API projects the effective bot-level
+  // state onto every integration copy, so keep those cached copies in sync.
   const setChannelAgent = useCallback(
-    async (integrationId: string, channelId: string, agentId: string | null) => {
+    async (integrationId: string, channelId: string, agentId: string) => {
       const updated = await apiUpdateIntegrationChannel(integrationId, channelId, { agentId })
       settleInBackground(
         mutateIntegrations(
-          (rows) =>
-            rows?.map((r) =>
-              r.id === integrationId
+          (rows) => {
+            const source = rows?.find((row) => row.id === integrationId)
+            if (!rows || !source) return rows
+            return rows.map((row) =>
+              row.botId === source.botId
                 ? {
-                    ...r,
-                    channels: r.channels.map((c) =>
-                      c.channelId === channelId ? { ...c, agentId: updated.agentId } : c
+                    ...row,
+                    channels: row.channels.map((channel) =>
+                      channel.channelId === channelId
+                        ? {
+                            ...channel,
+                            agentId,
+                            trigger: updated.trigger
+                          }
+                        : channel
                     )
                   }
-                : r
-            ),
+                : row
+            )
+          },
           { revalidate: false }
         )
       )
@@ -1175,6 +1212,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       allSessions,
       sessionFacets,
       sessionsNextCursor,
+      sessionActivityVersionById,
+      sessionStreamGeneration,
       crons,
       integrations,
       bots,
@@ -1235,6 +1274,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       allSessions,
       sessionFacets,
       sessionsNextCursor,
+      sessionActivityVersionById,
+      sessionStreamGeneration,
       crons,
       integrations,
       bots,

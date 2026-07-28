@@ -69,7 +69,7 @@ interface UserAuthzDeps {
 }
 
 const ACCESS_TTL_MS = 5 * 60_000
-/** Parallel permission probes per list-filter call (page ≤ 100 repos). */
+/** Parallel verified REST permission probes per list-filter call. */
 const FILTER_CONCURRENCY = 8
 
 export class GithubUserAuthzService {
@@ -103,6 +103,10 @@ export class GithubUserAuthzService {
     return login
   }
 
+  private permissionKey(login: string, ins: GithubInstallationRecord, owner: string, repo: string): string {
+    return `${ins.installationId}:${owner.toLowerCase()}/${repo.toLowerCase()}:${login.toLowerCase()}`
+  }
+
   /** Cached + deduped effective permission of `login` on one repo. */
   private permissionOf(
     login: string,
@@ -110,7 +114,7 @@ export class GithubUserAuthzService {
     owner: string,
     repo: string
   ): Promise<RepoPermission> {
-    const key = `${ins.installationId}:${owner}/${repo}:${login}`
+    const key = this.permissionKey(login, ins, owner, repo)
     const cached = this.perms.get(key)
     if (cached && cached.expiresAt > this.deps.clock.now()) return Promise.resolve(cached.value)
     let pending = this.permsInFlight.get(key)
@@ -170,9 +174,7 @@ export class GithubUserAuthzService {
    * List filter for the picker: keep public repos and private repos the caller
    * can read on GitHub — so no-access repo NAMES never render in the console.
    * Private repos are probed with the same cached permission unit as the gates
-   * (bounded concurrency; a cold 100-private page costs that many Metadata:read
-   * calls once per user per 5 minutes — fine at realistic grant sizes, and the
-   * GraphQL alias batch is the tracked upgrade if an org outgrows it). Throws
+   * using the verified REST endpoint with bounded concurrency. Throws
    * GITHUB_IDENTITY_REQUIRED like every other check — never a silent allow.
    */
   async filterReposForUser<T extends { fullName: string; private: boolean }>(
@@ -185,20 +187,20 @@ export class GithubUserAuthzService {
     let next = 0
     const worker = async (): Promise<void> => {
       for (;;) {
-        const i = next++
-        if (i >= repos.length) return
-        const r = repos[i]!
-        if (!r.private) {
-          results[i] = true
+        const index = next++
+        if (index >= repos.length) return
+        const candidate = repos[index]!
+        if (!candidate.private) {
+          results[index] = true
           continue
         }
-        const [owner, repo] = r.fullName.split('/')
+        const [owner, repo] = candidate.fullName.split('/')
         if (!owner || !repo) continue
-        results[i] = (await this.permissionOf(login, ins, owner, repo)) !== 'none'
+        results[index] = (await this.permissionOf(login, ins, owner, repo)) !== 'none'
       }
     }
     await Promise.all(Array.from({ length: Math.min(FILTER_CONCURRENCY, repos.length) }, worker))
-    return repos.filter((_, i) => results[i])
+    return repos.filter((_, index) => results[index])
   }
 
   /** The enforcement form: resolve access and throw USER_NO_ACCESS below `need`. */

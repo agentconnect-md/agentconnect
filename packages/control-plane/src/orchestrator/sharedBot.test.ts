@@ -96,7 +96,7 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
   let botRow: BotRecord
   let integrations: IntegrationRecord[]
   let channels: IntegrationChannelRecord[]
-  let upserts: { daemonId: string; spec: { platform: string; slack?: { mode?: string } } }[]
+  let upserts: { daemonId: string; spec: { platform: string; slack?: { mode?: string; appId?: string } } }[]
   // Drives the SessionRepo.findThreadOwner fallback in lookupThread (null = no daemon session).
   let threadOwner: { agentId: string; daemonId: string } | null
   let threadOwnerLookup: { botId: BotId; channel: string; thread: string } | null
@@ -104,6 +104,8 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
   let gatedAgents: Set<string>
   // Drives ThreadAffinityStore.get (null = affinity miss → SessionMeta fallback).
   let threadBinding: { agentId: AgentId; daemonId: string } | null
+  // One-shot barrier for deterministic channel-mutation concurrency tests.
+  let blockNextChannelList: (() => Promise<void>) | null
 
   function makeOrch(): SharedBotOrchestrator {
     const agents: Record<string, AgentRecord> = {
@@ -128,9 +130,14 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     const intRepo: Pick<IntegrationRepo, 'listForBot'> = { listForBot: async () => integrations }
     const chRepo: Pick<
       IntegrationChannelRepo,
-      'listForBot' | 'replaceSnapshot' | 'setAgent' | 'upsertAgent' | 'upsertConversation'
+      'listForBot' | 'replaceSnapshot' | 'setAgent' | 'setTrigger' | 'upsertAgent' | 'upsertConversation'
     > = {
-      listForBot: async () => channels,
+      listForBot: async () => {
+        const block = blockNextChannelList
+        blockNextChannelList = null
+        if (block) await block()
+        return channels
+      },
       replaceSnapshot: async (integrationId, reported, opts) => {
         channels = channels.filter(
           (row) => row.integrationId !== integrationId || reported.some((candidate) => candidate.id === row.channelId)
@@ -149,6 +156,12 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
         const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
         if (!row) return null
         row.agentId = agentId
+        return row
+      },
+      setTrigger: async (integrationId, channelId, trigger) => {
+        const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
+        if (!row) return null
+        row.trigger = trigger
         return row
       },
       upsertConversation: async (integrationId, conversation, opts) => {
@@ -217,6 +230,7 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     threadOwnerLookup = null
     gatedAgents = new Set()
     threadBinding = null
+    blockNextChannelList = null
   })
 
   describe('lookupThread — SessionMeta fallback on affinity miss (§7.2 case 2a)', () => {
@@ -290,6 +304,13 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     expect(assign.routes[0]).toMatchObject({ agentId: ALICE, scope: { channel: 'C9' }, match: { kind: 'auto' } })
   })
 
+  it('carries the public Slack app id to each daemon for permission-update links', async () => {
+    botRow = bot({ slackAppId: 'A123' })
+    await makeOrch().syncBot(BOT)
+    expect(upserts).toHaveLength(2)
+    expect(upserts.every((upsert) => upsert.spec.slack?.appId === 'A123')).toBe(true)
+  })
+
   describe('conversation gating (resource-visibility §14)', () => {
     it("a GATED owner's 'off' channel compiles no route (fail-closed until an editor enables it)", async () => {
       gatedAgents = new Set([ALICE])
@@ -347,14 +368,14 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       expect(bob.slack.bindRules).toEqual([])
     })
 
-    it("replaceChannels defaults a gated install's fresh channels to off (others to mention)", async () => {
+    it("replaceChannels makes a gated default owner's fresh channel Off on every membership row", async () => {
       gatedAgents = new Set([ALICE])
       channels = []
       await makeOrch().replaceChannels(BOT, [{ id: 'C7', name: 'deploys' }])
       const aliceRow = channels.find((c) => c.integrationId === INT_A && c.channelId === 'C7')
       const bobRow = channels.find((c) => c.integrationId === INT_B && c.channelId === 'C7')
       expect(aliceRow?.trigger).toBe('off')
-      expect(bobRow?.trigger).toBe('mention')
+      expect(bobRow?.trigger).toBe('off')
     })
 
     it('reportConversation fans a kind:im row (Off, agent-owned) to GATED installs only, idempotently', async () => {
@@ -445,7 +466,7 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
   it('setChannelAgent makes the pick the sole owner of the channel + pushes rc/routes', async () => {
     botRow = bot()
     // Start with C7 owned by alice (on alice's install); no row on bob's install.
-    channels = [channel({ integrationId: INT_A, channelId: 'C7', agentId: ALICE, trigger: 'mention' })]
+    channels = [channel({ integrationId: INT_A, channelId: 'C7', agentId: ALICE, trigger: 'any' })]
     const orch = makeOrch()
     // Operator picks BOB as C7's default in the modal.
     await orch.setChannelAgent(BOT, 'C7', BOB)
@@ -454,13 +475,77 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     const aliceRow = channels.find((c) => c.integrationId === INT_A && c.channelId === 'C7')
     const bobRow = channels.find((c) => c.integrationId === INT_B && c.channelId === 'C7')
     expect(aliceRow?.agentId).toBeNull()
-    expect(bobRow?.agentId).toBe(BOB)
+    expect(bobRow).toMatchObject({ agentId: BOB, trigger: 'any' })
 
     // and the relay got a hot rc/routes with C7 scoped to bob.
     const routes = ch.sends.filter((s) => s.type === 'rc/routes')
     expect(routes.length).toBeGreaterThan(0)
     const last = routes[routes.length - 1]!.payload as { routes: { agentId: string; scope?: { channel?: string } }[] }
     expect(last.routes.some((r) => r.scope?.channel === 'C7' && r.agentId === BOB)).toBe(true)
+  })
+
+  it('keeps an in-Slack owner move to a gated agent Off', async () => {
+    gatedAgents = new Set([BOB])
+    channels = [
+      channel({ integrationId: INT_A, channelId: 'C7', agentId: ALICE, trigger: 'any' }),
+      channel({ integrationId: INT_B, channelId: 'C7', agentId: null, trigger: 'off' })
+    ]
+
+    await makeOrch().setChannelAgent(BOT, 'C7', BOB)
+
+    expect(channels.find((row) => row.integrationId === INT_A)).toMatchObject({ agentId: null, trigger: 'off' })
+    expect(channels.find((row) => row.integrationId === INT_B)).toMatchObject({ agentId: BOB, trigger: 'off' })
+    const routes = ch.sends.filter((send) => send.type === 'rc/routes').at(-1)?.payload as RcBotAssign
+    expect(routes.routes.some((route) => route.scope?.channel === 'C7')).toBe(false)
+  })
+
+  it('rejects a queued Console update when Slack changes the authorized owner first', async () => {
+    gatedAgents = new Set([BOB])
+    channels = [
+      channel({ integrationId: INT_A, channelId: 'C7', agentId: ALICE, trigger: 'mention' }),
+      channel({ integrationId: INT_B, channelId: 'C7', agentId: null, trigger: 'mention' })
+    ]
+    let releaseChannelList!: () => void
+    let channelListReached!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      releaseChannelList = resolve
+    })
+    const reached = new Promise<void>((resolve) => {
+      channelListReached = resolve
+    })
+    blockNextChannelList = async () => {
+      channelListReached()
+      await blocked
+    }
+    const orch = makeOrch()
+
+    const slackMove = orch.setChannelAgent(BOT, 'C7', BOB)
+    await reached
+    const consoleUpdate = orch.updateChannel(
+      BOT,
+      'C7',
+      { trigger: 'any' },
+      { expectedOwnerAgentId: ALICE, source: 'console' }
+    )
+    releaseChannelList()
+
+    await slackMove
+    expect(await consoleUpdate).toBeNull()
+    expect(channels.find((row) => row.integrationId === INT_A)).toMatchObject({ agentId: null, trigger: 'off' })
+    expect(channels.find((row) => row.integrationId === INT_B)).toMatchObject({ agentId: BOB, trigger: 'off' })
+  })
+
+  it('backfills a missing sibling before the current owner can be removed', async () => {
+    channels = [channel({ integrationId: INT_A, channelId: 'C7', name: 'deploys', agentId: ALICE, trigger: 'any' })]
+
+    await makeOrch().prepareIntegrationRemoval(BOT)
+
+    expect(channels.find((row) => row.integrationId === INT_B)).toMatchObject({
+      channelId: 'C7',
+      name: 'deploys',
+      agentId: null,
+      trigger: 'any'
+    })
   })
 
   it('fans an HTTP Slack channel snapshot across every install and preserves channel ownership', async () => {
@@ -506,16 +591,44 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     expect(channels.find((c) => c.integrationId === INT_B && c.channelId === 'C1')?.agentId).toBe(BOB)
   })
 
-  it('does not re-seed a known channel the operator cleared to "No default"', async () => {
-    // C1 exists on both installs, un-owned (operator cleared it). A re-reported snapshot
-    // must NOT re-seed it — only genuinely new channels get the creating-agent default.
+  it('repairs a known ownerless channel to the earliest active agent', async () => {
     channels = [
       channel({ integrationId: INT_A, channelId: 'C1', agentId: null }),
       channel({ integrationId: INT_B, channelId: 'C1', agentId: null })
     ]
     await makeOrch().replaceChannels(BOT, [{ id: 'C1', name: 'deploys' }])
-    expect(channels.find((c) => c.integrationId === INT_A && c.channelId === 'C1')?.agentId).toBeNull()
+    expect(channels.find((c) => c.integrationId === INT_A && c.channelId === 'C1')?.agentId).toBe(ALICE)
     expect(channels.find((c) => c.integrationId === INT_B && c.channelId === 'C1')?.agentId).toBeNull()
+  })
+
+  it('transfers an ownerless channel to the earliest remaining integration', async () => {
+    integrations = [integration(INT_B, BOB)]
+    botRow = bot({ agentIds: [BOB] })
+    channels = [channel({ integrationId: INT_B, channelId: 'C1', agentId: null })]
+
+    await makeOrch().syncBot(BOT)
+
+    expect(channels).toEqual([expect.objectContaining({ integrationId: INT_B, channelId: 'C1', agentId: BOB })])
+    const assign = ch.sends.find((send) => send.type === 'rc/bot-assign')?.payload as RcBotAssign
+    expect(assign.routes).toEqual([
+      expect.objectContaining({ agentId: BOB, scope: { channel: 'C1' }, match: { kind: 'mention' } }),
+      expect.objectContaining({ agentId: BOB, match: { kind: 'keyword', value: 'bob' } })
+    ])
+  })
+
+  it('keeps an automatic ownerless fallback to a gated agent Off', async () => {
+    integrations = [integration(INT_B, BOB)]
+    botRow = bot({ agentIds: [BOB] })
+    gatedAgents = new Set([BOB])
+    channels = [channel({ integrationId: INT_B, channelId: 'C1', agentId: null, trigger: 'any' })]
+
+    await makeOrch().syncBot(BOT)
+
+    expect(channels).toEqual([
+      expect.objectContaining({ integrationId: INT_B, channelId: 'C1', agentId: BOB, trigger: 'off' })
+    ])
+    const assign = ch.sends.find((send) => send.type === 'rc/bot-assign')?.payload as RcBotAssign
+    expect(assign.routes).toEqual([])
   })
 
   it('defers placement when no relay is connected', async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseSkillRef, resolveAgentSkillEntries } from './skillSource.js'
+import { parseSkillRef, redactSourceCredentials, resolveAgentSkillEntries } from './skillSource.js'
 import type { SkillSourceRecord, SkillSourceRepo } from '../persistence/ports.js'
 import { OrgId } from '../domain/ids.js'
 
@@ -101,5 +101,65 @@ describe('resolveAgentSkillEntries', () => {
     const repo = repoWith([source({ name: 'platform' })])
     const out = await resolveAgentSkillEntries({ orgId: ORG, skills: ['gone/x', 'platform/*'] }, repo)
     expect(out.map((e) => e.name)).toEqual(['platform'])
+  })
+})
+
+describe('redactSourceCredentials', () => {
+  // The agent-scoped resolution shows a source to callers the source itself is
+  // shared away from, so anything that could be a secret must not survive.
+  it('strips userinfo from a scheme URL, whether it looks like a password or a token', () => {
+    expect(redactSourceCredentials('https://user:pw@git.example.test/ops/skills.git')).toBe(
+      'https://git.example.test/ops/skills.git'
+    )
+    expect(redactSourceCredentials('https://ghp_TOKEN@github.com/example-org/kit')).toBe(
+      'https://github.com/example-org/kit'
+    )
+    // ssh keeps its role username (it isn't a secret and the URL stays cloneable)
+    // but loses a password — the protocol codec's rule, inherited here.
+    expect(redactSourceCredentials('ssh://git:secret@git.example.test/ops/skills.git')).toBe(
+      'ssh://git@git.example.test/ops/skills.git'
+    )
+  })
+
+  it('handles the forms a naive regex gets wrong (bypasses caught in review)', () => {
+    // Minimal-match userinfo would stop at the FIRST `@` and echo `ss@host…`.
+    expect(redactSourceCredentials('https://user:p@ss@git.example.test/ops/skills.git')).toBe(
+      'https://git.example.test/ops/skills.git'
+    )
+    // A token can hide in a query or fragment instead of the authority.
+    for (const s of [
+      'https://git.example.test/ops/skills.git?access_token=visible-secret',
+      'https://git.example.test/ops/skills.git#fragment-secret',
+      'https://git.example.test/ops/skills.git?access_token=visible-secret#fragment-secret'
+    ]) {
+      const out = redactSourceCredentials(s)
+      expect(out).toBe('https://git.example.test/ops/skills.git')
+      expect(out).not.toContain('secret')
+    }
+  })
+
+  it('never throws on a malformed historical value, and never echoes its secret', () => {
+    for (const s of ['', 'not a url', 'https://user:secret@', 'https://good.example\\user:token@127.0.0.1/repo']) {
+      expect(() => redactSourceCredentials(s)).not.toThrow()
+      expect(redactSourceCredentials(s)).not.toMatch(/secret|token/)
+    }
+  })
+
+  it('leaves credential-free forms untouched', () => {
+    for (const s of [
+      'example-org/example-ai-kit',
+      'https://github.com/example-org/example-kit/tree/main/skills',
+      'git@github.com:example-org/example-kit.git' // scp-like: no scheme, so no userinfo
+    ]) {
+      expect(redactSourceCredentials(s)).toBe(s)
+    }
+  })
+
+  it('drops a query wholesale rather than guessing which parameter is a secret', () => {
+    // `?ref=v1@2` is innocuous, but the query is stripped anyway — `SkillSourceArg`
+    // no longer accepts one, so nothing legitimate depends on it surviving.
+    expect(redactSourceCredentials('https://git.example.test/ops/skills.git?ref=v1@2')).toBe(
+      'https://git.example.test/ops/skills.git'
+    )
   })
 })

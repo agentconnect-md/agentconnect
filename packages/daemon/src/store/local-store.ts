@@ -77,9 +77,9 @@ export interface SessionRecord {
   // NULL on legacy rows / non-platform sessions). Display-name resolution is a
   // separate `display_names` lookup keyed by this id.
   triggeredBy?: string | null
-  // Human-facing session title supplied by the runtime (ACP
-  // `session_info_update`) or AgentConnect's `setSessionTitle` tool. NULL until
-  // either source reports one.
+  // Human-facing session title supplied by an ingress when the session is
+  // created, by the runtime (ACP `session_info_update`), or by AgentConnect's
+  // `setSessionTitle` tool. Later runtime/tool updates win.
   title?: string | null
   // Slack-only chrome: the current in-thread status-bar message ts. One per session
   // so later turns edit the same status line instead of posting duplicates.
@@ -176,6 +176,8 @@ export interface TranscriptEntry {
  *  `toolCallId`/`body` columns carry through raw (NULL on text/reasoning rows). */
 export interface TranscriptRow extends TranscriptEntry {
   seq: number
+  /** Monotonic mutation watermark; changes when a stable row is updated in place. */
+  revision: number
   /** Normalized epoch microseconds used by chronological Slack history pagination. */
   eventTimeUs: number
   toolCallId?: string | null
@@ -186,6 +188,13 @@ export interface TranscriptRow extends TranscriptEntry {
 export interface TranscriptEventCursor {
   eventTimeUs: number
   seq: number
+}
+
+export interface TranscriptMutation {
+  channel: string
+  thread: string
+  agentIds: string[]
+  revision: number
 }
 
 export function sessionKey(platform: string, channel: string, thread: string, agentId: string): string {
@@ -374,6 +383,8 @@ function restrictPath(path: string, mode: number): void {
 
 export class LocalStore {
   private db: DatabaseSync
+  private transcriptRevision = 0
+  private transcriptMutationListener?: (mutation: TranscriptMutation) => void
 
   constructor(dbPath: string) {
     // This database holds every platform message body, agent reply, tool payload and
@@ -431,7 +442,7 @@ export class LocalStore {
         channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
         sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
         tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
-        attachmentsJson TEXT
+        attachmentsJson TEXT, revision INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS transcript_thread_seq ON transcript (channel, thread, seq);
       -- Dedup conversational rows by platform ts (double-fired inbound / redelivery);
@@ -622,10 +633,14 @@ export class LocalStore {
         triggerKind TEXT NOT NULL,
         sessionIds TEXT NOT NULL,         -- JSON string[]
         snapshotDigest TEXT NOT NULL,
+        executionSessionId TEXT,
+        runtime TEXT,
+        model TEXT,
+        stopReason TEXT,
         snapshotWrites TEXT,              -- JSON {total, nonDistill} write-ledger marks
         instructions TEXT,
         skills TEXT,                      -- JSON DreamSkillInfo[]
-        usage TEXT,                       -- JSON {inputBytes, outputBytes}
+        usage TEXT,                       -- JSON DreamUsage (tokens/cost + bounded byte counts)
         error TEXT,                       -- JSON {type, message}
         createdAt TEXT NOT NULL,
         endedAt TEXT
@@ -634,6 +649,7 @@ export class LocalStore {
     `)
     this.migrateDreamSnapshotWrites()
     this.migrateDreamSupersededStatus()
+    this.migrateDreamObservability()
     this.migrateSessionUsage()
     this.migrateSessionMutes()
     this.migrateInboxLoopGuardCounted()
@@ -641,6 +657,7 @@ export class LocalStore {
     this.migrateTranscriptAttachments()
     this.migrateTranscriptRecipient()
     this.migrateTranscriptEventTime()
+    this.migrateTranscriptRevision()
     this.migrateInboxHookContext()
     this.migrateRuntimeCatalogDefaultMode()
     // A daemon restart loses the in-memory ACP resolver. Retain the audit row but
@@ -695,6 +712,22 @@ export class LocalStore {
     )
   }
 
+  /** Stable-row updates need a cursor independent of insertion-order `seq`. */
+  private migrateTranscriptRevision(): void {
+    const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
+    if (!cols.some((c) => c.name === 'revision'))
+      this.db.exec('ALTER TABLE transcript ADD COLUMN revision INTEGER NOT NULL DEFAULT 0')
+    this.db.exec(`
+      UPDATE transcript SET revision = seq WHERE revision = 0;
+      CREATE INDEX IF NOT EXISTS transcript_thread_revision
+        ON transcript (channel, thread, revision);
+    `)
+    const row = this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript').get() as {
+      revision: number
+    }
+    this.transcriptRevision = row.revision
+  }
+
   /** R1 hook turns must retain their trusted dispatch fence and the poster's
    * single-attempt state across restart. Upgrade existing local stores in place. */
   private migrateInboxHookContext(): void {
@@ -718,6 +751,17 @@ export class LocalStore {
     const cols = this.db.prepare('PRAGMA table_info(dreams)').all() as { name: string }[]
     if (!cols.some((c) => c.name === 'snapshotWrites'))
       this.db.exec('ALTER TABLE dreams ADD COLUMN snapshotWrites TEXT')
+  }
+
+  /** Add metadata-only correlation and execution fields without rewriting
+   *  existing dream rows. Usage remains JSON for rolling schema compatibility. */
+  private migrateDreamObservability(): void {
+    const cols = this.db.prepare('PRAGMA table_info(dreams)').all() as { name: string }[]
+    const names = new Set(cols.map((column) => column.name))
+    if (!names.has('executionSessionId')) this.db.exec('ALTER TABLE dreams ADD COLUMN executionSessionId TEXT')
+    if (!names.has('runtime')) this.db.exec('ALTER TABLE dreams ADD COLUMN runtime TEXT')
+    if (!names.has('model')) this.db.exec('ALTER TABLE dreams ADD COLUMN model TEXT')
+    if (!names.has('stopReason')) this.db.exec('ALTER TABLE dreams ADD COLUMN stopReason TEXT')
   }
 
   /** Extend the dream lifecycle without stranding proposals created before the
@@ -1024,6 +1068,26 @@ export class LocalStore {
       .get(agentId, acpSessionId) as SessionRecord | undefined
   }
 
+  /** Addressable session ids whose authorized transcript scope may have changed. */
+  sessionIdsForTranscript(agentId: string, channel: string, thread: string): string[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT DISTINCT acpSessionId FROM sessions
+           WHERE agentId = ? AND channel = ? AND thread = ? AND acpSessionId IS NOT NULL`
+        )
+        .all(agentId, channel, thread) as { acpSessionId: string }[]
+    ).map((row) => row.acpSessionId)
+  }
+
+  currentTranscriptRevision(): number {
+    return this.transcriptRevision
+  }
+
+  setTranscriptMutationListener(listener?: (mutation: TranscriptMutation) => void): void {
+    this.transcriptMutationListener = listener
+  }
+
   /**
    * One newest-first page of a thread's user-visible transcript, for `session/history`.
    * Daemon housekeeping is excluded at read time as well as write time so rows stored
@@ -1181,6 +1245,49 @@ export class LocalStore {
     return { rows: hasMore ? rows.slice(0, limit) : rows, hasMore }
   }
 
+  /**
+   * Forward mutation page for one authorized session view. Rows are revision-ordered,
+   * so inserts and same-seq tool updates share one lossless cursor. The returned
+   * cursor skips unrelated/global revisions only after this scope is fully drained.
+   */
+  transcriptTailForAgent(
+    channel: string,
+    thread: string,
+    agentId: string,
+    afterRevision: number,
+    limit: number
+  ): { rows: TranscriptRow[]; hasMore: boolean; cursor: number } {
+    const scope = `(sender = ? OR recipient = ? OR (transcript.kind = 'text' AND EXISTS (
+        SELECT 1 FROM transcript_recipient tr
+        WHERE tr.channel = transcript.channel AND tr.thread = transcript.thread
+          AND tr.ts = transcript.ts AND tr.agentId = ?)))`
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM transcript
+         WHERE channel = ? AND thread = ? AND revision > ?
+           AND ${scope}
+           AND NOT (kind = 'tool' AND text IN (?, ?))
+         ORDER BY revision ASC LIMIT ?`
+      )
+      .all(
+        channel,
+        thread,
+        afterRevision,
+        agentId,
+        agentId,
+        agentId,
+        ...SESSION_TITLE_TOOL_TITLES,
+        limit + 1
+      ) as unknown as TranscriptRow[]
+    const hasMore = rows.length > limit
+    const kept = hasMore ? rows.slice(0, limit) : rows
+    return {
+      rows: kept,
+      hasMore,
+      cursor: hasMore ? kept[kept.length - 1]!.revision : this.transcriptRevision
+    }
+  }
+
   upsertSession(rec: SessionRecord): void {
     // Bind only the mutable session columns explicitly. `rec` may be a row read back
     // via `SELECT *` (e.g. from getSession/listSessions), which now also carries the
@@ -1249,8 +1356,8 @@ export class LocalStore {
     }
   }
 
-  /** Human-facing session title from ACP or the AgentConnect title tool (latest
-   *  wins; null clears per ACP semantics). No-op on an unknown key. */
+  /** Human-facing session title from ingress, ACP, or the AgentConnect title
+   *  tool (latest wins; null clears per ACP semantics). No-op on an unknown key. */
   setSessionTitle(key: string, title: string | null): void {
     this.db.prepare('UPDATE sessions SET title = ? WHERE key = ?').run(title, key)
   }
@@ -1505,6 +1612,10 @@ export class LocalStore {
       triggerKind: dream.trigger,
       sessionIds: JSON.stringify(dream.sessionIds),
       snapshotDigest: dream.snapshotDigest,
+      executionSessionId: dream.executionSessionId ?? null,
+      runtime: dream.runtime ?? null,
+      model: dream.model ?? null,
+      stopReason: dream.stopReason ?? null,
       snapshotWrites: dream.snapshotWrites ? JSON.stringify(dream.snapshotWrites) : null,
       instructions: dream.instructions ?? null,
       skills: dream.skills ? JSON.stringify(dream.skills) : null,
@@ -1523,6 +1634,10 @@ export class LocalStore {
       trigger: row.triggerKind as DreamInfo['trigger'],
       sessionIds: JSON.parse(row.sessionIds as string) as string[],
       snapshotDigest: row.snapshotDigest as string,
+      ...(row.executionSessionId ? { executionSessionId: row.executionSessionId as string } : {}),
+      ...(row.runtime ? { runtime: row.runtime as string } : {}),
+      ...(row.model ? { model: row.model as string } : {}),
+      ...(row.stopReason ? { stopReason: row.stopReason as string } : {}),
       ...(row.snapshotWrites
         ? { snapshotWrites: JSON.parse(row.snapshotWrites as string) as DreamInfo['snapshotWrites'] }
         : {}),
@@ -1539,9 +1654,9 @@ export class LocalStore {
     this.db
       .prepare(
         `INSERT INTO dreams (dreamId, agentId, status, triggerKind, sessionIds, snapshotDigest,
-           snapshotWrites, instructions, skills, usage, error, createdAt, endedAt)
+           executionSessionId, runtime, model, stopReason, snapshotWrites, instructions, skills, usage, error, createdAt, endedAt)
          VALUES (@dreamId, @agentId, @status, @triggerKind, @sessionIds, @snapshotDigest,
-           @snapshotWrites, @instructions, @skills, @usage, @error, @createdAt, @endedAt)`
+           @executionSessionId, @runtime, @model, @stopReason, @snapshotWrites, @instructions, @skills, @usage, @error, @createdAt, @endedAt)`
       )
       .run(this.dreamToRow(dream))
   }
@@ -1554,7 +1669,8 @@ export class LocalStore {
         // named parameter"). triggerKind/createdAt are immutable in practice but
         // are still assigned, so the row shape and the SQL can't drift apart.
         `UPDATE dreams SET status = @status, triggerKind = @triggerKind, sessionIds = @sessionIds,
-           snapshotDigest = @snapshotDigest, snapshotWrites = @snapshotWrites, instructions = @instructions,
+           snapshotDigest = @snapshotDigest, executionSessionId = @executionSessionId, runtime = @runtime,
+           model = @model, stopReason = @stopReason, snapshotWrites = @snapshotWrites, instructions = @instructions,
            skills = @skills, usage = @usage, error = @error, createdAt = @createdAt, endedAt = @endedAt
          WHERE dreamId = @dreamId AND agentId = @agentId`
       )
@@ -1604,7 +1720,7 @@ export class LocalStore {
     return this.db
       .prepare(
         `SELECT acpSessionId AS sessionId, channel, thread FROM sessions
-         WHERE agentId = ? AND acpSessionId IS NOT NULL
+         WHERE agentId = ? AND acpSessionId IS NOT NULL AND platform <> 'dream'
          ORDER BY updatedAt DESC LIMIT ?`
       )
       .all(agentId, limit) as { sessionId: string; channel: string; thread: string }[]
@@ -1681,26 +1797,42 @@ export class LocalStore {
 
   appendTranscript(e: TranscriptEntry): void {
     const { attachments, ...entry } = e
-    this.db
+    const revision = this.transcriptRevision + 1
+    const inserted = this.db
       .prepare(
         `INSERT OR IGNORE INTO transcript
-           (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson)
+           (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson, revision)
          VALUES
-           (@channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson)`
+           (@channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson, @revision)`
       )
       .run({
         ...entry,
         recipient: e.recipient ?? null,
         eventTimeUs: transcriptEventTimeUs(e.ts),
-        attachmentsJson: attachments?.length ? JSON.stringify(attachments) : null
+        attachmentsJson: attachments?.length ? JSON.stringify(attachments) : null,
+        revision
       } as unknown as SqlParams)
+    if (Number(inserted.changes) === 1) this.transcriptRevision = revision
     // Record the delivery separately so it survives the text-row dedup above: if this same
     // (channel, thread, ts) was already recorded by another agent, the INSERT OR IGNORE
     // dropped this row and its `recipient`, but the message WAS delivered to this agent too.
-    if (e.recipient && e.ts)
+    const delivered =
+      e.recipient && e.ts
+        ? this.db
+            .prepare('INSERT OR IGNORE INTO transcript_recipient (channel, thread, ts, agentId) VALUES (?, ?, ?, ?)')
+            .run(e.channel, e.thread, e.ts, e.recipient)
+        : undefined
+
+    if (Number(inserted.changes) === 1) {
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient], revision)
+    } else if (e.recipient && Number(delivered?.changes ?? 0) === 1) {
+      const deliveryRevision = this.transcriptRevision + 1
       this.db
-        .prepare('INSERT OR IGNORE INTO transcript_recipient (channel, thread, ts, agentId) VALUES (?, ?, ?, ?)')
-        .run(e.channel, e.thread, e.ts, e.recipient)
+        .prepare("UPDATE transcript SET revision = ? WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'")
+        .run(deliveryRevision, e.channel, e.thread, e.ts)
+      this.transcriptRevision = deliveryRevision
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.recipient], deliveryRevision)
+    }
   }
 
   /** First sight of a tool call: insert its kind='tool' row (title in `text`, the
@@ -1716,11 +1848,12 @@ export class LocalStore {
     title: string
     body: string
   }): void {
-    this.db
+    const revision = this.transcriptRevision + 1
+    const inserted = this.db
       .prepare(
         `INSERT OR IGNORE INTO transcript
-           (channel, thread, ts, sender, kind, text, tool_call_id, body, eventTimeUs)
-         VALUES (@channel, @thread, @ts, @sender, 'tool', @text, @toolCallId, @body, @eventTimeUs)`
+           (channel, thread, ts, sender, kind, text, tool_call_id, body, eventTimeUs, revision)
+         VALUES (@channel, @thread, @ts, @sender, 'tool', @text, @toolCallId, @body, @eventTimeUs, @revision)`
       )
       .run({
         channel: e.channel,
@@ -1730,8 +1863,13 @@ export class LocalStore {
         text: e.title,
         toolCallId: e.toolCallId,
         body: e.body,
-        eventTimeUs: transcriptEventTimeUs(e.ts)
+        eventTimeUs: transcriptEventTimeUs(e.ts),
+        revision
       })
+    if (Number(inserted.changes) === 1) {
+      this.transcriptRevision = revision
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], revision)
+    }
   }
 
   /** Later update for one agent's tool call. `seq`/`ts` keep their first-seen
@@ -1743,11 +1881,33 @@ export class LocalStore {
     toolCallId: string,
     patch: { title: string; body: string }
   ): void {
-    this.db
+    const revision = this.transcriptRevision + 1
+    const updated = this.db
       .prepare(
-        'UPDATE transcript SET text = ?, body = ? WHERE channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?'
+        `UPDATE transcript SET text = ?, body = ?, revision = ?
+         WHERE channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?
+           AND (text IS NOT ? OR body IS NOT ?)`
       )
-      .run(patch.title, patch.body, channel, thread, agentId, toolCallId)
+      .run(patch.title, patch.body, revision, channel, thread, agentId, toolCallId, patch.title, patch.body)
+    if (Number(updated.changes) === 1) {
+      this.transcriptRevision = revision
+      this.notifyTranscriptMutation(channel, thread, [agentId], revision)
+    }
+  }
+
+  private notifyTranscriptMutation(
+    channel: string,
+    thread: string,
+    candidates: Array<string | undefined>,
+    revision: number
+  ): void {
+    const agentIds = [...new Set(candidates.filter((candidate): candidate is string => !!candidate))]
+    if (agentIds.length === 0) return
+    try {
+      this.transcriptMutationListener?.({ channel, thread, agentIds, revision })
+    } catch {
+      // Live-view invalidation is best-effort and must never fail a durable write.
+    }
   }
 
   /** One agent's full stored ToolBody JSON, or undefined if unknown/not owned. */

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { CanonicalMemoryRecord, MemoryPluginHistoryEvent, MemoryPluginOperation } from '../memory-plugin.js'
+import { SessionUsage } from './session.js'
 
 /**
  * Agent memory directory (C→D REQ → REP) — the console's read/write of an agent's
@@ -323,6 +324,14 @@ export const DreamSkillInfo = z
   .strict()
 export type DreamSkillInfo = z.infer<typeof DreamSkillInfo>
 
+/** Model-run metering for one dream. Byte counts describe the bounded extraction
+ *  payload; token/context/cost fields use the same semantics as a normal session. */
+export const DreamUsage = SessionUsage.extend({
+  inputBytes: z.number().int().nonnegative(),
+  outputBytes: z.number().int().nonnegative()
+})
+export type DreamUsage = z.infer<typeof DreamUsage>
+
 /** Dream job metadata (never staged bodies). The only dream shape the CP may persist. */
 export const DreamInfo = z
   .object({
@@ -332,6 +341,13 @@ export const DreamInfo = z
     trigger: DreamTrigger,
     sessionIds: z.array(z.string().min(1)).max(100),
     snapshotDigest: z.string().min(1).max(128),
+    /** The isolated ACP session that executed this dream. It is retained as a
+     *  metadata-only/background session after the runtime session is discarded,
+     *  so Sessions can show lifecycle, usage, and safe audit history. */
+    executionSessionId: z.string().min(1).optional(),
+    runtime: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
+    stopReason: z.string().min(1).max(128).optional(),
     /** The store's write counters when it was snapshotted, captured under the
      *  memory-dir lock. Adoption compares them with the live counters to tell a
      *  distill-only drift — which it may rebase over — from a tool/console write,
@@ -351,13 +367,7 @@ export const DreamInfo = z
       .optional(),
     instructions: z.string().max(4096).optional(),
     skills: z.array(DreamSkillInfo).max(16).optional(),
-    usage: z
-      .object({
-        inputBytes: z.number().int().nonnegative(),
-        outputBytes: z.number().int().nonnegative()
-      })
-      .strict()
-      .optional(),
+    usage: DreamUsage.optional(),
     error: z
       .object({ type: z.string().min(1).max(128), message: z.string().max(2048) })
       .strict()

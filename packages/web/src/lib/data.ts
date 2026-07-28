@@ -709,6 +709,8 @@ export interface SessionStep {
 // Per-session token accounting (protocol `SessionUsage`), metered by the daemon.
 // Token counts are session-cumulative; context/cost are the latest snapshot.
 export interface SessionUsage {
+  /** Daemon timestamp of this cumulative snapshot (orders list/detail refreshes). */
+  reportedAt?: string
   totalTokens?: number
   inputTokens?: number
   outputTokens?: number
@@ -1326,7 +1328,7 @@ export interface IntegrationChannelRow {
   /** 'im' = a DM conversation row (gated/restricted agents only); absent = channel. */
   kind?: 'channel' | 'im'
   trigger: 'off' | 'mention' | 'any'
-  /** Per-channel default agent for a shared bot (agentId); null/absent ⇒ unset. */
+  /** Effective per-channel owner for a shared bot. */
   agentId?: string | null
 }
 
@@ -1440,7 +1442,7 @@ export interface DaemonRow {
   availableVersions: string[]
   /** The most recent CP-commanded restart/upgrade op (cli-daemon-split.md §7), or null.
    *  `status` is expiry-projected server-side; the modal tracks its own command by `id`
-   *  and the detail view derives the in-flight badge from `status === 'pending'`. */
+   *  and the daemon views derive the in-flight badge from `status === 'pending'`. */
   lifecycleOp: DaemonLifecycleOp | null
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
@@ -1540,6 +1542,7 @@ export const MEMBERS: Member[] = [
 export function platName(p: string): string {
   const x = (p || '').toLowerCase()
   if (x.includes('github')) return 'GitHub'
+  if (x.includes('dream')) return 'Memory dream'
   if (x.includes('hook')) return 'Webhook'
   // 'playground' (live sandbox) and 'webchat' (its persisted CP session) are the same
   // surface to a user — label both "Playground".

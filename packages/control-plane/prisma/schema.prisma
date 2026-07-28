@@ -182,12 +182,18 @@ model OrgInviteRedemption {
 
 // ───────────────────────────────────────────────────────────────────────────
 // WaitlistEntry — closed-beta admission
-//   One row per verified email. TWO write sides share this table (§7):
-//     • the EXTERNAL admin app writes approval/mint fields (status, note, source,
-//       tokenHash, displayTail, joinExpiresAt, revokedAt, approved*) — enforced by
-//       a column-level least-privilege DB role granted in the migration;
+//   One row per activation link. TWO write sides share this table (§7):
+//     • the EXTERNAL admin app writes approval/mint fields (name, email, status,
+//       note, source, tokenHash, displayTail, joinExpiresAt, revokedAt, approved*)
+//       — enforced by a column-level least-privilege DB role granted in the migration;
 //     • the CP writes ONLY the redemption fields (redeemed*), in the same
 //       transaction that sets User.activatedAt.
+//   `email` is OPTIONAL and drives the ONE redemption rule (§6): a row WITH an email
+//   may be redeemed ONLY by that verified email (strong binding); a row with NO email
+//   is a one-time BEARER link — any verified identity may redeem it once, and the
+//   redeemer's email is recorded in `redeemedEmail`. `email` stays `@unique` so real
+//   emails don't collide and self-signup upserts still work; Postgres treats NULLs as
+//   distinct, so any number of bearer rows (email null) coexist.
 //   The join link reuses OrgInviteLink's peppered-hash + tail + expiry/revoke
 //   shape, but the token is minted by the admin app and only VERIFIED (hashed &
 //   compared) by the CP on redeem. Minting/approval/admin-auth are out of this
@@ -202,7 +208,8 @@ enum WaitlistStatus {
 
 model WaitlistEntry {
   id     String         @id @default(cuid())
-  email  String         @unique // normalized lowercase, matching auth.ts
+  name   String? // display name for the applicant / invitee (admin- or intake-supplied)
+  email  String?        @unique // normalized lowercase (auth.ts); NULL ⇒ bearer link
   status WaitlistStatus @default(pending)
   note   String? // applicant message / admin note
   source String? // 'self' | 'admin' | …
@@ -218,6 +225,7 @@ model WaitlistEntry {
   approvedAt       DateTime? @db.Timestamptz(6)
   redeemedByUserId String? // written ONLY by the CP redeem path
   redeemedAt       DateTime? @db.Timestamptz(6) // written ONLY by the CP redeem path
+  redeemedEmail    String? // the redeemer's verified email; written ONLY by the CP redeem path
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
@@ -1398,26 +1406,28 @@ enum ConversationKind {
   im
 }
 
-// One conversation the integration's bot participates in (daemon-reported snapshot
-// via `integration/channels`, latest-wins for kind=channel; DM rows are reported on
-// first inbound DM and never dropped by the membership snapshot) + the operator's
-// per-conversation trigger choice. Channel id/name are control metadata — never
-// message content (§1/§12).
+// One conversation the integration's bot participates in. `integration/channels`
+// carries either an authoritative membership snapshot or a partial observed-
+// conversation report; DM rows and rows absent from partial reports are retained.
+// The operator's per-conversation trigger survives both forms. Channel id/name are
+// control metadata — never message content (§1/§12).
 model IntegrationChannel {
   integrationId String           @db.Uuid
   channelId     String // platform conversation id (Slack "C…" / DM "D…")
   name          String? // "#deploys" without the hash (or DM counterpart); null if lookup failed
   isPrivate     Boolean          @default(false)
   kind          ConversationKind @default(channel)
+  // Relay-backed channel rows repeat the effective trigger across each active
+  // integration so deleting the canonical owner does not discard channel state.
+  // DM rows remain independently gated per integration.
   trigger       ChannelTrigger   @default(mention)
   // Per-channel default/owning agent for a SHARED bot (shared-bot-relay.md §10.1
-  // channel ownership — the primary disambiguation path). When set, the relay
-  // routes this channel's traffic to this agent (and forwards to its daemon).
-  // Null ⇒ fall through to keyword / the bot's default agent. Irrelevant for a
-  // classic (non-shared) integration, where the owning agent is the only target.
-  agentId       String?        @db.Uuid
-  firstSeenAt   DateTime       @default(now()) @db.Timestamptz(6)
-  updatedAt     DateTime       @updatedAt @db.Timestamptz(6)
+  // channel ownership — the primary disambiguation path). Exactly one active
+  // integration row per shared channel carries the owner; sibling rows are null.
+  // Irrelevant for a classic integration, where its agent is the only target.
+  agentId       String?          @db.Uuid
+  firstSeenAt   DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime         @updatedAt @db.Timestamptz(6)
 
   integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
 

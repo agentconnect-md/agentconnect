@@ -109,61 +109,101 @@ function ProviderBrowser({
   )
 
   return (
-    <div className="flex flex-col gap-[14px]">
-      <div className="flex items-center gap-2">
-        <label className="relative flex flex-1 items-center">
-          <Icon
-            name="search"
-            size={15}
-            color="var(--text-tertiary)"
-            className="pointer-events-none absolute left-[11px]"
-          />
-          <input
-            className="inp mn pl-[34px]"
-            placeholder="Search connectors…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            aria-label="Search connectors"
-          />
-        </label>
-        {categories.length > 0 && (
-          <select
-            className="inp mn w-[40%] max-w-[190px]"
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            aria-label="Filter by category"
+    <div className="flex flex-col gap-[14px] desktop:flex-row desktop:items-stretch desktop:gap-5">
+      {categories.length > 0 && (
+        <aside className="hidden w-[176px] flex-none border-r border-(--border-subtle) pr-4 desktop:block">
+          <nav
+            className="sticky top-0 flex max-h-[calc(88vh-105px)] flex-col gap-1 overflow-y-auto"
+            aria-label="Connector categories"
           >
-            <option value="">All categories</option>
+            <span className="mb-1 px-[10px] font-sans text-[11px] font-semibold leading-normal text-(--text-tertiary)">
+              Categories
+            </span>
+            <button
+              type="button"
+              className={categoryButtonClass(category === '')}
+              onClick={() => setCategory('')}
+              aria-pressed={category === ''}
+            >
+              All categories
+            </button>
             {categories.map((c) => (
-              <option key={c} value={c}>
+              <button
+                key={c}
+                type="button"
+                className={categoryButtonClass(category === c)}
+                onClick={() => setCategory(c)}
+                aria-pressed={category === c}
+              >
                 {c}
-              </option>
+              </button>
             ))}
-          </select>
+          </nav>
+        </aside>
+      )}
+
+      <div className="flex min-w-0 flex-1 flex-col gap-[14px]">
+        <div className="flex items-center gap-2">
+          <label className="relative flex flex-1 items-center">
+            <Icon
+              name="search"
+              size={15}
+              color="var(--text-tertiary)"
+              className="pointer-events-none absolute left-[11px]"
+            />
+            <input
+              className="inp mn pl-[34px]"
+              placeholder="Search connectors…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              aria-label="Search connectors"
+            />
+          </label>
+          {categories.length > 0 && (
+            <select
+              className="inp mn w-[40%] max-w-[190px] desktop:hidden"
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              aria-label="Filter by category"
+            >
+              <option value="">All categories</option>
+              {categories.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        {providers.length === 0 ? (
+          <div className="px-4 py-9 text-center">
+            <div className="font-sans text-[13px] font-semibold leading-normal">No connectors available</div>
+            <div className="mx-auto mt-1 max-w-[430px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+              Non-OAuth connectors and OAuth providers with a configured client secret appear here, subject to the
+              configured catalog filters. Configure one upstream or adjust those filters to make it available.
+            </div>
+          </div>
+        ) : shown.length === 0 ? (
+          <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+            No connectors match your filters.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-2 desktop:grid-cols-2">
+            {shown.map((p) => (
+              <ProviderCard key={p.service} provider={p} onSelect={() => onSelect(p.service)} />
+            ))}
+          </div>
         )}
       </div>
-
-      {providers.length === 0 ? (
-        <div className="px-4 py-9 text-center">
-          <div className="font-sans text-[13px] font-semibold leading-normal">No connectors available</div>
-          <div className="mx-auto mt-1 max-w-[430px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-            Non-OAuth connectors and OAuth providers with a configured client secret appear here, subject to the
-            provider whitelist. Configure one upstream or widen the whitelist to make it available.
-          </div>
-        </div>
-      ) : shown.length === 0 ? (
-        <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          No connectors match your filters.
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-2 desktop:grid-cols-3">
-          {shown.map((p) => (
-            <ProviderCard key={p.service} provider={p} onSelect={() => onSelect(p.service)} />
-          ))}
-        </div>
-      )}
     </div>
   )
+}
+
+function categoryButtonClass(active: boolean): string {
+  return active
+    ? 'w-full cursor-pointer rounded-[7px] border-0 bg-(--brand-soft) px-[10px] py-2 text-left font-sans text-[12.5px] font-semibold leading-normal text-(--brand)'
+    : 'w-full cursor-pointer rounded-[7px] border-0 bg-transparent px-[10px] py-2 text-left font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
 }
 
 function ProviderCard({ provider, onSelect }: { provider: ConnectorProviderDto; onSelect: () => void }) {

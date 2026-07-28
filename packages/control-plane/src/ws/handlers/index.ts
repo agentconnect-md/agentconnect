@@ -28,6 +28,7 @@ import { handleCronReport } from './cron-report.js'
 import { handleHookReport } from './hook-report.js'
 import { handleChannelAgents } from './channel-agents.js'
 import { handleEventSession } from './event-session.js'
+import { handleSessionActivity } from './event-session-activity.js'
 import { handleGitCredRequest } from './gitcred.js'
 import { handleHookStart } from './hook-start.js'
 import { handleGithubReviewAuthorize } from './github-review-authorize.js'
@@ -55,6 +56,7 @@ export class FrameRouter {
       'github/review-result': handleGithubReviewResult,
       'channel/agents': handleChannelAgents,
       'event/session': handleEventSession,
+      'event/session-activity': handleSessionActivity,
       'gitcred/request': handleGitCredRequest,
       ...overrides
     }
@@ -82,5 +84,6 @@ export {
   handleGithubReviewAuthorize,
   handleGithubReviewResult,
   handleChannelAgents,
-  handleEventSession
+  handleEventSession,
+  handleSessionActivity
 }

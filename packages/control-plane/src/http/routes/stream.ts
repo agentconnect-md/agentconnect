@@ -1,9 +1,8 @@
 /**
  * `http/routes/stream.ts` (design §2.1) — `GET /orgs/:orgId/stream` Server-Sent
- * Events. The WebUI live feed: subscribes to the `SessionEventSink` and relays
- * each converged `event/session` milestone (metadata only) as an SSE `data:`
- * line — filtered to the PATH org's daemons, so one tenant never sees
- * another's session milestones.
+ * Events. The WebUI live feed relays converged session milestones and body-free
+ * transcript invalidations — filtered to the PATH org's daemons, so one tenant
+ * never sees another's session activity.
  *
  * SSE is written on the raw response (`reply.hijack()`), so this route opts out
  * of zod response serialization. The subscription is torn down when the client
@@ -26,8 +25,11 @@ export function canStreamAgent(agent: (Shareable & { orgId: OrgId }) | null, org
 }
 
 function writeEvent(reply: FastifyReply, envelope: SessionEventEnvelope): void {
-  const payload = JSON.stringify({ daemonId: envelope.daemonId, event: envelope.event })
-  reply.raw.write(`event: session\n`)
+  const activity = envelope.activity
+  const payload = JSON.stringify(
+    activity ? { daemonId: envelope.daemonId, activity } : { daemonId: envelope.daemonId, event: envelope.event }
+  )
+  reply.raw.write(`event: ${activity ? 'session-activity' : 'session'}\n`)
   reply.raw.write(`data: ${payload}\n\n`)
 }
 
@@ -40,7 +42,7 @@ export function streamRoutes(deps: HttpDeps) {
           tags: [Tag.Stream],
           summary: 'Live session event stream',
           description:
-            'Server-sent event feed relaying each converged session milestone (metadata only) for the org’s daemons.',
+            'Server-sent event feed relaying session milestones and body-free transcript activity for the org’s daemons.',
           operationId: 'streamSessionEvents'
         }
       },
@@ -88,7 +90,8 @@ export function streamRoutes(deps: HttpDeps) {
         const unsubscribe = deps.events.subscribe((envelope) => {
           void (async () => {
             if (!(await inOrg(envelope.daemonId))) return
-            if (!(await canSeeAgent(envelope.event.agentId))) return
+            const agentId = envelope.activity?.agentId ?? envelope.event?.agentId
+            if (!agentId || !(await canSeeAgent(agentId))) return
             writeEvent(reply, envelope)
           })()
         })

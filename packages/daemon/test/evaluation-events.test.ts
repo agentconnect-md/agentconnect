@@ -40,6 +40,30 @@ describe('evaluation event evidence', () => {
     ])
   })
 
+  it('accepts metadata-only memory dream lifecycle evidence', () => {
+    const collector = new EvaluationEventCollector()
+    const emitter = new EvaluationEventEmitter({ observer: collector, runId: 'run-dream' })
+
+    emitter.emit({
+      type: 'memory.dream.completed',
+      agentId: 'agent-a',
+      sessionId: 'dream-session-1',
+      data: {
+        dreamId: 'drm-1',
+        trigger: 'schedule',
+        sourceSessionCount: 2,
+        model: 'gpt-5.6',
+        usage: { totalTokens: 120, costAmount: 0.012, costCurrency: 'USD' }
+      }
+    })
+
+    expect(collector.events()[0]).toMatchObject({
+      type: 'memory.dream.completed',
+      sessionId: 'dream-session-1',
+      data: { dreamId: 'drm-1', sourceSessionCount: 2, model: 'gpt-5.6' }
+    })
+  })
+
   it('contains observer errors without starving the other observers', () => {
     const delivered: string[] = []
     const onObserverError = vi.fn()

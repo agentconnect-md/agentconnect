@@ -16,7 +16,9 @@ import {
   type InboxRow,
   type OrchestrationRow,
   type SessionRecord,
-  type SubtaskRow
+  type SubtaskRow,
+  type TranscriptMutation,
+  type StoredUsage
 } from './store/local-store.js'
 import { AcpHost, turnFailureCode, turnFailureReason, type AcpPermissionPolicyEvent } from './acp/acp-host.js'
 import { detectSandbox, SandboxError, type SandboxMechanism } from './acp/sandbox.js'
@@ -50,7 +52,7 @@ import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-
 import { toolsForIntegrations, MEMORY_TOOL_NAMES, ALL_TOOL_NAMES, GITHUB_REVIEW_TOOLS } from './mcp/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, trustedExtractionMode } from './agents/memory-distiller.js'
-import { DreamRunner, DreamStateError } from './agents/dream-runner.js'
+import { DreamRunner, DreamStateError, type DreamLifecycleEvent } from './agents/dream-runner.js'
 import { createDreamReader } from './cp/dream-reader.js'
 import { routeRules, type RouteVia } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
@@ -154,6 +156,7 @@ import {
   RELAY_DAEMON_SUBPROTOCOL,
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
+  effectiveMemoryDreamingPolicy,
   gitRepoLabel
 } from '@agentconnect.md/protocol'
 import { createSessionReader } from './cp/session-reader.js'
@@ -220,6 +223,7 @@ import type {
   DrainDone,
   SessionKey,
   EventSession,
+  SessionActivity,
   SessionListItem,
   AgentLaunch,
   AgentLaunched,
@@ -431,12 +435,12 @@ function reviewResultForWire(effect: GithubReviewEffect): HookReviewResult {
 
 // Cap per-session `!queue` depth so a hung turn or a user spamming `!queue` can't
 // grow `queued` without bound. Past the cap we reject with a clear message.
-/** An agent's dreaming policy, or undefined when it has none. An absent memory
- *  binding means the managed default, but dreaming itself is always opt-in — and
- *  it is only valid on the managed provider (the protocol enforces that too). */
+/** An agent's effective dreaming policy. Managed memory defaults to a daily
+ *  auto-adopting dream; an explicit disabled policy or non-managed provider is
+ *  preserved by the shared resolver. */
 function dreamingPolicyOf(agent: { memory?: Agent['memory'] } | undefined): MemoryDreamingPolicy | undefined {
-  const memory = agent?.memory
-  return memory?.provider === 'managed' ? memory.dreaming : undefined
+  if (!agent) return undefined
+  return effectiveMemoryDreamingPolicy(agent.memory)
 }
 
 const MAX_QUEUED_PER_SESSION = 10
@@ -1127,7 +1131,15 @@ export class Daemon {
   )
   /** Provider-neutral serialized post-turn work. Managed distills; external enqueues capture. */
   private memoryPostTurnChains = new Map<string, Promise<void>>()
-  private memoryExtractionCollectors = new Map<string, string[]>()
+  private memoryExtractionCollectors = new Map<
+    string,
+    { chunks: string[]; sessionKey?: string; runtimeCostReported?: boolean }
+  >()
+  /** Sessions whose cancel backstop fired while the runtime prompt is still
+   *  executing. Keep dropping every late update until that exact prompt settles:
+   *  otherwise a delayed Dream proposal can escape into generic evaluation or
+   *  transcript surfaces after its collector has been released. */
+  private memoryExtractionQuarantines = new Set<string>()
   /** One isolated extractor session per agent/host lifetime (never shown to users). */
   private memoryExtractionSessions = new Map<string, string>()
   private memoryExtractionDirs = new Map<string, string>()
@@ -1314,9 +1326,9 @@ export class Daemon {
   private cpClient?: CpClient
   private relays?: RelayManager
   private cpCrons?: CpCronRegistry
-  // Latest channel-membership snapshot per integrationId (from users.conversations),
-  // re-emitted to the CP on each (re)connect (emit is a no-op while disconnected).
-  private channelSnapshots = new Map<string, IntegrationChannel[]>()
+  // Latest channel report per integrationId plus whether it came from a complete
+  // membership listing. Replayed with the same authority on each CP (re)connect.
+  private channelSnapshots = new Map<string, { channels: IntegrationChannel[]; authoritative: boolean }>()
   private cpAgents?: CpAgentRegistry
   private cpIntegrations?: CpIntegrationRegistry
   private botUserIds: Record<string, string> = {}
@@ -1402,6 +1414,7 @@ export class Daemon {
   // Durable hook/report outbox drain. A READY socket may survive a temporary
   // CP/DB failure, so retries cannot depend only on reconnect callbacks.
   private hookReportRetryTimer?: TimerHandle
+  private transcriptActivityTimers = new Map<string, { timer: TimerHandle; activity: SessionActivity }>()
   private readonly hookReportInflight = new Set<string>()
   // Fresh per READY connection. Legacy CPs have no correlated ACK, so the local
   // outbox stamps each best-effort EVT with this generation and sends it at
@@ -1715,6 +1728,7 @@ export class Daemon {
     })
 
     this.store = new LocalStore(statePath(root))
+    this.store.setTranscriptMutationListener((mutation) => this.scheduleSessionActivity(mutation))
     this.memoryOutbox = new MemoryCaptureOutbox(this.store, this.memoryConnections, {
       log: { warn: (message) => this.log.warn(message) }
     })
@@ -2830,48 +2844,56 @@ export class Daemon {
   }
 
   /**
-   * Approach-A channel discovery for Telegram and Discord: the bot cannot cheaply
-   * enumerate the chats/channels it actually participates in (Telegram's API can't
-   * list them at all, and Discord's ready-cache enumeration would surface every text
-   * channel in a guild rather than the ones the bot is engaged in), so the observed
-   * session history IS the reachable set. Build a membership-style snapshot from
-   * stored sessions + cached display names and report it to the CP over the same
-   * `integration/channels` path Slack uses (refreshChannels), so the console lists
-   * these chats under the integration. Idempotent + latest-wins: safe to call on
-   * every reconcile, on a newly-created session, and whenever a channel name resolves
-   * (re-emitted from ChannelNameResolver's save sink — names fill in lazily and the
-   * console falls back to the raw chat id until then). The emit is a no-op while the
-   * CP is down; the cached snapshot re-asserts on the next reconnect.
+   * Observed-conversation discovery for Telegram and Discord. These platforms do
+   * not give us an authoritative set of chats the bot is engaged in, so stored
+   * session history is merged with explicitly-addressed Off conversations already
+   * cached for the integration. Reports carry `authoritative:false`: the CP upserts
+   * what we know but never treats an absent row as a leave.
+   *
+   * Names fill in lazily through ChannelNameResolver. Re-merging the cached rows
+   * here is important for Off conversations: they have no session row, so without
+   * preserving and enriching the cached entry an async Telegram getChat result
+   * could never replace the console's raw numeric id.
    */
   private refreshObservedChannels(): void {
     for (const agent of this.agents.values()) {
       for (const platform of ['telegram', 'discord'] as const) {
-        const [integ, ...rest] = agent.integrations.filter((i) => i.platform === platform)
+        const integrations = agent.integrations.filter((i) => i.platform === platform)
+        if (integrations.length === 0) continue
         // observedChannels is agent+platform-scoped, not per-bot (the sessions table
         // carries no integrationId). With several bots of the same platform on one
-        // agent we can't tell which bot saw which chat, so fanning the same set out to
-        // every integration would attribute chats to the wrong bot. Only report when
-        // there's exactly one — the common case — and skip the ambiguous multi-bot agent.
-        if (!integ || rest.length > 0) continue
-        // The sessions table can't tell a DM chat from a group, so observed rows are
-        // kind-less. Preserve previously established `im` kinds (§14.3): re-mark
-        // overlapping ids and keep im-only entries, otherwise a refresh would
-        // downgrade a reported DM row back to 'channel' on the CP.
-        const priorIms = new Set(
-          (this.channelSnapshots.get(integ.id) ?? []).filter((x) => x.kind === 'im').map((x) => x.id)
-        )
-        const observed: IntegrationChannel[] = this.store.observedChannels(agent.id, platform).map((c) => ({
-          id: c.id,
-          ...(c.name ? { name: c.name } : {}),
-          ...(priorIms.has(c.id) ? { kind: 'im' as const } : {})
-        }))
-        const observedIds = new Set(observed.map((x) => x.id))
-        const keptIms = (this.channelSnapshots.get(integ.id) ?? []).filter(
-          (x) => x.kind === 'im' && !observedIds.has(x.id)
-        )
-        const channels = [...observed, ...keptIms]
-        this.channelSnapshots.set(integ.id, channels)
-        this.cpClient?.emitIntegrationChannels({ integrationId: integ.id, channels })
+        // agent we can't tell which bot saw which session. Only merge session history
+        // in the common single-integration case; integration-attributed Off rows can
+        // still be refreshed safely when several bots share the agent.
+        const observed = integrations.length === 1 ? this.store.observedChannels(agent.id, platform) : []
+        for (const integ of integrations) {
+          const prior = this.channelSnapshots.get(integ.id)?.channels ?? []
+          if (observed.length === 0 && prior.length === 0) continue
+          const priorById = new Map(prior.map((c) => [c.id, c]))
+          const observedIds = new Set(observed.map((c) => c.id))
+          const names = this.store.getDisplayNames([...new Set([...observedIds, ...prior.map((c) => c.id)])])
+          // The sessions table cannot distinguish DMs from groups. Preserve the kind
+          // established by explicit gated-conversation discovery for overlapping ids.
+          const fromSessions: IntegrationChannel[] = observed.map((c) => {
+            const previous = priorById.get(c.id)
+            const name = c.name ?? names.get(c.id)
+            return {
+              id: c.id,
+              ...(name ? { name } : {}),
+              ...(previous?.isPrivate !== undefined ? { isPrivate: previous.isPrivate } : {}),
+              ...(previous?.kind ? { kind: previous.kind } : {})
+            }
+          })
+          const retained = prior
+            .filter((c) => !observedIds.has(c.id))
+            .map((c) => {
+              const name = names.get(c.id)
+              return name && name !== c.name ? { ...c, name } : c
+            })
+          const channels = [...fromSessions, ...retained]
+          this.channelSnapshots.set(integ.id, { channels, authoritative: false })
+          this.cpClient?.emitIntegrationChannels({ integrationId: integ.id, channels, authoritative: false })
+        }
       }
     }
   }
@@ -2900,9 +2922,9 @@ export class Daemon {
         // only, but a gated integration's snapshot also holds DM conversations — a
         // refresh must not wipe them (the CP protects them too; this keeps the
         // in-memory snapshot honest for the reconnect re-assert).
-        const ims = (this.channelSnapshots.get(integrationId) ?? []).filter((x) => x.kind === 'im')
+        const ims = (this.channelSnapshots.get(integrationId)?.channels ?? []).filter((x) => x.kind === 'im')
         const merged = [...channels, ...ims]
-        this.channelSnapshots.set(integrationId, merged)
+        this.channelSnapshots.set(integrationId, { channels: merged, authoritative: true })
         this.cpClient?.emitIntegrationChannels({ integrationId, channels: merged })
         this.maybeIntroduceOnJoin(integrationId, channels)
       }
@@ -3311,7 +3333,7 @@ export class Daemon {
     }
     const key = pendingTurnKey(agentId, sessionId)
     const chunks: string[] = []
-    this.memoryExtractionCollectors.set(key, chunks)
+    this.memoryExtractionCollectors.set(key, { chunks })
     try {
       // Extraction runs read-only and shouldn't touch the config files, but keep
       // the invariant uniform: every host.prompt is preceded by re-materialization.
@@ -3352,8 +3374,17 @@ export class Daemon {
     agentId: string,
     systemPrompt: string,
     prompt: string,
-    signal: AbortSignal
-  ): Promise<{ output: string; trustedChannel: boolean }> {
+    signal: AbortSignal,
+    context: { dreamId: string; trigger: 'manual' | 'schedule' | 'auto'; sessionIds: string[] }
+  ): Promise<{
+    output: string
+    trustedChannel: boolean
+    sessionId: string
+    runtime: string
+    model?: string
+    stopReason: string
+    usage?: StoredUsage
+  }> {
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     const host = await this.ensureHostAsync(agentId)
@@ -3372,11 +3403,65 @@ export class Daemon {
     // launching an uncancellable prompt.
     if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
     const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
+    const modelOptions = host.modelOptions?.(sessionId) ?? null
+    const selectedModel = modelOptions?.current
+    // Mirror ordinary-turn attribution: a runtime-owned `default` means the
+    // concrete model is unknown. Only use config when the runtime exposes no
+    // selector at all; an advertised `default` may mean the override failed to
+    // apply, and persisting/pricing that override would be false observability.
+    const model =
+      modelOptions === null ? agent.runtimeOverrides?.model : selectedModel === 'default' ? undefined : selectedModel
+    const executionKey = sessionKey('dream', 'memory', context.dreamId, agentId)
+    const now = this.clock.now()
+    this.store.upsertSession({
+      key: executionKey,
+      agentId,
+      platform: 'dream',
+      channel: 'memory',
+      thread: context.dreamId,
+      acpSessionId: sessionId,
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: now,
+      triggeredBy: context.trigger,
+      memoryProvider: 'managed'
+    })
+    this.store.setSessionTitle(executionKey, 'Memory dream')
+    const dream = this.store.getDream(agentId, context.dreamId)
+    if (dream) {
+      this.store.updateDream({
+        ...dream,
+        executionSessionId: sessionId,
+        runtime: agent.runtime,
+        ...(model ? { model } : {})
+      })
+    }
+    this.store.appendTranscript({
+      channel: 'memory',
+      thread: context.dreamId,
+      ts: monotonicTs(),
+      sender: agentId,
+      kind: 'text',
+      text: 'Memory dream started.'
+    })
+    this.emitSessionMetadataSnapshot({
+      sessionId,
+      agentId,
+      phase: 'start',
+      platform: 'dream',
+      channel: 'memory',
+      thread: context.dreamId,
+      status: 'running',
+      runtime: agent.runtime,
+      ...(model ? { model } : {})
+    })
     // On cancel, drive the ACP turn-cancel path so a hung/long prompt actually
     // stops instead of pinning the dream's one-in-flight reservation.
     const onAbort = () => void host.cancel(sessionId).catch(() => {})
     if (signal.aborted) onAbort()
     else signal.addEventListener('abort', onAbort, { once: true })
+    let promptCompleted = false
+    let extractionMode: string | undefined
     try {
       if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
       // HARD GATE: require a verified non-mutating mode. Fail closed if the
@@ -3384,6 +3469,7 @@ export class Daemon {
       // injection-exposed extraction with write access.
       const modes = host.permissionModeOptions()?.modes ?? []
       const readOnlyMode = modes.find((mode) => mode === 'read-only') ?? modes.find((mode) => mode === 'plan')
+      extractionMode = readOnlyMode
       if (!readOnlyMode || !(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
         throw new Error('runtime lacks a verified read-only/plan mode; dream extraction cannot run safely')
       }
@@ -3392,7 +3478,8 @@ export class Daemon {
 
       const key = pendingTurnKey(agentId, sessionId)
       const chunks: string[] = []
-      this.memoryExtractionCollectors.set(key, chunks)
+      const collector = { chunks, sessionKey: executionKey, runtimeCostReported: false }
+      this.memoryExtractionCollectors.set(key, collector)
       try {
         this.rematerializeConfigFiles(agentId)
         const text = trusted ? prompt : `${systemPrompt}\n\n${prompt}`
@@ -3400,13 +3487,73 @@ export class Daemon {
         // yields, stop awaiting after DREAM_CANCEL_FORCE_MS from the abort so the
         // `finally` discards the ACP session instead of leaking it. The runner's
         // own grace window already releases the reservation independently.
-        await this.promptWithCancelBackstop(host, sessionId, text, signal)
-        return { output: chunks.join(''), trustedChannel: trusted }
+        const result = await this.promptWithCancelBackstop(host, sessionId, text, signal, (prompt) => {
+          // Release the potentially large proposal chunks once the backstop wins,
+          // but retain a key-only tombstone until the ignored prompt truly ends.
+          if (this.memoryExtractionCollectors.get(key) === collector) this.memoryExtractionCollectors.delete(key)
+          this.memoryExtractionQuarantines.add(key)
+          const release = () => this.memoryExtractionQuarantines.delete(key)
+          void prompt.then(release, release)
+        })
+        promptCompleted = true
+        if (result.usage) {
+          const counts = {
+            totalTokens: result.usage.totalTokens,
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+            thoughtTokens: result.usage.thoughtTokens ?? undefined,
+            cachedReadTokens: result.usage.cachedReadTokens ?? undefined,
+            cachedWriteTokens: result.usage.cachedWriteTokens ?? undefined
+          }
+          this.store.setTokenUsage(executionKey, counts)
+          if (this.isCodexRuntime(agentId) && !collector.runtimeCostReported) {
+            const estimate = estimateOpenAiTurnCost(model, counts)
+            if (estimate.ok) this.store.addCost(executionKey, estimate.amount, estimate.currency)
+          }
+        }
+        const usage = this.store.getUsage(executionKey)
+        return {
+          output: chunks.join(''),
+          trustedChannel: trusted,
+          sessionId,
+          runtime: agent.runtime,
+          ...(model ? { model } : {}),
+          stopReason: String(result.stopReason),
+          ...(Object.keys(usage).length ? { usage } : {})
+        }
       } finally {
-        this.memoryExtractionCollectors.delete(key)
+        if (!this.memoryExtractionQuarantines.has(key)) this.memoryExtractionCollectors.delete(key)
       }
     } finally {
       signal.removeEventListener('abort', onAbort)
+      // Report even on failed/canceled prompts: a runtime may have streamed a
+      // native cost/context snapshot before the terminal error. The CP upsert is
+      // latest-wins, so the success path and this failure-safe path share one
+      // idempotent emission point.
+      this.emitStoredUsageReport(sessionId, agentId, 'dream', 'memory', executionKey)
+      this.store.appendTranscript({
+        channel: 'memory',
+        thread: context.dreamId,
+        ts: monotonicTs(),
+        sender: agentId,
+        kind: 'text',
+        text: promptCompleted
+          ? 'Model extraction finished. The dream job is validating and staging the result.'
+          : 'Model extraction stopped before producing a result.'
+      })
+      this.store.setSessionState(executionKey, 'idle', this.clock.now())
+      this.emitSessionMetadataSnapshot({
+        sessionId,
+        agentId,
+        phase: promptCompleted ? 'end' : 'problem',
+        platform: 'dream',
+        channel: 'memory',
+        thread: context.dreamId,
+        status: promptCompleted ? 'completed' : signal.aborted ? 'canceled' : 'failed',
+        runtime: agent.runtime,
+        ...(model ? { model } : {}),
+        ...(extractionMode ? { permissionMode: extractionMode } : {})
+      })
       host.discardSession(sessionId)
     }
   }
@@ -3418,24 +3565,83 @@ export class Daemon {
     host: AcpHost,
     sessionId: string,
     text: string,
-    signal: AbortSignal
-  ): Promise<void> {
+    signal: AbortSignal,
+    onDetached?: (prompt: ReturnType<AcpHost['prompt']>) => void
+  ): Promise<Awaited<ReturnType<AcpHost['prompt']>>> {
     const done = host.prompt(sessionId, [{ type: 'text', text }])
     let timer: ReturnType<typeof setTimeout> | undefined
     const backstop = new Promise<never>((_resolve, reject) => {
       const arm = () =>
-        (timer = setTimeout(
-          () => reject(new Error('dream extraction ignored session/cancel; detached after backstop')),
-          DREAM_CANCEL_FORCE_MS
-        ))
+        (timer = setTimeout(() => {
+          onDetached?.(done)
+          reject(new Error('dream extraction ignored session/cancel; detached after backstop'))
+        }, DREAM_CANCEL_FORCE_MS))
       if (signal.aborted) arm()
       else signal.addEventListener('abort', arm, { once: true })
     })
     try {
-      await Promise.race([done, backstop])
+      return await Promise.race([done, backstop])
     } finally {
       if (timer) clearTimeout(timer)
     }
+  }
+
+  /** Bridge the dream engine's metadata-only lifecycle into evaluation telemetry
+   *  and the safe transcript of its background execution session. Memory bodies,
+   *  source transcript text, prompts, model output, and error prose never enter
+   *  either surface. */
+  private recordDreamLifecycle(event: DreamLifecycleEvent): void {
+    const { dream } = event
+    this.emitEvaluation({
+      type: event.type,
+      agentId: dream.agentId,
+      ...(dream.executionSessionId ? { sessionId: dream.executionSessionId } : {}),
+      data: {
+        dreamId: dream.dreamId,
+        trigger: dream.trigger,
+        sourceSessionCount: dream.sessionIds.length,
+        ...(dream.runtime ? { runtime: dream.runtime } : {}),
+        ...(dream.model ? { model: dream.model } : {}),
+        ...(dream.stopReason ? { stopReason: dream.stopReason } : {}),
+        ...(dream.usage ? { usage: dream.usage } : {}),
+        ...(dream.error ? { errorType: dream.error.type } : {}),
+        ...(event.skillName ? { skillName: event.skillName } : {})
+      }
+    })
+
+    if (!dream.executionSessionId || event.type === 'memory.dream.started') return
+    const rec = this.store.getSessionByAcpIdForAgent(dream.agentId, dream.executionSessionId)
+    if (!rec) return
+    const message: Partial<Record<DreamLifecycleEvent['type'], string>> = {
+      'memory.dream.completed': 'Dream completed. The staged memory is ready for review.',
+      'memory.dream.failed': 'Dream failed during proposal validation or staging.',
+      'memory.dream.adopted': 'The staged memory was adopted.',
+      'memory.dream.skill_accepted': 'A recommended skill was accepted.',
+      'memory.dream.skill_dismissed': 'A recommended skill was dismissed.'
+    }
+    const text = message[event.type]
+    if (text) {
+      this.store.appendTranscript({
+        channel: rec.channel,
+        thread: rec.thread,
+        ts: monotonicTs(),
+        sender: dream.agentId,
+        kind: 'text',
+        text
+      })
+    }
+    this.store.setSessionState(rec.key, 'idle', this.clock.now())
+    this.emitSessionMetadataSnapshot({
+      sessionId: dream.executionSessionId,
+      agentId: dream.agentId,
+      phase: event.type === 'memory.dream.failed' ? 'problem' : 'end',
+      platform: 'dream',
+      channel: rec.channel,
+      thread: rec.thread,
+      status: dream.status,
+      ...(dream.runtime ? { runtime: dream.runtime } : {}),
+      ...(dream.model ? { model: dream.model } : {})
+    })
   }
 
   /** The daemon's single dream-job engine, built on first use (the local store
@@ -3445,8 +3651,9 @@ export class Daemon {
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
       dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
       store: this.store,
-      extract: (agentId, systemPrompt, prompt, signal) =>
-        this.runDreamExtraction(agentId, systemPrompt, prompt, signal),
+      extract: (agentId, systemPrompt, prompt, signal, context) =>
+        this.runDreamExtraction(agentId, systemPrompt, prompt, signal, context),
+      onEvent: (event) => this.recordDreamLifecycle(event),
       log: this.log
     })
     return this.dreamRunnerInstance
@@ -3563,12 +3770,12 @@ export class Daemon {
     // continues it). No-op on other platforms.
     this.canonicalizeTelegramThread(msg)
 
-    // §14.3: gated-DM ROW discovery must precede command interception AND routing —
-    // an Off DM whose first inbound is a control command is refused by command
-    // authz but still needs its pending row, and on a consolidated connection
-    // EVERY Off gated integration needs its own row. Report-only: the notice stays
-    // conditional on the message actually resolving to no admitted target.
-    this.discoverGatedDms(msg, srcIntegrationIds ?? [])
+    // §14.3: gated-conversation discovery must precede command interception AND
+    // routing. An Off DM whose first inbound is a command still needs its row; an
+    // explicitly-mentioned Off channel likewise needs a pending row even though no
+    // session will be created. Report-only: the notice remains conditional on the
+    // message actually resolving to no admitted target.
+    this.discoverGatedConversations(msg, srcIntegrationIds ?? [])
 
     // In-conversation control commands (`!stop` / `!queue …`) act on the running
     // agent and never reach it as a prompt — intercept before routing/dispatch.
@@ -9238,6 +9445,10 @@ export class Daemon {
     platform: SessionKey['platform']
     channel: string
     thread?: string
+    status?: string
+    runtime?: string
+    model?: string
+    permissionMode?: string
   }): void {
     if (!this.cpClient) return
     const now = new Date(this.clock.now()).toISOString()
@@ -9257,7 +9468,8 @@ export class Daemon {
     const thread = key?.thread ?? input.thread
     if (thread !== undefined) event.thread = thread
     if (row?.title !== undefined) event.title = row.title
-    if (row?.status !== undefined) event.status = row.status
+    if (input.status !== undefined) event.status = input.status
+    else if (row?.status !== undefined) event.status = row.status
     if (row?.triggeredBy !== undefined) event.triggeredBy = row.triggeredBy
     if (row?.channelName !== undefined) event.channelName = row.channelName
     if (row?.triggeredByName !== undefined) event.triggeredByName = row.triggeredByName
@@ -9268,12 +9480,14 @@ export class Daemon {
     // actually ran with — the agent's config can change later without rewriting history.
     const agent = this.agents.get(input.agentId)
     const allowRuntimeChangesInChat = agent?.allowRuntimeChangesInChat === true
-    if (agent?.runtime) event.runtime = agent.runtime
+    if (input.runtime !== undefined) event.runtime = input.runtime
+    else if (agent?.runtime) event.runtime = agent.runtime
     const storeKey = this.store.getSessionByAcpIdForAgent(input.agentId, input.sessionId)?.key
     const model =
       (allowRuntimeChangesInChat && storeKey ? this.store.getModelOverride(storeKey) : undefined) ??
       agent?.runtimeOverrides?.model
-    if (model !== undefined) event.model = model
+    if (input.model !== undefined) event.model = input.model
+    else if (model !== undefined) event.model = model
     const effort =
       (allowRuntimeChangesInChat && storeKey ? this.store.getEffortOverride(storeKey) : undefined) ??
       agent?.reasoningEffort
@@ -9284,7 +9498,8 @@ export class Daemon {
     const permissionMode =
       (allowRuntimeChangesInChat && storeKey ? this.store.getPermissionModeOverride(storeKey) : undefined) ??
       agent?.permissionMode
-    if (permissionMode !== undefined) event.permissionMode = permissionMode
+    if (input.permissionMode !== undefined) event.permissionMode = input.permissionMode
+    else if (permissionMode !== undefined) event.permissionMode = permissionMode
     const outputMode = (storeKey ? this.store.getOutputModeOverride(storeKey) : undefined) ?? agent?.output?.mode
     if (outputMode !== undefined) event.outputMode = outputMode
 
@@ -10469,13 +10684,32 @@ export class Daemon {
     // transcript recorder (tool rawInput/rawOutput included) all hang off this entry
     // point, so this one transform keeps a leaked value out of every surface at once.
     update = this.maskAgentSecrets(agentId, update)
-    const extraction = this.memoryExtractionCollectors.get(pendingTurnKey(agentId, sessionId))
+    const extractionKey = pendingTurnKey(agentId, sessionId)
+    const extraction = this.memoryExtractionCollectors.get(extractionKey)
     if (extraction) {
       if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
-        extraction.push(String(update.content.text ?? ''))
+        extraction.chunks.push(String(update.content.text ?? ''))
+      }
+      // Distillation uses an unlisted cached extractor and therefore has no
+      // sessionKey. A dream does: retain the native context/cost snapshot while
+      // still suppressing every body-bearing ACP update from ordinary transcript
+      // and evaluation surfaces.
+      if (update?.sessionUpdate === 'usage_update' && extraction.sessionKey) {
+        if (update.cost?.amount !== undefined) extraction.runtimeCostReported = true
+        this.store.setUsageSnapshot(extraction.sessionKey, {
+          contextUsed: update.used,
+          contextSize: update.size,
+          costAmount: update.cost?.amount ?? undefined,
+          costCurrency: update.cost?.currency ?? undefined
+        })
       }
       return
     }
+    // A runtime can ignore session/cancel and keep streaming after the bounded
+    // Dream await has detached. The collector is gone by then, but the content is
+    // still private extraction output and must never fall through to generic ACP
+    // evaluation, transcript, or delivery handling.
+    if (this.memoryExtractionQuarantines.has(extractionKey)) return
     const p = this.pending.get(pendingTurnKey(agentId, sessionId))
     this.emitEvaluation({
       type: 'acp.update',
@@ -10858,26 +11092,25 @@ export class Daemon {
   /**
    * §14: an explicitly-addressed message (a mention of a gated integration's bot, or
    * a DM to it) that routed nowhere gets a ONE-TIME per-conversation notice — the
-   * bot must never look silently broken — and a gated DM conversation is reported to
+   * bot must never look silently broken — and the Off conversation is reported to
    * the CP so the console can offer enabling it. Bot senders are never noticed.
    */
-  /** §14.3 DM ROW discovery, report-only: fan the pending-row report across EVERY
-   *  gated src integration whose conversation is Off. Runs before command
-   *  interception and routing for each inbound DM. No notice and no early return —
-   *  on a consolidated connection an Off sibling must not post a misleading lock
-   *  while another integration goes on to handle the DM, and every Off gated
-   *  integration needs its own row. */
-  private discoverGatedDms(msg: NormalizedMessage, srcIntegrationIds: string[]): void {
+  /** §14.3 pending-conversation discovery, report-only: fan an Off DM across every
+   *  gated source integration, and report an Off channel when the message explicitly
+   *  mentions that integration's bot. This runs before commands/routing so discovery
+   *  is independent of which sibling integration ultimately handles the message. */
+  private discoverGatedConversations(msg: NormalizedMessage, srcIntegrationIds: string[]): void {
     if (msg.sender.isBot || msg.source !== 'user') return
     const isDm = msg.isDm || (msg.platform === 'slack' && msg.channel.startsWith('D'))
-    if (!isDm) return
     for (const integrationId of srcIntegrationIds) {
       const int = this.integrationConfigById(integrationId)
       if (!int || int.platform !== msg.platform) continue
       const routing = integrationRouting(int)
       if (!routing.gated) continue
       if (routing.bindRules.some((r) => r.channel === msg.channel)) continue // enabled
-      this.reportGatedDm(integrationId, msg)
+      const botUserId = this.botUserIds[integrationId] ?? routing.staticBotUserId ?? ''
+      if (!isDm && (botUserId === '' || !msg.mentionedBots.includes(botUserId))) continue
+      this.reportGatedConversation(integrationId, msg, isDm)
     }
   }
 
@@ -10896,7 +11129,7 @@ export class Daemon {
       const botUserId = this.botUserIds[integrationId] ?? routing.staticBotUserId ?? ''
       const addressed = isDm || (botUserId !== '' && msg.mentionedBots.includes(botUserId))
       if (!addressed) continue
-      if (isDm) this.reportGatedDm(integrationId, msg)
+      if (isDm) this.reportGatedConversation(integrationId, msg, true)
       const latch = `${integrationId}:${msg.channel}`
       if (this.gatedNoticesSent.has(latch)) return
       this.gatedNoticesSent.add(latch)
@@ -10917,24 +11150,31 @@ export class Daemon {
     }
   }
 
-  /** §14.3: surface a gated DM conversation as a `kind:'im'` row (latest-wins
-   *  snapshot merge) so the console lists it for enablement. Name resolution is
-   *  best-effort: the display-name store first, then a Slack profile lookup that
-   *  re-reports when it lands. */
-  private reportGatedDm(integrationId: string, msg: NormalizedMessage): void {
-    const existing = this.channelSnapshots.get(integrationId) ?? []
+  /** §14.3: surface an explicitly-addressed Off conversation as a pending row so
+   *  the console can enable it. This is an observed/incremental report, not a full
+   *  membership snapshot: Telegram cannot enumerate all chats, and the conversation
+   *  deliberately creates no session while Off.
+   *
+   *  Name resolution is best-effort. Telegram/Discord getChat results land through
+   *  refreshObservedChannels; Slack DMs retain the existing profile fallback below. */
+  private reportGatedConversation(integrationId: string, msg: NormalizedMessage, isDm: boolean): void {
+    const cached = this.channelSnapshots.get(integrationId)
+    const existing = cached?.channels ?? []
     const current = existing.find((c) => c.id === msg.channel)
-    if (current?.kind === 'im') return
+    const kind = isDm ? ('im' as const) : ('channel' as const)
     const known = this.store.getDisplayNames([msg.channel]).get(msg.channel)
-    // A previously-observed DM (telegram/discord observed-channel snapshots are
-    // kind-less) is UPGRADED to 'im' rather than skipped — e.g. after an
-    // org→restricted flip the chat already sits in the snapshot as 'channel'.
+    if (current?.kind === kind && (!known || current.name === known)) return
+    // A previously-observed DM (Telegram/Discord session snapshots are kind-less)
+    // is upgraded to 'im' rather than skipped after an org→restricted flip.
     const next = current
-      ? existing.map((c) => (c.id === msg.channel ? { ...c, kind: 'im' as const } : c))
-      : [...existing, { id: msg.channel, ...(known ? { name: known } : {}), kind: 'im' as const }]
-    this.channelSnapshots.set(integrationId, next)
-    this.cpClient?.emitIntegrationChannels({ integrationId, channels: next })
-    if (known || current?.name) return
+      ? existing.map((c) => (c.id === msg.channel ? { ...c, ...(known ? { name: known } : {}), kind } : c))
+      : [...existing, { id: msg.channel, ...(known ? { name: known } : {}), kind }]
+    this.channelSnapshots.set(integrationId, {
+      channels: next,
+      authoritative: cached?.authoritative ?? false
+    })
+    this.cpClient?.emitIntegrationChannels({ integrationId, channels: next, authoritative: false })
+    if (!isDm || known || current?.name) return
     const conn = this.connForIntegration(integrationId)
     if (!(conn instanceof SlackConnection)) return
     void conn
@@ -10942,12 +11182,28 @@ export class Daemon {
       .then((prof) => {
         const name = prof.realName || prof.name
         if (!name) return
-        const snap = this.channelSnapshots.get(integrationId) ?? []
+        const cached = this.channelSnapshots.get(integrationId)
+        const snap = cached?.channels ?? []
         const updated = snap.map((c) => (c.id === msg.channel && !c.name ? { ...c, name: `@${name}` } : c))
-        this.channelSnapshots.set(integrationId, updated)
-        this.cpClient?.emitIntegrationChannels({ integrationId, channels: updated })
+        this.channelSnapshots.set(integrationId, {
+          channels: updated,
+          authoritative: cached?.authoritative ?? false
+        })
+        this.cpClient?.emitIntegrationChannels({ integrationId, channels: updated, authoritative: false })
       })
       .catch(() => {})
+  }
+
+  /** Re-assert cached reports after a CP reconnect without upgrading a partial
+   *  observation (including Slack gated-conversation discovery) to a full snapshot. */
+  private replayChannelSnapshots(): void {
+    for (const [integrationId, snapshot] of this.channelSnapshots) {
+      this.cpClient?.emitIntegrationChannels({
+        integrationId,
+        channels: snapshot.channels,
+        ...(snapshot.authoritative ? {} : { authoritative: false })
+      })
+    }
   }
 
   /** The live platform connection serving `integrationId`, any platform. */
@@ -12473,6 +12729,35 @@ export class Daemon {
     return { ok: false, reason: 'unknown cron' }
   }
 
+  /** Coalesce hot transcript writes into body-free, per-session invalidations. */
+  private scheduleSessionActivity(mutation: TranscriptMutation): void {
+    const ts = new Date(this.clock.now()).toISOString()
+    for (const agentId of mutation.agentIds) {
+      for (const sessionId of this.store.sessionIdsForTranscript(agentId, mutation.channel, mutation.thread)) {
+        const key = `${agentId}\0${sessionId}`
+        const existing = this.transcriptActivityTimers.get(key)
+        if (existing) {
+          existing.activity.revision = String(mutation.revision)
+          existing.activity.ts = ts
+          continue
+        }
+        const activity: SessionActivity = {
+          sessionId,
+          agentId,
+          revision: String(mutation.revision),
+          ts
+        }
+        const timer = this.clock.setTimeout(() => {
+          const pending = this.transcriptActivityTimers.get(key)
+          if (!pending || pending.timer !== timer) return
+          this.transcriptActivityTimers.delete(key)
+          this.cpClient?.emitSessionActivity(pending.activity)
+        }, 250)
+        this.transcriptActivityTimers.set(key, { timer, activity })
+      }
+    }
+  }
+
   private startCpClient(root: string): void {
     const cp = this.cfg.controlPlane
     if (!cp?.enabled || !cp.url || !cp.key) {
@@ -12583,8 +12868,7 @@ export class Daemon {
         this.cpClient?.emitMemoryConnectionFacts(this.memoryConnections?.facts() ?? [])
         this.hookReportConnectionId = randomUUID()
         this.replayHookTerminalReports()
-        for (const [integrationId, channels] of this.channelSnapshots)
-          this.cpClient?.emitIntegrationChannels({ integrationId, channels })
+        this.replayChannelSnapshots()
         // ...and each CP cron's stored last-run stamp — fires while the CP was
         // unreachable would otherwise never land (latest-wins upsert, so
         // re-asserting an already-known stamp is a no-op).
@@ -13057,6 +13341,9 @@ export class Daemon {
     // §2.5: gate new turns and let in-flight ones finish (deadline-bounded) BEFORE
     // tearing the hosts down — a hard kill mid-turn loses the reply + transcript.
     await this.drainForShutdown()
+    this.store.setTranscriptMutationListener()
+    for (const { timer } of this.transcriptActivityTimers.values()) this.clock.clearTimeout(timer)
+    this.transcriptActivityTimers.clear()
     const errors: unknown[] = []
     this.scheduler?.stop()
     this.dreamScheduler?.stop()

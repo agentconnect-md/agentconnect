@@ -692,6 +692,7 @@ describe('cold-move archive', () => {
         mode: 'direct',
         botToken: 'new-secret',
         appToken: 'new-app',
+        appId: 'A123',
         allowedUserIds: [],
         bindRules: []
       }
@@ -739,6 +740,7 @@ describe('cold-move archive', () => {
           mode: 'direct',
           botToken: 'new-secret',
           appToken: 'new-app',
+          appId: 'A123',
           allowedUserIds: [],
           bindRules: []
         }

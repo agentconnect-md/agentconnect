@@ -5,7 +5,13 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { DreamInfo, MemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { parse as parseYaml } from 'yaml'
-import { DreamRunner, DreamStateError, type DreamStorePort } from '../src/agents/dream-runner.js'
+import {
+  DreamRunner,
+  DreamStateError,
+  type DreamExtractionResult,
+  type DreamLifecycleEvent,
+  type DreamStorePort
+} from '../src/agents/dream-runner.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { appendDistilledMemories } from '../src/agents/memory-distiller.js'
 import {
@@ -74,6 +80,8 @@ async function setup(opts: {
   policy?: MemoryDreamingPolicy
   cancelGraceMs?: number
   trustedExtraction?: boolean
+  extractionResult?: DreamExtractionResult
+  onEvent?: (event: DreamLifecycleEvent) => void
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
   ensureMemory(dir, 'bot')
@@ -86,11 +94,13 @@ async function setup(opts: {
     store,
     extract: async (agentId, systemPrompt, prompt, signal) => {
       prompts.push({ systemPrompt, prompt })
+      if (opts.extractionResult) return opts.extractionResult
       const output = opts.extract ? await opts.extract(agentId, systemPrompt, prompt, signal) : PROPOSAL
       // The producing host's verdict rides WITH the output (a later host swap
       // must not be able to retro-authorize an untrusted proposal).
       return { output, trustedChannel: opts.trustedExtraction ?? false }
     },
+    ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),
     ...(opts.cancelGraceMs !== undefined ? { cancelGraceMs: opts.cancelGraceMs } : {}),
     log: silent
   })
@@ -127,6 +137,50 @@ describe('DreamRunner pipeline', () => {
     expect(staged?.map((f) => f.name)).toEqual(['MEMORY.md', 'prefs.md'])
     const read = await runner.stagedRead('a1', started.dreamId, 'prefs.md')
     expect(read?.content).toContain('2026-07-24')
+  })
+
+  it('keeps extraction correlation, usage, and lifecycle events on the job', async () => {
+    const events: DreamLifecycleEvent[] = []
+    const { store, runner } = await setup({
+      extractionResult: {
+        output: PROPOSAL,
+        trustedChannel: false,
+        sessionId: 'dream-session-1',
+        runtime: 'codex',
+        model: 'gpt-5.6',
+        stopReason: 'end_turn',
+        usage: {
+          totalTokens: 120,
+          inputTokens: 90,
+          outputTokens: 30,
+          costAmount: 0.012,
+          costCurrency: 'USD'
+        }
+      },
+      onEvent: (event) => events.push(event)
+    })
+
+    const started = await runner.start('a1', { trigger: 'manual' })
+    const done = await settle(store, started.dreamId)
+
+    expect(done).toMatchObject({
+      status: 'completed',
+      executionSessionId: 'dream-session-1',
+      runtime: 'codex',
+      model: 'gpt-5.6',
+      stopReason: 'end_turn',
+      usage: {
+        totalTokens: 120,
+        inputTokens: 90,
+        outputTokens: 30,
+        costAmount: 0.012,
+        costCurrency: 'USD'
+      }
+    })
+    expect(done.usage?.inputBytes).toBeGreaterThan(0)
+    expect(done.usage?.outputBytes).toBeGreaterThan(0)
+    expect(events.map((event) => event.type)).toEqual(['memory.dream.started', 'memory.dream.completed'])
+    expect(events[1]?.dream.executionSessionId).toBe('dream-session-1')
   })
 
   it('rejects a second dream while one is in flight and when dreaming is disabled', async () => {
@@ -749,11 +803,29 @@ describe('DreamRunner store + trust binding', () => {
       trigger: 'manual',
       sessionIds: ['s1'],
       snapshotDigest: 'sha256:abc',
+      executionSessionId: 'dream-session-1',
+      runtime: 'codex',
+      model: 'gpt-5.6',
+      stopReason: 'end_turn',
       snapshotWrites: { total: 7, nonDistill: 3 },
+      usage: {
+        inputBytes: 2048,
+        outputBytes: 512,
+        totalTokens: 120,
+        costAmount: 0.012,
+        costCurrency: 'USD'
+      },
       createdAt: '2026-07-24T00:00:00.000Z'
     }
     store.insertDream(dream)
-    expect(store.getDream('a1', 'drm-store-1')?.snapshotWrites).toEqual({ total: 7, nonDistill: 3 })
+    expect(store.getDream('a1', 'drm-store-1')).toMatchObject({
+      executionSessionId: 'dream-session-1',
+      runtime: 'codex',
+      model: 'gpt-5.6',
+      stopReason: 'end_turn',
+      snapshotWrites: { total: 7, nonDistill: 3 },
+      usage: { inputBytes: 2048, outputBytes: 512, totalTokens: 120, costAmount: 0.012 }
+    })
 
     // …and survives the status updates the pipeline makes on the way to adoption.
     store.updateDream({ ...dream, status: 'completed', endedAt: '2026-07-24T00:05:00.000Z' })
@@ -881,7 +953,11 @@ describe('DreamRunner skill mining (D-3)', () => {
     ]
   })
 
-  async function mining(proposal: string, store = new TwoSessionStore()) {
+  async function mining(
+    proposal: string,
+    store = new TwoSessionStore(),
+    onEvent?: (event: DreamLifecycleEvent) => void
+  ) {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
     ensureMemory(dir, 'bot')
     const runner = new DreamRunner({
@@ -889,6 +965,7 @@ describe('DreamRunner skill mining (D-3)', () => {
       dreamingPolicyFor: () => ({ enabled: true, mineSkills: true }),
       store,
       extract: async () => ({ output: proposal, trustedChannel: false }),
+      ...(onEvent ? { onEvent } : {}),
       log: silent
     })
     const started = await runner.start('a1', { trigger: 'manual' })
@@ -938,15 +1015,33 @@ describe('DreamRunner skill mining (D-3)', () => {
     expect(done.skills).toBeUndefined()
   })
 
-  it('refuses to accept — a terminal success without its effect would be a lie', async () => {
-    // Accepting must mean the skill can steer later sessions, which needs a
-    // containment-safe write under the agent-writable cwd. Until that exists,
-    // refuse loudly rather than record `accepted` with no effect.
-    const { runner, dreamId, done } = await mining(grounded)
-    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).rejects.toThrow(/not available yet/)
-    // The candidate stays reviewable rather than being consumed.
-    expect(done.skills?.[0]).toMatchObject({ state: 'proposed' })
-    expect(await runner.stagedSkill('a1', dreamId, 'deploy-staging')).not.toBeNull()
+  it('accept copies the skill into the agent-owned tree and marks it accepted', async () => {
+    const events: DreamLifecycleEvent[] = []
+    const { dir, runner, dreamId } = await mining(grounded, new TwoSessionStore(), (event) => events.push(event))
+    const after = await runner.skillAccept('a1', dreamId, 'deploy-staging')
+    expect(after.skills?.[0]).toMatchObject({ state: 'accepted' })
+    expect(events.at(-1)).toMatchObject({
+      type: 'memory.dream.skill_accepted',
+      dream: { dreamId, skills: [{ name: 'deploy-staging', state: 'accepted' }] },
+      skillName: 'deploy-staging'
+    })
+
+    // The canonical copy lands under the agent root — daemon-owned, outside the
+    // workspace. Session prep materializes it into the runtime's skill root
+    // under symlink containment (see dream-skill-install.test.ts).
+    expect(await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')).toContain('name: deploy-staging')
+    // Idempotent — no duplicate lifecycle decision.
+    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).resolves.toMatchObject({})
+    expect(events.filter((event) => event.type === 'memory.dream.skill_accepted')).toHaveLength(1)
+  })
+
+  it('an accepted skill survives discarding the dream it came from', async () => {
+    // Acceptance COPIES rather than referencing the staging, so tidying up the
+    // dream cannot silently uninstall a skill the user already took.
+    const { dir, runner, dreamId } = await mining(grounded)
+    await runner.skillAccept('a1', dreamId, 'deploy-staging')
+    await runner.discard('a1', dreamId)
+    expect(await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')).toContain('name: deploy-staging')
   })
 
   it('dismiss drops the staging and blocks a later accept; both are idempotent', async () => {
@@ -1034,13 +1129,13 @@ describe('DreamRunner skill mining — review findings', () => {
     expect(prompts[0]).not.toContain('Bash(')
   })
 
-  it('keeps the candidate reviewable rather than half-accepting it', async () => {
-    // Acceptance is deferred (see skillAccept), so the daemon must not leave a
-    // half-applied state behind: the candidate stays `proposed` and staged.
-    const { runner, dreamId } = await mine()
-    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).rejects.toThrow(/not available yet/)
-    const staged = await runner.stagedSkill('a1', dreamId, 'deploy-staging')
-    expect(staged?.skill).toContain('name: deploy-staging')
+  it('accepts the generated skill with its validated frontmatter intact', async () => {
+    const { dir, runner, dreamId } = await mine()
+    await runner.skillAccept('a1', dreamId, 'deploy-staging')
+    const body = await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')
+    // Frontmatter is daemon-generated from the VALIDATED name/description, so
+    // what ships is exactly what the reviewer saw.
+    expect(parseYaml(body.split('---')[1] ?? '')).toMatchObject({ name: 'deploy-staging' })
   })
 
   it('keeps a still-proposed candidate reviewable after the store proposal is discarded', async () => {

@@ -12,11 +12,12 @@ import { agentLabel, type Agent } from '@/lib/data'
 import {
   ApiError,
   setAgentWorkspace,
-  fetchAllGithubRepos,
   fetchGithubBranches,
   fetchGithubInstallations,
   fetchGithubInstallUrl,
+  fetchGithubRepoRoster,
   fetchGithubRepoAccess,
+  invalidateGithubRepoRosterCache,
   syncGithubInstallations,
   type AgentRepoAuthDto,
   type GithubInstallationDto,
@@ -109,22 +110,14 @@ export default function EditWorkspaceModal({
     if (!gh?.enabled || gh.installations.length === 0) return
     let alive = true
     const ctrl = new AbortController()
-    void Promise.all(
-      gh.installations.map(async (ins) => {
-        try {
-          const page = await fetchAllGithubRepos(ins.id, ctrl.signal)
-          return { page: page.map((r) => ({ ...r, installationId: ins.id })) }
-        } catch (e) {
-          const denied = e instanceof ApiError && e.code === 'GITHUB_IDENTITY_REQUIRED'
-          return { error: denied ? ('denied' as const) : ('failed' as const) }
-        }
-      })
-    ).then((batches) => {
+    void fetchGithubRepoRoster(gh.installations, ctrl.signal, (partial) => {
+      if (alive) setRepos(partial)
+    }).then(({ repos, denied, failed }) => {
       if (!alive) return
       // A failed roster read (GitHub outage) must not render as an empty
       // list — keep the pages that loaded and surface the gap with a retry.
-      setReposError(batches.find((b) => b.error === 'denied')?.error ?? batches.find((b) => b.error)?.error ?? null)
-      setRepos(batches.flatMap((b) => b.page ?? []))
+      setReposError(denied ? 'denied' : failed ? 'failed' : null)
+      setRepos(repos)
     })
     return () => {
       alive = false
@@ -392,6 +385,7 @@ export default function EditWorkspaceModal({
                         : undefined
                   }
                   onRetry={() => {
+                    invalidateGithubRepoRosterCache()
                     setReposError(null)
                     setRepos(null)
                     setReposNonce((value) => value + 1)

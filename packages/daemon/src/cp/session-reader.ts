@@ -182,9 +182,9 @@ export function createSessionReader(
   return {
     list(req) {
       const rows = store.listSessions(req.agentId)
-      // Title = the title supplied by ACP or the AgentConnect title tool, else a
-      // fallback derived from the session's FIRST user message. Before the agent has
-      // a meaningful request to name, this keeps the console better than "Session <id>".
+      // Title = the ingress/runtime/tool title, else a fallback derived from the
+      // session's FIRST user message. Before the agent has a meaningful request to
+      // name, this keeps the console better than "Session <id>".
       // firstMessageText only runs for untitled rows (`||` short-circuits).
       const enriched = rows.map((r) => ({
         r,
@@ -231,6 +231,10 @@ export function createSessionReader(
     history(req) {
       const rec = sessionForRead(store, req.agentId, req.sessionId)
       if (!rec) return { sessionId: req.sessionId, messages: [] }
+      const tailing = req.after !== undefined
+      const afterRevision = tailing ? Number(req.after) : null
+      if (afterRevision !== null && (!Number.isSafeInteger(afterRevision) || afterRevision < 0))
+        throw new Error('invalid transcript revision')
       // Slack can append an older platform row during warm-thread backfill, so its
       // authoritative history pages by normalized event time + seq tie-breaker. A
       // plain numeric cursor came from a pre-upgrade daemon: finish that page walk in
@@ -243,11 +247,15 @@ export function createSessionReader(
       // Scope to what THIS agent's session received + produced, not the whole shared
       // (channel, thread) thread — an agent-called session only ever saw the message handed
       // to it (context isolation), so the view must not leak other participants' cross-talk.
-      const { rows, hasMore } = chronologicalSlack
-        ? store.transcriptPageForAgentByEventTime(rec.channel, rec.thread, rec.agentId, eventCursor, req.limit)
-        : store.transcriptPageForAgent(rec.channel, rec.thread, rec.agentId, legacyBefore, req.limit)
+      const page =
+        afterRevision !== null
+          ? store.transcriptTailForAgent(rec.channel, rec.thread, rec.agentId, afterRevision, req.limit)
+          : chronologicalSlack
+            ? store.transcriptPageForAgentByEventTime(rec.channel, rec.thread, rec.agentId, eventCursor, req.limit)
+            : store.transcriptPageForAgent(rec.channel, rec.thread, rec.agentId, legacyBefore, req.limit)
+      const { rows, hasMore } = page
       // rows are newest-first; the page itself is oldest→newest.
-      const ordered = rows.slice().reverse()
+      const ordered = tailing ? rows : rows.slice().reverse()
       // Display names (cached in the store) for both senders AND `<@U…>` mentions in
       // message bodies; agent-id senders and unresolved ids have no entry, so
       // `senderName` is omitted (UI falls back) and mentions stay as the raw token.
@@ -286,6 +294,41 @@ export function createSessionReader(
         }
         return base
       })
+      if (tailing) {
+        // A forward page must retain the EARLIEST unseen mutations so its cursor
+        // always makes progress without skipping an insert or same-seq update.
+        const kept: SessionMessage[] = []
+        let acc = 0
+        for (const message of built) {
+          const enc = encodedBytes(message) + 1
+          if (kept.length > 0 && acc + enc > REPLY_BUDGET) break
+          kept.push(message)
+          acc += enc
+        }
+        const droppedToBudget = kept.length < built.length
+        const liveMore = hasMore || droppedToBudget
+        const lastMutationRow = kept.length > 0 ? rows[kept.length - 1] : undefined
+        const liveCursor =
+          liveMore && lastMutationRow
+            ? lastMutationRow.revision
+            : (page as ReturnType<LocalStore['transcriptTailForAgent']>).cursor
+        // Mutation order and display order differ when a Slack warm-thread backfill
+        // inserts an older platform message. Return a chronological page while the
+        // revision cursor above remains anchored to mutation order.
+        const rowBySeq = new Map(rows.map((row) => [row.seq, row]))
+        kept.sort((a, b) => {
+          if (rec.platform !== 'slack') return a.seq - b.seq
+          const ar = rowBySeq.get(a.seq)
+          const br = rowBySeq.get(b.seq)
+          return (ar?.eventTimeUs ?? 0) - (br?.eventTimeUs ?? 0) || a.seq - b.seq
+        })
+        return {
+          sessionId: req.sessionId,
+          messages: kept,
+          liveCursor: String(liveCursor),
+          ...(liveMore ? { liveMore: true } : {})
+        }
+      }
       // Per-page frame budget: keep the NEWEST rows that fit, drop older overflow, and
       // page older via nextCursor = oldest KEPT seq. `built` is oldest→newest, so we
       // accumulate from the newest end. A single ≤ 32 KiB preview always fits ⇒ progress.
@@ -314,6 +357,7 @@ export function createSessionReader(
       return {
         sessionId: req.sessionId,
         messages: kept,
+        liveCursor: String(store.currentTranscriptRevision()),
         ...(hasOlder && oldestKept
           ? {
               nextCursor:

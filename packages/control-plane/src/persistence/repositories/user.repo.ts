@@ -91,7 +91,15 @@ const isP2002 = (err: unknown): boolean => (err as { code?: string }).code === '
  * one). Extracted as a free function so the waitlist redeem transaction can create
  * the personal org at ACTIVATION time (waitlist-and-login.md §6) sharing the exact
  * same slug-allocation logic as signup. `db` may be an interactive transaction
- * client. Slug collisions retry with a numeric suffix, then a userId-derived slug.
+ * client. Slug collisions fall back to a numeric suffix, then a userId-derived slug.
+ *
+ * Each candidate is claimed with a conflict-TOLERANT insert (`createMany` +
+ * `skipDuplicates` ⇒ `INSERT … ON CONFLICT DO NOTHING`), which reports a taken slug as
+ * `count: 0` instead of raising. Never allocate by catching the unique violation of a
+ * plain INSERT: this may run inside an interactive transaction (the waitlist redeem),
+ * and in Postgres ANY failed statement aborts the WHOLE transaction — the caught P2002
+ * would poison every following query with 25P02 and surface as a 500. A read-then-insert
+ * has the same flaw, since two concurrent allocations can pick the same free candidate.
  */
 export async function ensurePersonalOrg(
   db: PrismaLike,
@@ -106,17 +114,19 @@ export async function ensurePersonalOrg(
   const baseSlug = slugify(base)
   const candidates = [baseSlug, `${baseSlug}-2`, `${baseSlug}-3`, `org-${userId.slice(-8).toLowerCase()}`]
   for (const slug of candidates) {
-    let org
-    try {
-      org = await db.org.create({ data: { name, slug } })
-    } catch (err) {
-      if (isP2002(err)) continue // slug taken — try the next
-      throw err
-    }
+    // `count: 0` ⇒ the slug is taken (by a committed row, or by a concurrent inserter
+    // this statement waited on) — move to the next candidate with the transaction
+    // still healthy. `count: 1` ⇒ the row is OURS, and `slug` is unique, so reading it
+    // back by slug cannot pick up someone else's org.
+    const { count } = await db.org.createMany({ data: [{ name, slug }], skipDuplicates: true })
+    if (count === 0) continue
+    const org = await db.org.findUniqueOrThrow({ where: { slug }, select: { id: true } })
     try {
       await db.membership.create({ data: { orgId: org.id, userId, role: 'owner' } })
     } catch (err) {
-      await db.org.delete({ where: { id: org.id } }).catch(() => {}) // don't leak an empty org
+      // Outside a transaction this keeps an empty org from leaking; inside one the
+      // rollback does it (and this delete is itself a no-op on the aborted tx).
+      await db.org.delete({ where: { id: org.id } }).catch(() => {})
       throw err
     }
     return

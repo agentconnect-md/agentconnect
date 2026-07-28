@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import useSWR from 'swr'
@@ -24,6 +24,7 @@ import {
   sessionPlatform,
   speaker,
   status,
+  type Agent,
   type SessionImage,
   type SessionStep
 } from '@/lib/data'
@@ -33,6 +34,7 @@ import {
   fetchToolBody,
   fmtCountCompact,
   memberDisplayName,
+  mergeSessionDetailUsage,
   sessionFromDetailDto,
   type SessionDetailDto,
   type SessionMessageDto,
@@ -51,6 +53,7 @@ import { formatTranscriptTime, parseTranscriptTime } from '@/lib/transcript-time
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
 import { sessionSenderLabel } from '@/lib/session-trigger'
+import { mergeSessionMessages } from '@/lib/session-transcript'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
@@ -303,12 +306,14 @@ function ContentBlock({ block }: { block: unknown }) {
 // locations, plus a "view full" affordance when only a truncated preview is inline.
 function ToolBodyDetail({ msg, sessionId }: { msg: SessionMessageDto; sessionId: string }) {
   const [open, setOpen] = useState(false)
-  const [full, setFull] = useState<string | null>(null) // full body JSON, once fetched
+  const [full, setFull] = useState<{ source: SessionMessageDto; body: string } | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  // Prefer the fetched full body over the inline preview once available.
-  const bodyStr = full ?? msg.body ?? null
+  // A same-seq live update replaces `msg`; associate the fetched body with the
+  // exact source row so an older full response can never mask the new preview.
+  const fullBody = full?.source === msg ? full.body : null
+  const bodyStr = fullBody ?? msg.body ?? null
   let body: ToolBody | null = null
   let parseErr = false
   if (bodyStr) {
@@ -319,7 +324,7 @@ function ToolBodyDetail({ msg, sessionId }: { msg: SessionMessageDto; sessionId:
     }
   }
 
-  const truncated = msg.bodyTruncated && full == null
+  const truncated = msg.bodyTruncated && fullBody == null
   const badge = statusBadge(body?.status ?? msg.toolStatus)
   const kind = body?.kind ?? msg.toolKind
   const bytes = msg.bodyBytes
@@ -330,7 +335,7 @@ function ToolBodyDetail({ msg, sessionId }: { msg: SessionMessageDto; sessionId:
     setErr(null)
     fetchToolBody(sessionId, msg.toolCallId ?? body?.toolCallId ?? '').then(
       (s) => {
-        setFull(s)
+        setFull({ source: msg, body: s })
         setLoading(false)
         setOpen(true)
       },
@@ -454,14 +459,17 @@ type Turn =
 
 function SessionRelationLink({
   relation,
+  agent,
   orgPath,
   bordered = false
 }: {
   relation: SessionRelationDto
+  agent?: Agent
   orgPath: (path: string) => string
   bordered?: boolean
 }) {
   const title = relation.title?.trim() || `Session ${relation.id.slice(0, 8)}`
+  const agentName = agent ? agentLabel(agent) : relation.agentId
   return (
     <Link
       href={orgPath(`/sessions/${encodeURIComponent(relation.id)}`)}
@@ -470,8 +478,15 @@ function SessionRelationLink({
         bordered ? 'border-t border-(--border-subtle)' : ''
       }`}
     >
-      <Icon name="message-square" size={14} className="flex-none" />
-      <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-semibold leading-normal">{title}</span>
+      <span className="av h-6 w-6 flex-none rounded-sm">
+        {agent ? <AgentIconView icon={agent.icon} runtime={agent.runtime} size={24} /> : <Icon name="bot" size={14} />}
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col gap-[1px]">
+        <span className="truncate font-sans text-[12.5px] font-semibold leading-normal">{title}</span>
+        <span className="truncate font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)">
+          {agentName}
+        </span>
+      </span>
       {relation.title && (
         <span className="hidden flex-none font-mono text-[10.5px] font-medium leading-normal text-(--text-tertiary) desktop:inline">
           {relation.id.slice(0, 8)}
@@ -485,10 +500,12 @@ function SessionRelationLink({
 function SessionFamilyLinks({
   parent,
   children,
+  agentById,
   orgPath
 }: {
   parent: SessionRelationDto | null
   children: SessionRelationDto[]
+  agentById: ReadonlyMap<string, Agent>
   orgPath: (path: string) => string
 }) {
   if (!parent && children.length === 0) return null
@@ -503,7 +520,7 @@ function SessionFamilyLinks({
           <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
             Parent session
           </span>
-          <SessionRelationLink relation={parent} orgPath={orgPath} />
+          <SessionRelationLink relation={parent} agent={agentById.get(parent.agentId)} orgPath={orgPath} />
         </div>
       )}
       {children.length > 0 && (
@@ -513,7 +530,13 @@ function SessionFamilyLinks({
           </span>
           <div className="min-w-0">
             {children.map((child, index) => (
-              <SessionRelationLink key={child.id} relation={child} orgPath={orgPath} bordered={index > 0} />
+              <SessionRelationLink
+                key={child.id}
+                relation={child}
+                agent={agentById.get(child.agentId)}
+                orgPath={orgPath}
+                bordered={index > 0}
+              />
             ))}
           </div>
         </div>
@@ -527,11 +550,20 @@ export default function SessionDetailView() {
   const { activeOrg, orgPath } = useOrgs()
   const router = useRouter()
   const { id } = useParams<{ id: string }>()
-  const { agents, allSessions, sessionsLoading, crons, daemons, members } = useConsoleData()
+  const {
+    agents,
+    allSessions,
+    sessionsLoading,
+    crons,
+    daemons,
+    members,
+    sessionActivityVersionById,
+    sessionStreamGeneration
+  } = useConsoleData()
   const {
     getPgSession,
     getLiveSteps,
-    clearLiveSteps,
+    reconcileLiveSteps,
     getPgInput,
     getPgImage,
     isPgBusy,
@@ -550,6 +582,7 @@ export default function SessionDetailView() {
   const [msgLoading, setMsgLoading] = useState(false)
   const [msgPaging, setMsgPaging] = useState(false)
   const [msgErr, setMsgErr] = useState<string | null>(null)
+  const [tailReady, setTailReady] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [showThinking, setShowThinking] = useState(true)
   const [showTools, setShowTools] = useState(true)
@@ -561,6 +594,11 @@ export default function SessionDetailView() {
     Record<string, { model?: string; effort?: string; permissionMode?: string }>
   >({})
   const imageInputRef = useRef<HTMLInputElement>(null)
+  const liveCursorRef = useRef<string | null>(null)
+  const tailSessionRef = useRef<string | null>(null)
+  const tailReadyRef = useRef(false)
+  const tailInFlightRef = useRef<Promise<void> | null>(null)
+  const tailDirtyRef = useRef(false)
 
   const localSession = getPgSession(id) ?? allSessions.find((s) => s.id === id) ?? null
   // Relationship links can point outside the cursor pages loaded by SessionsView.
@@ -577,8 +615,13 @@ export default function SessionDetailView() {
     ([, orgId, , sessionId]) => fetchSessionDetail(sessionId as string, orgId as string),
     { refreshInterval: 30_000 }
   )
-  const sessionBase = localSession ?? (sessionDetail ? sessionFromDetailDto(sessionDetail) : null)
-  const owner = sessionBase ? agents.find((a) => a.id === sessionBase.agentId) : undefined
+  const detailSession = sessionDetail ? sessionFromDetailDto(sessionDetail) : null
+  // The cursor-loaded list row can predate the final Dream usage report. Keep
+  // its local/live fields, but let the independently refreshed detail snapshot
+  // supply the authoritative per-session token and cost totals.
+  const sessionBase = localSession ? mergeSessionDetailUsage(localSession, detailSession) : detailSession
+  const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents])
+  const owner = sessionBase?.agentId ? agentById.get(sessionBase.agentId) : undefined
   const session =
     sessionBase && !localSession
       ? {
@@ -592,6 +635,8 @@ export default function SessionDetailView() {
   const agentRuntime = session?.runtime || owner?.runtime || ''
   const runtimeMeta = acpRuntime(acpRegistry, agentRuntime)
   const sessionBusy = session ? isPgBusy(session.id) : false
+  const sessionBusyRef = useRef(sessionBusy)
+  sessionBusyRef.current = sessionBusy
 
   // A fresh Playground starts on a synthetic `pg_…` route so it can render before
   // the runtime creates a durable session. As soon as the real id arrives, make it
@@ -631,13 +676,16 @@ export default function SessionDetailView() {
   useEffect(() => {
     if (!wantTranscript || !sid || !aid) return
     let active = true
+    tailSessionRef.current = sid
+    tailReadyRef.current = false
+    liveCursorRef.current = null
+    tailInFlightRef.current = null
+    tailDirtyRef.current = false
+    setTailReady(false)
     setMsgLoading(true)
     setMsgErr(null)
     setMsgs(null)
     setMsgPaging(false)
-    // We're loading authoritative history — drop any optimistic live tail from a prior
-    // visit so a resumed turn already in that history doesn't also render from the tail.
-    clearLiveSteps(sid)
     // Pull the WHOLE history, not just the newest frame-budgeted page: render the
     // first (newest) page immediately, then keep paging strictly older via
     // nextCursor, prepending each page. Bounded so a pathological session can't
@@ -646,20 +694,30 @@ export default function SessionDetailView() {
     ;(async () => {
       let all: SessionMessageDto[] = []
       let cursor: string | undefined
+      let liveCursor: string | null = null
       for (let i = 0; i < MAX_PAGES; i++) {
-        const page = await fetchSessionMessages(sid, cursor)
+        const page = await fetchSessionMessages(sid, { ...(cursor ? { cursor } : {}) })
         if (!active) return
+        if (i === 0) liveCursor = page.liveCursor ?? null
         all = [...page.messages, ...all]
         setMsgs(all)
         setMsgLoading(false)
         if (!page.nextCursor) {
           setMsgPaging(false)
+          liveCursorRef.current = liveCursor
+          tailReadyRef.current = true
+          setTailReady(true)
+          if (!sessionBusyRef.current) reconcileLiveSteps(sid, all, aid)
           return
         }
         cursor = page.nextCursor
         setMsgPaging(true)
       }
       setMsgPaging(false)
+      liveCursorRef.current = liveCursor
+      tailReadyRef.current = true
+      setTailReady(true)
+      if (!sessionBusyRef.current) reconcileLiveSteps(sid, all, aid)
     })().catch((e) => {
       if (!active) return
       setMsgErr(e instanceof Error ? e.message : String(e))
@@ -668,8 +726,65 @@ export default function SessionDetailView() {
     })
     return () => {
       active = false
+      if (tailSessionRef.current === sid) {
+        tailSessionRef.current = null
+        tailReadyRef.current = false
+      }
     }
-  }, [wantTranscript, sid, aid, clearLiveSteps])
+  }, [wantTranscript, sid, aid, reconcileLiveSteps])
+
+  const refreshTranscriptTail = useCallback((): Promise<void> => {
+    if (!wantTranscript || !sid || !tailReadyRef.current || sessionBusyRef.current) return Promise.resolve()
+    if (tailInFlightRef.current) {
+      tailDirtyRef.current = true
+      return tailInFlightRef.current
+    }
+    const platform = session?.platform ?? ''
+    const run = (async () => {
+      let cursor = liveCursorRef.current
+      const persisted: SessionMessageDto[] = []
+      for (let pageNo = 0; pageNo < 20; pageNo++) {
+        const page = await fetchSessionMessages(sid, {
+          ...(cursor !== null ? { after: cursor } : {}),
+          limit: 200
+        })
+        if (tailSessionRef.current !== sid) return
+        persisted.push(...page.messages)
+        setMsgs((current) => mergeSessionMessages(current ?? [], page.messages, platform))
+        if (page.liveCursor !== null) {
+          cursor = page.liveCursor
+          liveCursorRef.current = cursor
+        }
+        if (!page.liveMore || page.liveCursor === null) break
+      }
+      if (tailSessionRef.current === sid && !sessionBusyRef.current) reconcileLiveSteps(sid, persisted, aid)
+    })()
+      .catch(() => {
+        // Keep the last good transcript. The next SSE signal, reconnect, or
+        // safety poll retries without replacing visible history with an error.
+      })
+      .finally(() => {
+        if (tailInFlightRef.current !== run) return
+        tailInFlightRef.current = null
+        const retry = tailDirtyRef.current && tailSessionRef.current === sid
+        tailDirtyRef.current = false
+        if (retry) void refreshTranscriptTail()
+      })
+    tailInFlightRef.current = run
+    return run
+  }, [wantTranscript, sid, aid, session?.platform, reconcileLiveSteps])
+
+  const sessionActivityVersion = sid ? (sessionActivityVersionById[sid] ?? 0) : 0
+  useEffect(() => {
+    if (!tailReady || sessionBusy) return
+    void refreshTranscriptTail()
+  }, [tailReady, sessionBusy, sessionActivityVersion, sessionStreamGeneration, refreshTranscriptTail])
+
+  useEffect(() => {
+    if (!tailReady) return
+    const timer = window.setInterval(() => void refreshTranscriptTail(), 15_000)
+    return () => window.clearInterval(timer)
+  }, [tailReady, refreshTranscriptTail])
 
   useEffect(() => {
     if (!session || (session.platform !== 'playground' && session.platform !== 'webchat') || !sessionBusy) return
@@ -1285,6 +1400,7 @@ export default function SessionDetailView() {
         <SessionFamilyLinks
           parent={sessionDetail.parentSession}
           children={sessionDetail.childSessions}
+          agentById={agentById}
           orgPath={orgPath}
         />
       )}

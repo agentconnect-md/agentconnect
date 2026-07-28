@@ -395,6 +395,93 @@ describe('SessionReader', () => {
     s.close()
   })
 
+  it('tails inserts, same-seq tool updates, and newly visible shared deliveries', () => {
+    const s = store()
+    seedHistorySession(s)
+    const reader = createSessionReader(s)
+    const initial = reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+    expect(initial.liveCursor).toBe('0')
+
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: 'U1',
+      recipient: AGENT,
+      kind: 'text',
+      text: 'first'
+    })
+    s.insertToolCall({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '2',
+      sender: AGENT,
+      toolCallId: 'tc-live',
+      title: 'Running',
+      body: JSON.stringify({ toolCallId: 'tc-live', status: 'in_progress' })
+    })
+
+    const inserted = reader.history({
+      agentId: AGENT,
+      sessionId: 'acp-1',
+      after: initial.liveCursor!,
+      limit: 50
+    })
+    expect(inserted.messages.map((message) => message.text)).toEqual(['first', 'Running'])
+    expect(inserted.liveCursor).toBe('2')
+
+    const toolSeq = inserted.messages[1]!.seq
+    s.updateToolCall('C1', 'T1', AGENT, 'tc-live', {
+      title: 'Complete',
+      body: JSON.stringify({ toolCallId: 'tc-live', status: 'completed' })
+    })
+    const updated = reader.history({
+      agentId: AGENT,
+      sessionId: 'acp-1',
+      after: inserted.liveCursor!,
+      limit: 50
+    })
+    expect(updated.messages).toEqual([
+      expect.objectContaining({ seq: toolSeq, text: 'Complete', toolStatus: 'completed' })
+    ])
+
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '3',
+      sender: OTHER_AGENT,
+      kind: 'reasoning',
+      text: 'peer-private'
+    })
+    const privateAdvance = reader.history({
+      agentId: AGENT,
+      sessionId: 'acp-1',
+      after: updated.liveCursor!,
+      limit: 50
+    })
+    expect(privateAdvance.messages).toEqual([])
+
+    for (const recipient of [OTHER_AGENT, AGENT]) {
+      s.appendTranscript({
+        channel: 'C1',
+        thread: 'T1',
+        ts: '4',
+        sender: 'U1',
+        recipient,
+        kind: 'text',
+        text: 'shared-later'
+      })
+    }
+    const shared = reader.history({
+      agentId: AGENT,
+      sessionId: 'acp-1',
+      after: privateAdvance.liveCursor!,
+      limit: 50
+    })
+    expect(shared.messages.map((message) => message.text)).toEqual(['shared-later'])
+    s.close()
+  })
+
   it('orders Slack history by event time when older thread rows are backfilled after the trigger', () => {
     const s = store()
     seedHistorySession(s)

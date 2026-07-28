@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { sessionFromDto, type SessionDto } from './api'
+import {
+  mergeSessionDetailUsage,
+  sessionFromDetailDto,
+  sessionFromDto,
+  type SessionDetailDto,
+  type SessionDto
+} from './api'
 import { sessionPlatform } from './data'
 import {
   githubRepoIdFromSessionTriggerFilter,
@@ -76,6 +82,120 @@ describe('sessionTriggerKind', () => {
     expect(sessionPlatform(slashNamedWebhook)).toBe('hook')
     expect(sessionPlatform({ platform: 'hook', hookKind: 'github' })).toBe('github')
     expect(sessionPlatform({ platform: 'playground' })).toBe('webchat')
+  })
+
+  it('labels dream execution sessions without exposing their synthetic routing key', () => {
+    const dream = sessionFromDto(
+      sessionDto({
+        sessionId: 'dream-session-1',
+        sessionKey: { platform: 'dream', channel: 'memory' },
+        title: 'Memory dream',
+        triggeredBy: 'schedule',
+        runtime: 'codex',
+        model: 'gpt-5.6',
+        usage: { totalTokens: 120, costAmount: 0.012, costCurrency: 'USD' }
+      })
+    )
+
+    expect(dream).toMatchObject({
+      platform: 'dream',
+      channel: 'Memory',
+      user: 'Scheduled',
+      runtime: 'codex',
+      model: 'gpt-5.6',
+      tokens: '120',
+      cost: '$0.01'
+    })
+  })
+
+  it('hydrates token and cost usage from a direct session-detail response', () => {
+    const detail: SessionDetailDto = {
+      id: 'dream-session-1',
+      parentSession: null,
+      childSessions: [],
+      agentId: 'target-agent',
+      platform: 'dream',
+      channel: 'memory',
+      thread: 'drm-1',
+      title: 'Memory dream',
+      status: 'completed',
+      lastActivityAt: '2026-07-27T00:00:00.000Z',
+      usage: {
+        reportedAt: '2026-07-27T00:02:00.000Z',
+        totalTokens: 12_400,
+        inputTokens: 10_000,
+        outputTokens: 2_400,
+        costAmount: 0.12,
+        costCurrency: 'USD'
+      },
+      triggeredBy: 'manual',
+      channelName: null,
+      triggeredByName: null,
+      threadUrl: null,
+      runtime: 'codex',
+      model: 'gpt-5.6',
+      effort: null,
+      fastMode: null,
+      permissionMode: 'read-only',
+      outputMode: null,
+      daemonId: 'daemon-1'
+    }
+
+    const hydrated = sessionFromDetailDto(detail)
+    expect(hydrated).toMatchObject({
+      platform: 'dream',
+      tokens: '12K',
+      cost: '$0.12',
+      usage: { inputTokens: 10_000, outputTokens: 2_400 }
+    })
+
+    const staleListRow = sessionFromDto(
+      sessionDto({
+        sessionId: detail.id,
+        sessionKey: { platform: 'dream', channel: 'memory' },
+        usage: {
+          reportedAt: '2026-07-27T00:03:00.000Z',
+          totalTokens: 20_000,
+          costAmount: 0.2,
+          costCurrency: 'USD'
+        }
+      })
+    )
+    expect(mergeSessionDetailUsage(staleListRow, hydrated)).toMatchObject({
+      tokens: '20K',
+      cost: '$0.20',
+      usage: { totalTokens: 20_000 }
+    })
+
+    const freshDetail = {
+      ...hydrated,
+      tokens: '30K',
+      cost: '$0.30',
+      usage: {
+        ...hydrated.usage!,
+        reportedAt: '2026-07-27T00:04:00.000Z',
+        totalTokens: 30_000,
+        costAmount: 0.3
+      }
+    }
+    expect(mergeSessionDetailUsage(staleListRow, freshDetail)).toMatchObject({
+      tokens: '30K',
+      cost: '$0.30',
+      usage: { totalTokens: 30_000 }
+    })
+
+    const unmeteredListRow = sessionFromDto(
+      sessionDto({
+        sessionId: detail.id,
+        sessionKey: { platform: 'dream', channel: 'memory' },
+        usage: null
+      })
+    )
+    expect(mergeSessionDetailUsage(unmeteredListRow, hydrated)).toMatchObject({
+      tokens: '12K',
+      cost: '$0.12',
+      usage: { totalTokens: 12_400 }
+    })
   })
 })
 

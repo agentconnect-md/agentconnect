@@ -14,6 +14,9 @@ export const CP_SUBPROTOCOL = 'agentconnect.v1'
 /** The CP mount path the daemon↔CP WebSocket connects to. */
 export const CP_WS_PATH = '/daemon/ws'
 
+/** CP accepts metadata-only transcript activity invalidations from current daemons. */
+export const SESSION_LIVE_TAIL_FEATURE = 'session-live-tail-v1'
+
 /**
  * Exit code a daemon uses for a PLANNED lifecycle exit (drain-then-exit on a
  * `daemon/restart` or `daemon/upgrade`, cli-daemon-split.md §6). It must be
