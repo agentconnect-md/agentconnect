@@ -13,6 +13,8 @@ import { buildWsHarness } from '../fakes/build-ws.js'
 import { buildHttpApp } from '../fakes/build-http.js'
 import { seedAgent } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { PgSessionUsageRepo } from '../../src/persistence/repositories/session-usage.repo.js'
+import { AgentId } from '../../src/domain/ids.js'
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -211,16 +213,16 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
         }
       ]
     })
-    // The series reads the incremental spend ledger, not the cumulative snapshot,
-    // so mirror each row's cost as one ledger delta at its activity time. (These
-    // rows are seeded directly; the record() path writes both together — see the
-    // per-bucket regression test below.)
+    // Cost rollups (total, per-agent, series) derive from the spend timeline, not
+    // the snapshot. Each of these is a single-report session, so its cumulative
+    // equals its cost. (Seeded directly; the record() path writes both — see the
+    // per-bucket and boundary regressions below.)
     await prisma.sessionSpend.createMany({
       data: [
-        { agentId: AGENT_A, sessionId: 'a1', costAmount: 0.1, at: recent(10) },
-        { agentId: AGENT_A, sessionId: 'a2', costAmount: 0.2, at: recent(20) },
-        { agentId: AGENT_A, sessionId: 'a-old', costAmount: 9.9, at: new Date(now.getTime() - 100 * DAY_MS) },
-        { agentId: AGENT_B, sessionId: 'b1', costAmount: 0.05, at: recent(30) }
+        { agentId: AGENT_A, sessionId: 'a1', cumulativeCost: 0.1, at: recent(10) },
+        { agentId: AGENT_A, sessionId: 'a2', cumulativeCost: 0.2, at: recent(20) },
+        { agentId: AGENT_A, sessionId: 'a-old', cumulativeCost: 9.9, at: new Date(now.getTime() - 100 * DAY_MS) },
+        { agentId: AGENT_B, sessionId: 'b1', cumulativeCost: 0.05, at: recent(30) }
       ]
     })
 
@@ -298,6 +300,109 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
       expect(body.range).toBe('d1')
       expect(body.totals.sessions).toBe(1)
       expect(body.totals.totalTokens).toBe(700)
+    } finally {
+      await close()
+    }
+  })
+
+  it('does not double-count concurrent duplicate reports (idempotent spend timeline)', async () => {
+    await seedAgent(prisma, AGENT_A)
+    const repo = new PgSessionUsageRepo(prisma)
+    const at = new Date(Date.now() - 60_000) // in-range
+    const input = {
+      agentId: AgentId(AGENT_A),
+      sessionId: 'dup',
+      lastActivityAt: at,
+      usage: { totalTokens: 100, costAmount: 1, costCurrency: 'USD' }
+    }
+    // Three identical cumulative $1 reports raced together — the old derive-delta
+    // write appended one row each ($3); the cumulative upsert on (agent, session,
+    // at) converges to a single row worth $1.
+    await Promise.all([repo.record({ ...input }), repo.record({ ...input }), repo.record({ ...input })])
+    expect(await prisma.sessionSpend.count({ where: { agentId: AGENT_A, sessionId: 'dup' } })).toBe(1)
+
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d1` })
+      const body = res.json() as {
+        totals: { costAmount: number }
+        series: { points: { costAmount: number }[] }
+      }
+      expect(body.totals.costAmount).toBeCloseTo(1) // not 3
+      expect(body.series.points.reduce((s, p) => s + p.costAmount, 0)).toBeCloseTo(1)
+    } finally {
+      await close()
+    }
+  })
+
+  it('nets a downward correction against a later increase (no double-count, no lost correction)', async () => {
+    await seedAgent(prisma, AGENT_A)
+    const repo = new PgSessionUsageRepo(prisma)
+    const min = (m: number) => new Date(Date.now() - m * 60_000)
+    // Same session, in report order: $1 → $2 → corrected down to $1.5 → $2.5.
+    for (const [m, cost] of [
+      [40, 1],
+      [30, 2],
+      [20, 1.5],
+      [10, 2.5]
+    ] as const) {
+      await repo.record({
+        agentId: AgentId(AGENT_A),
+        sessionId: 'corr',
+        lastActivityAt: min(m),
+        usage: { costAmount: cost, costCurrency: 'USD' }
+      })
+    }
+
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d1` })
+      const body = res.json() as {
+        totals: { costAmount: number }
+        agents: { agentId: string; costAmount: number }[]
+        series: { points: { costAmount: number }[] }
+      }
+      // Deltas 1, +1, −0.5, +1 net to the final cumulative 2.5 — not 7 (summing
+      // reports) and not 5.5 (ignoring the correction).
+      expect(body.totals.costAmount).toBeCloseTo(2.5)
+      expect(body.agents.find((a) => a.agentId === AGENT_A)!.costAmount).toBeCloseTo(2.5)
+      expect(body.series.points.reduce((s, p) => s + p.costAmount, 0)).toBeCloseTo(2.5)
+    } finally {
+      await close()
+    }
+  })
+
+  it('counts only in-window spend for a session that spans the range boundary (cards match chart)', async () => {
+    await seedAgent(prisma, AGENT_A)
+    const repo = new PgSessionUsageRepo(prisma)
+    const now = Date.now()
+    // $10 accrued BEFORE the d30 window, then one $11 cumulative report inside it.
+    await repo.record({
+      agentId: AgentId(AGENT_A),
+      sessionId: 'span-win',
+      lastActivityAt: new Date(now - 40 * DAY_MS),
+      usage: { costAmount: 10, costCurrency: 'USD' }
+    })
+    await repo.record({
+      agentId: AgentId(AGENT_A),
+      sessionId: 'span-win',
+      lastActivityAt: new Date(now - 5 * 60_000),
+      usage: { costAmount: 11, costCurrency: 'USD' }
+    })
+
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d30` })
+      const body = res.json() as {
+        totals: { costAmount: number }
+        agents: { agentId: string; costAmount: number }[]
+        series: { points: { costAmount: number }[] }
+      }
+      // Only the $1 incurred inside the window — the $10 baseline is excluded, and
+      // the card, the agent row, and the chart all agree (never $11).
+      expect(body.totals.costAmount).toBeCloseTo(1)
+      expect(body.agents.find((a) => a.agentId === AGENT_A)!.costAmount).toBeCloseTo(1)
+      expect(body.series.points.reduce((s, p) => s + p.costAmount, 0)).toBeCloseTo(1)
     } finally {
       await close()
     }

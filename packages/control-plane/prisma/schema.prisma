@@ -833,25 +833,27 @@ model SessionUsage {
   @@map("session_usage")
 }
 
-// SessionSpend — append-only incremental spend ledger backing the /usage
-// spend-over-time chart.
+// SessionSpend — spend timeline backing every range-scoped cost rollup: the
+// /usage spend-over-time chart AND the Total-spend / per-agent cards.
 //
-// session_usage is a latest-wins CUMULATIVE snapshot, so it can't say "how much
-// was spent in each time bucket": a long-lived session collapses its entire cost
-// into the bucket of its newest report. On each usage/report the CP appends the
-// INCREMENTAL delta (new cumulative − prior snapshot) here, stamped with the
-// report's activity time; the series sums deltas per bucket. Rows are only ever
-// inserted (immutable), so past buckets stay stable. Per-agent/token TOTALS still
-// read session_usage — only the chart series reads this ledger.
+// session_usage is a latest-wins lifetime snapshot, so it can't answer "how much
+// was spent inside this window": a long-lived session collapses its entire cost
+// into its newest report. This table records the session's CUMULATIVE cost at each
+// report time; readers derive per-window / per-bucket spend by DIFFING consecutive
+// cumulatives (see PgSessionUsageRepo.aggregate). Storing cumulative (not a delta)
+// makes writes a plain idempotent upsert on (agentId, sessionId, at) — a duplicate
+// or out-of-order delivery just re-asserts the same value, so replays and
+// concurrent reports never double-count, and a downward correction is a lower
+// cumulative that the diff reflects as negative spend in its bucket.
 model SessionSpend {
-  id         BigInt   @id @default(autoincrement())
-  agentId    String   @db.Uuid
-  sessionId  String // ACP session id (echo of the snapshot row; for traceability)
-  at         DateTime @db.Timestamptz(6) // the report's lastActivityAt — the bucket time
-  costAmount Float // incremental spend since the prior report (delta, not cumulative)
+  agentId        String   @db.Uuid
+  sessionId      String // ACP session id (echo of the snapshot row)
+  at             DateTime @db.Timestamptz(6) // the report's lastActivityAt — the bucket time
+  cumulativeCost Float // session's cumulative cost as of `at`; window spend = diff of consecutive cumulatives
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
+  @@id([agentId, sessionId, at])
   @@index([agentId, at])
   @@map("session_spend")
 }

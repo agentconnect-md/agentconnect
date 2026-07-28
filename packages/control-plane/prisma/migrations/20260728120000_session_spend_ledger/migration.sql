@@ -1,17 +1,18 @@
--- SessionSpend — append-only incremental spend ledger for the spend-over-time
--- chart. session_usage stays the latest-wins CUMULATIVE snapshot (per-agent and
--- token totals); this table records each usage/report's cost delta stamped at its
--- activity time, so the /usage series can attribute spend to the bucket it
--- actually happened in instead of collapsing a session's whole cost into its
--- newest bucket. Rows are only inserted, never updated.
+-- SessionSpend — spend timeline behind every range-scoped cost rollup (the
+-- spend-over-time chart AND the Total-spend / per-agent cards). session_usage
+-- stays the latest-wins lifetime snapshot (tokens, session counts, current cost);
+-- this table records each usage/report's CUMULATIVE cost stamped at its activity
+-- time, and readers derive window/bucket spend by diffing consecutive cumulatives.
+-- Storing cumulative keyed by (agentId, sessionId, at) makes the write a plain
+-- idempotent upsert, so replays, out-of-order, and concurrent duplicate reports
+-- never double-count.
 CREATE TABLE "public"."session_spend" (
-    "id" BIGSERIAL NOT NULL,
     "agentId" UUID NOT NULL,
     "sessionId" TEXT NOT NULL,
     "at" TIMESTAMPTZ(6) NOT NULL,
-    "costAmount" DOUBLE PRECISION NOT NULL,
+    "cumulativeCost" DOUBLE PRECISION NOT NULL,
 
-    CONSTRAINT "session_spend_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "session_spend_pkey" PRIMARY KEY ("agentId","sessionId","at")
 );
 
 CREATE INDEX "session_spend_agentId_at_idx" ON "public"."session_spend"("agentId" ASC, "at" ASC);
