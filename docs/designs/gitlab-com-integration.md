@@ -287,7 +287,10 @@ Within one AgentConnect deployment, a GitLab project may have only one active
 project binding. A second organization must use an explicit ownership transfer
 after the first binding is released. This matches the existing one-organization
 claim over a GitHub App installation and prevents two tenants from managing
-competing bots, credentials, and webhooks in the same project.
+competing bots, credentials, and webhooks in the same project. The
+deployment-global claim in Section 8.1 enforces this invariant before any
+provider mutation; an organization-scoped repository row is not itself an
+ownership claim.
 
 ### 7.3 Three Credential Purposes
 
@@ -303,19 +306,27 @@ Git over HTTPS. A `write_repository` token, by contrast, supports Git push but
 does not authenticate API requests. A write-capable workspace therefore does
 not imply a broad API bearer in the agent environment.
 
-The provider tokens have an underlying GitLab expiration measured in months,
-not minutes; under GitLab.com's normal policy, a service-account PAT defaults
-to the maximum allowed lifetime of up to 365 days. AgentConnect grants are
-shorter **authorization/cache leases**; they do not change the provider-side
-token expiry. A lease expires locally even if the PAT would still authenticate
-at GitLab.
+Every service-account PAT creation, including a replacement, sends an explicit
+ISO `expires_at`. The v1 policy is 90 calendar days from creation in UTC. It is
+finite even when a top-level group has disabled GitLab's service-account token
+expiration requirement; AgentConnect never relies on the provider default.
+
+Before a returned token can be sealed or activated, the response must identify
+the expected project service account, exact scopes, active token, and requested
+non-null expiry date. A null, later, or otherwise mismatched expiry is
+out-of-policy. The reconciler immediately revokes that returned token by ID,
+records any ambiguous revocation as restricted cleanup debt, and fails closed;
+the token is never granted to a daemon. AgentConnect grants remain shorter
+**authorization/cache leases** and expire locally even while the finite PAT is
+still provider-valid.
 
 ### 7.4 Rotation
 
 Each credential has an external token ID, expiration date, purpose, and local
 credential epoch. Before expiry, the reconciler:
 
-1. creates a replacement PAT with the same purpose and scopes;
+1. creates a replacement PAT with the same purpose, scopes, and an explicit new
+   90-day `expires_at`, then validates the returned expiry and identity;
 2. seals it before making it active in application state;
 3. atomically switches the active credential record and increments its epoch;
 4. broadcasts invalidation so daemon caches purge the old value; and
@@ -358,6 +369,14 @@ reference rather than duplicate GitHub authorization and hook logic.
 Its unique identity is `(orgId, provider, externalId)`. Display paths and clone
 URLs are mutable hints. Authorization, hook matching, and run effects use the
 provider-qualified numeric identity.
+
+That uniqueness is only the organization-scoped catalog identity. A separate
+`CodeHostRepositoryClaim` is deployment-scoped and has a unique
+`(provider, externalId)` key plus owning organization, binding, claim
+generation, and lifecycle state (`provisioning`, `active`, `transferring`, or
+`cleanup_pending`). It contains no path, content, or credential. GitLab v1
+acquires this row transactionally before provisioning; the existing GitHub
+installation claim remains unchanged until a separate migration.
 
 Existing GitHub workspace, `AgentRepoAuthorization`, and `HookDef.repoId`
 references migrate to this resource without changing behavior. During rolling
@@ -506,13 +525,23 @@ requires:
 - a canonical HTTPS clone URL.
 
 Projects below Maintainer may appear as visible but not installable, with the
-required role stated explicitly.
+required role stated explicitly. Maintainer or Owner is the user's current
+effective project membership, including inherited and invited-group access,
+with the same active-state and expiry validation defined in Section 12.2.
 
 ### 10.2 Desired-State Provisioning
 
+After the read-only project and permission checks, the Control Plane opens one
+database transaction that inserts the deployment-global
+`CodeHostRepositoryClaim`, creates the organization-scoped repository and
+binding rows, and attaches the claim to that binding. The claim's unique
+`(provider, externalId)` key selects one winner. A uniqueness loser returns
+`project_already_claimed` and may not begin any external mutation. Every
+provisioning step checks the owning binding and claim generation.
+
 The reconciler converges these steps:
 
-1. create or refresh `CodeHostRepository` by numeric project ID;
+1. refresh `CodeHostRepository` by numeric project ID;
 2. find the binding's deterministically marked Project Service Account or
    create it;
 3. ensure that account is a Developer member of the project;
@@ -537,6 +566,21 @@ an ambiguous create response, reconciliation lists resources by that marker:
 The reconciler also refreshes the current project path by numeric ID, detects
 role or service-account membership drift, checks PAT expiry, and repairs the
 union of desired webhook events.
+
+The claim remains held through `provisioning`, `ready`, degraded states, and
+`cleanup_pending`. It can be released only when the operation ledger proves
+that no provider mutation began or a current Maintainer/Owner connection has
+verified that every managed webhook, PAT, and service account is absent. Local
+disablement, elapsed time, a failed cleanup, or an administrator assertion
+without provider verification never releases it.
+
+A cross-organization ownership transfer locks this same claim row, changes it
+to `transferring`, and increments its generation before disabling the old
+binding. The transfer saga definitively removes the old binding's external
+credentials, webhook, and Project Service Account before atomically moving the
+claim to the new organization and allowing fresh provisioning. A crash or
+ambiguous cleanup keeps the claim in `transferring` or `cleanup_pending`; it
+cannot be stolen or independently re-created by a competing binding.
 
 ### 10.3 Webhook Ownership
 
@@ -658,9 +702,12 @@ GitLab webhook payloads do not provide GitHub's trusted
 `author_association`. For comments and external merge requests, the relay sends
 only project ID, hook fences, and sender/author numeric user ID to the Control
 Plane. The Control Plane performs a current target-project membership lookup
-with the project effect identity and returns one bit.
-
-Developer, Maintainer, or Owner is trusted. Lower, missing, ambiguous, or
+with the project effect identity using
+`GET /projects/:id/members/all/:user_id`, or a semantic equivalent that includes
+direct, ancestor-group, and invited-group membership and returns the highest
+effective access level. It accepts only the requested numeric user ID with
+`state=active`, `expires_at` absent or later than the current UTC date, and
+`access_level >= 30`. Awaiting, expired, lower, missing, ambiguous, or
 unavailable membership fails closed. The lookup never carries authored text.
 
 A merge request from an untrusted source author does not start automatically.
@@ -688,6 +735,23 @@ canonical Git ref from the signed payload, such as `refs/heads/main`. Missing
 or wrong-branch identity is rejected before constructing `RdMsgHook`; the
 adapter never substitutes `undefined`, a display path, or a delivery ID into a
 session key.
+
+The trusted `gitlab` member on `RdMsgHook` is also the daemon normalization
+discriminator. Before generic session-key fallback, `splitSessionKey()` must
+recompute and validate the key from that metadata, then map a headless GitLab
+turn to:
+
+```text
+channel = <hook-id>
+thread  = <complete provider-qualified session key>
+```
+
+The complete thread value is opaque to the daemon; it is not split on colons.
+`msgId` remains the delivery identity and transcript ordering suffix, never a
+thread fallback. Consequently, different webhook IDs delivered to one hook for
+one MR or ref resolve to the same durable ACP session, while different IIDs,
+subject kinds, projects, or refs remain disjoint. A daemon without this mapping
+cannot advertise `gitlab-com-v1` and cannot receive a GitLab assignment.
 
 The relay sends only bounded excerpts. The daemon wraps them in the same
 explicit untrusted-content boundary used for GitHub. The agent reads current
@@ -821,6 +885,10 @@ submitCodeReview({
 })
 ```
 
+`COMMENT` accepts `pass`, `fail`, or `neutral`.
+`REQUEST_CHANGES` requires `fail`, and `APPROVE` requires `pass`; contradictory
+pairs are rejected before any provider effect.
+
 The GitLab adapter:
 
 1. synchronously reserves one review attempt for the active turn;
@@ -831,21 +899,36 @@ The GitLab adapter:
 4. reconciles every pending draft owned by the service account on that merge
    request, as described below;
 5. re-fetches the current merge request and rejects a changed head;
-6. creates regular and diff draft notes with the exact diff refs, putting a
+6. reads the service account's current record from
+   `GET /projects/:id/merge_requests/:iid/reviewers`;
+7. creates regular and diff draft notes with the exact diff refs, putting a
    signed hidden attempt-and-ordinal marker in every draft and recording each
    returned draft ID;
-7. re-lists drafts and verifies that the current attempt owns the complete set;
-8. bulk-publishes the drafts with a summary and signed hidden attempt marker;
-9. sets `reviewer_state=reviewed` for `COMMENT`;
-10. sets `reviewer_state=requested_changes` for `REQUEST_CHANGES`; or
-11. for `APPROVE`, sets `reviewer_state=reviewed`, waits until
+8. re-lists drafts and verifies that the current attempt owns the complete set;
+9. bulk-publishes the drafts with a summary, signed hidden attempt marker, and
+   the event-specific reviewer-state parameter below;
+10. re-reads the reviewers endpoint and verifies the service account's exact
+    reviewer-state postcondition; and
+11. for `APPROVE`, only after that postcondition holds, waits until
     `detailed_merge_status` is neither `checking` nor `approvals_syncing` and the
     merge-request diff has a non-null `patch_id_sha`, and calls the approval
     endpoint with the exact head SHA.
 
+Reviewer-state mapping is:
+
+| Input                        | `bulk_publish.reviewer_state` | Required postcondition                          |
+| ---------------------------- | ----------------------------- | ----------------------------------------------- |
+| `COMMENT` + `neutral`/`fail` | omit                          | state is unchanged from the pre-publish read    |
+| `COMMENT` + `pass`           | `reviewed`                    | state is `reviewed`                             |
+| `REQUEST_CHANGES` + `fail`   | `requested_changes`           | state is `requested_changes`                    |
+| `APPROVE` + `pass`           | `reviewed`                    | state is `reviewed` before the approval request |
+
 Approval is deliberately a separate call because GitLab's review publication
 does not record a formal approval and the approval API provides the required
-SHA fence.
+SHA fence. A passing `COMMENT` is the only `COMMENT` that explicitly supersedes
+a prior change request. Neutral or failing comments never send `reviewed`, so
+publishing conversational or still-failing feedback cannot clear an existing
+`requested_changes`.
 
 ### 15.1 Publication Serialization and Orphan Recovery
 
@@ -935,6 +1018,13 @@ If review comments publish but approval deterministically fails, a public
 effect already exists. Record a submitted comment review with
 `approval_not_recorded`; do not publish an ordinary fallback. A later approval
 retry must revalidate the same head and attempt marker.
+
+The same public-effect rule applies when `bulk_publish` returns `204` but the
+reviewer-state readback is missing, unavailable, or mismatched. Record
+`review_state_not_recorded` or `review_state_changed_unexpectedly`, do not call
+the approval endpoint, do not repeat bulk publication, and suppress the
+ordinary fallback. Publication success is not evidence that GitLab recorded
+the requested state transition.
 
 Review bodies and inline comments stay relay/daemon-to-GitLab. The Control
 Plane stores attempt ID, external IDs, event, verdict, head SHA, and normalized
@@ -1056,6 +1146,12 @@ dispatch fields remain unchanged. Membership checks use a metadata-only
 provider-neutral authorization request. Formal review authorization/result
 frames become provider-neutral while preserving the existing GitHub frame
 until every active daemon supports the replacement.
+
+The GitLab member is trusted, signature-verified metadata and includes the
+numeric project ID plus the discriminated subject/IID or push ref needed to
+recompute the complete session key. Daemon normalization uses that
+discriminator for the explicit `channel=hookId`, `thread=sessionKey` mapping in
+Section 12.3; it never infers GitLab identity from model-visible context.
 
 Status projection adds a body-free desired/result frame pair. The desired
 frame carries only fixed state, timestamps, normalized reason, identifiers,
@@ -1195,7 +1291,9 @@ GitLab retains its prior contributions under GitLab's account-deletion rules.
 If external cleanup cannot complete, retain a sealed, access-restricted
 tombstone only for bounded cleanup retries and mark `cleanup_pending`. Local
 authority remains disabled. The Console provides the exact GitLab resources
-an administrator must remove if cleanup is abandoned.
+an administrator must remove if cleanup is abandoned. The deployment-global
+project claim remains held until current provider reads verify that cleanup is
+complete; `cleanup_pending` never frees the project for another organization.
 
 ## 20. Security Analysis
 
@@ -1217,7 +1315,7 @@ an administrator must remove if cleanup is abandoned.
 | Stale hook or daemon performs an effect           | Config, dispatch, placement, project, subject, head, attempt, and credential-epoch fences             |
 | Duplicate note/review after timeout               | Signed random markers and read-after-ambiguous reconciliation                                         |
 | Shared service account cross-publishes drafts     | Durable per-MR ownership, no timeout transfer after a permit, exact marked-draft set, orphan cleanup  |
-| Cross-tenant access                               | Organization-owned connection/binding/repository plus current agent placement checks                  |
+| Cross-tenant access                               | Transactional deployment-global project claim plus org-owned connection/binding and placement checks  |
 | Secret or content logging                         | Log identifiers, scope/purpose, status, latency, and normalized codes only                            |
 
 Residual risks are explicit:
@@ -1261,9 +1359,11 @@ Use focused unit tests for pure boundaries only:
 - OAuth state/PKCE binding and refresh single-writer transitions;
 - Standard Webhooks signature, timestamp, and multi-signature verification;
 - event normalization, mention targeting, bot veto, labels, and membership
-  gates;
+  gates, including effective direct, inherited, invited-group, expired, and
+  awaiting membership;
 - disjoint issue, merge-request, and push session-key derivation with missing
-  target/ref rejection;
+  target/ref rejection, plus daemon normalization that keeps one MR/ref on one
+  channel/thread pair across different delivery IDs;
 - provider-qualified repository authorization and grant mismatch rejection;
 - review-policy and exact-head fencing;
 - review-publication lease, fence, attempt ownership, and reconciliation state
@@ -1273,7 +1373,11 @@ Use focused unit tests for pure boundaries only:
 Use integration tests for:
 
 - secret-store sealing and metadata-only DTOs;
+- transactional global project-claim races, retention through
+  `cleanup_pending`, and serialized ownership transfer;
 - project provisioning saga recovery after every external side effect;
+- explicit PAT expiry on create/replacement, including null or mismatched
+  provider responses and ambiguous revocation cleanup;
 - daemon/relay feature negotiation and mixed-version rejection;
 - two-relay redelivery with the same `webhook-id`, preserving per-hook fan-out
   while the daemon inbox and unique `HookRun` absorb retries;
@@ -1290,26 +1394,35 @@ The release contract suite runs against real GitLab.com Free and Premium test
 projects and covers:
 
 1. OAuth connect, refresh, ambiguous-refresh recovery, and takeover;
-2. project discovery, nested namespaces, rename, and permission loss;
-3. service-account creation, Free quota failure, membership, PAT rotation, and
-   cleanup;
-4. signed webhook creation, test, cross-relay retry deduplication, drift
+2. project discovery, nested namespaces, rename, permission loss, and direct,
+   inherited, invited-group, mixed-source-highest, expired, and awaiting
+   effective membership;
+3. two organizations concurrently binding one numeric project, where only the
+   global-claim winner may begin provider provisioning;
+4. service-account creation, Free quota failure, PAT creation and rotation with
+   group expiration enforcement disabled, null/out-of-policy expiry rejection,
+   and cleanup;
+5. signed webhook creation, test, cross-relay retry deduplication, drift
    repair, and deletion;
-5. private clone, pull, push, additional repositories, and unauthorized path
+6. private clone, pull, push, additional repositories, and unauthorized path
    rejection;
-6. issue/MR created, updated, comment, diff comment, push, mention, label,
+7. issue/MR created, updated, comment, diff comment, push, mention, label,
    reviewer re-request, and external-MR gates;
-7. ordinary reply versus formal-review mutual exclusion;
-8. inline `COMMENT`, `REQUEST_CHANGES`, and SHA-fenced `APPROVE`;
-9. simultaneous reviews from multiple agents on the same MR, including agents
-   placed on different daemons, with no cross-attempt publication;
-10. crashes after draft creation and immediately before bulk publish, including
+8. same-MR/ref session reuse across distinct webhook IDs and disjoint
+   sessions for different IIDs, subject kinds, projects, and refs;
+9. ordinary reply versus formal-review mutual exclusion;
+10. inline `COMMENT`, `REQUEST_CHANGES`, and SHA-fenced `APPROVE`, including
+    existing `requested_changes` followed by neutral/failing `COMMENT` and a
+    published review whose reviewer-state postcondition is absent;
+11. simultaneous reviews from multiple agents on the same MR, including agents
+    placed on different daemons, with no cross-attempt publication;
+12. crashes after draft creation and immediately before bulk publish, including
     orphan cleanup, same-attempt recovery, and ambiguous-publish
     reconciliation; a broker paused after permit validation must keep
     ownership and prevent a newer attempt until its request is positively
     classified;
-11. Free advisory versus Premium blocking behavior; and
-12. queued/running/terminal daemon-owned status-note convergence, daemon
+13. Free advisory versus Premium blocking behavior; and
+14. queued/running/terminal daemon-owned status-note convergence, daemon
     failover fencing, and authorized rerun.
 
 Validation must also scan source, generated examples, fixtures, logs, and PR
@@ -1328,6 +1441,7 @@ IDs, tokens, and signing secrets.
 - [GitLab webhooks and signing tokens](https://docs.gitlab.com/user/project/integrations/webhooks/)
 - [GitLab webhook events](https://docs.gitlab.com/user/project/integrations/webhook_events/)
 - [GitLab Draft Notes API](https://docs.gitlab.com/api/draft_notes/)
+- [GitLab Draft Notes API implementation](https://gitlab.com/gitlab-org/gitlab/-/blob/master/lib/api/draft_notes.rb)
 - [GitLab merge request approvals API](https://docs.gitlab.com/api/merge_request_approvals/)
 - [GitLab merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
 - [GitLab merge request reviews](https://docs.gitlab.com/user/project/merge_requests/reviews/)
