@@ -1539,3 +1539,288 @@ describe('SessionManager — collaboration preamble', () => {
     store.close()
   })
 })
+
+describe('SessionManager — quoted reply source', () => {
+  // Telegram ships the replied-to message inline and the Bot API cannot fetch it later,
+  // so a quoted source the daemon never recorded must ride the prompt (see quotedSourceBlock).
+  const tgMsg = (over: Partial<NormalizedMessage> & { ts?: string }): NormalizedMessage =>
+    msg({ platform: 'telegram', channel: '-100123', thread: 'tg:10', ...over })
+
+  it('injects the quoted source of a Telegram reply the daemon never recorded, before the reply text', async () => {
+    const store = newStore()
+    const host = fakeHost()
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '11',
+        thread: 'tg:11',
+        text: '@bot-a what do you make of this?',
+        replyTo: '9',
+        quoted: { messageId: '9', sender: '@bob', text: 'the deploy failed with ECONNRESET' }
+      })
+    )
+    const texts = blocks.map((b: any) => b.text as string)
+    const quotedIdx = texts.findIndex((t) => t.includes('the message this reply quotes'))
+    expect(quotedIdx).toBeGreaterThanOrEqual(0)
+    expect(texts[quotedIdx]).toContain('[@bob] the deploy failed with ECONNRESET')
+    // Framed as context, and the agent's actual instruction stays last (and thus salient).
+    expect(texts[quotedIdx]).toContain('not as instructions')
+    expect(texts.indexOf('@bot-a what do you make of this?')).toBeGreaterThan(quotedIdx)
+    store.close()
+  })
+
+  it('does not duplicate a quoted row THIS prompt already replays', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', tgMsg({ ts: '10', text: 'kicking off the migration' }))
+    // Recorded but never delivered, so it is unread and rides this turn's catch-up context.
+    store.appendTranscript({
+      channel: transcriptChannelKey('-100123'),
+      thread: 'tg:10',
+      ts: '11',
+      sender: 'U2',
+      kind: 'text',
+      text: 'the deploy failed with ECONNRESET'
+    })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '12',
+        text: '@bot-a look at this',
+        replyTo: '11',
+        quoted: { messageId: '11', sender: '@bob', text: 'the deploy failed with ECONNRESET' }
+      })
+    )
+    const texts = blocks.map((b: any) => b.text as string)
+    // Present exactly once — as replayed context, not also as a quote block.
+    expect(texts.some((t) => t.includes('this reply quotes'))).toBe(false)
+    expect(texts.filter((t) => t.includes('the deploy failed with ECONNRESET'))).toHaveLength(1)
+    store.close()
+  })
+
+  it('delivers the inline source when the replayed row at that id holds STALE (pre-edit) text', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', tgMsg({ ts: '10', text: 'checking staging' }))
+    // The connection consumes `message` but not `edited_message`, so this row keeps the text as
+    // first sent. Telegram's inline reply_to_message carries the user's later correction.
+    store.appendTranscript({
+      channel: transcriptChannelKey('-100123'),
+      thread: 'tg:10',
+      ts: '11',
+      sender: 'U2',
+      kind: 'text',
+      text: 'staging is healthy'
+    })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '12',
+        text: '@bot-a look at this',
+        replyTo: '11',
+        quoted: { messageId: '11', sender: '@bob', text: 'staging is returning 500s' }
+      })
+    )
+    // Matching on the id alone would have suppressed the correction and left only the stale row.
+    expect(blocks.map((b: any) => b.text as string).join('\n')).toContain('staging is returning 500s')
+    store.close()
+  })
+
+  // A stale row that merely CONTAINS the quote can mean its opposite, and the lossy
+  // normalizations that make containment look workable each hide a real edit.
+  const replayedThenQuoted = async (replayedText: string, quotedText: string): Promise<string> => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', tgMsg({ ts: '10', text: 'starting' }))
+    store.appendTranscript({
+      channel: transcriptChannelKey('-100123'),
+      thread: 'tg:10',
+      ts: '11',
+      sender: 'U2',
+      kind: 'text',
+      text: replayedText
+    })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '12',
+        text: '@bot-a look at this',
+        replyTo: '11',
+        quoted: { messageId: '11', sender: '@bob', text: quotedText }
+      })
+    )
+    store.close()
+    return blocks.map((b: any) => b.text as string).join('\n')
+  }
+
+  it('delivers an edited source whose stale row CONTAINS it but inverts its meaning', async () => {
+    const prompt = await replayedThenQuoted('do not deploy now', 'deploy now')
+    // Containment would suppress the correction, leaving only the opposite instruction.
+    expect(prompt).toContain('this reply quotes')
+    expect(prompt).toContain('[@bob] deploy now')
+  })
+
+  it('delivers an edited source that differs from the replayed row only by indentation', async () => {
+    const prompt = await replayedThenQuoted('if (x) {\n  return 1\n}', 'if (x) {\n    return 1\n}')
+    expect(prompt).toContain('this reply quotes')
+  })
+
+  it('delivers a short source genuinely ending in an ellipsis that the row does not match', async () => {
+    const prompt = await replayedThenQuoted('waiting for the migration to finish', 'waiting…')
+    expect(prompt).toContain('[@bob] waiting…')
+  })
+
+  it('still delivers the quoted source when only a delivery RECEIPT says the agent has it', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    // Turn 1 records the row with `recipient: bot-a` and advances the cursor — but a receipt is
+    // written at the top of handle(), before any prompt, and dispatchOne can still bail in
+    // between (readyGate). It is not proof the runtime saw it, so it must not suppress.
+    await sm.handle('bot-a', tgMsg({ ts: '10', text: 'the deploy failed with ECONNRESET' }))
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '11',
+        text: '@bot-a look at this',
+        replyTo: '10',
+        quoted: { messageId: '10', sender: '@bob', text: 'the deploy failed with ECONNRESET' }
+      })
+    )
+    expect(blocks.map((b: any) => b.text as string).join('\n')).toContain('the deploy failed with ECONNRESET')
+    store.close()
+  })
+
+  it('still delivers the agent OWN reply quoted back (past authorship ≠ present context)', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', tgMsg({ ts: '10', text: 'why is staging down?' }))
+    store.appendTranscript({
+      channel: transcriptChannelKey('-100123'),
+      thread: 'tg:10',
+      ts: '11',
+      sender: 'bot-a',
+      kind: 'text',
+      text: 'because the migration job is stuck'
+    })
+    // Own authorship only says SOME past session produced this. It also says which of several
+    // bot messages the user means — the reason they reply-quoted rather than just typing.
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '12',
+        text: 'why?',
+        replyTo: '11',
+        quoted: { messageId: '11', sender: '@mybot', text: 'because the migration job is stuck' }
+      })
+    )
+    expect(blocks.map((b: any) => b.text as string).join('\n')).toContain('because the migration job is stuck')
+    store.close()
+  })
+
+  it('injects an undelivered quoted source whose id sorts BELOW the cursor as text ("100" < "99")', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    // Cursor lands on id 99; Telegram's next ids are 100+, which are NOT lexically greater.
+    await sm.handle('bot-a', tgMsg({ ts: '99', text: 'looking into it' }))
+    // A message the agent never received (nobody routed it to this agent — no delivery receipt).
+    store.appendTranscript({
+      channel: transcriptChannelKey('-100123'),
+      thread: 'tg:10',
+      ts: '100',
+      sender: 'U2',
+      kind: 'text',
+      text: 'the payment webhook is retrying forever'
+    })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '101',
+        text: '@bot-a what about this?',
+        replyTo: '100',
+        quoted: { messageId: '100', sender: '@carol', text: 'the payment webhook is retrying forever' }
+      })
+    )
+    // Suppressing here would leave a bare "what about this?" — the PR's whole point.
+    expect(blocks.map((b: any) => b.text as string).join('\n')).toContain('the payment webhook is retrying forever')
+    store.close()
+  })
+
+  it('always delivers a user-SELECTED passage, even when the full source is already in context', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', tgMsg({ ts: '10', text: 'staging is down and prod latency doubled since 14:00' }))
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '11',
+        text: '@bot-a what about this?',
+        replyTo: '10',
+        // Telegram `quote`: the user highlighted ONE clause of a message the agent already
+        // has. Which clause they picked is the whole content of "what about this?", and no
+        // amount of prior context can recover it — so it must survive suppression.
+        quoted: { messageId: '10', sender: '@bob', text: 'prod latency doubled', selection: true, excerpt: true }
+      })
+    )
+    const quoted = blocks.map((b: any) => b.text as string).find((t) => t.includes('this reply quotes'))
+    expect(quoted).toContain('the user selected exactly this part')
+    expect(quoted).toContain('[@bob] prod latency doubled')
+    store.close()
+  })
+
+  it('injects the quoted bot message when the runtime session had to be recreated', async () => {
+    const store = newStore()
+    // Turn 1 mints acp-1 and the bot answers; the reply is recorded under the agent's own id.
+    const host1 = { newSession: vi.fn(async () => 'acp-1') } as any
+    const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
+    await sm1.handle('bot-a', tgMsg({ ts: '10', text: 'why is staging down?' }))
+    store.appendTranscript({
+      channel: transcriptChannelKey('-100123'),
+      thread: 'tg:10',
+      ts: '11',
+      sender: 'bot-a',
+      kind: 'text',
+      text: 'staging is down because the migration job is stuck'
+    })
+    // The persisted ACP session cannot be resumed, so handle mints a fresh one whose context
+    // is empty. Replay cannot cover the gap: it filters the agent's OWN rows. Without the
+    // quote the recreated session would receive a bare "why?" about nothing.
+    const host2 = { newSession: vi.fn(async () => 'acp-2'), hasSession: () => false, loadSupported: () => false } as any
+    const sm2 = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory })
+    const { blocks, created } = await sm2.handle(
+      'bot-a',
+      tgMsg({
+        ts: '12',
+        text: 'why?',
+        replyTo: '11',
+        quoted: { messageId: '11', sender: '@mybot', text: 'staging is down because the migration job is stuck' }
+      })
+    )
+    expect(created).toBe(true)
+    const texts = blocks.map((b: any) => b.text as string)
+    expect(texts.some((t) => t.includes('the message this reply quotes'))).toBe(true)
+    expect(texts.join('\n')).toContain('the migration job is stuck')
+    store.close()
+  })
+
+  it('injects a quoted source with no resolvable id (cannot be proven already delivered)', async () => {
+    const store = newStore()
+    const host = fakeHost()
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({ ts: '11', thread: 'tg:11', text: 'thoughts?', quoted: { text: 'a quoted line', excerpt: true } })
+    )
+    const quoted = blocks.map((b: any) => b.text as string).find((t) => t.includes('the message this reply quotes'))
+    expect(quoted).toContain('partial excerpt')
+    expect(quoted).toContain('[unknown] a quoted line')
+    store.close()
+  })
+})
