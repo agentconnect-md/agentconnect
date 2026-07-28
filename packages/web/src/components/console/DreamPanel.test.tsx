@@ -20,7 +20,8 @@ const api = vi.hoisted(() => ({
   fetchAgentMemoryFull: vi.fn(),
   listAgentMemory: vi.fn(),
   acceptDreamSkill: vi.fn(),
-  dismissDreamSkill: vi.fn()
+  dismissDreamSkill: vi.fn(),
+  fetchDreamSkill: vi.fn()
 }))
 
 vi.mock('@/lib/api', () => ({
@@ -73,6 +74,12 @@ beforeEach(() => {
   api.discardDream.mockResolvedValue(dream({ status: 'discarded' }))
   api.acceptDreamSkill.mockResolvedValue(dream())
   api.dismissDreamSkill.mockResolvedValue(dream())
+  api.fetchDreamSkill.mockResolvedValue({
+    name: 'deploy-staging',
+    exists: true,
+    skill: '---\nname: deploy-staging\n---\n# Deploy\nrun the thing',
+    scripts: [{ path: 'run.sh', content: '#!/bin/sh\necho deploying' }]
+  })
 })
 
 afterEach(async () => {
@@ -335,6 +342,24 @@ describe('DreamPanel', () => {
     // Nothing happens until the human acts — skills are never auto-installed.
     expect(api.acceptDreamSkill).not.toHaveBeenCalled()
 
+    // Accept is GATED on reading the body — the safety argument for mined
+    // skills is that a human reviewed the executable content, and a
+    // model-authored description is not evidence for itself.
+    expect(button(host, 'Accept')?.disabled).toBe(true)
+
+    const disclosure = host.querySelector<HTMLDetailsElement>('details')
+    await act(async () => {
+      disclosure!.open = true
+      disclosure!.dispatchEvent(new Event('toggle'))
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    // The ACTUAL executable content is on screen, not just the description.
+    expect(host.textContent).toContain('# Deploy')
+    expect(host.textContent).toContain('echo deploying')
+    expect(host.textContent).toContain('scripts/run.sh')
+
     await act(async () => button(host, 'Accept')?.click())
     expect(api.acceptDreamSkill).toHaveBeenCalledWith(AGENT, 'drm-1', 'deploy-staging')
   })
@@ -359,6 +384,21 @@ describe('DreamPanel', () => {
     ])
     const host = await render()
     expect(host.textContent).not.toContain('Suggested skills')
+  })
+
+  it('keeps a pending candidate reachable behind newer dreams', async () => {
+    // Proposed skills survive adoption/discard until reviewed, so an old pending
+    // candidate must not fall off the list behind newer runs.
+    const older = dream({
+      dreamId: 'drm-old',
+      status: 'adopted',
+      skills: [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
+    })
+    const newer = Array.from({ length: 25 }, (_, i) => dream({ dreamId: `drm-${i}`, status: 'adopted' }))
+    api.listDreams.mockResolvedValue([...newer, older])
+    const host = await render()
+    expect(api.listDreams).toHaveBeenCalledWith(AGENT, 50)
+    expect(host.textContent).toContain('deploy-staging')
   })
 
   it('keeps recommendations actionable for a viewer but disabled', async () => {

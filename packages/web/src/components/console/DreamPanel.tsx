@@ -23,6 +23,7 @@ import {
   adoptDream,
   discardDream,
   acceptDreamSkill,
+  fetchDreamSkill,
   dismissDreamSkill,
   cancelDream,
   listDreamFiles,
@@ -34,6 +35,7 @@ import {
   fmtCost,
   ApiError,
   type DreamDto,
+  type DreamSkillContentDto,
   type MemoryFileEntry
 } from '@/lib/api'
 import { Icon, Button } from '@/components/ui'
@@ -45,6 +47,8 @@ const POLL_MS = 4000
 /** …and even when settled it is NOT static: a scheduled dream (or another
  *  console) can start one, so revalidate slowly rather than going silent. */
 const IDLE_POLL_MS = 30_000
+/** Max the CP list route accepts. */
+const DREAM_PAGE = 50
 
 /** Human label for a job's lifecycle state. */
 const STATUS_LABEL: Record<DreamDto['status'], string> = {
@@ -124,7 +128,10 @@ export function DreamPanel({
   const refresh = useCallback(async () => {
     const request = ++listRequest.current
     try {
-      const rows = await listDreams(agentId, 20)
+      // Proposed skills deliberately survive adoption/discard until reviewed, so a
+      // pending candidate must not fall off the list behind newer runs. Ask for
+      // the full window the CP allows rather than one screen's worth.
+      const rows = await listDreams(agentId, DREAM_PAGE)
       if (request !== listRequest.current) return
       setDreams(rows)
       setListError(null)
@@ -374,6 +381,8 @@ export function DreamPanel({
               key={`skills-${dream.dreamId}`}
               proposed={proposed}
               busy={busy || !canEdit}
+              agentId={agentId}
+              dreamId={dream.dreamId}
               onAccept={(name) => void run(() => acceptDreamSkill(agentId, dream.dreamId, name))}
               onDismiss={(name) => void run(() => dismissDreamSkill(agentId, dream.dreamId, name))}
             />
@@ -601,16 +610,24 @@ function DreamReview({
  * can auto-adopt on a trusted runtime.
  */
 function DreamSkills({
+  agentId,
+  dreamId,
   proposed,
   busy,
   onAccept,
   onDismiss
 }: {
+  agentId: string
+  dreamId: string
   proposed: Array<{ name: string; description: string }>
   busy: boolean
   onAccept: (name: string) => void
   onDismiss: (name: string) => void
 }) {
+  // Accept stays disabled until the body has been opened. The whole safety
+  // argument for mined skills is that a human reviewed them, and a
+  // model-authored description is not evidence for itself.
+  const [seen, setSeen] = useState<Set<string>>(new Set())
   return (
     <div className="flex flex-col gap-2 rounded-md border border-(--border-subtle) bg-(--surface-sunken) p-3">
       <span className="font-sans text-[12px] font-semibold leading-normal text-(--text-secondary)">
@@ -635,12 +652,71 @@ function DreamSkills({
             <Button variant="secondary" disabled={busy} onClick={() => onDismiss(skill.name)}>
               Dismiss
             </Button>
-            <Button disabled={busy} onClick={() => onAccept(skill.name)}>
+            <Button disabled={busy || !seen.has(skill.name)} onClick={() => onAccept(skill.name)}>
               Accept
             </Button>
           </span>
+          <SkillBody
+            agentId={agentId}
+            dreamId={dreamId}
+            name={skill.name}
+            onRead={() => setSeen((current) => new Set(current).add(skill.name))}
+          />
         </div>
       ))}
     </div>
+  )
+}
+
+/** The staged SKILL.md and scripts, behind a disclosure. Opening it is what
+ *  enables Accept — see the note in DreamSkills. */
+function SkillBody({
+  agentId,
+  dreamId,
+  name,
+  onRead
+}: {
+  agentId: string
+  dreamId: string
+  name: string
+  onRead: () => void
+}) {
+  const [content, setContent] = useState<DreamSkillContentDto | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  return (
+    <details
+      className="w-full"
+      onToggle={(e) => {
+        if (!(e.currentTarget as HTMLDetailsElement).open || content) return
+        onRead()
+        void fetchDreamSkill(agentId, dreamId, name)
+          .then(setContent)
+          .catch((err) => setError(err instanceof Error ? err.message : 'Could not load this skill.'))
+      }}
+    >
+      <summary className="cursor-pointer list-none font-sans text-[11px] font-medium leading-normal text-(--brand-soft-text) [&::-webkit-details-marker]:hidden">
+        Show what this installs
+      </summary>
+      {error ? <div className="mt-1 font-sans text-[11px] text-(--status-error)">{error}</div> : null}
+      {content?.exists === false ? (
+        <div className="mt-1 font-sans text-[11px] text-(--text-tertiary)">This candidate is no longer staged.</div>
+      ) : null}
+      {content?.skill ? (
+        <pre className="mt-1 max-h-[240px] overflow-auto rounded-sm border border-(--border-subtle) bg-(--surface-card) p-2 font-mono text-[11px] leading-[1.5] whitespace-pre-wrap text-(--text-primary)">
+          {content.skill}
+        </pre>
+      ) : null}
+      {(content?.scripts ?? []).map((script) => (
+        <div key={script.path} className="mt-1 flex flex-col gap-[2px]">
+          <span className="font-mono text-[10.5px] font-medium leading-normal text-(--text-tertiary)">
+            scripts/{script.path}
+          </span>
+          <pre className="max-h-[240px] overflow-auto rounded-sm border border-(--border-subtle) bg-(--surface-card) p-2 font-mono text-[11px] leading-[1.5] whitespace-pre-wrap text-(--text-primary)">
+            {script.content}
+          </pre>
+        </div>
+      ))}
+    </details>
   )
 }

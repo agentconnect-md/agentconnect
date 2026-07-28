@@ -107,6 +107,7 @@ import {
   DreamFileDto,
   DreamIdParam,
   DreamSkillParam,
+  DreamSkillContentDto,
   StartDreamBody,
   AdoptDreamBody,
   type AgentDtoT,
@@ -3144,6 +3145,44 @@ export function agentRoutes(deps: HttpDeps) {
             dreamId: req.params.dreamId
           })
           return toDreamDto(dream)
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Read one candidate's FULL staged body. Acceptance installs executable
+    // instruction content, so the reviewer must be able to see it — a
+    // model-authored description cannot be evidence for itself (design §7).
+    r.get(
+      '/agents/:id/memory/dreams/:dreamId/skills/:name',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Read a mined skill candidate',
+          description:
+            'Proxy the staged SKILL.md and every staged script for one candidate live from the owning daemon, so the reviewer can read exactly what accepting would install. Nothing staged under that name is data (exists:false), not an error.',
+          operationId: 'readAgentMemoryDreamSkill',
+          params: DreamSkillParam,
+          response: { 200: DreamSkillContentDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id)
+        if (!agent) return
+        try {
+          const content = await deps.control.dreamSkillRead(agent.daemonId, {
+            agentId: agent.id,
+            dreamId: req.params.dreamId,
+            name: req.params.name
+          })
+          return {
+            name: content.name,
+            exists: content.exists,
+            skill: content.skill ?? null,
+            scripts: content.scripts ?? []
+          }
         } catch (err) {
           if (sendDreamFailure(reply, err)) return
           throw err

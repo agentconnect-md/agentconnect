@@ -84,6 +84,8 @@ import type {
   DreamFileReadReq,
   DreamFileReadContent,
   DreamSkillReviewReq,
+  DreamSkillReadReq,
+  DreamSkillContent,
   DreamState,
   RelayRosterEntry,
   CollabRoutesSnapshot,
@@ -553,6 +555,12 @@ export class ControlSender {
   async dreamFiles(daemonId: string, req: DreamFilesReq): Promise<DreamFilesPage> {
     const c = this.must(daemonId)
     return c.conn.request<DreamFilesPage>('memory/dream/files', req, { epoch: c.sessionEpoch })
+  }
+
+  /** Full staged body of one candidate, so a reviewer sees what accepting installs. */
+  async dreamSkillRead(daemonId: string, req: DreamSkillReadReq): Promise<DreamSkillContent> {
+    const c = this.must(daemonId)
+    return c.conn.request<DreamSkillContent>('memory/dream/skill/read', req, { epoch: c.sessionEpoch })
   }
 
   /** Accept one mined skill candidate — installs it for the agent (design §7). */

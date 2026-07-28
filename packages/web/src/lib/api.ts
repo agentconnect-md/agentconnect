@@ -1997,6 +1997,20 @@ export async function adoptDream(agentId: string, dreamId: string, force = false
   return apiPost<DreamDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/adopt`, force ? { force } : {})
 }
 
+export interface DreamSkillContentDto {
+  name: string
+  exists: boolean
+  skill: string | null
+  scripts: { path: string; content: string }[]
+}
+
+/** Read a candidate's FULL staged body — what accepting would install. */
+export async function fetchDreamSkill(agentId: string, dreamId: string, name: string): Promise<DreamSkillContentDto> {
+  return apiGet<DreamSkillContentDto>(
+    `${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/skills/${encodeURIComponent(name)}`
+  )
+}
+
 /** Accept one mined skill candidate — installs it for this agent (design §7). */
 export async function acceptDreamSkill(agentId: string, dreamId: string, name: string): Promise<DreamDto> {
   return apiPost<DreamDto>(
