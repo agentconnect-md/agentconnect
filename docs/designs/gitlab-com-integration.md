@@ -123,7 +123,7 @@ GitHub modes.
 | Ordinary final reply                   | One service-account note                                                       | Equivalent                                                     |
 | Inline formal review                   | Draft Notes API + bulk publish                                                 | Equivalent                                                     |
 | Approve                                | Bulk-published review plus SHA-fenced approval API call                        | Equivalent unless policy requires interactive reauthentication |
-| Request changes                        | Additive bot-reviewer prerequisite, then `reviewer_state=requested_changes`    | Equivalent on Premium; advisory on Free                        |
+| Request changes                        | Human-requested bot reviewer, then `reviewer_state=requested_changes`          | Equivalent on Premium once requested; advisory on Free         |
 | Informational run state                | One updated merge-request status note                                          | Semantically equivalent; not a native Check                    |
 | Re-request                             | Re-request the service-account reviewer, authorized mention, or Console action | Equivalent                                                     |
 | Required run gate                      | Not in the current GitHub delivery contract                                    | Not introduced                                                 |
@@ -144,7 +144,7 @@ The core path deliberately uses only features common to Free and Premium.
 | Draft review notes                             | Supported                                   | Supported                                     | Common inline-review transport                              |
 | Approval API                                   | Supported; approval is optional             | Supported; approval rules may be required     | Approval action works on both                               |
 | Request changes                                | Visible but non-blocking                    | Can block merging                             | Show the effective behavior                                 |
-| Multiple reviewers and required approval rules | Limited                                     | Supported                                     | Never replace a Free reviewer to make room for the bot      |
+| Multiple reviewers and required approval rules | Limited                                     | Supported                                     | AgentConnect never mutates the reviewer list                |
 | Approval reauthentication                      | Project setting may disable bot approval    | Project/group policy may disable bot approval | Detect and report; never borrow a human credential          |
 | Group webhooks                                 | Not used                                    | Available                                     | No Premium-only branch in v1                                |
 | Project access tokens on GitLab.com            | Not available                               | Available                                     | Do not use                                                  |
@@ -854,17 +854,12 @@ integration surface:
 
 - create or update an issue/MR comment;
 - read and reply to a discussion;
-- append the Project Service Account as an MR reviewer for a
-  `REQUEST_CHANGES` review;
 - create or update a merge request where the repository grant permits it;
 - inspect pipelines and jobs; and
 - retry or cancel a pipeline/job when `write` authority permits it.
 
 Each operation has an allowlisted endpoint and method. The broker does not
 expose an arbitrary path, GraphQL query, request body, or bearer token.
-Reviewer append is one fixed
-`mergeRequestSetReviewers(operationMode: APPEND)` GraphQL operation; replacement
-or removal of existing reviewers is not exposed.
 
 ## 15. Formal Merge-Request Reviews
 
@@ -896,13 +891,13 @@ pairs are rejected before any provider effect.
 
 `COMMENT` and `APPROVE` neither require nor create a reviewer record.
 `REQUEST_CHANGES` requires the Project Service Account to be a current reviewer.
-When it is absent, the adapter may append only the current username resolved
-from the bound numeric service-account ID with the fixed GraphQL `APPEND`
-operation. This is an atomic set addition and cannot replace concurrently added
-human reviewers. On Free, if another reviewer occupies the available reviewer
-slot, assignment fails before any review note is created; AgentConnect never
-removes that reviewer and reports that only advisory `COMMENT + fail` is
-currently available.
+AgentConnect never assigns itself: GitLab's REST reviewer update replaces the
+list, and GraphQL `APPEND` also snapshots, unions, and replaces the complete
+list, so either can lose a concurrent human assignment. The MR author or another
+authorized user must request or re-request the service account through GitLab's
+native reviewer control. Until then, active-turn policy omits
+`REQUEST_CHANGES`, the adapter rejects a stale invocation before any review
+draft, and advisory `COMMENT + fail` remains available.
 
 The GitLab adapter:
 
@@ -916,10 +911,8 @@ The GitLab adapter:
 5. re-fetches the current merge request and rejects a changed head;
 6. reads the service account's current record from
    `GET /projects/:id/merge_requests/:iid/reviewers`;
-7. for `REQUEST_CHANGES` only, if the record is absent, executes the fenced
-   additive reviewer operation and requires an error-free response plus an
-   exact numeric-user-ID readback; a deterministic denial or reviewer limit
-   fails before drafts;
+7. for `REQUEST_CHANGES` only, requires that reviewer record or returns
+   `reviewer_assignment_required` before drafts;
 8. creates regular and diff draft notes with the exact diff refs, putting a
    signed hidden attempt-and-ordinal marker in every draft and recording each
    returned draft ID;
@@ -954,12 +947,6 @@ prior change request; only the explicit `APPROVE` operation can record that
 passing transition. Therefore no `COMMENT`, and no pre-approval publication,
 can clear an existing `requested_changes`.
 
-Reviewer append is part of the same fenced attempt and is read back before
-draft creation. It is never retried blindly after an ambiguous response. The
-attempt retains publication ownership until the original broker records a
-deterministic response and reviewer presence is read back. Otherwise it becomes
-`ambiguous_locked` without publishing review content.
-
 ### 15.1 Publication Serialization and Orphan Recovery
 
 GitLab's bulk-publish endpoint publishes every pending draft on the merge
@@ -969,17 +956,15 @@ publication lease is a correctness boundary, not an optimization.
 
 The lease and attempt phase live in the Control Plane database. Acquisition is
 compare-and-swap, increments the fence, and permits only one owner across
-agents and daemons. Every reviewer append, draft create/delete, and bulk-publish
-operation requires a durable single-use operation record bound to the current
-attempt, fence, method, target, and operation ordinal. Before the outbound
-request, the trusted daemon broker atomically moves that record from `issued`
-to `request_started`. It then records the deterministic response or
+agents and daemons. Every draft create/delete and bulk-publish operation
+requires a durable single-use operation record bound to the current attempt,
+fence, method, target, and operation ordinal. Before the outbound request, the
+trusted daemon broker atomically moves that record from `issued` to
+`request_started`. It then records the deterministic response or
 `response_ambiguous`. Review content still travels directly from the daemon to
 GitLab, so the Control Plane sees only metadata. The broker and its HTTP client
-disable automatic retries for all review mutations. Although reviewer append
-is set-additive, an ambiguous delayed request is reconciled rather than
-replayed. One `request_started` record permits exactly one outbound provider
-request.
+disable automatic retries for these non-idempotent review mutations. One
+`request_started` record permits exactly one outbound provider request.
 
 The fence prevents a stale broker from obtaining another operation record, but
 it is not presented as a GitLab-side fence. In particular, checking or starting
@@ -998,11 +983,6 @@ The coordinator may transfer ownership only when:
   has been reconciled; or
 - a previously ambiguous request is positively identified by its signed
   provider marker and fully reconciled.
-
-Reviewer append has no signed provider marker. For a started append, merely
-observing that the service account is now a reviewer does not prove that the
-original request is quiescent; only its deterministic response satisfies the
-transfer condition.
 
 Otherwise the row moves to `ambiguous_locked` and retains the old attempt
 indefinitely. No new review attempt may create drafts or publish under that
@@ -1073,12 +1053,13 @@ state only.
 ### 15.3 Tier Semantics
 
 - On Free, `APPROVE` records an optional approval without requiring reviewer
-  assignment. `REQUEST_CHANGES` records reviewer state but does not block
-  merging. If another user occupies the available reviewer slot, AgentConnect
-  does not replace them and exposes `COMMENT + fail` as the advisory outcome.
+  assignment. `REQUEST_CHANGES` is available only while the service account is
+  a current reviewer, records reviewer state, and does not block merging.
+  Otherwise AgentConnect exposes `COMMENT + fail` as the advisory outcome.
 - On Premium, existing approval rules may make approval required, and request
-  changes can block merging until addressed or bypassed under project policy.
-  The additive prerequisite preserves every existing reviewer.
+  changes can block merging until addressed or bypassed under project policy,
+  but only after a user requests or re-requests the service account through
+  GitLab's native reviewer control. AgentConnect never edits the reviewer list.
 - If project or group policy requires interactive password or SAML
   reauthentication for approval, the non-interactive Project Service Account
   cannot satisfy it. Mark `APPROVE` unavailable for that binding while keeping
@@ -1358,7 +1339,7 @@ complete; `cleanup_pending` never frees the project for another organization.
 | Stale hook or daemon performs an effect           | Config, dispatch, placement, project, subject, head, attempt, and credential-epoch fences             |
 | Duplicate note/review after timeout               | Signed random markers and read-after-ambiguous reconciliation                                         |
 | Shared service account cross-publishes drafts     | Durable per-MR ownership, no timeout transfer after a permit, exact marked-draft set, orphan cleanup  |
-| Reviewer prerequisite overwrites human choices    | Fixed GraphQL `APPEND`; never replace or remove existing reviewers                                    |
+| Reviewer prerequisite overwrites human choices    | Never mutate reviewers; require a native human request or re-request                                  |
 | Cross-tenant access                               | Transactional deployment-global project claim plus org-owned connection/binding and placement checks  |
 | Secret or content logging                         | Log identifiers, scope/purpose, status, latency, and normalized codes only                            |
 
@@ -1409,8 +1390,8 @@ Use focused unit tests for pure boundaries only:
   target/ref rejection, plus daemon normalization that keeps one MR/ref on one
   channel/thread pair across different delivery IDs;
 - provider-qualified repository authorization and grant mismatch rejection;
-- review-policy, reviewer-state mapping, additive reviewer prerequisites, and
-  exact-head fencing;
+- review-policy, reviewer-state mapping, human reviewer prerequisites,
+  fail-before-draft gating, and exact-head fencing;
 - review-publication lease, fence, attempt ownership, and reconciliation state
   transitions; and
 - status-projection generation and marker reconciliation.
@@ -1424,8 +1405,8 @@ Use integration tests for:
 - explicit PAT expiry on create/replacement, including null or mismatched
   provider responses and ambiguous revocation cleanup;
 - unassigned-reviewer handling: comment and approval without assignment,
-  additive request-changes assignment without reviewer replacement, Free
-  reviewer-limit failure, and ambiguous assignment reconciliation;
+  request-changes rejection before drafts, and reviewer removal before or
+  after the final state check;
 - daemon/relay feature negotiation and mixed-version rejection;
 - two-relay redelivery with the same `webhook-id`, preserving per-hook fan-out
   while the daemon inbox and unique `HookRun` absorb retries;
@@ -1460,11 +1441,11 @@ projects and covers:
    sessions for different IIDs, subject kinds, projects, and refs;
 9. ordinary reply versus formal-review mutual exclusion;
 10. inline `COMMENT`, `REQUEST_CHANGES`, and SHA-fenced `APPROVE`, including an
-    initially unassigned service account, additive assignment that preserves
-    concurrent human reviewers, Free reviewer-slot exhaustion, existing
+    initially unassigned service account, request-changes fail-before-draft,
+    native request or re-request enabling request-changes, existing
     `requested_changes` followed by any `COMMENT`, approval without reviewer
-    assignment, and a published review whose reviewer-state postcondition is
-    absent;
+    assignment, reviewer removal races, and a published review whose
+    reviewer-state postcondition is absent;
 11. simultaneous reviews from multiple agents on the same MR, including agents
     placed on different daemons, with no cross-attempt publication;
 12. crashes after draft creation and immediately before bulk publish, including
@@ -1491,7 +1472,6 @@ IDs, tokens, and signing secrets.
 - [GitLab project webhooks API](https://docs.gitlab.com/api/project_webhooks/)
 - [GitLab webhooks and signing tokens](https://docs.gitlab.com/user/project/integrations/webhooks/)
 - [GitLab webhook events](https://docs.gitlab.com/user/project/integrations/webhook_events/)
-- [GitLab GraphQL API reference](https://docs.gitlab.com/api/graphql/reference/)
 - [GitLab Draft Notes API](https://docs.gitlab.com/api/draft_notes/)
 - [GitLab Draft Notes API implementation](https://gitlab.com/gitlab-org/gitlab/-/blob/master/lib/api/draft_notes.rb)
 - [GitLab merge request approvals API](https://docs.gitlab.com/api/merge_request_approvals/)
