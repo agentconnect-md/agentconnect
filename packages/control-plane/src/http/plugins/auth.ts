@@ -82,11 +82,26 @@ export type VerifyApiKey = (
  */
 export type PrincipalExists = (userId: string) => Promise<boolean>
 
+/**
+ * The durable half of the deleted-account boundary (see the cutoff map in
+ * `oidcAuth`). `read` is consulted the FIRST time a process sees a subject —
+ * precisely the post-restart case, where an in-memory cutoff is gone but a
+ * pre-deletion bearer may still be live — and `record` persists a newly observed
+ * deletion so it survives the next restart. Both are expiry-limited: this is a
+ * boundary around one deletion, not a ban on the identity. Absent ⇒ the cutoff is
+ * process-local only.
+ */
+export interface DeletedIdentityStore {
+  read: (oidcSubject: string, now: Date) => Promise<Date | null>
+  record: (oidcSubject: string, cutoffAt: Date, expiresAt: Date) => Promise<void>
+}
+
 /** Registration options: the config plus the optional JIT resolver + API-key verifier. */
 export type HumanAuthOptions = HumanAuthConfig & {
   resolveUser?: ResolveOidcUser
   verifyApiKey?: VerifyApiKey
   principalExists?: PrincipalExists
+  deletedIdentities?: DeletedIdentityStore
 }
 
 declare module 'fastify' {
@@ -192,20 +207,59 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
   // again, and admitting one does NOT lift the cutoff, so the old bearer never
   // becomes valid against the replacement row.
   //
-  // Scope, deliberately: this closes the window in which a LIVE pre-deletion session
-  // resurrects the row. It is process-local and expires after TOMBSTONE_TTL_SECONDS,
-  // which outlives any access token by a wide margin — so no token that existed at
-  // deletion time can outlast its cutoff. It is NOT a durable ban on the subject:
-  // after that (or a CP restart) a deleted user signing in again is ordinary open
-  // signup — a fresh, gated account with nothing inherited. Denying re-signup is a
-  // product decision owned by whoever performs the deletion, not by this plane.
+  // This map is the fast path; `cfg.deletedIdentities` is its durable twin, read the
+  // first time a process sees a subject and written whenever a deletion is observed,
+  // so a restart does not forget the boundary while a pre-deletion bearer is still
+  // live. Both are expiry-limited (TOMBSTONE_TTL_SECONDS, far beyond any access-token
+  // lifetime): a boundary around one deletion, NOT a ban on the identity. Once it
+  // expires, a deleted user signing in again is ordinary open signup — a fresh, gated
+  // account with nothing inherited — and whether that is allowed at all is the
+  // deleting application's policy, not this plane's.
   const tombstoned = new Map<string, number>()
   const TOMBSTONE_TTL_SECONDS = 24 * 60 * 60
-  function tombstone(sub: string, issuedAt: number | undefined, nowSeconds: number): void {
+  async function tombstone(
+    sub: string,
+    issuedAt: number | undefined,
+    nowSeconds: number,
+    log: FastifyRequest['log']
+  ): Promise<void> {
     for (const [key, at] of tombstoned) if (nowSeconds - at > TOMBSTONE_TTL_SECONDS) tombstoned.delete(key)
     // At least the offending token's own `iat`, so an issuer clock running ahead of
     // ours cannot mint a token that reads as "issued after the deletion".
-    tombstoned.set(sub, Math.max(nowSeconds, issuedAt ?? 0))
+    const cutoff = Math.max(nowSeconds, issuedAt ?? 0)
+    tombstoned.set(sub, cutoff)
+    try {
+      await cfg.deletedIdentities?.record(
+        sub,
+        new Date(cutoff * 1000),
+        new Date((cutoff + TOMBSTONE_TTL_SECONDS) * 1000)
+      )
+    } catch (err) {
+      // The in-memory cutoff still holds for this process; only restart durability
+      // is lost, and refusing the request is the important part.
+      log.warn({ err }, 'humanAuth: could not persist the deleted-account cutoff')
+    }
+  }
+
+  /** The cutoff for `sub`: the in-memory one, or — the first time this process sees
+   *  the subject — whatever a previous process durably recorded. Fail-open on a store
+   *  error: a blip must not lock people out. */
+  async function cutoffFor(sub: string, log: FastifyRequest['log']): Promise<number | undefined> {
+    const known = tombstoned.get(sub)
+    if (known !== undefined) return known
+    // Only on first sight: once the subject is resolved (or tombstoned) in this
+    // process, the maps answer and this never runs again — so it stays off the hot path.
+    if (!cfg.deletedIdentities || resolved.has(sub)) return undefined
+    try {
+      const at = await cfg.deletedIdentities.read(sub, new Date())
+      if (!at) return undefined
+      const seconds = Math.floor(at.getTime() / 1000)
+      tombstoned.set(sub, seconds)
+      return seconds
+    } catch (err) {
+      log.warn({ err }, 'humanAuth: could not read the deleted-account cutoff — admitting')
+      return undefined
+    }
   }
   return async (req: FastifyRequest, reply: FastifyReply) => {
     const header = req.headers.authorization
@@ -227,7 +281,7 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
       // and signs up afresh. (A silent refresh also mints a newer `iat`; a bearer
       // alone cannot distinguish that from a re-login, and the console drops its
       // tokens on ACCOUNT_GONE, so this is the achievable line.)
-      const tombstonedAt = tombstoned.get(sub)
+      const tombstonedAt = await cutoffFor(sub, req.log)
       if (tombstonedAt !== undefined) {
         const issuedAt = typeof payload.iat === 'number' ? payload.iat : undefined
         if (issuedAt === undefined || issuedAt <= tombstonedAt) {
@@ -312,7 +366,12 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
           // Tombstone the subject as well, so this bearer (and every concurrent
           // request already holding it) cannot fall through to JIT provisioning and
           // recreate the account the admin just deleted.
-          tombstone(sub, typeof payload.iat === 'number' ? payload.iat : undefined, Math.floor(Date.now() / 1000))
+          await tombstone(
+            sub,
+            typeof payload.iat === 'number' ? payload.iat : undefined,
+            Math.floor(Date.now() / 1000),
+            req.log
+          )
           req.log.warn({ userId: identity.userId }, 'humanAuth: account no longer exists — session rejected')
           return accountGone(reply)
         }

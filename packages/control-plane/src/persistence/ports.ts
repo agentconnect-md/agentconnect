@@ -2482,6 +2482,23 @@ export interface UserRepo {
   exists(userId: string): Promise<boolean>
 
   /**
+   * Record that `oidcSubject`'s local account was found deleted at `cutoffAt`, so
+   * the decision outlives this process (a restart would forget an in-memory one, and
+   * a restart is exactly when a live pre-deletion session would slip through and
+   * re-provision). `expiresAt` keeps it expiry-limited — a boundary, not a ban.
+   * Idempotent: a later cutoff wins; an earlier one never moves the boundary back.
+   * Also prunes expired rows.
+   */
+  recordDeletedIdentity(oidcSubject: string, cutoffAt: Date, expiresAt: Date): Promise<void>
+
+  /**
+   * The recorded cutoff for `oidcSubject`, or null when there is none or it has
+   * expired at `now`. Read once per subject per process (first sight), never on the
+   * hot path.
+   */
+  deletedIdentityCutoff(oidcSubject: string, now: Date): Promise<Date | null>
+
+  /**
    * Restore a membership-less user's personal org (an interrupted signup must
    * not brick the account). No-op when the user already owns an org or the
    * user row is gone. `GET /orgs` calls this when the list comes back empty.

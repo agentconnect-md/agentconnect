@@ -265,6 +265,34 @@ export class PgUserRepo implements UserRepo {
     return (await this.db.user.findUnique({ where: { id: userId }, select: { id: true } })) != null
   }
 
+  async recordDeletedIdentity(oidcSubject: string, cutoffAt: Date, expiresAt: Date): Promise<void> {
+    const { count } = await this.db.deletedIdentityCutoff.createMany({
+      data: [{ oidcSubject, cutoffAt, expiresAt }],
+      skipDuplicates: true
+    })
+    if (count === 0) {
+      // A cutoff only ever moves FORWARD — guarded in the WHERE so a slower
+      // observation of an OLDER deletion cannot reopen a window a newer one closed.
+      await this.db.deletedIdentityCutoff.updateMany({
+        where: { oidcSubject, cutoffAt: { lt: cutoffAt } },
+        data: { cutoffAt, expiresAt }
+      })
+    }
+    // Opportunistic prune — no scheduler needed for a table that holds at most one
+    // short-lived row per deleted identity. Housekeeping: never fail the write it
+    // rode along with.
+    await this.db.deletedIdentityCutoff.deleteMany({ where: { expiresAt: { lte: cutoffAt } } }).catch(() => {})
+  }
+
+  async deletedIdentityCutoff(oidcSubject: string, now: Date): Promise<Date | null> {
+    const row = await this.db.deletedIdentityCutoff.findUnique({
+      where: { oidcSubject },
+      select: { cutoffAt: true, expiresAt: true }
+    })
+    if (!row || row.expiresAt <= now) return null
+    return row.cutoffAt
+  }
+
   async healPersonalOrg(userId: string): Promise<void> {
     // Also gated by the signup flag: under WAITLIST_MODE a bare `GET /orgs` must not
     // self-heal an org into existence (that would flip a Stranger to orgCount=1 =

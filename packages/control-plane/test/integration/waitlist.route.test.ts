@@ -677,6 +677,44 @@ describe('waitlist admission — auth boundaries', () => {
     }
   })
 
+  it('the deletion boundary survives a CP restart — a pre-deletion bearer cannot re-provision', async () => {
+    const email = 'wl-restart@acme.dev'
+    const h = await headers('wl-restart', email)
+
+    // ── process 1: the account exists, then an admin deletes it under the session ──
+    const first = buildApp()
+    try {
+      expect((await first.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })).statusCode).toBe(200)
+      await prisma.user.delete({ where: { email } })
+      const rejected = await first.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      expect(rejected.statusCode).toBe(401)
+      expect(rejected.json()).toMatchObject({ code: 'ACCOUNT_GONE' })
+    } finally {
+      await first.close()
+    }
+
+    // ── process 2: same database, empty in-memory state (a deploy / crash restart) ──
+    // The still-valid pre-deletion bearer must NOT read as a never-seen subject and
+    // get JIT-provisioned a replacement account.
+    const second = buildApp()
+    try {
+      const afterRestart = await second.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      expect(afterRestart.statusCode).toBe(401)
+      expect(afterRestart.json()).toMatchObject({ code: 'ACCOUNT_GONE' })
+      expect(await prisma.user.findUnique({ where: { email } })).toBeNull()
+
+      // A real new sign-in still works, in the fresh process too.
+      const fresh = await headers('wl-restart', email, Math.floor(Date.now() / 1000) + 5)
+      expect((await second.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: fresh })).statusCode).toBe(
+        200
+      )
+      // …and even then the old bearer stays out.
+      expect((await second.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })).statusCode).toBe(401)
+    } finally {
+      await second.close()
+    }
+  })
+
   it('/me/access reads the email from persistence, ignoring x-ac-user-email', async () => {
     const { app, close } = buildApp()
     try {
