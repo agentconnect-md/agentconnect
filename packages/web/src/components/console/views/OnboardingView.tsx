@@ -69,15 +69,16 @@ export default function OnboardingView() {
   const didInit = useRef(false)
   const loading = (agentsLoading || daemonsLoading) && daemons.length === 0 && agents.length === 0
 
-  // Seed the resume position once, after the first data load: jump straight to the first
-  // incomplete step (past the welcome) when the org is already part-way set up.
+  // Seed the resume position once, after BOTH lists finish loading: jump straight to the
+  // first incomplete step (past the welcome) when the org is already part-way set up.
+  // Gating on emptiness would seed from partial data when one SWR key resolves first.
   useEffect(() => {
-    if (didInit.current || loading) return
+    if (didInit.current || agentsLoading || daemonsLoading) return
     didInit.current = true
     const s = !daemonOnline ? 0 : !hasAgent ? 1 : !hasIntegration ? 2 : 3
     setStep(s)
     setEntered(s > 0)
-  }, [loading, daemonOnline, hasAgent, hasIntegration])
+  }, [agentsLoading, daemonsLoading, daemonOnline, hasAgent, hasIntegration])
 
   // --- Daemon provisioning (step 0), mirrors AddDaemonModal --------------------------
   const [connect, setConnect] = useState<DaemonCommand | null>(null)

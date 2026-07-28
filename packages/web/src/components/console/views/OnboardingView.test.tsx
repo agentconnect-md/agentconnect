@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   agents: [] as Array<Record<string, unknown>>,
   daemons: [] as Array<Record<string, unknown>>,
   integrations: [] as Array<Record<string, unknown>>,
+  agentsLoading: false,
+  daemonsLoading: false,
   provisionDaemon: vi.fn(),
   reconnectDaemon: vi.fn(),
   deleteDaemon: vi.fn(),
@@ -23,8 +25,8 @@ vi.mock('@/lib/data-context', () => ({
     agents: mocks.agents,
     daemons: mocks.daemons,
     integrations: mocks.integrations,
-    agentsLoading: false,
-    daemonsLoading: false,
+    agentsLoading: mocks.agentsLoading,
+    daemonsLoading: mocks.daemonsLoading,
     provisionDaemon: mocks.provisionDaemon,
     reconnectDaemon: mocks.reconnectDaemon,
     deleteDaemon: mocks.deleteDaemon,
@@ -74,6 +76,8 @@ beforeEach(async () => {
   mocks.agents = []
   mocks.daemons = []
   mocks.integrations = []
+  mocks.agentsLoading = false
+  mocks.daemonsLoading = false
   mocks.provisionDaemon.mockReset()
   mocks.reconnectDaemon.mockReset()
   mocks.deleteDaemon.mockReset().mockResolvedValue(undefined)
@@ -127,6 +131,27 @@ describe('daemon onboarding lifecycle', () => {
     expect(mocks.deleteDaemon).not.toHaveBeenCalled()
     await click('Add a Daemon')
     expect(mocks.reconnectDaemon).toHaveBeenCalledTimes(2)
+  })
+
+  it('resumes at the live step when daemons resolve before agents/integrations', async () => {
+    act(() => root.unmount())
+    // First load: daemons resolve for a fully-live org while agents are still loading.
+    mocks.daemons = [{ daemonId: 'new-1', status: 'online', name: 'edge-1', host: 'edge-1', version: '1.0.0' }]
+    mocks.agents = []
+    mocks.integrations = []
+    mocks.agentsLoading = true
+    mocks.daemonsLoading = false
+    root = createRoot(host)
+    await act(async () => root.render(<OnboardingView />))
+    // Must not seed a mid-wizard step from the partial data — still on the welcome screen.
+    expect(host.textContent).toContain('Welcome to AgentConnect')
+
+    // Agents/integrations finish loading — the wizard now resumes at the final step.
+    mocks.agents = [{ id: 'agent-1', daemon: 'new-1', hookKinds: [] }]
+    mocks.integrations = [{ id: 'int-1' }]
+    mocks.agentsLoading = false
+    await act(async () => root.render(<OnboardingView />))
+    expect(host.textContent).toContain('You’re live')
   })
 
   it('never deletes a claimed daemon that disconnects before Finish', async () => {
