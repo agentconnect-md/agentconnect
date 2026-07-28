@@ -580,11 +580,19 @@ interface CallMeta {
 
 type TurnInterruptReason = 'pause' | 'loop protection' | 'stop' | 'cancel' | 'shutdown'
 
-/** One durable loop-guard scope shared by every agent in a conversation. DMs are
- *  keyed at channel level because malformed platform wrappers may lose thread
- *  coordinates; threaded channel conversations retain their canonical thread. */
-function loopGuardScopeFromCoords(platform: string, channel: string, thread: string, isDm: boolean): string {
-  return `${platform}:${channel}:${isDm ? 'dm' : thread}`
+/** One durable loop-guard scope shared by every agent on one physical bot.
+ *  DMs are keyed at channel level because malformed platform wrappers may lose
+ *  thread coordinates; threaded channel conversations retain their canonical
+ *  thread. Platform coordinates can overlap across bot installations. */
+function loopGuardScopeFromCoords(
+  platform: string,
+  channel: string,
+  thread: string,
+  isDm: boolean,
+  transportScope?: string
+): string {
+  const base = `${platform}:${channel}:${isDm ? 'dm' : thread}`
+  return transportScope ? `${base}:${transportScope}` : base
 }
 
 function slackTopLevelLoopGuardScope(channel: string): string {
@@ -600,7 +608,7 @@ function loopGuardScope(msg: NormalizedMessage): string {
     // forever and every message gets a brand-new guard scope.
     if (eventTs !== undefined && msg.thread === eventTs) return slackTopLevelLoopGuardScope(msg.channel)
   }
-  return loopGuardScopeFromCoords(msg.platform, msg.channel, msg.thread ?? msg.msgId, msg.isDm)
+  return loopGuardScopeFromCoords(msg.platform, msg.channel, msg.thread ?? msg.msgId, msg.isDm, msg.transportScope)
 }
 
 function isTrustedHumanTurn(msg: NormalizedMessage): boolean {
@@ -779,7 +787,7 @@ function authorizedReviewTarget(
  * §4.3/§6.9). Carries the FULL DispatchContext so a queued turn dispatches identically to
  * one that ran immediately — same reply transport (`integrationId`), same webchat sink,
  * same trusted `callMeta` — and settles its OWN `dispatch()` promise (§6.9 #367). The gate
- * is keyed by the LOGICAL sessionKey (platform:channel:thread:agentId), NOT the ACP
+ * is keyed by the LOGICAL sessionKey (platform:channel:thread:agentId[:transportScope]), NOT the ACP
  * sessionId, so a cold session (no ACP id yet) is serialized too.
  */
 interface QueueEntry {
@@ -869,7 +877,7 @@ interface Pending {
   isDm: boolean
   /** Durable loop-breaker scope captured from the original event shape. */
   loopGuardScope: string
-  /** Local session key (platform:channel:thread:agentId) — for state writes. */
+  /** Local session key (platform:channel:thread:agentId[:transportScope]) — for state writes. */
   sessionKey: string
   /** The live ACP session id for this turn (part of the `this.pending` map key) — surfaced
    *  in the status bar so the console can deep-link to the session detail page. */
@@ -1840,7 +1848,7 @@ export class Daemon {
       log: this.log,
       now: () => Date.now(),
       canRun: (ctx) => {
-        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId)
+        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
         const active = this.activeGateEntries.get(key)
         // A transient safety drain only gates NEW admissions while an interrupted turn
         // unwinds. It must not break MCP tools in an unrelated, already-running turn.
@@ -1934,7 +1942,7 @@ export class Daemon {
       // ACP session to its exact channel/thread/delivery integration.
       // The agent's enabled daemon-configured MCP servers are appended AFTER the bridge entry, gated
       // on the runtime's probed transport caps.
-      mcpServersFor: ({ agent, platform, channel, thread, integrationId, isDm }) => {
+      mcpServersFor: ({ agent, platform, channel, thread, integrationId, transportScope, isDm }) => {
         const servers: McpServer[] = []
         let tools = toolsForIntegrations(agent.integrations, {
           collaboration: this.evaluationProfile.collaboration === 'configured'
@@ -1958,6 +1966,7 @@ export class Daemon {
             agentId: agent.id,
             platform,
             ...(integrationId ? { integrationId } : {}),
+            ...(transportScope ? { transportScope } : {}),
             isDm,
             channel,
             thread,
@@ -3810,7 +3819,7 @@ export class Daemon {
       return
     }
 
-    const result = routeRules(msg, routingRules, (c, t) => this.sessions.threadOwner(c, t))
+    const result = routeRules(msg, routingRules, (c, t) => this.sessions.threadOwner(c, t, msg.transportScope))
     if (!result) {
       // §8.5: a message that activates no agent (a human @human reply, or one
       // addressed to another bot) must still enter the transcript when a session
@@ -3843,7 +3852,7 @@ export class Daemon {
     // auto / dm) never dispatches — only an explicit @mention does, and it clears the
     // mute. Muted-thread traffic still enters the transcript (recordUnrouted) so the
     // agent catches up on it when re-activated (§8.5).
-    const muteKey = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, result.agentId)
+    const muteKey = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, result.agentId, msg.transportScope)
     if (this.isSessionMuted(muteKey)) {
       if (result.via !== 'mention') {
         this.recordUnrouted(msg)
@@ -4493,7 +4502,8 @@ export class Daemon {
       normalized.platform,
       normalized.channel,
       normalized.thread ?? normalized.msgId,
-      msg.agentId
+      msg.agentId,
+      normalized.transportScope
     )
     if (this.isSessionMuted(muteKey)) {
       if (normalized.trigger !== 'mention') {
@@ -4785,7 +4795,13 @@ export class Daemon {
       return 'invalid_target'
     }
     if (req.toAgentId === req.callerAgentId) return 'self'
-    const callerKey = sessionKey(platform, req.callerChannel, req.callerThread, req.callerAgentId)
+    const callerKey = sessionKey(
+      platform,
+      req.callerChannel,
+      req.callerThread,
+      req.callerAgentId,
+      req.callerTransportScope
+    )
     const inbound = this.activeTurnCallMeta.get(callerKey)
     if (inbound !== undefined && inbound.hopCount >= MAX_AGENT_CALL_HOPS) return 'hop_limit'
     return this.localWakeAuthorizationRejection(req, platform)
@@ -4793,7 +4809,13 @@ export class Daemon {
 
   private async messageAgent(req: MessageAgentReq): Promise<MessageAgentResult> {
     const platform = this.narrowPlatform(req.platform)
-    const callerKey = sessionKey(platform, req.callerChannel, req.callerThread, req.callerAgentId)
+    const callerKey = sessionKey(
+      platform,
+      req.callerChannel,
+      req.callerThread,
+      req.callerAgentId,
+      req.callerTransportScope
+    )
     const observe = (
       type:
         'collaboration.delivery.admitted' | 'collaboration.delivery.rejected' | 'collaboration.delivery.deduplicated',
@@ -4879,13 +4901,17 @@ export class Daemon {
       req.correlationId !== undefined ? req.correlationId : isReply ? inbound.correlationId : undefined
 
     const target = this.agents.get(req.toAgentId)
+    const resolved = target ? this.resolveCpAgent(req.toAgentId, platform === 'hook' ? 'slack' : platform) : null
+    const integrationId = resolved?.integrationId
+    const targetTransportScope =
+      integrationId !== undefined ? this.transportScopeForIntegrationIds([integrationId]) : undefined
     // A2A delivery is direct and postless (#854): the woken peer receives a caller-framed
     // message and nothing is left in any channel. session-concept case 2c (pure wake) is thus
     // the default — a `sendMessage` with `toAgent` never posts, regardless of `channel`.
     const event = this.prepareAgentDelivery(req)
     const { deliveryId } = event
     const msgId = `agentcall:${req.channel}:${deliveryId}`
-    const targetSession = sessionKey(platform, req.channel, event.thread, req.toAgentId)
+    const targetSession = sessionKey(platform, req.channel, event.thread, req.toAgentId, targetTransportScope)
 
     const prior = this.agentCallDeliveries.get(deliveryId)
     if (prior) return observe('collaboration.delivery.deduplicated', prior, deliveryId)
@@ -4952,12 +4978,6 @@ export class Daemon {
       originCoords
     }
 
-    // The reply/attribution integration for the target (a definite value, not a fallback
-    // — §6.2). Same-daemon: the target's own first integration (may be absent for a
-    // memory-only agent — dispatch handles that).
-    const resolved = this.resolveCpAgent(req.toAgentId)
-    const integrationId = resolved?.integrationId
-
     const normalized: NormalizedMessage = {
       msgId,
       traceId: deliveryId,
@@ -4965,6 +4985,7 @@ export class Daemon {
       platform,
       channel: req.channel,
       thread: event.thread,
+      ...(targetTransportScope !== undefined ? { transportScope: targetTransportScope } : {}),
       sender: { id: req.callerAgentId, isBot: true },
       text: event.text,
       mentionedBots: resolved?.botUserId ? [resolved.botUserId] : [],
@@ -5005,7 +5026,13 @@ export class Daemon {
    */
   private async replyToSession(req: ReplyToSessionReq): Promise<ReplyToSessionResult> {
     const platform = this.narrowPlatform(req.platform)
-    const callerKey = sessionKey(platform, req.callerChannel, req.callerThread, req.callerAgentId)
+    const callerKey = sessionKey(
+      platform,
+      req.callerChannel,
+      req.callerThread,
+      req.callerAgentId,
+      req.callerTransportScope
+    )
     const inbound = this.activeTurnCallMeta.get(callerKey)
     const callerRec = this.store.getSession(callerKey)
     // Origin authorization is DURABLE (§5.3): a session spawned by a parent may reply into it on
@@ -5060,8 +5087,11 @@ export class Daemon {
       // otherwise post the reply through integrations[0]'s client, and a Telegram chat id
       // sent via the Slack client fails with channel_not_found (the reply turn runs but its
       // answer never reaches the origin channel).
+      const integrationId = this.integrationIdForTransportScope(originOwner, narrowedLocal, local.transportScope)
+      if (local.transportScope && !integrationId) {
+        return { delivered: false, targetSession: local.key, reason: 'not_found' }
+      }
       const resolved = this.resolveCpAgent(originOwner, narrowedLocal)
-      const integrationId = resolved?.integrationId
       const normalized: NormalizedMessage = {
         msgId: `agentcall:${local.channel}:${deliveryId}`,
         traceId: deliveryId,
@@ -5069,6 +5099,7 @@ export class Daemon {
         platform: narrowedLocal,
         channel: local.channel,
         ...(local.thread ? { thread: local.thread } : {}),
+        ...(local.transportScope ? { transportScope: local.transportScope } : {}),
         // A monotonic "now" ts so the reply is ordered as a NEW message in the origin session.
         // Without it, transcriptCoords derives the ts from the msgId's random UUID, which the
         // origin's dedup mis-orders — the parent turn then runs with no new content and the reply
@@ -5076,7 +5107,13 @@ export class Daemon {
         transcriptTs: monotonicTs(),
         sender: { id: req.callerAgentId, isBot: true },
         text: req.text,
-        mentionedBots: resolved?.botUserId ? [resolved.botUserId] : [],
+        mentionedBots: integrationId
+          ? this.botUserIds[integrationId]
+            ? [this.botUserIds[integrationId]!]
+            : []
+          : resolved?.botUserId
+            ? [resolved.botUserId]
+            : [],
         isDm: false
       }
       void this.dispatch(originOwner, normalized, integrationId, undefined, callMeta).catch((err) =>
@@ -5139,6 +5176,7 @@ export class Daemon {
     thread: string
     text: string
     originPlatform?: string
+    originTransportScope?: string
     originChannel: string
     originThread: string
   }): void {
@@ -5147,7 +5185,13 @@ export class Daemon {
     // turn posting to Slack). Key the origin lookup by the ORIGIN's platform, not the target's,
     // or the caller session is never found and the new session loses its parent lineage.
     const originPlatform = this.narrowPlatform(req.originPlatform ?? req.platform)
-    const originKey = sessionKey(originPlatform, req.originChannel, req.originThread, req.agentId)
+    const originKey = sessionKey(
+      originPlatform,
+      req.originChannel,
+      req.originThread,
+      req.agentId,
+      req.originTransportScope
+    )
     const inbound = this.activeTurnCallMeta.get(originKey)
     // A self-post from a plain human/platform turn (no active callMeta) starts the self-chain at 1.
     const hopCount = inbound ? inbound.hopCount + 1 : 1
@@ -5169,6 +5213,9 @@ export class Daemon {
         ...(req.originThread ? { thread: req.originThread } : {})
       }
     }
+    const transportScope = this.transportScopeForIntegrationIds(
+      req.integrationId !== undefined ? [req.integrationId] : undefined
+    )
     const normalized: NormalizedMessage = {
       msgId: `agentcall:${req.channel}:${deliveryId}`,
       traceId: deliveryId,
@@ -5176,6 +5223,7 @@ export class Daemon {
       platform,
       channel: req.channel,
       thread: req.thread,
+      ...(transportScope !== undefined ? { transportScope } : {}),
       // The seed's transcript ts MUST be the post's real ts (the new thread's root), not the
       // random deliveryId — otherwise the session's lastDeliveredTs becomes a non-ts string and
       // a later real reply in this thread is mis-compared and wrongly skipped as already-delivered.
@@ -5188,7 +5236,7 @@ export class Daemon {
       // output — an agent must not visibly answer its own top-level post.
       headless: true
     }
-    const targetSession = sessionKey(platform, req.channel, req.thread, req.agentId)
+    const targetSession = sessionKey(platform, req.channel, req.thread, req.agentId, transportScope)
     void this.dispatch(req.agentId, normalized, req.integrationId, undefined, callMeta).catch((err) =>
       this.log.error(`channel-root session spawn failed for agent "${req.agentId}": ${formatErr(err)}`)
     )
@@ -5277,7 +5325,7 @@ export class Daemon {
     const platform = this.narrowPlatform(req.platform)
     // The main's session key is the exact coords its tool call ran under, so a deadline
     // fire and a worker report both key to the SAME session as the caller.
-    const mainSessionKey = sessionKey(platform, req.channel, req.thread, req.mainAgentId)
+    const mainSessionKey = sessionKey(platform, req.channel, req.thread, req.mainAgentId, req.transportScope)
     const now = this.clock.now()
     const deadline =
       req.deadlineMs !== undefined && req.deadlineMs > 0 ? now + Math.min(req.deadlineMs, 2_147_483_647) : null
@@ -5334,6 +5382,7 @@ export class Daemon {
           callerAgentId: req.mainAgentId,
           platform: req.platform,
           ...(req.integrationId !== undefined ? { callerIntegrationId: req.integrationId } : {}),
+          ...(req.transportScope !== undefined ? { callerTransportScope: req.transportScope } : {}),
           callerChannel: req.channel,
           callerThread: req.thread,
           toAgentId: s.toAgentId,
@@ -5557,7 +5606,13 @@ export class Daemon {
   private ownedOrchestration(req: OrchestrationOwnerReq): OrchestrationRow | undefined {
     const orch = this.store.getOrchestration(req.orchestrationId)
     if (!orch) return undefined
-    const requesterKey = sessionKey(this.narrowPlatform(req.platform), req.channel, req.thread, req.mainAgentId)
+    const requesterKey = sessionKey(
+      this.narrowPlatform(req.platform),
+      req.channel,
+      req.thread,
+      req.mainAgentId,
+      req.transportScope
+    )
     if (orch.mainSessionKey !== requesterKey || orch.mainAgentId !== req.mainAgentId) return undefined
     return orch
   }
@@ -5896,7 +5951,7 @@ export class Daemon {
   }
 
   private async submitGithubReview(req: SubmitGithubReviewReq): Promise<GithubReviewEffect> {
-    const key = sessionKey(req.platform, req.channel, req.thread, req.agentId)
+    const key = sessionKey(req.platform, req.channel, req.thread, req.agentId, req.transportScope)
     const active = this.activeGithubTurnMeta.get(key)
     if (!active || active.hook.agentId !== req.agentId) {
       throw new Error('formal GitHub review is only available during the active PR hook turn')
@@ -6228,7 +6283,7 @@ export class Daemon {
 
   // ── §4.3/§6.9 per-sessionKey serial admission gate ────────────────────────────
   // The UNIFIED admission queue (design §6.9 #390): one FIFO per LOGICAL sessionKey
-  // (platform:channel:thread:agentId), NOT per ACP sessionId. `inflight` records the
+  // (platform:channel:thread:agentId[:transportScope]), NOT per ACP sessionId. `inflight` records the
   // keys a `runLoop` currently OWNS; ownership is claimed synchronously (before any
   // await) in `dispatch()` so two concurrent dispatches for the same key can never both
   // enter `sessions.handle()` and overwrite `pending`. While a key is owned, further
@@ -6385,7 +6440,9 @@ export class Daemon {
   ): boolean {
     let target =
       explicitTarget ??
-      routeRules(msg, this.mergedRulesForSource(srcIntegrationIds), (c, t) => this.sessions.threadOwner(c, t))
+      routeRules(msg, this.mergedRulesForSource(srcIntegrationIds), (c, t) =>
+        this.sessions.threadOwner(c, t, msg.transportScope)
+      )
     if (!target) {
       // Routing found no agent — the common group case: a bare `/status@bot` carries no
       // mention entity, no reply, and its fresh thread has no session. Resolve the agent
@@ -6414,22 +6471,15 @@ export class Daemon {
     // than on a phantom empty thread. `thread`/`key` follow the resolved session so a
     // `/queue` dispatch continues it and the sticky overrides land on the right key.
     let thread = replyThread
-    let key = sessionKey(msg.platform, msg.channel, thread, target.agentId)
+    let key = sessionKey(msg.platform, msg.channel, thread, target.agentId, msg.transportScope)
     let rec = this.store.getSession(key)
-    const transportScope = msg.transportScope ?? ''
-    if ((rec?.transportScope ?? '') !== transportScope) rec = undefined
     // A cold turn owns its logical key before SessionManager persists the session row.
     // Prefer that exact live gate over the channel's latest historical session; otherwise
     // a `!stop` sent in the cold thread can mute/cancel an older thread and leave the
     // actual turn running. Check all gate representations because commands can race the
     // short hand-offs between them.
-    const gateActiveFor = (candidateKey: string): boolean => {
-      const directEntry = this.activeGateEntries.get(candidateKey)
-      return (
-        (directEntry !== undefined && (directEntry.msg.transportScope ?? '') === transportScope) ||
-        (this.serialQueue.get(candidateKey) ?? []).some((entry) => (entry.msg.transportScope ?? '') === transportScope)
-      )
-    }
+    const gateActiveFor = (candidateKey: string): boolean =>
+      this.activeGateEntries.has(candidateKey) || (this.serialQueue.get(candidateKey)?.length ?? 0) > 0
     let directGateActive = gateActiveFor(key)
     if (!rec && !directGateActive) {
       const latest = this.store.latestSessionForTransport(target.agentId, msg.channel, msg.transportScope)
@@ -6463,7 +6513,7 @@ export class Daemon {
       const directScope =
         thread === replyThread
           ? loopGuardScope(msg)
-          : loopGuardScopeFromCoords(msg.platform, msg.channel, thread, msg.isDm)
+          : loopGuardScopeFromCoords(msg.platform, msg.channel, thread, msg.isDm, msg.transportScope)
       const topLevelScope = msg.platform === 'slack' && !msg.isDm ? slackTopLevelLoopGuardScope(msg.channel) : undefined
       // A top-level feedback loop posts its warning into the triggering root. A
       // trusted !resume from that warning thread (or elsewhere in the channel)
@@ -7468,7 +7518,7 @@ export class Daemon {
         }
         return
       }
-      const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId)
+      const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
       const loopScope = loopGuardScope(msg)
       // A latched circuit is checked at the common dispatch seam, so startup replay,
       // cron/hook turns, webchat, and agent→agent calls cannot bypass it. Purging here
@@ -10729,7 +10779,7 @@ export class Daemon {
    *  their lifetime. The tool input contains only the title; every coordinate and
    *  delivery route was captured in the trusted SessionContext. */
   private async setSessionTitleFromTool(req: SetSessionTitleReq): Promise<void> {
-    const key = sessionKey(req.platform, req.channel, req.thread, req.agentId)
+    const key = sessionKey(req.platform, req.channel, req.thread, req.agentId, req.transportScope)
     const rec = this.store.getSession(key)
     if (!rec?.acpSessionId) throw new Error('the current session is not addressable yet')
 
@@ -11199,6 +11249,18 @@ export class Daemon {
     if (scopes.length === 0) return undefined
     if (scopes.length === 1) return scopes[0]
     return `mixed:${createHash('sha256').update(scopes.join('\0')).digest('hex').slice(0, 24)}`
+  }
+
+  /** Resolve the live integration that owns a persisted bot-scoped session. */
+  private integrationIdForTransportScope(
+    agentId: string,
+    platform: string,
+    transportScope?: string | null
+  ): string | undefined {
+    const candidates = this.agents.get(agentId)?.integrations.filter((integration) => integration.platform === platform)
+    if (!candidates?.length) return undefined
+    if (!transportScope) return candidates[0]?.id
+    return candidates.find((integration) => this.transportScopeForIntegration(integration) === transportScope)?.id
   }
 
   /** Every integrationId served by `conn` — ingress attribution for gating. A Slack

@@ -199,8 +199,15 @@ export interface TranscriptMutation {
   revision: number
 }
 
-export function sessionKey(platform: string, channel: string, thread: string, agentId: string): string {
-  return `${platform}:${channel}:${thread}:${agentId}`
+export function sessionKey(
+  platform: string,
+  channel: string,
+  thread: string,
+  agentId: string,
+  transportScope?: string | null
+): string {
+  const base = `${platform}:${channel}:${thread}:${agentId}`
+  return transportScope ? `${base}:${transportScope}` : base
 }
 
 /** Internal transcript namespace. Platform-visible coordinates remain raw on the
@@ -938,6 +945,57 @@ export class LocalStore {
 
   getSession(key: string): SessionRecord | undefined {
     return this.db.prepare('SELECT * FROM sessions WHERE key = ?').get(key) as SessionRecord | undefined
+  }
+
+  /** Move one pre-scope session onto its first attributable physical-bot key.
+   * Legacy runtime context is discarded because it may already contain traffic
+   * admitted through another bot; rows written by the partially scoped rollout
+   * retain their ACP id when the persisted scope matches. */
+  adoptLegacySessionScope(
+    legacyKey: string,
+    scopedKey: string,
+    transportScope: string,
+    updatedAt: number
+  ): SessionRecord | undefined {
+    if (legacyKey === scopedKey) return this.getSession(scopedKey)
+    const current = this.getSession(scopedKey)
+    if (current) return current
+    const legacy = this.getSession(legacyKey)
+    if (!legacy || (legacy.transportScope != null && legacy.transportScope !== transportScope)) return undefined
+    const resetRuntime = legacy.transportScope == null
+    this.db.exec('BEGIN')
+    try {
+      this.db
+        .prepare(
+          'INSERT OR IGNORE INTO session_mutes (key) SELECT ? WHERE EXISTS (SELECT 1 FROM session_mutes WHERE key = ?)'
+        )
+        .run(scopedKey, legacyKey)
+      this.db.prepare('DELETE FROM session_mutes WHERE key = ?').run(legacyKey)
+      this.db
+        .prepare(
+          `UPDATE sessions
+           SET key = ?, transportScope = ?,
+               acpSessionId = CASE WHEN ? = 1 THEN NULL ELSE acpSessionId END,
+               state = CASE WHEN ? = 1 AND state != 'closed' THEN 'idle' ELSE state END,
+               lastDeliveredTs = CASE WHEN ? = 1 THEN NULL ELSE lastDeliveredTs END,
+               updatedAt = ?
+           WHERE key = ?`
+        )
+        .run(
+          scopedKey,
+          transportScope,
+          resetRuntime ? 1 : 0,
+          resetRuntime ? 1 : 0,
+          resetRuntime ? 1 : 0,
+          updatedAt,
+          legacyKey
+        )
+      this.db.exec('COMMIT')
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
+    return this.getSession(scopedKey)
   }
 
   createPermissionRequest(record: PermissionRequestRecord): void {
@@ -2016,11 +2074,13 @@ export class LocalStore {
     return row?.thread
   }
 
-  openSessionAgents(channel: string, thread: string): string[] {
+  openSessionAgents(channel: string, thread: string, transportScope?: string | null): string[] {
     return (
       this.db
-        .prepare("SELECT agentId FROM sessions WHERE channel = ? AND thread = ? AND state != 'closed'")
-        .all(channel, thread) as { agentId: string }[]
+        .prepare(
+          "SELECT agentId FROM sessions WHERE channel = ? AND thread = ? AND COALESCE(transportScope, '') = ? AND state != 'closed'"
+        )
+        .all(channel, thread, transportScope ?? '') as { agentId: string }[]
     ).map((r) => r.agentId)
   }
 
@@ -2029,11 +2089,13 @@ export class LocalStore {
    *  to the sole agent that previously owned it, and SessionManager.handle recreates/
    *  resumes the ACP session. Kept separate from `openSessionAgents` so the live
    *  multi-agent disambiguation (2+ open owners → mention-gated) is never perturbed. */
-  closedSessionAgents(channel: string, thread: string): string[] {
+  closedSessionAgents(channel: string, thread: string, transportScope?: string | null): string[] {
     return (
       this.db
-        .prepare("SELECT agentId FROM sessions WHERE channel = ? AND thread = ? AND state = 'closed'")
-        .all(channel, thread) as { agentId: string }[]
+        .prepare(
+          "SELECT agentId FROM sessions WHERE channel = ? AND thread = ? AND COALESCE(transportScope, '') = ? AND state = 'closed'"
+        )
+        .all(channel, thread, transportScope ?? '') as { agentId: string }[]
     ).map((r) => r.agentId)
   }
 

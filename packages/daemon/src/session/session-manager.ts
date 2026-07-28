@@ -178,6 +178,7 @@ export class SessionManager {
         channel: string
         thread: string
         integrationId?: string
+        transportScope?: string
         isDm: boolean
       }) => McpServer[]
       /**
@@ -214,8 +215,8 @@ export class SessionManager {
   private readonly turnsSinceReminder = new Map<string, number>()
   private readonly lastContextUsed = new Map<string, number>()
 
-  threadOwner(channel: string, thread: string): string | null {
-    const owners = this.deps.store.openSessionAgents(channel, thread)
+  threadOwner(channel: string, thread: string, transportScope?: string | null): string | null {
+    const owners = this.deps.store.openSessionAgents(channel, thread, transportScope)
     // 2+ live owners actively share the thread → ambiguous, fall through to
     // mention-gating (§8.2). Exactly one → thread continuity.
     if (owners.length > 0) return owners.length === 1 ? owners[0]! : null
@@ -224,7 +225,7 @@ export class SessionManager {
     // the sole agent that previously owned this thread — SessionManager.handle then
     // recreates/resumes its ACP session. Still gated at exactly one, and the `!stop`
     // mute check downstream (onInbound) keeps a muted thread suppressed regardless.
-    const dormant = this.deps.store.closedSessionAgents(channel, thread)
+    const dormant = this.deps.store.closedSessionAgents(channel, thread, transportScope)
     return dormant.length === 1 ? dormant[0]! : null
   }
 
@@ -266,11 +267,17 @@ export class SessionManager {
     // daemon.ts, so the user message and its reply never collide on the same ms) — the
     // whole conversation is recorded, and thread stays stable → one session.
     const ts = msg.platform === 'webchat' ? monotonicTs() : coordTs
-    const key = sessionKey(msg.platform, msg.channel, thread, agentId)
+    const transportScope = msg.transportScope
+    const legacyKey = sessionKey(msg.platform, msg.channel, thread, agentId)
+    const key = sessionKey(msg.platform, msg.channel, thread, agentId, transportScope)
     let rec = this.deps.store.getSession(key)
-    const transportScope = msg.transportScope ?? rec?.transportScope ?? undefined
+    if (!rec && transportScope) {
+      // A pre-scope session may already contain traffic admitted through another
+      // physical bot. The store moves it onto the attributable key and discards
+      // unsafe runtime context when its old bot scope is unknown.
+      rec = this.deps.store.adoptLegacySessionScope(legacyKey, key, transportScope, Date.now())
+    }
     const transcriptChannel = transcriptChannelKey(msg.channel, transportScope)
-    if (transportScope !== undefined) msg.transportScope = transportScope
 
     // record the triggering message in the transcript (with an attachment mention
     // for prompt replay; bounded inline webchat images remain daemon-local for UI replay)
@@ -292,9 +299,7 @@ export class SessionManager {
     const isNewLogicalSession = rec === undefined
     if (rec) {
       const persistedMemoryProvider = rec.memoryProvider ?? 'managed'
-      // A pre-scope session may already contain context admitted through another
-      // physical bot. It cannot be attributed safely during migration, so the first
-      // scoped turn starts a clean runtime session instead of adopting that context.
+      // Defensive corruption fence: a scoped key and its stored scope must agree.
       const transportChanged = transportScope != null && rec.transportScope !== transportScope
       if (persistedMemoryProvider !== currentMemoryProvider || transportChanged) {
         rec = {
@@ -533,6 +538,7 @@ export class SessionManager {
           channel: msg.channel,
           thread,
           ...(integrationId !== undefined ? { integrationId } : {}),
+          ...(transportScope !== undefined ? { transportScope } : {}),
           isDm: msg.isDm
         }) ?? []
       const acpSessionId = await newRuntimeSession(cwd, mcpServers, metaContext)
@@ -579,6 +585,7 @@ export class SessionManager {
           channel: msg.channel,
           thread,
           ...(integrationId !== undefined ? { integrationId } : {}),
+          ...(transportScope !== undefined ? { transportScope } : {}),
           isDm: msg.isDm
         }) ?? []
       let resumed = false

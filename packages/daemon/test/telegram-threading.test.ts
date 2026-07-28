@@ -178,6 +178,52 @@ describe('Telegram ingress attribution', () => {
     ])
     await daemon.stop()
   })
+
+  it('keeps a loop-guard trip on one bot from blocking the same DM coordinates on another bot', async () => {
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-b'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => 'end_turn'),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    const agent = (daemon as any).agents.get('bot-a')
+    agent.integrations = [
+      {
+        id: 'i-a',
+        platform: 'telegram',
+        telegram: { botToken: '111:a', allowedUserIds: [], bindRules: [{ match: { kind: 'dm' } }] }
+      },
+      {
+        id: 'i-b',
+        platform: 'telegram',
+        telegram: { botToken: '222:b', allowedUserIds: [], bindRules: [{ match: { kind: 'dm' } }] }
+      }
+    ]
+    const scopeA = (daemon as any).transportScopeForIntegrationIds(['i-a'])
+    const scopeB = (daemon as any).transportScopeForIntegrationIds(['i-b'])
+    ;(daemon as any).store.tripLoopGuard(`telegram:42:dm:${scopeA}`, 1, 'test_loop')
+
+    await expect(
+      (daemon as any).dispatch(
+        'bot-a',
+        tg(1, { channel: '42', thread: 'dm', transportScope: scopeB, isDm: true, headless: true }),
+        'i-b'
+      )
+    ).resolves.toBe('acp-b')
+    await expect(
+      (daemon as any).dispatch(
+        'bot-a',
+        tg(1, { channel: '42', thread: 'dm', transportScope: scopeA, isDm: true, headless: true }),
+        'i-a'
+      )
+    ).resolves.toBeNull()
+    expect(host.prompt).toHaveBeenCalledOnce()
+    await daemon.stop()
+  })
 })
 
 describe('canonicalizeTelegramThread', () => {
@@ -303,6 +349,24 @@ describe('reply-based session continuity (routing)', () => {
     expect(routed).toMatchObject({ agentId: 'bot-a', via: 'thread' })
   })
 
+  it('resolves identical thread coordinates independently on each receiving bot', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    await daemon.start()
+    makeScopedTelegramPair(daemon)
+    seedSession(daemon, '-100', 'tg:77', { agentId: 'bot-a', integrationId: 'i-a' })
+    seedSession(daemon, '-100', 'tg:77', { agentId: 'bot-b', integrationId: 'i-b' })
+    const dispatch = vi.spyOn(daemon as any, 'dispatch').mockResolvedValue('acp')
+
+    ;(daemon as any).onInbound(tg(78, { telegramThreadRoot: '77', text: 'follow up A' }), ['i-a'])
+    ;(daemon as any).onInbound(tg(78, { telegramThreadRoot: '77', text: 'follow up B' }), ['i-b'])
+
+    expect(dispatch.mock.calls.map(([agentId, , integrationId]) => [agentId, integrationId])).toEqual([
+      ['bot-a', 'i-a'],
+      ['bot-b', 'i-b']
+    ])
+    await daemon.stop()
+  })
+
   it('a fresh @mention with no reply starts a new, distinct session thread', async () => {
     const daemon = new Daemon({ root: scaffold() })
     await daemon.start()
@@ -342,18 +406,21 @@ function seedSession(
 ) {
   const agentId = opts.agentId ?? 'bot-a'
   const integrationId = opts.integrationId ?? 'i-tg'
+  const transportScope = (daemon as any).transportScopeForIntegrationIds([integrationId])
+  const key = sessionKey('telegram', channel, thread, agentId, transportScope)
   ;(daemon as any).store.upsertSession({
-    key: sessionKey('telegram', channel, thread, agentId),
+    key,
     agentId,
     platform: 'telegram',
     channel,
     thread,
-    transportScope: (daemon as any).transportScopeForIntegrationIds([integrationId]),
+    transportScope,
     acpSessionId: opts.acpSessionId ?? `acp-${agentId}`,
     state: 'idle',
     lastDeliveredTs: null,
     updatedAt: opts.updatedAt ?? Date.now()
   })
+  return key
 }
 
 function makeScopedTelegramPair(daemon: Daemon) {
@@ -493,8 +560,7 @@ describe('session-control cards (/models tappable buttons)', () => {
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
     const conn = makeTelegramRoutable(daemon)
     injectHost(daemon)
-    seedSession(daemon, '-100', 'tg:100')
-    const key = sessionKey('telegram', '-100', 'tg:100', 'bot-a')
+    const key = seedSession(daemon, '-100', 'tg:100')
 
     ;(daemon as any).handleTelegramCallback(
       { id: 'cb1', data: 'm:1', channel: '-100', messageId: 55, userId: 'U1' },
@@ -539,13 +605,13 @@ describe('session-control cards (/models tappable buttons)', () => {
     const conn = makeTelegramRoutable(daemon)
     injectHost(daemon)
     ;(daemon as any).agents.get('bot-a').integrations[0].telegram.allowedUserIds = ['999']
-    seedSession(daemon, '-100', 'tg:100')
+    const key = seedSession(daemon, '-100', 'tg:100')
 
     ;(daemon as any).handleTelegramCallback(
       { id: 'cb2', data: 'm:1', channel: '-100', messageId: 55, userId: 'U1' },
       conn
     )
-    expect((daemon as any).store.getModelOverride(sessionKey('telegram', '-100', 'tg:100', 'bot-a'))).toBeUndefined()
+    expect((daemon as any).store.getModelOverride(key)).toBeUndefined()
     expect(conn.answerCallback).toHaveBeenCalledWith('cb2', expect.stringContaining('No active session'))
     expect(conn.editCard).not.toHaveBeenCalled()
   })
@@ -570,12 +636,12 @@ describe('session-control cards (/models tappable buttons)', () => {
     ;(daemon as any).hosts.set('bot-a', host)
     ;(daemon as any).hosts.set('bot-b', host)
     const now = Date.now()
-    seedSession(daemon, '-100', 'tg:a', {
+    const keyA = seedSession(daemon, '-100', 'tg:a', {
       agentId: 'bot-a',
       integrationId: 'i-a',
       updatedAt: now
     })
-    seedSession(daemon, '-100', 'tg:b', {
+    const keyB = seedSession(daemon, '-100', 'tg:b', {
       agentId: 'bot-b',
       integrationId: 'i-b',
       updatedAt: now - 1_000
@@ -586,8 +652,8 @@ describe('session-control cards (/models tappable buttons)', () => {
       connB
     )
 
-    expect((daemon as any).store.getModelOverride(sessionKey('telegram', '-100', 'tg:b', 'bot-b'))).toBe('sonnet')
-    expect((daemon as any).store.getModelOverride(sessionKey('telegram', '-100', 'tg:a', 'bot-a'))).toBeUndefined()
+    expect((daemon as any).store.getModelOverride(keyB)).toBe('sonnet')
+    expect((daemon as any).store.getModelOverride(keyA)).toBeUndefined()
     expect(connB.answerCallback).toHaveBeenCalledWith('cb-scoped', expect.stringContaining('sonnet'))
     await daemon.stop()
   })
