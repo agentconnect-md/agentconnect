@@ -9,19 +9,17 @@
  * labelled with the same enclosing channel name ("#general" ×3).
  *
  * Fold each observed id onto its enclosing channel (LocalStore `channel_scopes`, learnt
- * from the inbound message and from the channel-name lookup) and dedupe on
- * **(space, channel name)** — the guild plus the channel name — so the same channel
- * reported under two ids collapses while same-named channels in two different guilds
- * stay separate rows. Rows with no known space (DM conversations, and channels whose
- * scope hasn't been resolved yet) dedupe on id alone, which is the only key that can't
- * merge two genuinely different conversations.
+ * from the inbound message and from the channel-name lookup) and dedupe on the resulting
+ * channel SNOWFLAKE. Identity is deliberately never the display name: Discord permits
+ * two distinct channels of one guild to carry the same name, so a (guild, name) key
+ * would silently hide one of them from the console and make its trigger unconfigurable.
+ * An id whose scope isn't known yet therefore stays a row of its own until the lookup
+ * resolves its parent — a transient duplicate is recoverable, a hidden channel is not.
  */
 
 export interface ChannelScope {
   /** Enclosing channel id when this id is a thread. */
   parentId?: string
-  /** Guild ("server") display name. */
-  spaceName?: string
 }
 
 /**
@@ -38,18 +36,12 @@ export function collapseDiscordChannels(
   const out: { id: string; name?: string }[] = []
   const seen = new Set<string>()
   for (const c of observed) {
-    const scope = scopes.get(c.id)
-    const id = scope?.parentId ?? c.id
+    const id = scopes.get(c.id)?.parentId ?? c.id
+    if (seen.has(id)) continue
+    seen.add(id)
     // A thread row already carries its parent's name (the resolver labels a thread with
     // the enclosing channel), so the observed label is a sound fallback either way.
     const name = displayNames.get(id) ?? c.name
-    const byId = `i:${id}`
-    // Length-prefixed so a space name containing the separator cannot forge another
-    // space's key.
-    const key = scope?.spaceName && name ? `s:${scope.spaceName.length}:${scope.spaceName}/${name}` : byId
-    if (seen.has(key) || seen.has(byId)) continue
-    seen.add(key)
-    seen.add(byId)
     out.push({ id, ...(name ? { name } : {}) })
   }
   return out

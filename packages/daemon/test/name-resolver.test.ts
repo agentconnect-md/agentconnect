@@ -111,20 +111,21 @@ describe('ChannelNameResolver', () => {
     expect(saved.get('C1')).toBe('general')
   })
 
-  it('reports a thread scope (enclosing channel + space) and names the channel itself', async () => {
+  it('reports a thread scope (its enclosing channel) and names the channel itself', async () => {
     const saved = new Map<string, string>()
-    const scopes = new Map<string, { parentId?: string; spaceName?: string }>()
+    const scopes = new Map<string, { parentId?: string }>()
     const r = new ChannelNameResolver((id, name) => saved.set(id, name), {
       saveScope: (id, scope) => scopes.set(id, scope)
     })
-    r.noteChannel(
-      source({ id: 'T1', name: 'deploy the docs', parentId: 'C1', parentName: 'general', spaceName: 'Acme' }),
-      'T1'
-    )
+    r.noteChannel(source({ id: 'T1', name: 'deploy the docs', parentId: 'C1', parentName: 'general' }), 'T1')
     await flush()
-    expect(scopes.get('T1')).toEqual({ parentId: 'C1', spaceName: 'Acme' })
+    expect(scopes.get('T1')).toEqual({ parentId: 'C1' })
     // The enclosing channel is a reportable conversation of its own.
     expect(saved.get('C1')).toBe('general')
+    // A non-thread channel has no scope to report.
+    r.noteChannel(source({ id: 'C9', name: 'ops' }), 'C9')
+    await flush()
+    expect(scopes.has('C9')).toBe(false)
   })
 
   it('noteMessage caches the human sender and the users they mentioned', async () => {

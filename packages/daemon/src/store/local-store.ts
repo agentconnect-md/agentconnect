@@ -441,11 +441,10 @@ export class LocalStore {
       );
       -- Where a conversation id SITS: its enclosing channel (a Discord thread's parent
       -- channel — a session keys on the thread id, so the reachable channel it belongs
-      -- to is otherwise unrecoverable) and its space (the Discord guild / "server"
-      -- name). Backs observed-channel collapsing: threads fold into their channel, and
-      -- (space, name) is the uniqueness key of a reported channel row.
+      -- to is otherwise unrecoverable). Backs observed-channel collapsing: threads fold
+      -- onto their channel, whose snowflake is the uniqueness key of a reported row.
       CREATE TABLE IF NOT EXISTS channel_scopes (
-        id TEXT PRIMARY KEY, parentId TEXT, spaceName TEXT, updatedAt INTEGER
+        id TEXT PRIMARY KEY, parentId TEXT, updatedAt INTEGER
       );
       CREATE TABLE IF NOT EXISTS permission_requests (
         id TEXT PRIMARY KEY,
@@ -2145,37 +2144,28 @@ export class LocalStore {
     return out
   }
 
-  /** Record where a conversation id sits — its enclosing channel and/or its space
-   *  (guild) name. Field-wise latest-wins: a partial note (only a parent, only a
-   *  space) never clears what another lookup already established. */
-  setChannelScope(id: string, scope: { parentId?: string; spaceName?: string }, updatedAt: number): void {
-    if (scope.parentId === undefined && scope.spaceName === undefined) return
+  /** Record where a conversation id sits — the channel enclosing it. Latest-wins; an
+   *  empty note writes nothing. */
+  setChannelScope(id: string, scope: { parentId?: string }, updatedAt: number): void {
+    if (scope.parentId === undefined) return
     this.db
       .prepare(
-        `INSERT INTO channel_scopes (id, parentId, spaceName, updatedAt) VALUES (?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           parentId = COALESCE(excluded.parentId, channel_scopes.parentId),
-           spaceName = COALESCE(excluded.spaceName, channel_scopes.spaceName),
-           updatedAt = excluded.updatedAt`
+        `INSERT INTO channel_scopes (id, parentId, updatedAt) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET parentId = excluded.parentId, updatedAt = excluded.updatedAt`
       )
-      .run(id, scope.parentId ?? null, scope.spaceName ?? null, updatedAt)
+      .run(id, scope.parentId, updatedAt)
   }
 
   /** Scopes for a set of conversation ids — only the ids that have one. One batched
    *  `IN (…)` query, not a round-trip per id (mirrors getDisplayNames). */
-  getChannelScopes(ids: string[]): Map<string, { parentId?: string; spaceName?: string }> {
-    const out = new Map<string, { parentId?: string; spaceName?: string }>()
+  getChannelScopes(ids: string[]): Map<string, { parentId?: string }> {
+    const out = new Map<string, { parentId?: string }>()
     const unique = [...new Set(ids)]
     if (unique.length === 0) return out
     const rows = this.db
-      .prepare(`SELECT id, parentId, spaceName FROM channel_scopes WHERE id IN (${unique.map(() => '?').join(',')})`)
-      .all(...unique) as unknown as { id: string; parentId: string | null; spaceName: string | null }[]
-    for (const r of rows) {
-      out.set(r.id, {
-        ...(r.parentId ? { parentId: r.parentId } : {}),
-        ...(r.spaceName ? { spaceName: r.spaceName } : {})
-      })
-    }
+      .prepare(`SELECT id, parentId FROM channel_scopes WHERE id IN (${unique.map(() => '?').join(',')})`)
+      .all(...unique) as unknown as { id: string; parentId: string | null }[]
+    for (const r of rows) if (r.parentId) out.set(r.id, { parentId: r.parentId })
     return out
   }
 

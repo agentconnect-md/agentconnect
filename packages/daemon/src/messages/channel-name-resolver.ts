@@ -16,8 +16,6 @@ export interface ChannelInfoSource {
     parentId?: string
     /** Enclosing channel name when `channel` is itself a thread (Discord). */
     parentName?: string
-    /** Space ("server"/guild) display name the conversation lives in. */
-    spaceName?: string
   }>
   getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }>
 }
@@ -46,11 +44,9 @@ const FAIL_TTL_MS = 10 * 60 * 1000 // retry failed lookups (rate limit / outage)
 const MAX_TRACKED_IDS = 5000 // attempt-cache cap (oldest-evicted)
 
 /** Where a conversation sits — reported alongside its name so the daemon can fold a
- *  thread onto its enclosing channel and keep same-named channels of different spaces
- *  apart (see discord/channels.ts). */
+ *  thread onto the enclosing channel it belongs to (see discord/channels.ts). */
 export interface ResolvedChannelScope {
   parentId?: string
-  spaceName?: string
 }
 
 export interface ChannelNameResolverOpts {
@@ -121,13 +117,10 @@ export class ChannelNameResolver {
     if (!this.claim(channel)) return
     try {
       const info = await src.getChannelInfo(channel)
-      // Where the conversation sits: a thread folds onto its enclosing channel, and the
-      // space name keeps two guilds' "#general" apart in channel discovery. Saved before
-      // the name so a nameless lookup still contributes the scope.
-      this.saveScope?.(channel, {
-        ...(info.parentId ? { parentId: info.parentId } : {}),
-        ...(info.spaceName ? { spaceName: info.spaceName } : {})
-      })
+      // Where the conversation sits: a thread folds onto its enclosing channel in
+      // channel discovery. Saved before the name so a nameless lookup still contributes
+      // the scope.
+      if (info.parentId) this.saveScope?.(channel, { parentId: info.parentId })
       // The enclosing channel is a reportable conversation of its own (channel discovery
       // labels the folded row from it) — cache its name under ITS id too.
       if (info.parentId && info.parentName) this.save(info.parentId, info.parentName)

@@ -53,8 +53,6 @@ export interface DiscordMessageLike {
   mentionUserNames?: Record<string, string>
   /** Enclosing channel id when `channelId` is a thread (null/absent otherwise). */
   parentChannelId?: string | null
-  /** Guild ("server") display name; absent in a DM. */
-  guildName?: string | null
   attachments: DiscordAttachmentLike[]
 }
 
@@ -116,7 +114,6 @@ export function normalizeDiscordMessage(msg: DiscordMessageLike, ctx: { traceId:
     // conversation belongs to, where the session keys on the thread (see header).
     // Channel-scoped routing/gating and channel discovery both key on it.
     ...(msg.isThread && msg.parentChannelId ? { parentChannel: msg.parentChannelId } : {}),
-    ...(msg.guildName ? { spaceName: msg.guildName } : {}),
     // Top-level guild message → the daemon opens a thread off it and re-keys the turn.
     ...(!isDm && !msg.isThread ? { discordTopLevel: true } : {})
   }

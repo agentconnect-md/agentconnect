@@ -91,12 +91,6 @@ export interface NormalizedMessage {
    * enclosing channel rather than one row per thread. Absent outside a thread.
    */
   parentChannel?: string
-  /**
-   * Display name of the SPACE the conversation lives in (a Discord guild / "server").
-   * Metadata only: it disambiguates same-named channels across spaces. Absent in DMs
-   * and on platforms with a single implicit space.
-   */
-  spaceName?: string
   /** Trusted activation cause when known. In particular, `mention` means the router
    *  matched a raw platform token against this integration's own bound bot identity. */
   trigger?: 'mention' | 'dm' | 'keyword' | 'auto' | 'cron' | 'hook'

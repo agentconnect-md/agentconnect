@@ -320,7 +320,6 @@ export class DiscordConnection {
       ...(interaction.channel?.isThread() && interaction.channel.parentId
         ? { parentChannelId: interaction.channel.parentId }
         : {}),
-      ...(interaction.guild?.name ? { guildName: interaction.guild.name } : {}),
       attachments: []
     }
   }
@@ -342,7 +341,6 @@ export class DiscordConnection {
         [...message.mentions.users.values()].map((u) => [u.id, u.globalName ?? u.username])
       ),
       ...(message.channel.isThread() && message.channel.parentId ? { parentChannelId: message.channel.parentId } : {}),
-      ...(message.guild?.name ? { guildName: message.guild.name } : {}),
       attachments: [...message.attachments.values()].map((a) => ({
         id: a.id,
         name: a.name,
@@ -610,7 +608,6 @@ export class DiscordConnection {
     isPrivate?: boolean
     parentId?: string
     parentName?: string
-    spaceName?: string
   }> {
     const ch = await this.client.channels.fetch(channel).catch(() => null)
     const c = ch as
@@ -619,7 +616,6 @@ export class DiscordConnection {
           isDMBased?: () => boolean
           isThread?: () => boolean
           parentId?: string | null
-          guild?: { name?: string } | null
         })
       | null
     const isIm = typeof c?.isDMBased === 'function' ? c.isDMBased() : false
@@ -633,7 +629,6 @@ export class DiscordConnection {
       ...(c?.name ? { name: c.name } : {}),
       ...(parentId ? { parentId } : {}),
       ...(parentName ? { parentName } : {}),
-      ...(c?.guild?.name ? { spaceName: c.guild.name } : {}),
       isIm,
       // A guild channel's visibility depends on role overwrites we don't resolve here;
       // treat non-DM guild channels as non-private best-effort.

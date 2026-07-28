@@ -565,7 +565,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord discovery)', () => {
     // channel — the console showed "#general" three times before the fold.
     const store = (daemon as any).store
     for (const t of ['900001', '900002', '900003']) {
-      store.setChannelScope(t, { parentId: '900123', spaceName: 'Acme' }, 1)
+      store.setChannelScope(t, { parentId: '900123' }, 1)
     }
     store.setDisplayName('900123', 'general', 1)
     vi.spyOn(store, 'observedChannels').mockReturnValue([

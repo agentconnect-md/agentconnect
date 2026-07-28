@@ -75,16 +75,15 @@ describe('normalizeDiscordMessage', () => {
     expect(normalizeDiscordMessage({ ...base, authorIsBot: true }, { traceId: 't' }).sender.isBot).toBe(true)
   })
 
-  it('carries the enclosing channel of a thread message, plus the guild name', () => {
+  it('carries the enclosing channel of a thread message', () => {
     const m = normalizeDiscordMessage(
-      { ...base, channelId: 'T555', isThread: true, parentChannelId: 'C777', guildName: 'Acme' },
+      { ...base, channelId: 'T555', isThread: true, parentChannelId: 'C777' },
       { traceId: 't' }
     )
     // The session still keys on the thread; `parentChannel` is the reachable channel it
     // belongs to (channel-scoped triggers + channel discovery both key on it).
     expect(m.channel).toBe('T555')
     expect(m.parentChannel).toBe('C777')
-    expect(m.spaceName).toBe('Acme')
   })
 
   it('leaves parentChannel unset outside a thread (the channel IS the conversation)', () => {
@@ -122,45 +121,48 @@ describe('collapseDiscordChannels', () => {
       { id: 'T1', name: 'general' }
     ]
     const scopes = new Map([
-      ['T1', { parentId: 'C1', spaceName: 'Acme' }],
-      ['T2', { parentId: 'C1', spaceName: 'Acme' }],
-      ['T3', { parentId: 'C1', spaceName: 'Acme' }]
+      ['T1', { parentId: 'C1' }],
+      ['T2', { parentId: 'C1' }],
+      ['T3', { parentId: 'C1' }]
     ])
     expect(collapseDiscordChannels(observed, scopes, new Map([['C1', 'general']]))).toEqual([
       { id: 'C1', name: 'general' }
     ])
   })
 
-  it('keeps same-named channels of DIFFERENT servers apart (the key is space + name)', () => {
+  it('keeps two same-named channels of ONE guild apart (Discord allows duplicate names)', () => {
+    // Identity is the snowflake, never the label: merging these would hide a real
+    // conversation and make its trigger unconfigurable.
     const observed = [
       { id: 'T1', name: 'general' },
-      { id: 'T2', name: 'general' }
+      { id: 'T2', name: 'general' },
+      { id: 'C3', name: 'general' }
     ]
     const scopes = new Map([
-      ['T1', { parentId: 'C1', spaceName: 'Acme' }],
-      ['T2', { parentId: 'C2', spaceName: 'Globex' }]
+      ['T1', { parentId: 'C1' }],
+      ['T2', { parentId: 'C2' }]
     ])
     expect(collapseDiscordChannels(observed, scopes, new Map())).toEqual([
       { id: 'C1', name: 'general' },
-      { id: 'C2', name: 'general' }
+      { id: 'C2', name: 'general' },
+      { id: 'C3', name: 'general' }
     ])
   })
 
-  it('collapses one channel reported under two ids within the same server', () => {
-    // Two threads whose parent lookup landed differently (one unresolved) still name the
-    // same channel of the same guild — a second "#general" row would be a duplicate.
+  it('keeps an unresolved id distinct from the channel it may belong to', () => {
+    // A thread whose parent isn't known yet stays its own row until the lookup resolves
+    // it — a transient duplicate is recoverable, a hidden channel is not.
     const observed = [
       { id: 'C1', name: 'general' },
       { id: 'T9', name: 'general' }
     ]
-    const scopes = new Map([
-      ['C1', { spaceName: 'Acme' }],
-      ['T9', { spaceName: 'Acme' }]
+    expect(collapseDiscordChannels(observed, new Map(), new Map())).toEqual([
+      { id: 'C1', name: 'general' },
+      { id: 'T9', name: 'general' }
     ])
-    expect(collapseDiscordChannels(observed, scopes, new Map())).toEqual([{ id: 'C1', name: 'general' }])
   })
 
-  it('dedupes on id alone when there is no space (DM conversations must not merge)', () => {
+  it('dedupes repeated ids (DM conversations keep one row each)', () => {
     const observed = [
       { id: 'D1', name: '@dana' },
       { id: 'D2', name: '@dana' },

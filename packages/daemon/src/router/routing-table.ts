@@ -5,16 +5,24 @@ import type { RoutingRule } from './routing-rule.js'
 
 const KIND_ORDER = ['mention', 'dm', 'keyword', 'auto'] as const
 
+/**
+ * Does a rule's channel scope cover this message? A channel-scoped rule also serves the
+ * threads INSIDE that channel: a Discord session keys on the thread's own channel id, so
+ * a trigger the operator set on "#general" would otherwise stop applying the moment the
+ * bot opens a thread there. Every channel-scope comparison in the ladder goes through
+ * here — the scope filter AND the CP-override check — so the two can't disagree.
+ */
+function channelInScope(scopeChannel: string | undefined, msg: NormalizedMessage): boolean {
+  if (scopeChannel === undefined) return true
+  return scopeChannel === msg.channel || scopeChannel === msg.parentChannel
+}
+
 function scopeMatches(r: RoutingRule, msg: NormalizedMessage): boolean {
   // A platform-tagged rule only serves its own platform, so an unscoped Slack
   // `dm`/`auto` rule can't route a Telegram message (and vice-versa). Undefined
   // platform (legacy/tests) matches any.
   if (r.platform !== undefined && r.platform !== msg.platform) return false
-  // A channel-scoped rule also serves the threads INSIDE that channel: a Discord
-  // session keys on the thread's own channel id, so a trigger the operator set on
-  // "#general" would otherwise stop applying the moment the bot opens a thread there.
-  if (r.scope.channel !== undefined && r.scope.channel !== msg.channel && r.scope.channel !== msg.parentChannel)
-    return false
+  if (!channelInScope(r.scope.channel, msg)) return false
   if (r.scope.thread !== undefined && r.scope.thread !== msg.thread) return false
   return true
 }
@@ -100,10 +108,13 @@ export function routeRules(
   }
 
   // 3. CP per-sessionKey override (§8.3: CP authoritative).
+  // A rule scoped to the channel this message sits in (its enclosing channel counts —
+  // same predicate as the scope filter), NOT an unscoped global CP rule.
   const cpInChannel = kindCandidates.some(
     (r) =>
       r.source === 'cp' &&
-      r.scope.channel === msg.channel &&
+      r.scope.channel !== undefined &&
+      channelInScope(r.scope.channel, msg) &&
       (r.scope.thread === undefined || r.scope.thread === msg.thread)
   )
   const layer = cpInChannel ? kindCandidates.filter((r) => r.source === 'cp') : kindCandidates

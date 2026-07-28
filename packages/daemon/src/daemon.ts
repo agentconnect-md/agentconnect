@@ -2881,26 +2881,14 @@ export class Daemon {
   }
 
   /**
-   * Record where an inbound conversation sits (its enclosing channel and space name)
-   * straight from the message, which already carries both — no platform call, and no
-   * waiting on the TTL-cached name lookup. Channel discovery folds a thread onto the
-   * channel it belongs to with it; a message that carries neither is a no-op.
+   * Record the enclosing channel of an inbound conversation straight from the message,
+   * which already carries it — no platform call, and no waiting on the TTL-cached name
+   * lookup. Channel discovery folds a thread onto the channel it belongs to with it; a
+   * message that carries none is a no-op.
    */
   private noteChannelScope(msg: NormalizedMessage): void {
-    if (!msg.parentChannel && !msg.spaceName) return
-    this.store.setChannelScope(
-      msg.channel,
-      {
-        ...(msg.parentChannel ? { parentId: msg.parentChannel } : {}),
-        ...(msg.spaceName ? { spaceName: msg.spaceName } : {})
-      },
-      this.clock.now()
-    )
-    // The enclosing channel is itself a reportable conversation — carry the space onto
-    // it so its own row dedupes on (space, name) too.
-    if (msg.parentChannel && msg.spaceName) {
-      this.store.setChannelScope(msg.parentChannel, { spaceName: msg.spaceName }, this.clock.now())
-    }
+    if (!msg.parentChannel) return
+    this.store.setChannelScope(msg.channel, { parentId: msg.parentChannel }, this.clock.now())
     this.refreshObservedChannels()
   }
 
@@ -4006,11 +3994,7 @@ export class Daemon {
       // The session is about to key on the thread; record the channel it belongs to (and
       // its space) NOW, while `msg.channel` still names the parent — channel discovery
       // then reports this one channel instead of a row per thread we open under it.
-      this.store.setChannelScope(
-        threadId,
-        { parentId: msg.channel, ...(msg.spaceName ? { spaceName: msg.spaceName } : {}) },
-        this.clock.now()
-      )
+      this.store.setChannelScope(threadId, { parentId: msg.channel }, this.clock.now())
       // Re-key the turn onto the thread channel (channel == thread == session; see
       // discord/normalize.ts). msgId keeps the original message id → its `ts`, which
       // equals the thread id, so the session treats this message as the thread root.
