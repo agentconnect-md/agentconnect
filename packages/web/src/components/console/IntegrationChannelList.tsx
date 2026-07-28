@@ -98,27 +98,58 @@ function TriggerToggle({
   )
 }
 
+/** One band of the channel list: the rows of a single Discord server, with the header
+ *  to print above them (absent ⇒ no header, the flat lead group). */
+export interface SpaceGroup {
+  key: string
+  label?: string
+  rows: IntegrationChannelRow[]
+}
+
+/** Discord servers may share a NAME, so two same-named bands are told apart by a tail
+ *  of the server id — enough to distinguish them without printing a whole snowflake. */
+const spaceDiscriminator = (spaceId: string) => spaceId.slice(-4)
+
 /**
  * Bucket channel rows by the space (Discord server) they sit in.
  *
  * A Discord bot is usually in several servers, each with its own "#general", so the
  * channel name alone doesn't say which row an operator is configuring — the rows are
- * banded under their server, alphabetically. Platforms with one implicit container per
- * bot (Slack, Telegram, Feishu) report no space and stay one flat, unheaded list; so do
- * the Discord rows whose server name hasn't resolved yet, which lead the list rather
- * than hiding under a header that doesn't apply to them.
+ * banded under their server, alphabetically.
+ *
+ * Grouping keys on the server ID, never the label: Discord permits two distinct servers
+ * to carry the same name, and banding those together would merge exactly the rows this
+ * is here to separate. When two bands do end up with the same label they are suffixed
+ * with a tail of their id, so the duplication is visible rather than silent. A server
+ * whose name hasn't resolved yet still gets its own band, headed by that id tail alone.
+ *
+ * Platforms with one implicit container per bot (Slack, Telegram, Feishu) report no
+ * space at all and stay one flat, unheaded list, which leads.
  *
  * Exported for its unit test.
  */
-export function groupBySpace(rows: IntegrationChannelRow[]): [string, IntegrationChannelRow[]][] {
-  const spaces = new Map<string, IntegrationChannelRow[]>()
+export function groupBySpace(rows: IntegrationChannelRow[]): SpaceGroup[] {
+  const spaces = new Map<string, { label?: string; rows: IntegrationChannelRow[] }>()
   for (const c of rows) {
-    const key = c.space ?? ''
+    const key = c.spaceId ?? ''
     const group = spaces.get(key)
-    if (group) group.push(c)
-    else spaces.set(key, [c])
+    if (group) {
+      group.rows.push(c)
+      group.label ??= c.space
+    } else spaces.set(key, { ...(c.space ? { label: c.space } : {}), rows: [c] })
   }
-  return [...spaces.entries()].sort(([a], [b]) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)))
+  const byLabel = new Map<string, number>()
+  for (const { label } of spaces.values()) if (label) byLabel.set(label, (byLabel.get(label) ?? 0) + 1)
+  return [...spaces.entries()]
+    .map(([key, { label, rows }]) => {
+      if (!key) return { key, rows }
+      // An unnamed server is headed by its discriminator alone — it is still a distinct
+      // server, and leaving it unheaded would silently pool it with the flat group.
+      const collides = label !== undefined && (byLabel.get(label) ?? 0) > 1
+      const suffix = spaceDiscriminator(key)
+      return { key, label: label === undefined ? `server ${suffix}` : collides ? `${label} · ${suffix}` : label, rows }
+    })
+    .sort((a, b) => (!a.key ? -1 : !b.key ? 1 : (a.label ?? '').localeCompare(b.label ?? '')))
 }
 
 /** The band that names a run of rows — a Discord server, or the DM section. */
@@ -428,10 +459,10 @@ export function IntegrationChannelList({
           </span>
         </div>
       )}
-      {grouped.map(([space, rows]) => (
-        <Fragment key={space || '(unscoped)'}>
-          {space && groupHeader(space, padX)}
-          {rows.map(row)}
+      {grouped.map((g) => (
+        <Fragment key={g.key || '(unscoped)'}>
+          {g.label && groupHeader(g.label, padX)}
+          {g.rows.map(row)}
         </Fragment>
       ))}
       {dmRows.length > 0 && groupHeader('Direct messages', padX)}

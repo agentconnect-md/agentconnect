@@ -702,8 +702,11 @@ export const CreateIntegrationBody = z
 export const IntegrationChannelDto = z.object({
   channelId: z.string(),
   name: z.string().nullable(), // "#deploys" without the hash (or DM counterpart); null if lookup failed
-  /** Enclosing space (Discord server) name — one bot spans several servers, each with
-   *  its own "#general". Null on single-container platforms, DMs, and until resolved. */
+  /** Enclosing space (Discord server) — one bot spans several servers, each with its
+   *  own "#general". `spaceId` is the identity the console groups on (two servers may
+   *  share a name); `space` is the label. Null on single-container platforms, on DMs,
+   *  and until resolved. */
+  spaceId: z.string().nullable(),
   space: z.string().nullable(),
   isPrivate: z.boolean(),
   kind: z.enum(['channel', 'im']),

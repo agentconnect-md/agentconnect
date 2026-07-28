@@ -86,31 +86,48 @@ describe('placePopover', () => {
   })
 })
 
-// One Discord bot commonly spans several servers, each with a "#general" of its own.
+// One Discord bot commonly spans several servers, each with a "#general" of its own —
+// and Discord lets two of those servers carry the same NAME.
 describe('groupBySpace', () => {
-  const chan = (channelId: string, space?: string): IntegrationChannelRow => ({
+  const chan = (channelId: string, spaceId?: string, space?: string): IntegrationChannelRow => ({
     channelId,
     name: 'general',
     kind: 'channel',
     trigger: 'mention',
+    ...(spaceId ? { spaceId } : {}),
     ...(space ? { space } : {})
   })
 
   it('bands the rows under their server, alphabetically', () => {
-    expect(groupBySpace([chan('C2', 'Side Project'), chan('C1', 'Acme HQ')])).toEqual([
-      ['Acme HQ', [chan('C1', 'Acme HQ')]],
-      ['Side Project', [chan('C2', 'Side Project')]]
+    expect(groupBySpace([chan('C2', 'G2', 'Side Project'), chan('C1', 'G1', 'Acme HQ')])).toEqual([
+      { key: 'G1', label: 'Acme HQ', rows: [chan('C1', 'G1', 'Acme HQ')] },
+      { key: 'G2', label: 'Side Project', rows: [chan('C2', 'G2', 'Side Project')] }
     ])
+  })
+
+  it('keeps two SAME-NAMED servers apart and makes the duplication visible', () => {
+    // Grouping on the label would merge these, hiding the very ambiguity the server
+    // band exists to resolve — both channels are called "general" too.
+    const groups = groupBySpace([chan('C1', '90000001111', 'Acme'), chan('C2', '90000002222', 'Acme')])
+    expect(groups.map((g) => g.key)).toEqual(['90000001111', '90000002222'])
+    expect(groups.map((g) => g.label)).toEqual(['Acme · 1111', 'Acme · 2222'])
   })
 
   it('keeps a space-less platform one flat, unheaded list', () => {
-    expect(groupBySpace([chan('C1'), chan('C2')])).toEqual([['', [chan('C1'), chan('C2')]]])
+    expect(groupBySpace([chan('C1'), chan('C2')])).toEqual([{ key: '', rows: [chan('C1'), chan('C2')] }])
   })
 
-  it('leads with rows whose server has not resolved yet rather than mislabelling them', () => {
-    expect(groupBySpace([chan('C1', 'Acme HQ'), chan('C2')])).toEqual([
-      ['', [chan('C2')]],
-      ['Acme HQ', [chan('C1', 'Acme HQ')]]
+  it('heads a server whose name has not resolved yet by its id, not the flat group', () => {
+    const groups = groupBySpace([chan('C1', 'G1', 'Acme HQ'), chan('C2', '90000002222'), chan('C3')])
+    expect(groups).toEqual([
+      { key: '', rows: [chan('C3')] },
+      { key: 'G1', label: 'Acme HQ', rows: [chan('C1', 'G1', 'Acme HQ')] },
+      { key: '90000002222', label: 'server 2222', rows: [chan('C2', '90000002222')] }
     ])
+  })
+
+  it('takes the label from whichever row of the server carries one', () => {
+    const rows = [chan('C1', 'G1'), chan('C2', 'G1', 'Acme HQ')]
+    expect(groupBySpace(rows)).toEqual([{ key: 'G1', label: 'Acme HQ', rows }])
   })
 })

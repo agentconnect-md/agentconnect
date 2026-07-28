@@ -112,6 +112,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
       {
         channelId: 'C1',
         name: 'deploys',
+        spaceId: null,
         space: null,
         isPrivate: false,
         kind: 'channel',
@@ -121,6 +122,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
       {
         channelId: 'C2',
         name: 'releases',
+        spaceId: null,
         space: null,
         isPrivate: true,
         kind: 'channel',
@@ -139,12 +141,19 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
     const id = await install(running)
 
-    await report(DAEMON, id, [{ id: 'C1', name: 'general', space: 'Acme HQ' }], undefined, undefined, false)
+    await report(
+      DAEMON,
+      id,
+      [{ id: 'C1', name: 'general', spaceId: 'G1', space: 'Acme HQ' }],
+      undefined,
+      undefined,
+      false
+    )
     await report(DAEMON, id, [{ id: 'C1', name: 'general' }], undefined, undefined, false)
 
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     const [dto] = res.json() as { channels: { channelId: string; space: string | null }[] }[]
-    expect(dto!.channels).toEqual([expect.objectContaining({ channelId: 'C1', space: 'Acme HQ' })])
+    expect(dto!.channels).toEqual([expect.objectContaining({ channelId: 'C1', spaceId: 'G1', space: 'Acme HQ' })])
   })
 
   it("a restricted agent's fresh conversations default to OFF, and DM rows survive a membership re-report (§14)", async () => {
@@ -178,6 +187,72 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     ;[dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
     expect(dto!.channels.find((c) => c.channelId === 'D1')).toMatchObject({ kind: 'im' })
+  })
+
+  it('stores a DM discovered while the agent is public as OFF, so a later gate stays closed (§14.3)', async () => {
+    // Observed-conversation discovery reports DMs whatever the agent's visibility, and
+    // visibility can flip later — at which point gatedBindRules enables every non-Off IM
+    // row. A DM stored with the ordinary 'mention' default would therefore keep being
+    // answered by a now-private agent that no operator ever enabled it for.
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
+
+    // Public agent: the DM is discovered (and a channel alongside it, for contrast).
+    await report(DAEMON, id, [
+      { id: 'C1', name: 'deploys' },
+      { id: 'D1', name: '@alice', kind: 'im' }
+    ])
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    const [dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
+    const byId = new Map(dto!.channels.map((c) => [c.channelId, c]))
+    expect(byId.get('D1')).toMatchObject({ kind: 'im', trigger: 'off' })
+    expect(byId.get('C1')).toMatchObject({ kind: 'channel', trigger: 'mention' })
+
+    spy.upserts.length = 0
+    const put = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${integration.agentId}/sharing`,
+      payload: { visibility: 'restricted', sharedWith: [] }
+    })
+    expect(put.statusCode).toBe(200)
+    const u0 = spy.upserts[0]!.u
+    if (u0.platform !== 'slack') throw new Error('expected slack integration')
+    expect(u0.slack.gated).toBe(true)
+    // No dm rule for D1: the private agent answers that DM only once enabled.
+    expect(u0.slack.bindRules).toEqual([{ channel: 'C1', match: { kind: 'mention' } }])
+  })
+
+  it('resets the trigger when a row misclassified as a channel converts to a DM (§14.3)', async () => {
+    // Session-history discovery cannot tell a DM from a group, so a DM could already be
+    // stored as a channel carrying a channel's trigger. That is not an operator's DM
+    // choice, so the conversion must not inherit it into the gated DM rule set.
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
+
+    await report(DAEMON, id, [{ id: 'D1', name: '@alice' }], undefined, undefined, false)
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'D1', 'any')
+    // The daemon now knows it is a DM and re-reports it as one.
+    await report(DAEMON, id, [{ id: 'D1', name: '@alice', kind: 'im' }], undefined, undefined, false)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    const [dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
+    expect(dto!.channels).toEqual([expect.objectContaining({ channelId: 'D1', kind: 'im', trigger: 'off' })])
+
+    spy.upserts.length = 0
+    await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${integration.agentId}/sharing`,
+      payload: { visibility: 'restricted', sharedWith: [] }
+    })
+    const u0 = spy.upserts[0]!.u
+    if (u0.platform !== 'slack') throw new Error('expected slack integration')
+    expect(u0.slack.bindRules).toEqual([])
   })
 
   it('enabling conversations on a GATED integration pushes conversation-scoped rules ONLY (§14)', async () => {
@@ -654,6 +729,7 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
     expect(res.json()).toEqual({
       channelId: 'C2',
       name: 'releases',
+      spaceId: null,
       space: null,
       isPrivate: false,
       kind: 'channel',

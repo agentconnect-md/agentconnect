@@ -47,6 +47,7 @@ function toChannelDto(c: IntegrationChannelRecord): IntegrationChannelDtoT {
   return {
     channelId: c.channelId,
     name: c.name,
+    spaceId: c.spaceId,
     space: c.space,
     isPrivate: c.isPrivate,
     kind: c.kind,

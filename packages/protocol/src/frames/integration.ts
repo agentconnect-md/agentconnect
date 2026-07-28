@@ -192,15 +192,19 @@ export type IntegrationRemove = z.infer<typeof IntegrationRemove>
  * (`kind: 'im'`, Slack "D…" ids) are reported only for gated integrations, on
  * first inbound DM; their `name` is the counterpart's display name.
  *
- * `space` names the container the conversation lives in — a Discord GUILD, whose
- * name a bot in several servers needs for the channel to be identifiable at all
- * (every server has a "#general"). Absent on platforms with one implicit container
- * per bot (Slack workspace, Telegram, Feishu tenant) and on DM rows.
+ * `spaceId`/`space` identify the container the conversation lives in — a Discord
+ * GUILD, which a bot in several servers needs for the channel to be identifiable at
+ * all (every server has a "#general"). The ID is the identity: two distinct guilds
+ * may carry the SAME name, so grouping on the name alone would merge them and hide
+ * the ambiguity it was meant to resolve. `space` is the display label only. Both are
+ * absent on platforms with one implicit container per bot (Slack workspace, Telegram,
+ * Feishu tenant) and on DM rows.
  */
 export const IntegrationChannel = z.object({
   id: z.string(), // platform conversation id (Slack "C…" / DM "D…")
   name: z.string().optional(), // "#deploys" without the hash (or DM counterpart); absent if lookup failed
-  space: z.string().optional(), // enclosing Discord guild/server name; absent until resolved
+  spaceId: z.string().optional(), // enclosing Discord guild snowflake — the space's IDENTITY
+  space: z.string().optional(), // that guild's display name; absent until resolved
   isPrivate: z.boolean().optional(),
   kind: z.enum(['channel', 'im']).optional() // absent = 'channel'
 })

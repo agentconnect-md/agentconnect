@@ -195,22 +195,46 @@ describe('collapseDiscordChannels', () => {
       ['G2', 'Side Project']
     ])
     expect(collapseDiscordChannels(observed, scopes, names)).toEqual([
-      { id: 'C1', name: 'general', space: 'Acme HQ' },
-      { id: 'C2', name: 'general', space: 'Side Project' }
+      { id: 'C1', name: 'general', spaceId: 'G1', space: 'Acme HQ' },
+      { id: 'C2', name: 'general', spaceId: 'G2', space: 'Side Project' }
     ])
   })
 
   it('takes the guild off the thread when the enclosing channel has no scope of its own', () => {
     const scopes = new Map([['T1', { parentId: 'C1', spaceId: 'G1' }]])
     expect(collapseDiscordChannels([{ id: 'T1', name: 'general' }], scopes, new Map([['G1', 'Acme HQ']]))).toEqual([
-      { id: 'C1', name: 'general', space: 'Acme HQ' }
+      { id: 'C1', name: 'general', spaceId: 'G1', space: 'Acme HQ' }
     ])
   })
 
-  it('omits the space until its name is resolved (never a raw guild snowflake)', () => {
+  it('carries the guild id even before its name resolves (identity, then label)', () => {
     const scopes = new Map([['C1', { spaceId: 'G1' }]])
     expect(collapseDiscordChannels([{ id: 'C1', name: 'general' }], scopes, new Map())).toEqual([
-      { id: 'C1', name: 'general' }
+      { id: 'C1', name: 'general', spaceId: 'G1' }
+    ])
+  })
+
+  it('keeps two SAME-NAMED guilds apart by id (Discord allows duplicate server names)', () => {
+    const scopes = new Map([
+      ['C1', { spaceId: 'G1' }],
+      ['C2', { spaceId: 'G2' }]
+    ])
+    const names = new Map([
+      ['G1', 'Acme'],
+      ['G2', 'Acme']
+    ])
+    expect(
+      collapseDiscordChannels(
+        [
+          { id: 'C1', name: 'general' },
+          { id: 'C2', name: 'general' }
+        ],
+        scopes,
+        names
+      )
+    ).toEqual([
+      { id: 'C1', name: 'general', spaceId: 'G1', space: 'Acme' },
+      { id: 'C2', name: 'general', spaceId: 'G2', space: 'Acme' }
     ])
   })
 

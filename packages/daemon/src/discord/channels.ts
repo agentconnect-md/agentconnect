@@ -30,17 +30,18 @@ export interface ChannelScope {
  * LocalStore lookups keyed by conversation id; the enclosing channel's own cached
  * name wins over the observed row's label when present.
  *
- * Each row also carries its guild's name (`space`) when known: a bot invited to
- * several servers surfaces one "#general" per server, and the channel name alone
- * makes those rows indistinguishable in the console. The guild id resolves from the
- * folded-onto channel's scope, falling back to the observed thread's own.
+ * Each row also carries the guild it sits in — `spaceId` (the snowflake, which is the
+ * space's identity: two guilds may share a name) plus `space` (that guild's name, once
+ * resolved). A bot invited to several servers surfaces one "#general" per server, and
+ * the channel name alone makes those rows indistinguishable in the console. The guild
+ * resolves from the folded-onto channel's scope, falling back to the observed thread's.
  */
 export function collapseDiscordChannels(
   observed: { id: string; name?: string }[],
   scopes: Map<string, ChannelScope>,
   displayNames: Map<string, string>
-): { id: string; name?: string; space?: string }[] {
-  const out: { id: string; name?: string; space?: string }[] = []
+): { id: string; name?: string; spaceId?: string; space?: string }[] {
+  const out: { id: string; name?: string; spaceId?: string; space?: string }[] = []
   const seen = new Set<string>()
   for (const c of observed) {
     const id = scopes.get(c.id)?.parentId ?? c.id
@@ -51,7 +52,7 @@ export function collapseDiscordChannels(
     const name = displayNames.get(id) ?? c.name
     const spaceId = scopes.get(id)?.spaceId ?? scopes.get(c.id)?.spaceId
     const space = spaceId ? displayNames.get(spaceId) : undefined
-    out.push({ id, ...(name ? { name } : {}), ...(space ? { space } : {}) })
+    out.push({ id, ...(name ? { name } : {}), ...(spaceId ? { spaceId } : {}), ...(space ? { space } : {}) })
   }
   return out
 }

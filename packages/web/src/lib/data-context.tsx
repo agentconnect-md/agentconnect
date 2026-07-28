@@ -263,6 +263,7 @@ function integrationRowFromDto(
     channels: d.channels.map((c) => ({
       channelId: c.channelId,
       name: c.name || c.channelId,
+      ...(c.spaceId ? { spaceId: c.spaceId } : {}),
       ...(c.space ? { space: c.space } : {}),
       kind: c.kind,
       trigger: c.trigger,
