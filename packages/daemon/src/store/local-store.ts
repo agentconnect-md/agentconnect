@@ -61,6 +61,8 @@ export interface SessionRecord {
   platform: string
   channel: string
   thread: string
+  /** Opaque physical-bot scope for transcript/session lookup isolation. */
+  transportScope?: string | null
   acpSessionId: string | null
   // §7.3 session lifecycle. `prompting` ⇒ a turn is in flight; `cancelling` ⇒
   // a `!stop` was issued and we're awaiting the agent (with a force backstop);
@@ -199,6 +201,12 @@ export interface TranscriptMutation {
 
 export function sessionKey(platform: string, channel: string, thread: string, agentId: string): string {
   return `${platform}:${channel}:${thread}:${agentId}`
+}
+
+/** Internal transcript namespace. Platform-visible coordinates remain raw on the
+ * session row and wire; only local transcript storage uses the physical-bot scope. */
+export function transcriptChannelKey(channel: string, transportScope?: string | null): string {
+  return transportScope ? `${channel}\u001f${transportScope}` : channel
 }
 
 /**
@@ -408,7 +416,7 @@ export class LocalStore {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
-        acpSessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
+        transportScope TEXT, acpSessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
         usage TEXT, muted INTEGER, triggeredBy TEXT, title TEXT, modelOverride TEXT,
         effortOverride TEXT, permissionModeOverride TEXT, fastModeOverride INTEGER,
         outputModeOverride TEXT, statusBarTs TEXT, memoryProvider TEXT
@@ -903,6 +911,8 @@ export class LocalStore {
       this.db.exec('ALTER TABLE sessions ADD COLUMN memoryProvider TEXT')
     if (!cols.some((c) => c.name === 'originSessionId'))
       this.db.exec('ALTER TABLE sessions ADD COLUMN originSessionId TEXT')
+    if (!cols.some((c) => c.name === 'transportScope'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN transportScope TEXT')
   }
 
   /**
@@ -1045,6 +1055,28 @@ export class LocalStore {
       .get(agentId, channel) as SessionRecord | undefined
   }
 
+  /** Latest addressable session for one physical platform bot. The explicit
+   * transport scope prevents equal Telegram chat ids on different bots from
+   * stealing command/callback targeting from one another. */
+  latestSessionForTransport(
+    agentId: string,
+    channel: string,
+    transportScope?: string,
+    thread?: string
+  ): SessionRecord | undefined {
+    const args: SQLInputValue[] = [agentId, channel, transportScope ?? '']
+    const threadClause = thread === undefined ? '' : ' AND thread = ?'
+    if (thread !== undefined) args.push(thread)
+    return this.db
+      .prepare(
+        `SELECT * FROM sessions
+         WHERE agentId = ? AND channel = ? AND COALESCE(transportScope, '') = ?
+           AND acpSessionId IS NOT NULL${threadClause}
+         ORDER BY updatedAt DESC LIMIT 1`
+      )
+      .get(...args) as SessionRecord | undefined
+  }
+
   /** The most recently active addressable session (has an ACP id) in a channel, across
    *  ALL agents — or undefined. Used to resolve which agent a bare command targets when
    *  routing can't (e.g. a group `/status@bot` with no mention entity / thread). */
@@ -1070,14 +1102,15 @@ export class LocalStore {
 
   /** Addressable session ids whose authorized transcript scope may have changed. */
   sessionIdsForTranscript(agentId: string, channel: string, thread: string): string[] {
-    return (
-      this.db
-        .prepare(
-          `SELECT DISTINCT acpSessionId FROM sessions
-           WHERE agentId = ? AND channel = ? AND thread = ? AND acpSessionId IS NOT NULL`
-        )
-        .all(agentId, channel, thread) as { acpSessionId: string }[]
-    ).map((row) => row.acpSessionId)
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT acpSessionId, channel, transportScope FROM sessions
+         WHERE agentId = ? AND thread = ? AND acpSessionId IS NOT NULL`
+      )
+      .all(agentId, thread) as { acpSessionId: string; channel: string; transportScope: string | null }[]
+    return rows
+      .filter((row) => transcriptChannelKey(row.channel, row.transportScope) === channel)
+      .map((row) => row.acpSessionId)
   }
 
   currentTranscriptRevision(): number {
@@ -1299,14 +1332,15 @@ export class LocalStore {
     this.db
       .prepare(
         `INSERT INTO sessions
-           (key, agentId, platform, channel, thread, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, memoryProvider, originSessionId)
+           (key, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, memoryProvider, originSessionId)
          VALUES
-           (@key, @agentId, @platform, @channel, @thread, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
+           (@key, @agentId, @platform, @channel, @thread, @transportScope, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
             CASE WHEN EXISTS (SELECT 1 FROM session_mutes WHERE key = @key) THEN 1 ELSE NULL END,
             @triggeredBy, @memoryProvider, @originSessionId)
          ON CONFLICT(key) DO UPDATE SET
            acpSessionId=excluded.acpSessionId, state=excluded.state,
            lastDeliveredTs=excluded.lastDeliveredTs, updatedAt=excluded.updatedAt,
+           transportScope=excluded.transportScope,
            muted=CASE
              WHEN EXISTS (SELECT 1 FROM session_mutes WHERE key = excluded.key) THEN 1
              ELSE sessions.muted
@@ -1323,6 +1357,7 @@ export class LocalStore {
         platform: rec.platform,
         channel: rec.channel,
         thread: rec.thread,
+        transportScope: rec.transportScope ?? null,
         acpSessionId: rec.acpSessionId,
         state: rec.state,
         lastDeliveredTs: rec.lastDeliveredTs,
@@ -1716,14 +1751,23 @@ export class LocalStore {
   }
 
   /** Newest-first addressable sessions to mine as dream transcript sources. */
-  dreamSessionSources(agentId: string, limit: number): { sessionId: string; channel: string; thread: string }[] {
-    return this.db
+  dreamSessionSources(
+    agentId: string,
+    limit: number
+  ): { sessionId: string; channel: string; thread: string; transportScope?: string | null }[] {
+    const rows = this.db
       .prepare(
-        `SELECT acpSessionId AS sessionId, channel, thread FROM sessions
+        `SELECT acpSessionId AS sessionId, channel, thread, transportScope FROM sessions
          WHERE agentId = ? AND acpSessionId IS NOT NULL AND platform <> 'dream'
          ORDER BY updatedAt DESC LIMIT ?`
       )
-      .all(agentId, limit) as { sessionId: string; channel: string; thread: string }[]
+      .all(agentId, limit) as {
+      sessionId: string
+      channel: string
+      thread: string
+      transportScope: string | null
+    }[]
+    return rows.map(({ transportScope, ...row }) => (transportScope ? { ...row, transportScope } : row))
   }
 
   /** Chronological conversational text of one session thread, scoped like
@@ -1761,8 +1805,10 @@ export class LocalStore {
     thread: string,
     agentId: string,
     limit: number,
-    includeTools = false
+    includeTools = false,
+    transportScope?: string | null
   ): { sender: string; text: string; kind?: string }[] {
+    const transcriptChannel = transcriptChannelKey(channel, transportScope)
     const rows = this.db
       .prepare(
         // SECURITY: gate the delivery-table match on `kind = 'text'`, exactly as
@@ -1780,7 +1826,7 @@ export class LocalStore {
            AND NOT (kind = 'tool' AND text IN (?, ?))
          ORDER BY seq DESC LIMIT ?`
       )
-      .all(channel, thread, agentId, agentId, agentId, ...SESSION_TITLE_TOOL_TITLES, limit) as {
+      .all(transcriptChannel, thread, agentId, agentId, agentId, ...SESSION_TITLE_TOOL_TITLES, limit) as {
       sender: string
       text: string
       kind?: string
@@ -1994,12 +2040,14 @@ export class LocalStore {
   /** Count non-closed sessions in (channel, thread) touched at/after `sinceTs`
    *  (epoch ms). Used to bound unrouted-transcript growth to recently-active
    *  threads, since there is no session-`closed` lifecycle yet. */
-  activeSessionCountSince(channel: string, thread: string, sinceTs: number): number {
+  activeSessionCountSince(channel: string, thread: string, sinceTs: number, transportScope?: string | null): number {
     const row = this.db
       .prepare(
-        "SELECT COUNT(*) AS n FROM sessions WHERE channel = ? AND thread = ? AND state != 'closed' AND updatedAt >= ?"
+        `SELECT COUNT(*) AS n FROM sessions
+         WHERE channel = ? AND thread = ? AND COALESCE(transportScope, '') = ?
+           AND state != 'closed' AND updatedAt >= ?`
       )
-      .get(channel, thread, sinceTs) as { n: number } | undefined
+      .get(channel, thread, transportScope ?? '', sinceTs) as { n: number } | undefined
     return row?.n ?? 0
   }
 

@@ -1,5 +1,5 @@
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
-import { LocalStore, sessionKey } from '../store/local-store.js'
+import { LocalStore, sessionKey, transcriptChannelKey } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { prepareWorkspace } from '../workspace/workspace-manager.js'
 import { memoryKindOf, type MemoryProvider } from '../agents/memory-provider.js'
@@ -267,13 +267,17 @@ export class SessionManager {
     // whole conversation is recorded, and thread stays stable → one session.
     const ts = msg.platform === 'webchat' ? monotonicTs() : coordTs
     const key = sessionKey(msg.platform, msg.channel, thread, agentId)
+    let rec = this.deps.store.getSession(key)
+    const transportScope = msg.transportScope ?? rec?.transportScope ?? undefined
+    const transcriptChannel = transcriptChannelKey(msg.channel, transportScope)
+    if (transportScope !== undefined) msg.transportScope = transportScope
 
     // record the triggering message in the transcript (with an attachment mention
     // for prompt replay; bounded inline webchat images remain daemon-local for UI replay)
     const mention = attachmentMention(msg.attachments)
     const transcriptAttachments = transcriptImageAttachments(msg.attachments)
     this.deps.store.appendTranscript({
-      channel: msg.channel,
+      channel: transcriptChannel,
       thread,
       ts,
       sender: msg.sender.id,
@@ -285,22 +289,30 @@ export class SessionManager {
       ...(transcriptAttachments.length ? { attachments: transcriptAttachments } : {})
     })
 
-    let rec = this.deps.store.getSession(key)
     const isNewLogicalSession = rec === undefined
     if (rec) {
       const persistedMemoryProvider = rec.memoryProvider ?? 'managed'
-      if (persistedMemoryProvider !== currentMemoryProvider) {
+      // A pre-scope session may already contain context admitted through another
+      // physical bot. It cannot be attributed safely during migration, so the first
+      // scoped turn starts a clean runtime session instead of adopting that context.
+      const transportChanged = transportScope != null && rec.transportScope !== transportScope
+      if (persistedMemoryProvider !== currentMemoryProvider || transportChanged) {
         rec = {
           ...rec,
           acpSessionId: null,
           memoryProvider: currentMemoryProvider,
+          transportScope: transportScope ?? null,
           state: rec.state === 'closed' ? 'closed' : 'idle',
           lastDeliveredTs: null,
           updatedAt: Date.now()
         }
         this.deps.store.upsertSession(rec)
-      } else if (rec.memoryProvider == null) {
-        rec = { ...rec, memoryProvider: currentMemoryProvider }
+      } else if (rec.memoryProvider == null || rec.transportScope == null) {
+        rec = {
+          ...rec,
+          memoryProvider: currentMemoryProvider,
+          ...(transportScope !== undefined ? { transportScope } : {})
+        }
         this.deps.store.upsertSession(rec)
       }
     }
@@ -531,6 +543,7 @@ export class SessionManager {
         platform: msg.platform,
         channel: msg.channel,
         thread,
+        transportScope: transportScope ?? null,
         acpSessionId,
         state: 'idle',
         lastDeliveredTs: null,
@@ -635,7 +648,7 @@ export class SessionManager {
         // them (low/medium/high record at the send boundary WITH the Slack ts, so they dedup).
         if (h.sender === agentId) continue
         this.deps.store.appendTranscript({
-          channel: msg.channel,
+          channel: transcriptChannel,
           thread,
           ts: h.ts,
           sender: h.sender,
@@ -654,7 +667,7 @@ export class SessionManager {
     const blocks: ContentBlock[] = []
     {
       const gap = this.deps.store
-        .transcriptSince(msg.channel, thread, markerBefore)
+        .transcriptSince(transcriptChannel, thread, markerBefore)
         .filter(
           (e) =>
             snapshotCutoffTs === undefined ||

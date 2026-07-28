@@ -23,7 +23,7 @@ import type {
   ToolBody,
   Platform
 } from '@agentconnect.md/protocol'
-import type { LocalStore, TranscriptEventCursor } from '../store/local-store.js'
+import { transcriptChannelKey, type LocalStore, type TranscriptEventCursor } from '../store/local-store.js'
 import { mentionedUserIds, substituteUserMentions } from '../slack/mentions.js'
 import { slackThreadUrl } from '../slack/permalink.js'
 
@@ -188,7 +188,9 @@ export function createSessionReader(
       // firstMessageText only runs for untitled rows (`||` short-circuits).
       const enriched = rows.map((r) => ({
         r,
-        rawTitle: r.title || deriveTitle(store.firstMessageText(r.channel, r.thread, r.agentId))
+        rawTitle:
+          r.title ||
+          deriveTitle(store.firstMessageText(transcriptChannelKey(r.channel, r.transportScope), r.thread, r.agentId))
       }))
       // Display names for every channel + triggering sender + `<@U…>` mention in a
       // title we know one for (daemon-resolved + cached; absent ids just stay raw).
@@ -244,15 +246,22 @@ export function createSessionReader(
       const legacyBefore = Number.isSafeInteger(numericCursor) ? numericCursor : null
       const chronologicalSlack =
         rec.platform === 'slack' && (req.cursor === undefined || eventCursor !== null || legacyBefore === null)
+      const transcriptChannel = transcriptChannelKey(rec.channel, rec.transportScope)
       // Scope to what THIS agent's session received + produced, not the whole shared
       // (channel, thread) thread — an agent-called session only ever saw the message handed
       // to it (context isolation), so the view must not leak other participants' cross-talk.
       const page =
         afterRevision !== null
-          ? store.transcriptTailForAgent(rec.channel, rec.thread, rec.agentId, afterRevision, req.limit)
+          ? store.transcriptTailForAgent(transcriptChannel, rec.thread, rec.agentId, afterRevision, req.limit)
           : chronologicalSlack
-            ? store.transcriptPageForAgentByEventTime(rec.channel, rec.thread, rec.agentId, eventCursor, req.limit)
-            : store.transcriptPageForAgent(rec.channel, rec.thread, rec.agentId, legacyBefore, req.limit)
+            ? store.transcriptPageForAgentByEventTime(
+                transcriptChannel,
+                rec.thread,
+                rec.agentId,
+                eventCursor,
+                req.limit
+              )
+            : store.transcriptPageForAgent(transcriptChannel, rec.thread, rec.agentId, legacyBefore, req.limit)
       const { rows, hasMore } = page
       // rows are newest-first; the page itself is oldest→newest.
       const ordered = tailing ? rows : rows.slice().reverse()
@@ -377,7 +386,12 @@ export function createSessionReader(
         totalBytes: 0
       }
       if (!rec) return empty
-      const body = store.getToolBodyForAgent(rec.channel, rec.thread, rec.agentId, req.toolCallId)
+      const body = store.getToolBodyForAgent(
+        transcriptChannelKey(rec.channel, rec.transportScope),
+        rec.thread,
+        rec.agentId,
+        req.toolCallId
+      )
       if (body === undefined) return empty
       const buf = Buffer.from(body, 'utf8')
       const totalBytes = buf.length

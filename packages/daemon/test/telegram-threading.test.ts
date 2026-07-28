@@ -321,26 +321,87 @@ describe('reply targeting', () => {
     await daemon.start()
     const conn = makeTelegramRoutable(daemon)
     // A DM `/status` with no live session → the "no session" note, replied to message 900.
-    ;(daemon as any).onInbound(tg(900, { channel: '42', isDm: true, text: '/status' }))
+    ;(daemon as any).onInbound(tg(900, { channel: '42', isDm: true, text: '/status' }), ['i-tg'])
     expect(conn.postMessage).toHaveBeenCalledWith('42', expect.stringContaining('No active session'), 'dm', {
       replyTo: 900
     })
   })
 })
 
-/** Seed an addressable session for bot-a in a channel so command routing can resolve it. */
-function seedSession(daemon: Daemon, channel: string, thread: string) {
+/** Seed an addressable session in one physical Telegram bot scope. */
+function seedSession(
+  daemon: Daemon,
+  channel: string,
+  thread: string,
+  opts: {
+    agentId?: string
+    integrationId?: string
+    acpSessionId?: string
+    updatedAt?: number
+  } = {}
+) {
+  const agentId = opts.agentId ?? 'bot-a'
+  const integrationId = opts.integrationId ?? 'i-tg'
   ;(daemon as any).store.upsertSession({
-    key: sessionKey('telegram', channel, thread, 'bot-a'),
-    agentId: 'bot-a',
+    key: sessionKey('telegram', channel, thread, agentId),
+    agentId,
     platform: 'telegram',
     channel,
     thread,
-    acpSessionId: 'acp-x',
+    transportScope: (daemon as any).transportScopeForIntegrationIds([integrationId]),
+    acpSessionId: opts.acpSessionId ?? `acp-${agentId}`,
     state: 'idle',
     lastDeliveredTs: null,
-    updatedAt: Date.now()
+    updatedAt: opts.updatedAt ?? Date.now()
   })
+}
+
+function makeScopedTelegramPair(daemon: Daemon) {
+  const agentA = (daemon as any).agents.get('bot-a')
+  agentA.integrations = [
+    {
+      id: 'i-a',
+      platform: 'telegram',
+      telegram: {
+        botToken: '111:a',
+        botUsername: 'bota',
+        allowedUserIds: [],
+        bindRules: [{ match: { kind: 'mention' } }]
+      }
+    }
+  ]
+  const agentB = {
+    ...agentA,
+    id: 'bot-b',
+    name: 'bot-b',
+    integrations: [
+      {
+        id: 'i-b',
+        platform: 'telegram',
+        telegram: {
+          botToken: '222:b',
+          botUsername: 'botb',
+          allowedUserIds: [],
+          bindRules: [{ match: { kind: 'mention' } }]
+        }
+      }
+    ]
+  }
+  ;(daemon as any).agents.set('bot-b', agentB)
+  const connection = () => ({
+    postMessage: vi.fn(async () => 'out-1'),
+    postChrome: vi.fn(async () => 'chrome-1'),
+    postCard: vi.fn(async () => 'card-1'),
+    editCard: vi.fn(async () => {}),
+    answerCallback: vi.fn(async () => {})
+  })
+  const connA = connection()
+  const connB = connection()
+  ;(daemon as any).tgConnByIntegration.set('i-a', connA)
+  ;(daemon as any).tgConnByIntegration.set('i-b', connB)
+  ;(daemon as any).botUserIds['i-a'] = 'bota'
+  ;(daemon as any).botUserIds['i-b'] = 'botb'
+  return { agentA, agentB, connA, connB }
 }
 
 describe('group command routing (no mention entity)', () => {
@@ -351,7 +412,7 @@ describe('group command routing (no mention entity)', () => {
     seedSession(daemon, '-100', 'tg:100')
     // A group `/status@mybot`: no mention entity, no reply, not a DM — routeRules can't
     // place it, so it must fall back to the channel's latest session (not be dropped).
-    ;(daemon as any).onInbound(tg(200, { text: '/status@mybot' }))
+    ;(daemon as any).onInbound(tg(200, { text: '/status@mybot' }), ['i-tg'])
     expect(conn.postChrome).toHaveBeenCalled()
     const [ch, , opts] = conn.postChrome.mock.calls.at(-1)!
     expect(ch).toBe('-100')
@@ -365,9 +426,32 @@ describe('group command routing (no mention entity)', () => {
     ;(daemon as any).agents.get('bot-a').integrations[0].telegram.allowedUserIds = ['999']
     seedSession(daemon, '-100', 'tg:100')
     // Sender U1 (id 'U1') is not in the allow-list → the command is ignored.
-    ;(daemon as any).onInbound(tg(200, { text: '/status@mybot' }))
+    ;(daemon as any).onInbound(tg(200, { text: '/status@mybot' }), ['i-tg'])
     expect(conn.postChrome).not.toHaveBeenCalled()
     expect(conn.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('finds the latest eligible session on the bot that received the command', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    await daemon.start()
+    const { connA, connB } = makeScopedTelegramPair(daemon)
+    const now = Date.now()
+    seedSession(daemon, '-100', 'tg:a', {
+      agentId: 'bot-a',
+      integrationId: 'i-a',
+      updatedAt: now
+    })
+    seedSession(daemon, '-100', 'tg:b', {
+      agentId: 'bot-b',
+      integrationId: 'i-b',
+      updatedAt: now - 1_000
+    })
+
+    ;(daemon as any).onInbound(tg(201, { text: '/status@botb' }), ['i-b'])
+
+    expect(connB.postChrome).toHaveBeenCalled()
+    expect(connA.postChrome).not.toHaveBeenCalled()
+    await daemon.stop()
   })
 })
 
@@ -396,7 +480,7 @@ describe('session-control cards (/models tappable buttons)', () => {
     injectHost(daemon)
     seedSession(daemon, '-100', 'tg:100')
 
-    ;(daemon as any).onInbound(tg(200, { text: '/models@mybot' }))
+    ;(daemon as any).onInbound(tg(200, { text: '/models@mybot' }), ['i-tg'])
     expect(conn.postCard).toHaveBeenCalled()
     const [ch, , buttons] = conn.postCard.mock.calls.at(-1)!
     expect(ch).toBe('-100')
@@ -464,5 +548,47 @@ describe('session-control cards (/models tappable buttons)', () => {
     expect((daemon as any).store.getModelOverride(sessionKey('telegram', '-100', 'tg:100', 'bot-a'))).toBeUndefined()
     expect(conn.answerCallback).toHaveBeenCalledWith('cb2', expect.stringContaining('No active session'))
     expect(conn.editCard).not.toHaveBeenCalled()
+  })
+
+  it('applies a callback only to a session owned by the bot that delivered the tap', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    await daemon.start()
+    const { agentA, agentB, connB } = makeScopedTelegramPair(daemon)
+    agentA.allowRuntimeChangesInChat = true
+    agentB.allowRuntimeChangesInChat = true
+    const host = {
+      hasSession: () => true,
+      modelOptions: () => ({ current: 'opus', models: ['opus', 'sonnet'] }),
+      effortOptions: () => ({ current: 'medium', efforts: ['low', 'medium', 'high'] }),
+      permissionModeOptions: () => ({ current: 'default', modes: ['default', 'plan'] }),
+      fastModeOption: () => null,
+      setSessionModel: vi.fn(async () => true),
+      setSessionEffort: vi.fn(async () => true),
+      setSessionPermissionMode: vi.fn(async () => true),
+      stop: vi.fn(async () => {})
+    }
+    ;(daemon as any).hosts.set('bot-a', host)
+    ;(daemon as any).hosts.set('bot-b', host)
+    const now = Date.now()
+    seedSession(daemon, '-100', 'tg:a', {
+      agentId: 'bot-a',
+      integrationId: 'i-a',
+      updatedAt: now
+    })
+    seedSession(daemon, '-100', 'tg:b', {
+      agentId: 'bot-b',
+      integrationId: 'i-b',
+      updatedAt: now - 1_000
+    })
+
+    ;(daemon as any).handleTelegramCallback(
+      { id: 'cb-scoped', data: 'm:1', channel: '-100', messageId: 55, userId: 'U1' },
+      connB
+    )
+
+    expect((daemon as any).store.getModelOverride(sessionKey('telegram', '-100', 'tg:b', 'bot-b'))).toBe('sonnet')
+    expect((daemon as any).store.getModelOverride(sessionKey('telegram', '-100', 'tg:a', 'bot-a'))).toBeUndefined()
+    expect(connB.answerCallback).toHaveBeenCalledWith('cb-scoped', expect.stringContaining('sonnet'))
+    await daemon.stop()
   })
 })

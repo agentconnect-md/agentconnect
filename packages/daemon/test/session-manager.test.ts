@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { LocalStore, sessionKey } from '../src/store/local-store.js'
+import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { SessionManager, isStandingContextTitleEcho } from '../src/session/session-manager.js'
 import { createManagedMemoryProvider } from '../src/agents/memory-provider.js'
 import { writeMemoryFile, MEMORY_INDEX } from '../src/agents/memory.js'
@@ -68,6 +68,44 @@ describe('SessionManager', () => {
     expect(created).toBe(true) // brand-new ACP session → daemon emits event/session start
     expect(host.newSession).toHaveBeenCalledOnce()
     expect(blocks.map((b: any) => b.text).join('')).toContain('first')
+    store.close()
+  })
+
+  it('does not replay transcript context from another physical bot with the same channel coordinates', async () => {
+    const store = newStore()
+    const agentB = { ...agent, id: 'bot-b', name: 'bot-b' }
+    const hosts = new Map([
+      ['bot-a', { newSession: vi.fn(async () => 'acp-a') } as any],
+      ['bot-b', { newSession: vi.fn(async () => 'acp-b') } as any]
+    ])
+    const sm = new SessionManager({
+      store,
+      hostFor: async (agentId) => hosts.get(agentId)!,
+      agentById: (agentId) => (agentId === 'bot-a' ? agent : agentId === 'bot-b' ? agentB : undefined),
+      memory
+    })
+    store.upsertSession({
+      key: sessionKey('slack', 'C1', '100.1', 'bot-b'),
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'legacy-acp-b',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'private text for bot A', transportScope: 'slack:scope-a' }))
+    const turnB = await sm.handle('bot-b', msg({ ts: '100.2', text: 'hello bot B', transportScope: 'slack:scope-b' }))
+
+    expect(turnB.sessionId).toBe('acp-b')
+    expect(hosts.get('bot-b')?.newSession).toHaveBeenCalledOnce()
+    expect(JSON.stringify(turnB.blocks)).not.toContain('private text for bot A')
+    expect(JSON.stringify(turnB.blocks)).toContain('hello bot B')
+    expect(store.threadTranscript(transcriptChannelKey('C1', 'slack:scope-a'), '100.1')).toHaveLength(1)
+    expect(store.threadTranscript(transcriptChannelKey('C1', 'slack:scope-b'), '100.1')).toHaveLength(1)
+    expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-b'))?.transportScope).toBe('slack:scope-b')
     store.close()
   })
 

@@ -34,6 +34,14 @@ export interface NormalizedMessage {
   platform: 'slack' | 'telegram' | 'webchat' | 'discord' | 'feishu' | 'hook'
   channel: string
   thread?: string
+  /**
+   * Opaque identity of the physical platform bot/connection that received this
+   * message. Platform channel ids are only unique within one bot installation
+   * (Telegram DMs in particular reuse the user's numeric id across bots), so the
+   * daemon uses this scope for private transcript and session lookup boundaries.
+   * It is internal metadata: user-facing channel/thread coordinates stay unchanged.
+   */
+  transportScope?: string
   sender: {
     id: string
     isBot: boolean

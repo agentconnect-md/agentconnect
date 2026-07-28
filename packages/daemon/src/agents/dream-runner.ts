@@ -70,7 +70,10 @@ export interface DreamStorePort {
   /** Proposals reconciled as superseded during a store upgrade. */
   supersededDreams(): DreamInfo[]
   /** Newest-first addressable sessions for the agent (transcript sources). */
-  dreamSessionSources(agentId: string, limit: number): { sessionId: string; channel: string; thread: string }[]
+  dreamSessionSources(
+    agentId: string,
+    limit: number
+  ): { sessionId: string; channel: string; thread: string; transportScope?: string | null }[]
   /** Chronological text rows of one session thread, scoped to the agent. */
   dreamTranscriptText(
     channel: string,
@@ -78,7 +81,8 @@ export interface DreamStorePort {
     agentId: string,
     limit: number,
     /** Include tool TITLES too — the trajectory skill mining reads (never bodies). */
-    includeTools?: boolean
+    includeTools?: boolean,
+    transportScope?: string | null
   ): { sender: string; text: string; kind?: string; input?: string }[]
 }
 
@@ -336,7 +340,7 @@ export class DreamRunner {
   private async run(
     dream: DreamInfo,
     files: { name: string; content: string }[],
-    sources: { sessionId: string; channel: string; thread: string }[],
+    sources: { sessionId: string; channel: string; thread: string; transportScope?: string | null }[],
     signal: AbortSignal
   ): Promise<void> {
     const { agentId, dreamId } = dream
@@ -352,7 +356,8 @@ export class DreamRunner {
           source.thread,
           agentId,
           TRANSCRIPT_ROWS_PER_SESSION,
-          mineSkills
+          mineSkills,
+          source.transportScope
         )
       }))
 

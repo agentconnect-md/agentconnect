@@ -295,7 +295,14 @@ export interface OpsDeps {
    *  Universal (every agent has memory), independent of the platform. */
   memory: MemoryProvider
   /** Record an agent-sent message into the session transcript. */
-  recordOutbound: (ctx: SessionContext, channel: string, thread: string | undefined, text: string, ts: string) => void
+  recordOutbound: (
+    ctx: SessionContext,
+    channel: string,
+    thread: string | undefined,
+    text: string,
+    ts: string,
+    integrationId: string
+  ) => void
   /** Monotonic-ish clock for synthesizing a message id when the platform doesn't return one. */
   now: () => number
   /** Byte cap for `read*File` downloads (defaults to 8 MiB). */
@@ -643,7 +650,7 @@ export async function executeTool(
         (Object.keys(identity).length > 0
           ? await gw.postMessage(channel, body, thread, identity)
           : await gw.postMessage(channel, body, thread)) ?? `local-${deps.now()}`
-      deps.recordOutbound(ctx, channel, thread, body, ts)
+      deps.recordOutbound(ctx, channel, thread, body, ts, targetId)
       post = { platform: wantPlatform, integrationId: targetId, channel, thread: thread ?? null, ts }
       postedThread = thread ?? (ts.startsWith('local-') ? undefined : ts)
       // session-concept case 2a: a ROOT post (no thread) with NO peer wake seeds a NEW session

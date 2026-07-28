@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -6,6 +7,8 @@ import { Daemon } from '../src/daemon.js'
 import { configFilesDir } from '../src/agents/config-file-env.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { FakeClock } from './cp/fake-clock.js'
+
+const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
 
 /** A daemon root with one DM-less agent (we attach routing + a fake conn by hand,
  *  exactly like daemon-commands.test.ts). `limits` overrides the lifecycle tunables. */
@@ -130,6 +133,7 @@ const dm = (ts: string, text: string, thread = 'T1') => ({
   platform: 'slack' as const,
   channel: 'C1',
   thread,
+  transportScope: TRANSPORT_SCOPE,
   sender: { id: 'U1', isBot: false },
   text,
   mentionedBots: [] as string[],

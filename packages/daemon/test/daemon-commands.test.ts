@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,7 +11,7 @@ import {
   type RdMsgSlackAction
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
-import { LocalStore } from '../src/store/local-store.js'
+import { LocalStore, transcriptChannelKey } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
 
 const AGENT_IDENTITY = {
@@ -22,6 +23,7 @@ const STATUS_BAR_POST_OPTIONS = {
   icon_url: AGENT_IDENTITY.iconUrl,
   chrome: true
 }
+const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
 
 function hasPending(daemon: Daemon, acpSessionId: string): boolean {
   return [...(daemon as any).pending.values()].some(
@@ -115,6 +117,7 @@ const dm = (ts: string, text: string) => ({
   platform: 'slack' as const,
   channel: 'C1',
   thread: 'T1',
+  transportScope: TRANSPORT_SCOPE,
   sender: { id: 'U1', isBot: false },
   text,
   mentionedBots: [] as string[],
@@ -453,6 +456,7 @@ describe('Daemon in-conversation commands', () => {
       platform: 'slack',
       channel: 'C1',
       thread: 'T1',
+      transportScope: TRANSPORT_SCOPE,
       acpSessionId: 'acp-old',
       state: 'idle',
       lastDeliveredTs: null,
@@ -552,7 +556,9 @@ describe('Daemon in-conversation commands', () => {
     expect(blocked.prompts).toHaveLength(1) // the follow-up was dropped, not dispatched (memory prefixes the 'hello' turn)
     expect(blocked.prompts[0]).toContain('hello')
     expect(
-      store.transcriptSince('C1', 'T1', null).some((r: any) => r.text === 'humans talking amongst themselves')
+      store
+        .transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
+        .some((r: any) => r.text === 'humans talking amongst themselves')
     ).toBe(true)
 
     // explicit @mention clears the mute and dispatches (with the missed context replayed)
@@ -906,12 +912,13 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
       platform: 'slack',
       channel: 'C1',
       thread: 'T1',
+      transportScope: TRANSPORT_SCOPE,
       sender: { id: 'B999', isBot: true },
       text: 'beep from another bot',
       mentionedBots: ['UOTHER'],
       isDm: false
     })
-    const rows = store.transcriptSince('C1', 'T1', null)
+    const rows = store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
     expect(rows.some((r: any) => r.text === 'beep from another bot' && r.sender === 'B999')).toBe(true)
 
     await daemon.stop()
@@ -989,7 +996,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     // age the session record so the recency window alone would exclude it
     const rec = store.getSession('slack:C1:T1:bot-a')
     store.upsertSession({ ...rec, updatedAt: rec.updatedAt - 60 * 60 * 1000 })
-    expect(store.activeSessionCountSince('C1', 'T1', Date.now() - 900_000)).toBe(0)
+    expect(store.activeSessionCountSince('C1', 'T1', Date.now() - 900_000, TRANSPORT_SCOPE)).toBe(0)
 
     // An unrouted peer mention arrives mid-turn → still recorded (in-flight keeps it active).
     ;(daemon as any).onInbound({
@@ -999,12 +1006,17 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
       platform: 'slack',
       channel: 'C1',
       thread: 'T1',
+      transportScope: TRANSPORT_SCOPE,
       sender: { id: 'B999', isBot: true },
       text: 'mid-turn peer message',
       mentionedBots: ['UOTHER'],
       isDm: false
     })
-    expect(store.transcriptSince('C1', 'T1', null).some((r: any) => r.text === 'mid-turn peer message')).toBe(true)
+    expect(
+      store
+        .transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
+        .some((r: any) => r.text === 'mid-turn peer message')
+    ).toBe(true)
 
     blocked.release()
     await turn
