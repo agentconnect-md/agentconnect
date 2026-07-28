@@ -81,7 +81,15 @@ export interface NormalizedMessage {
     sender?: string
     /** The quoted text — already bounded, with any attachment mention folded in. */
     text: string
-    /** True when this is only a partial, user-selected excerpt of the quoted message. */
+    /**
+     * True when the replying user explicitly SELECTED this passage (Telegram `quote`).
+     * The selection is itself the message — it says which part of the source the reply is
+     * about — so prompt assembly delivers it even when the full source is already in the
+     * agent's context, where a "what about this?" would otherwise be ambiguous.
+     */
+    selection?: boolean
+    /** True when `text` is only part of the quoted message — a selection, or truncated
+     *  by the ingress cap. Affects how the block is labeled, not whether it is sent. */
     excerpt?: boolean
   }
   /**

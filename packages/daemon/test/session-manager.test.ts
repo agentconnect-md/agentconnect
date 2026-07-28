@@ -1570,7 +1570,7 @@ describe('SessionManager — quoted reply source', () => {
     store.close()
   })
 
-  it('does not re-inject a quoted message that is already in this session transcript', async () => {
+  it('does not re-inject a quoted message already delivered to the SAME continuing session', async () => {
     const store = newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
@@ -1590,6 +1590,64 @@ describe('SessionManager — quoted reply source', () => {
     // …and it is NOT repeated as catch-up context either: turn 1 already delivered it, so it
     // lives in the agent's ACP session context. Suppression here is what prevents duplication.
     expect(texts.join('\n')).not.toContain('the deploy failed with ECONNRESET')
+    store.close()
+  })
+
+  it('always delivers a user-SELECTED passage, even when the full source is already in context', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', tgMsg({ ts: '10', text: 'staging is down and prod latency doubled since 14:00' }))
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '11',
+        text: '@bot-a what about this?',
+        replyTo: '10',
+        // Telegram `quote`: the user highlighted ONE clause of a message the agent already
+        // has. Which clause they picked is the whole content of "what about this?", and no
+        // amount of prior context can recover it — so it must survive suppression.
+        quoted: { messageId: '10', sender: '@bob', text: 'prod latency doubled', selection: true, excerpt: true }
+      })
+    )
+    const quoted = blocks.map((b: any) => b.text as string).find((t) => t.includes('this reply quotes'))
+    expect(quoted).toContain('the user selected exactly this part')
+    expect(quoted).toContain('[@bob] prod latency doubled')
+    store.close()
+  })
+
+  it('injects the quoted bot message when the runtime session had to be recreated', async () => {
+    const store = newStore()
+    // Turn 1 mints acp-1 and the bot answers; the reply is recorded under the agent's own id.
+    const host1 = { newSession: vi.fn(async () => 'acp-1') } as any
+    const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
+    await sm1.handle('bot-a', tgMsg({ ts: '10', text: 'why is staging down?' }))
+    store.appendTranscript({
+      channel: transcriptChannelKey('-100123'),
+      thread: 'tg:10',
+      ts: '11',
+      sender: 'bot-a',
+      kind: 'text',
+      text: 'staging is down because the migration job is stuck'
+    })
+    // The persisted ACP session cannot be resumed, so handle mints a fresh one whose context
+    // is empty. Replay cannot cover the gap: it filters the agent's OWN rows. Without the
+    // quote the recreated session would receive a bare "why?" about nothing.
+    const host2 = { newSession: vi.fn(async () => 'acp-2'), hasSession: () => false, loadSupported: () => false } as any
+    const sm2 = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory })
+    const { blocks, created } = await sm2.handle(
+      'bot-a',
+      tgMsg({
+        ts: '12',
+        text: 'why?',
+        replyTo: '11',
+        quoted: { messageId: '11', sender: '@mybot', text: 'staging is down because the migration job is stuck' }
+      })
+    )
+    expect(created).toBe(true)
+    const texts = blocks.map((b: any) => b.text as string)
+    expect(texts.some((t) => t.includes('the message this reply quotes'))).toBe(true)
+    expect(texts.join('\n')).toContain('the migration job is stuck')
     store.close()
   })
 

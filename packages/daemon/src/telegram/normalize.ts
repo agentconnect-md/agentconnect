@@ -174,6 +174,9 @@ export function quotedFromTelegramReply(msg: TelegramMessage): NormalizedMessage
     messageId: String(source.message_id),
     ...(quotedSenderLabel(source.from) !== undefined ? { sender: quotedSenderLabel(source.from)! } : {}),
     text: truncated ? `${body.slice(0, MAX_QUOTED_TEXT_CHARS)}…` : body,
+    // A user-selected passage is load-bearing on its own (which part they meant), so it is
+    // tracked separately from mere partialness — only the latter is a labeling concern.
+    ...(selection ? { selection: true } : {}),
     // A truncated full source is as partial as a manual selection — say so either way,
     // so the agent knows it is not looking at the complete quoted message.
     ...(selection || truncated ? { excerpt: true } : {})

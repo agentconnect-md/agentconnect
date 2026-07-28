@@ -162,7 +162,14 @@ describe('quoted (reply_to_message content)', () => {
       }),
       ctx
     )
-    expect(n.quoted).toEqual({ messageId: '999', sender: '7', text: 'ECONNRESET', excerpt: true })
+    expect(n.quoted).toEqual({ messageId: '999', sender: '7', text: 'ECONNRESET', selection: true, excerpt: true })
+  })
+
+  it('marks a truncated full source partial but NOT a selection (nothing was chosen by hand)', () => {
+    // `selection` gates suppression downstream, so mere partialness must never set it.
+    const n = normalizeTelegramMessage(msg({ reply_to_message: { message_id: 5, text: 'y'.repeat(1200) } }), ctx)
+    expect(n.quoted?.excerpt).toBe(true)
+    expect(n.quoted?.selection).toBeUndefined()
   })
 
   it('falls back to the numeric id when the quoted author has no username', () => {
