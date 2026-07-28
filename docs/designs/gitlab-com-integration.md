@@ -386,9 +386,9 @@ joined by list/get DTO queries.
 publication coordinator, not a content ledger: it stores no review body,
 inline-comment body, diff, or prompt. Attempt records keep only signed-marker
 digests and provider IDs needed to reconcile effects. Its publication phases
-are `idle`, `preparing`, `publishing`, `reconciling`, and `published`; an
-abandoned attempt must reconcile or delete its marked drafts before the row can
-return to `idle`.
+are `idle`, `preparing`, `publishing`, `reconciling`, `ambiguous_locked`, and
+`published`; an abandoned attempt must reconcile or delete its marked drafts
+before the row can return to `idle`.
 
 Suggested project-binding states are:
 
@@ -843,18 +843,40 @@ publication lease is a correctness boundary, not an optimization.
 The lease and attempt phase live in the Control Plane database. Acquisition is
 compare-and-swap, increments the fence, and permits only one owner across
 agents and daemons. Every draft create, delete, and bulk-publish operation
-requires a single-use operation permit bound to the current attempt and fence.
-The trusted daemon broker validates that permit online immediately before the
-GitLab request; review content still travels directly from the daemon to
-GitLab, so the Control Plane sees only metadata.
+requires a durable single-use operation record bound to the current attempt,
+fence, method, target, and operation ordinal. Before the outbound request, the
+trusted daemon broker atomically moves that record from `issued` to
+`request_started`. It then records the deterministic response or
+`response_ambiguous`. Review content still travels directly from the daemon to
+GitLab, so the Control Plane sees only metadata. The broker and its HTTP client
+disable automatic retries for these non-idempotent mutations; one
+`request_started` record permits exactly one outbound provider request.
 
-A lease timeout never transfers publication authority immediately. It moves
-the coordinator to `reconciling` and blocks both the old and a prospective new
-attempt. If a provider request may already be in flight, reconciliation waits
-the bounded provider-convergence window before deciding its outcome. Only
-after the prior operation is classified and the service account's pending
-draft set is known may the Control Plane increment the fence and grant a new
-lease.
+The fence prevents a stale broker from obtaining another operation record, but
+it is not presented as a GitLab-side fence. In particular, checking or starting
+an operation record does not make an outbound request revocable: the broker
+could pause immediately afterward. Consequently, elapsed time, a disconnected
+daemon, an expired lease, and absence of a marker after a convergence window
+are never sufficient to transfer publication authority once an operation
+record has been issued.
+
+The coordinator may transfer ownership only when:
+
+- no provider-mutation operation record was issued for the attempt;
+- the same live broker durably returns every issued record as unused before
+  any request starts;
+- every started request has a deterministic response and its provider effect
+  has been reconciled; or
+- a previously ambiguous request is positively identified by its signed
+  provider marker and fully reconciled.
+
+Otherwise the row moves to `ambiguous_locked` and retains the old attempt
+indefinitely. No new review attempt may create drafts or publish under that
+service account on the merge request. Recovery waits for the old broker to
+report a definite outcome or for positive provider evidence; a timeout-based
+or operator “force unlock” is deliberately absent. This fail-closed state can
+make one merge request's automated reviews unavailable, but it cannot let an
+old request consume a newer attempt's drafts.
 
 While holding the lease, the owner lists all service-account drafts on the
 merge request before creating any new draft:
@@ -872,9 +894,10 @@ Immediately before bulk publish, the broker renews the lease, verifies the
 head and fence again, and re-lists drafts. Bulk publish is allowed only when
 every pending draft has the current signed attempt marker and the expected
 ordinal set is exact. The coordinator remains owned until publication,
-reviewer state, and any approval outcome are durably classified. This prevents
-a concurrent agent's drafts or crash-left drafts from being published under
-the wrong verdict.
+reviewer state, and any approval outcome are durably classified. If the
+publish operation becomes ambiguous, it remains owned even when the lease
+expires. This prevents a concurrent agent's drafts or crash-left drafts from
+being published under the wrong verdict.
 
 ### 15.2 Partial and Ambiguous Effects
 
@@ -882,15 +905,17 @@ GitLab note APIs do not offer an idempotency key. Every review summary carries
 a signed hidden marker derived from the random attempt ID. Each draft also
 carries its attempt-and-ordinal marker so an ambiguous create can be recovered
 without guessing from its text. On an ambiguous publish, the daemon retains
-the publication lease in `reconciling` and searches the target merge request
-for that exact summary marker:
+publication ownership and searches the target merge request for that exact
+summary marker:
 
 - found: record the external IDs and do not publish again;
-- not found after the bounded convergence window, with the complete marked
-  draft set still pending: classify as `not_submitted`, from which the same
-  attempt may retry while it still owns the lease; and
-- still uncertain: classify as `ambiguous`, suppress the ordinary fallback,
-  and keep new publication blocked until reconciliation.
+- a deterministic provider rejection, or an operation record durably returned
+  unused by the same broker before `request_started`: classify as
+  `not_submitted`, from which the same attempt may retry while it still owns
+  the lease; and
+- no marker after the bounded observation window, even with the complete
+  marked draft set still pending: classify as `ambiguous_locked`, suppress the
+  ordinary fallback, and keep new publication blocked indefinitely.
 
 If review comments publish but approval deterministically fails, a public
 effect already exists. Record a submitted comment review with
@@ -1157,7 +1182,7 @@ an administrator must remove if cleanup is abandoned.
 | External contributor starts privileged work       | Live target-project membership or explicit current-maintainer request                                 |
 | Stale hook or daemon performs an effect           | Config, dispatch, placement, project, subject, head, attempt, and credential-epoch fences             |
 | Duplicate note/review after timeout               | Signed random markers and read-after-ambiguous reconciliation                                         |
-| Shared service account cross-publishes drafts     | Durable per-MR publication lease, fenced single-use permits, exact marked-draft set, orphan cleanup   |
+| Shared service account cross-publishes drafts     | Durable per-MR ownership, no timeout transfer after a permit, exact marked-draft set, orphan cleanup  |
 | Cross-tenant access                               | Organization-owned connection/binding/repository plus current agent placement checks                  |
 | Secret or content logging                         | Log identifiers, scope/purpose, status, latency, and normalized codes only                            |
 
@@ -1168,6 +1193,8 @@ Residual risks are explicit:
   local AgentConnect lease;
 - a Control Plane compromise can expose the selected projects' stored
   credentials;
+- an ambiguous GitLab review mutation can leave automated reviews fail-closed
+  for that merge request indefinitely;
 - Free request changes cannot become blocking without Premium project
   behavior; and
 - a lost OAuth refresh response requires human reconnection.
@@ -1202,7 +1229,7 @@ Use focused unit tests for pure boundaries only:
 - event normalization, mention targeting, bot veto, labels, and membership
   gates;
 - provider-qualified repository authorization and grant mismatch rejection;
-- review-policy and exact-head fencing; and
+- review-policy and exact-head fencing;
 - review-publication lease, fence, attempt ownership, and reconciliation state
   transitions; and
 - status-projection generation and marker reconciliation.
@@ -1213,9 +1240,10 @@ Use integration tests for:
 - project provisioning saga recovery after every external side effect;
 - daemon/relay feature negotiation and mixed-version rejection;
 - credential epoch invalidation on role, token, project, agent-placement, and
-  disconnect changes; and
-- durable review-publication serialization and fail-closed lease transfer
-  after a simulated daemon loss; and
+  disconnect changes;
+- durable review-publication serialization and non-transferable ambiguous
+  ownership after a simulated daemon loss, including a permit issued
+  immediately before the broker pauses; and
 - message/content absence from Control Plane frames and persistence.
 
 The release contract suite runs against real GitLab.com Free and Premium test
@@ -1237,7 +1265,9 @@ projects and covers:
    placed on different daemons, with no cross-attempt publication;
 10. crashes after draft creation and immediately before bulk publish, including
     orphan cleanup, same-attempt recovery, and ambiguous-publish
-    reconciliation;
+    reconciliation; a broker paused after permit validation must keep
+    ownership and prevent a newer attempt until its request is positively
+    classified;
 11. Free advisory versus Premium blocking behavior; and
 12. queued/running/terminal status-note convergence and authorized rerun.
 
