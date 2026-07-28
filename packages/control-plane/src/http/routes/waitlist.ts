@@ -107,7 +107,7 @@ export function waitlistRoutes(deps: HttpDeps) {
           tags: [Tag.Profile],
           summary: 'Redeem a waitlist activation link',
           description:
-            'Redeem an activation link, making the signed-in user a formal (activated) user with a personal org. A link minted for a specific email must be redeemed by that verified email; an email-less bearer link may be redeemed by any verified identity and binds to the first redeemer (one use), except that an already-activated account is admitted without consuming it. Idempotent on repeat by the same user. Requires OIDC sign-in with a verified email.',
+            'Redeem an activation link, making the signed-in user a formal (activated) user with a personal org. A link minted for a specific email must be redeemed by that verified email; an email-less bearer link may be redeemed by any verified identity and binds to the first redeemer (one use), except that an already-activated account is admitted without consuming it. Optionally send `expectSubject` to assert which signed-in identity the client meant: if it disagrees with the verified token, the request is refused (409 IDENTITY_CHANGED) instead of activating a different account. Idempotent on repeat by the same user. Requires OIDC sign-in with a verified email.',
           operationId: 'redeemWaitlistLink',
           body: WaitlistRedeemBody,
           response: {
@@ -121,6 +121,20 @@ export function waitlistRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
+        // The client may state which identity it believes it is activating. A browser
+        // shares its token store across tabs, so another tab signing in elsewhere can
+        // swap the identity out from under the activation page — and a bearer
+        // (email-less) link accepts ANY verified identity, so it would cheerfully
+        // activate that other account. Confirm rather than redeem as someone else.
+        // (Not a credential: the identity is still the verified bearer's `sub`.)
+        if (req.body.expectSubject && req.body.expectSubject !== req.oidcSubject) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'the signed-in account changed — reopen the activation link and try again',
+            code: 'IDENTITY_CHANGED'
+          })
+        }
         const email = (await deps.waitlist.access(req.principal!.userId)).email
         if (!email) {
           return reply.code(409).send({

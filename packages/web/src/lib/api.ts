@@ -17,7 +17,7 @@ import type {
 import { isSelfSender, MOCK_MODE } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
-import { getToken, getIdTokenRaw, getUser } from '@/lib/auth'
+import { getToken, getIdTokenRaw, getUser, signOutDeletedAccount } from '@/lib/auth'
 import { track } from '@/lib/analytics'
 import { createSseParser } from '@/lib/sse'
 import { isUpgradeAvailable } from '@/lib/version'
@@ -1074,7 +1074,12 @@ async function apiErrorFromResponse(method: string, path: string, res: Response)
     typeof body.message === 'string' && body.message.length > 0
       ? body.message
       : `${method} ${path} → ${res.status} ${res.statusText}`
-  return new ApiError(message, res.status, typeof body.code === 'string' ? body.code : undefined)
+  const code = typeof body.code === 'string' ? body.code : undefined
+  // The token is still valid but its account was deleted (admin action): nothing in
+  // the console can work, and no retry helps, so sign out instead of surfacing the
+  // failure on every panel. The error is still thrown for the in-flight caller.
+  if (res.status === 401 && code === 'ACCOUNT_GONE') void signOutDeletedAccount()
+  return new ApiError(message, res.status, code)
 }
 
 async function apiPatch<T>(path: string, body: unknown): Promise<T> {
@@ -2752,9 +2757,12 @@ export function joinWaitlist(intake: WaitlistIntake): Promise<{ status: 'pending
 }
 
 /** Redeem a waitlist activation link (POST /waitlist/redeem) → become a formal user.
- *  Root-scoped: the caller may not belong to any org yet. */
-export function redeemWaitlistLink(token: string): Promise<{ activated: true }> {
-  return apiPost<{ activated: true }>('/waitlist/redeem', { token })
+ *  Root-scoped: the caller may not belong to any org yet. `expectSubject` asserts
+ *  WHICH signed-in identity the caller means: the CP refuses (409 IDENTITY_CHANGED)
+ *  if the verified bearer belongs to someone else, so a tab that switched accounts
+ *  mid-flow cannot get its own account activated by this link. */
+export function redeemWaitlistLink(token: string, expectSubject?: string): Promise<{ activated: true }> {
+  return apiPost<{ activated: true }>('/waitlist/redeem', { token, ...(expectSubject ? { expectSubject } : {}) })
 }
 
 // ── personal API keys (the caller's own credentials; identity-scoped `/me/keys`) ──

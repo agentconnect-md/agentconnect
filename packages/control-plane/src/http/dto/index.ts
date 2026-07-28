@@ -1383,7 +1383,17 @@ export const WaitlistJoinDto = z.object({
 
 /** `POST /waitlist/redeem` — the join-link plaintext token from the activation URL. */
 export const WaitlistRedeemBody = z.object({
-  token: z.string().min(1).max(200)
+  token: z.string().min(1).max(200),
+  /**
+   * The OIDC subject the CLIENT believes it is redeeming as. Optional, and never a
+   * credential — the identity still comes from the verified bearer. It exists because
+   * a browser's token store is shared across tabs: another tab can sign in as a
+   * different account between the moment the activation page established its identity
+   * and the moment this request is sent, and a bearer (email-less) link would happily
+   * activate that other account. When present and it disagrees with the token's `sub`,
+   * the request is refused rather than redeemed as somebody else.
+   */
+  expectSubject: z.string().min(1).max(255).optional()
 })
 
 /** `POST /waitlist/redeem` success — the user is now a formal (activated) user. */

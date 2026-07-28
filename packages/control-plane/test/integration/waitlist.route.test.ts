@@ -13,7 +13,9 @@ const codec = new WaitlistJoinTokenCodec(TEST_API_KEY_PEPPER)
 
 let oidcServer: Server
 let oidcIssuer = ''
-let mintBearer: (subject: string, email?: string) => Promise<string>
+/** `issuedAt` (epoch seconds) overrides the `iat` claim — lets a test mint a token
+ *  that is demonstrably NEWER than an event, without sleeping a whole second. */
+let mintBearer: (subject: string, email?: string, issuedAt?: number) => Promise<string>
 
 beforeAll(async () => {
   const { privateKey, publicKey } = await generateKeyPair('RS256')
@@ -37,7 +39,7 @@ beforeAll(async () => {
   })
   const { port } = oidcServer.address() as AddressInfo
   oidcIssuer = `http://127.0.0.1:${port}`
-  mintBearer = (subject, email) => {
+  mintBearer = (subject, email, issuedAt) => {
     const claims: Record<string, unknown> = {}
     if (email) claims.email = email
     return new SignJWT(claims)
@@ -45,7 +47,7 @@ beforeAll(async () => {
       .setIssuer(oidcIssuer)
       .setAudience(OIDC_AUDIENCE)
       .setSubject(subject)
-      .setIssuedAt()
+      .setIssuedAt(issuedAt)
       .setExpirationTime('10m')
       .sign(privateKey)
   }
@@ -60,8 +62,8 @@ afterAll(
 
 /** A waitlist-mode app (real OIDC + gate on). */
 const buildApp = () => buildHttpApp(prisma, { OIDC_ISSUER: oidcIssuer, OIDC_AUDIENCE, WAITLIST_MODE: true })
-const headers = async (subject: string, email?: string) => ({
-  authorization: `Bearer ${await mintBearer(subject, email)}`
+const headers = async (subject: string, email?: string, issuedAt?: number) => ({
+  authorization: `Bearer ${await mintBearer(subject, email, issuedAt)}`
 })
 
 /** Simulate the external admin app approving an email + minting its join link. */
@@ -309,6 +311,43 @@ describe('waitlist admission — POST /waitlist/redeem', () => {
       // Idempotent for the SAME user.
       const again = await app.inject({ method: 'POST', url: '/api/v1/waitlist/redeem', headers: h, payload: { token } })
       expect(again.statusCode).toBe(200)
+    } finally {
+      await close()
+    }
+  })
+
+  it('refuses to redeem as an identity the client did not mean (expectSubject)', async () => {
+    const { token, tokenHash } = await mintOpenLink()
+    const { app, close } = buildApp()
+    try {
+      // The browser prepared the flow as `wl-expected`, but by the time the request
+      // goes out another tab has swapped the session to `wl-swapped`. A bearer link
+      // takes any verified identity, so without the assertion this would silently
+      // activate the WRONG account.
+      const swapped = await headers('wl-swapped', 'swapped@acme.dev')
+      const redeem = await app.inject({
+        method: 'POST',
+        url: '/api/v1/waitlist/redeem',
+        headers: swapped,
+        payload: { token, expectSubject: 'wl-expected' }
+      })
+      expect(redeem.statusCode).toBe(409)
+      expect(redeem.json()).toMatchObject({ code: 'IDENTITY_CHANGED' })
+      // Nothing was activated and the one-use link was not consumed.
+      expect(await prisma.user.findUnique({ where: { oidcSubject: 'wl-swapped' } })).toMatchObject({
+        activatedAt: null
+      })
+      expect((await prisma.waitlistEntry.findUnique({ where: { tokenHash } }))!.redeemedByUserId).toBeNull()
+
+      // The same request with the identity it actually holds goes through.
+      const ok = await app.inject({
+        method: 'POST',
+        url: '/api/v1/waitlist/redeem',
+        headers: swapped,
+        payload: { token, expectSubject: 'wl-swapped' }
+      })
+      expect(ok.statusCode).toBe(200)
+      expect(ok.json()).toEqual({ activated: true })
     } finally {
       await close()
     }
@@ -581,6 +620,160 @@ describe('waitlist admission — auth boundaries', () => {
       expect(redeem.statusCode).toBe(503)
     } finally {
       await close()
+    }
+  })
+
+  it('keeps rejecting a deleted account with ACCOUNT_GONE — the same bearer cannot recreate it', async () => {
+    const { app, close } = buildApp()
+    const email = 'wl-deleted@acme.dev'
+    try {
+      const h = await headers('wl-deleted', email)
+      // First call provisions the user AND memoizes sub → userId inside the auth plane.
+      const before = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      expect(before.statusCode).toBe(200)
+      expect(before.json()).toMatchObject({ email })
+
+      // The external admin app deletes the account under the live session.
+      await prisma.user.delete({ where: { email } })
+
+      // Same (still valid) bearer, same process, same memo: the plane must notice the
+      // row is gone and tell the client to sign out — never serve a dangling identity.
+      const after = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      expect(after.statusCode).toBe(401)
+      expect(after.json()).toMatchObject({ code: 'ACCOUNT_GONE' })
+      expect(await prisma.user.findUnique({ where: { email } })).toBeNull()
+
+      // …and it must KEEP rejecting it. A retry (or a parallel console poll) with the
+      // same authentication must not fall through to JIT provisioning and resurrect
+      // the account the admin just removed.
+      for (let i = 0; i < 3; i++) {
+        const retry = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+        expect(retry.statusCode).toBe(401)
+        expect(retry.json()).toMatchObject({ code: 'ACCOUNT_GONE' })
+      }
+      // Not even a different route / a write may provision behind the rejection.
+      const join = await app.inject({ method: 'POST', url: '/api/v1/waitlist', headers: h, payload: {} })
+      expect(join.statusCode).toBe(401)
+      expect(join.json()).toMatchObject({ code: 'ACCOUNT_GONE' })
+      expect(await prisma.user.findUnique({ where: { email } })).toBeNull()
+
+      // Only a demonstrably NEW authentication (a token issued after the deletion)
+      // signs up again — as the new account it is, with nothing inherited.
+      const fresh = await headers('wl-deleted', email, Math.floor(Date.now() / 1000) + 5)
+      const reSignIn = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: fresh })
+      expect(reSignIn.statusCode).toBe(200)
+      expect(reSignIn.json()).toMatchObject({ email, activated: false, orgCount: 0 })
+
+      // Admitting that newer token must NOT revive the old one: replaying the
+      // pre-deletion bearer against the replacement row keeps the ended session
+      // ended (the cutoff is retained, not cleared).
+      const replay = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      expect(replay.statusCode).toBe(401)
+      expect(replay.json()).toMatchObject({ code: 'ACCOUNT_GONE' })
+      // …while the new authentication keeps working.
+      expect((await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: fresh })).statusCode).toBe(200)
+    } finally {
+      await close()
+    }
+  })
+
+  it('the deletion itself records the boundary — no CP need be running to observe it', async () => {
+    const email = 'wl-unobserved@acme.dev'
+    const h = await headers('wl-unobserved', email)
+
+    // Process 1 provisions the account, then goes away entirely.
+    const first = buildApp()
+    try {
+      expect((await first.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })).statusCode).toBe(200)
+    } finally {
+      await first.close()
+    }
+
+    // The admin deletes the account with NOTHING running — no request ever sees it,
+    // so the auth plane cannot be the one to record the boundary. The trigger is.
+    await prisma.user.delete({ where: { email } })
+    expect(await prisma.deletedIdentityCutoff.findUnique({ where: { oidcSubject: 'wl-unobserved' } })).not.toBeNull()
+
+    const second = buildApp()
+    try {
+      // A fresh process, an unknown subject, and a still-valid pre-deletion bearer:
+      // this is the ordering that must NOT hand out a replacement account.
+      const replay = await second.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      expect(replay.statusCode).toBe(401)
+      expect(replay.json()).toMatchObject({ code: 'ACCOUNT_GONE' })
+      expect(await prisma.user.findUnique({ where: { email } })).toBeNull()
+
+      // A genuine new sign-in is still allowed — this is a boundary, not a ban.
+      const fresh = await headers('wl-unobserved', email, Math.floor(Date.now() / 1000) + 5)
+      expect((await second.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: fresh })).statusCode).toBe(
+        200
+      )
+    } finally {
+      await second.close()
+    }
+  })
+
+  it('an unclaimed invited row being merged away does NOT fence anyone', async () => {
+    // upgradeSyntheticEmail deletes the invited (oidcSubject-less) row when a real
+    // verified email arrives for a user holding a placeholder. That deletion must not
+    // write a cutoff — there is no identity behind it, and fencing the wrong subject
+    // would lock out the very person claiming the invite.
+    const repo = new PgUserRepo(prisma, false)
+    const invited = await prisma.user.create({ data: { email: 'wl-merge@acme.dev' } }) // no oidcSubject
+    await repo.provisionOidcUser({ oidcSubject: 'wl-merge', emailVerified: false }) // synthetic placeholder
+    await repo.provisionOidcUser({ oidcSubject: 'wl-merge', email: 'wl-merge@acme.dev', emailVerified: true })
+
+    expect(await prisma.user.findUnique({ where: { id: invited.id } })).toBeNull() // merged away
+    expect(await prisma.deletedIdentityCutoff.count()).toBe(0)
+    const { app, close } = buildApp()
+    try {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/me/access',
+        headers: await headers('wl-merge', 'wl-merge@acme.dev')
+      })
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toMatchObject({ email: 'wl-merge@acme.dev' })
+    } finally {
+      await close()
+    }
+  })
+
+  it('the deletion boundary survives a CP restart — a pre-deletion bearer cannot re-provision', async () => {
+    const email = 'wl-restart@acme.dev'
+    const h = await headers('wl-restart', email)
+
+    // ── process 1: the account exists, then an admin deletes it under the session ──
+    const first = buildApp()
+    try {
+      expect((await first.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })).statusCode).toBe(200)
+      await prisma.user.delete({ where: { email } })
+      const rejected = await first.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      expect(rejected.statusCode).toBe(401)
+      expect(rejected.json()).toMatchObject({ code: 'ACCOUNT_GONE' })
+    } finally {
+      await first.close()
+    }
+
+    // ── process 2: same database, empty in-memory state (a deploy / crash restart) ──
+    // The still-valid pre-deletion bearer must NOT read as a never-seen subject and
+    // get JIT-provisioned a replacement account.
+    const second = buildApp()
+    try {
+      const afterRestart = await second.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      expect(afterRestart.statusCode).toBe(401)
+      expect(afterRestart.json()).toMatchObject({ code: 'ACCOUNT_GONE' })
+      expect(await prisma.user.findUnique({ where: { email } })).toBeNull()
+
+      // A real new sign-in still works, in the fresh process too.
+      const fresh = await headers('wl-restart', email, Math.floor(Date.now() / 1000) + 5)
+      expect((await second.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: fresh })).statusCode).toBe(
+        200
+      )
+      // …and even then the old bearer stays out.
+      expect((await second.app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })).statusCode).toBe(401)
+    } finally {
+      await second.close()
     }
   })
 

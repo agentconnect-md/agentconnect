@@ -57,6 +57,10 @@ const TABLES = [
   'oauth_client',
   'oauth_code',
   'oauth_grant',
+  // Keyed by OIDC subject, no FK to app_user (the row it describes is GONE) — so
+  // CASCADE never reaches it and a cutoff would otherwise outlive its test and
+  // reject the next test that reuses the subject.
+  'deleted_identity_cutoff',
   'membership',
   'app_user',
   'org'
