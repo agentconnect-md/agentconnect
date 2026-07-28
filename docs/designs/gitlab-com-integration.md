@@ -372,6 +372,7 @@ numeric ID.
 | `GitlabConnection`        | org, AgentConnect user, GitLab user ID/username, granted scopes, access expiry, state, token version, refresh lease, last sync                                         |
 | `GitlabProjectBinding`    | org, numeric project ID, current path, installer connection, service-account user ID/username, role, webhook ID, desired event hash, credential epoch, lifecycle state |
 | `GitlabProjectCredential` | binding, purpose, external token ID, scopes, provider expiry, active generation                                                                                        |
+| `GitlabReviewPublication` | binding, MR IID, service-account user ID, active attempt, lease owner/expiry, monotonic fence, phase, head SHA, external draft/note IDs, normalized outcome            |
 | `GitlabWebhookSecret`     | binding relation only in normal reads                                                                                                                                  |
 | `GitlabConnectionSecret`  | connection relation only in normal reads                                                                                                                               |
 
@@ -379,6 +380,15 @@ numeric ID.
 secret-store port. `GitlabWebhookSecret` stores the sealed signing token.
 `GitlabConnectionSecret` stores sealed OAuth access and refresh tokens. None is
 joined by list/get DTO queries.
+
+`GitlabReviewPublication` has a unique key of
+`(bindingId, mergeRequestIid, serviceAccountUserId)`. It is a durable
+publication coordinator, not a content ledger: it stores no review body,
+inline-comment body, diff, or prompt. Attempt records keep only signed-marker
+digests and provider IDs needed to reconcile effects. Its publication phases
+are `idle`, `preparing`, `publishing`, `reconciling`, and `published`; an
+abandoned attempt must reconcile or delete its marked drafts before the row can
+return to `idle`.
 
 Suggested project-binding states are:
 
@@ -800,33 +810,87 @@ submitCodeReview({
 The GitLab adapter:
 
 1. synchronously reserves one review attempt for the active turn;
-2. asks the Control Plane to authorize the exact hook, project, IID, event,
+2. acquires the durable publication lease for
+   `(project, MR IID, service-account user)` and receives its monotonic fence;
+3. asks the Control Plane to authorize the exact hook, project, IID, event,
    policy, configuration/dispatch revisions, and current placement;
-3. re-fetches the current merge request and rejects a changed head;
-4. creates regular and diff draft notes with the exact diff refs;
-5. bulk-publishes the drafts with a summary and hidden attempt marker;
-6. sets `reviewer_state=reviewed` for `COMMENT`;
-7. sets `reviewer_state=requested_changes` for `REQUEST_CHANGES`; or
-8. for `APPROVE`, sets `reviewer_state=reviewed`, waits until
-   `detailed_merge_status` is neither `checking` nor `approvals_syncing` and the
-   merge-request diff has a non-null `patch_id_sha`, and calls the approval
-   endpoint with the exact head SHA.
+4. reconciles every pending draft owned by the service account on that merge
+   request, as described below;
+5. re-fetches the current merge request and rejects a changed head;
+6. creates regular and diff draft notes with the exact diff refs, putting a
+   signed hidden attempt-and-ordinal marker in every draft and recording each
+   returned draft ID;
+7. re-lists drafts and verifies that the current attempt owns the complete set;
+8. bulk-publishes the drafts with a summary and signed hidden attempt marker;
+9. sets `reviewer_state=reviewed` for `COMMENT`;
+10. sets `reviewer_state=requested_changes` for `REQUEST_CHANGES`; or
+11. for `APPROVE`, sets `reviewer_state=reviewed`, waits until
+    `detailed_merge_status` is neither `checking` nor `approvals_syncing` and the
+    merge-request diff has a non-null `patch_id_sha`, and calls the approval
+    endpoint with the exact head SHA.
 
 Approval is deliberately a separate call because GitLab's review publication
 does not record a formal approval and the approval API provides the required
 SHA fence.
 
-### 15.1 Partial and Ambiguous Effects
+### 15.1 Publication Serialization and Orphan Recovery
+
+GitLab's bulk-publish endpoint publishes every pending draft on the merge
+request that belongs to the authenticated user. It has no attempt identifier.
+Because all AgentConnect agents on a project share one service account, the
+publication lease is a correctness boundary, not an optimization.
+
+The lease and attempt phase live in the Control Plane database. Acquisition is
+compare-and-swap, increments the fence, and permits only one owner across
+agents and daemons. Every draft create, delete, and bulk-publish operation
+requires a single-use operation permit bound to the current attempt and fence.
+The trusted daemon broker validates that permit online immediately before the
+GitLab request; review content still travels directly from the daemon to
+GitLab, so the Control Plane sees only metadata.
+
+A lease timeout never transfers publication authority immediately. It moves
+the coordinator to `reconciling` and blocks both the old and a prospective new
+attempt. If a provider request may already be in flight, reconciliation waits
+the bounded provider-convergence window before deciding its outcome. Only
+after the prior operation is classified and the service account's pending
+draft set is known may the Control Plane increment the fence and grant a new
+lease.
+
+While holding the lease, the owner lists all service-account drafts on the
+merge request before creating any new draft:
+
+- a draft with a valid signed marker for the same attempt is recovered by its
+  ordinal and recorded provider ID;
+- drafts for an expired, definitively unpublished attempt are deleted
+  individually, with read-after-ambiguous-delete, before a new attempt starts;
+- a prior attempt whose publish result is uncertain is reconciled against both
+  pending drafts and published notes by its signed marker; and
+- an unmarked draft, an invalid marker, an unknown attempt, or a cleanup result
+  that remains uncertain fails closed as `review_reconciliation_required`.
+
+Immediately before bulk publish, the broker renews the lease, verifies the
+head and fence again, and re-lists drafts. Bulk publish is allowed only when
+every pending draft has the current signed attempt marker and the expected
+ordinal set is exact. The coordinator remains owned until publication,
+reviewer state, and any approval outcome are durably classified. This prevents
+a concurrent agent's drafts or crash-left drafts from being published under
+the wrong verdict.
+
+### 15.2 Partial and Ambiguous Effects
 
 GitLab note APIs do not offer an idempotency key. Every review summary carries
-a hidden marker derived from the random attempt ID. On an ambiguous publish,
-the daemon searches the target merge request for that exact marker:
+a signed hidden marker derived from the random attempt ID. Each draft also
+carries its attempt-and-ordinal marker so an ambiguous create can be recovered
+without guessing from its text. On an ambiguous publish, the daemon retains
+the publication lease in `reconciling` and searches the target merge request
+for that exact summary marker:
 
 - found: record the external IDs and do not publish again;
-- not found after a bounded convergence window: classify as
-  `not_submitted`; and
+- not found after the bounded convergence window, with the complete marked
+  draft set still pending: classify as `not_submitted`, from which the same
+  attempt may retry while it still owns the lease; and
 - still uncertain: classify as `ambiguous`, suppress the ordinary fallback,
-  and require reconciliation.
+  and keep new publication blocked until reconciliation.
 
 If review comments publish but approval deterministically fails, a public
 effect already exists. Record a submitted comment review with
@@ -837,7 +901,7 @@ Review bodies and inline comments stay relay/daemon-to-GitLab. The Control
 Plane stores attempt ID, external IDs, event, verdict, head SHA, and normalized
 state only.
 
-### 15.2 Tier Semantics
+### 15.3 Tier Semantics
 
 - On Free, `APPROVE` records an optional approval and
   `REQUEST_CHANGES` records reviewer state but does not block merging.
@@ -1092,7 +1156,8 @@ an administrator must remove if cleanup is abandoned.
 | Untrusted issue/MR prompt injection               | Bounded excerpts, explicit prompt fence, source-of-truth read path                                    |
 | External contributor starts privileged work       | Live target-project membership or explicit current-maintainer request                                 |
 | Stale hook or daemon performs an effect           | Config, dispatch, placement, project, subject, head, attempt, and credential-epoch fences             |
-| Duplicate note/review after timeout               | Hidden random markers and read-after-ambiguous reconciliation                                         |
+| Duplicate note/review after timeout               | Signed random markers and read-after-ambiguous reconciliation                                         |
+| Shared service account cross-publishes drafts     | Durable per-MR publication lease, fenced single-use permits, exact marked-draft set, orphan cleanup   |
 | Cross-tenant access                               | Organization-owned connection/binding/repository plus current agent placement checks                  |
 | Secret or content logging                         | Log identifiers, scope/purpose, status, latency, and normalized codes only                            |
 
@@ -1138,6 +1203,8 @@ Use focused unit tests for pure boundaries only:
   gates;
 - provider-qualified repository authorization and grant mismatch rejection;
 - review-policy and exact-head fencing; and
+- review-publication lease, fence, attempt ownership, and reconciliation state
+  transitions; and
 - status-projection generation and marker reconciliation.
 
 Use integration tests for:
@@ -1147,6 +1214,8 @@ Use integration tests for:
 - daemon/relay feature negotiation and mixed-version rejection;
 - credential epoch invalidation on role, token, project, agent-placement, and
   disconnect changes; and
+- durable review-publication serialization and fail-closed lease transfer
+  after a simulated daemon loss; and
 - message/content absence from Control Plane frames and persistence.
 
 The release contract suite runs against real GitLab.com Free and Premium test
@@ -1164,8 +1233,13 @@ projects and covers:
    reviewer re-request, and external-MR gates;
 7. ordinary reply versus formal-review mutual exclusion;
 8. inline `COMMENT`, `REQUEST_CHANGES`, and SHA-fenced `APPROVE`;
-9. Free advisory versus Premium blocking behavior; and
-10. queued/running/terminal status-note convergence and authorized rerun.
+9. simultaneous reviews from multiple agents on the same MR, including agents
+   placed on different daemons, with no cross-attempt publication;
+10. crashes after draft creation and immediately before bulk publish, including
+    orphan cleanup, same-attempt recovery, and ambiguous-publish
+    reconciliation;
+11. Free advisory versus Premium blocking behavior; and
+12. queued/running/terminal status-note convergence and authorized rerun.
 
 Validation must also scan source, generated examples, fixtures, logs, and PR
 prose for real deployment addresses, account identifiers, OAuth application
