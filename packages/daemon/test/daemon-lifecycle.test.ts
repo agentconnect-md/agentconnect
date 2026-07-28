@@ -619,9 +619,10 @@ describe('Daemon idle sweep — background-task lease', () => {
     expect((daemon as any).hosts.has('bot-a')).toBe(true)
     expect((daemon as any).store.getSession(KEY)?.state).toBe('idle')
 
-    // Wake fires and is delivered; once its turn settles the lease is quiescent for real.
+    // Wake fires and is delivered; the fence is held until that turn SETTLES, not until it is
+    // dispatched, so wait on the count rather than on the timer set.
     clock.advance(4000)
-    await vi.waitFor(() => expect((daemon as any).bgWakeTimers.size).toBe(0))
+    await vi.waitFor(() => expect((daemon as any).sdkLease.get(LEASE_KEY)?.armedWakes).toBe(0))
     await vi.waitFor(() => expect((daemon as any).store.getSession(KEY)?.state).toBe('idle'))
     clock.advance(1001)
     ;(daemon as any).sweepIdle()
@@ -677,7 +678,7 @@ describe('Daemon idle sweep — background-task lease', () => {
     expect((daemon as any).hosts.has('bot-a')).toBe(true)
 
     clock.advance(4000)
-    await vi.waitFor(() => expect((daemon as any).bgWakeTimers.size).toBe(0))
+    await vi.waitFor(() => expect((daemon as any).sdkLease.get(LEASE_KEY)?.armedWakes).toBe(0))
     clock.advance(1001)
     ;(daemon as any).sweepIdle()
     await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false))
@@ -811,6 +812,7 @@ describe('Daemon idle sweep — background-task lease', () => {
 
       clock.advance(4000) // re-armed, not abandoned
       await vi.waitFor(() => expect((daemon as any).bgWakeTimers.size).toBe(1))
+      expect((daemon as any).sdkLease.get(LEASE_KEY)?.armedWakes).toBe(1) // fence never dipped
       expect(host.prompt).toHaveBeenCalledTimes(1)
 
       ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
@@ -874,6 +876,47 @@ describe('Daemon idle sweep — background-task lease', () => {
       await daemon.stop()
     }, 15_000)
 
+    // The hand-off after the fence is released is its own race: `dispatch()` claims the serial
+    // gate synchronously, but `dispatchOne` then awaits thread history / attachments / memory
+    // recall before SessionManager writes `state = 'prompting'`. Releasing at dispatch time
+    // would leave an already-expired session reading quiescent AND idle for that whole window.
+    it('holds the fence through async turn initialization, not just up to dispatch', async () => {
+      const clock = new FakeClock()
+      const { daemon, host } = await bootWithTurn(clock, {
+        agentIdleTimeoutMs: 1000,
+        agentMaxLifetimeMs: 10_000_000,
+        idleSweepMs: 10_000_000
+      })
+      // Stall initialization exactly where it is slow in production (managed-memory recall),
+      // i.e. AFTER the wake's dispatch but BEFORE the row leaves `idle`.
+      let releaseRecall!: () => void
+      const recallBlocked = new Promise<void>((resolve) => (releaseRecall = resolve))
+      const memory = (daemon as any).memory
+      const realRecall = memory.recallForTurn.bind(memory)
+      memory.recallForTurn = async (...args: unknown[]) => {
+        await recallBlocked
+        return realRecall(...args)
+      }
+
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      clock.advance(4000)
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1)) // wake dispatched, stalled
+
+      // Past the TTL, mid-initialization: the row is still `idle` and has no Pending, so only
+      // the lease fence can keep the sweep off it.
+      clock.advance(1001)
+      ;(daemon as any).sweepIdle()
+      expect((daemon as any).store.getSession(KEY)?.state).not.toBe('closed')
+      expect((daemon as any).hosts.has('bot-a')).toBe(true)
+      expect(host.stop).not.toHaveBeenCalled()
+
+      releaseRecall()
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2))
+      await vi.waitFor(() => expect((daemon as any).sdkLease.get(LEASE_KEY)?.armedWakes).toBe(0))
+      await daemon.stop()
+    }, 15_000)
+
     it('does not wake for an internal subagent task', async () => {
       const clock = new FakeClock()
       const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
@@ -904,20 +947,29 @@ describe('Daemon idle sweep — background-task lease', () => {
       await daemon.stop()
     }, 15_000)
 
+    // A wake has no hopCount to bound and a woken turn may start further background tasks, so
+    // the budget is the only backstop against a self-feeding loop.
     it('stops waking once the per-session budget is exhausted', async () => {
       const clock = new FakeClock()
-      const { daemon } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+      const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
 
-      // 25 settle→wake cycles against a budget of 20: the extras must be refused, so a wake
-      // that keeps re-spawning background tasks cannot feed itself forever. The counter is
-      // the assertion (not host.prompt) because these turns are queued, never drained.
-      for (let i = 0; i < 25; i++) {
-        ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: `t${i}` }))
-        ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: `t${i}` }))
-        clock.advance(4000)
-        await vi.waitFor(() => expect((daemon as any).bgWakeTimers.size).toBe(0))
-      }
-      expect((daemon as any).sdkLease.get(LEASE_KEY)?.bgWakes).toBe(20)
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      clock.advance(4000)
+      const lease = (daemon as any).sdkLease.get(LEASE_KEY)
+      await vi.waitFor(() => expect(lease.armedWakes).toBe(0))
+      expect(host.prompt).toHaveBeenCalledTimes(2)
+      expect(lease.bgWakes).toBe(1) // a delivered wake is spent
+
+      // Pre-spend the rest rather than driving 19 more real turns: the property under test is
+      // the refusal at the cap, not the arithmetic getting there.
+      lease.bgWakes = 20
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't2' }))
+      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't2' }))
+      clock.advance(4000)
+      await vi.waitFor(() => expect(lease.armedWakes).toBe(0)) // fence released, but no wake
+      expect(host.prompt).toHaveBeenCalledTimes(2)
+      expect(lease.bgWakes).toBe(20) // never spends past the cap
       await daemon.stop()
     }, 30_000)
   })

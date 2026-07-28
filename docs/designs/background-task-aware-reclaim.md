@@ -85,7 +85,9 @@ has no foreground prompt pending for the agent.
 `tasks` **before** its completion wake is armed (§5.1). Without it, a task that
 outlived the session's idle TTL would leave the session quiescent for the whole
 grace window, and a sweep landing there would close the session and drop the
-lease — losing exactly the completion the wake exists to deliver.
+lease — losing exactly the completion the wake exists to deliver. The count is
+held past the injected dispatch as well, until the woken turn is itself visible to
+the sweep; §5.1 covers why.
 
 ### Logical waiting state
 
@@ -194,19 +196,35 @@ The daemon therefore delivers it, as a new turn into the same session:
 The wake is armed on a `BG_TASK_WAKE_GRACE_MS` (4s) delay and every precondition
 is re-checked when it fires, never captured when it is armed:
 
-| Condition at fire time      | Behavior                                                                                  |
-| --------------------------- | ----------------------------------------------------------------------------------------- |
-| No lease                    | Host was reclaimed; the ACP session is gone. Skip.                                        |
-| Another wake still armed    | Several tasks settled on one edge; let the LAST one deliver for all. Skip.                |
-| `sdkState == "running"`     | The runtime's self-drain cycle is in flight. **Re-arm**, up to `MAX_BG_TASK_WAKE_REARMS`. |
-| `tasks.size > 0`            | Another task is still live; its completion carries the session forward. Skip.             |
-| Session missing or not idle | Closed, or a real turn is already running and will observe the task. Skip.                |
-| Budget exhausted            | Warn and skip (see below).                                                                |
+| Condition at fire time       | Behavior                                                                                  |
+| ---------------------------- | ----------------------------------------------------------------------------------------- |
+| No lease                     | Host was reclaimed; the ACP session is gone. Skip.                                        |
+| Another wake armed/in-flight | Several tasks settled on one edge, or a wake turn is already running. Skip.               |
+| `sdkState == "running"`      | The runtime's self-drain cycle is in flight. **Re-arm**, up to `MAX_BG_TASK_WAKE_REARMS`. |
+| `tasks.size > 0`             | Another task is still live; its completion carries the session forward. Skip.             |
+| Session missing or not idle  | Closed, or a real turn is already running and will observe the task. Skip.                |
+| Budget exhausted             | Warn and skip (see below).                                                                |
 
-Arming takes `armedWakes`; the fire path releases it before deciding anything, so
-every outcome — delivered, skipped, given up — leaves the count balanced, and the
-re-arm path takes it again. That is also what makes the "another wake still armed"
-row safe: the fence is held continuously across the hand-off.
+Arming takes `armedWakes` and every outcome releases it exactly once, so the count
+stays balanced. The release point differs by outcome, and that difference is the
+whole fence:
+
+- **Delivered** — the count is handed to the dispatch promise and released when it
+  settles, i.e. at turn completion. Releasing at dispatch time is NOT enough:
+  `dispatch()` claims the serial gate synchronously, but `dispatchOne` then awaits
+  thread history, attachments, and managed-memory recall before `SessionManager`
+  writes `state = 'prompting'`. Through that window the row is still `idle` and has
+  no `Pending`, so an already-expired session would read quiescent and a sweep
+  landing there would TTL-close it and stop the host mid-initialization.
+- **Re-armed** — the next attempt takes its count first, so the total never dips.
+- **Skipped or given up** — released immediately.
+
+A wake turn that never settles keeps the fence indefinitely; the absolute
+`agentMaxLifetimeMs` ceiling (§4) remains the backstop, as it is for a hung task.
+
+Holding past dispatch is also why "another wake armed **or delivering**" covers
+both: a task settling while a wake turn is in flight is handed to the model by the
+runtime in-turn, exactly as the session-state guard assumes.
 
 The `running` case is a **wait, not a stand-down**. The self-drain cycle delivers
 nothing (see §5), so treating it as the delivery is what strands the session; the

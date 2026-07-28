@@ -12196,29 +12196,53 @@ export class Daemon {
     if (this.draining) return
     const lease = this.sdkLease.get(sdkLeaseKey(agentId, acpSessionId))
     const what = description?.trim() || 'background task'
-    const skip = (why: string): void => this.log.debug(`bg-task wake skipped (${why}): "${what}" on ${acpSessionId}`)
-    if (!lease) return skip('host reclaimed')
-    // This attempt is no longer armed. Release the fence FIRST so every exit below — deliver,
-    // skip, give up — leaves it balanced; the re-arm path re-takes it via schedule().
-    lease.armedWakes = Math.max(0, lease.armedWakes - 1)
-    // Several tasks can settle on the SAME edge (an empty `background_tasks_changed` snapshot
-    // settles all of them), arming a timer each. The `tasks.size` guard below does not catch
-    // that — they are all already out of `tasks` — so let the LAST armed wake deliver and drop
-    // the rest: one turn covers every completion, and the fence stays held meanwhile.
-    if (lease.armedWakes > 0) return skip('a later wake for this session is already armed')
+    if (!lease) {
+      this.log.debug(`bg-task wake skipped (host reclaimed): "${what}" on ${acpSessionId}`)
+      return
+    }
+    // Release this attempt's fence — but NOT before the dispatch below is reclaim-visible.
+    // `dispatch()` only claims the serial gate synchronously; `dispatchOne` then awaits thread
+    // history, attachments, and managed-memory recall before SessionManager writes
+    // `state = 'prompting'`. Releasing here would reopen the very window this fence closes: an
+    // already-expired session would read quiescent AND idle, and a sweep landing there would
+    // TTL-close it and stop the host mid-initialization. So on the delivery path the fence is
+    // handed to the dispatch promise (which settles at turn completion) and released there;
+    // every other path releases immediately.
+    let released = false
+    const release = (): void => {
+      if (released) return
+      released = true
+      lease.armedWakes = Math.max(0, lease.armedWakes - 1)
+    }
+    const skip = (why: string): void => {
+      release()
+      this.log.debug(`bg-task wake skipped (${why}): "${what}" on ${acpSessionId}`)
+    }
+    // A count above this attempt means another wake is either armed or still delivering:
+    //  • armed — several tasks settled on the SAME edge (an empty `background_tasks_changed`
+    //    snapshot settles all of them), arming a timer each. The `tasks.size` guard below
+    //    cannot catch that, since they are all already out of `tasks`. Let the LAST one
+    //    deliver for all of them rather than running one turn per task.
+    //  • delivering — a wake turn is in flight, and a task settling during a turn is handed to
+    //    the model by the runtime in-turn anyway (the same reasoning as the `state` guard).
+    // Either way the fence stays held by the other wake, so skipping here is safe.
+    if (lease.armedWakes > 1) return skip('another wake for this session is armed or delivering')
     if (lease.sdkState === 'running') {
       if (attempt >= MAX_BG_TASK_WAKE_REARMS) {
+        release()
         this.log.warn(
           `bg-task wake gave up after ${MAX_BG_TASK_WAKE_REARMS} re-arms — runtime cycle on ` +
             `${acpSessionId} never returned to idle ("${what}")`
         )
         return
       }
+      // Take the next attempt's fence BEFORE releasing this one so the count never dips to 0.
       this.scheduleBackgroundTaskWake(agentId, acpSessionId, taskId, description, status, attempt + 1)
       return skip(`runtime cycle still running, re-armed ${attempt + 1}/${MAX_BG_TASK_WAKE_REARMS}`)
     }
     if (lease.tasks.size > 0) return skip('other background tasks still live')
     if (lease.bgWakes >= MAX_BG_TASK_WAKES_PER_SESSION) {
+      release()
       this.log.warn(
         `bg-task wake budget exhausted (${MAX_BG_TASK_WAKES_PER_SESSION}) on ${acpSessionId} — ` +
           `not waking for "${what}"`
@@ -12265,9 +12289,13 @@ export class Daemon {
     }
     lease.bgWakes += 1
     this.log.info(`bg-task wake: "${what}" → agent "${agentId}" session ${acpSessionId} (${rec.key})`)
-    void this.dispatch(agentId, msg, integrationId).catch((err) =>
-      this.log.error(`bg-task wake dispatch failed for "${agentId}": ${formatErr(err)}`)
-    )
+    // The fence stays taken until this settles (which is turn completion, not admission), so
+    // initialization is never exposed to the idle sweep. `finally` covers rejection too — a
+    // failed wake must not pin the host. A turn that never settles at all is still bounded by
+    // the absolute `agentMaxLifetimeMs` ceiling (§4).
+    void this.dispatch(agentId, msg, integrationId)
+      .catch((err) => this.log.error(`bg-task wake dispatch failed for "${agentId}": ${formatErr(err)}`))
+      .finally(release)
   }
 
   /** A session is SDK-quiescent when it has no live background tasks, no armed completion
