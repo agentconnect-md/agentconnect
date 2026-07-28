@@ -36,10 +36,14 @@ import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, type OrgId } from '../../domain/ids.js'
 import { mcpProxyDef, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
 import { serializeByProviderNames } from './mcp-providers.js'
+import { serializeBySkillSourceNames } from './skill-sources.js'
 
 /** Thrown inside the provider-name fence when the in-fence visibility re-check
  *  refuses an enable-list name; the route maps it to a 403. */
 class McpEnableDenied extends Error {}
+/** The skill-source twin: thrown inside the source-name fence when the in-fence
+ *  visibility re-check refuses a submitted skill-ref; the route maps it to a 403. */
+class SkillEnableDenied extends Error {}
 import { parseSkillRef, redactSourceCredentials } from '../../orchestrator/skillSource.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from '../../orchestrator/memoryConnection.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
@@ -645,6 +649,47 @@ export function agentRoutes(deps: HttpDeps) {
         : null
     }
 
+    // The skill-source twin of withSubmittedMcpProviderChains — same fence, same
+    // reasoning (see that helper and routes/skill-sources.ts): the write joins the
+    // (orgId, name) chain of every SOURCE its submitted skill-refs name, keyed off
+    // the whole submitted list (a stale full-replace PATCH may be the write that
+    // RESTORES a ref after a concurrent removal). Removal-only submissions ([] /
+    // null / untouched) join no chain.
+    //
+    // The visibility gate re-runs INSIDE the fence with the keep-exemption derived
+    // from the agent's COMMITTED refs (evaluated in the row-locked update
+    // transaction via AgentUpdateOpts.authorizeSkills): a kept ref's source can be
+    // neither deleted nor name-captured while held (both 409 while referenced), so
+    // the committed hold is exactly the authorization it was granted under. One
+    // skills-specific difference from MCP: there is no daemon-local fallback for a
+    // skill-ref — a submitted NEW ref whose source is unknown (e.g. just deleted in
+    // this very chain) or unviewable is refused, so a dangling ref can never be
+    // committed through this surface. A refusal surfaces as SkillEnableDenied (the
+    // route maps it to 403).
+    const withSubmittedSkillSourceChains = async <T>(
+      orgId: OrgId,
+      ctx: ViewCtx,
+      submitted: readonly string[] | null | undefined,
+      run: (authorizeSkills: (currentlyHeld: readonly string[]) => void) => Promise<T>
+    ): Promise<T> => {
+      if (!submitted || submitted.length === 0) return run(() => {})
+      const names = submitted.map((ref) => parseSkillRef(ref).source)
+      return serializeBySkillSourceNames(orgId, names, async () => {
+        const visible = new Set((await deps.repos.skillSource.listForOrg(orgId, ctx)).map((s) => s.name))
+        return run((currentlyHeld) => {
+          const held = new Set(currentlyHeld)
+          const blocked = [
+            ...new Set(submitted.filter((ref) => !held.has(ref)).map((ref) => parseSkillRef(ref).source))
+          ].filter((n) => !visible.has(n))
+          if (blocked.length) {
+            throw new SkillEnableDenied(
+              `cannot enable skills from a source you don't have access to: ${blocked.join(', ')}`
+            )
+          }
+        })
+      })
+    }
+
     const validateExternalMemoryBinding = async (
       memory: AgentRecord['memory'] | undefined,
       orgId: OrgId
@@ -935,59 +980,64 @@ export function agentRoutes(deps: HttpDeps) {
               : undefined
           // One transaction for the agent row + its initial secret rows (sealing
           // happens before it opens) — a failure can't leave a partial definition.
-          // Chained per submitted MCP provider name so the row can't commit inside a concurrent
-          // provider-delete's check→drop window.
+          // Chained per submitted MCP provider name AND per submitted skill-ref source
+          // name so the row can't commit inside a concurrent registry-delete's
+          // check→drop window. Nesting order (providers outer, sources inner) is fixed
+          // everywhere agent writes take both, so the two chain families can't cycle.
           let agent: AgentRecord
           try {
-            agent = await withSubmittedMcpProviderChains(orgOf(req), ctxOf(req), req.body.mcpServers, (authorize) => {
-              // A not-yet-created agent holds nothing, and nothing can concurrently
-              // remove from it — the empty-hold decision is stable through create.
-              authorize([])
-              return deps.repos.agentConfig.create(
-                {
-                  id: agentId,
-                  orgId: orgOf(req),
-                  name: req.body.name,
-                  ...(req.body.displayName !== undefined ? { displayName: req.body.displayName } : {}),
-                  // Absent ⇒ the repo assigns a random glyph+color combo (product default).
-                  ...(req.body.icon !== undefined ? { icon: req.body.icon } : {}),
-                  ...(req.body.description !== undefined ? { description: req.body.description } : {}),
-                  runtime: req.body.runtime,
-                  ...(req.body.model !== undefined ? { model: req.body.model } : {}),
-                  ...(req.body.reasoningEffort !== undefined ? { reasoningEffort: req.body.reasoningEffort } : {}),
-                  ...(req.body.outputMode !== undefined ? { outputMode: req.body.outputMode } : {}),
-                  ...(req.body.showFooter !== undefined ? { showFooter: req.body.showFooter } : {}),
-                  ...(req.body.fastMode !== undefined ? { fastMode: req.body.fastMode } : {}),
-                  ...(req.body.permissionMode !== undefined ? { permissionMode: req.body.permissionMode } : {}),
-                  ...(req.body.allowRuntimeChangesInChat !== undefined
-                    ? { allowRuntimeChangesInChat: req.body.allowRuntimeChangesInChat }
-                    : {}),
-                  ...(req.body.pause !== undefined ? { pause: req.body.pause } : {}),
-                  ...(req.body.introduceOnJoin !== undefined ? { introduceOnJoin: req.body.introduceOnJoin } : {}),
-                  restrictFileAccess,
-                  ...(req.body.env !== undefined ? { env: req.body.env } : {}),
-                  ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
-                  ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
-                  ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
-                  ...(req.body.daemonId !== undefined ? { daemonId: DaemonId(req.body.daemonId) } : {}),
-                  ...(workspace !== undefined ? { workspace } : {}),
-                  ...(workspaceRepoId !== undefined ? { workspaceRepoId } : {}),
-                  ...(req.principal ? { createdByUserId: req.principal.userId } : {}),
-                  ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
-                  ...(initialSharedWith ? { sharedWith: initialSharedWith } : {}),
-                  ...(req.body.callPolicy ? { callPolicy: req.body.callPolicy } : {}),
-                  ...(initialAllowedCallers ? { allowedCallerAgentIds: initialAllowedCallers } : {}),
-                  ...(req.body.outboundPolicy ? { outboundPolicy: req.body.outboundPolicy } : {}),
-                  ...(initialAllowedTargets ? { allowedTargetAgentIds: initialAllowedTargets } : {}),
-                  capabilities: req.body.capabilities
-                },
-                // Initial write-only secrets — same transaction, so the first
-                // replicateUpsert below always sees the complete definition.
-                req.body.secrets
-              )
-            })
+            agent = await withSubmittedMcpProviderChains(orgOf(req), ctxOf(req), req.body.mcpServers, (authorize) =>
+              withSubmittedSkillSourceChains(orgOf(req), ctxOf(req), req.body.skills, (authorizeSkills) => {
+                // A not-yet-created agent holds nothing, and nothing can concurrently
+                // remove from it — the empty-hold decision is stable through create.
+                authorize([])
+                authorizeSkills([])
+                return deps.repos.agentConfig.create(
+                  {
+                    id: agentId,
+                    orgId: orgOf(req),
+                    name: req.body.name,
+                    ...(req.body.displayName !== undefined ? { displayName: req.body.displayName } : {}),
+                    // Absent ⇒ the repo assigns a random glyph+color combo (product default).
+                    ...(req.body.icon !== undefined ? { icon: req.body.icon } : {}),
+                    ...(req.body.description !== undefined ? { description: req.body.description } : {}),
+                    runtime: req.body.runtime,
+                    ...(req.body.model !== undefined ? { model: req.body.model } : {}),
+                    ...(req.body.reasoningEffort !== undefined ? { reasoningEffort: req.body.reasoningEffort } : {}),
+                    ...(req.body.outputMode !== undefined ? { outputMode: req.body.outputMode } : {}),
+                    ...(req.body.showFooter !== undefined ? { showFooter: req.body.showFooter } : {}),
+                    ...(req.body.fastMode !== undefined ? { fastMode: req.body.fastMode } : {}),
+                    ...(req.body.permissionMode !== undefined ? { permissionMode: req.body.permissionMode } : {}),
+                    ...(req.body.allowRuntimeChangesInChat !== undefined
+                      ? { allowRuntimeChangesInChat: req.body.allowRuntimeChangesInChat }
+                      : {}),
+                    ...(req.body.pause !== undefined ? { pause: req.body.pause } : {}),
+                    ...(req.body.introduceOnJoin !== undefined ? { introduceOnJoin: req.body.introduceOnJoin } : {}),
+                    restrictFileAccess,
+                    ...(req.body.env !== undefined ? { env: req.body.env } : {}),
+                    ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
+                    ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
+                    ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
+                    ...(req.body.daemonId !== undefined ? { daemonId: DaemonId(req.body.daemonId) } : {}),
+                    ...(workspace !== undefined ? { workspace } : {}),
+                    ...(workspaceRepoId !== undefined ? { workspaceRepoId } : {}),
+                    ...(req.principal ? { createdByUserId: req.principal.userId } : {}),
+                    ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
+                    ...(initialSharedWith ? { sharedWith: initialSharedWith } : {}),
+                    ...(req.body.callPolicy ? { callPolicy: req.body.callPolicy } : {}),
+                    ...(initialAllowedCallers ? { allowedCallerAgentIds: initialAllowedCallers } : {}),
+                    ...(req.body.outboundPolicy ? { outboundPolicy: req.body.outboundPolicy } : {}),
+                    ...(initialAllowedTargets ? { allowedTargetAgentIds: initialAllowedTargets } : {}),
+                    capabilities: req.body.capabilities
+                  },
+                  // Initial write-only secrets — same transaction, so the first
+                  // replicateUpsert below always sees the complete definition.
+                  req.body.secrets
+                )
+              })
+            )
           } catch (e) {
-            if (e instanceof McpEnableDenied) {
+            if (e instanceof McpEnableDenied || e instanceof SkillEnableDenied) {
               return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: e.message })
             }
             throw e
@@ -1366,8 +1416,9 @@ export function agentRoutes(deps: HttpDeps) {
           // The row patch and the secret merge commit as ONE transaction (sealing
           // outside it), so the replicateUpsert below can only ever ship a
           // definition that fully applied — never a half-updated one. Chained per
-          // submitted MCP provider name so the row can't commit inside a concurrent
-          // provider-delete's check→drop window.
+          // submitted MCP provider name AND per submitted skill-ref source name so
+          // the row can't commit inside a concurrent registry-delete's check→drop
+          // window (nesting order fixed: providers outer, sources inner).
           const { secrets: secretsPatch, ...bodyPatch } = req.body
           let agent: AgentRecord
           try {
@@ -1376,20 +1427,22 @@ export function agentRoutes(deps: HttpDeps) {
               ctxOf(req),
               req.body.mcpServers,
               (authorizeMcpServers) =>
-                deps.repos.agentConfig.update(
-                  AgentId(req.params.id),
-                  {
-                    ...bodyPatch,
-                    ...(req.principal ? { lastModifiedByUserId: req.principal.userId } : {})
-                  },
-                  secretsPatch,
-                  // Evaluated inside the row-locked transaction, against the same
-                  // committed list this write merges onto (see the fence helper).
-                  { authorizeMcpServers }
+                withSubmittedSkillSourceChains(orgOf(req), ctxOf(req), req.body.skills, (authorizeSkills) =>
+                  deps.repos.agentConfig.update(
+                    AgentId(req.params.id),
+                    {
+                      ...bodyPatch,
+                      ...(req.principal ? { lastModifiedByUserId: req.principal.userId } : {})
+                    },
+                    secretsPatch,
+                    // Evaluated inside the row-locked transaction, against the same
+                    // committed lists this write merges onto (see the fence helpers).
+                    { authorizeMcpServers, authorizeSkills }
+                  )
                 )
             )
           } catch (e) {
-            if (e instanceof McpEnableDenied) {
+            if (e instanceof McpEnableDenied || e instanceof SkillEnableDenied) {
               return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: e.message })
             }
             throw e

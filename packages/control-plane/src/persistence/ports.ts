@@ -639,17 +639,18 @@ export interface AgentRecord {
 
 export interface AgentUpdateOpts {
   authorizeMcpServers?: (currentlyHeld: readonly string[]) => void
+  authorizeSkills?: (currentlyHeld: readonly string[]) => void
 }
 
 export interface AgentRepo {
   create(input: CreateAgentInput): Promise<AgentRecord>
   get(agentId: AgentId): Promise<AgentRecord | null>
-  /** `opts.authorizeMcpServers` (only meaningful when the patch includes
-   *  `mcpServers`) runs INSIDE the row-locked transaction, right after the
-   *  committed runtimeOverrides read, with the agent's currently-held MCP list —
-   *  the one atomic point where an enable-list authorization decision and the
-   *  write it guards cannot be separated by a concurrent removal. A throw
-   *  aborts the transaction. */
+  /** `opts.authorizeMcpServers` / `opts.authorizeSkills` (only meaningful when
+   *  the patch includes `mcpServers` / `skills`) run INSIDE the row-locked
+   *  transaction, right after the committed runtimeOverrides read, with the
+   *  agent's currently-held MCP list / skill-ref list — the one atomic point
+   *  where an enable-list authorization decision and the write it guards cannot
+   *  be separated by a concurrent removal. A throw aborts the transaction. */
   update(agentId: AgentId, patch: UpdateAgentInput, opts?: AgentUpdateOpts): Promise<AgentRecord>
   /** Compare-and-set a workspace edit. The caller has already drained/proved
    *  an owning daemon when one exists. */

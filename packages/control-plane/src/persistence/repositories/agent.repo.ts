@@ -289,11 +289,12 @@ export class PgAgentRepo implements AgentRepo {
         Prisma.sql`SELECT "runtimeOverrides" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
       )
       const cur = (rows[0]?.runtimeOverrides ?? null) as RuntimeOverrides | null
-      // The enable-list authorization decision happens HERE, against the row-locked
-      // committed list — a removal-only write (which joins no provider-name chain)
+      // The enable-list authorization decisions happen HERE, against the row-locked
+      // committed lists — a removal-only write (which joins no registry-name chain)
       // can no longer land between the hold check and the write it authorized. A
       // throw aborts the transaction before any merge is computed.
       opts?.authorizeMcpServers?.(cur?.mcpServers ?? [])
+      opts?.authorizeSkills?.(cur?.skills ?? [])
       const next: RuntimeOverrides = { ...(cur ?? {}) }
       if (patch.model !== undefined) {
         if (patch.model === null) delete next.model
