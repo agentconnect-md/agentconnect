@@ -87,6 +87,50 @@ describe('usage/report handler — persists per-session token usage', () => {
     expect(stub.lastSent('error')).toBeUndefined()
   })
 
+  it('splits a session that spans two buckets into a per-bucket spend ledger', async () => {
+    const h = buildWsHarness(prisma)
+    const { stub } = await connectReady(h)
+    await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
+
+    const now = new Date()
+    const yesterday = new Date(now.getTime() - DAY_MS)
+    const where = { agentId: AGENT_A, sessionId: 'span' }
+
+    // Day 1: cumulative $1.
+    stub.inject('usage/report', {
+      sessionId: 'span',
+      agentId: AGENT_A,
+      lastActivityAt: yesterday.toISOString(),
+      usage: { totalTokens: 100, costAmount: 1, costCurrency: 'USD' }
+    })
+    await vi.waitFor(async () => expect(await prisma.sessionSpend.count({ where })).toBe(1))
+
+    // Day 2, SAME session: cumulative $2 → a $1 delta appended, not a rewrite of
+    // the snapshot's single row into today's bucket.
+    stub.inject('usage/report', {
+      sessionId: 'span',
+      agentId: AGENT_A,
+      lastActivityAt: now.toISOString(),
+      usage: { totalTokens: 200, costAmount: 2, costCurrency: 'USD' }
+    })
+    await vi.waitFor(async () => expect(await prisma.sessionSpend.count({ where })).toBe(2))
+
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d30` })
+      expect(res.statusCode).toBe(200)
+      const body = res.json() as { series: { points: { costAmount: number }[] } }
+      const points = body.series.points
+      // The regression: $1 stays in yesterday's bucket and $1 in today's. The old
+      // latest-wins snapshot would show $0 yesterday and the full $2 today.
+      expect(points.at(-2)!.costAmount).toBeCloseTo(1)
+      expect(points.at(-1)!.costAmount).toBeCloseTo(1)
+      expect(points.reduce((s, p) => s + p.costAmount, 0)).toBeCloseTo(2)
+    } finally {
+      await close()
+    }
+  })
+
   it('drops usage for an agent not placed on the reporting daemon', async () => {
     const h = buildWsHarness(prisma)
     const { stub } = await connectReady(h)
@@ -165,6 +209,18 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
           costCurrency: 'USD',
           lastActivityAt: recent(30)
         }
+      ]
+    })
+    // The series reads the incremental spend ledger, not the cumulative snapshot,
+    // so mirror each row's cost as one ledger delta at its activity time. (These
+    // rows are seeded directly; the record() path writes both together — see the
+    // per-bucket regression test below.)
+    await prisma.sessionSpend.createMany({
+      data: [
+        { agentId: AGENT_A, sessionId: 'a1', costAmount: 0.1, at: recent(10) },
+        { agentId: AGENT_A, sessionId: 'a2', costAmount: 0.2, at: recent(20) },
+        { agentId: AGENT_A, sessionId: 'a-old', costAmount: 9.9, at: new Date(now.getTime() - 100 * DAY_MS) },
+        { agentId: AGENT_B, sessionId: 'b1', costAmount: 0.05, at: recent(30) }
       ]
     })
 

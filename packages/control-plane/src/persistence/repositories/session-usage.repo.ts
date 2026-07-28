@@ -44,13 +44,37 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       costCurrency: u.costCurrency ?? null,
       lastActivityAt: input.lastActivityAt
     }
-    await this.db.sessionUsage.upsert({
-      where: { agentId_sessionId: { agentId: input.agentId, sessionId: input.sessionId } },
+    const key = { agentId_sessionId: { agentId: input.agentId, sessionId: input.sessionId } }
+    // Snapshot upsert + spend-ledger append commit together. The daemon reports
+    // CUMULATIVE cost, so the ledger delta = new − prior snapshot; we append it
+    // stamped at the report's activity time so the spend-over-time series can
+    // bucket it where it happened (the snapshot alone collapses a session's whole
+    // cost into its newest bucket). Cost only grows ⇒ delta ≥ 0; a re-send or a
+    // reset yields ≤ 0 and appends nothing, keeping the ledger idempotent.
+    // ponytail: the read-then-write assumes reports for one session are serialized
+    // (a single active turn at a time — true today). If concurrent same-session
+    // reports ever happen, lock the prior-cost read with SELECT … FOR UPDATE so
+    // two deltas can't both diff against the same stale snapshot and double-count.
+    const apply = async (tx: PrismaLike) => {
+      const prev = await tx.sessionUsage.findUnique({ where: key, select: { costAmount: true } })
       // `startedAt` defaults to now() on first insert (the session's first-seen);
       // never touched on update, so it stays the earliest report.
-      create: { agentId: input.agentId, sessionId: input.sessionId, ...fields },
-      update: fields
-    })
+      await tx.sessionUsage.upsert({
+        where: key,
+        create: { agentId: input.agentId, sessionId: input.sessionId, ...fields },
+        update: fields
+      })
+      const delta = fields.costAmount - (prev?.costAmount ?? 0)
+      if (delta > 0) {
+        await tx.sessionSpend.create({
+          data: { agentId: input.agentId, sessionId: input.sessionId, at: input.lastActivityAt, costAmount: delta }
+        })
+      }
+    }
+    // `record` is called with the full client (never inside a withTx), so open our
+    // own transaction; the narrow keeps it composable if that ever changes.
+    if ('$transaction' in this.db) await this.db.$transaction(apply)
+    else await apply(this.db)
   }
 
   async get(agentId: AgentId, sessionId: string): Promise<SessionUsageCounts | null> {
@@ -127,9 +151,11 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     })
     const costCurrency = currencies.length === 1 ? currencies[0]!.costCurrency : null
 
-    // Spend-over-time series: attribute each session's cost to the bucket of its
-    // last activity, then fill empty buckets with 0 across the whole window. d1
-    // buckets hourly, longer ranges daily. Buckets align to the viewer's LOCAL
+    // Spend-over-time series: sum the append-only spend ledger's INCREMENTAL
+    // deltas into the bucket each report landed in, then fill empty buckets with 0
+    // across the whole window. Reading the ledger (not the cumulative snapshot)
+    // keeps a session's spend in the buckets it actually happened in. d1 buckets
+    // hourly, longer ranges daily. Buckets align to the viewer's LOCAL
     // day/hour: we shift into local time (subtract offMs), floor there, shift back
     // — so `start` is the UTC instant of a local boundary and the client labels it
     // in local tz. offMs is 0 ⇒ plain UTC.
@@ -151,12 +177,12 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       start: new Date(floorSince + i * stepMs).toISOString(),
       costAmount: 0
     }))
-    const costRows = await this.db.sessionUsage.findMany({
-      where: { agent: agentScope, lastActivityAt: { gte: since } },
-      select: { lastActivityAt: true, costAmount: true }
+    const spendRows = await this.db.sessionSpend.findMany({
+      where: { agent: agentScope, at: { gte: since } },
+      select: { at: true, costAmount: true }
     })
-    for (const row of costRows) {
-      const idx = Math.floor((row.lastActivityAt.getTime() - floorSince) / stepMs)
+    for (const row of spendRows) {
+      const idx = Math.floor((row.at.getTime() - floorSince) / stepMs)
       if (idx >= 0 && idx < n) points[idx]!.costAmount += row.costAmount
     }
 
