@@ -1593,6 +1593,66 @@ describe('SessionManager — quoted reply source', () => {
     store.close()
   })
 
+  it('does not duplicate the agent OWN reply it is quoted back, though replay filters it out', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', tgMsg({ ts: '10', text: 'why is staging down?' }))
+    // The bot answers AFTER that read cursor, so its row is in the next unread window yet is
+    // filtered from replay as an own message. The continuing runtime authored it, so it is in
+    // context regardless — quoting it back must add nothing.
+    store.appendTranscript({
+      channel: transcriptChannelKey('-100123'),
+      thread: 'tg:10',
+      ts: '11',
+      sender: 'bot-a',
+      kind: 'text',
+      text: 'because the migration job is stuck'
+    })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '12',
+        text: 'why?',
+        replyTo: '11',
+        quoted: { messageId: '11', sender: '@mybot', text: 'because the migration job is stuck' }
+      })
+    )
+    const texts = blocks.map((b: any) => b.text as string)
+    expect(texts.some((t) => t.includes('this reply quotes'))).toBe(false)
+    expect(texts.join('\n')).not.toContain('because the migration job is stuck')
+    store.close()
+  })
+
+  it('injects an undelivered quoted source whose id sorts BELOW the cursor as text ("100" < "99")', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    // Cursor lands on id 99; Telegram's next ids are 100+, which are NOT lexically greater.
+    await sm.handle('bot-a', tgMsg({ ts: '99', text: 'looking into it' }))
+    // A message the agent never received (nobody routed it to this agent — no delivery receipt).
+    store.appendTranscript({
+      channel: transcriptChannelKey('-100123'),
+      thread: 'tg:10',
+      ts: '100',
+      sender: 'U2',
+      kind: 'text',
+      text: 'the payment webhook is retrying forever'
+    })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '101',
+        text: '@bot-a what about this?',
+        replyTo: '100',
+        quoted: { messageId: '100', sender: '@carol', text: 'the payment webhook is retrying forever' }
+      })
+    )
+    // Suppressing here would leave a bare "what about this?" — the PR's whole point.
+    expect(blocks.map((b: any) => b.text as string).join('\n')).toContain('the payment webhook is retrying forever')
+    store.close()
+  })
+
   it('always delivers a user-SELECTED passage, even when the full source is already in context', async () => {
     const store = newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any

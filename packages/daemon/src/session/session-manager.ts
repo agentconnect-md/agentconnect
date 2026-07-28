@@ -238,15 +238,20 @@ export class SessionManager {
    * text alone (unlike Slack, Telegram has no `fetchThreadHistory` backfill).
    *
    * Suppression must key on what actually REACHES the runtime, not on what the daemon merely
-   * stored — a transcript row is not proof the model can see it. Only two states qualify:
-   *   - the quoted row is in `replayed`, so this very prompt already carries it, and
-   *   - the quoted row predates this turn's unread window on a CONTINUING runtime session,
-   *     so it was delivered on an earlier turn (this covers the bot's own past posts, the
-   *     common "reply to the agent" case, which the own-message filter keeps out of replay).
-   * Anything else is injected. In particular a `freshSession` turn suppresses nothing: when
-   * a persisted ACP session cannot be resumed, `handle` mints a new one whose context is
-   * empty, and the agent's own prior messages are filtered out of replay — so the quote is
-   * the only remaining carrier of what the reply refers to.
+   * stored — a transcript row is not proof the model can see it. It also must not be inferred
+   * from cursor ORDER: `ts` is text, and Telegram's ascending integer ids do not compare
+   * correctly as text (`"100" > "99"` is false), so an unread-window test both misses rows
+   * that were never delivered and mistakes rows that were. Only three order-free states prove
+   * the content is present:
+   *   - the quoted row is in `replayed`, so this very prompt already carries it;
+   *   - on a CONTINUING runtime session, the quoted row was AUTHORED by this agent, so the
+   *     model produced it (the common "reply to the agent" case, which the own-message filter
+   *     keeps out of replay — hence not covered by `replayed`); and
+   *   - on a CONTINUING runtime session, the quoted row is recorded as DELIVERED to this
+   *     agent, the durable per-message receipt every inbound append writes.
+   * Anything else is injected. In particular a `freshSession` turn suppresses nothing: when a
+   * persisted ACP session cannot be resumed, `handle` mints a new one whose context is empty,
+   * so past authorship and past delivery say nothing about what the model can still see.
    *
    * A user-selected passage (`quoted.selection`) is never suppressed: it states WHICH part
    * of the source the reply is about, which having the full source in context cannot supply.
@@ -254,10 +259,9 @@ export class SessionManager {
   private quotedSourceBlock(
     msg: NormalizedMessage,
     ctx: {
+      agentId: string
       transcriptChannel: string
       thread: string
-      /** This turn's unread window, before the own-message filter and the replay cap. */
-      gap: readonly { ts: string }[]
       /** The rows this prompt actually replays to the model. */
       replayed: readonly { ts: string }[]
       /** A brand-new runtime session was minted this turn — no prior context survives. */
@@ -271,11 +275,13 @@ export class SessionManager {
     if (quoted.messageId !== undefined && !quoted.selection) {
       const id = quoted.messageId
       if (ctx.replayed.some((e) => e.ts === id)) return undefined
-      const deliveredEarlier =
-        !ctx.freshSession &&
-        !ctx.gap.some((e) => e.ts === id) &&
-        this.deps.store.telegramThreadForMessage(ctx.transcriptChannel, id) === ctx.thread
-      if (deliveredEarlier) return undefined
+      if (!ctx.freshSession) {
+        const row = this.deps.store.transcriptTextEntryAt(ctx.transcriptChannel, ctx.thread, id)
+        if (row?.sender === ctx.agentId) return undefined
+        if (row && this.deps.store.wasDeliveredToAgent(ctx.transcriptChannel, ctx.thread, id, ctx.agentId)) {
+          return undefined
+        }
+      }
     }
     // Framed as context, never as instruction: the quoted author is a third party whose text
     // the agent should reason about, not obey. Same `[sender] text` shape as thread context.
@@ -791,9 +797,9 @@ export class SessionManager {
           blocks.push({ type: 'text', text: `${head}\n${ctxText}` })
         }
         const quotedBlock = this.quotedSourceBlock(msg, {
+          agentId,
           transcriptChannel,
           thread,
-          gap,
           replayed: context,
           freshSession: created
         })
