@@ -131,6 +131,55 @@ describe('gated Telegram conversation discovery', () => {
   })
 })
 
+describe('Telegram ingress attribution', () => {
+  it('routes and deduplicates DMs within the bot connection that received them', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    await daemon.start()
+    const wrong = (daemon as any).agents.get('bot-a')
+    wrong.integrations = [
+      {
+        id: 'wrong-tg',
+        platform: 'telegram',
+        telegram: {
+          botToken: 'wrong-token',
+          allowedUserIds: [],
+          bindRules: [{ match: { kind: 'dm' } }]
+        }
+      }
+    ]
+    ;(daemon as any).agents.set('target', {
+      ...wrong,
+      id: 'target',
+      name: 'target',
+      integrations: [
+        {
+          id: 'target-tg',
+          platform: 'telegram',
+          telegram: {
+            botToken: 'target-token',
+            allowedUserIds: [],
+            bindRules: [{ channel: '424242', match: { kind: 'dm' } }],
+            gated: true
+          }
+        }
+      ]
+    })
+    const dispatch = vi.spyOn(daemon as any, 'dispatch').mockResolvedValue('acp')
+
+    // Separate bot chats can produce the same normalized chat/message coordinates.
+    // Each physical connection must route only through its own integration and must
+    // not suppress the other bot's event as a duplicate.
+    ;(daemon as any).onInbound(tg(1, { channel: '424242', isDm: true }), ['wrong-tg'])
+    ;(daemon as any).onInbound(tg(1, { channel: '424242', isDm: true }), ['target-tg'])
+
+    expect(dispatch.mock.calls.map(([agentId, , integrationId]) => [agentId, integrationId])).toEqual([
+      ['bot-a', 'wrong-tg'],
+      ['target', 'target-tg']
+    ])
+    await daemon.stop()
+  })
+})
+
 describe('canonicalizeTelegramThread', () => {
   it('roots a fresh group @mention at its own message (tg:<id>)', async () => {
     const daemon = new Daemon({ root: scaffold() })

@@ -3755,13 +3755,19 @@ export class Daemon {
       this.log.debug(`routing: dropping AgentConnect bot message ${msg.msgId}`)
       return
     }
-    // A mention in a watched channel can arrive via both `message.*` and
-    // `app_mention`; both share channel:ts, so msgId dedups the double-fire.
-    if (this.seenMsgIds.has(msg.msgId)) {
+    // A mention in a watched Slack channel can arrive via both `message.*` and
+    // `app_mention`; both share channel:ts, so dedup the double-fire from ONE bot
+    // connection. Do not dedup across bot connections: several Slack apps receive
+    // the same channel:ts, and Telegram DMs to different bots can share user chat ids
+    // plus per-bot message numbers.
+    const sourceKey =
+      srcIntegrationIds === undefined ? '' : [...srcIntegrationIds].sort((a, b) => a.localeCompare(b)).join(',')
+    const seenMsgId = `${sourceKey}|${msg.msgId}`
+    if (this.seenMsgIds.has(seenMsgId)) {
       this.log.debug(`routing: duplicate ${msg.msgId} ignored`)
       return
     }
-    this.seenMsgIds.add(msg.msgId)
+    this.seenMsgIds.add(seenMsgId)
     if (this.seenMsgIds.size > 2000) this.seenMsgIds.clear()
 
     // Telegram reply-based session threading: derive the session thread from the reply
@@ -3776,6 +3782,7 @@ export class Daemon {
     // session will be created. Report-only: the notice remains conditional on the
     // message actually resolving to no admitted target.
     this.discoverGatedConversations(msg, srcIntegrationIds ?? [])
+    const routingRules = this.mergedRulesForSource(srcIntegrationIds)
 
     // In-conversation control commands (`!stop` / `!queue …`) act on the running
     // agent and never reach it as a prompt — intercept before routing/dispatch.
@@ -3790,11 +3797,12 @@ export class Daemon {
       }
       // §14.3: a command that resolved no admitted target in an Off gated
       // conversation gets the same one-time notice as an unrouted message.
-      if (!this.handleCommand(command, msg)) this.maybeGatedNotice(msg, srcIntegrationIds ?? [])
+      if (!this.handleCommand(command, msg, undefined, srcIntegrationIds))
+        this.maybeGatedNotice(msg, srcIntegrationIds ?? [])
       return
     }
 
-    const result = routeRules(msg, this.mergedRules(), (c, t) => this.sessions.threadOwner(c, t))
+    const result = routeRules(msg, routingRules, (c, t) => this.sessions.threadOwner(c, t))
     if (!result) {
       // §8.5: a message that activates no agent (a human @human reply, or one
       // addressed to another bot) must still enter the transcript when a session
@@ -6245,7 +6253,8 @@ export class Daemon {
    * no matching integration, or the sender isn't allowed.
    */
   private resolveCommandTargetFromLatest(
-    msg: NormalizedMessage
+    msg: NormalizedMessage,
+    srcIntegrationIds?: readonly string[]
   ): { agentId: string; integrationId: string; via: RouteVia } | null {
     const latest = this.store.latestSessionInChannel(msg.channel)
     if (!latest) return null
@@ -6257,7 +6266,9 @@ export class Daemon {
     // commands (no thread) and Telegram's per-command reply threads are unaffected.
     if (msg.platform === 'slack' && msg.thread !== undefined && latest.thread !== msg.thread) return null
     const agent = this.agents.get(latest.agentId)
-    const integ = agent?.integrations.find((i) => i.platform === msg.platform)
+    const integ = agent?.integrations.find(
+      (i) => i.platform === msg.platform && this.integrationBelongsToSource(i.id, srcIntegrationIds)
+    )
     if (!integ) return null
     const allowed =
       integ.platform === 'telegram'
@@ -6288,7 +6299,8 @@ export class Daemon {
    *  latest session to route a bare `!resume` through. Select only an integration
    *  that independently authorizes this human, preferring an explicitly mentioned bot. */
   private resolveTopLevelResumeTarget(
-    msg: NormalizedMessage
+    msg: NormalizedMessage,
+    srcIntegrationIds?: readonly string[]
   ): { agentId: string; integrationId: string; via: RouteVia } | null {
     if (msg.platform !== 'slack' || msg.isDm || !this.store.isLoopGuardOpen(slackTopLevelLoopGuardScope(msg.channel))) {
       return null
@@ -6301,7 +6313,12 @@ export class Daemon {
     }> = []
     for (const [agentId, agent] of this.agents) {
       for (const integration of agent.integrations) {
-        if (integration.platform !== 'slack' || !this.commandSenderAllowed(agentId, integration.id, msg)) continue
+        if (
+          integration.platform !== 'slack' ||
+          !this.integrationBelongsToSource(integration.id, srcIntegrationIds) ||
+          !this.commandSenderAllowed(agentId, integration.id, msg)
+        )
+          continue
         const mentioned =
           integration.slack.botUserId !== undefined && msg.mentionedBots.includes(integration.slack.botUserId)
         candidates.push({
@@ -6347,17 +6364,20 @@ export class Daemon {
   private handleCommand(
     command: AgentCommand,
     msg: NormalizedMessage,
-    explicitTarget?: { agentId: string; integrationId: string; via: RouteVia }
+    explicitTarget?: { agentId: string; integrationId: string; via: RouteVia },
+    srcIntegrationIds?: readonly string[]
   ): boolean {
-    let target = explicitTarget ?? routeRules(msg, this.mergedRules(), (c, t) => this.sessions.threadOwner(c, t))
+    let target =
+      explicitTarget ??
+      routeRules(msg, this.mergedRulesForSource(srcIntegrationIds), (c, t) => this.sessions.threadOwner(c, t))
     if (!target) {
       // Routing found no agent — the common group case: a bare `/status@bot` carries no
       // mention entity, no reply, and its fresh thread has no session. Resolve the agent
       // from the channel's latest session so the command still lands on it (subject to
       // that agent's per-integration allowedUserIds authz).
-      target = this.resolveCommandTargetFromLatest(msg)
+      target = this.resolveCommandTargetFromLatest(msg, srcIntegrationIds)
     }
-    if (!target && command.kind === 'resume') target = this.resolveTopLevelResumeTarget(msg)
+    if (!target && command.kind === 'resume') target = this.resolveTopLevelResumeTarget(msg, srcIntegrationIds)
     if (!target) {
       this.log.debug(`command: '${command.kind}' in ch=${msg.channel} — no agent resolved, ignoring`)
       return false
@@ -11078,6 +11098,18 @@ export class Daemon {
     for (const [id, c] of this.dcConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.fsConnByIntegration) if (c === conn) out.push(id)
     return out
+  }
+
+  /** Direct platform ingress is owned by one physical bot connection. Rules from
+   *  another bot on the same platform must never arbitrate that message. Undefined
+   *  preserves internal/test callers with no connection attribution; an empty live
+   *  source fails closed during the tiny connect→binding window. */
+  private integrationBelongsToSource(integrationId: string, srcIntegrationIds?: readonly string[]): boolean {
+    return srcIntegrationIds === undefined || srcIntegrationIds.includes(integrationId)
+  }
+
+  private mergedRulesForSource(srcIntegrationIds?: readonly string[]): RoutingRule[] {
+    return this.mergedRules().filter((rule) => this.integrationBelongsToSource(rule.integrationId, srcIntegrationIds))
   }
 
   /** §14 admission for a pre-addressed (relay) message: a gated integration accepts
