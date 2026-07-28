@@ -5,6 +5,8 @@ export interface LineDiffRow {
   text: string
   oldLine?: number
   newLine?: number
+  oldLineCount?: number
+  newLineCount?: number
   eofSide?: 'old' | 'new' | 'both'
 }
 
@@ -33,10 +35,10 @@ interface LineMatch {
   newIndex: number
 }
 
-/** Hirschberg is memory-linear but still quadratic in time. History snapshots
- * are capped at 4 KB, while dream review can compare a complete 256 KB memory
- * file, so bound exact work before the shared renderer is used there. */
-const MAX_EXACT_DIFF_CELLS = 20_000_000
+/** Bounds both quadratic matching and the number of table rows. History
+ * snapshots are capped at 4 KB, while dream review can compare a complete
+ * 256 KB memory file containing hundreds of thousands of tiny lines. */
+const MAX_DETAILED_DIFF_LINES = 2_000
 
 function prefixLcsLengths(
   oldLines: LineToken[],
@@ -141,17 +143,19 @@ function addEofMarkers(rows: LineDiffRow[], oldLines: LineToken[], newLines: Lin
   const withMarkers: LineDiffRow[] = []
   for (const row of rows) {
     withMarkers.push(row)
-    if (row.kind === 'delete' && row.oldLine === oldCount && oldMissingNewline) {
+    const oldEnd = row.oldLine === undefined ? undefined : row.oldLine + (row.oldLineCount ?? 1) - 1
+    const newEnd = row.newLine === undefined ? undefined : row.newLine + (row.newLineCount ?? 1) - 1
+    if (row.kind === 'delete' && oldEnd === oldCount && oldMissingNewline) {
       withMarkers.push({ kind: 'meta', text: 'No newline at end of file', eofSide: 'old' })
     }
-    if (row.kind === 'add' && row.newLine === newCount && newMissingNewline) {
+    if (row.kind === 'add' && newEnd === newCount && newMissingNewline) {
       withMarkers.push({ kind: 'meta', text: 'No newline at end of file', eofSide: 'new' })
     }
     if (
       hasChanges &&
       row.kind === 'context' &&
-      row.oldLine === oldCount &&
-      row.newLine === newCount &&
+      oldEnd === oldCount &&
+      newEnd === newCount &&
       oldMissingNewline &&
       newMissingNewline
     ) {
@@ -161,11 +165,69 @@ function addEofMarkers(rows: LineDiffRow[], oldLines: LineToken[], newLines: Lin
   return withMarkers
 }
 
+function groupedDiffRows(oldLines: LineToken[], newLines: LineToken[], prefix: number, suffix: number): LineDiffRow[] {
+  const rows: LineDiffRow[] = []
+  const blockText = (lines: LineToken[], start: number, end: number) =>
+    lines
+      .slice(start, end)
+      .map((line) => line.text)
+      .join('\n')
+  if (prefix > 0) {
+    rows.push({
+      kind: 'context',
+      text: blockText(oldLines, 0, prefix),
+      oldLine: 1,
+      newLine: 1,
+      oldLineCount: prefix,
+      newLineCount: prefix
+    })
+  }
+
+  const oldMiddleEnd = oldLines.length - suffix
+  const newMiddleEnd = newLines.length - suffix
+  const oldMiddleCount = oldMiddleEnd - prefix
+  const newMiddleCount = newMiddleEnd - prefix
+  if (oldMiddleCount > 0 && newMiddleCount > 0) {
+    rows.push({
+      kind: 'meta',
+      text: 'Large diff grouped; unchanged lines inside this block may appear removed and added.'
+    })
+  }
+  if (oldMiddleCount > 0) {
+    rows.push({
+      kind: 'delete',
+      text: blockText(oldLines, prefix, oldMiddleEnd),
+      oldLine: prefix + 1,
+      oldLineCount: oldMiddleCount
+    })
+  }
+  if (newMiddleCount > 0) {
+    rows.push({
+      kind: 'add',
+      text: blockText(newLines, prefix, newMiddleEnd),
+      newLine: prefix + 1,
+      newLineCount: newMiddleCount
+    })
+  }
+  if (suffix > 0) {
+    rows.push({
+      kind: 'context',
+      text: blockText(oldLines, oldMiddleEnd, oldLines.length),
+      oldLine: oldMiddleEnd + 1,
+      newLine: newMiddleEnd + 1,
+      oldLineCount: suffix,
+      newLineCount: suffix
+    })
+  }
+  return rows
+}
+
 /**
  * Exact line diff for bounded text snapshots. Hirschberg keeps working memory
  * linear even when a valid 4 KB snapshot contains thousands of tiny lines.
- * For a larger changed middle, retain exact common edges and render the middle
- * as one delete/add block instead of freezing the browser on quadratic work.
+ * Larger files retain exact common edges but group each edge and changed side
+ * into a bounded number of rendered blocks, avoiding quadratic work and an
+ * unbounded number of DOM rows.
  */
 export function diffLines(before: string, after: string): LineDiffRow[] {
   const oldLines = splitLines(before)
@@ -183,13 +245,11 @@ export function diffLines(before: string, after: string): LineDiffRow[] {
     suffix += 1
   }
 
-  const oldMiddleLength = oldLines.length - prefix - suffix
-  const newMiddleLength = newLines.length - prefix - suffix
-  const simplified = oldMiddleLength * newMiddleLength > MAX_EXACT_DIFF_CELLS
-  const matches: LineMatch[] = oldLines.slice(0, prefix).map((_text, index) => ({ oldIndex: index, newIndex: index }))
-  if (!simplified) {
-    collectLcsMatches(oldLines, prefix, oldLines.length - suffix, newLines, prefix, newLines.length - suffix, matches)
+  if (oldLines.length + newLines.length > MAX_DETAILED_DIFF_LINES) {
+    return addEofMarkers(groupedDiffRows(oldLines, newLines, prefix, suffix), oldLines, newLines)
   }
+  const matches: LineMatch[] = oldLines.slice(0, prefix).map((_text, index) => ({ oldIndex: index, newIndex: index }))
+  collectLcsMatches(oldLines, prefix, oldLines.length - suffix, newLines, prefix, newLines.length - suffix, matches)
   for (let index = 0; index < suffix; index += 1) {
     matches.push({
       oldIndex: oldLines.length - suffix + index,
@@ -226,12 +286,6 @@ export function diffLines(before: string, after: string): LineDiffRow[] {
     rows.push({ kind: 'add', text: newLines[newIndex]!.text, newLine: newIndex + 1 })
     newIndex += 1
   }
-  if (simplified) {
-    rows.splice(prefix, 0, {
-      kind: 'meta',
-      text: 'Large diff simplified; unchanged lines inside this block may appear removed and added.'
-    })
-  }
   return addEofMarkers(rows, oldLines, newLines)
 }
 
@@ -247,6 +301,12 @@ const MARKER: Record<LineDiffKind, string> = {
   add: '+',
   delete: '−',
   meta: '\\'
+}
+
+function lineLabel(start: number | undefined, count: number | undefined): string {
+  if (start === undefined) return ''
+  if (!count || count === 1) return String(start)
+  return `${start}–${start + count - 1}`
 }
 
 export function LineDiff({ before, after }: { before: string; after: string }) {
@@ -270,13 +330,13 @@ export function LineDiff({ before, after }: { before: string; after: string }) {
                   className={ROW_STYLE[row.kind]}
                   data-diff-kind={row.kind}
                 >
-                  <td className="w-9 select-none border-r border-(--border-subtle) px-2 py-px text-right text-(--text-tertiary)">
-                    {row.oldLine ?? ''}
+                  <td className="w-9 select-none border-r border-(--border-subtle) px-2 py-px text-right align-top text-(--text-tertiary)">
+                    {lineLabel(row.oldLine, row.oldLineCount)}
                   </td>
-                  <td className="w-9 select-none border-r border-(--border-subtle) px-2 py-px text-right text-(--text-tertiary)">
-                    {row.newLine ?? ''}
+                  <td className="w-9 select-none border-r border-(--border-subtle) px-2 py-px text-right align-top text-(--text-tertiary)">
+                    {lineLabel(row.newLine, row.newLineCount)}
                   </td>
-                  <td className="w-7 select-none px-2 py-px text-center font-semibold">{MARKER[row.kind]}</td>
+                  <td className="w-7 select-none px-2 py-px text-center align-top font-semibold">{MARKER[row.kind]}</td>
                   <td className="whitespace-pre px-2 py-px pr-4">{row.text || '\u00a0'}</td>
                 </tr>
               ))}

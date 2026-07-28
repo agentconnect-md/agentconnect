@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { diffLines, type LineDiffRow } from './LineDiff'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { diffLines, LineDiff, type LineDiffRow } from './LineDiff'
 
 function rebuild(rows: LineDiffRow[], side: 'old' | 'new'): string {
   const contentKind = side === 'old' ? 'delete' : 'add'
@@ -93,19 +95,21 @@ describe('diffLines', () => {
     }
   })
 
-  it('handles a newline-heavy 4 KB snapshot without a quadratic matrix', () => {
+  it('groups a newline-heavy 4 KB snapshot into bounded render rows', () => {
     const before = `a${'\n'.repeat(3_998)}x`
     const after = `b${'\n'.repeat(3_998)}y`
 
     const rows = diffLines(before, after)
 
-    expect(rows.filter((row) => row.kind === 'context')).toHaveLength(3_997)
-    expect(rows.filter((row) => row.kind === 'delete').map((row) => row.text)).toEqual(['a', 'x'])
-    expect(rows.filter((row) => row.kind === 'add').map((row) => row.text)).toEqual(['b', 'y'])
-    expect(rows.filter((row) => row.kind === 'meta')).toHaveLength(2)
+    expect(rows.filter((row) => row.kind === 'context')).toHaveLength(0)
+    expect(rows.filter((row) => row.kind === 'delete')).toHaveLength(1)
+    expect(rows.filter((row) => row.kind === 'add')).toHaveLength(1)
+    expect(rows.filter((row) => row.kind === 'meta')).toHaveLength(3)
+    expect(rebuild(rows, 'old')).toBe(before)
+    expect(rebuild(rows, 'new')).toBe(after)
   })
 
-  it('simplifies a large changed middle while preserving both complete files', () => {
+  it('groups a large changed middle while preserving both complete files', () => {
     const before = [
       'head',
       ...Array.from({ length: 2_300 }, (_, index) => [`same-${index}`, `old-${index}`]).flat(),
@@ -119,14 +123,28 @@ describe('diffLines', () => {
 
     const rows = diffLines(before, after)
 
-    expect(rows.filter((row) => row.kind === 'context').map((row) => row.text)).toEqual(['head', 'same-0', 'tail'])
+    expect(rows.filter((row) => row.kind === 'context').map((row) => row.text)).toEqual(['head\nsame-0', 'tail'])
     expect(rows).toContainEqual(
       expect.objectContaining({
         kind: 'meta',
-        text: expect.stringContaining('Large diff simplified')
+        text: expect.stringContaining('Large diff grouped')
       })
     )
     expect(rebuild(rows, 'old')).toBe(before)
     expect(rebuild(rows, 'new')).toBe(after)
+  })
+
+  it('bounds rendered rows for maximum-size newline-heavy dream files', () => {
+    const before = 'a\n'.repeat(128_000)
+    const after = 'b\n'.repeat(128_000)
+
+    const rows = diffLines(before, after)
+    const markup = renderToStaticMarkup(createElement(LineDiff, { before, after }))
+
+    expect(rows).toHaveLength(3)
+    expect(rows.find((row) => row.kind === 'delete')?.oldLineCount).toBe(128_000)
+    expect(rows.find((row) => row.kind === 'add')?.newLineCount).toBe(128_000)
+    expect(markup.match(/<tr/g)).toHaveLength(3)
+    expect(Buffer.byteLength(markup)).toBeLessThan(2_000_000)
   })
 })
