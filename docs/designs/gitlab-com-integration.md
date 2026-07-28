@@ -922,8 +922,10 @@ The GitLab adapter:
     current attempt's drafts and returns `reviewer_assignment_required`;
 11. bulk-publishes the drafts with a summary, signed hidden attempt marker, and
     the event-specific reviewer-state parameter below;
-12. re-reads the reviewers endpoint and verifies the exact reviewer-state
-    postcondition; and
+12. re-reads the reviewers endpoint and the merge request's refreshed
+    `detailed_merge_status`; a missing or mismatched reviewer record after
+    `REQUEST_CHANGES` is an unknown, potentially blocking provider effect on
+    Premium, not evidence of an advisory-only outcome; and
 13. for `APPROVE`, only after the unchanged-state postcondition holds, waits
     until
     `detailed_merge_status` is neither `checking` nor `approvals_syncing` and the
@@ -933,11 +935,11 @@ The GitLab adapter:
 
 Reviewer-state mapping is:
 
-| Input                               | `bulk_publish.reviewer_state` | Required postcondition                               |
-| ----------------------------------- | ----------------------------- | ---------------------------------------------------- |
-| `COMMENT` + `pass`/`neutral`/`fail` | omit                          | reviewer record remains absent or state is unchanged |
-| `REQUEST_CHANGES` + `fail`          | `requested_changes`           | state is `requested_changes`                         |
-| `APPROVE` + `pass`                  | omit                          | reviewer record remains absent or state is unchanged |
+| Input                               | `bulk_publish.reviewer_state` | Required postcondition                                                 |
+| ----------------------------------- | ----------------------------- | ---------------------------------------------------------------------- |
+| `COMMENT` + `pass`/`neutral`/`fail` | omit                          | reviewer record remains absent or state is unchanged                   |
+| `REQUEST_CHANGES` + `fail`          | `requested_changes`           | state is `requested_changes`; otherwise classify the effect as unknown |
+| `APPROVE` + `pass`                  | omit                          | reviewer record remains absent or state is unchanged                   |
 
 Approval is deliberately a separate call because GitLab's review publication
 does not record a formal approval and the approval API provides the required
@@ -1037,14 +1039,31 @@ effect already exists. Record a submitted comment review with
 retry must revalidate the same head and attempt marker.
 
 The same public-effect rule applies when `bulk_publish` returns `204` but the
-required reviewer-state readback is missing, unavailable, or mismatched.
-Record `review_state_not_recorded` or
-`review_state_changed_unexpectedly`, do not call the approval endpoint, do not
-repeat bulk publication, and suppress the ordinary fallback. A service account
-removed in the final provider race can therefore leave published
-`REQUEST_CHANGES` comments that are correctly reported as advisory, never as a
-blocking change request. Publication success is not evidence that GitLab
-recorded the requested state transition.
+required reviewer-state readback is missing, unavailable, or mismatched. Do not
+repeat bulk publication, do not publish an ordinary fallback, and do not call
+the approval endpoint.
+
+For `COMMENT` or `APPROVE`, record `review_state_not_recorded` or
+`review_state_changed_unexpectedly`. For `REQUEST_CHANGES`, reviewer absence is
+not evidence that the state transition failed: GitLab persists the
+requested-changes merge block separately from the reviewer assignment, and a
+concurrent removal can race after that record is created. Request a merge-status
+recheck and read `detailed_merge_status` after it leaves `checking` and
+`approvals_syncing`:
+
+- `requested_changes` confirms that the merge request is currently blocked,
+  but does not by itself attribute the block to this attempt; record
+  `requested_changes_block_observed`;
+- any other, unavailable, or unstable value does not prove absence because
+  another mergeability reason can mask it; record
+  `requested_changes_state_ambiguous`; and
+- on Premium, the first result is surfaced as currently blocking and the second
+  as potentially blocking until GitLab's native merge widget shows the change
+  request removed, approved, or bypassed. On Free, the state is still unknown
+  but the tier contract makes it non-blocking.
+
+Publication success and reviewer absence are therefore both insufficient to
+claim that GitLab did or did not record the requested state transition.
 
 Review bodies and inline comments stay relay/daemon-to-GitLab. The Control
 Plane stores attempt ID, external IDs, event, verdict, head SHA, and normalized
@@ -1351,7 +1370,8 @@ Residual risks are explicit:
 - a Control Plane compromise can expose the selected projects' stored
   credentials;
 - an ambiguous GitLab review mutation can leave automated reviews fail-closed
-  for that merge request indefinitely;
+  for that merge request indefinitely and can leave a Premium merge request
+  potentially blocked;
 - Free request changes cannot become blocking without Premium project
   behavior; and
 - a lost OAuth refresh response requires human reconnection.
@@ -1406,7 +1426,8 @@ Use integration tests for:
   provider responses and ambiguous revocation cleanup;
 - unassigned-reviewer handling: comment and approval without assignment,
   request-changes rejection before drafts, and reviewer removal before or
-  after the final state check;
+  after the final state check, including potentially blocking Premium
+  classification from refreshed mergeability;
 - daemon/relay feature negotiation and mixed-version rejection;
 - two-relay redelivery with the same `webhook-id`, preserving per-hook fan-out
   while the daemon inbox and unique `HookRun` absorb retries;
@@ -1444,8 +1465,9 @@ projects and covers:
     initially unassigned service account, request-changes fail-before-draft,
     native request or re-request enabling request-changes, existing
     `requested_changes` followed by any `COMMENT`, approval without reviewer
-    assignment, reviewer removal races, and a published review whose
-    reviewer-state postcondition is absent;
+    assignment, reviewer removal immediately before and immediately after
+    publication with the actual Premium merge status checked, and a published
+    review whose reviewer-state postcondition is absent;
 11. simultaneous reviews from multiple agents on the same MR, including agents
     placed on different daemons, with no cross-attempt publication;
 12. crashes after draft creation and immediately before bulk publish, including
@@ -1469,6 +1491,7 @@ IDs, tokens, and signing secrets.
 - [GitLab access token scopes](https://docs.gitlab.com/security/tokens/access_token_scopes/)
 - [GitLab project access tokens](https://docs.gitlab.com/user/project/settings/project_access_tokens/)
 - [GitLab project members API](https://docs.gitlab.com/api/project_members/)
+- [GitLab merge requests API](https://docs.gitlab.com/api/merge_requests/)
 - [GitLab project webhooks API](https://docs.gitlab.com/api/project_webhooks/)
 - [GitLab webhooks and signing tokens](https://docs.gitlab.com/user/project/integrations/webhooks/)
 - [GitLab webhook events](https://docs.gitlab.com/user/project/integrations/webhook_events/)
