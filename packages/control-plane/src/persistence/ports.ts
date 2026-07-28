@@ -2221,8 +2221,9 @@ export interface ChannelPlacementRecord {
 
 export type ChannelTrigger = 'off' | 'mention' | 'any'
 
-/** Member channel vs DM conversation (resource-visibility.md §14.3). */
-export type ConversationKind = 'channel' | 'im'
+/** Member channel vs direct conversation (resource-visibility.md §14.3). `mpim` is a
+ *  Slack group DM: observed like an `im`, mention-gated like a channel. */
+export type ConversationKind = 'channel' | 'im' | 'mpim'
 
 /** One conversation the integration's bot participates in, as reported by the daemon. */
 export interface IntegrationChannelRecord {

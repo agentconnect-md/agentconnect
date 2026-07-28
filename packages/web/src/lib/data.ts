@@ -1332,11 +1332,20 @@ export interface IntegrationChannelRow {
    *  implicit container per bot, on DM rows, and until the daemon resolves them. */
   spaceId?: string
   space?: string
-  /** 'im' = a DM conversation row (gated/restricted agents only); absent = channel. */
-  kind?: 'channel' | 'im'
+  /** 'im' = a DM conversation row, 'mpim' = a Slack group DM (both gated/restricted
+   *  agents only); absent = channel. */
+  kind?: 'channel' | 'im' | 'mpim'
   trigger: 'off' | 'mention' | 'any'
   /** Effective per-channel owner for a shared bot. */
   agentId?: string | null
+}
+
+/** A direct conversation — a DM or a Slack group DM. Neither is a place the bot can be
+ *  invited to, so neither is ever enumerated: they are listed apart from channels and
+ *  only appear once observed. A group DM still holds several humans, so unlike a DM it
+ *  keeps a channel's @-mention trigger rather than a binary on/off. */
+export function isDirectConversation(kind: IntegrationChannelRow['kind']): boolean {
+  return kind === 'im' || kind === 'mpim'
 }
 
 export interface IntegrationRow {

@@ -187,10 +187,14 @@ export type IntegrationRemove = z.infer<typeof IntegrationRemove>
 
 /**
  * One conversation the bot participates in (metadata only — no messages).
- * `kind` distinguishes member channels from DM conversations (resource-
+ * `kind` distinguishes member channels from direct conversations (resource-
  * visibility.md §14.3): absent = 'channel' for wire compatibility. DM rows
  * (`kind: 'im'`, Slack "D…" ids) are reported only for gated integrations, on
- * first inbound DM; their `name` is the counterpart's display name.
+ * first inbound DM; their `name` is the counterpart's display name. Group DMs
+ * (`kind: 'mpim'`, Slack multi-person DMs) are reported on observation the same
+ * way — never enumerated, because Slack does not list them as bot membership —
+ * but they behave like a channel: several humans share the room, so the agent
+ * stays mention-gated there rather than answering every message.
  *
  * `spaceId`/`space` identify the container the conversation lives in — a Discord
  * GUILD, which a bot in several servers needs for the channel to be identifiable at
@@ -206,7 +210,7 @@ export const IntegrationChannel = z.object({
   spaceId: z.string().optional(), // enclosing Discord guild snowflake — the space's IDENTITY
   space: z.string().optional(), // that guild's display name; absent until resolved
   isPrivate: z.boolean().optional(),
-  kind: z.enum(['channel', 'im']).optional() // absent = 'channel'
+  kind: z.enum(['channel', 'im', 'mpim']).optional() // absent = 'channel'
 })
 export type IntegrationChannel = z.infer<typeof IntegrationChannel>
 

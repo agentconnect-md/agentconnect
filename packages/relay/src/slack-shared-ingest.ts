@@ -348,7 +348,11 @@ export function normalizeSlackMessage(e: SlackMessageEvent): WireNormalizedMessa
     text,
     mentionedBots,
     ...(attachments.length ? { attachments } : {}),
-    isDm: e.channel_type === 'im'
+    isDm: e.channel_type === 'im',
+    // Classification only — a group DM stays mention-gated like a channel. `app_mention`
+    // payloads omit channel_type; the daemon classifies those from the conversation
+    // lookup rather than guessing from the id.
+    ...(e.channel_type === 'mpim' ? { isGroupDm: true } : {})
   }
 }
 

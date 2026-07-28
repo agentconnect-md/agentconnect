@@ -84,6 +84,21 @@ automatic fallback to a restricted agent instead leaves the channel Off, because
 an authorized Console editor may enable it. Direct messages remain separate:
 restricted agents may independently enable or disable their own DM conversation rows.
 
+## Group direct messages
+
+A Slack multi-person DM is a conversation between people that the agent happens to sit
+in, not a room addressed to the agent. It therefore follows a channel's rule, not a
+DM's: the agent answers when explicitly @-mentioned, and follow-ups in a thread it has
+joined need no further mention. "Every message" stays an operator's opt-in.
+
+Slack never reports a group DM as bot membership, so one is surfaced the way a DM is —
+on observation, when an inbound message names the bot — and never through a membership
+snapshot. A restricted agent's group DM therefore starts Off and stays unroutable until
+a Console editor enables it, exactly like its DM rows. A conversation first mistaken for
+a channel converts to a group DM once resolved, and that conversion returns it to Off:
+the trigger it carried was a channel's default, never an operator's choice for this
+conversation.
+
 ## No-response control marker
 
 Every agent session receives the same standing response-choice instruction, independent

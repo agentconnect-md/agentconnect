@@ -533,14 +533,15 @@ export interface SlackConfigInput {
 export type ChannelTrigger = 'off' | 'mention' | 'any'
 
 // One conversation the integration's bot is in (daemon-reported) + its trigger
-// choice. kind 'im' rows are DM conversations (gated/restricted agents only).
+// choice. kind 'im' rows are DM conversations and 'mpim' rows are Slack group DMs
+// (both gated/restricted agents only — neither is enumerable).
 export interface IntegrationChannelDto {
   channelId: string
   name: string | null // "deploys" without the hash (or DM counterpart); null if lookup failed
   spaceId: string | null // enclosing Discord server id — the identity (names are not unique)
   space: string | null // that server's display name; null elsewhere and until resolved
   isPrivate: boolean
-  kind: 'channel' | 'im'
+  kind: 'channel' | 'im' | 'mpim'
   trigger: ChannelTrigger
   agentId: string | null // effective shared-channel owner; null before convergence / when not applicable
 }

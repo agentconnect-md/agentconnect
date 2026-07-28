@@ -2,7 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { agentLabel, type IntegrationChannelRow, type IntegrationRow } from '@/lib/data'
+import { agentLabel, isDirectConversation, type IntegrationChannelRow, type IntegrationRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
@@ -55,7 +55,9 @@ function TriggerToggle({
   // A DM conversation activates on any message once enabled — binary off/on. A
   // channel keeps the any/mention choice (mention last); "off" appears when
   // gated (and, so the state stays visible, on an inert off row of a
-  // no-longer-gated integration).
+  // no-longer-gated integration). A GROUP DM takes the channel's three-way choice,
+  // not the DM's: several people share it, so "every message" must stay opt-in.
+  const here = channel.kind === 'mpim' ? 'this group DM' : 'this channel'
   const segs: [IntegrationChannelRow['trigger'], string, string][] =
     channel.kind === 'im'
       ? [
@@ -64,8 +66,8 @@ function TriggerToggle({
         ]
       : gated || channel.trigger === 'off'
         ? [
-            ['off', 'off', "The agent doesn't respond in this channel."],
-            ['any', 'any message', 'The agent responds to every message in this channel.'],
+            ['off', 'off', `The agent doesn't respond in ${here}.`],
+            ['any', 'any message', `The agent responds to every message in ${here}.`],
             [
               'mention',
               '@-mention',
@@ -73,7 +75,7 @@ function TriggerToggle({
             ]
           ]
         : [
-            ['any', 'any message', 'The agent responds to every message in this channel.'],
+            ['any', 'any message', `The agent responds to every message in ${here}.`],
             [
               'mention',
               '@-mention',
@@ -234,7 +236,7 @@ export function channelOwners(botId: string, integrations: IntegrationRow[]): Ma
   for (const i of integrations) {
     if (i.botId !== botId) continue
     for (const c of i.channels) {
-      if (c.kind === 'im' || !c.agentId || owners.has(c.channelId)) continue
+      if (isDirectConversation(c.kind) || !c.agentId || owners.has(c.channelId)) continue
       owners.set(c.channelId, c.agentId)
     }
   }
@@ -415,15 +417,16 @@ export function IntegrationChannelList({
     const explicit = c.agentId ?? owners?.get(c.channelId)
     return (explicit ? members.find((m) => m.id === explicit) : undefined) ?? members[0]
   }
-  const channelRows = channels.filter((c) => c.kind !== 'im')
-  // A DM is not a place the bot can be invited to and has no per-conversation choice
-  // to make unless the agent is gated (resource-visibility.md §14.3) — a non-gated bot
-  // always answers its DMs. The daemon still REPORTS them (that is how a DM previously
-  // mistaken for a channel converts), so hide them here rather than at the source.
-  const dmRows = gated ? channels.filter((c) => c.kind === 'im') : []
+  const channelRows = channels.filter((c) => !isDirectConversation(c.kind))
+  // A direct conversation is not a place the bot can be invited to and has no
+  // per-conversation choice to make unless the agent is gated (resource-visibility.md
+  // §14.3) — a non-gated bot always answers its DMs, and answers a group DM whenever
+  // it is @-mentioned. The daemon still REPORTS them (that is how a conversation
+  // previously mistaken for a channel converts), so hide them here, not at the source.
+  const dmRows = gated ? channels.filter((c) => isDirectConversation(c.kind)) : []
   const grouped = groupBySpace(channelRows)
   const row = (c: IntegrationChannelRow) => {
-    const def = c.kind !== 'im' && shareable ? defaultAgent(c) : undefined
+    const def = !isDirectConversation(c.kind) && shareable ? defaultAgent(c) : undefined
     return (
       <div
         key={c.channelId}
@@ -431,12 +434,12 @@ export function IntegrationChannelList({
         style={{ padding: `10px ${padX}px` }}
       >
         <span className="font-mono text-[14px] font-medium leading-normal text-(--text-tertiary)">
-          {c.kind === 'im' ? '@' : '#'}
+          {c.kind === 'im' ? '@' : c.kind === 'mpim' ? '@@' : '#'}
         </span>
         {/* DM labels are stored as "@Alice" (name resolvers); the glyph column already
             renders the marker, so strip a leading @ to avoid "@@Alice". */}
         <span className="mono min-w-0 flex-1 truncate text-[13px] text-(--text-primary)">
-          {c.kind === 'im' ? c.name.replace(/^@+/, '') : c.name}
+          {isDirectConversation(c.kind) ? c.name.replace(/^@+/, '') : c.name}
         </span>
         <div className="ml-auto flex items-center gap-[10px] max-desktop:ml-0 max-desktop:w-full max-desktop:flex-col max-desktop:items-start">
           {def && (

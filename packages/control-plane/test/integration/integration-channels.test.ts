@@ -300,6 +300,33 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(u0.slack.bindRules).toEqual([])
   })
 
+  it('stores a group DM OFF and keeps a channel→group-DM conversion fail-closed (§14.3)', async () => {
+    // Slack classifies a group DM late: an `app_mention` payload carries no
+    // channel_type, so the conversation first lands as a channel with a channel's
+    // trigger. That is not an operator's choice for this conversation, so resolving it
+    // must reset to Off — and an authoritative channel snapshot (which can never list a
+    // group DM) must not delete the row.
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma)
+    const id = await install(running)
+
+    await report(DAEMON, id, [{ id: 'G1', name: 'mpim-alice--bob-1' }], undefined, undefined, false)
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'G1', 'any')
+    await report(DAEMON, id, [{ id: 'G1', name: 'mpim-alice--bob-1', kind: 'mpim' }], undefined, undefined, false)
+
+    const channelsOf = async () => {
+      const res = await running!.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+      const [dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
+      return new Map(dto!.channels.map((c) => [c.channelId, c]))
+    }
+    expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'off' })
+
+    // An operator enables it; a later authoritative channel snapshot leaves it alone.
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'G1', 'mention')
+    await report(DAEMON, id, [{ id: 'C1', name: 'general' }])
+    expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'mention' })
+  })
+
   it('keeps the DM conversion fail-closed when a kind-less and an IM report OVERLAP (§14.3)', async () => {
     // Channel reports are fire-and-forget and their handlers run concurrently: a daemon
     // start emits a kind-less observed snapshot, and the resolver's later verdict emits

@@ -49,6 +49,7 @@ export const SLACK_BOT_EVENTS = [
   'message.channels',
   'message.groups',
   'message.im',
+  'message.mpim',
   'member_joined_channel',
   'channel_left',
   'group_left'

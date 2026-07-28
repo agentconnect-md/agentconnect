@@ -419,7 +419,12 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       // downgrade an established 'im' row.
       const setName = authoritative || c.name !== undefined
       const setPrivate = authoritative || c.isPrivate !== undefined
-      const createTrigger = c.kind === 'im' ? 'off' : (opts?.defaultTrigger ?? 'mention')
+      // Direct conversations (a DM, or a Slack group DM) are only ever reported by
+      // observation, never enumerated — so they are pinned Off on creation and on
+      // conversion for the same fail-closed reason, and an authoritative channel
+      // snapshot (which cannot contain them) must not delete them.
+      const direct = c.kind === 'im' || c.kind === 'mpim'
+      const createTrigger = direct ? 'off' : (opts?.defaultTrigger ?? 'mention')
       await this.db.$executeRaw`
         INSERT INTO "integration_channel"
           ("integrationId", "channelId", "name", "spaceId", "space", "isPrivate", "kind", "trigger",
@@ -440,10 +445,12 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
           "kind" = CASE WHEN ${c.kind !== undefined}::boolean THEN EXCLUDED."kind"
                         ELSE "integration_channel"."kind" END,
           -- The fail-closed conversion, resolved against the COMMITTED kind: a row that
-          -- was a channel carried a channel's trigger, which is not an operator's DM
-          -- choice. An already-'im' row keeps whatever the operator set.
+          -- was a channel carried a channel's trigger, which is not an operator's choice
+          -- for a direct conversation. A row already of the reported kind keeps whatever
+          -- the operator set. (Slack classifies a group DM late — an app_mention payload
+          -- carries no channel_type — so channel to mpim is a real transition, not a race.)
           "trigger" = CASE
-            WHEN ${c.kind === 'im'}::boolean AND "integration_channel"."kind" <> 'im'::"ConversationKind"
+            WHEN ${direct}::boolean AND "integration_channel"."kind" <> EXCLUDED."kind"
               THEN 'off'::"ChannelTrigger"
             ELSE "integration_channel"."trigger"
           END,
@@ -467,9 +474,10 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         space: conversation.space ?? null,
         isPrivate: conversation.isPrivate ?? false,
         kind: conversation.kind ?? 'channel',
-        // Same fail-closed rule as replaceSnapshot: a created DM row starts Off however
-        // it was discovered, so a later flip to restricted cannot grandfather it in.
-        ...(conversation.kind === 'im'
+        // Same fail-closed rule as replaceSnapshot: a created direct-conversation row
+        // (DM or group DM) starts Off however it was discovered, so a later flip to
+        // restricted cannot grandfather it in.
+        ...(conversation.kind === 'im' || conversation.kind === 'mpim'
           ? { trigger: 'off' as const }
           : opts?.defaultTrigger
             ? { trigger: opts.defaultTrigger }

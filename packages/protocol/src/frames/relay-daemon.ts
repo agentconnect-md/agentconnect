@@ -147,6 +147,9 @@ export const WireNormalizedMessage = z.object({
   mentionedBots: z.array(z.string()),
   attachments: z.array(WireAttachment).optional(),
   isDm: z.boolean(),
+  // Slack `mpim` — several humans and the bot in a direct conversation with no channel
+  // identity. Classification only: a group DM stays mention-gated like a channel.
+  isGroupDm: z.boolean().optional(),
   replyTo: z.string().optional(),
   telegramTopicId: z.string().optional(),
   telegramThreadRoot: z.string().optional(),
