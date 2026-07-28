@@ -2002,7 +2002,7 @@ export default function AddIntegrationModal({
                           <span>{'  -d \'{"message":"'}</span>
                           <textarea
                             ref={hookMessageRef}
-                            className="mx-[2px] min-h-[20px] min-w-[18ch] flex-1 resize-none overflow-hidden rounded-xs border border-(--border-subtle) bg-(--surface-active) px-[3px] py-0 font-mono text-[12px] leading-[1.65] text-[#cdd6e0] outline-none focus:border-(--brand)"
+                            className="mx-[2px] min-h-[20px] min-w-[18ch] flex-1 resize-none overflow-hidden rounded-xs border border-(--gray-800) bg-(--gray-900) px-[3px] py-0 font-mono text-[12px] leading-[1.65] text-[#cdd6e0] outline-none focus:border-(--brand)"
                             rows={1}
                             spellCheck={false}
                             aria-label="Webhook test message"
