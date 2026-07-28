@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { completeLogin, isAuthConfigured } from '@/lib/auth'
+import { takeFlowState } from '@/lib/flow-state'
 import { Spinner } from '@/components/marks'
 
 // Logto redirect landing page. Exchanges the authorization code (PKCE) for tokens
@@ -22,13 +23,10 @@ export default function AuthCallback() {
         // Return to a stashed same-origin destination (e.g. the OAuth consent page
         // that bounced the user through login), else the console home.
         let dest = '/'
-        try {
-          const stashed = sessionStorage.getItem('ac.returnTo')
-          sessionStorage.removeItem('ac.returnTo')
-          if (stashed && stashed.startsWith('/') && !stashed.startsWith('//')) dest = stashed
-        } catch {
-          /* sessionStorage unavailable — fall through to home */
-        }
+        // takeFlowState also reads the cookie fallback, so a flow that had to resume
+        // without sessionStorage (activation links) still lands where it started.
+        const stashed = takeFlowState('returnTo')
+        if (stashed && stashed.startsWith('/') && !stashed.startsWith('//')) dest = stashed
         router.replace(dest)
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'sign-in failed'))

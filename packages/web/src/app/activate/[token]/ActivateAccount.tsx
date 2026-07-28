@@ -13,44 +13,25 @@ import { Button, Icon } from '@/components/ui'
 import { Spinner, Wordmark } from '@/components/marks'
 import { redeemWaitlistLink, ApiError } from '@/lib/api'
 import { getUser, isAuthConfigured, resetSession } from '@/lib/auth'
+import { takeFlowState, writeFlowState } from '@/lib/flow-state'
 
-// Per-tab marker: "the session in this tab was established for THIS activation
-// token". Set before signing the old session out, so the post-sign-in return trip
+// Marker: "the session in this browser was established for THIS activation token".
+// Written before signing the old session out, so the post-sign-in return trip
 // redeems instead of logging out again (an unmarked visit always logs out first).
-const FRESH_KEY = 'ac.activate.fresh'
+const FRESH_KEY = 'activate.fresh'
 
-/** Stash the marker, confirming it stuck — sessionStorage can be unavailable
- *  (private modes, blocked storage), and an unreadable marker would loop. */
-function markFresh(token: string): boolean {
-  try {
-    sessionStorage.setItem(FRESH_KEY, token)
-    return sessionStorage.getItem(FRESH_KEY) === token
-  } catch {
-    return false
-  }
-}
-
-function takeFresh(): string | null {
-  try {
-    const v = sessionStorage.getItem(FRESH_KEY)
-    sessionStorage.removeItem(FRESH_KEY)
-    return v
-  } catch {
-    return null
-  }
-}
-
-function stashReturnTo(): void {
-  try {
-    sessionStorage.setItem('ac.returnTo', window.location.pathname)
-  } catch {
-    /* sessionStorage unavailable — sign-in will fall back to the console home */
-  }
-}
+const STORAGE_BLOCKED =
+  'This browser is blocking the temporary storage this activation link needs, so it cannot ' +
+  'verify who is signing in. Allow site data for this site (or use a regular, non-private ' +
+  'window), then open the link again.'
 
 export default function ActivateAccount({ token }: { token: string }) {
   const router = useRouter()
   const [error, setError] = useState<string | null>(null)
+  // Shown when the flow was refused before redeeming — the user can clear the
+  // session by hand and re-open the link, which is the manual form of the reset
+  // this page normally does for them.
+  const [offerSignOut, setOfferSignOut] = useState(false)
   // The flow below is single-shot: it consumes the freshness marker and can start a
   // sign-out. A second effect pass (React StrictMode remount) would see its own
   // marker and redeem under the very session we are trying to discard.
@@ -64,26 +45,31 @@ export default function ActivateAccount({ token }: { token: string }) {
       try {
         if (isAuthConfigured()) {
           // A residual console session belongs to whoever signed in last — possibly
-          // a different account, or one an admin has since deleted (whose stale
-          // identity the CP still resolves). Redeeming under it activates the wrong
-          // user or fails outright, so always start from a clean slate: sign out,
-          // then come back through a real sign-in for this link.
-          if (takeFresh() !== token) {
-            stashReturnTo()
-            if (markFresh(token)) {
-              // 'redirecting' ⇒ the browser is leaving for Logto's end-session
-              // endpoint and lands on /login; nothing left to do here.
-              if ((await resetSession()) === 'redirecting') return
-              if (!cancelled) router.replace('/login')
+          // a different account, or one an admin has since deleted. Redeeming under
+          // it activates the wrong user, so always start from a clean slate: sign
+          // out, then come back through a real sign-in for this link.
+          if (takeFlowState(FRESH_KEY) !== token) {
+            // Both writes must stick or the round trip cannot be resumed, and
+            // resuming is what keeps the redemption off the old session. Logto keeps
+            // a completed session in localStorage while this state needs
+            // sessionStorage/cookies, so "no scratch storage" and "already signed
+            // in" can coexist — fail CLOSED rather than redeem as that user.
+            if (!writeFlowState('returnTo', window.location.pathname) || !writeFlowState(FRESH_KEY, token)) {
+              if (!cancelled) {
+                setError(STORAGE_BLOCKED)
+                setOfferSignOut(true)
+              }
               return
             }
-            // No usable sessionStorage ⇒ a forced sign-out could not be resumed
-            // reliably. Fall through and use whatever session exists rather than
-            // strand the link in a sign-out loop.
+            // 'redirecting' ⇒ the browser is leaving for Logto's end-session
+            // endpoint and lands on /login; nothing left to do here.
+            if ((await resetSession()) === 'redirecting') return
+            if (!cancelled) router.replace('/login')
+            return
           }
 
           if (!(await getUser())) {
-            stashReturnTo()
+            writeFlowState('returnTo', window.location.pathname)
             if (!cancelled) router.replace('/login')
             return
           }
@@ -122,9 +108,15 @@ export default function ActivateAccount({ token }: { token: string }) {
               <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">Activation unavailable</h1>
               <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">{error}</p>
             </div>
-            <Button variant="secondary" onClick={() => router.replace('/waitlist')}>
-              Back to waitlist
-            </Button>
+            {offerSignOut ? (
+              <Button variant="secondary" onClick={() => void resetSession()}>
+                Sign out
+              </Button>
+            ) : (
+              <Button variant="secondary" onClick={() => router.replace('/waitlist')}>
+                Back to waitlist
+              </Button>
+            )}
           </>
         ) : (
           <>

@@ -13,7 +13,9 @@ const codec = new WaitlistJoinTokenCodec(TEST_API_KEY_PEPPER)
 
 let oidcServer: Server
 let oidcIssuer = ''
-let mintBearer: (subject: string, email?: string) => Promise<string>
+/** `issuedAt` (epoch seconds) overrides the `iat` claim — lets a test mint a token
+ *  that is demonstrably NEWER than an event, without sleeping a whole second. */
+let mintBearer: (subject: string, email?: string, issuedAt?: number) => Promise<string>
 
 beforeAll(async () => {
   const { privateKey, publicKey } = await generateKeyPair('RS256')
@@ -37,7 +39,7 @@ beforeAll(async () => {
   })
   const { port } = oidcServer.address() as AddressInfo
   oidcIssuer = `http://127.0.0.1:${port}`
-  mintBearer = (subject, email) => {
+  mintBearer = (subject, email, issuedAt) => {
     const claims: Record<string, unknown> = {}
     if (email) claims.email = email
     return new SignJWT(claims)
@@ -45,7 +47,7 @@ beforeAll(async () => {
       .setIssuer(oidcIssuer)
       .setAudience(OIDC_AUDIENCE)
       .setSubject(subject)
-      .setIssuedAt()
+      .setIssuedAt(issuedAt)
       .setExpirationTime('10m')
       .sign(privateKey)
   }
@@ -60,8 +62,8 @@ afterAll(
 
 /** A waitlist-mode app (real OIDC + gate on). */
 const buildApp = () => buildHttpApp(prisma, { OIDC_ISSUER: oidcIssuer, OIDC_AUDIENCE, WAITLIST_MODE: true })
-const headers = async (subject: string, email?: string) => ({
-  authorization: `Bearer ${await mintBearer(subject, email)}`
+const headers = async (subject: string, email?: string, issuedAt?: number) => ({
+  authorization: `Bearer ${await mintBearer(subject, email, issuedAt)}`
 })
 
 /** Simulate the external admin app approving an email + minting its join link. */
@@ -584,30 +586,46 @@ describe('waitlist admission — auth boundaries', () => {
     }
   })
 
-  it('rejects the session with ACCOUNT_GONE once the account is deleted', async () => {
+  it('keeps rejecting a deleted account with ACCOUNT_GONE — the same bearer cannot recreate it', async () => {
     const { app, close } = buildApp()
+    const email = 'wl-deleted@acme.dev'
     try {
-      const h = await headers('wl-deleted', 'wl-deleted@acme.dev')
+      const h = await headers('wl-deleted', email)
       // First call provisions the user AND memoizes sub → userId inside the auth plane.
       const before = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
       expect(before.statusCode).toBe(200)
-      expect(before.json()).toMatchObject({ email: 'wl-deleted@acme.dev' })
+      expect(before.json()).toMatchObject({ email })
 
       // The external admin app deletes the account under the live session.
-      await prisma.user.delete({ where: { email: 'wl-deleted@acme.dev' } })
+      await prisma.user.delete({ where: { email } })
 
       // Same (still valid) bearer, same process, same memo: the plane must notice the
-      // row is gone and tell the client to sign out — never serve a dangling identity
-      // and never silently re-provision one.
+      // row is gone and tell the client to sign out — never serve a dangling identity.
       const after = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
       expect(after.statusCode).toBe(401)
       expect(after.json()).toMatchObject({ code: 'ACCOUNT_GONE' })
-      expect(await prisma.user.findUnique({ where: { email: 'wl-deleted@acme.dev' } })).toBeNull()
+      expect(await prisma.user.findUnique({ where: { email } })).toBeNull()
 
-      // The dead mapping is dropped, so a fresh sign-in is a fresh signup.
-      const reSignIn = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+      // …and it must KEEP rejecting it. A retry (or a parallel console poll) with the
+      // same authentication must not fall through to JIT provisioning and resurrect
+      // the account the admin just removed.
+      for (let i = 0; i < 3; i++) {
+        const retry = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
+        expect(retry.statusCode).toBe(401)
+        expect(retry.json()).toMatchObject({ code: 'ACCOUNT_GONE' })
+      }
+      // Not even a different route / a write may provision behind the rejection.
+      const join = await app.inject({ method: 'POST', url: '/api/v1/waitlist', headers: h, payload: {} })
+      expect(join.statusCode).toBe(401)
+      expect(join.json()).toMatchObject({ code: 'ACCOUNT_GONE' })
+      expect(await prisma.user.findUnique({ where: { email } })).toBeNull()
+
+      // Only a demonstrably NEW authentication (a token issued after the deletion)
+      // signs up again — as the new account it is, with nothing inherited.
+      const fresh = await headers('wl-deleted', email, Math.floor(Date.now() / 1000) + 5)
+      const reSignIn = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: fresh })
       expect(reSignIn.statusCode).toBe(200)
-      expect(reSignIn.json()).toMatchObject({ email: 'wl-deleted@acme.dev', activated: false })
+      expect(reSignIn.json()).toMatchObject({ email, activated: false, orgCount: 0 })
     } finally {
       await close()
     }

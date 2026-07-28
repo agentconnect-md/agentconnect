@@ -179,6 +179,22 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
   // per request so org switches (x-ac-org-id), role edits and removals take
   // effect immediately.
   const resolved = new Map<string, Promise<{ userId: string }>>()
+  // Subjects whose local account was found deleted, and WHEN (epoch seconds). The
+  // memo eviction alone would let the very next request with the same bearer re-run
+  // JIT provisioning and recreate the account the admin just removed — a retry or a
+  // parallel console poll would resurrect it before the client finishes signing out.
+  // So the subject stays rejected until a token issued AFTER the deletion arrives:
+  // only a new authentication may provision again. Entries expire (below) so this
+  // cannot grow without bound; the TTL is far longer than any access-token lifetime,
+  // so no token minted before the deletion outlives its tombstone.
+  const tombstoned = new Map<string, number>()
+  const TOMBSTONE_TTL_SECONDS = 24 * 60 * 60
+  function tombstone(sub: string, issuedAt: number | undefined, nowSeconds: number): void {
+    for (const [key, at] of tombstoned) if (nowSeconds - at > TOMBSTONE_TTL_SECONDS) tombstoned.delete(key)
+    // At least the offending token's own `iat`, so an issuer clock running ahead of
+    // ours cannot mint a token that reads as "issued after the deletion".
+    tombstoned.set(sub, Math.max(nowSeconds, issuedAt ?? 0))
+  }
   return async (req: FastifyRequest, reply: FastifyReply) => {
     const header = req.headers.authorization
     if (!header?.startsWith('Bearer ')) {
@@ -192,6 +208,22 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
       })
       if (!payload.sub) return unauthorized(reply, 'token missing subject')
       const sub = payload.sub
+      // Was this subject's account deleted? Anything issued at or before that moment
+      // — including the bearer that was live when it happened — stays rejected, so no
+      // amount of retrying re-provisions it. A token with no `iat` cannot prove it is
+      // newer, so it is refused too. A demonstrably newer one clears the tombstone
+      // and signs up afresh. (A silent refresh also mints a newer `iat`; a bearer
+      // alone cannot distinguish that from a re-login, and the console drops its
+      // tokens on ACCOUNT_GONE, so this is the achievable line.)
+      const tombstonedAt = tombstoned.get(sub)
+      if (tombstonedAt !== undefined) {
+        const issuedAt = typeof payload.iat === 'number' ? payload.iat : undefined
+        if (issuedAt === undefined || issuedAt <= tombstonedAt) {
+          req.log.warn('humanAuth: token predates the account deletion — session rejected')
+          return accountGone(reply)
+        }
+        tombstoned.delete(sub)
+      }
       // The creator identity we surface is the user's real EMAIL. A Logto access
       // token minted for an API resource omits the `email` claim, so we also accept
       // it from the browser (which has it from the id token) via `x-ac-user-email`.
@@ -262,6 +294,10 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
         }
         if (!alive) {
           resolved.delete(sub)
+          // Tombstone the subject as well, so this bearer (and every concurrent
+          // request already holding it) cannot fall through to JIT provisioning and
+          // recreate the account the admin just deleted.
+          tombstone(sub, typeof payload.iat === 'number' ? payload.iat : undefined, Math.floor(Date.now() / 1000))
           req.log.warn({ userId: identity.userId }, 'humanAuth: account no longer exists — session rejected')
           return accountGone(reply)
         }
