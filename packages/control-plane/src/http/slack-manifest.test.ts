@@ -85,6 +85,9 @@ describe('buildInstallManifest', () => {
       'groups:history',
       'groups:read',
       'im:history',
+      'im:write',
+      'mpim:history',
+      'mpim:read',
       'reactions:write',
       'assistant:write',
       'users:read'
