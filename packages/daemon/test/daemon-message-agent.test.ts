@@ -1001,12 +1001,21 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
     })
   }
 
-  const ask = (daemon: any, sessionId: string, caller = { agentId: 'bot-a', channel: 'C1', thread: '100.1' }) =>
+  const ask = (
+    daemon: any,
+    sessionId: string,
+    caller: { agentId: string; channel: string; thread: string; transportScope?: string } = {
+      agentId: 'bot-a',
+      channel: 'C1',
+      thread: '100.1'
+    }
+  ) =>
     daemon.viewSessionStatus({
       callerAgentId: caller.agentId,
       platform: 'slack',
       callerChannel: caller.channel,
       callerThread: caller.thread,
+      ...(caller.transportScope !== undefined ? { callerTransportScope: caller.transportScope } : {}),
       sessionId
     })
 
@@ -1100,6 +1109,35 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
 
     expect(await ask(daemon, 'no-such-session')).toBeNull()
     expect(await ask(daemon, CHILD_KEY, { agentId: 'bot-b', channel: 'C1', thread: '999.9' })).toBeNull()
+    await daemon.stop()
+  })
+
+  // A caller whose session is scoped to a physical bot keys its row with the 5th `sessionKey`
+  // segment. The lineage lookup must carry that scope, or the parent's own session is never found
+  // and every read is (fail-closed but wrongly) refused.
+  it('finds the caller’s own session when it is transportScope-keyed', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon } = await bootWithDispatchSpy(root)
+    const scopedParent = sessionKey('slack', 'C1', '100.1', 'bot-a', 'bot-scope-1')
+    ;(daemon as any).store.upsertSession({
+      key: scopedParent,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      transportScope: 'bot-scope-1',
+      acpSessionId: 'acp-parent-scoped',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+    seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1', originSessionId: 'acp-parent-scoped' })
+    ;(daemon as any).store.setSessionTurnOutcome(CHILD_KEY, 'done', 2_000)
+
+    const caller = { agentId: 'bot-a', channel: 'C1', thread: '100.1', transportScope: 'bot-scope-1' }
+    expect((await ask(daemon, CHILD_KEY, caller))?.status).toBe('done')
+    // …and the unscoped caller coords are a DIFFERENT session, which is not this child's parent.
+    expect(await ask(daemon, CHILD_KEY)).toBeNull()
     await daemon.stop()
   })
 

@@ -159,6 +159,9 @@ export interface SessionStatusReq {
   platform: string
   callerChannel: string
   callerThread: string
+  /** Trusted physical-bot scope of the caller's session, when it has one. Part of the caller's
+   *  logical session key, so it must travel for the lineage lookup to find the right row. */
+  callerTransportScope?: string
   /** The ONLY untrusted field: the child session's id, as handed back by `sendMessage`. */
   sessionId: string
 }
@@ -780,6 +783,7 @@ export async function executeTool(
       platform: ctx.platform,
       callerChannel: ctx.channel,
       callerThread: ctx.thread,
+      ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
       sessionId
     })
     // Unknown and not-yours are deliberately ONE message: distinguishing them would let a

@@ -5309,7 +5309,13 @@ export class Daemon {
    */
   private viewSessionStatus(req: SessionStatusReq): SessionStatusResult | null {
     const platform = this.narrowPlatform(req.platform)
-    const callerKey = sessionKey(platform, req.callerChannel, req.callerThread, req.callerAgentId)
+    const callerKey = sessionKey(
+      platform,
+      req.callerChannel,
+      req.callerThread,
+      req.callerAgentId,
+      req.callerTransportScope
+    )
     const callerSessionId = this.store.getSession(callerKey)?.acpSessionId ?? undefined
     // A caller with no session id of its own has no lineage to check against — refuse rather than
     // fall through to a link lookup that could match an `undefined` parent.
