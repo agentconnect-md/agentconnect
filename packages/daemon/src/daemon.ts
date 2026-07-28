@@ -1248,11 +1248,19 @@ export class Daemon {
       /** Background-task wakes already spent on this session — see
        *  {@link MAX_BG_TASK_WAKES_PER_SESSION}. */
       bgWakes: number
-      /** Wakes armed but not yet admitted. `settle()` removes the task BEFORE arming the
-       *  timer, so without counting these the session would read as quiescent during the
-       *  grace/re-arm window and an idle sweep could close it (and drop the lease) out from
-       *  under a completion that is about to be delivered. */
+      /** Wake timers armed (or deferred) but not yet fired. `settle()` removes the task
+       *  BEFORE arming the timer, so without counting these the session would read as
+       *  quiescent during the grace/re-arm window and an idle sweep could close it (and drop
+       *  the lease) out from under a completion that is about to be delivered. Deliberately
+       *  SEPARATE from {@link deliveringWakes}: several armed timers coalesce (none has run),
+       *  whereas a delivery in flight must never absorb a newly settled task. */
       armedWakes: number
+      /** Wake dispatches in flight — taken before `dispatch()` and released when its promise
+       *  settles, so the fence spans async turn initialization. Counted apart from
+       *  `armedWakes` because a delivery is past the point where it could carry another
+       *  task's completion: once `host.prompt()` has returned the model is no longer running,
+       *  yet the dispatch stays pending through renderer/finalization. */
+      deliveringWakes: number
     }
   >()
   /** Armed background-task wake checks (one per settled non-subagent task), tracked so
@@ -12045,7 +12053,8 @@ export class Daemon {
       tasks: new Map<string, { description?: string; isSubagent: boolean }>(),
       sdkState: 'idle' as const,
       bgWakes: 0,
-      armedWakes: 0
+      armedWakes: 0,
+      deliveringWakes: 0
     }
     // Release a task from the lease and, if it's a real background task (not an
     // internal subagent), announce its completion when the agent is verbose enough
@@ -12200,14 +12209,9 @@ export class Daemon {
       this.log.debug(`bg-task wake skipped (host reclaimed): "${what}" on ${acpSessionId}`)
       return
     }
-    // Release this attempt's fence — but NOT before the dispatch below is reclaim-visible.
-    // `dispatch()` only claims the serial gate synchronously; `dispatchOne` then awaits thread
-    // history, attachments, and managed-memory recall before SessionManager writes
-    // `state = 'prompting'`. Releasing here would reopen the very window this fence closes: an
-    // already-expired session would read quiescent AND idle, and a sweep landing there would
-    // TTL-close it and stop the host mid-initialization. So on the delivery path the fence is
-    // handed to the dispatch promise (which settles at turn completion) and released there;
-    // every other path releases immediately.
+    // This attempt's timer has fired, so release its slot of the fence — but the fence as a
+    // whole must not drop to zero while a delivery is still owed. Every branch below either
+    // takes a replacement slot first (re-arm, defer) or hands one to `deliveringWakes`.
     let released = false
     const release = (): void => {
       if (released) return
@@ -12218,15 +12222,12 @@ export class Daemon {
       release()
       this.log.debug(`bg-task wake skipped (${why}): "${what}" on ${acpSessionId}`)
     }
-    // A count above this attempt means another wake is either armed or still delivering:
-    //  • armed — several tasks settled on the SAME edge (an empty `background_tasks_changed`
-    //    snapshot settles all of them), arming a timer each. The `tasks.size` guard below
-    //    cannot catch that, since they are all already out of `tasks`. Let the LAST one
-    //    deliver for all of them rather than running one turn per task.
-    //  • delivering — a wake turn is in flight, and a task settling during a turn is handed to
-    //    the model by the runtime in-turn anyway (the same reasoning as the `state` guard).
-    // Either way the fence stays held by the other wake, so skipping here is safe.
-    if (lease.armedWakes > 1) return skip('another wake for this session is armed or delivering')
+    // Another timer still armed ⇒ several tasks settled on the SAME edge (an empty
+    // `background_tasks_changed` snapshot settles all of them), arming a timer each. The
+    // `tasks.size` guard below cannot catch that, since they are all already out of `tasks`.
+    // Coalescing is safe here precisely because NONE of them has run: the last one delivers
+    // for all, and it holds the fence meanwhile.
+    if (lease.armedWakes > 1) return skip('another wake for this session is still armed')
     if (lease.sdkState === 'running') {
       if (attempt >= MAX_BG_TASK_WAKE_REARMS) {
         release()
@@ -12251,6 +12252,22 @@ export class Daemon {
     }
     const rec = this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
     if (!rec) return skip('no session row')
+    // A turn is in flight for this session. It must NOT absorb this completion: `sdkState` is
+    // already idle above, so `host.prompt()` has returned and the model cannot observe the task
+    // in-turn, yet the dispatch stays pending through renderer/finalization. Dropping here is
+    // how a task started by a wake turn and settling in that cleanup window got lost. Defer
+    // instead — retry the same attempt once the active dispatch settles, holding a fence slot
+    // across the hand-off. Bounded in aggregate by the wake budget, which caps deliveries.
+    const active = this.activeDispatchDoneByKey.get(rec.key)
+    if (active) {
+      lease.armedWakes += 1 // the deferred retry's slot, taken before this one is released
+      const resume = (): void => {
+        lease.armedWakes = Math.max(0, lease.armedWakes - 1)
+        this.scheduleBackgroundTaskWake(agentId, acpSessionId, taskId, description, status, attempt)
+      }
+      void active.then(resume, resume)
+      return skip('a turn is in flight — deferred until it settles')
+    }
     if (rec.state !== 'idle') return skip(`session is ${rec.state}`)
 
     const platform = this.narrowPlatform(rec.platform)
@@ -12289,13 +12306,19 @@ export class Daemon {
     }
     lease.bgWakes += 1
     this.log.info(`bg-task wake: "${what}" → agent "${agentId}" session ${acpSessionId} (${rec.key})`)
-    // The fence stays taken until this settles (which is turn completion, not admission), so
-    // initialization is never exposed to the idle sweep. `finally` covers rejection too — a
-    // failed wake must not pin the host. A turn that never settles at all is still bounded by
-    // the absolute `agentMaxLifetimeMs` ceiling (§4).
+    // Hand this attempt's fence slot over to `deliveringWakes` before releasing it, so the
+    // fence spans async turn initialization: `dispatch()` claims the serial gate synchronously,
+    // but `dispatchOne` then awaits thread history, attachments, and managed-memory recall
+    // before SessionManager writes `state = 'prompting'`. Released when the promise settles —
+    // turn completion, not admission. `finally` covers rejection too, so a failed wake cannot
+    // pin the host; a turn that never settles is still bounded by `agentMaxLifetimeMs` (§4).
+    lease.deliveringWakes += 1
+    release()
     void this.dispatch(agentId, msg, integrationId)
       .catch((err) => this.log.error(`bg-task wake dispatch failed for "${agentId}": ${formatErr(err)}`))
-      .finally(release)
+      .finally(() => {
+        lease.deliveringWakes = Math.max(0, lease.deliveringWakes - 1)
+      })
   }
 
   /** A session is SDK-quiescent when it has no live background tasks, no armed completion
@@ -12306,15 +12329,20 @@ export class Daemon {
   private sessionSdkQuiescent(agentId: string, acpSessionId: string | null | undefined): boolean {
     if (!acpSessionId) return true
     const l = this.sdkLease.get(sdkLeaseKey(agentId, acpSessionId))
-    return !l || (l.tasks.size === 0 && l.armedWakes === 0 && l.sdkState === 'idle')
+    return !l || (l.tasks.size === 0 && l.armedWakes === 0 && l.deliveringWakes === 0 && l.sdkState === 'idle')
   }
 
-  /** Whether any of an agent's sessions has in-flight background work — a live
-   *  background task, an armed completion wake, or a running SDK cycle (a self-initiated
-   *  followup turn that carries no `this.pending` entry). Gates idle host reclaim. */
+  /** Whether any of an agent's sessions has in-flight background work — a live background
+   *  task, a completion wake that is armed or delivering, or a running SDK cycle (a
+   *  self-initiated followup turn that carries no `this.pending` entry). Gates idle host
+   *  reclaim. */
   private agentHasLiveSdkWork(agentId: string): boolean {
     for (const l of this.sdkLease.values())
-      if (l.agentId === agentId && (l.tasks.size > 0 || l.armedWakes > 0 || l.sdkState === 'running')) return true
+      if (
+        l.agentId === agentId &&
+        (l.tasks.size > 0 || l.armedWakes > 0 || l.deliveringWakes > 0 || l.sdkState === 'running')
+      )
+        return true
     return false
   }
 

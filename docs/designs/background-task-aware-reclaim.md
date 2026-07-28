@@ -51,8 +51,9 @@ through `tasks`/`sdkState`, or spend its wake budget.
   agentId,
   tasks: Map<taskId, { description?, isSubagent }>,
   sdkState: "idle" | "running",
-  bgWakes,    // wakes already spent on this session, see §5.1
-  armedWakes  // wakes armed but not yet admitted, see §5.1
+  bgWakes,         // wakes already spent on this session, see §5.1
+  armedWakes,      // wake timers armed or deferred, see §5.1
+  deliveringWakes  // wake dispatches in flight, see §5.1
 }
 ```
 
@@ -75,7 +76,7 @@ repairs missed completion edges for tasks already observed through
 A session is SDK-quiescent when:
 
 ```text
-tasks.size == 0 && armedWakes == 0 && sdkState == "idle"
+tasks.size == 0 && armedWakes == 0 && deliveringWakes == 0 && sdkState == "idle"
 ```
 
 No lease means quiescent. Host reclamation separately requires that the daemon
@@ -85,9 +86,9 @@ has no foreground prompt pending for the agent.
 `tasks` **before** its completion wake is armed (§5.1). Without it, a task that
 outlived the session's idle TTL would leave the session quiescent for the whole
 grace window, and a sweep landing there would close the session and drop the
-lease — losing exactly the completion the wake exists to deliver. The count is
-held past the injected dispatch as well, until the woken turn is itself visible to
-the sweep; §5.1 covers why.
+lease — losing exactly the completion the wake exists to deliver. `deliveringWakes`
+extends the same fence past the injected dispatch, until the woken turn is itself
+visible to the sweep; §5.1 covers why both counters exist separately.
 
 ### Logical waiting state
 
@@ -196,35 +197,53 @@ The daemon therefore delivers it, as a new turn into the same session:
 The wake is armed on a `BG_TASK_WAKE_GRACE_MS` (4s) delay and every precondition
 is re-checked when it fires, never captured when it is armed:
 
-| Condition at fire time       | Behavior                                                                                  |
-| ---------------------------- | ----------------------------------------------------------------------------------------- |
-| No lease                     | Host was reclaimed; the ACP session is gone. Skip.                                        |
-| Another wake armed/in-flight | Several tasks settled on one edge, or a wake turn is already running. Skip.               |
-| `sdkState == "running"`      | The runtime's self-drain cycle is in flight. **Re-arm**, up to `MAX_BG_TASK_WAKE_REARMS`. |
-| `tasks.size > 0`             | Another task is still live; its completion carries the session forward. Skip.             |
-| Session missing or not idle  | Closed, or a real turn is already running and will observe the task. Skip.                |
-| Budget exhausted             | Warn and skip (see below).                                                                |
+| Condition at fire time      | Behavior                                                                                  |
+| --------------------------- | ----------------------------------------------------------------------------------------- |
+| No lease                    | Host was reclaimed; the ACP session is gone. Skip.                                        |
+| Another timer still armed   | Several tasks settled on one edge; the last one delivers for all. Skip.                   |
+| `sdkState == "running"`     | The runtime's self-drain cycle is in flight. **Re-arm**, up to `MAX_BG_TASK_WAKE_REARMS`. |
+| `tasks.size > 0`            | Another task is still live; its completion carries the session forward. Skip.             |
+| Budget exhausted            | Warn and skip (see below).                                                                |
+| A turn is in flight         | **Defer** — retry this attempt once the active dispatch settles.                          |
+| Session missing or not idle | Closed. Skip.                                                                             |
 
-Arming takes `armedWakes` and every outcome releases it exactly once, so the count
-stays balanced. The release point differs by outcome, and that difference is the
-whole fence:
+Coalescing and deferring are **not** the same case, and conflating them loses
+results:
 
-- **Delivered** — the count is handed to the dispatch promise and released when it
-  settles, i.e. at turn completion. Releasing at dispatch time is NOT enough:
-  `dispatch()` claims the serial gate synchronously, but `dispatchOne` then awaits
-  thread history, attachments, and managed-memory recall before `SessionManager`
-  writes `state = 'prompting'`. Through that window the row is still `idle` and has
-  no `Pending`, so an already-expired session would read quiescent and a sweep
-  landing there would TTL-close it and stop the host mid-initialization.
-- **Re-armed** — the next attempt takes its count first, so the total never dips.
-- **Skipped or given up** — released immediately.
+- **Another timer still armed** is safely coalescible because none of those wakes
+  has run yet — an empty `background_tasks_changed` snapshot settles every task on
+  one edge, arming a timer each, and all of them then see an empty `tasks`. One turn
+  covers them all.
+- **A turn is in flight** is not. `sdkState` is already `idle` by this point, so
+  `host.prompt()` has returned and the model cannot observe the task in-turn — yet
+  the dispatch stays pending through renderer/finalization. Folding the new
+  completion into that finishing delivery discards it permanently. So the wake
+  defers instead: it retries the same attempt once
+  `activeDispatchDoneByKey` for the session resolves, holding a fence slot across
+  the hand-off. Aggregate progress is bounded by the wake budget, which caps
+  deliveries.
+
+The fence is two counters, and every outcome releases exactly one slot:
+
+| Counter           | Taken                    | Released                          |
+| ----------------- | ------------------------ | --------------------------------- |
+| `armedWakes`      | arming a timer / a defer | that timer firing                 |
+| `deliveringWakes` | just before `dispatch()` | when the dispatch promise settles |
+
+The two are separate precisely so the coalescing decision above can tell "armed"
+from "delivering". Re-arm and defer take the replacement slot **before** releasing
+the current one, so the total never dips to zero while a completion is owed.
+
+Delivery releases at dispatch-promise settle — turn completion, not admission.
+Releasing at dispatch time is not enough: `dispatch()` claims the serial gate
+synchronously, but `dispatchOne` then awaits thread history, attachments, and
+managed-memory recall before `SessionManager` writes `state = 'prompting'`. Through
+that window the row is still `idle` and has no `Pending`, so an already-expired
+session would read quiescent and a sweep landing there would TTL-close it and stop
+the host mid-initialization.
 
 A wake turn that never settles keeps the fence indefinitely; the absolute
 `agentMaxLifetimeMs` ceiling (§4) remains the backstop, as it is for a hung task.
-
-Holding past dispatch is also why "another wake armed **or delivering**" covers
-both: a task settling while a wake turn is in flight is handed to the model by the
-runtime in-turn, exactly as the session-state guard assumes.
 
 The `running` case is a **wait, not a stand-down**. The self-drain cycle delivers
 nothing (see §5), so treating it as the delivery is what strands the session; the
