@@ -147,26 +147,38 @@ function quotedSenderLabel(from: TelegramUser | undefined): string | undefined {
 
 /**
  * The content of the message a Telegram reply is replying to, or undefined when there is
- * nothing usable to carry. Prefers the user's `quote` selection over the full source
- * message — a manual quote is an explicit statement of which part the reply is about.
- * Media-only sources still yield an `[attached: …]` mention so the agent knows the reply
- * points at a file rather than at nothing.
+ * nothing usable to carry.
+ *
+ * `quote` comes in two kinds and only `is_manual` tells them apart: a passage the sender
+ * CHOSE, which states which part of the source the reply is about, versus one the server
+ * added on its own, which carries no intent at all. Only the manual kind may claim
+ * selection semantics downstream — attributing a deliberate choice to a server-generated
+ * excerpt would put an intent the user never expressed in front of the model. A
+ * server-added quote is still used as content when the source has no text of its own,
+ * where it beats saying nothing.
+ *
+ * Media-only sources yield an `[attached: …]` mention so the agent knows the reply points
+ * at a file rather than at nothing.
  */
 export function quotedFromTelegramReply(msg: TelegramMessage): NormalizedMessage['quoted'] | undefined {
   const source = msg.reply_to_message
   if (!source) return undefined
 
-  const selection = msg.quote?.text?.trim()
+  const quoteText = msg.quote?.text?.trim() ?? ''
+  const manual = msg.quote?.is_manual === true ? quoteText : ''
   const full = (source.text ?? source.caption ?? '').trim()
+  // Server-added quote: content only, and only where the source itself offers no text.
+  const serverExcerpt = manual || full ? '' : quoteText
   const attachments: Attachment[] = []
   const photo = photoToAttachment(source.photo)
   if (photo) attachments.push(photo)
   const doc = documentToAttachment(source.document)
   if (doc) attachments.push(doc)
-  // A selection is already scoped to text the user picked, so it never needs the
-  // source's attachment mention folded in; a full source does.
-  const mention = selection ? '' : attachmentMention(attachments)
-  const body = [selection || full, mention].filter(Boolean).join(' ')
+  // A partial body is already scoped to some passage, so it never needs the source's
+  // attachment mention folded in; a complete source does.
+  const partial = manual || serverExcerpt
+  const mention = partial ? '' : attachmentMention(attachments)
+  const body = [partial || full, mention].filter(Boolean).join(' ')
   if (!body) return undefined
 
   const truncated = body.length > MAX_QUOTED_TEXT_CHARS
@@ -174,12 +186,12 @@ export function quotedFromTelegramReply(msg: TelegramMessage): NormalizedMessage
     messageId: String(source.message_id),
     ...(quotedSenderLabel(source.from) !== undefined ? { sender: quotedSenderLabel(source.from)! } : {}),
     text: truncated ? `${body.slice(0, MAX_QUOTED_TEXT_CHARS)}…` : body,
-    // A user-selected passage is load-bearing on its own (which part they meant), so it is
-    // tracked separately from mere partialness — only the latter is a labeling concern.
-    ...(selection ? { selection: true } : {}),
-    // A truncated full source is as partial as a manual selection — say so either way,
-    // so the agent knows it is not looking at the complete quoted message.
-    ...(selection || truncated ? { excerpt: true } : {})
+    // Load-bearing on its own (which part they meant), so tracked apart from mere
+    // partialness — and never inferred from a quote the server generated.
+    ...(manual ? { selection: true } : {}),
+    // A truncated or server-clipped source is as partial as a manual selection — say so
+    // either way, so the agent knows it is not looking at the complete quoted message.
+    ...(manual || serverExcerpt || truncated ? { excerpt: true } : {})
   }
 }
 

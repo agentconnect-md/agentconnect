@@ -102,6 +102,23 @@ export function isStandingContextTitleEcho(title: string): boolean {
   return title.replace(/\s+/g, ' ').trimStart().startsWith(AGENT_META_OPENING.join(' '))
 }
 
+/**
+ * Whether a replayed transcript body already carries a quoted source, so re-stating it would
+ * only duplicate. Containment rather than equality because the recorded row may carry extra
+ * daemon-side text the quote lacks (an `[attached: …]` mention), and the quote may have been
+ * clipped by the ingress cap — a trailing ellipsis is dropped before comparing so a bounded
+ * quote still matches the complete row it came from. Whitespace is collapsed since the two
+ * sides travel through different renderers. A false result only costs one duplicated block,
+ * whereas a false match discards content the model may not have (e.g. an edited message,
+ * whose correction never reaches the transcript at all).
+ */
+function replayCoversQuotedText(replayedText: string, quotedText: string): boolean {
+  const collapse = (s: string): string => s.replace(/\s+/g, ' ').trim()
+  const needle = collapse(quotedText).replace(/…$/, '').trim()
+  if (!needle) return false
+  return collapse(replayedText).includes(needle)
+}
+
 function interrupted(signal: AbortSignal): Error {
   return signal.reason instanceof Error
     ? signal.reason
@@ -236,9 +253,13 @@ export class SessionManager {
    * @mention that quotes a message the daemon never recorded otherwise reaches the agent as
    * the mention text alone (unlike Slack, Telegram has no `fetchThreadHistory` backfill).
    *
-   * It is emitted whenever the reply carries one, with a single exception: the quoted row is
-   * among the rows THIS prompt already replays, where it would be verbatim duplication inside
-   * one message. Deliberately nothing cleverer, because the daemon records no fact that
+   * It is emitted whenever the reply carries one, with a single exception: this prompt already
+   * replays that same message AND the replayed body still contains the quoted text, so the
+   * block would be verbatim duplication inside one message. Matching the id alone is not
+   * enough — the connection consumes `message` but not `edited_message`, so a recorded row can
+   * hold PRE-EDIT text while Telegram's inline source carries the correction. Suppressing on
+   * the id there would hand the model the stale wording and discard the current one.
+   * Deliberately nothing cleverer than that, because the daemon records no fact that
    * implies "the current ACP session has seen this message", and each available proxy is
    * demonstrably weaker than it looks:
    *   - cursor order — `ts` is TEXT, so Telegram's ascending ids miscompare (`"100" > "99"`
@@ -259,7 +280,7 @@ export class SessionManager {
     msg: NormalizedMessage,
     ctx: {
       /** The rows this prompt actually replays to the model. */
-      replayed: readonly { ts: string }[]
+      replayed: readonly { ts: string; text: string }[]
     }
   ): string | undefined {
     const quoted = msg.quoted
@@ -267,7 +288,10 @@ export class SessionManager {
     // A user-selected passage stays even against replay: it states WHICH part of the source
     // the reply is about, which the full source sitting in context cannot supply.
     if (quoted.messageId !== undefined && !quoted.selection) {
-      if (ctx.replayed.some((e) => e.ts === quoted.messageId)) return undefined
+      const alreadyInPrompt = ctx.replayed.some(
+        (e) => e.ts === quoted.messageId && replayCoversQuotedText(e.text, quoted.text)
+      )
+      if (alreadyInPrompt) return undefined
     }
     // Framed as context, never as instruction: the quoted author is a third party whose text
     // the agent should reason about, not obey. Same `[sender] text` shape as thread context.

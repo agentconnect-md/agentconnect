@@ -1600,6 +1600,35 @@ describe('SessionManager — quoted reply source', () => {
     store.close()
   })
 
+  it('delivers the inline source when the replayed row at that id holds STALE (pre-edit) text', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', tgMsg({ ts: '10', text: 'checking staging' }))
+    // The connection consumes `message` but not `edited_message`, so this row keeps the text as
+    // first sent. Telegram's inline reply_to_message carries the user's later correction.
+    store.appendTranscript({
+      channel: transcriptChannelKey('-100123'),
+      thread: 'tg:10',
+      ts: '11',
+      sender: 'U2',
+      kind: 'text',
+      text: 'staging is healthy'
+    })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      tgMsg({
+        ts: '12',
+        text: '@bot-a look at this',
+        replyTo: '11',
+        quoted: { messageId: '11', sender: '@bob', text: 'staging is returning 500s' }
+      })
+    )
+    // Matching on the id alone would have suppressed the correction and left only the stale row.
+    expect(blocks.map((b: any) => b.text as string).join('\n')).toContain('staging is returning 500s')
+    store.close()
+  })
+
   it('still delivers the quoted source when only a delivery RECEIPT says the agent has it', async () => {
     const store = newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
