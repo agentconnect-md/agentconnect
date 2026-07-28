@@ -172,3 +172,60 @@ export const SessionToolBodyChunk = z.object({
   nextOffset: z.number().int().optional() // absent ⇒ this is the last chunk
 })
 export type SessionToolBodyChunk = z.infer<typeof SessionToolBodyChunk>
+
+/**
+ * session-concept §5.4 — the shared shape of a child-session status answer, returned by BOTH
+ * legs of a cross-daemon status read (`session/child-status/ok` from the CP to the asking daemon,
+ * and `session/child-status/probe/ok` from the owning daemon to the CP).
+ *
+ * `found:false` is deliberately the single negative outcome for "unknown session" AND "not your
+ * child": distinguishing them would let a caller probe for the existence of sessions it may not
+ * read, which is exactly what the daemon-local path also refuses to do. `reason` describes only
+ * TRANSPORT-level failure (the owning daemon is unreachable), never an authorization verdict.
+ */
+export const ChildSessionStatus = z.object({
+  found: z.boolean(),
+  /** The agent that owns the child session. Present only when `found`. */
+  agentId: z.string().uuid().optional(),
+  /** Coarse progress, collapsed by the OWNING daemon from its own session lifecycle. */
+  status: z.enum(['in-progress', 'failed', 'done']).optional(),
+  /** The underlying lifecycle state, for a caller that wants the detail. */
+  state: z.enum(['starting', 'idle', 'prompting', 'cancelling', 'resuming', 'closed']).optional(),
+  /** Epoch ms of the child's last state change. */
+  updatedAt: z.number().int().optional(),
+  /** Transport-level failure only: the owning daemon is not currently reachable. */
+  reason: z.enum(['offline']).optional()
+})
+export type ChildSessionStatus = z.infer<typeof ChildSessionStatus>
+
+/**
+ * D→C REQ: "what is the status of a child session my session started, which lives on ANOTHER
+ * daemon?" The CP is the placement authority, so it resolves `childAgentId` to the owning daemon
+ * and forwards the question there — the daemon never addresses another daemon directly.
+ *
+ * AUTHORIZATION IS TWO-SIDED. The CP verifies that `parentSessionId` really is a session reported
+ * by the ASKING daemon (a daemon cannot claim someone else's parent session), and the owning
+ * daemon then verifies that the child's durable origin link actually equals `parentSessionId`.
+ * Neither check alone is sufficient: the first stops a forged parent claim, the second is the
+ * real lineage rule and is enforced where the session lives.
+ */
+export const ChildSessionStatusReq = z.object({
+  /** The ASKING session's own stable acpSessionId. The CP validates ownership of this. */
+  parentSessionId: z.string().min(1),
+  /** The child's logical session key, exactly as `sendMessage` handed it back. Opaque to the CP. */
+  childSessionId: z.string().min(1),
+  /** The child agent, so the CP can resolve placement without parsing the composite key. */
+  childAgentId: z.string().uuid()
+})
+export type ChildSessionStatusReq = z.infer<typeof ChildSessionStatusReq>
+
+/**
+ * C→D REQ: the forwarded leg of {@link ChildSessionStatusReq}, sent to the daemon that OWNS the
+ * child. `childAgentId` is dropped — placement is already resolved — leaving exactly the lineage
+ * pair the owning daemon authorizes on. The CP does not persist or interpret the answer.
+ */
+export const ChildSessionStatusProbe = z.object({
+  parentSessionId: z.string().min(1),
+  childSessionId: z.string().min(1)
+})
+export type ChildSessionStatusProbe = z.infer<typeof ChildSessionStatusProbe>

@@ -473,6 +473,52 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
     await daemon.stop()
   })
 
+  it('forwards needsReply on the wire when the caller has an origin session', async () => {
+    const root = scaffold([{ id: 'bot-a' }]) // bot-b is remote
+    const { daemon, call } = await bootWithDispatchSpy(root)
+    const sent: any[] = []
+    ;(daemon as any).relays = {
+      stop: vi.fn(async () => {}),
+      sendAgentMsg: vi.fn(async (payload: any) => {
+        sent.push(payload)
+        return { deliveryId: payload.deliveryId, delivered: true }
+      })
+    }
+    ;(daemon as any).store.upsertSession({
+      key: sessionKey('slack', 'C1', '100.1', 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'acp-parent-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+
+    await call(baseReq({ toAgentId: 'bot-b', needsReply: true }))
+    expect(sent[0]).toMatchObject({ originSessionId: 'acp-parent-1', needsReply: true })
+    await daemon.stop()
+  })
+
+  it('omits needsReply on the wire with no origin to report to, and for a plain wake', async () => {
+    const root = scaffold([{ id: 'bot-a' }])
+    const { daemon, call } = await bootWithDispatchSpy(root)
+    const sent: any[] = []
+    ;(daemon as any).relays = {
+      stop: vi.fn(async () => {}),
+      sendAgentMsg: vi.fn(async (payload: any) => {
+        sent.push(payload)
+        return { deliveryId: payload.deliveryId, delivered: true }
+      })
+    }
+    // No caller session row ⇒ no originSessionId ⇒ nothing to report into.
+    await call(baseReq({ toAgentId: 'bot-b', needsReply: true }))
+    expect(sent[0].needsReply).toBeUndefined()
+    expect(sent[0].originSessionId).toBeUndefined()
+    await daemon.stop()
+  })
+
   it('forwards the visible-post transcriptTs on the wire (toAgent+channel wake)', async () => {
     const root = scaffold([{ id: 'bot-a' }])
     const { daemon, call } = await bootWithDispatchSpy(root)
@@ -644,6 +690,30 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     const ack = await (daemon as any).handleRelayAgentMsg(fwd({ transcriptTs: '100.250000' }))
     expect(ack).toMatchObject({ deliveryId: 'd-1', delivered: true })
     expect(calls[0]!.msg.transcriptTs).toBe('100.250000')
+    await daemon.stop()
+  })
+
+  it('stamps a forwarded needsReply onto the child’s CallMeta, gated on an origin', async () => {
+    const root = scaffold([{ id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    withSnapshot(daemon)
+    const ack = await (daemon as any).handleRelayAgentMsg(
+      fwd({ originSessionId: 'acp-remote-parent', needsReply: true })
+    )
+    expect(ack.delivered).toBe(true)
+    expect(calls[0]!.callMeta).toMatchObject({ originSessionId: 'acp-remote-parent', needsReply: true })
+    // The obligation is metadata — it never enters the delivered text.
+    expect(calls[0]!.msg.text).not.toMatch(/needsReply|report back/i)
+    await daemon.stop()
+  })
+
+  it('ignores a forwarded needsReply that carries no origin to report into', async () => {
+    const root = scaffold([{ id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    withSnapshot(daemon)
+    const ack = await (daemon as any).handleRelayAgentMsg(fwd({ needsReply: true }))
+    expect(ack.delivered).toBe(true)
+    expect(calls[0]!.callMeta.needsReply).toBeUndefined()
     await daemon.stop()
   })
 
@@ -1057,14 +1127,36 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
     await daemon.stop()
   })
 
-  it('accepts the child’s stable ACP id as well as its logical key', async () => {
+  // ACP ids are minted per runtime and are NOT unique across agents, so accepting one would make
+  // the status read ambiguous. Only the logical key `sendMessage` returned is addressable.
+  it('refuses the child’s ACP session id — only the returned logical key is addressable', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
     seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1' })
     seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1', originSessionId: 'acp-parent-1' })
     ;(daemon as any).store.setSessionTurnOutcome(CHILD_KEY, 'done', 2_000)
 
-    expect((await ask(daemon, 'acp-child-1'))?.status).toBe('done')
+    expect((await ask(daemon, CHILD_KEY))?.status).toBe('done')
+    expect(await ask(daemon, 'acp-child-1')).toBeNull()
+    await daemon.stop()
+  })
+
+  // Review finding 3: the row still reads `idle` + the PREVIOUS turn's outcome until
+  // SessionManager flips it to `prompting`, so a re-delegating parent must not be handed `done`.
+  it('reports in-progress for a re-wake of an already-finished child, not its old outcome', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, call } = await bootWithDispatchSpy(root)
+    seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1', state: 'prompting' })
+    seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1', originSessionId: 'acp-parent-1' })
+    ;(daemon as any).store.setSessionTurnOutcome(CHILD_KEY, 'done', 2_000)
+    // Before the re-wake the parent legitimately sees the finished first delegation.
+    expect((await ask(daemon, CHILD_KEY))?.status).toBe('done')
+
+    const res = await call(baseReq())
+    expect(res.targetSession).toBe(CHILD_KEY)
+    // dispatch is stubbed here, so the row is still exactly as it was — precisely the window the
+    // admission snapshot has to cover.
+    expect((await ask(daemon, CHILD_KEY))?.status).toBe('in-progress')
     await daemon.stop()
   })
 
@@ -1148,6 +1240,214 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
     seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1' })
 
     expect(await ask(daemon, CHILD_KEY)).toBeNull()
+    await daemon.stop()
+  })
+})
+
+/**
+ * §5.4 cross-daemon status: a remote wake is still a followable child. The parent daemon has no way
+ * to address the owning daemon, so it asks the CP (the placement authority), which forwards the
+ * lineage pair. These drive both legs directly.
+ */
+describe('viewSessionStatus: cross-daemon children', () => {
+  const PARENT_KEY = sessionKey('slack', 'C1', '100.1', 'bot-a')
+
+  const seedParent = (daemon: any) =>
+    (daemon as any).store.upsertSession({
+      key: PARENT_KEY,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'acp-parent-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+
+  const withRelay = (daemon: any, delivered = true) =>
+    ((daemon as any).relays = {
+      stop: vi.fn(async () => {}),
+      sendAgentMsg: vi.fn(async (p: any) => ({ deliveryId: p.deliveryId, delivered }))
+    })
+
+  const ask = (daemon: any, sessionId: string) =>
+    (daemon as any).viewSessionStatus({
+      callerAgentId: 'bot-a',
+      platform: 'slack',
+      callerChannel: 'C1',
+      callerThread: '100.1',
+      sessionId
+    })
+
+  it('asks the CP for a child admitted on another daemon, and maps the answer', async () => {
+    const root = scaffold([{ id: 'bot-a' }]) // bot-b is remote
+    const { daemon, call } = await bootWithDispatchSpy(root)
+    seedParent(daemon)
+    withRelay(daemon)
+    const asks: any[] = []
+    ;(daemon as any).cpClient = {
+      stop: vi.fn(async () => {}),
+      childSessionStatus: async (req: any) => {
+        asks.push(req)
+        return { found: true, agentId: 'bot-b', status: 'done', state: 'idle', updatedAt: 9 }
+      }
+    }
+
+    const res = await call(baseReq({ toAgentId: 'bot-b' }))
+    expect(res.delivered).toBe(true)
+    expect(await ask(daemon, res.targetSession)).toEqual({
+      sessionId: res.targetSession,
+      agentId: 'bot-b',
+      status: 'done',
+      state: 'idle',
+      updatedAt: 9
+    })
+    // The CP needs the child AGENT to resolve placement — it must not parse the composite key.
+    expect(asks[0]).toEqual({
+      parentSessionId: 'acp-parent-1',
+      childSessionId: res.targetSession,
+      childAgentId: 'bot-b'
+    })
+    await daemon.stop()
+  })
+
+  it('does not track a remote child whose wake was REFUSED — nothing was opened', async () => {
+    const root = scaffold([{ id: 'bot-a' }])
+    const { daemon, call } = await bootWithDispatchSpy(root)
+    seedParent(daemon)
+    withRelay(daemon, false)
+    ;(daemon as any).cpClient = {
+      stop: vi.fn(async () => {}),
+      childSessionStatus: async () => {
+        throw new Error('must not ask the CP about a child that was never admitted')
+      }
+    }
+
+    const res = await call(baseReq({ toAgentId: 'bot-b' }))
+    expect(res.delivered).toBe(false)
+    expect(await ask(daemon, res.targetSession)).toBeNull()
+    await daemon.stop()
+  })
+
+  it('surfaces an unreachable owning daemon and a disconnected CP as retryable errors, not denials', async () => {
+    const root = scaffold([{ id: 'bot-a' }])
+    const { daemon, call } = await bootWithDispatchSpy(root)
+    seedParent(daemon)
+    withRelay(daemon)
+    ;(daemon as any).cpClient = {
+      stop: vi.fn(async () => {}),
+      childSessionStatus: async () => ({ found: false, reason: 'offline' })
+    }
+    const res = await call(baseReq({ toAgentId: 'bot-b' }))
+
+    await expect(ask(daemon, res.targetSession)).rejects.toThrow(/not currently reachable/)
+    // A `found:false` WITHOUT a transport reason is the lineage verdict — that one is a plain null.
+    ;(daemon as any).cpClient = { stop: vi.fn(async () => {}), childSessionStatus: async () => ({ found: false }) }
+    expect(await ask(daemon, res.targetSession)).toBeNull()
+    // No CP at all: degraded mode cannot answer a cross-daemon question.
+    ;(daemon as any).cpClient = undefined
+    await expect(ask(daemon, res.targetSession)).rejects.toThrow(/control plane is disconnected/)
+    await daemon.stop()
+  })
+
+  it('refuses a remote child to a session that did not wake it', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, call } = await bootWithDispatchSpy(root)
+    seedParent(daemon)
+    withRelay(daemon)
+    ;(daemon as any).cpClient = {
+      stop: vi.fn(async () => {}),
+      childSessionStatus: async () => {
+        throw new Error('must not reach the CP for an unauthorized caller')
+      }
+    }
+    const res = await call(baseReq({ toAgentId: 'bot-c' })) // remote (not scaffolded locally)
+    expect(res.delivered).toBe(true)
+
+    // bot-b has its own session in the same channel but never woke this child.
+    ;(daemon as any).store.upsertSession({
+      key: sessionKey('slack', 'C1', '777.7', 'bot-b'),
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '777.7',
+      acpSessionId: 'acp-other',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+    const asOther = await (daemon as any).viewSessionStatus({
+      callerAgentId: 'bot-b',
+      platform: 'slack',
+      callerChannel: 'C1',
+      callerThread: '777.7',
+      sessionId: res.targetSession
+    })
+    expect(asOther).toBeNull()
+    await daemon.stop()
+  })
+})
+
+/** The OWNING side of a §5.4 status read: the lineage rule is re-enforced where the session lives. */
+describe('childSessionStatusProbe: owning-daemon authorization', () => {
+  const CHILD_KEY = sessionKey('slack', 'C1', '100.1', 'bot-b')
+
+  const seedChild = (daemon: any, over: Record<string, unknown> = {}) =>
+    (daemon as any).store.upsertSession({
+      key: CHILD_KEY,
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'acp-child-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1_000,
+      ...over
+    })
+
+  it('answers with the collapsed status when the child’s origin matches the claimed parent', async () => {
+    const root = scaffold([{ id: 'bot-b' }])
+    const { daemon } = await bootWithDispatchSpy(root)
+    seedChild(daemon, { originSessionId: 'acp-remote-parent' })
+    ;(daemon as any).store.setSessionTurnOutcome(CHILD_KEY, 'failed', 2_000)
+
+    expect(
+      (daemon as any).childSessionStatusProbe({
+        parentSessionId: 'acp-remote-parent',
+        childSessionId: CHILD_KEY
+      })
+    ).toMatchObject({ found: true, agentId: 'bot-b', status: 'failed', state: 'idle' })
+    await daemon.stop()
+  })
+
+  it('refuses a mismatched parent, a parentless child, and an unknown session — all as found:false', async () => {
+    const root = scaffold([{ id: 'bot-b' }])
+    const { daemon } = await bootWithDispatchSpy(root)
+    seedChild(daemon, { originSessionId: 'acp-remote-parent' })
+
+    const probe = (parentSessionId: string, childSessionId = CHILD_KEY) =>
+      (daemon as any).childSessionStatusProbe({ parentSessionId, childSessionId })
+    // A CP that forwarded a wrong/forged parent still cannot read the child.
+    expect(probe('acp-someone-else')).toEqual({ found: false })
+    expect(probe('acp-remote-parent', 'slack:C1:999.9:nobody')).toEqual({ found: false })
+
+    // A parentless (root) child: originSessionId is first-wins in the store, so this needs a key
+    // that was never given an origin rather than a re-seed with null.
+    const rootKey = sessionKey('slack', 'C1', '555.5', 'bot-b')
+    ;(daemon as any).store.upsertSession({
+      key: rootKey,
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '555.5',
+      acpSessionId: 'acp-root-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+    expect(probe('acp-remote-parent', rootKey)).toEqual({ found: false })
     await daemon.stop()
   })
 })

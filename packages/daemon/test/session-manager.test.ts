@@ -575,6 +575,34 @@ describe('SessionManager', () => {
       store.close()
     })
 
+    // Review finding 2: a session can be woken by more than one parent. `replyToSession`
+    // authorizes THIS turn's wake origin ahead of the persisted first-wins link, so the directive
+    // (and the `Parent session` locator) must name that same session — otherwise the agent is told
+    // to reply somewhere its reply is then refused.
+    it('names the CURRENT wake origin, not the first-wins persisted parent', async () => {
+      const store = newStore()
+      const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+      const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+      // Parent A opens the session…
+      await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }), undefined, undefined, 'origin-A', undefined, true)
+      // …then a DIFFERENT parent C wakes the same session and asks for a report.
+      const turn = await sm.handle(
+        'bot-a',
+        msg({ ts: '100.2', text: 'second parent' }),
+        undefined,
+        undefined,
+        'origin-C',
+        undefined,
+        true
+      )
+      const text = (turn.blocks.find((b: any) => String(b.text).includes('Reporting back')) as any)?.text ?? ''
+      expect(text).toContain('"sessionId":"origin-C"')
+      expect(text).not.toContain('origin-A')
+      // The DURABLE link stays first-wins (the store COALESCEs it) — only this turn's addressing moved.
+      expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.originSessionId).toBe('origin-A')
+      store.close()
+    })
+
     it('states the directive as a turn block when it is added to an ALREADY-OPEN session', async () => {
       const store = newStore()
       const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any

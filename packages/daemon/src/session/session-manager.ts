@@ -330,15 +330,32 @@ export class SessionManager {
     // first spawns the session carries it). This value both drives the `Parent session` line and,
     // once persisted, is what authorizes SessionTarget replies to the parent on later
     // human-triggered turns that have no per-turn CallMeta.
-    const effectiveOriginSessionId = rec?.originSessionId ?? originSessionId
+    // PRECEDENCE MATTERS: this must agree with what `replyToSession` will actually authorize on
+    // this turn, which prefers the turn's CallMeta origin over the persisted one. A session can be
+    // woken by more than one parent; if we named the first-wins persisted parent while the
+    // authorizer accepted the current waker, the agent would be told to reply somewhere its reply
+    // is then refused. A turn with no wake origin (human follow-up) falls back to the persisted
+    // link, which is what the authorizer also falls back to. The DURABLE link itself stays
+    // first-wins — the store COALESCEs it — so this only changes who the current turn addresses.
+    const effectiveOriginSessionId = originSessionId ?? rec?.originSessionId
     // The report-back directive is sticky the same way: once a parent asked for a reply the
     // session keeps the obligation, so later (human-triggered) turns and resumes re-assert it
     // instead of quietly dropping it. Only meaningful with a parent to report to.
     const needsReplyToParent =
       effectiveOriginSessionId !== undefined && (rec?.needsParentReply === 1 || needsParentReply === true)
-    // True only on the turn that ADDS the obligation to an already-open session — that session's
-    // standing context was composed without it, so this turn carries a one-off reminder instead.
-    const newlyNeedsReplyToParent = needsReplyToParent && rec?.needsParentReply !== 1
+    // When an already-open session's STANDING context does not (or no longer) states the right
+    // obligation, this turn has to carry it as a turn-scoped block instead. Two causes:
+    //   • the obligation was just added — the session opened without it; or
+    //   • a DIFFERENT parent woke the session than the one its standing context named. That
+    //     context is fixed for the ACP session's life (Claude sets it at session/new, other
+    //     runtimes inline it once), so a second parent's wake would otherwise leave the agent
+    //     addressing the first parent — which `replyToSession` refuses on this turn.
+    const restateParentReply =
+      needsReplyToParent &&
+      (rec?.needsParentReply !== 1 ||
+        (originSessionId !== undefined &&
+          rec?.originSessionId !== undefined &&
+          originSessionId !== rec.originSessionId))
     // Prepare the workspace (clone/pull + skill install) BEFORE acquiring the host,
     // but ONLY when the runtime process is COLD — that's when hostFor spawns it, so
     // skills must be on disk first (design §6). This covers both a brand-new session
@@ -892,11 +909,11 @@ export class SessionManager {
       // new session just received (inline or via `_meta.systemPrompt`).
       this.turnsSinceReminder.set(key, 0)
       if (!usesMeta && sessionContext) promptPrelude.push({ type: 'text', text: sessionContext })
-    } else if (newlyNeedsReplyToParent) {
-      // An ALREADY-OPEN session just took on the obligation (a second wake added `needsReply`).
-      // Its standing context was composed before that, and this session isn't being recreated, so
-      // there is no system-prompt channel to update — state the directive as a turn-scoped block.
-      // The flag is persisted below, so every later turn/resume carries it in standing context.
+    } else if (restateParentReply) {
+      // An ALREADY-OPEN session whose standing context does not state the current obligation —
+      // it was composed before the obligation existed, or it names a previous parent. This session
+      // is not being recreated, so there is no system-prompt channel to update; state the
+      // directive as a turn-scoped block naming the parent THIS turn may actually reply to.
       promptPrelude.push({ type: 'text', text: parentReplyAppend })
     } else if (this.shouldRemind(key)) {
       // Long-running (or just-compacted) session: re-assert the no-response

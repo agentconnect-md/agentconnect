@@ -414,18 +414,45 @@ work therefore needs a handle on the child and a way to ask how it is going.
   in-memory admission-time link covering the window before the child's session
   row exists. Anything else — an unknown id, a sibling, the caller's own
   session — is refused with one indistinguishable error, so a caller cannot
-  probe for sessions it may not read. `done` means the child's turn ended, not
-  that it reported anything back.
+  probe for sessions it may not read. Only the returned logical key is
+  addressable: an ACP session id is not accepted, because ACP ids are minted per
+  runtime and are not unique across agents. `done` means the child's turn ended,
+  not that it reported anything back.
+
+  A turn that is queued, running, or admitted-but-not-yet-started all report
+  `in-progress`. That matters for a RE-delegation: until the child picks the new
+  wake up, its row still holds the previous turn's outcome, so the daemon fences
+  the window by snapshotting the child row's `updatedAt` at admission.
+
+- **Children on another daemon.** A peer wake may be admitted on a different
+  daemon, and that child is followable too. Daemons cannot address each other —
+  the relay carries message delivery, not queries — so the read goes
+  daemon → CP → owning daemon (`session/child-status` → `session/child-status/probe`),
+  which is the same bounded-metadata proxy shape the BFF reads use. Authorization
+  is **two-sided and neither half suffices**: the CP proves the asking daemon
+  actually reported the parent session it claims (a daemon cannot name someone
+  else's parent), and the owning daemon re-checks the real lineage rule against
+  the child's `originSessionId`, because that rule belongs where the session
+  lives. An unreachable owning daemon or a disconnected CP is reported as a
+  retryable transport failure, never as "not your child" — the two must stay
+  distinguishable to the agent.
 
 - **Push: `toAgent.needsReply`.** Polling tells the parent _that_ the child
   stopped, never _what_ it produced. `needsReply: true` asks for the result
   instead: the daemon carries the flag as trusted `CallMeta` (never in the
   delivered text) and prompt assembly turns it into a standing directive in the
   child's system-prompt append, naming `originSessionId` as the reply target.
-  The obligation is persisted on the child session and therefore sticky — it
-  survives resume and later human-triggered turns — and it does **not** cascade:
-  a grandchild is obliged only if its own parent asks. Prefer this over a tight
-  polling loop.
+  It travels cross-daemon on the `rd/agentmsg` frames, so a remote child takes on
+  the same obligation. The obligation is persisted on the child session and
+  therefore sticky — it survives resume and later human-triggered turns — and it
+  does **not** cascade: a grandchild is obliged only if its own parent asks.
+  Prefer this over a tight polling loop.
+
+  A session may be woken by more than one parent. The directive always names the
+  parent **this turn** may actually reply to (the turn's wake origin, which is
+  what the SessionTarget authorizer accepts), and is restated as a turn-scoped
+  block when the standing context named a previous one — the durable link itself
+  stays first-wins.
 
 ### 5.5 Two reply shapes
 

@@ -302,7 +302,13 @@ export const RdAgentMsg = z.object({
       channel: z.string().min(1),
       thread: z.string().optional()
     })
-    .optional()
+    .optional(),
+  // session-concept §5.4: the caller asked the woken session to report its outcome back into
+  // `originSessionId` (`sendMessage`'s `toAgent.needsReply`). The target daemon turns this into a
+  // standing directive on the child; it is never part of the delivered `text`. Meaningless without
+  // an origin to report to, so the target ignores it when `originSessionId` is absent. Optional —
+  // an ordinary fire-and-forget wake and any older daemon omit it.
+  needsReply: z.boolean().optional()
 })
 export type RdAgentMsg = z.infer<typeof RdAgentMsg>
 
@@ -343,7 +349,11 @@ export const RdAgentMsgFwd = z.object({
       channel: z.string().min(1),
       thread: z.string().optional()
     })
-    .optional()
+    .optional(),
+  // Forwarded verbatim from RdAgentMsg (session-concept §5.4): the caller's request that the woken
+  // session report its outcome back into `originSessionId`. Opaque to the relay — it is the
+  // caller's own instruction about its own lineage, not a claim the relay mints or validates.
+  needsReply: z.boolean().optional()
 })
 export type RdAgentMsgFwd = z.infer<typeof RdAgentMsgFwd>
 

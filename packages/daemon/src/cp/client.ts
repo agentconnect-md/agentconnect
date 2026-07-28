@@ -42,6 +42,9 @@ import type {
   GitCredGrant,
   ChannelAgentsReq,
   ChannelAgentsOk,
+  ChildSessionStatus,
+  ChildSessionStatusReq,
+  ChildSessionStatusProbe,
   MemoryListReq,
   MemoryReadReq,
   MemoryWriteReq,
@@ -125,6 +128,10 @@ export interface CpClientDeps {
   configApply: ConfigApply
   /** Read-only session list/history seam over the local store (§1/§12). */
   sessionRead: SessionReader
+  /** Answer a CP-forwarded child-session status probe for a child THIS daemon owns
+   *  (session-concept §5.4). The daemon re-checks the lineage itself — the CP proves only that the
+   *  asking daemon owns the claimed parent session, never that the child belongs to it. */
+  childSessionStatusProbe?: (probe: ChildSessionStatusProbe) => ChildSessionStatus
   /** Live workspace file seam over the agents' workspace dirs (§1/§12). */
   workspaceRead: WorkspaceReader
   /** Git status/pull seam over the agents' git-repo workspace dirs (§1/§12). */
@@ -535,6 +542,26 @@ export class CpClient {
     return rep.payload as ChannelAgentsOk
   }
 
+  /**
+   * `session/child-status` (D→C REQ) → the status of a child session that lives on ANOTHER daemon
+   * (session-concept §5.4). Same shape and state gate as {@link channelAgents}: the daemon cannot
+   * address another daemon directly, so it asks the CP — the placement authority — which forwards
+   * the lineage pair to the owning daemon and returns its answer. Metadata only; the CP stores
+   * nothing. `parentSessionId` is the asking session's own id, taken from the trusted session
+   * store, and the CP verifies this daemon actually reported it.
+   */
+  async childSessionStatus(payload: ChildSessionStatusReq): Promise<ChildSessionStatus> {
+    if ((this.state !== 'READY' && this.state !== 'DRAINING') || !this.transport) {
+      throw new WireError('INTERNAL', `control plane unreachable (client ${this.state})`, true)
+    }
+    const frame = buildEnvelope('session/child-status', payload)
+    const rep = await this.correlator.request(frame, (e) => this.transport!.send(e))
+    if (rep.type !== 'session/child-status/ok') {
+      throw new WireError('INTERNAL', `expected session/child-status/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as ChildSessionStatus
+  }
+
   private async onText(text: string): Promise<void> {
     const decoded = decodeEnvelope(text)
     if (!decoded.ok) {
@@ -812,6 +839,18 @@ export class CpClient {
           this.reply(frame, 'session/history/page', this.deps.sessionRead.history(req))
         } catch (err) {
           this.sendError(frame.id, 'INTERNAL', `session/history failed: ${(err as Error).message}`, false)
+        }
+        return
+      }
+      case 'session/child-status/probe': {
+        try {
+          const probe = frame.payload as ChildSessionStatusProbe
+          // No handler wired (older/embedded daemon) ⇒ answer `found:false`, which the asking side
+          // renders as "not your child" rather than a hard failure.
+          const answer = this.deps.childSessionStatusProbe?.(probe) ?? { found: false }
+          this.reply(frame, 'session/child-status/probe/ok', answer)
+        } catch (err) {
+          this.sendError(frame.id, 'INTERNAL', `session/child-status/probe failed: ${(err as Error).message}`, false)
         }
         return
       }

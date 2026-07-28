@@ -119,6 +119,38 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(forwards[0].transcriptTs).toBe('1784297789.871789')
   })
 
+  it('forwards needsReply opaquely (it is the caller’s instruction about its own lineage)', async () => {
+    const router = new CollaborationRouter()
+    router.replace(snap())
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+
+    const ack = await route(D1, baseMsg({ originSessionId: 'acp-parent-1', needsReply: true }))
+    expect(ack.delivered).toBe(true)
+    // The router copies field-by-field, so a new optional field is silently dropped unless it is
+    // explicitly forwarded — assert it survives the hop.
+    expect(forwards[0].needsReply).toBe(true)
+    expect(forwards[0].originSessionId).toBe('acp-parent-1')
+  })
+
+  it('leaves needsReply absent for an ordinary wake', async () => {
+    const router = new CollaborationRouter()
+    router.replace(snap())
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+
+    await route(D1, baseMsg())
+    expect(forwards[0].needsReply).toBeUndefined()
+  })
+
   it('forged claimedFromAgentId (not owned by the sending daemon) → rejected, not delivered', async () => {
     const router = new CollaborationRouter()
     router.replace(snap())

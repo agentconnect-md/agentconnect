@@ -555,8 +555,9 @@ export const COLLABORATION_TOOLS: ToolDescriptor[] = [
       'running), "done" (its last turn finished cleanly), or "failed" (its last turn ended in an error). This is ' +
       'scoped to YOUR children: sessions you did not start — including your own and unrelated agents’ — cannot be ' +
       'read, and asking for one is an error. `done` means the child ended its turn, not that it reported anything ' +
-      'back; wake it with `needsReply` if you want its result delivered to you. Poll sparingly, and prefer waiting ' +
-      'for the child’s reply over a tight polling loop.',
+      'back; wake it with `needsReply` if you want its result delivered to you. Works for a peer on another machine ' +
+      'too, where a transient "not reachable" error means retry, not that the session is gone. Poll sparingly, and ' +
+      'prefer waiting for the child’s reply over a tight polling loop.',
     inputSchema: obj(
       {
         sessionId: {

@@ -673,4 +673,15 @@ describe('CpClient dispatch', () => {
     expect(rep.type).toBe('session/history/page')
     expect(rep.corr).toBe(f.id)
   })
+
+  it('answers session/child-status/probe from the daemon-owned handler, correlated to the req', async () => {
+    const { t } = await readyClient()
+    const f = JSON.parse(
+      frame('session/child-status/probe', { parentSessionId: 'acp-parent-1', childSessionId: 'k' }, { epoch: 5 })
+    )
+    t.pushInbound(JSON.stringify(f))
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('session/child-status/probe/ok')
+    expect(rep.corr).toBe(f.id)
+  })
 })

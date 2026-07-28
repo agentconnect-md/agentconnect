@@ -39,7 +39,10 @@ import {
   SessionListReq,
   SessionListPage,
   SessionToolBodyReq,
-  SessionToolBodyChunk
+  SessionToolBodyChunk,
+  ChildSessionStatus,
+  ChildSessionStatusReq,
+  ChildSessionStatusProbe
 } from './frames/session.js'
 import { ChannelAgentsReq, ChannelAgentsOk } from './frames/channel.js'
 import {
@@ -203,6 +206,13 @@ export const FRAME_SCHEMAS = {
   'session/history/page': SessionHistoryPage,
   'session/tool-body': SessionToolBodyReq,
   'session/tool-body/chunk': SessionToolBodyChunk,
+  // ── child-session status (session-concept §5.4). Two legs: D→C asks the CP (the placement
+  // authority) about a child on another daemon; C→D forwards the lineage pair to the OWNING
+  // daemon, which authorizes it. Metadata only — the CP never persists the answer.
+  'session/child-status': ChildSessionStatusReq,
+  'session/child-status/ok': ChildSessionStatus,
+  'session/child-status/probe': ChildSessionStatusProbe,
+  'session/child-status/probe/ok': ChildSessionStatus,
   // ── channel agent directory (agent collaboration; D→C REQ → REP) ──
   'channel/agents': ChannelAgentsReq,
   'channel/agents/ok': ChannelAgentsOk,
@@ -374,6 +384,10 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('session/history/page', FRAME_SCHEMAS['session/history/page']),
   frame('session/tool-body', FRAME_SCHEMAS['session/tool-body']),
   frame('session/tool-body/chunk', FRAME_SCHEMAS['session/tool-body/chunk']),
+  frame('session/child-status', FRAME_SCHEMAS['session/child-status']),
+  frame('session/child-status/ok', FRAME_SCHEMAS['session/child-status/ok']),
+  frame('session/child-status/probe', FRAME_SCHEMAS['session/child-status/probe']),
+  frame('session/child-status/probe/ok', FRAME_SCHEMAS['session/child-status/probe/ok']),
   frame('channel/agents', FRAME_SCHEMAS['channel/agents']),
   frame('channel/agents/ok', FRAME_SCHEMAS['channel/agents/ok']),
   frame('workspace/list', FRAME_SCHEMAS['workspace/list']),
