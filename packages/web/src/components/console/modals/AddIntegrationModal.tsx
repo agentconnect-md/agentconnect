@@ -1040,10 +1040,11 @@ export default function AddIntegrationModal({
     transport: 'socket' | 'http'
   } | null>(null)
 
-  // Webhook path: the form (just a name), then the created row — which carries
-  // the ONE-TIME signing-secret echo, so once it exists the platform is locked
-  // (switching away would discard a secret the user can never see again).
+  // Webhook path: the form, then the created row. HMAC is an optional second
+  // factor; when selected, the row carries the ONE-TIME signing-secret echo.
+  // Once created the platform is locked so the completed hook is not orphaned.
   const [hookName, setHookName] = useState('')
+  const [hookHmac, setHookHmac] = useState(false)
   const [createdHook, setCreatedHook] = useState<CreatedHookDto | null>(null)
   const [copiedHook, setCopiedHook] = useState<'url' | 'secret' | 'curl' | null>(null)
   const [hookTestMessage, setHookTestMessage] = useState(DEFAULT_HOOK_TEST_MESSAGE)
@@ -1278,11 +1279,9 @@ export default function AddIntegrationModal({
   const manifestJson = slackManifestJson(manifestNames, manifestOpts)
   const createUrl = slackCreateAppUrl(manifestNames, manifestOpts)
 
-  // Webhook path: create the hook (secret always minted), then flip to the reveal
-  // step — the response is the ONLY time the signing secret is ever shown. Nothing
-  // to validate: the name defaults to the agent's; there is no fixed prompt — the
-  // agent's description is its standing context and the caller speaks through
-  // the delivery payload.
+  // Webhook path: create the capability URL, optionally minting an HMAC secret,
+  // then flip to the endpoint/reveal step. There is no fixed prompt — the
+  // agent's description is standing context and the delivery payload speaks.
   const submitHook = async () => {
     if (busyRef.current || createdHook) return
     busyRef.current = true
@@ -1291,7 +1290,8 @@ export default function AddIntegrationModal({
     try {
       const created = await createHook({
         agentId: agent.id,
-        name: hookName.trim() || `${agent.name}-webhook`
+        name: hookName.trim() || `${agent.name}-webhook`,
+        hmac: hookHmac
       })
       setCreatedHook(created)
     } catch (e) {
@@ -1817,7 +1817,7 @@ export default function AddIntegrationModal({
   // action inline (step ① "Create & install" next to the name; step ② the token field),
   // so the footer is the final commit — "Connect" (finalize), live only once the app is
   // installed and a valid app-level token is pasted. The webhook path is two-step:
-  // create (mints URL + secret) → reveal → Done.
+  // create (mints a URL and optional secret) → reveal → Done.
   // Auto-install (config-token funnel) works for BOTH transports: socket ends with the
   // operator pasting the app-level (xapp) token; http is fully automatic — the CP builds
   // an Events-API manifest and captures the signing secret from apps.manifest.create, so
@@ -1843,7 +1843,7 @@ export default function AddIntegrationModal({
     platform === 'webhook'
       ? createdHook
         ? { label: 'Done', act: onClose, enabled: true }
-        : { label: 'Connect & authorize', act: () => void submitHook(), enabled: true }
+        : { label: 'Create webhook', act: () => void submitHook(), enabled: true }
       : platform === 'github'
         ? {
             label: 'Connect',
@@ -1919,12 +1919,22 @@ export default function AddIntegrationModal({
                 onChange={(e) => setHookName(e.target.value)}
               />
             </div>
+            <label className="mt-3 flex cursor-pointer items-start gap-2.5 rounded-md border border-(--border-default) bg-(--surface-card) px-3 py-[10px]">
+              <input
+                type="checkbox"
+                className="mt-[2px] flex-none accent-(--brand)"
+                checked={hookHmac}
+                onChange={(e) => setHookHmac(e.target.checked)}
+              />
+              <span className="font-sans text-[12px] font-medium leading-[1.5] text-(--text-secondary)">
+                Require HMAC signature
+              </span>
+            </label>
             <div className="mt-3 flex items-start gap-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
               <Icon name="info" size={13} className="mt-[1px] flex-none" />
               <span>
                 The payload is the message — the <span className="mono">message</span> field in your JSON tells the
-                agent what to do (its description already sets the standing context). Connecting mints the URL and
-                signing secret next.
+                agent what to do. The generated URL contains a random token and works like an API key; keep it private.
               </span>
             </div>
           </div>
@@ -1947,8 +1957,8 @@ export default function AddIntegrationModal({
             </div>
             <div className="mt-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
               Send a JSON POST here and each request runs this agent — the payload is the message (the{' '}
-              <span className="mono">message</span> field speaks for the caller). The endpoint lives on the relay pool —
-              payloads never touch the control plane.
+              <span className="mono">message</span> field speaks for the caller). Keep the full URL private: its random
+              token authenticates each request.
             </div>
             {createdHook.hmacSecret && (
               <div className="mt-[14px] border-t border-dashed border-(--border-default) pt-[13px]">
@@ -1968,7 +1978,7 @@ export default function AddIntegrationModal({
                 </div>
                 <div className="mt-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
                   Send <span className="mono">X-AC-Signature: sha256=&lt;hmac&gt;</span> computed over the raw request
-                  body. The relay verifies it before dispatching to the agent.{' '}
+                  body. The signature is verified before the request reaches the agent.{' '}
                   <span className="font-medium text-(--text-secondary)">Shown only once — copy it now.</span>
                 </div>
               </div>
