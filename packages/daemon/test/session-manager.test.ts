@@ -448,7 +448,76 @@ describe('SessionManager', () => {
     await sm.handle('bot-a', msg({ ts: '100.1', text: 'from parent' }), undefined, undefined, 'origin-sess-9')
     const metaArg = host.newSession.mock.calls[0][3] as string
     expect(metaArg).toContain('- Parent session: origin-sess-9')
+    // No `needsReply` on the wake ⇒ no report-back obligation.
+    expect(metaArg).not.toContain('# Reporting back to your parent session')
     store.close()
+  })
+
+  // §5.3 `toAgent.needsReply`: the parent asked to be told how this session ends. The obligation
+  // outlives the waking turn, so it must ride the STANDING context (and be persisted), not the
+  // delivered message text.
+  describe('needsParentReply report-back directive', () => {
+    const wake = (sm: SessionManager, text: string, needsReply?: boolean, ts = '100.1') =>
+      sm.handle('bot-a', msg({ ts, text }), undefined, undefined, 'origin-sess-9', undefined, needsReply)
+
+    it('adds the directive to the new session’s standing context, naming the parent as the target', async () => {
+      const store = newStore()
+      const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+      const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+      await wake(sm, 'do this and tell me', true)
+      const metaArg = host.newSession.mock.calls[0][3] as string
+      expect(metaArg).toContain('# Reporting back to your parent session')
+      expect(metaArg).toContain('{"to":{"sessionId":"origin-sess-9"},"message":"..."}')
+      // Persisted, so later turns and resumes keep it.
+      expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.needsParentReply).toBe(1)
+      store.close()
+    })
+
+    it('requires a parent to report to — a root turn gets no directive even if the flag is set', async () => {
+      const store = newStore()
+      const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+      const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+      await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi' }), undefined, undefined, undefined, undefined, true)
+      expect(host.newSession.mock.calls[0][3] as string).not.toContain('# Reporting back')
+      expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.needsParentReply ?? null).toBeNull()
+      store.close()
+    })
+
+    it('is sticky: a later ordinary turn keeps it, and a resume re-asserts it', async () => {
+      const store = newStore()
+      const host1 = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+      const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
+      await wake(sm1, 'delegated work', true)
+      // An ordinary follow-up carries no flag; the obligation must not be dropped.
+      await sm1.handle('bot-a', msg({ ts: '100.2', text: 'more' }))
+      expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.needsParentReply).toBe(1)
+
+      const host2 = {
+        newSession: vi.fn(async () => 'acp-2'),
+        loadSession: vi.fn(async () => {}),
+        hasSession: () => false,
+        loadSupported: () => true,
+        usesMetaSystemPrompt: () => true
+      } as any
+      const sm2 = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory })
+      await sm2.handle('bot-a', msg({ ts: '100.3', text: 'after restart' }))
+      expect(host2.loadSession.mock.calls[0][4] as string).toContain('# Reporting back to your parent session')
+      store.close()
+    })
+
+    it('states the directive as a turn block when it is added to an ALREADY-OPEN session', async () => {
+      const store = newStore()
+      const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+      const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+      // First wake without the flag: the session opens with no obligation…
+      await wake(sm, 'first', false)
+      // …so a second wake that DOES ask has no system-prompt channel to update.
+      const turn = await wake(sm, 'now report back when done', true, '100.2')
+      expect(turn.blocks[0]).toMatchObject({ type: 'text' })
+      expect((turn.blocks[0] as any).text).toContain('# Reporting back to your parent session')
+      expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.needsParentReply).toBe(1)
+      store.close()
+    })
   })
 
   it('declares write-only secret NAMES — never values — in the standing context', async () => {

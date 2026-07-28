@@ -182,7 +182,8 @@ type MessageTarget = {
   platform?: 'slack' | 'telegram' | 'discord' | 'feishu' | ... // Defaults to current session; narrowed to installed platforms
   channel?: string   // Channel ID or name; omitted means no visible channel post
   toUser?: string    // Platform user ID to mention or direct-message
-  toAgent?: string   // AgentConnect agent ID to wake
+  // AgentConnect agent ID to wake. The object form adds delivery options; see section 5.4.
+  toAgent?: string | { agentId: string; needsReply?: boolean }
   thread?: string    // Existing thread in which the receiver should reply
 }
 ```
@@ -386,7 +387,47 @@ implements the same-thread form, and unified `sendMessage` reuses it.
      plane through `routeAgentMsgCrossDaemon` at `daemon.ts:3623`, never the
      Control Plane.
 
-### 5.4 Two reply shapes
+### 5.4 Following the child: `childSessionId`, `viewSessionStatus`, `needsReply`
+
+A wake is admission, not a result: `sendMessage` returns as soon as the child is
+admitted, and the child runs its turn in its own time. A parent that delegated
+work therefore needs a handle on the child and a way to ask how it is going.
+
+- **The handle.** An admitted peer wake returns `childSessionId` alongside
+  `wake` — the child's logical session key, the same value as
+  `wake.targetSession`. A refused wake opened nothing, so the field is absent
+  and `wake.reason` explains why.
+- **Polling: `viewSessionStatus(sessionId)`.** The read counterpart of a
+  SessionTarget reply, and authorized as its mirror image: a child may reply
+  **up** its lineage, a parent may read **down** it, and neither may reach
+  sideways. The tool accepts the `childSessionId` (or the child's stable ACP id)
+  and returns `{ sessionId, agentId, status, state, updatedAt }`, where `status`
+  collapses the section 7.3 lifecycle plus the last turn's outcome:
+
+  | `status`      | When                                                                     |
+  | ------------- | ------------------------------------------------------------------------ |
+  | `in-progress` | admitted but not yet open, a turn in flight, or no turn has finished yet |
+  | `done`        | the last turn ended cleanly                                              |
+  | `failed`      | the last turn ended in a problem phase (spawn/ACP failure, loop breaker) |
+
+  Authorization comes from the child's durable `originSessionId`, with an
+  in-memory admission-time link covering the window before the child's session
+  row exists. Anything else — an unknown id, a sibling, the caller's own
+  session — is refused with one indistinguishable error, so a caller cannot
+  probe for sessions it may not read. `done` means the child's turn ended, not
+  that it reported anything back.
+
+- **Push: `toAgent.needsReply`.** Polling tells the parent _that_ the child
+  stopped, never _what_ it produced. `needsReply: true` asks for the result
+  instead: the daemon carries the flag as trusted `CallMeta` (never in the
+  delivered text) and prompt assembly turns it into a standing directive in the
+  child's system-prompt append, naming `originSessionId` as the reply target.
+  The obligation is persisted on the child session and therefore sticky — it
+  survives resume and later human-triggered turns — and it does **not** cascade:
+  a grandchild is obliged only if its own parent asks. Prefer this over a tight
+  polling loop.
+
+### 5.5 Two reply shapes
 
 - **Cross-agent reply, cases 2b and 3b:** child owner B inserts
   `{ type: system, from: agentB }` into agent A's origin. This is the
@@ -612,3 +653,9 @@ waking B in a Slack session.
 10. **Session platform differs from target platform:** a session's platform is
     where it lives. `sendMessage.to.platform` may differ, and the two sides of
     agent-to-agent delivery may live on different platforms.
+11. **Lineage is readable in exactly one direction:** an admitted wake returns
+    the child's `childSessionId`, and `viewSessionStatus` accepts only a session
+    whose parent is the calling session. Unknown and unauthorized ids are
+    indistinguishable. `status: done` means the child's turn ended, not that it
+    reported back — `toAgent.needsReply` is what obliges it to report, as a
+    sticky standing directive on the child, never as delivered message text.

@@ -5,7 +5,8 @@ import {
   type SessionContext,
   type MessageGateway,
   type MessageAgentReq,
-  type ReplyToSessionReq
+  type ReplyToSessionReq,
+  type SessionStatusReq
 } from '../src/mcp/ops.js'
 import type { MemoryProvider } from '../src/agents/memory-provider.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
@@ -697,6 +698,146 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     })
     await executeTool(ctx, 'sendMessage', { to: { sessionId: 'sess-1', correlationId: 'o1.0' }, message: 'done' }, d)
     expect(replyCalls[0]!.correlationId).toBe('o1.0')
+  })
+
+  // The woken peer runs in its own session; the caller needs its id to follow the work it just
+  // delegated (viewSessionStatus). Only an ADMITTED wake opened one.
+  it('returns the woken session as childSessionId', async () => {
+    const { deps: d } = wakeDeps()
+    const res = (await executeTool(ctx, 'sendMessage', { to: { toAgent: 'peer-1' }, message: 'go' }, d)) as {
+      childSessionId?: string
+      wake?: { targetSession: string }
+    }
+    expect(res.childSessionId).toBe(res.wake!.targetSession)
+  })
+
+  it('omits childSessionId when the wake was refused — nothing was opened', async () => {
+    const { deps: d } = wakeDeps({
+      messageAgent: async () => ({ delivered: false, targetSession: 'slack:C:root:peer-1', reason: 'not_allowed' })
+    })
+    const res = (await executeTool(ctx, 'sendMessage', { to: { toAgent: 'peer-1' }, message: 'go' }, d)) as {
+      childSessionId?: string
+      wake?: { reason?: string }
+    }
+    expect(res.childSessionId).toBeUndefined()
+    expect(res.wake?.reason).toBe('not_allowed')
+  })
+
+  it('omits childSessionId for a plain channel post — a post is not a delegated session', async () => {
+    const { deps: d } = wakeDeps()
+    const res = (await executeTool(ctx, 'sendMessage', { to: { channel: 'C_X' }, message: 'fyi' }, d)) as {
+      childSessionId?: string
+    }
+    expect(res.childSessionId).toBeUndefined()
+  })
+
+  it('accepts the object toAgent form and forwards needsReply as trusted request metadata', async () => {
+    const { deps: d, calls } = wakeDeps()
+    await executeTool(
+      ctx,
+      'sendMessage',
+      { to: { toAgent: { agentId: 'peer-1', needsReply: true } }, message: 'take this over' },
+      d
+    )
+    expect(calls[0]!.toAgentId).toBe('peer-1')
+    expect(calls[0]!.needsReply).toBe(true)
+    // needsReply must NOT leak into the delivered text — it becomes a standing directive on the
+    // child's session instead, which the daemon owns.
+    expect(calls[0]!.text).toBe('take this over')
+  })
+
+  it('leaves needsReply absent for the bare-string form and for an explicit false', async () => {
+    const { deps: d, calls } = wakeDeps()
+    await executeTool(ctx, 'sendMessage', { to: { toAgent: 'peer-1' }, message: 'a' }, d)
+    await executeTool(
+      ctx,
+      'sendMessage',
+      { to: { toAgent: { agentId: 'peer-1', needsReply: false } }, message: 'b' },
+      d
+    )
+    expect(calls[0]!.needsReply).toBeUndefined()
+    expect(calls[1]!.needsReply).toBeUndefined()
+  })
+
+  it('the object toAgent form still composes with a visible channel post', async () => {
+    const { deps: d, calls, gw } = wakeDeps()
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      { to: { toAgent: { agentId: 'peer-1', needsReply: true }, channel: 'C_X' }, message: 'over to you' },
+      d
+    )) as { post?: { ts: string }; childSessionId?: string }
+    expect(gw.postMessage).toHaveBeenCalled()
+    expect(res.post?.ts).toBe('ts-123')
+    expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', channel: 'C_X', thread: 'ts-123', needsReply: true })
+    expect(res.childSessionId).toBe('slack:C_X:ts-123:peer-1')
+  })
+
+  it.each([
+    { toAgent: {}, label: 'an object with no agentId' },
+    { toAgent: { agentId: 'peer-1', urgent: true }, label: 'an unknown option' },
+    { toAgent: { agentId: 'peer-1', needsReply: 'yes' }, label: 'a non-boolean needsReply' },
+    { toAgent: ['peer-1'], label: 'an array' },
+    { toAgent: 42, label: 'a number' }
+  ])('rejects $label for to.toAgent instead of silently dropping it', async ({ toAgent }) => {
+    const { deps: d, calls } = wakeDeps()
+    await expect(executeTool(ctx, 'sendMessage', { to: { toAgent }, message: 'x' }, d)).rejects.toThrow()
+    expect(calls).toHaveLength(0)
+  })
+})
+
+// viewSessionStatus is the read counterpart of a SessionTarget reply: the identity + coords come
+// from the trusted SessionContext and only `sessionId` is model input. ops.ts owns the argument
+// contract and the deliberately-indistinguishable unknown/not-yours error; the daemon owns the
+// lineage check itself (see daemon-message-agent.test.ts).
+describe('executeTool: viewSessionStatus', () => {
+  const childStatus = {
+    sessionId: 'slack:C_X:ts-1:peer-1',
+    agentId: 'peer-1',
+    status: 'in-progress' as const,
+    state: 'prompting' as const,
+    updatedAt: 5
+  }
+
+  it('passes the trusted caller coords and returns the daemon status verbatim', async () => {
+    const calls: SessionStatusReq[] = []
+    const d = makeDeps({
+      viewSessionStatus: async (req) => {
+        calls.push(req)
+        return childStatus
+      }
+    })
+    const res = await executeTool(ctx, 'viewSessionStatus', { sessionId: 'slack:C_X:ts-1:peer-1' }, d)
+    expect(res).toEqual(childStatus)
+    expect(calls[0]).toEqual({
+      callerAgentId: 'bot-a',
+      platform: 'slack',
+      callerChannel: 'C_CURRENT',
+      callerThread: '111.1',
+      sessionId: 'slack:C_X:ts-1:peer-1'
+    })
+  })
+
+  it('surfaces an unauthorized/unknown session as one error that does not confirm existence', async () => {
+    const d = makeDeps({ viewSessionStatus: async () => null })
+    await expect(executeTool(ctx, 'viewSessionStatus', { sessionId: 'someone-elses' }, d)).rejects.toThrow(
+      /not a session started by this session/
+    )
+  })
+
+  it('requires a sessionId', async () => {
+    const d = makeDeps({
+      viewSessionStatus: async () => {
+        throw new Error('must not be called without a sessionId')
+      }
+    })
+    await expect(executeTool(ctx, 'viewSessionStatus', {}, d)).rejects.toThrow(/missing required string argument/)
+  })
+
+  it('reports unavailability when the daemon does not supply the callback (chat CLI)', async () => {
+    const d = makeDeps()
+    delete (d as Partial<OpsDeps>).viewSessionStatus
+    await expect(executeTool(ctx, 'viewSessionStatus', { sessionId: 'x' }, d)).rejects.toThrow(/unavailable/)
   })
 })
 
