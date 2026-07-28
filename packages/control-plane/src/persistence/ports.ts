@@ -2236,18 +2236,19 @@ export interface ReportedChannel {
 
 export interface IntegrationChannelRepo {
   /**
-   * Converge to the daemon's membership snapshot (latest-wins): upsert every
-   * reported conversation (refreshing name/isPrivate, PRESERVING the stored
-   * trigger), delete kind='channel' rows the bot is no longer a member of. DM
-   * (kind='im') rows are NEVER deleted by the snapshot — they are reported
-   * incrementally on first inbound DM (§14.3), so a membership-only report must
-   * not wipe them. `defaultTrigger` seeds NEW rows only ('off' for a gated
-   * integration, 'mention' otherwise); existing rows keep their trigger.
+   * Converge to the daemon's channel report (latest-wins): upsert every reported
+   * conversation (refreshing name/isPrivate, PRESERVING the stored trigger).
+   * Authoritative membership snapshots delete kind='channel' rows the bot is no
+   * longer a member of; non-authoritative observed-conversation reports retain
+   * missing rows because platforms such as Telegram cannot enumerate all chats.
+   * DM (kind='im') rows are always retained. `defaultTrigger` seeds NEW rows only
+   * ('off' for a gated integration, 'mention' otherwise); existing rows keep
+   * their trigger.
    */
   replaceSnapshot(
     integrationId: IntegrationId,
     channels: ReportedChannel[],
-    opts?: { defaultTrigger?: ChannelTrigger }
+    opts?: { defaultTrigger?: ChannelTrigger; authoritative?: boolean }
   ): Promise<void>
   listForIntegration(integrationId: IntegrationId): Promise<IntegrationChannelRecord[]>
   /** Incremental conversation upsert (§14.3, DM rows): create the row (kind, name,

@@ -399,10 +399,11 @@ export class CpClient {
   }
 
   /**
-   * Report an integration's channel-membership snapshot (D→C `integration/channels`
-   * EVT, fire-and-forget, latest-wins). No-op unless READY/DRAINING — the daemon
-   * re-emits its cached snapshots on each (re)connect (see onReady in daemon.ts),
-   * so a dropped report only delays the console's channel list, never loses it.
+   * Report an integration's channels (D→C `integration/channels` EVT,
+   * fire-and-forget, latest-wins). Slack sends an authoritative membership
+   * snapshot; non-enumerable platforms send observed rows with
+   * `authoritative:false`. No-op unless READY/DRAINING — the daemon re-emits its
+   * cached reports on each (re)connect (see onReady in daemon.ts).
    */
   emitIntegrationChannels(snapshot: IntegrationChannels): void {
     if (this.state !== 'READY' && this.state !== 'DRAINING') return

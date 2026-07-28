@@ -480,8 +480,8 @@ describe('Daemon.reconcileSlackConnections', () => {
   })
 })
 
-describe('Daemon.refreshObservedChannels (approach-A Telegram/Discord discovery)', () => {
-  it('reports observed Telegram chats as an integration/channels snapshot (Slack is left to its own path)', async () => {
+describe('Daemon.refreshObservedChannels (Telegram/Discord discovery)', () => {
+  it('reports observed Telegram chats as a non-authoritative integration/channels update', async () => {
     const root = root1()
     const { daemon } = makeStubDaemon(root)
     await daemon.start()
@@ -513,7 +513,7 @@ describe('Daemon.refreshObservedChannels (approach-A Telegram/Discord discovery)
     // A named chat carries its name; an unresolved one is id-only (console falls back to the id).
     const channels = [{ id: '-100123', name: 'Team Chat' }, { id: '-100456' }]
     expect(emit).toHaveBeenCalledOnce()
-    expect(emit).toHaveBeenCalledWith({ integrationId: 'tg-int', channels })
+    expect(emit).toHaveBeenCalledWith({ integrationId: 'tg-int', channels, authoritative: false })
     // Cached so it re-asserts on the next CP reconnect.
     expect((daemon as any).channelSnapshots.get('tg-int')).toEqual(channels)
     await daemon.stop()
@@ -543,7 +543,7 @@ describe('Daemon.refreshObservedChannels (approach-A Telegram/Discord discovery)
 
     expect(observed).toHaveBeenCalledWith('bot-dc', 'discord')
     const channels = [{ id: '900123', name: 'general' }, { id: '900456' }]
-    expect(emit).toHaveBeenCalledWith({ integrationId: 'dc-int', channels })
+    expect(emit).toHaveBeenCalledWith({ integrationId: 'dc-int', channels, authoritative: false })
     expect((daemon as any).channelSnapshots.get('dc-int')).toEqual(channels)
     await daemon.stop()
   })
@@ -574,6 +574,34 @@ describe('Daemon.refreshObservedChannels (approach-A Telegram/Discord discovery)
     // Ambiguous which bot saw which chat ⇒ report nothing rather than mis-attribute.
     expect(observed).not.toHaveBeenCalled()
     expect(emit).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
+  it('retains an explicitly discovered Off chat and fills its asynchronously resolved name', async () => {
+    const root = root1()
+    const { daemon } = makeStubDaemon(root)
+    await daemon.start()
+
+    const emit = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    ;(daemon as any).agents = new Map([
+      [
+        'bot-tg',
+        {
+          id: 'bot-tg',
+          integrations: [{ id: 'tg-int', platform: 'telegram', telegram: { botToken: 'tg' } }]
+        }
+      ]
+    ])
+    ;(daemon as any).channelSnapshots.set('tg-int', [{ id: '-100999', kind: 'channel' }])
+    ;(daemon as any).store.setDisplayName('-100999', 'New private group', Date.now())
+    vi.spyOn((daemon as any).store, 'observedChannels').mockReturnValue([])
+
+    ;(daemon as any).refreshObservedChannels()
+
+    const channels = [{ id: '-100999', kind: 'channel', name: 'New private group' }]
+    expect((daemon as any).channelSnapshots.get('tg-int')).toEqual(channels)
+    expect(emit).toHaveBeenCalledWith({ integrationId: 'tg-int', channels, authoritative: false })
     await daemon.stop()
   })
 })

@@ -127,7 +127,9 @@ export interface TelegramApi {
   answerCallbackQuery(callbackQueryId: string, opts?: { text?: string }): Promise<unknown>
   sendChatAction(chatId: number | string, action: string): Promise<unknown>
   setMyCommands(commands: { command: string; description: string }[]): Promise<unknown>
-  getChat(chatId: number | string): Promise<{ id: number; type: string; title?: string; username?: string }>
+  getChat(
+    chatId: number | string
+  ): Promise<{ id: number; type: string; title?: string; username?: string; first_name?: string; last_name?: string }>
   getChatMember(chatId: number | string, userId: number): Promise<{ user: TgUser }>
   getChatAdministrators(chatId: number | string): Promise<{ user: TgUser }[]>
   getFile(fileId: string): Promise<{ file_path?: string; file_size?: number }>
@@ -460,9 +462,10 @@ export class TelegramConnection {
 
   async getChannelInfo(channel: string): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean }> {
     const c = await this.bot.api.getChat(channel)
+    const privateName = [c.first_name, c.last_name].filter(Boolean).join(' ')
     return {
       id: String(c.id ?? channel),
-      name: c.title ?? c.username,
+      name: (c.title ?? c.username ?? privateName) || undefined,
       isIm: c.type === 'private',
       // A group/supergroup without a public @username is effectively private.
       isPrivate: c.type === 'group' || c.type === 'supergroup' ? !c.username : c.type !== 'channel'

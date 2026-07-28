@@ -376,21 +376,24 @@ function toChannelRecord(c: IntegrationChannel): IntegrationChannelRecord {
 export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   constructor(private readonly db: PrismaLike) {}
 
-  // Converge to the daemon's membership snapshot: refresh name/isPrivate on known
+  // Converge to a daemon channel report: refresh supplied metadata on known
   // conversations (PRESERVING the operator's trigger), insert new ones (trigger =
-  // `defaultTrigger`, 'mention' unless the integration is gated), and drop
-  // kind='channel' rows the bot is no longer a member of. DM (kind='im') rows are
-  // reported incrementally on first inbound DM (§14.3), so the membership snapshot
-  // must never delete them.
+  // `defaultTrigger`, 'mention' unless the integration is gated), and, for an
+  // authoritative membership snapshot, drop channel rows that are no longer present.
+  // DM rows and rows omitted from a non-authoritative observed-conversation report
+  // are retained.
   async replaceSnapshot(
     integrationId: IntegrationId,
     channels: ReportedChannel[],
-    opts?: { defaultTrigger?: ChannelTrigger }
+    opts?: { defaultTrigger?: ChannelTrigger; authoritative?: boolean }
   ): Promise<void> {
-    await this.db.integrationChannel.deleteMany({
-      where: { integrationId, kind: 'channel', channelId: { notIn: channels.map((c) => c.id) } }
-    })
+    if (opts?.authoritative !== false) {
+      await this.db.integrationChannel.deleteMany({
+        where: { integrationId, kind: 'channel', channelId: { notIn: channels.map((c) => c.id) } }
+      })
+    }
     for (const c of channels) {
+      const authoritative = opts?.authoritative !== false
       await this.db.integrationChannel.upsert({
         where: { integrationId_channelId: { integrationId, channelId: c.id } },
         create: {
@@ -403,7 +406,11 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         },
         // kind updates only when explicitly reported: a kind-less membership/observed
         // re-report must never downgrade an established 'im' row (§14.3).
-        update: { name: c.name ?? null, isPrivate: c.isPrivate ?? false, ...(c.kind ? { kind: c.kind } : {}) }
+        update: {
+          ...(authoritative || c.name !== undefined ? { name: c.name ?? null } : {}),
+          ...(authoritative || c.isPrivate !== undefined ? { isPrivate: c.isPrivate ?? false } : {}),
+          ...(c.kind ? { kind: c.kind } : {})
+        }
       })
     }
   }
