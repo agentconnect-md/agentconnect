@@ -165,7 +165,7 @@ export default function DaemonDetailView() {
             {daemon.version}
           </span>
           {pending ? (
-            <DaemonLifecycleBadge op={op} />
+            <DaemonLifecycleBadge op={op} size="md" />
           ) : (
             <DaemonUpgradeBadge
               show={daemon.upgradeAvailable}
@@ -512,7 +512,7 @@ export default function DaemonDetailView() {
               <span className="mono text-[12px]">{daemon.version}</span>
             </span>
             {pending ? (
-              <DaemonLifecycleBadge op={op} />
+              <DaemonLifecycleBadge op={op} size="md" />
             ) : (
               <DaemonUpgradeBadge
                 show={daemon.upgradeAvailable}

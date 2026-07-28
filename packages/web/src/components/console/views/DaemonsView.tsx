@@ -194,12 +194,13 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
             <span className="dot hidden flex-none desktop:inline-block" style={{ background: s.dot }} />
           </div>
           {/* Version meta — mobile appends the host (when it differs from the name); desktop shows
-              version only. The available-upgrade hint is hidden while an operation is in flight. */}
+              version only. A pending lifecycle operation replaces the available-upgrade hint. */}
           <div className="flex min-w-0 items-center gap-[7px]">
             <span className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[11px] desktop:leading-[1.5] desktop:tabular-nums">
               {m.version}
               {m.host && m.host !== m.name && <span className="desktop:hidden">{` · ${m.host}`}</span>}
             </span>
+            <DaemonLifecycleBadge op={m.lifecycleOp} />
             <DaemonUpgradeBadge
               show={!pending && m.upgradeAvailable}
               latest={m.latestVersion}
@@ -291,11 +292,6 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
           participate directly in the card's flex-col gap-3; on desktop it is the
           padded section under the header border. */}
       <div className="contents desktop:flex desktop:flex-col desktop:gap-3 desktop:px-4 desktop:py-[14px]">
-        {pending && (
-          <div className="flex">
-            <DaemonLifecycleBadge op={m.lifecycleOp} />
-          </div>
-        )}
         <div className="flex w-full gap-4 desktop:flex-col desktop:gap-3">
           <UtilBar label="CPU" pct={m.cpu} color={barColor} hot={hot} />
           <UtilBar label="Memory" mobileLabel="MEM" pct={m.mem} color={barColor} hot={hot} />
