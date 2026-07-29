@@ -8486,7 +8486,10 @@ export class Daemon {
     // applies from the next turn on, not mid-turn (see `mode`, resolved above before replyConn).
     const conv =
       msg.platform === 'telegram'
-        ? new TelegramConverger(mode)
+        ? // The continue-the-topic hint only earns its space in a group, where the reply chain
+          // is the ONLY way back into this session; a DM has one implicit thread already.
+          // Gated on showFooter, the agent-level switch for delivery chrome.
+          new TelegramConverger(mode, { continueHint: showFooter && !msg.isDm })
         : msg.platform === 'discord'
           ? new DiscordConverger(mode)
           : msg.platform === 'feishu'
@@ -9747,7 +9750,8 @@ export class Daemon {
    * Apply one converger action against the session's Telegram connection — the
    * Telegram analog of applySlackAction. Reuses the Pending's `*Ts` fields as
    * Telegram message-id strings for the in-place (edit-thereafter) messages.
-   *  - post        → a new message (PLAIN text); ALSO recorded to the transcript.
+   *  - post        → a new message (PLAIN text); ALSO recorded to the transcript. A `hint`
+   *                  (the continue-the-topic line) is sent but not recorded.
    *  - notice / tool-output → posted (HTML) but NOT recorded (chrome).
    *  - typing      → a transient chat-action ("typing…").
    *  - progress / plan / reasoning → the single in-place message of that kind.
@@ -9768,7 +9772,10 @@ export class Daemon {
         await conn.sendChatAction(p.channel)
         return
       case 'post': {
-        const id = await conn.postMessage(p.channel, action.text, p.thread, { replyTo: p.tgReplyTo })
+        // The continue-the-topic hint is chrome: sent with the reply (so it lands on the very
+        // message users are told to reply to) but kept out of the recorded text below.
+        const sent = action.hint ? `${action.text}\n\n${action.hint}` : action.text
+        const id = await conn.postMessage(p.channel, sent, p.thread, { replyTo: p.tgReplyTo })
         this.store.appendTranscript({
           channel: p.transcriptChannel,
           thread: p.statusThread,

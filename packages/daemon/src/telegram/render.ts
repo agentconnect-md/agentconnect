@@ -33,7 +33,9 @@ import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 export type TelegramAction =
   // `recordOnly: true` writes to the transcript without sending — minimal mode keeps the
   // full audit trail while the chat shows only the single `live-reply` message.
-  | { kind: 'post'; text: string; recordOnly?: boolean }
+  // `hint` is the continue-the-topic footer line: appended to the SENT text only, never to
+  // the recorded transcript text (it is chrome, not the agent's words).
+  | { kind: 'post'; text: string; recordOnly?: boolean; hint?: string }
   // `live-reply` is minimal mode's single, in-place agent reply (post-once/edit-thereafter,
   // like `progress`) — display only, NOT recorded. Plain text, like `post`.
   | { kind: 'live-reply'; text: string }
@@ -46,6 +48,17 @@ export type TelegramAction =
 
 /** Telegram single-message hard cap (4096 chars) — vs Slack's 12000-char block. */
 export const TELEGRAM_MESSAGE_LIMIT = 4096
+
+/**
+ * The continue-the-topic footer appended to the last message of an agent turn.
+ *
+ * Telegram has no threads outside forum topics, so session continuity in a group runs
+ * off the reply chain: a reply to a recorded bot message resolves back to the session
+ * that message was posted in (LocalStore.telegramThreadForMessage). The line makes that
+ * invisible rule visible. Plain text, because the agent's reply is sent without a
+ * parse_mode (see the header note) — the leading ↩️ carries the "small print" weight.
+ */
+export const TELEGRAM_CONTINUE_HINT = '↩️ To continue this topic, please reply to this message.'
 
 const THINKING = 'is thinking…'
 const MAX_LABEL = 100
@@ -170,7 +183,14 @@ export class TelegramConverger {
   private segmentReset = false
   private recordDirty = false
 
-  constructor(private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high') {}
+  /** `continueHint`: append {@link TELEGRAM_CONTINUE_HINT} to the turn's last posted reply.
+   *  Only honored in the modes whose reply is a real recorded `post` (low/medium/high) —
+   *  `none` sends nothing, and minimal's `live-reply` message id is never recorded, so a
+   *  reply to it could not resolve back to this session (the hint would be a lie there). */
+  constructor(
+    private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high',
+    private opts: { continueHint?: boolean } = {}
+  ) {}
 
   /** True while body text OR reasoning is pending — the daemon (re)arms the idle-flush timer on it. */
   hasBuffered(): boolean {
@@ -223,7 +243,9 @@ export class TelegramConverger {
     return [{ kind: 'reasoning', text: renderReasoning(this.reasoningBuf), parseMode: 'HTML' }]
   }
 
-  private flush(): TelegramAction[] {
+  /** `final` marks the turn-closing flush: its LAST post carries the continue hint (so a
+   *  multi-message reply is annotated once, on the message users would reply to). */
+  private flush(final = false): TelegramAction[] {
     const trimmed = this.buf.trim()
     if (!trimmed) {
       this.buf = ''
@@ -238,8 +260,16 @@ export class TelegramConverger {
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` runs before
     // the connection check, so it lands even though replyConn is unset for this mode.
     const recordOnly = this.mode === 'none'
-    return splitIntoSections(text, TELEGRAM_MESSAGE_LIMIT).map(
-      (t) => ({ kind: 'post', text: t, ...(recordOnly ? { recordOnly: true } : {}) }) as TelegramAction
+    const sections = splitIntoSections(text, TELEGRAM_MESSAGE_LIMIT)
+    const hintOn = final && !recordOnly && this.opts.continueHint === true
+    return sections.map(
+      (t, i) =>
+        ({
+          kind: 'post',
+          text: t,
+          ...(recordOnly ? { recordOnly: true } : {}),
+          ...(hintOn && i === sections.length - 1 ? { hint: TELEGRAM_CONTINUE_HINT } : {})
+        }) as TelegramAction
     )
   }
 
@@ -353,11 +383,11 @@ export class TelegramConverger {
     if (this.mode === 'minimal') return this.closeSegment()
     // none: record the final body only; nothing is sent to the chat.
     if (this.mode === 'none') return this.flush()
-    if (this.mode === 'low') return [...this.flush()]
+    if (this.mode === 'low') return [...this.flush(true)]
     const reasoning = this.drainReasoning()
     const footer: TelegramAction[] = link
       ? [{ kind: 'notice', text: `✅ done — <a href="${escapeHtml(link)}">details</a>`, parseMode: 'HTML' }]
       : []
-    return [...reasoning, ...this.flush(), ...footer]
+    return [...reasoning, ...this.flush(true), ...footer]
   }
 }
