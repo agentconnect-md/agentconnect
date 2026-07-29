@@ -364,7 +364,7 @@ latch is already OPEN, select a target from current agents' Slack integrations
 that actually permits the user, preferring an explicit mention and then stable
 ordering. The same concrete-integration authorization check still runs.
 
-Shared-bot `rd/msg(im)` likewise parses commands before dispatch and uses the
+Relay-managed `rd/msg(im)` likewise parses commands before dispatch and uses the
 target resolved by the relay for the final `allowedUserIds` check. A bot or
 unknown sender cannot resume the scope.
 
