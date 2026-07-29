@@ -1568,6 +1568,7 @@ export function platName(p: string): string {
   if (x.includes('play') || x.includes('web')) return 'Playground'
   if (x.includes('tele')) return 'Telegram'
   if (x.includes('disc')) return 'Discord'
+  if (x.includes('feishu') || x.includes('lark')) return 'Lark'
   return 'Slack'
 }
 

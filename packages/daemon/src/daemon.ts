@@ -1842,12 +1842,12 @@ export class Daemon {
       this.store.setDisplayName(id, name, Date.now())
       this.emitSessionMetadataSnapshotsForDisplayName(id)
     }, this.log)
-    // Same cache-then-emit sink for Discord/Telegram channel-name resolution.
+    // Same cache-then-emit sink for Discord/Telegram/Feishu channel and user names.
     this.channelNameResolver = new ChannelNameResolver(
       (id, name) => {
         this.store.setDisplayName(id, name, Date.now())
         this.emitSessionMetadataSnapshotsForDisplayName(id)
-        // A freshly-resolved Telegram/Discord channel name should also refresh that
+        // A freshly-resolved Telegram/Discord/Feishu channel name should also refresh that
         // integration's observed-channel snapshot (approach-A discovery) so the console
         // shows the human name rather than the raw chat/channel id.
         this.refreshObservedChannels()
@@ -2878,7 +2878,7 @@ export class Daemon {
         group,
         newTraceId: () => randomUUID(),
         onMessage: (msg) => {
-          this.channelNameResolver?.noteChannel(conn, msg.channel, msg.sender.id)
+          this.channelNameResolver?.noteMessage(conn, { ...msg, mentionedUserIds: msg.mentionedBots })
           this.onInbound(msg, this.srcIntegrationIds(conn))
         },
         log: this.log
@@ -2923,11 +2923,12 @@ export class Daemon {
   }
 
   /**
-   * Resolve display names for the channels of already-stored Discord/Telegram sessions
+   * Resolve display names for the channels and triggering users of already-stored
+   * Discord/Telegram/Feishu sessions
    * so the console labels them without waiting for a new inbound message (the per-message
    * ChannelNameResolver only fires on fresh traffic). The Slack analog is refreshChannels'
-   * bulk membership snapshot; Discord/Telegram have no cheap channel enumeration, so we
-   * resolve each live session's channel individually via its bot connection. Best-effort +
+   * bulk membership snapshot; here we resolve each live session's channel individually
+   * via its bot connection. Best-effort +
    * TTL-guarded by the resolver, so calling it on every reconcile is cheap.
    */
   private backfillChannelNames(): void {
@@ -2943,7 +2944,15 @@ export class Daemon {
           : row.platform === 'telegram'
             ? this.tgConnByIntegration.get(integrationId)
             : this.fsConnByIntegration.get(integrationId)
-      if (conn) resolver.noteChannel(conn, row.channel, row.triggeredBy ?? undefined)
+      if (!conn) continue
+      if (row.triggeredBy) {
+        resolver.noteMessage(conn, {
+          channel: row.channel,
+          sender: { id: row.triggeredBy, isBot: false }
+        })
+      } else {
+        resolver.noteChannel(conn, row.channel)
+      }
     }
     this.refreshObservedChannels()
   }
@@ -2961,11 +2970,10 @@ export class Daemon {
   }
 
   /**
-   * Observed-conversation discovery for Telegram and Discord. These platforms do
-   * not give us an authoritative set of chats the bot is engaged in, so stored
-   * session history is merged with explicitly-addressed Off conversations already
-   * cached for the integration. Reports carry `authoritative:false`: the CP upserts
-   * what we know but never treats an absent row as a leave.
+   * Observed-conversation discovery for Telegram, Discord, and Feishu. Stored session
+   * history is merged with explicitly-addressed Off conversations already cached for
+   * the integration. Reports carry `authoritative:false`: the CP upserts what we know
+   * but never treats an absent row as a leave.
    *
    * Names fill in lazily through ChannelNameResolver. Re-merging the cached rows
    * here is important for Off conversations: they have no session row, so without
@@ -2977,7 +2985,7 @@ export class Daemon {
    */
   private refreshObservedChannels(): void {
     for (const agent of this.agents.values()) {
-      for (const platform of ['telegram', 'discord'] as const) {
+      for (const platform of ['telegram', 'discord', 'feishu'] as const) {
         const integrations = agent.integrations.filter((i) => i.platform === platform)
         if (integrations.length === 0) continue
         // observedChannels is agent+platform-scoped, not per-bot (the sessions table
@@ -3104,7 +3112,7 @@ export class Daemon {
    */
   private collapseObserved(
     observed: { id: string; name?: string }[],
-    platform: 'telegram' | 'discord'
+    platform: 'telegram' | 'discord' | 'feishu'
   ): { id: string; name?: string; spaceId?: string; space?: string }[] {
     if (platform !== 'discord') return observed
     // Two-step: the observed (thread) ids first, then the channels they fold onto —
@@ -8676,9 +8684,12 @@ export class Daemon {
         channel: msg.channel,
         thread: statusThread
       })
-      // A first-seen Telegram/Discord chat widens the observed reachable set (approach-A
-      // discovery) — report the updated membership snapshot so the console lists it.
-      if (msg.platform === 'telegram' || msg.platform === 'discord') this.refreshObservedChannels()
+      // A first-seen Telegram/Discord/Feishu chat widens the observed reachable set
+      // (approach-A discovery) — report it after the session row exists so the console
+      // cannot miss a name lookup that completed during cold session startup.
+      if (msg.platform === 'telegram' || msg.platform === 'discord' || msg.platform === 'feishu') {
+        this.refreshObservedChannels()
+      }
     }
     this.finishSessionInitialization(agentId, sessionId)
     try {
