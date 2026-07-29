@@ -447,6 +447,7 @@ export function integrationRoutes(deps: HttpDeps) {
               name,
               // Durable home for the region so a later reinstall of this freed bot
               // reconstructs the right gateway (the integration row is deleted on uninstall).
+              feishuAppId: feishu.appId,
               feishuRegion: region,
               ...(req.principal ? { createdByUserId: req.principal.userId } : {})
             })

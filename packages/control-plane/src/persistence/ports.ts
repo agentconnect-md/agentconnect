@@ -1786,6 +1786,8 @@ export interface CreateBotInput {
   botUserId?: string
   /** Discord application (client) id, decoded from the bot token. Public metadata, NOT a secret. */
   discordAppId?: string
+  /** Feishu/Lark app id (`cli_…`). Public metadata used for the developer-console link. */
+  feishuAppId?: string
   /** Feishu/Lark gateway region; only set for platform 'feishu'. Durable home for the
    *  region so a freed bot reinstalls against the same gateway. */
   feishuRegion?: FeishuRegion
@@ -1823,6 +1825,8 @@ export interface BotRecord {
   credentialInstalledAt: Date | null
   /** Discord application (client) id — lets the console offer a ready-made invite URL. */
   discordAppId: string | null
+  /** Feishu/Lark app id — lets the console deep-link to this app's developer settings. */
+  feishuAppId: string | null
   /** Feishu/Lark gateway region for this bot; null for non-feishu bots (and feishu bots
    *  created before the column — treated as 'feishu'). Durable across uninstall. */
   feishuRegion: FeishuRegion | null

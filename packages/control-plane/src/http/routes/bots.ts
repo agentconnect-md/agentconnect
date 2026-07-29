@@ -38,6 +38,8 @@ function toDto(b: BotRecord): BotDtoT {
     prebuilt: b.prebuilt,
     slackAppId: b.slackAppId,
     discordAppId: b.discordAppId,
+    feishuAppId: b.feishuAppId,
+    feishuRegion: b.feishuRegion,
     // Creator's userId (web resolves to a name / "You"); synthetic-email placeholder ⇒
     // non-human creator ⇒ null (the console shows the prebuilt/"—" fallback).
     createdBy: b.createdBy && !isSyntheticEmail(b.createdBy.email) ? b.createdBy.userId : null,
