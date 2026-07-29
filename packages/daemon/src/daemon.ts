@@ -111,7 +111,7 @@ import {
   type StatusBarInfo,
   type StatusModalIdentity
 } from './slack/render.js'
-import { TelegramConverger, renderStatusReply, type TelegramAction } from './telegram/render.js'
+import { TelegramConverger, renderStatusReply, TELEGRAM_MESSAGE_LIMIT, type TelegramAction } from './telegram/render.js'
 import {
   DiscordConverger,
   renderStatusText,
@@ -960,6 +960,10 @@ interface Pending {
   reasoningTs?: string
   /** Whether the reasoning message's first post was attempted (see progressAttempted). */
   reasoningAttempted?: boolean
+  /** Telegram: the id and exact sent text of the LAST body message posted this turn, so a
+   *  turn-end `continue-hint` action can append the continue-the-topic line to it in place
+   *  (the body may have been flushed long before the turn ended). */
+  tgLastBody?: { id: string; text: string }
   /** ts of the single in-place agent reply message (minimal mode's `live-reply`), once posted. */
   liveReplyTs?: string
   /** Whether the live-reply's first post was attempted (see progressAttempted). */
@@ -8486,7 +8490,10 @@ export class Daemon {
     // applies from the next turn on, not mid-turn (see `mode`, resolved above before replyConn).
     const conv =
       msg.platform === 'telegram'
-        ? new TelegramConverger(mode)
+        ? // The continue-the-topic hint only earns its space in a group, where the reply chain
+          // is the ONLY way back into this session; a DM has one implicit thread already.
+          // Gated on showFooter, the agent-level switch for delivery chrome.
+          new TelegramConverger(mode, { continueHint: showFooter && !msg.isDm })
         : msg.platform === 'discord'
           ? new DiscordConverger(mode)
           : msg.platform === 'feishu'
@@ -9747,7 +9754,9 @@ export class Daemon {
    * Apply one converger action against the session's Telegram connection — the
    * Telegram analog of applySlackAction. Reuses the Pending's `*Ts` fields as
    * Telegram message-id strings for the in-place (edit-thereafter) messages.
-   *  - post        → a new message (PLAIN text); ALSO recorded to the transcript.
+   *  - post        → a new message (PLAIN text); ALSO recorded to the transcript. A `hint`
+   *                  (the continue-the-topic line) is sent but not recorded.
+   *  - continue-hint → edits that hint onto the last body message already sent.
    *  - notice / tool-output → posted (HTML) but NOT recorded (chrome).
    *  - typing      → a transient chat-action ("typing…").
    *  - progress / plan / reasoning → the single in-place message of that kind.
@@ -9768,7 +9777,12 @@ export class Daemon {
         await conn.sendChatAction(p.channel)
         return
       case 'post': {
-        const id = await conn.postMessage(p.channel, action.text, p.thread, { replyTo: p.tgReplyTo })
+        // The continue-the-topic hint is chrome: sent with the reply (so it lands on the very
+        // message users are told to reply to) but kept out of the recorded text below.
+        const sent = action.hint ? `${action.text}\n\n${action.hint}` : action.text
+        const id = await conn.postMessage(p.channel, sent, p.thread, { replyTo: p.tgReplyTo })
+        // Remember the newest body message so a turn-end `continue-hint` can annotate it.
+        if (id) p.tgLastBody = { id, text: sent }
         this.store.appendTranscript({
           channel: p.transcriptChannel,
           thread: p.statusThread,
@@ -9777,6 +9791,19 @@ export class Daemon {
           kind: 'text',
           text: action.text
         })
+        return
+      }
+      case 'continue-hint': {
+        // The turn's last body went out earlier (idle flush / tool boundary), so the hint
+        // lands by editing that message. Skipped when its id is unknown (a failed send) or
+        // when the suffix would not fit — the converger reserves room for it in the body
+        // budget, so this guard only fires for text that predates the reservation.
+        const last = p.tgLastBody
+        if (!last || last.text.endsWith(action.hint)) return
+        const sent = `${last.text}\n\n${action.hint}`
+        if (sent.length > TELEGRAM_MESSAGE_LIMIT) return
+        p.tgLastBody = { id: last.id, text: sent }
+        await conn.updateMessage(p.channel, last.id, sent)
         return
       }
       case 'live-reply': {

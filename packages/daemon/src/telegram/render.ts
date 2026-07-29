@@ -33,10 +33,17 @@ import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 export type TelegramAction =
   // `recordOnly: true` writes to the transcript without sending — minimal mode keeps the
   // full audit trail while the chat shows only the single `live-reply` message.
-  | { kind: 'post'; text: string; recordOnly?: boolean }
+  // `hint` is the continue-the-topic footer line: appended to the SENT text only, never to
+  // the recorded transcript text (it is chrome, not the agent's words).
+  | { kind: 'post'; text: string; recordOnly?: boolean; hint?: string }
   // `live-reply` is minimal mode's single, in-place agent reply (post-once/edit-thereafter,
   // like `progress`) — display only, NOT recorded. Plain text, like `post`.
   | { kind: 'live-reply'; text: string }
+  // Append the continue-the-topic line to the body message ALREADY sent this turn (an
+  // in-place edit). Emitted at turn end when the last reply body was flushed earlier — by
+  // the idle timer or a tool/plan boundary — so nothing remains for a `post` to carry the
+  // hint on. Display only: the transcript keeps the agent's words as recorded.
+  | { kind: 'continue-hint'; hint: string }
   | { kind: 'notice'; text: string; parseMode?: 'HTML' }
   | { kind: 'typing' }
   | { kind: 'progress'; text: string; parseMode: 'HTML' }
@@ -46,6 +53,21 @@ export type TelegramAction =
 
 /** Telegram single-message hard cap (4096 chars) — vs Slack's 12000-char block. */
 export const TELEGRAM_MESSAGE_LIMIT = 4096
+
+/**
+ * The continue-the-topic footer appended to the last message of an agent turn.
+ *
+ * Telegram has no threads outside forum topics, so session continuity in a group runs
+ * off the reply chain: a reply to a recorded bot message resolves back to the session
+ * that message was posted in (LocalStore.telegramThreadForMessage). The line makes that
+ * invisible rule visible. Plain text, because the agent's reply is sent without a
+ * parse_mode (see the header note) — the leading ↩️ carries the "small print" weight.
+ */
+export const TELEGRAM_CONTINUE_HINT = '↩️ To continue this topic, please reply to this message.'
+
+/** Exactly what a hinted message carries beyond its body — the blank-line separator plus
+ *  the hint. `length` is UTF-16 code units, which is also how Telegram counts a message. */
+export const TELEGRAM_CONTINUE_HINT_SUFFIX = `\n\n${TELEGRAM_CONTINUE_HINT}`
 
 const THINKING = 'is thinking…'
 const MAX_LABEL = 100
@@ -169,8 +191,31 @@ export class TelegramConverger {
   // minimal mode only — see the OutputConverger (Slack) for the segment/record contract.
   private segmentReset = false
   private recordDirty = false
+  /** Whether this turn has already SENT a body post — the message a turn-end
+   *  `continue-hint` edit would land on when no body is left to flush. */
+  private postedBody = false
+  private readonly hintEnabled: boolean
+  /** Body budget per message. With the hint on, every body post reserves room for the
+   *  suffix, because ANY of them can end up being the one that carries it (the last flush
+   *  appends it directly; an earlier one gets it by edit). Reserving only at the moment of
+   *  appending would let a maximal 4096-char section grow past the cap, and Telegram
+   *  rejects the whole message — losing the reply AND the transcript row the reply chain
+   *  needs. 58 units off 4096 is a cost worth paying for that. */
+  private readonly bodyLimit: number
 
-  constructor(private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high') {}
+  /** `continueHint`: append {@link TELEGRAM_CONTINUE_HINT} to the turn's last sent reply.
+   *  Only honored in the modes whose reply is a real recorded `post` (low/medium/high) —
+   *  `none` sends nothing, and minimal's `live-reply` message id is never recorded, so a
+   *  reply to it could not resolve back to this session (the hint would be a lie there). */
+  constructor(
+    private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high',
+    opts: { continueHint?: boolean } = {}
+  ) {
+    this.hintEnabled = opts.continueHint === true && (mode === 'low' || mode === 'medium' || mode === 'high')
+    this.bodyLimit = this.hintEnabled
+      ? TELEGRAM_MESSAGE_LIMIT - TELEGRAM_CONTINUE_HINT_SUFFIX.length
+      : TELEGRAM_MESSAGE_LIMIT
+  }
 
   /** True while body text OR reasoning is pending — the daemon (re)arms the idle-flush timer on it. */
   hasBuffered(): boolean {
@@ -223,7 +268,9 @@ export class TelegramConverger {
     return [{ kind: 'reasoning', text: renderReasoning(this.reasoningBuf), parseMode: 'HTML' }]
   }
 
-  private flush(): TelegramAction[] {
+  /** `final` marks the turn-closing flush: its LAST post carries the continue hint (so a
+   *  multi-message reply is annotated once, on the message users would reply to). */
+  private flush(final = false): TelegramAction[] {
     const trimmed = this.buf.trim()
     if (!trimmed) {
       this.buf = ''
@@ -238,9 +285,26 @@ export class TelegramConverger {
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` runs before
     // the connection check, so it lands even though replyConn is unset for this mode.
     const recordOnly = this.mode === 'none'
-    return splitIntoSections(text, TELEGRAM_MESSAGE_LIMIT).map(
-      (t) => ({ kind: 'post', text: t, ...(recordOnly ? { recordOnly: true } : {}) }) as TelegramAction
+    const sections = splitIntoSections(text, this.bodyLimit)
+    const hintOn = final && this.hintEnabled
+    if (!recordOnly) this.postedBody = true
+    return sections.map(
+      (t, i) =>
+        ({
+          kind: 'post',
+          text: t,
+          ...(recordOnly ? { recordOnly: true } : {}),
+          ...(hintOn && i === sections.length - 1 ? { hint: TELEGRAM_CONTINUE_HINT } : {})
+        }) as TelegramAction
     )
+  }
+
+  /** The turn's hint, once the body is settled: carried by the final `post` when that flush
+   *  produced one, otherwise edited onto the body message already sent. Empty when the hint
+   *  is off, or when this turn never sent a body for it to belong to. */
+  private trailingHint(finalPosts: TelegramAction[]): TelegramAction[] {
+    if (!this.hintEnabled || finalPosts.length > 0 || !this.postedBody) return []
+    return [{ kind: 'continue-hint', hint: TELEGRAM_CONTINUE_HINT }]
   }
 
   private toolLabel(update: { toolCallId?: string; title?: string }): string {
@@ -353,11 +417,15 @@ export class TelegramConverger {
     if (this.mode === 'minimal') return this.closeSegment()
     // none: record the final body only; nothing is sent to the chat.
     if (this.mode === 'none') return this.flush()
-    if (this.mode === 'low') return [...this.flush()]
+    if (this.mode === 'low') {
+      const posts = this.flush(true)
+      return [...posts, ...this.trailingHint(posts)]
+    }
     const reasoning = this.drainReasoning()
     const footer: TelegramAction[] = link
       ? [{ kind: 'notice', text: `✅ done — <a href="${escapeHtml(link)}">details</a>`, parseMode: 'HTML' }]
       : []
-    return [...reasoning, ...this.flush(), ...footer]
+    const posts = this.flush(true)
+    return [...reasoning, ...posts, ...this.trailingHint(posts), ...footer]
   }
 }

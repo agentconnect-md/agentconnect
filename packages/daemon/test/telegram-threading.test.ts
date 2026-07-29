@@ -677,3 +677,75 @@ describe('session-control cards (/models tappable buttons)', () => {
     await daemon.stop()
   })
 })
+
+describe('continue-the-topic hint delivery', () => {
+  /** A minimal Pending for a group turn, plus a fake connection recording sends/edits. */
+  function pending(daemon: Daemon) {
+    const conn = {
+      postMessage: vi.fn(async () => 'out-9'),
+      postChrome: vi.fn(async () => 'chrome-1'),
+      updateMessage: vi.fn(async () => {}),
+      sendChatAction: vi.fn(async () => {})
+    }
+    const p = {
+      agentId: 'bot-a',
+      channel: '-100',
+      transcriptChannel: '-100',
+      statusThread: 'tg:100',
+      thread: 'tg:100',
+      tgReplyTo: 100,
+      approvalSurfaceSuppressed: false,
+      conn
+    }
+    return { conn, p, apply: (a: unknown) => (daemon as any).applyTelegramAction(p, a) }
+  }
+
+  it('sends the hint with the reply but keeps it out of the transcript', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    await daemon.start()
+    const { conn, p, apply } = pending(daemon)
+
+    await apply({ kind: 'post', text: 'answer', hint: '↩️ hint' })
+
+    expect(conn.postMessage.mock.calls[0]![1]).toBe('answer\n\n↩️ hint')
+    // The recorded row keeps the agent's words AND the real message id — the reply chain
+    // resolves through it (LocalStore.telegramThreadForMessage).
+    const rows = (daemon as any).store.threadTranscript('-100', 'tg:100')
+    expect(rows.at(-1)).toMatchObject({ text: 'answer', ts: 'out-9' })
+    expect((daemon as any).store.telegramThreadForMessage('-100', 'out-9')).toBe('tg:100')
+    expect(p).toMatchObject({ tgLastBody: { id: 'out-9', text: 'answer\n\n↩️ hint' } })
+    await daemon.stop()
+  })
+
+  it('edits the hint onto the body already sent when the turn ends empty', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    await daemon.start()
+    const { conn, apply } = pending(daemon)
+
+    await apply({ kind: 'post', text: 'earlier answer' })
+    await apply({ kind: 'continue-hint', hint: '↩️ hint' })
+
+    expect(conn.updateMessage).toHaveBeenCalledWith('-100', 'out-9', 'earlier answer\n\n↩️ hint')
+    // Idempotent: a second hint action never doubles the line.
+    await apply({ kind: 'continue-hint', hint: '↩️ hint' })
+    expect(conn.updateMessage).toHaveBeenCalledOnce()
+    await daemon.stop()
+  })
+
+  it('skips the edit when no body was sent, or when the suffix would breach the cap', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    await daemon.start()
+    const { conn, apply } = pending(daemon)
+
+    // No body yet → nothing to annotate.
+    await apply({ kind: 'continue-hint', hint: '↩️ hint' })
+    expect(conn.updateMessage).not.toHaveBeenCalled()
+
+    // A maximal message (only reachable from a build that predates the budget reservation)
+    // is left alone rather than sent over the cap.
+    await apply({ kind: 'post', text: 'x'.repeat(4096) })
+    await apply({ kind: 'continue-hint', hint: '↩️ hint' })
+    expect(conn.updateMessage).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+})
