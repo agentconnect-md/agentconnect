@@ -119,7 +119,7 @@ browser              relay                 CP                              daemo
   │─ op ──────────────▶│─ rd/msg (unchanged) ───────────────────────────────▶ │
   │                    │                             │                        │ session/new
   │                    │                             │◀─ delegation/request ──┤  (agent has control
-  │                    │                             │   {convId, agentId}    │   tools enabled)
+  │                    │                             │   {convId}             │   tools enabled)
   │                    │                             │ checks: row exists ∧    │
   │                    │                             │ agent placed HERE ∧     │
   │                    │                             │ conversation LIVE ∧     │
@@ -190,11 +190,19 @@ Pulling therefore keeps user-authority secrets off the relay entirely, leaves `r
 ### 5.2 Frames (mirroring `secrets/*`)
 
 ```
-delegation/request   D→C REQ  { conversationId, agentId }
+delegation/request   D→C REQ  { conversationId }
 delegation/grant     C→D REP  { leaseId, conversationId, secret, ttl, renewBeforeSec }
 delegation/renew     D→C REQ  { leaseId } → delegation/grant
 delegation/revoke    C→D EVT  { leaseId, reason }
 ```
+
+The request carries **only** the conversation id. Everything else is resolved from
+CP-owned state, never from the daemon's claim: the acting user and the agent come from
+the conversation row, and the granted scopes come from the CP's own copy of that agent's
+control-tools switch at grant time. `delegation/renew` re-runs the full §5.3 admission
+and mints a **fresh secret** (the reply is a full `delegation/grant`; the old key is
+revoked in the same transaction) — a lease that can no longer be granted can no longer
+be renewed.
 
 `secret` is credential material: never logged on either side, never persisted by the
 daemon, and excluded from telemetry.
@@ -203,10 +211,11 @@ daemon, and excluded from telemetry.
 
 The CP grants only when **all** hold:
 
-1. the conversation row exists (so the acting user is known from CP-owned state, never
-   from the daemon's claim);
+1. the conversation row exists — it names both the acting user and the agent, so
+   neither is ever taken from the daemon's claim;
 2. the conversation's agent is **currently placed on the asking daemon**;
-3. the conversation is **LIVE** — a browser is connected right now (§5.4);
+3. the conversation is **LIVE** — at least one browser connection is open right now
+   (§5.4);
 4. the acting user is still a member of the org (`roleOf` returns a role).
 
 Condition 3 is what makes the blast-radius claim true rather than aspirational: without
@@ -222,15 +231,25 @@ The CP has no idea whether a tab is still open: `rc/*` carries `verify` and
 re-verifies exactly zero times (verification happens once per WS dial). So add:
 
 ```
-rc/webchat-open    R→C EVT  { conversationId, agentId, daemonId }
-rc/webchat-close   R→C EVT  { conversationId }
+rc/webchat-open    R→C EVT  { conversationId, connectionId }
+rc/webchat-close   R→C EVT  { conversationId, connectionId }
 ```
 
-A relay that disconnects clears every conversation it held (the existing relay sweeper
-already knows when a relay drops, and its registration/liveness bookkeeping is the
-natural home). On close: CP marks the conversation not-live and hot-revokes its lease
-(`delegation/revoke` → the daemon drops it, so a background turn that outlives its tab
-loses control-plane authority but keeps chatting).
+Liveness is **per browser connection, not a boolean**: the relay stamps each event with
+its own connection id, the CP counts open connections per conversation, and LIVE means
+count > 0. A boolean model would let two tabs on the same conversation kill each other
+(open A, open B, close A → lease revoked while B is still chatting). The relay emits
+`open` after a successful verify and `close` when that browser socket ends; a relay that
+disconnects clears every connection it contributed (the existing relay sweeper already
+knows when a relay drops, and its registration/liveness bookkeeping is the natural
+home). A relay that **reconnects** re-emits `open` for every browser connection it still
+holds — liveness lives in CP memory, so a CP restart would otherwise strand every
+conversation as not-live (same replay-on-register pattern as `onRegistered`'s shared-bot
+replay).
+
+When the count reaches zero: CP marks the conversation not-live and hot-revokes its
+lease (`delegation/revoke` → the daemon drops it, so a background turn that outlives its
+tab loses control-plane authority but keeps chatting).
 
 ### 5.5 Renewal
 
@@ -271,18 +290,32 @@ installation funnels, `/slack/config`, and hook writes.
 
 ### 6.2 No self-modification (decision)
 
-A write whose target `agentId` equals the conversation's own `agentId` is refused, full
-stop — including delete, re-placement, runtime change, `permissions`, `workspace`, and
-`mcpServers`. The agent has shell access, so editing its own configuration is a direct
-route to escalating its own execution authority on the daemon host. This is a
-constraint that holds without relying on anyone's judgement; "attach this repo to
-yourself" is a console action.
+A write whose **target resource binds to the conversation's own agent** is refused, full
+stop. That covers more than `PATCH /agents/:id` on itself:
+
+- agent writes targeting its own `agentId` — delete, re-placement, runtime change,
+  `permissions`, `workspace`, `mcpServers`;
+- **cron writes whose `agentId` is its own** — a cron drives exactly one agent
+  (`http/routes/crons.ts`: "A cron drives ONE agent, agentId is required"), and a cron
+  turn runs as **non-webchat ingress: no lease, but full local tools**. Without this
+  rule, injected content could schedule instructions for itself and convert a 15-minute
+  lease window into persistent shell execution — the exact escalation §6.2 exists to
+  block, one route family over. Re-targeting an existing cron **onto** itself is refused
+  the same way; `POST /crons/:id/run` on a self-targeted cron likewise.
+
+The agent has shell access, so editing its own configuration — directly or via a
+resource that feeds it work — is a direct route to escalating its own execution
+authority on the daemon host. This constraint holds without relying on anyone's
+judgement; "attach this repo to yourself" is a console action.
 
 ### 6.3 Destructive confirmation
 
-`agent-assistant.md` §6.4 stands: `deleteAgent` / `deleteCron` / `removeIntegration`
-require `confirm` exactly equal to the target's name, compared in the tool layer. §8
-records honestly what this does and does not buy.
+`agent-assistant.md` §6.4's mechanism stands: destructive tools require `confirm`
+exactly equal to the target's name, compared in the tool layer. Under the v1 allowlist
+the only reachable destructive operation is `deleteCron` (`DELETE /agents/:id` and
+integration writes are not admitted, so `deleteAgent` / `removeIntegration` do not exist
+in v1's catalog — the rule applies to them if and when the allowlist grows). §8 records
+honestly what this does and does not buy.
 
 ---
 
@@ -301,12 +334,23 @@ suddenly becomes a management entry point).
 
 ### 7.2 Proxy through the daemon's own bridge (decision)
 
-`mcpServersFor` (`daemon.ts:2024`) gains a branch: when `platform === 'webchat'`, the
-agent has control tools enabled, and a lease exists for the derived sessionKey, push a
-**second MCP server** — another instance of the daemon's existing stdio bridge, whose
-IPC token resolves to a `cp-mcp` passthrough in `mcp/ops.ts` that forwards `tools/list`
-and `tools/call` to `<controlPlane.url → http(s)>/v1/mcp` with
+`mcpServersFor` (`daemon.ts:2024`) gains a branch: when `platform === 'webchat'` and the
+agent has control tools enabled, push a **second MCP server** — another instance of the
+daemon's existing stdio bridge, whose IPC token resolves to a `cp-mcp` passthrough in
+`mcp/ops.ts` that forwards `tools/list` and `tools/call` to
+`<controlPlane.url → http(s)>/v1/mcp` with
 `Authorization: Bearer <the sessionKey's CURRENT lease secret>`.
+
+Injection is deliberately **not** conditioned on a lease existing. Two reasons.
+`mcpServersFor` is a synchronous callback (`session-manager.ts:195`) while acquiring a
+lease is a D→C round trip, so the lease can only ever be prefetched best-effort (the
+daemon requests it at turn admission, before dispatch). And an ACP session's server list
+is fixed at `session/new` — if a CP blip at the first turn suppressed injection, that
+conversation would **permanently** lack control tools for the life of the session, which
+contradicts the whole point of the proxy (static descriptor, credential resolved per
+call). So: inject on webchat + switch alone, both synchronously known; a call arriving
+with no live lease fails closed with the §9 message, and the next turn's prefetch
+restores service.
 
 Not a URL + header handed to the runtime, because:
 
@@ -380,18 +424,19 @@ every call audited.
 
 ## 9. Failure modes
 
-| Case                               | Behavior                                                                                                |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Old relay (no `rc/webchat-open`)   | Conversation never marked live ⇒ no grant ⇒ no control tools. Fail-closed; identical to today.          |
-| Old daemon (no `delegation/*`)     | Never asks ⇒ never injects. Fail-closed.                                                                |
-| CP down                            | Chat unaffected. `tools/call` returns the daemon's "control tools are temporarily unavailable" message. |
-| Lease lapsed (renew failed)        | Same message; the next turn re-requests and restores it.                                                |
-| Browser tab closed                 | `rc/webchat-close` → lease revoked; an in-flight turn finishes but loses control-plane authority.       |
-| Acting user demoted / removed      | Next call resolves the new role: writes 403, removal reads as 404. No revocation round-trip needed.     |
-| Daemon restart mid-conversation    | Next turn's `session/load` re-requests a lease and re-injects the same descriptor.                      |
-| Two tabs, same conversation        | Second grant revokes the first key; the daemon holds one lease per sessionKey.                          |
-| Agent moved to another daemon      | Admission rule 2 fails on the old daemon; the new one requests its own lease.                           |
-| Non-webchat ingress (Slack / cron) | No conversation, no lease, no injection — structurally, not by policy check.                            |
+| Case                               | Behavior                                                                                                                       |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Old relay (no `rc/webchat-open`)   | Conversation never marked live ⇒ no grant ⇒ no control tools. Fail-closed; identical to today.                                 |
+| Old daemon (no `delegation/*`)     | Never asks ⇒ never injects. Fail-closed.                                                                                       |
+| CP down                            | Chat unaffected. `tools/call` returns the daemon's "control tools are temporarily unavailable" message.                        |
+| Lease lapsed (renew failed)        | Same message; the next turn re-requests and restores it.                                                                       |
+| Last browser tab closed            | Connection count hits zero → lease revoked; an in-flight turn finishes but loses control-plane authority.                      |
+| Acting user demoted / removed      | Next call resolves the new role: writes 403, removal reads as 404. No revocation round-trip needed.                            |
+| Daemon restart mid-conversation    | Next turn's `session/load` re-requests a lease and re-injects the same descriptor.                                             |
+| Two tabs, same conversation        | One daemon session, one lease — tabs share it. Liveness counts connections, so closing one tab does not revoke (§5.4).         |
+| CP restart                         | Liveness memory lost; relays re-emit `open` for held connections on reconnect (§5.4). Leases keep verifying (DB rows survive). |
+| Agent moved to another daemon      | Admission rule 2 fails on the old daemon; the new one requests its own lease.                                                  |
+| Non-webchat ingress (Slack / cron) | No conversation, no lease, no injection — structurally, not by policy check.                                                   |
 
 ---
 
@@ -403,12 +448,14 @@ every call audited.
 
 **control-plane** — `PrincipalType.delegated` + `agentId`/`conversationId` columns
 (migration); `mintDelegated` with same-triple revoke; `authenticateUser` support and
-`req.delegation`; the route allowlist guard (default-deny) + the self-target refusal;
-conversation liveness state driven by `rc/webchat-{open,close}` and relay drop; the
-`delegation/*` handlers on the daemon WS; audit events; expiry sweeper.
+`req.delegation`; the route allowlist guard (default-deny) + the self-target refusal
+(agents **and** self-bound crons, §6.2); per-connection liveness counting driven by
+`rc/webchat-{open,close}` and relay drop; the `delegation/*` handlers on the daemon WS
+(renew re-runs admission, fresh secret); audit events; expiry sweeper.
 
-**relay** — emit `rc/webchat-open` after a successful verify and `rc/webchat-close` on
-browser disconnect; clear its conversations when its CP connection drops.
+**relay** — emit `rc/webchat-open` per browser connection after a successful verify and
+`rc/webchat-close` when that socket ends; clear contributed connections when its CP
+link drops, and re-emit `open` for held connections on CP reconnect.
 
 **daemon** — lease store keyed by webchat sessionKey (memory-only) with renew-at-turn-start
 and revoke handling; `cp-mcp` passthrough in `mcp/ops.ts` + descriptors in `mcp/tools.ts`;
@@ -419,13 +466,17 @@ predicate extension (§7.4); CP HTTP base derived from `controlPlane.url` (ws→
 playground that this session acts as the signed-in user.
 
 **tests** — CP unit: grant admission rule (each of the four conditions independently),
-re-grant revokes the old key, allowlist default-deny (a route not listed 403s), self-target
-refusal, scope confinement on writes, demotion takes effect without re-grant. Relay unit:
-open/close emitted, conversations cleared on drop. Daemon unit: injection happens only when
-all three of webchat / switch enabled / live lease hold, key resolved per call (rotation
-visible mid-session), fail-closed message with no lease, no injection for Slack or cron,
-auto-allow predicate matches the control server. Integration: a viewer's conversation
-cannot write; an agent cannot modify itself.
+re-grant and renew both revoke the old key and re-run admission, allowlist default-deny
+(a route not listed 403s), self-target refusal for agent writes AND for cron writes with
+`agentId=self` (create, re-target onto self, run), scope confinement on writes, scopes
+derived from the CP's agent record (not the request), demotion takes effect without
+re-grant, liveness counting (two opens + one close stays LIVE; last close revokes).
+Relay unit: open/close per connection, contributed connections cleared on drop, re-emit
+on CP reconnect. Daemon unit: injection on webchat + switch alone (present with no lease),
+key resolved per call (rotation visible mid-session), fail-closed message when a call
+arrives with no live lease, no injection for Slack or cron, auto-allow predicate matches
+the control server. Integration: a viewer's conversation cannot write; an agent cannot
+modify itself directly or via a self-bound cron.
 
 ---
 
@@ -485,7 +536,10 @@ argue the merge — it inherits it, and only the delegation mechanics are in que
 
 - TTL ~15 min with `renewBeforeSec` per `secrets.ts`; renew at turn start only.
 - Fail-closed text is daemon-authored and names the remedy ("reload the playground").
-- Audit reuses `assistant_op_log` with `principalType='delegated'` plus `actingUserId`,
-  `agentId`, `conversationId`.
+- Audit reuses the shipped MCP audit path — `audit_event` via `deps.repos.audit.append`
+  (`http/mcp/routes.ts`, including its serialized-args cap) — with
+  `principalType='delegated'` plus `actingUserId`, `agentId`, `conversationId`. (The
+  `assistant_op_log` table `agent-assistant.md` §9.3 proposed was never built; do not
+  add it.)
 - The v1 tool catalog is the read set of `agent-assistant.md` §6.2 plus agent and cron
   writes — kept identical to the allowlist in §6.1 so catalog and boundary cannot drift.
