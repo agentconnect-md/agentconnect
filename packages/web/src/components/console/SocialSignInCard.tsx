@@ -13,7 +13,6 @@ import {
   removeSocialIdentity,
   requestEmailVerification,
   socialIdentityDetails,
-  takeAccountNotice,
   verifyEmailCode,
   writeSocialLinkFlow,
   type AccountNotice,
@@ -189,14 +188,19 @@ function Notice({ notice }: { notice: AccountNotice }) {
   )
 }
 
-export default function SocialSignInCard({ mobile = false }: { mobile?: boolean }) {
+export default function SocialSignInCard({
+  mobile = false,
+  notice,
+  onNotice
+}: {
+  mobile?: boolean
+  notice?: AccountNotice
+  onNotice: (notice: AccountNotice) => void
+}) {
   const { data, error, isLoading, mutate } = useSWR('logto-account-sign-in-methods', fetchSignInMethods, {
     revalidateOnFocus: true
   })
   const [pending, setPending] = useState<PendingAction>()
-  const [notice, setNotice] = useState<AccountNotice>()
-
-  useEffect(() => setNotice(takeAccountNotice()), [])
 
   const finishAction = async (verificationRecordId?: string) => {
     if (!pending || !data) return
@@ -204,7 +208,7 @@ export default function SocialSignInCard({ mobile = false }: { mobile?: boolean 
       await removeSocialIdentity(pending.connector.target, verificationRecordId)
       await mutate()
       setPending(undefined)
-      setNotice({ kind: 'success', message: `${pending.connector.name} was disconnected.` })
+      onNotice({ kind: 'success', message: `${pending.connector.name} was disconnected.` })
       return
     }
 
