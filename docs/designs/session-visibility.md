@@ -58,10 +58,14 @@ The IM form carries a **workspace/tenant segment** from day one: platform uids
 are only unique per tenant (Slack team, Feishu tenant, Telegram bot scope), and
 one org can connect multiple workspaces of the same platform, so a two-segment
 `slack:<uid>` form would allow same-org identity collisions. The workspace
-value is **carried on the wire by the daemon** — the daemon already maintains
-a physical transport scope per platform connection, and `EventSession` gains a
+value is **carried on the wire by the daemon** — `EventSession` gains a
 `transportScope` field (§4.1) that the CP persists verbatim into
-`ownerIdentity`. The CP never reconstructs the scope from `platform` +
+`ownerIdentity`. The reported value must be a **durable tenant identifier**
+(Slack team id, Feishu tenant key): the daemon's existing physical transport
+scope is credential-derived and rotates with tokens, so reusing it would
+orphan historical identity matches on rotation. An adapter whose platform
+exposes no durable tenant id mints a stable per-integration scope once and
+persists it. The CP never reconstructs the scope from `platform` +
 `channel` (ambiguous when an org connects multiple bots/workspaces), and the
 design does not assume every adapter's integration record stores a usable
 tenant key (Feishu's, for example, is not exposed the same way). A milestone
@@ -117,9 +121,11 @@ enum VisibilitySource {
 ```
 
 - `orgId` is denormalized so the list predicate and its index do not join
-  `agent`. All existing paging indexes are `agentId`-prefixed; add
-  `@@index([orgId, visibility, lastActivityAt(sort: Desc), id])` for the
-  org-wide session list, keeping the existing keyset-pagination shape.
+  `agent`. All existing paging indexes are `agentId`-prefixed; add an
+  `(orgId, visibility, …)` index whose trailing columns **mirror the existing
+  keyset tuple exactly** (`lastActivityAt desc, startedAt, id` — whatever the
+  current `agentId`-prefixed page indexes use) so the org-wide session list
+  pages with the same cursor shape.
 - No `sharedWith String[]` on sessions in this iteration. Per-session
   member-sharing can be added later with the same GIN pattern as agents;
   share-by-link (§8) covers the near-term "share this session" ask.
