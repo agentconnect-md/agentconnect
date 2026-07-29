@@ -3370,8 +3370,8 @@ export default function AddIntegrationModal({
               </span>
             </div>
             <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-              {/* Region is used as a fallback; the one-click result normally reports
-                  the authorized tenant brand and the CP stores that exact gateway. */}
+              {/* Region selects the user-facing launcher; the one-click result normally
+                  reports the authorized tenant brand and the CP stores that exact gateway. */}
               <div className="mb-3">
                 <span className="fldlbl mb-[6px] block">Region</span>
                 <div className="grid grid-cols-2 gap-[6px]" role="radiogroup" aria-label="Lark or Feishu region">

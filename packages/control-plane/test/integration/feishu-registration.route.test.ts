@@ -12,7 +12,8 @@ import {
   AGENTCONNECT_FEISHU_SCOPES
 } from '../../src/http/feishu-app-template.js'
 import {
-  LARK_REGISTRATION_DOMAIN,
+  FEISHU_REGISTRATION_DOMAIN,
+  LARK_LAUNCHER_DOMAIN,
   OfficialFeishuRegistrationProvider,
   type PollFeishuRegistration,
   type FeishuRegistrationProvider
@@ -77,11 +78,11 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
 }
 
 describe('Feishu/Lark one-click app registration', () => {
-  it('starts Lark registration on the Lark accounts domain', async () => {
+  it('uses the canonical issuer for a valid Lark launcher link', async () => {
     const fetcher = vi.fn<typeof fetch>(async () => {
       return new Response(
         JSON.stringify({
-          verification_uri_complete: 'https://accounts.larksuite.com/device?user_code=LARK',
+          verification_uri_complete: 'https://open.feishu.cn/page/launcher?user_code=LARK',
           device_code: 'lark-device-code',
           expires_in: 600,
           interval: 1
@@ -90,9 +91,10 @@ describe('Feishu/Lark one-click app registration', () => {
     })
     const begun = await new OfficialFeishuRegistrationProvider(fetcher).begin('AgentConnect Lark', 'lark')
 
-    expect(new URL(String(fetcher.mock.calls[0]![0])).hostname).toBe(LARK_REGISTRATION_DOMAIN)
-    expect(new URL(begun.authorizationUrl).hostname).toBe(LARK_REGISTRATION_DOMAIN)
-    expect(begun.providerDomain).toBe(LARK_REGISTRATION_DOMAIN)
+    expect(new URL(String(fetcher.mock.calls[0]![0])).hostname).toBe(FEISHU_REGISTRATION_DOMAIN)
+    expect(new URL(begun.authorizationUrl).hostname).toBe(LARK_LAUNCHER_DOMAIN)
+    expect(new URL(begun.authorizationUrl).searchParams.get('user_code')).toBe('LARK')
+    expect(begun.providerDomain).toBe(FEISHU_REGISTRATION_DOMAIN)
   })
 
   it('survives a CP restart, installs the full template, and never returns credentials', async () => {
