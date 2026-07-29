@@ -2311,16 +2311,23 @@ export interface IntegrationRepo {
    * Atomic bot-membership admission — EVERY multi-agent bot admission (the
    * platform "Add to Slack" re-install and the generic `POST /integrations`
    * reuse, preset-agents.md §5.5) funnels here: locks the bot row, re-reads
-   * `shareable` and the ACTIVE membership set inside the SAME transaction as
-   * the insert, and admits at most one active row per (bot, agent) —
-   * `'exists'` returns the winner's row as the idempotent success for a
-   * duplicate concurrent admission, `'not_shareable'` is the §5.5 refusal
-   * (another agent holds a non-shared bot). Serialized with
-   * {@link BotRepo.setShareable} on the same lock.
+   * `shareable` + `revokedAt` and the ACTIVE membership set inside the SAME
+   * transaction as the insert, and admits at most one active row per
+   * (bot, agent) — `'exists'` returns the winner's row as the idempotent
+   * success for a duplicate concurrent admission, `'not_shareable'` is the
+   * §5.5 refusal (another agent holds a non-shared bot), `'revoked'` refuses
+   * admission onto a dead credential (a revoke that won the lock flipped every
+   * install; zero-active must not read as "free"). Serialized with
+   * {@link BotRepo.setShareable} and {@link BotCredentialWriter.revoke} on the
+   * same bot-row lock.
    */
   addBotMembership(
     input: CreateIntegrationInput
-  ): Promise<{ outcome: 'added' | 'exists'; integration: IntegrationRecord } | { outcome: 'not_shareable' }>
+  ): Promise<
+    | { outcome: 'added' | 'exists'; integration: IntegrationRecord }
+    | { outcome: 'not_shareable' }
+    | { outcome: 'revoked' }
+  >
   get(id: IntegrationId): Promise<IntegrationRecord | null>
   /** Every integration in the org. When a `viewer` is supplied, integrations whose
    *  parent agent is restricted-away from them are filtered out (derived visibility,

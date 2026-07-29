@@ -272,6 +272,19 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
             name: existing.name,
             ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {})
           })
+          if (admission.outcome === 'revoked') {
+            // Exotic: the workspace uninstalled again between this callback's
+            // fresh credential install and the admission — the revoke won the
+            // row lock and flipped every install, so admitting now would mint a
+            // live membership on the dead credential. Settle as a plain error;
+            // the next "Add to Slack" round trip re-installs cleanly.
+            req.log.warn(
+              { installId: row.id, botId: existing.id, targetAgentId: agent.id },
+              'slack platform re-install: bot revoked mid-callback'
+            )
+            await deps.httpBot.syncBot(existing.id)
+            return fail('error')
+          }
           if (admission.outcome === 'not_shareable') {
             // The platform bot installs NON-shareable: one workspace install
             // serves exactly one agent, so a re-install aimed at a DIFFERENT

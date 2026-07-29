@@ -795,6 +795,41 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
     expect(await prisma.integration.count({ where: { botId, agentId: target, status: 'active' } })).toBe(1)
   })
 
+  // Blocker regression (review #196, round 3): a credential revoke that wins the
+  // bot-row lock flips every install AND stamps revokedAt — a queued admission
+  // must re-check that stamp under the lock instead of reading the now-empty
+  // membership set as "free" and minting a live row on the dead credential.
+  it('generic reuse cannot resurrect a bot a concurrent revoke just killed', async () => {
+    const { app } = withPlatform()
+    const { botId, target } = await sharedPlatformBotWithTarget(app)
+
+    let revoke!: () => void
+    const gate = new Promise<void>((resolve) => (revoke = resolve))
+    const winner = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM bot WHERE id = ${botId} FOR UPDATE`
+      await gate
+      // The committed effect of BotCredentialWriter.revoke (bot CAS + install flip).
+      await tx.bot.update({ where: { id: botId }, data: { revokedAt: new Date() } })
+      await tx.integration.updateMany({ where: { botId, status: 'active' }, data: { status: 'revoked' } })
+    })
+    // Fires while the lock is held: its optimistic revokedAt check sees the
+    // pre-revoke snapshot, then it queues on the row lock inside addBotMembership.
+    const reuse = app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'slack', agentId: target, botId }
+    })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    revoke()
+    await winner
+    const res = await reuse
+
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).toMatch(/uninstalled|revoked/)
+    // Nothing came back alive: the bot stays revoked with zero active installs.
+    expect(await prisma.integration.count({ where: { botId, status: 'active' } })).toBe(0)
+  })
+
   it('404s for another org’s install id', async () => {
     const { app } = withPlatform()
     const otherOrg = await prisma.org.create({ data: { slug: `foreign-${randomUUID().slice(0, 8)}` } })

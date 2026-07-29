@@ -280,20 +280,29 @@ export class PgIntegrationRepo implements IntegrationRepo {
 
   async addBotMembership(
     input: CreateIntegrationInput
-  ): Promise<{ outcome: 'added' | 'exists'; integration: IntegrationRecord } | { outcome: 'not_shareable' }> {
+  ): Promise<
+    | { outcome: 'added' | 'exists'; integration: IntegrationRecord }
+    | { outcome: 'not_shareable' }
+    | { outcome: 'revoked' }
+  > {
     // Atomic bot-membership admission (the platform "Add to Slack" re-install
-    // AND the generic reuse path): the bot row is LOCKED, so `shareable` and the
-    // active membership set read below are stable through the insert — a
-    // concurrent sharing toggle (setShareable takes the same lock) or a
-    // concurrent duplicate admission serializes here instead of racing an
-    // earlier snapshot of the handler.
+    // AND the generic reuse path): the bot row is LOCKED, so `shareable`,
+    // `revokedAt`, and the active membership set read below are stable through
+    // the insert — a concurrent sharing toggle (setShareable takes the same
+    // lock), a credential revoke (BotCredentialWriter.revoke opens with the
+    // bot-row CAS), or a concurrent duplicate admission serializes here instead
+    // of racing an earlier snapshot of the handler.
     return await withAmbientTx(this.db, async (tx) => {
       const locked = await tx.$queryRaw<
-        { shareable: boolean }[]
-      >`SELECT shareable FROM bot WHERE id = ${input.botId} FOR UPDATE`
-      // Bot vanished mid-flight (uninstall race) — nothing to admit onto; the
+        { shareable: boolean; revokedAt: Date | null }[]
+      >`SELECT shareable, "revokedAt" FROM bot WHERE id = ${input.botId} FOR UPDATE`
+      // Bot vanished mid-flight (delete race) — nothing to admit onto; the
       // caller's refusal path is close enough for this exotic window.
       if (!locked[0]) return { outcome: 'not_shareable' as const }
+      // A revoke that won the lock flipped every install AND stamped the bot:
+      // admitting after it would mint a live membership on a dead credential
+      // (the zero-active read below would otherwise wave it through).
+      if (locked[0].revokedAt) return { outcome: 'revoked' as const }
       const active = await tx.integration.findMany({ where: { botId: input.botId, status: 'active' } })
       // Idempotent per (bot, agent): the loser of two concurrent same-agent
       // admissions lands here and reports the winner's row as success.

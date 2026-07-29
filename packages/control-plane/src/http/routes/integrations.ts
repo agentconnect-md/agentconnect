@@ -303,6 +303,16 @@ export function integrationRoutes(deps: HttpDeps) {
                 ...(bot.feishuRegion ? { feishuRegion: bot.feishuRegion } : {}),
                 ...(req.principal ? { createdByUserId: req.principal.userId } : {})
               })
+              if (admission.outcome === 'revoked') {
+                // A workspace revoke won the row lock and flipped every install —
+                // zero-active must not read as "free" (the optimistic revokedAt
+                // check above saw the pre-revoke snapshot).
+                return reply.code(409).send({
+                  error: 'Conflict',
+                  statusCode: 409,
+                  message: 'this bot’s Slack app was uninstalled or its tokens were revoked; reinstall it instead'
+                })
+              }
               if (admission.outcome === 'not_shareable') {
                 return reply.code(409).send({
                   error: 'Conflict',
