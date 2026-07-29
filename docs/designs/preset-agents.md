@@ -284,6 +284,15 @@ installed via standard OAuth v2. Verified gaps against current code:
 - **Transport.** Distributed apps are Events-API-only — a socket-mode app token is
   per-app and cannot be demuxed per workspace — so this path hard-depends on the relay
   pool (`PUBLIC_RELAY_URL` + ≥1 connected relay), exactly like `http` transport today.
+- **Console surface: the preset agent only.** Add-integration offers the one-click
+  "Add to Slack" pane on the **`agentconnect` preset** (`AgentDto.builtin`) and on no
+  other agent, even where the platform app is configured: the deployment publishes one
+  Slack app, its workspace install binds to the preset, and a second agent clicking it
+  can only hit `agent_taken` (§5.5). Every other agent opens straight on the custom
+  bot-identity flow — its own app via quick-install (§5.2 machinery), or reuse of a
+  freed / shared bot. The start route still accepts an explicit `agentId` (the API
+  path that widens an already-shared workspace bot); the console never sends one for a
+  non-preset agent.
 
 ### 5.4 The scope contract
 

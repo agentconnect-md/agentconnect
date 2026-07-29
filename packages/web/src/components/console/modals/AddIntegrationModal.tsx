@@ -1071,7 +1071,8 @@ export default function AddIntegrationModal({
   } | null>(null)
   // Platform-published "Add to Slack" app (preset-agents.md §5.3): one click, no app
   // to create and no tokens — the CP finishes the install in the OAuth callback, and
-  // the modal polls THAT install row for its terminal state.
+  // the modal polls THAT install row for its terminal state. This is the DEPLOYMENT
+  // probe only; whether THIS agent may use it is `builtinAppOffered` below.
   const [platformAvailable, setPlatformAvailable] = useState(false)
   const [platformPhase, setPlatformPhase] = useState<'idle' | 'authorizing'>('idle')
   const [platformErr, setPlatformErr] = useState<string | null>(null)
@@ -1272,8 +1273,15 @@ export default function AddIntegrationModal({
   // the platform app configured, the DEFAULT pane is the one-click built-in
   // install — the whole custom flow (mode cards, token steps, share toggle, the
   // footer action) hides behind the "Use a custom bot identity" disclosure.
+  // …and it is offered on the BUILT-IN preset agent only (preset-agents.md §5.3):
+  // the platform app is one deployment-level Slack app whose workspace install
+  // binds to the org's `agentconnect` preset. Clicking it from any other agent
+  // is a dead end — the workspace is already taken by the preset, and the
+  // callback answers `agent_taken`. Every other agent gets its own bot identity
+  // (create an app via quick-install, or reuse a freed / shared one).
+  const builtinAppOffered = platformAvailable && agent.builtin === true
   const slackChecking = platform === 'slack' && slackFunnel === null
-  const slackBuiltin = platform === 'slack' && slackFunnel !== null && platformAvailable && slackIdentity === 'builtin'
+  const slackBuiltin = platform === 'slack' && slackFunnel !== null && builtinAppOffered && slackIdentity === 'builtin'
   const hideIdentitySection = slackChecking || slackBuiltin
   const selectedBotId = freeBots.some((b) => b.id === botPick) ? botPick : (freeBots[0]?.id ?? null)
   const selectedBot = freeBots.find((b) => b.id === selectedBotId) ?? null
@@ -2740,8 +2748,9 @@ export default function AddIntegrationModal({
         {platform !== 'webhook' && platform !== 'github' && !hideIdentitySection && (
           <div className="mb-2 flex items-center justify-between gap-3">
             <div className="fldlbl">Bot identity</div>
-            {/* Way back to the simple pane — only meaningful when the platform app exists. */}
-            {platform === 'slack' && platformAvailable && (
+            {/* Way back to the simple pane — only meaningful when the platform app
+                exists AND this agent is the preset it binds to. */}
+            {platform === 'slack' && builtinAppOffered && (
               <button
                 type="button"
                 onClick={() => setSlackIdentity('builtin')}
