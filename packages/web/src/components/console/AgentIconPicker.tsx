@@ -20,12 +20,16 @@ export function AgentIconPicker({
   onChange,
   onCommit,
   onUploadImage,
+  disabled = false,
   size = 30,
   pencilCorner = 'br',
   radiusClass = 'rounded-[7px]'
 }: {
   value: AgentIcon | null
   runtime: string
+  /** True ⇒ display-only: no pencil badge, no popover (built-in preset agents
+   *  keep their fixed brand icon — the CP refuses the change too). */
+  disabled?: boolean
   /** Live update on each glyph/color pick — for a controlled parent (the Add modal persists on Create). */
   onChange?: (icon: AgentIcon) => void
   /** Fired once when the popover closes IF the glyph/color changed while open — the header's
@@ -92,6 +96,22 @@ export function AgentIconPicker({
   }
 
   const pencilPos = pencilCorner === 'tr' ? '-top-1 -right-1' : '-bottom-1 -right-1'
+
+  if (disabled) {
+    // Display-only avatar: same tile, no pencil affordance and no popover.
+    return (
+      <span
+        className={`relative flex flex-none items-center justify-center ${value?.kind === 'image' ? 'bg-white' : value?.kind === 'glyph' ? '' : 'bg-(--surface-inverse)'} ${radiusClass}`}
+        style={{
+          width: size,
+          height: size,
+          background: value?.kind === 'glyph' && value.glyph !== 'agentconnect' ? value.color : undefined
+        }}
+      >
+        <AgentIconView icon={value} runtime={runtime} size={size} />
+      </span>
+    )
+  }
 
   return (
     <div className="relative flex-none">

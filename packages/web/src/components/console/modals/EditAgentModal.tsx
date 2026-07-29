@@ -521,12 +521,16 @@ export default function EditAgentModal({
                 </div>
                 <div className="fld">
                   <span className="fldlbl">Display name</span>
+                  {/* Built-in preset agents keep their fixed brand identity — the CP
+                      refuses the change too. */}
                   <input
                     className="inp"
                     placeholder="Deploy Bot (optional)"
                     value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)}
-                    autoFocus
+                    disabled={!!agent.builtin}
+                    title={agent.builtin ? 'Built-in agents keep their name' : undefined}
+                    autoFocus={!agent.builtin}
                   />
                 </div>
                 <div className="fld desktop:col-span-2">

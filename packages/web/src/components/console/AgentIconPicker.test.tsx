@@ -26,4 +26,19 @@ describe('AgentIconPicker', () => {
     expect(brand).not.toContain('bg-(--surface-inverse)')
     expect(brand).toContain('#f2c64a') // the native logo's facet fill renders
   })
+
+  it('disabled renders a display-only avatar — no pencil, no picker button (built-ins)', () => {
+    const markup = renderToStaticMarkup(
+      <AgentIconPicker
+        value={{ kind: 'glyph', glyph: 'agentconnect', color: '#1a212b' }}
+        runtime=""
+        size={44}
+        disabled
+      />
+    )
+
+    expect(markup).toContain('#f2c64a') // the avatar itself still shows
+    expect(markup).not.toContain('<button')
+    expect(markup).not.toContain('Choose icon')
+  })
 })

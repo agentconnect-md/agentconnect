@@ -470,6 +470,7 @@ export default function AgentDetailView() {
           runtime={da.runtime}
           onCommit={(icon) => void updateAgent(da.id, { icon }).catch(() => {})}
           onUploadImage={onUploadIcon}
+          disabled={!!da.builtin}
           size={52}
           radiusClass="rounded-[12px]"
         />
@@ -591,6 +592,7 @@ export default function AgentDetailView() {
           runtime={da.runtime}
           onCommit={(icon) => void updateAgent(da.id, { icon }).catch(() => {})}
           onUploadImage={onUploadIcon}
+          disabled={!!da.builtin}
           size={48}
           radiusClass="rounded-[12px]"
         />

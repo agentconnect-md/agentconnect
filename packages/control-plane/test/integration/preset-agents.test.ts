@@ -3,10 +3,11 @@
  * the one-time backfill, the reserved slugs, and the deferred-runtime tolerance
  * of the existing routes.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
+import type { IconStore } from '../../src/icons/icon-store.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { GENERAL_PRESET, PresetAgentBackfill, provisionPresetAgents } from '../../src/persistence/index.js'
@@ -92,6 +93,50 @@ describe('org-creation seam (POST /orgs)', () => {
         url: `/api/v1/orgs/${orgId}/agents/${siblingBody.id}`
       })
       expect(delSibling.statusCode).toBe(204)
+    } finally {
+      await close()
+    }
+  })
+
+  it('the built-in identity is immutable — display name, icon, and icon uploads all 403', async () => {
+    const PNG = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
+      0, 0, 0, 0
+    ])
+    const store: IconStore = {
+      put: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+      publicUrl: vi.fn(() => 'https://images.example.test/x')
+    }
+    const { app, close } = buildHttpApp(prisma, {}, undefined, undefined, { iconStore: store })
+    try {
+      const created = await app.inject({ method: 'POST', url: '/api/v1/orgs', payload: { slug: 'identity-org' } })
+      const orgId = (created.json() as { id: string }).id
+      const agents = (await (await app.inject({ method: 'GET', url: `/api/v1/orgs/${orgId}/agents` })).json()) as {
+        id: string
+      }[]
+      const base = `/api/v1/orgs/${orgId}/agents/${agents[0]!.id}`
+
+      for (const payload of [{ displayName: 'Renamed' }, { icon: { kind: 'glyph', glyph: 'bot', color: '#c62a78' } }]) {
+        const res = await app.inject({ method: 'PATCH', url: base, payload })
+        expect(res.statusCode).toBe(403)
+        expect((res.json() as { message: string }).message).toMatch(/identity/)
+      }
+      // Everything else stays an ordinary edit — the preset is a normal agent.
+      expect(
+        (await app.inject({ method: 'PATCH', url: base, payload: { description: 'still mine' } })).statusCode
+      ).toBe(200)
+
+      // The dedicated upload/reset routes refuse the same way.
+      const up = await app.inject({
+        method: 'PUT',
+        url: `${base}/icon`,
+        headers: { 'content-type': 'image/png' },
+        payload: PNG
+      })
+      expect(up.statusCode).toBe(403)
+      expect((await app.inject({ method: 'DELETE', url: `${base}/icon` })).statusCode).toBe(403)
+      expect(store.put).not.toHaveBeenCalled()
     } finally {
       await close()
     }

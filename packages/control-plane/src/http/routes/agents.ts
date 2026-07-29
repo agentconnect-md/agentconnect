@@ -1305,6 +1305,16 @@ export function agentRoutes(deps: HttpDeps) {
         if (!canEdit(existing, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
+        // Built-in preset agents keep their fixed brand identity (preset-agents.md
+        // §3.1): display name and icon are not editable — everything else stays an
+        // ordinary edit. (The slug is create-time-immutable for every agent.)
+        if (existing.builtin && (req.body.displayName !== undefined || req.body.icon !== undefined)) {
+          return reply.code(403).send({
+            error: 'Forbidden',
+            statusCode: 403,
+            message: 'built-in agent identity (display name, icon) cannot be changed'
+          })
+        }
         const release = deps.agentMutations.tryBeginMutation(existing.id)
         if (!release) {
           return reply
