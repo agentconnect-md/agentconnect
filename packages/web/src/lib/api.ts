@@ -509,6 +509,26 @@ export interface SlackInstallStatusDto {
   status: 'awaiting_oauth' | 'bot_ready'
 }
 
+/** Feishu/Lark one-click self-built app registration. The browser receives only
+ * the provider authorization URL; App ID/Secret are finalized server-side. */
+export interface StartFeishuRegistrationInput {
+  agentId: string
+  name?: string
+  region?: 'feishu' | 'lark'
+}
+export interface FeishuRegistrationStartDto {
+  id: string
+  authorizationUrl: string
+  expiresAt: string
+}
+export interface FeishuRegistrationStatusDto {
+  id: string
+  status: 'pending' | 'completed' | 'failed'
+  failureReason: 'denied' | 'expired' | 'agent_unavailable' | 'invalid_credentials' | 'setup_failed' | null
+  integrationId: string | null
+  expiresAt: string
+}
+
 /** `GET /slack/config` — the CALLER's own stored-config status (drives the create
  *  modal's forced auto/manual mode). Per-user. NEVER carries the token. */
 export interface SlackConfigDto {
@@ -2509,6 +2529,18 @@ export async function fetchIntegrations(orgId?: string): Promise<IntegrationDto[
 // (never the tokens); the CP delivers the tokens to the owning agent's daemon.
 export async function createIntegration(input: CreateIntegrationInput): Promise<IntegrationDto> {
   return apiPost<IntegrationDto>(`${orgBase()}/integrations`, input)
+}
+
+// ── Feishu/Lark one-click app registration ──
+// Start the official device flow and receive a normal browser deeplink. The CP
+// keeps polling and installs the returned credentials without exposing them here.
+export async function startFeishuRegistration(
+  input: StartFeishuRegistrationInput
+): Promise<FeishuRegistrationStartDto> {
+  return apiPost<FeishuRegistrationStartDto>(`${orgBase()}/integrations/feishu/app`, input)
+}
+export async function getFeishuRegistration(id: string): Promise<FeishuRegistrationStatusDto> {
+  return apiGet<FeishuRegistrationStatusDto>(`${orgBase()}/integrations/feishu/app/${encodeURIComponent(id)}`)
 }
 
 // ── Slack auto-install funnel ──

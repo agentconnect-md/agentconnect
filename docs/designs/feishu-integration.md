@@ -153,6 +153,16 @@ IntegrationFeishuConfig }`.
   `replicateUpsert(integration, agent.daemonId)`, which sends
   `integrationUpsert(daemonId, integrationToSpec(...))`. This nearly copies the
   Discord branch.
+- Add `POST /integrations/feishu/app` and
+  `GET /integrations/feishu/app/:id` for the default one-click path. The first
+  route starts the official SDK's `registerApp` device flow and returns only a
+  direct authorization URL plus an opaque registration ID. The second polls
+  the short-lived registration status.
+- Configure `registerApp` with `createOnly: true`, the platform
+  `PersonalAgent` preset, AgentConnect's tenant scopes, and
+  `im.message.receive_v1`. After approval, pass the returned App ID and App
+  Secret directly to the same bot-secret installation helper used by the
+  manual route. Never return either credential from the registration routes.
 - In `src/http/dto/index.ts`:
   - Add `'feishu'` to the `platform` `[enum]` in `CreateIntegrationBody`; add
     optional `feishu: z.object({ appId, appSecret })`; and update both
@@ -302,12 +312,14 @@ IntegrationFeishuConfig }`.
 - In `src/components/console/modals/AddIntegrationModal.tsx`:
   - Add `{ key: 'feishu', label: 'Feishu' }` to `BOT_PLATFORMS`; see the scope
     note in section 1.
-  - Add `CREATE_DESC.feishu`, explaining that the user creates a custom app in
-    Feishu Open Platform, enables long-connection event subscriptions, and
-    pastes the App ID and App Secret.
-  - Render **two inputs**, App ID and App Secret, and submit
+  - Make **One-click** the default for a new bot. Open the authorization URL in
+    a new tab, poll the opaque registration ID, and refresh the integration
+    list when setup completes. This is a direct deeplink; the user does not
+    need to scan a QR code.
+  - Keep **Manual** as the advanced fallback. It renders App ID and App Secret
+    inputs and submits
     `{ platform: 'feishu', feishu: { appId, appSecret } }`.
-  - Add `FEISHU_CHECKLIST`, following `DISCORD_CHECKLIST`: enable bot
+  - Show `FEISHU_CHECKLIST` only for manual or existing-app setup: enable bot
     capability, subscribe to `im.message.receive_v1`, select long connection,
     grant required scopes, and add the bot to a group.
   - Optionally derive an "Add to group" link from `feishuAppId`.
@@ -336,13 +348,20 @@ All three must include `'feishu'` for end-to-end selection.
 
 ## 6. Credential flow and security
 
-At installation:
-Console collects `appId` and `appSecret` -> the Control Plane calls
-`verifyFeishuBot` once -> `botSecret.put` stores
+At one-click installation:
+Console starts registration -> the Control Plane returns a provider
+authorization deeplink -> the user confirms the app and requested permissions
+in Feishu/Lark -> the SDK returns `appId` and `appSecret` only to the Control
+Plane -> `verifyFeishuBot` validates them -> `botSecret.put` stores
 `{ botToken: appSecret, appToken: appId }` -> `integrationToSpec` constructs
 `IntegrationSpec.feishu` -> `integration/upsert`, with
 `RegisterOk.integrations[]` as reconciliation fallback, distributes it to the
 daemon -> the daemon persists it in `agent.json` and starts `WSClient`.
+
+The browser receives only the authorization URL, expiry, status, and final
+integration ID. The manual fallback enters at `verifyFeishuBot` with an App ID
+and App Secret supplied by the user and then follows the same installation
+path.
 
 - `appSecret` is a plaintext secret. Wire frames and `agent.json` share the
   existing trust boundary, and the secret **must never be logged**. Preserve the
@@ -417,13 +436,19 @@ flat send.
 
 ### 7.5 Platform setup prerequisites in the web checklist
 
-A custom application must enable bot capability, select **long connection** for
-event subscription, subscribe to `im.message.receive_v1`, request scopes such
-as `im:message`, `im:message:send_as_bot`, `im:resource`, and optionally
-`im:chat` and `contact:user.base:readonly`, and be added to the target group.
-The installation API cannot automate these steps. `FEISHU_CHECKLIST` links to
-[open.feishu.cn](https://open.feishu.cn), parallel to the Discord Developer
-Portal checklist.
+The default one-click flow uses the official `PersonalAgent` app template and
+pre-fills AgentConnect's event and permission additions. They include
+`im.message.receive_v1`, message send/read and resource scopes,
+`im:chat:read`, `im:chat.members:bot_access`,
+`contact:contact.base:readonly`, and `contact:user.base:readonly`. The last
+scope is required for participant names instead of raw `ou_...` IDs. The user
+still reviews and confirms the app, and tenant policy may require administrator
+approval.
+
+Manual setup must configure the same bot capability, long-connection event,
+scopes, and publication state. In both paths, adding the bot to a target group
+remains a user action. `FEISHU_CHECKLIST` documents those manual prerequisites
+and links to [open.feishu.cn](https://open.feishu.cn).
 
 ## 8. Current implementation and remaining scope
 
@@ -432,8 +457,13 @@ Portal checklist.
   capability declaration.
 - **Daemon runtime:** `feishu/{connection,normalize,render}.ts` uses `WSClient`
   for inbound normalization, outbound messages, and reconciliation.
-- **Web:** `AddIntegrationModal` includes Feishu marks, App ID and App Secret
-  fields, a setup checklist, Settings card, and API types.
+- **Web:** `AddIntegrationModal` defaults to the official one-click
+  authorization deeplink and keeps App ID/App Secret entry as an advanced
+  fallback. It also includes Feishu marks, a manual setup checklist, Settings
+  card, and API types.
+- **Control Plane:** a short-lived registration broker owns SDK polling and
+  installs credentials server-side through the same secret-store helper as the
+  manual route. App Secret never enters a browser response.
 - **Attachments and topics:** `downloadFile` uses authenticated
   `im.messageResource.get`; topic replies use
   `im.message.reply(reply_in_thread)` and group sessions keyed by topic root.
@@ -451,6 +481,9 @@ Portal checklist.
 - **Control Plane integration:** apply the migration and exercise the Feishu
   path in `integrations.route.test.ts` with `verifyFeishuBot` stubbed to
   success, invalid, and unreachable.
+- **One-click integration:** stub `registerApp`, verify the complete scope/event
+  preset, complete and denied states, secret persistence, and that registration
+  responses never contain App ID or App Secret.
 - **Live:** use a real custom application with long connection,
   `im.message.receive_v1`, permissions, and group membership. Like Discord, this
   does not block the contract phase.

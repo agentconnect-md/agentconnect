@@ -29,6 +29,7 @@ import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js
 import { pickChannelOwner } from '../../orchestrator/httpBot.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewSlackBot, slackAppIdFromAppToken } from '../install-slack.js'
+import { installNewFeishuBot } from '../install-feishu.js'
 import { discordAppIdFromBotToken } from '../discord-identity.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
 import {
@@ -464,35 +465,15 @@ export function integrationRoutes(deps: HttpDeps) {
             const provided = req.body.name?.trim()
             const derived = check?.status === 'ok' ? check.name : null
             const name = provided || derived || agent.name
-            const botId = BotId(randomUUID())
-            await deps.repos.bot.create({
-              id: botId,
+            const integration = await installNewFeishuBot(deps, app.log, {
               orgId,
-              platform: 'feishu',
+              agent,
               name,
-              // Durable home for the region so a later reinstall of this freed bot
-              // reconstructs the right gateway (the integration row is deleted on uninstall).
-              feishuAppId: feishu.appId,
-              feishuRegion: region,
+              appId: feishu.appId,
+              appSecret: feishu.appSecret,
+              region,
               ...(req.principal ? { createdByUserId: req.principal.userId } : {})
             })
-            // botToken = appSecret (secret), appToken = appId (identifier).
-            await deps.repos.botSecret.put(botId, {
-              botToken: feishu.appSecret,
-              appToken: feishu.appId,
-              signingSecret: null
-            })
-            const integration = await deps.repos.integration.create({
-              id: IntegrationId(randomUUID()),
-              orgId,
-              agentId: agent.id,
-              botId,
-              platform: 'feishu',
-              name,
-              feishuRegion: region,
-              ...(req.principal ? { createdByUserId: req.principal.userId } : {})
-            })
-            await replicateUpsert(integration, daemonId)
             return reply.code(201).send(toDto(integration))
           }
 

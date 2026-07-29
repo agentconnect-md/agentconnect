@@ -14,6 +14,8 @@ import { consoleKeys } from '@/lib/swr-keys'
 import {
   ApiError,
   creatorLabel,
+  startFeishuRegistration,
+  getFeishuRegistration,
   startSlackInstall,
   startSlackPlatformInstall,
   getSlackPlatformInstall,
@@ -107,6 +109,14 @@ const PLATFORM_INSTALL_FAILURES: Record<string, string> = {
   workspace_taken: 'That Slack workspace is already connected to another organization.',
   agent_taken: 'That Slack workspace is already connected to another agent here. Remove that integration first.',
   error: 'Slack could not complete the install. Please try again.'
+}
+
+const FEISHU_REGISTRATION_FAILURES: Record<string, string> = {
+  denied: 'The Feishu/Lark app setup was cancelled.',
+  expired: 'This setup link expired — start again.',
+  agent_unavailable: 'This agent moved or was removed during setup. Check its daemon, then try again.',
+  invalid_credentials: 'The app was created, but its credentials could not be verified.',
+  setup_failed: 'Feishu/Lark could not complete the app setup. Please try again.'
 }
 
 const GH_TRIGGER_TILES: { mode: GhTriggerMode; label: string; desc: string }[] = [
@@ -213,8 +223,8 @@ const FEISHU_REQS: { icon: string; title: string; desc: string }[] = [
   },
   {
     icon: 'shield-check',
-    title: 'Grant the message scopes',
-    desc: 'Request im:message, im:message:send_as_bot and im:resource (add im:chat as needed), then create a version and publish.'
+    title: 'Grant message and name scopes',
+    desc: 'Request the message, chat and resource scopes plus contact:contact.base:readonly and contact:user.base:readonly so channels and participants have readable names, then publish.'
   },
   {
     icon: 'users',
@@ -987,6 +997,7 @@ export default function AddIntegrationModal({
     createGithubHook,
     daemons,
     daemonsLoading,
+    refresh,
     updateAgent
   } = useConsoleData()
   const { me } = useProfile()
@@ -999,11 +1010,18 @@ export default function AddIntegrationModal({
   // Feishu/Lark gateway: new installs default to international Lark.
   const [feishuRegion, setFeishuRegion] = useState<'feishu' | 'lark'>('lark')
   const feishuBrand = feishuRegion === 'lark' ? 'Lark' : 'Feishu'
+  const [feishuMethod, setFeishuMethod] = useState<'deeplink' | 'manual'>('deeplink')
+  const [feishuPhase, setFeishuPhase] = useState<'idle' | 'authorizing'>('idle')
+  const [feishuRegistration, setFeishuRegistration] = useState<{
+    id: string
+    authorizationUrl: string
+    expiresAt: string
+  } | null>(null)
   const botIdentityCopy: Record<BotPlatform, { create: string; existing: string }> = {
     slack: { create: 'Create with a Slack manifest', existing: 'An unused Slack app' },
     telegram: { create: 'Create a bot with @BotFather', existing: 'An unused Telegram bot' },
     discord: { create: 'Create a bot in Discord', existing: 'An unused Discord bot' },
-    feishu: { create: `Create a bot in ${feishuBrand}`, existing: `An unused ${feishuBrand} bot` }
+    feishu: { create: `Create with one-click ${feishuBrand} setup`, existing: `An unused ${feishuBrand} bot` }
   }
   const [saving, setSaving] = useState(false)
   const [showErrors, setShowErrors] = useState(false)
@@ -1204,6 +1222,9 @@ export default function AddIntegrationModal({
     setBotToken('')
     setAppToken('')
     setCreateMethod(null)
+    setFeishuMethod('deeplink')
+    setFeishuPhase('idle')
+    setFeishuRegistration(null)
     setCfgAccess('')
     setCfgRefresh('')
     setShowErrors(false)
@@ -1225,6 +1246,9 @@ export default function AddIntegrationModal({
     setAppName(agent.name)
     setBotToken('')
     setAppToken('')
+    setFeishuMethod('deeplink')
+    setFeishuPhase('idle')
+    setFeishuRegistration(null)
     setShowErrors(false)
     setErr(null)
   }, [agent.name, createdHook, daemonsLoading, firstSupportedBotPlatform, selectedBotPlatformSupported])
@@ -1792,6 +1816,79 @@ export default function AddIntegrationModal({
     setErr(null)
   }
 
+  // Feishu/Lark's official device flow returns a normal authorization deeplink.
+  // Open a blank tab synchronously so popup blockers preserve the user's click
+  // while the CP asks the provider for that URL.
+  const startFeishuAuto = async () => {
+    if (busyRef.current || feishuRegistration) return
+    busyRef.current = true
+    setSaving(true)
+    setErr(null)
+    const authorizationTab = window.open('about:blank', '_blank')
+    if (authorizationTab) authorizationTab.opener = null
+    try {
+      const started = await startFeishuRegistration({
+        agentId: agent.id,
+        region: feishuRegion,
+        ...(appName.trim() ? { name: appName.trim() } : {})
+      })
+      setFeishuRegistration(started)
+      setFeishuPhase('authorizing')
+      if (authorizationTab) authorizationTab.location.replace(started.authorizationUrl)
+      else window.open(started.authorizationUrl, '_blank', 'noopener,noreferrer')
+    } catch (e) {
+      authorizationTab?.close()
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+      busyRef.current = false
+    }
+  }
+
+  // The App Secret never reaches the browser. Poll only the short-lived session:
+  // once the CP has installed the credentials and pushed the integration, refresh
+  // the two console projections and close.
+  useEffect(() => {
+    if (
+      mode !== 'create' ||
+      platform !== 'feishu' ||
+      feishuMethod !== 'deeplink' ||
+      feishuPhase !== 'authorizing' ||
+      !feishuRegistration
+    )
+      return
+    let alive = true
+    const stop = (message: string) => {
+      setFeishuPhase('idle')
+      setFeishuRegistration(null)
+      setErr(message)
+    }
+    const tick = async () => {
+      try {
+        const status = await getFeishuRegistration(feishuRegistration.id)
+        if (!alive || status.status === 'pending') return
+        if (status.status === 'completed') {
+          refresh()
+          return onClose()
+        }
+        stop(
+          FEISHU_REGISTRATION_FAILURES[status.failureReason ?? ''] ??
+            'Feishu/Lark could not complete the app setup. Please try again.'
+        )
+      } catch (e) {
+        // A missing short-lived session is terminal; ordinary network failures
+        // remain retryable and the next poll keeps the setup moving.
+        if (alive && e instanceof ApiError && e.status === 404) stop(FEISHU_REGISTRATION_FAILURES.expired!)
+      }
+    }
+    const timer = setInterval(() => void tick(), 2000)
+    void tick()
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [feishuMethod, feishuPhase, feishuRegistration, mode, onClose, platform, refresh])
+
   // Auto flow — final step. Socket: hand the CP the pasted app-level token; it
   // combines it with the OAuth-obtained bot token to create the bot + integration.
   // Http: no token — the CP reads the signing secret via the caller's config token,
@@ -1943,6 +2040,7 @@ export default function AddIntegrationModal({
   // is shown and the footer commits it (save + create the app).
   const isConfigSetup =
     mode === 'create' && platform === 'slack' && slackFunnel === true && slackMethod === 'config' && !autoUsable
+  const isFeishuDeeplink = mode === 'create' && platform === 'feishu' && feishuMethod === 'deeplink'
   const footer =
     platform === 'webhook'
       ? createdHook
@@ -3228,112 +3326,208 @@ export default function AddIntegrationModal({
               </div>
             </div>
           )}
-        {/* Feishu needs TWO credentials (App ID + App Secret), so it gets its own create
-            block instead of the single-token generic one above — mirroring Slack. */}
+        {/* Feishu/Lark defaults to the official device-registration deeplink. The
+            manual credential pair remains available as an advanced fallback. */}
         {mode === 'create' && platform === 'feishu' && (
-          <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-            {/* Region picks the open-platform gateway: Feishu (China, open.feishu.cn) vs
-                Lark (international, open.larksuite.com). Same app model, different console
-                + host — an app is registered in one region, so the operator chooses first. */}
-            <div className="mb-3">
-              <span className="fldlbl mb-[6px] block">Region</span>
-              <div className="grid grid-cols-2 gap-[6px]" role="radiogroup" aria-label="Lark or Feishu region">
-                {(
-                  [
-                    { key: 'lark', label: 'Lark', sub: 'International' },
-                    { key: 'feishu', label: 'Feishu', sub: '飞书 · China' }
-                  ] as const
-                ).map((r) => (
-                  <button
-                    key={r.key}
-                    type="button"
-                    role="radio"
-                    aria-checked={feishuRegion === r.key}
-                    onClick={() => setFeishuRegion(r.key)}
-                    className={`flex flex-col items-start gap-[1px] rounded-md border px-[11px] py-[7px] text-left ${
-                      feishuRegion === r.key
-                        ? 'border-(--brand) bg-(--surface-active)'
-                        : 'border-(--border-default) bg-(--surface-app)'
-                    }`}
-                  >
-                    <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                      {r.label}
-                    </span>
-                    <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                      {r.sub}
-                    </span>
-                  </button>
-                ))}
+          <>
+            <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-[6px]">
+              <div className="inline-flex flex-none rounded-lg border border-(--border-default) bg-(--surface-card) p-[3px]">
+                {(['deeplink', 'manual'] as const).map((method) => {
+                  const on = feishuMethod === method
+                  return (
+                    <button
+                      key={method}
+                      type="button"
+                      disabled={feishuPhase === 'authorizing'}
+                      onClick={() => {
+                        setFeishuMethod(method)
+                        setShowErrors(false)
+                        setErr(null)
+                      }}
+                      title={feishuPhase === 'authorizing' ? 'App setup is in progress' : undefined}
+                      className={`rounded-[6px] px-[11px] py-[5px] font-sans text-[12px] font-semibold leading-normal ${
+                        on ? 'bg-(--brand-soft) text-(--brand)' : 'bg-transparent text-(--text-tertiary)'
+                      } ${feishuPhase === 'authorizing' ? 'cursor-not-allowed opacity-50' : ''}`}
+                    >
+                      {method === 'deeplink' ? 'One-click' : 'Manual'}
+                    </button>
+                  )
+                })}
               </div>
-            </div>
-            <div className="mb-3 flex gap-[10px]">
-              <span className="mono mt-[1px] flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                1
+              <span className="min-w-0 flex-1 font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                {feishuMethod === 'deeplink'
+                  ? `Recommended — approve in ${feishuBrand}; permissions, events and credentials are connected automatically.`
+                  : 'Advanced — configure a self-built app yourself and paste its credentials.'}
               </span>
-              <div className="min-w-0 flex-1">
-                <div className="mb-2 font-sans text-[12.5px] font-medium leading-[1.45] text-(--text-secondary)">
-                  Create a self-built app in the {feishuBrand}&#32;console, enable the bot, then copy its App ID and App
-                  Secret from Credentials &amp; Basic Info.
-                </div>
-                <div className="group relative">
-                  <a
-                    href={
-                      feishuRegion === 'lark'
-                        ? 'https://open.larksuite.com/page/launcher'
-                        : 'https://open.feishu.cn/page/launcher'
-                    }
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
-                  >
-                    <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
-                      <PlatformMark platform="feishu" />
-                    </span>
-                    Create {feishuBrand} bot
-                    <Icon name="external-link" size={14} />
-                  </a>
-                  <BotSetupWalkthrough
-                    steps={
-                      feishuRegion === 'lark'
-                        ? feishuWalkthroughSteps('Lark', 'open.larksuite.com')
-                        : feishuWalkthroughSteps('Feishu', 'open.feishu.cn')
-                    }
-                    label={feishuRegion === 'lark' ? 'Lark bot setup steps' : 'Feishu bot setup steps'}
-                  />
+            </div>
+            <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
+              {/* Region is used as a fallback; the one-click result normally reports
+                  the authorized tenant brand and the CP stores that exact gateway. */}
+              <div className="mb-3">
+                <span className="fldlbl mb-[6px] block">Region</span>
+                <div className="grid grid-cols-2 gap-[6px]" role="radiogroup" aria-label="Lark or Feishu region">
+                  {(
+                    [
+                      { key: 'lark', label: 'Lark', sub: 'International' },
+                      { key: 'feishu', label: 'Feishu', sub: '飞书 · China' }
+                    ] as const
+                  ).map((region) => (
+                    <button
+                      key={region.key}
+                      type="button"
+                      role="radio"
+                      disabled={feishuPhase === 'authorizing'}
+                      aria-checked={feishuRegion === region.key}
+                      onClick={() => setFeishuRegion(region.key)}
+                      className={`flex flex-col items-start gap-[1px] rounded-md border px-[11px] py-[7px] text-left ${
+                        feishuRegion === region.key
+                          ? 'border-(--brand) bg-(--surface-active)'
+                          : 'border-(--border-default) bg-(--surface-app)'
+                      } ${feishuPhase === 'authorizing' ? 'cursor-not-allowed opacity-50' : ''}`}
+                    >
+                      <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                        {region.label}
+                      </span>
+                      <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                        {region.sub}
+                      </span>
+                    </button>
+                  ))}
                 </div>
               </div>
+
+              {feishuMethod === 'deeplink' ? (
+                feishuPhase === 'authorizing' && feishuRegistration ? (
+                  <div className="flex gap-[10px]">
+                    <span className="flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--brand-soft)">
+                      <Icon name="loader" size={12} color="var(--brand)" className="animate-spin" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+                        Approve the app setup in {feishuBrand}
+                      </div>
+                      <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+                        We opened the authorization page in a new tab. Confirm the app and permissions; this dialog
+                        updates automatically.
+                      </div>
+                      <a
+                        href={feishuRegistration.authorizationUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="lnk mt-2 inline-flex items-center gap-[5px]"
+                      >
+                        Reopen {feishuBrand} setup
+                        <Icon name="external-link" size={12} />
+                      </a>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="mb-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+                      Name and create the bot
+                    </div>
+                    <div className="flex flex-col gap-2 desktop:flex-row">
+                      <div className="fld flex-1">
+                        <input
+                          className="inp mn"
+                          placeholder="Bot name"
+                          value={appName}
+                          onChange={(e) => setAppName(e.target.value)}
+                        />
+                      </div>
+                      <Button
+                        disabled={saving}
+                        onClick={() => void startFeishuAuto()}
+                        className={saving ? 'flex-none cursor-default opacity-50' : 'flex-none'}
+                      >
+                        <span className="imark h-4 w-4 border-0 bg-transparent">
+                          <PlatformMark platform="feishu" />
+                        </span>
+                        {saving ? 'Creating…' : `Create ${feishuBrand} bot`}
+                      </Button>
+                    </div>
+                    <div className="mt-[9px] flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+                      <Icon name="shield-check" size={13} className="mt-[1px] flex-none" />
+                      <span>
+                        You review the requested message, chat, resource and basic-contact permissions before the app is
+                        created. No App ID or Secret is shown here.
+                      </span>
+                    </div>
+                  </>
+                )
+              ) : (
+                <>
+                  <div className="mb-3 flex gap-[10px]">
+                    <span className="mono mt-[1px] flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
+                      1
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="mb-2 font-sans text-[12.5px] font-medium leading-[1.45] text-(--text-secondary)">
+                        Create a self-built app in the {feishuBrand}&#32;console, enable the bot, then copy its App ID
+                        and App Secret.
+                      </div>
+                      <div className="group relative">
+                        <a
+                          href={
+                            feishuRegion === 'lark'
+                              ? 'https://open.larksuite.com/page/launcher'
+                              : 'https://open.feishu.cn/page/launcher'
+                          }
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
+                        >
+                          <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
+                            <PlatformMark platform="feishu" />
+                          </span>
+                          Create {feishuBrand} bot
+                          <Icon name="external-link" size={14} />
+                        </a>
+                        <BotSetupWalkthrough
+                          steps={
+                            feishuRegion === 'lark'
+                              ? feishuWalkthroughSteps('Lark', 'open.larksuite.com')
+                              : feishuWalkthroughSteps('Feishu', 'open.feishu.cn')
+                          }
+                          label={feishuRegion === 'lark' ? 'Lark bot setup steps' : 'Feishu bot setup steps'}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-[14px] mb-[11px] flex items-center gap-[10px] border-t border-dashed border-(--border-default) pt-[13px]">
+                    <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
+                      2
+                    </span>
+                    <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+                      Paste the App ID &amp; App Secret
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 gap-[10px] pl-[30px] min-[440px]:grid-cols-2">
+                    <div className="fld">
+                      <span className="fldlbl">App ID</span>
+                      <input
+                        className={`inp mn ${showErrors && !feishuAppIdOk ? 'border-(--status-error)' : ''}`}
+                        placeholder="cli_…"
+                        value={botToken}
+                        onChange={(e) => setBotToken(e.target.value)}
+                      />
+                    </div>
+                    <div className="fld">
+                      <span className="fldlbl">App Secret</span>
+                      <input
+                        className={`inp mn ${showErrors && !feishuSecretOk ? 'border-(--status-error)' : ''}`}
+                        placeholder="App Secret"
+                        value={appToken}
+                        onChange={(e) => setAppToken(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
-            <div className="mt-[14px] mb-[11px] flex items-center gap-[10px] border-t border-dashed border-(--border-default) pt-[13px]">
-              <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                2
-              </span>
-              <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                Paste the App ID &amp; App Secret — both required to connect
-              </span>
-            </div>
-            <div className="grid grid-cols-1 gap-[10px] pl-[30px] min-[440px]:grid-cols-2">
-              <div className="fld">
-                <span className="fldlbl">App ID</span>
-                <input
-                  className={`inp mn ${showErrors && !feishuAppIdOk ? 'border-(--status-error)' : ''}`}
-                  placeholder="cli_…"
-                  value={botToken}
-                  onChange={(e) => setBotToken(e.target.value)}
-                />
-              </div>
-              <div className="fld">
-                <span className="fldlbl">App Secret</span>
-                <input
-                  className={`inp mn ${showErrors && !feishuSecretOk ? 'border-(--status-error)' : ''}`}
-                  placeholder="App Secret"
-                  value={appToken}
-                  onChange={(e) => setAppToken(e.target.value)}
-                />
-              </div>
-            </div>
-          </div>
+          </>
         )}
-        {platform === 'feishu' && (
+        {platform === 'feishu' && (mode === 'existing' || feishuMethod === 'manual') && (
           <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
             <div className="mb-[11px] flex items-center gap-2 font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary)">
               <Icon name="shield-check" size={14} color="var(--brand)" className="flex-none" />
@@ -3412,7 +3606,7 @@ export default function AddIntegrationModal({
         </Button>
         {/* The built-in pane's action is its own Add-to-Slack button (the modal closes
             itself when the install lands), so the custom flow's footer action hides. */}
-        {!hideIdentitySection && (
+        {!hideIdentitySection && !isFeishuDeeplink && (
           <Button onClick={footer.act} className={footer.enabled && !saving ? undefined : 'cursor-default opacity-50'}>
             <Icon name={platform === 'webhook' && createdHook ? 'check' : 'plug'} size={15} />
             {saving ? (isAuto && autoPhase === 'config' ? 'Creating…' : 'Connecting…') : footer.label}

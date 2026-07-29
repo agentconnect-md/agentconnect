@@ -66,6 +66,7 @@ import type { SlackConfigApi } from './slack-config-api.js'
 import type { TelegramBotNameResolver } from './telegram-identity.js'
 import type { DiscordBotVerifier } from './discord-identity.js'
 import type { FeishuBotVerifier } from './feishu-identity.js'
+import type { FeishuAppRegistrationService } from './feishu-registration.js'
 import type { Readiness } from './readiness.js'
 import type { McpRateLimiter } from './mcp/rate-limit.js'
 import type { SessionKey } from '../domain/sessionKey.js'
@@ -260,6 +261,10 @@ export interface HttpDeps {
    *  Optional/injectable so tests stay offline (absent ⇒ no validation, route falls
    *  back to the agent name). */
   verifyFeishuBot?: FeishuBotVerifier
+  /** Owns the short-lived official Feishu/Lark device-registration poll. The
+   *  browser sees only a deeplink + opaque id; credentials are finalized through
+   *  BotSecretStore before the session becomes completed. */
+  feishuAppRegistration: FeishuAppRegistrationService
   /** github-app workspaces façade; absent ⇒ feature disabled (GITHUB_APP_* unset) and
    *  every github route 404s. */
   github?: GithubService

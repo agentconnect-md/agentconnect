@@ -141,6 +141,7 @@ import { verifySlackBot, verifySlackAppToken } from './http/slack-identity.js'
 import { resolveTelegramBotName } from './http/telegram-identity.js'
 import { verifyDiscordBot } from './http/discord-identity.js'
 import { verifyFeishuBot } from './http/feishu-identity.js'
+import { FeishuAppRegistrationService } from './http/feishu-registration.js'
 
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from './config/defaults.js'
 
@@ -655,6 +656,7 @@ export function buildContainer(
     resolveTelegramBotName,
     verifyDiscordBot,
     verifyFeishuBot,
+    feishuAppRegistration: new FeishuAppRegistrationService(),
     ...(github ? { github } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
     ...(iconStore ? { iconStore } : {}),
@@ -683,6 +685,7 @@ export function buildContainer(
       RELAY_STALE_MS: relayStaleMs
     }
   }
+  const feishuAppRegistration = httpDeps.feishuAppRegistration
   const http = buildHttpServer(httpDeps, opts.fastify)
 
   // Reconciler for orphaned schedule runs: fails `running` cron_run rows whose
@@ -1139,6 +1142,7 @@ export function buildContainer(
       slackPlatformInstallReaper.stop()
       relaySweeper.stop()
       slackBotIdentityReconciler.stop()
+      feishuAppRegistration.shutdown()
       await Promise.allSettled([...relayRegistrationTasks])
       await prisma.$disconnect()
     }

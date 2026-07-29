@@ -83,6 +83,7 @@ import { pingDb } from '../../src/persistence/prisma.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { DEFAULT_OWNER_ID } from '../../prisma/seed.js'
+import { FeishuAppRegistrationService } from '../../src/http/feishu-registration.js'
 
 export const TEST_API_KEY_PEPPER = 'test-api-key-pepper-0123456789abcdef'
 
@@ -233,6 +234,7 @@ export function buildHttpApp(
     events,
     mcpRateLimit: new McpRateLimiter(clock),
     readiness: createReadiness(() => pingDb(prisma)),
+    feishuAppRegistration: new FeishuAppRegistrationService(),
     config: { DEFAULT_OWNER_ID, ...configOverrides },
     ...depsOverrides
   }
@@ -245,6 +247,7 @@ export function buildHttpApp(
     events,
     relayReg,
     close: async () => {
+      deps.feishuAppRegistration.shutdown()
       await app.close()
     }
   }
