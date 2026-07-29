@@ -48,9 +48,18 @@ work).
 
 ```
 ownerIdentity :=
-  user:<app_user_id>          — console-originated (webchat, Web API launch)
-  <platform>:<platform_uid>   — IM-originated, e.g. slack:U0123ABCD, feishu:ou_...
+  user:<app_user_id>                     — console-originated (webchat, Web API launch)
+  <platform>:<workspace>:<platform_uid>  — IM-originated, e.g. slack:T024BE7LD:U0123ABCD
 ```
+
+The IM form carries a **workspace/tenant segment** from day one: platform uids
+are only unique per tenant (Slack team, Feishu tenant, Telegram bot scope), and
+one org can connect multiple workspaces of the same platform, so a two-segment
+`slack:<uid>` form would allow same-org identity collisions. The workspace
+value is the tenant identifier the integration already stores (Slack team id,
+Feishu tenant key); for a platform surface with no tenant concept in DMs
+(e.g. Discord DMs have no guild), use the integration id. Identity linking
+(§7) stores and matches the same three-part tuple.
 
 Matching is set membership: at request time the BFF computes the viewer's
 **identity set** — today just `{ user:<userId> }`, later expanded with the
@@ -65,12 +74,9 @@ Consequences:
 - When identity linking ships, those sessions become visible to the mapped
   user **automatically**, with no backfill: the stored `ownerIdentity` is
   already correct; only the viewer's identity set grows.
-- Platform uids are scoped per workspace/tenant (a Slack user id is unique per
-  workspace). The predicate is always additionally scoped by `orgId` and by
-  agent visibility, so cross-org collisions are not reachable; a same-org
-  collision across two workspaces of the same platform is theoretical and
-  accepted. If it ever matters, the identity format can grow a tenant segment
-  (`slack:<team>:<uid>`) without a schema change.
+- The predicate is always additionally scoped by `orgId` and by agent
+  visibility, so an identity match can never reach across orgs; the workspace
+  segment above closes the remaining same-org, cross-tenant collision.
 
 ## 3. Data-model changes (`packages/control-plane/prisma/schema.prisma`)
 
@@ -113,6 +119,7 @@ Visibility tightening applies to **new sessions only**.
 
 ```ts
 conversationKind?: 'dm' | 'group_dm' | 'channel'
+launchCorrelationId?: string // Web API launch provenance, §4.4
 ```
 
 The daemon already knows this (`NormalizedMessage.isDm` / `isGroupDm`,
@@ -129,28 +136,43 @@ The CP classifies once, in the `event/session` ingest path
 (`ws/handlers/event-session.ts` → `session.recordMilestone`), first-wins like
 the other origin scalars:
 
-| Origin (how detected)                                                        | `visibility` | `ownerIdentity`                                                            |
-| ---------------------------------------------------------------------------- | ------------ | -------------------------------------------------------------------------- |
-| Webchat / Playground (`platform === 'webchat'`)                              | `private`    | `user:<WebchatConversation.userId>` via `channel == conversationId` lookup |
-| Web API launch (`launchId` present, launch principal known)                  | `private`    | `user:<launch creator userId>`                                             |
-| IM DM (`conversationKind` = `dm`)                                            | `private`    | `<platform>:<triggeredBy>`                                                 |
-| IM group DM (`conversationKind` = `group_dm`)                                | `org`        | `null`                                                                     |
-| IM channel (`conversationKind` = `channel` or absent)                        | `org`        | `null`                                                                     |
-| Automation: cron / hook / dream / agent-to-agent (`triggeredBy` prefix/UUID) | `org`        | `null`                                                                     |
+| Origin (how detected)                                 | `visibility`    | `ownerIdentity`                                                                                                                       |
+| ----------------------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Webchat / Playground (`platform === 'webchat'`)       | `private`       | `user:<WebchatConversation.userId>` via `channel == conversationId` lookup; lookup miss ⇒ stays `private`, owner `null` (fail closed) |
+| Web API session launch (§4.4 correlation)             | `private`       | `user:<launch principal userId>`; missing correlation ⇒ `private`, `null`                                                             |
+| IM DM (`conversationKind` = `dm`)                     | `private`       | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
+| IM group DM (`conversationKind` = `group_dm`)         | `org`           | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
+| IM channel (`conversationKind` = `channel` or absent) | `org`           | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
+| Agent-to-agent child (`triggeredBy` is an agent UUID) | inherits parent | inherits parent's `ownerIdentity`; parent unresolved ⇒ `private`, `null` (fail closed)                                                |
+| Automation: cron / hook / dream                       | `org`           | `null`                                                                                                                                |
 
 Notes:
 
+- **Fail closed on missing ownership metadata.** A classification rule that
+  defaults to `private` must never widen to `org` because a lookup failed —
+  that would turn a metadata inconsistency into disclosure. An unresolvable
+  owner yields `private` + `ownerIdentity = null` (an owner-orphan, visible to
+  org owners only, recoverable via §4.3).
 - Webchat `triggeredBy` is the console user's **email** (set in
   `routes/webchat-token.ts`), which degrades under devAuth and is not a stable
   key — hence the `WebchatConversation` lookup rather than trusting the wire
-  value. Under devAuth the stub principal has no conversation row mismatch
-  concern; if the lookup misses, fall back to `org`.
-- `group_dm` defaults to `org`, like a channel: `ownerIdentity` can only
-  record one person, so treating a multi-party conversation as `private`
-  would hide it from its own participants. Multi-participant conversations
-  are treated as team-visible; a participant who wants it hidden can
-  re-classify it via §4.3 once identity linking makes them the recognizable
-  owner (org owners can always re-classify).
+  value.
+- **`ownerIdentity` is recorded for every human-triggered session regardless
+  of visibility** (DM, group DM, and channel alike). It is orthogonal to the
+  visibility default: for `org` sessions it is provenance and the anchor for
+  §4.3 reclassification rights, not an access gate.
+- `group_dm` defaults to `org`, like a channel: a multi-party conversation
+  treated as `private` would hide it from its own participants, since the
+  predicate can match only one owner. The initiator (or an org owner) can
+  pull it `private` via §4.3.
+- **Agent-to-agent children inherit.** A delegation from a private DM or
+  Playground session copies the delegated prompt into the child transcript;
+  classifying children `org` would expose that to every viewer of the target
+  agent. The child takes the parent's `visibility` + `ownerIdentity` at
+  ingest. `parentSessionId` has no FK and cross-daemon ordering means the
+  parent row may not exist yet — in that case the child is classified
+  `private`/`null` (fail closed) and re-reconciled when the parent's milestone
+  lands.
 
 ### 4.3 Changing visibility after the fact
 
@@ -158,8 +180,28 @@ Notes:
 `{ visibility: 'private' | 'org' }`. Allowed for the session owner (identity
 match) and org owners; collaborators/viewers cannot re-classify other people's
 sessions. This is the escape hatch for both directions: publishing a useful DM
-transcript to the org, or pulling a channel-born session private (org owners
-only, since a channel session has no owner).
+transcript to the org, or pulling a channel/group-DM session private (its
+recorded initiator — once identity linking makes them matchable — or an org
+owner).
+
+### 4.4 Web API launch provenance
+
+The Web API rule in §4.2 is not implementable from what exists today:
+`AgentLaunch` has no creator column, its `launchId` is an agent-runtime
+lifecycle fence (part of the `sessionEpoch`/`seq`/`launchId` fencing tuple),
+and daemon `event/session` telemetry does not populate it. Ownership therefore
+needs explicit provenance:
+
+- The Web API session-launch flow is CP-mediated: the authenticated principal
+  (personal API key → `userId`) is known at the moment the CP issues the
+  launch command. The CP mints a **launch correlation id** and records
+  `correlationId → user:<userId>` (new column or side table on the launch
+  record — distinct from the fencing `launchId`).
+- The daemon echoes the correlation id in the session's `event/session` frame
+  (optional protocol field, added alongside `conversationKind` in §4.1).
+- At ingest, a frame carrying a known correlation id classifies the session
+  `private` with that owner. A Web API launch whose correlation cannot be
+  resolved fails closed per §4.2.
 
 ## 5. Enforcement points (control-plane)
 
@@ -175,13 +217,13 @@ canViewSession(s, ctx, identitySet) =
 All of these already gate on agent visibility; each additionally applies the
 session predicate:
 
-| Surface                       | Where                                                                                     | Change                                                                                                                                                |
-| ----------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| List + facets                 | `persistence/repositories/session.repo.ts` (`pageWhereSql` — raw SQL, not Prisma `where`) | `AND (visibility = 'org' OR owner_identity = ANY(:identitySet))`, skipped for org owners                                                              |
-| Detail / messages / tool-body | `http/routes/sessions.ts` `getOrgViewableSession`                                         | apply `canViewSession` after the agent gate; fail as 404                                                                                              |
-| Children                      | `session.repo.ts` `listChildren`                                                          | same predicate; invisible parent already renders `null`                                                                                               |
-| SSE                           | `http/routes/stream.ts`                                                                   | today filters per **agent**; must additionally drop `event/session` envelopes for invisible sessions, else private-session live updates leak org-wide |
-| Usage                         | `http/routes/usage.ts`                                                                    | same predicate on session-grained reads; org-aggregate rollups stay org-visible                                                                       |
+| Surface                       | Where                                                                                     | Change                                                                                                                                                                                                                                                                                             |
+| ----------------------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| List + facets                 | `persistence/repositories/session.repo.ts` (`pageWhereSql` — raw SQL, not Prisma `where`) | `AND (visibility = 'org' OR owner_identity = ANY(:identitySet))`, skipped for org owners                                                                                                                                                                                                           |
+| Detail / messages / tool-body | `http/routes/sessions.ts` `getOrgViewableSession`                                         | apply `canViewSession` after the agent gate; fail as 404                                                                                                                                                                                                                                           |
+| Children                      | `session.repo.ts` `listChildren`                                                          | same predicate; invisible parent already renders `null`                                                                                                                                                                                                                                            |
+| SSE                           | `http/routes/stream.ts`                                                                   | today filters per **agent**; must apply the session predicate to **every session-scoped envelope variant** — both `event/session` milestones and `event/session-activity` invalidations (the latter still expose `sessionId`, revision, and live activity), plus any future session-bearing frames |
+| Usage                         | `http/routes/usage.ts`                                                                    | same predicate on session-grained reads; org-aggregate rollups stay org-visible                                                                                                                                                                                                                    |
 
 Invariants preserved:
 
@@ -191,6 +233,24 @@ Invariants preserved:
 - 404, never 403, for invisible sessions (no existence oracle).
 - A `?triggeredBy=` / `?channel=` query filter remains a filter, not an
   authorization boundary; the predicate is applied regardless.
+
+### 5.1 Agent-scoped memory is a bypass — must be plugged
+
+Console read gates alone do not contain private content: **managed memory is
+agent-scoped and shared across users.** A private DM/Playground turn can be
+distilled into agent memory (including by dream sessions) and later surface —
+via memory reads or recall in someone else's session — to any user who can
+view the agent, bypassing every gate in the table above.
+
+Mitigation is **daemon-local**, preserving the invariant that CP visibility
+never crosses the wire: the daemon already knows a turn's origin without any
+CP round-trip (`isDm`, `platform === 'webchat'`, the §4.4 launch correlation).
+By default it must **exclude private-origin turns from agent-scoped memory
+capture** (dream distillation included). Per-owner memory namespaces are a
+possible future relaxation, but exclusion is the shipping requirement — the
+`private` tier's guarantee is dishonest without it. If exclusion is deferred,
+the product docs must explicitly narrow the guarantee ("private hides the
+transcript, not what the agent learned from it"); silence is not an option.
 
 ## 6. Web console
 
@@ -204,8 +264,9 @@ Invariants preserved:
 
 ## 7. Identity linking (future, separate design)
 
-A `UserIdentity` table (`userId`, `platform`, `platformUserId`, verified-at,
-unique on `(platform, platformUserId)` per org or globally) populated by an
+A `UserIdentity` table (`userId`, `platform`, `workspace`, `platformUserId`,
+verified-at, unique on the `(platform, workspace, platformUserId)` tuple —
+matching the three-part identity format of §2) populated by an
 explicit link flow (e.g. the bot DMs a code, the user pastes it in the
 console). Once it exists, the BFF's identity-set computation reads it and
 owner-orphan DM sessions light up for their owners retroactively — no session
@@ -224,10 +285,15 @@ link ends public access without touching the session row.
 ## 9. Test plan
 
 - **Unit (`test:unit`):** `canViewSession` truth table (role × visibility ×
-  identity match × orphan owner); ingest classification table from §4.2
-  including webchat-lookup fallback and absent `conversationKind`.
+  identity match × orphan owner); ingest classification table from §4.2,
+  including every fail-closed path (webchat lookup miss, unresolved launch
+  correlation, unresolved parent) and absent `conversationKind`; child
+  inheritance + reconciliation when the parent milestone arrives late.
 - **Integration (`test:int`):** list/detail/SSE visibility for a two-member
   org (owner sees all; collaborator sees own private + org sessions only);
-  keyset pagination stability under the new predicate; migration backfill
-  (`org` + `orgId`) on seeded legacy rows; visibility PUT authorization
-  matrix.
+  SSE assertion that **neither** `event/session` nor `event/session-activity`
+  for a private session reaches an unauthorized subscriber; keyset pagination
+  stability under the new predicate; migration backfill (`org` + `orgId`) on
+  seeded legacy rows; visibility PUT authorization matrix (initiator of an
+  `org` channel session may pull it private; a non-owner collaborator may
+  not).
