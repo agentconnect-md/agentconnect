@@ -174,7 +174,14 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     await seedAgent(prisma, AGENT_A)
     await seedAgent(prisma, AGENT_B)
     const now = new Date()
-    const recent = (mins: number) => new Date(now.getTime() - mins * 60_000)
+    // A d30 series buckets by DAY on the requested tz's boundary, which defaults to
+    // UTC — and the assertions below require all three rows in the FINAL bucket. A
+    // naive "N minutes ago" silently crosses into yesterday's bucket whenever the suite
+    // runs within N minutes of UTC midnight, so clamp the offset to the time actually
+    // elapsed since that boundary. (Everything stays comfortably inside the 30-day
+    // window either way, so the totals and the tz-shift sums are unaffected.)
+    const sinceUtcMidnight = now.getTime() - Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+    const recent = (mins: number) => new Date(now.getTime() - Math.min(mins * 60_000, sinceUtcMidnight))
 
     // Agent A: two in-range sessions + one stale (100 days old, excluded from d30/d90).
     await prisma.sessionUsage.createMany({
