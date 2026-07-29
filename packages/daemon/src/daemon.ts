@@ -2890,6 +2890,7 @@ export class Daemon {
           this.channelNameResolver?.noteMessage(conn, { ...msg, mentionedUserIds: msg.mentionedBots })
           this.onInbound(msg, this.srcIntegrationIds(conn))
         },
+        onStatusAction: (a) => this.handleStatusAction(a),
         log: this.log
       })
       this.feishuConnecting.add(connectKey)
@@ -10017,7 +10018,10 @@ export class Daemon {
       case 'card-start':
         if (p.feishuCardAttempted) return
         p.feishuCardAttempted = true
-        p.feishuCard = await conn.startStreamingCard(p.channel, p.thread)
+        p.feishuCard = await conn.startStreamingCard(p.channel, p.thread, {
+          sessionKey: p.sessionKey,
+          sessionUrl: this.sessionLink(p.acpSessionId)
+        })
         return
       case 'card-stream':
         if (p.feishuCard) await conn.updateStreamingCard(p.channel, p.feishuCard, action.text)

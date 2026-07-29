@@ -1,6 +1,17 @@
 import { describe, expect, it, vi } from 'vitest'
-import { FeishuConnection, type ConsolidatedFeishuGroup, type FeishuClientHandle } from '../src/feishu/connection.js'
-import { FEISHU_STREAMING_ELEMENT_ID } from '../src/feishu/render.js'
+import {
+  FeishuConnection,
+  type ConsolidatedFeishuGroup,
+  type FeishuCardActionResponse,
+  type FeishuClientHandle,
+  type FeishuRawCardActionEvent
+} from '../src/feishu/connection.js'
+import {
+  FEISHU_REPLY_ACTIONS_ELEMENT_ID,
+  FEISHU_REPLY_ACTION_VALUE,
+  FEISHU_REPLY_CANCEL_OPTION,
+  FEISHU_STREAMING_ELEMENT_ID
+} from '../src/feishu/render.js'
 import type { ReplyAttributionInfo } from '../src/messages/attribution.js'
 
 const attribution: ReplyAttributionInfo = {
@@ -18,6 +29,8 @@ function connection() {
   const setCardEntityStreaming = vi.fn(async () => {})
   const updateCardEntity = vi.fn(async () => {})
   const deleteMessage = vi.fn(async () => {})
+  const onStatusAction = vi.fn()
+  let cardActionHandler: ((event: FeishuRawCardActionEvent) => FeishuCardActionResponse | undefined) | undefined
   const handle: FeishuClientHandle = {
     api: {
       createText: async () => ({}),
@@ -39,7 +52,9 @@ function connection() {
       getUser: async (id) => ({ id }),
       getBotInfo: async () => ({})
     },
-    startWs: async () => {},
+    startWs: async (_onEvent, onCardAction) => {
+      cardActionHandler = onCardAction
+    },
     close: () => {}
   }
   const group: ConsolidatedFeishuGroup = {
@@ -50,7 +65,7 @@ function connection() {
   }
   return {
     conn: new FeishuConnection(
-      { group, onMessage: () => {}, newTraceId: () => 'trace', sendIntervalMs: 0 },
+      { group, onMessage: () => {}, onStatusAction, newTraceId: () => 'trace', sendIntervalMs: 0 },
       () => handle
     ),
     createCardEntity,
@@ -58,7 +73,9 @@ function connection() {
     updateCardEntityElement,
     setCardEntityStreaming,
     updateCardEntity,
-    deleteMessage
+    deleteMessage,
+    onStatusAction,
+    triggerCardAction: (event: FeishuRawCardActionEvent) => cardActionHandler?.(event)
   }
 }
 
@@ -73,11 +90,26 @@ describe('Lark CardKit transport', () => {
       updateCardEntity
     } = connection()
 
-    const card = await conn.startStreamingCard('oc_chat', 'om_root')
+    const card = await conn.startStreamingCard('oc_chat', 'om_root', {
+      sessionKey: 'feishu:oc_chat:om_root:review-bot',
+      sessionUrl: attribution.sessionUrl
+    })
     expect(card).toEqual({ cardId: 'card-1', messageId: 'message-1' })
     expect(createCardEntity.mock.calls[0]![0]).toMatchObject({
       schema: '2.0',
-      config: { streaming_mode: true }
+      config: { streaming_mode: true },
+      body: {
+        elements: [
+          { element_id: FEISHU_STREAMING_ELEMENT_ID, content: 'Thinking…' },
+          {
+            element_id: FEISHU_REPLY_ACTIONS_ELEMENT_ID,
+            options: [
+              { value: FEISHU_REPLY_CANCEL_OPTION },
+              { value: 'session', multi_url: { url: attribution.sessionUrl } }
+            ]
+          }
+        ]
+      }
     })
     expect(replyCardEntityMessage).toHaveBeenCalledWith('om_root', 'card-1')
 
@@ -96,9 +128,42 @@ describe('Lark CardKit transport', () => {
             tag: 'markdown',
             content:
               'sent by [Review Bot](https://agentconnect.example/agents/review-bot) (Codex · gpt-5.6) · [open in session](https://agentconnect.example/sessions/123)'
+          },
+          {
+            tag: 'overflow',
+            options: [{ value: 'session', multi_url: { url: attribution.sessionUrl } }]
           }
         ]
       }
+    })
+  })
+
+  it('routes an active reply Cancel run selection once', async () => {
+    const { conn, onStatusAction, triggerCardAction } = connection()
+    await conn.start()
+    await conn.startStreamingCard('oc_chat', 'om_root', {
+      sessionKey: 'feishu:oc_chat:om_root:review-bot',
+      sessionUrl: attribution.sessionUrl
+    })
+
+    const event: FeishuRawCardActionEvent = {
+      context: { open_message_id: 'message-1', open_chat_id: 'oc_chat' },
+      operator: { open_id: 'ou_operator' },
+      action: {
+        tag: 'overflow',
+        option: FEISHU_REPLY_CANCEL_OPTION,
+        value: { action: FEISHU_REPLY_ACTION_VALUE }
+      }
+    }
+    expect(triggerCardAction(event)).toEqual({
+      toast: { type: 'info', content: 'Cancellation requested.' }
+    })
+    expect(triggerCardAction(event)).toBeUndefined()
+    expect(onStatusAction).toHaveBeenCalledOnce()
+    expect(onStatusAction).toHaveBeenCalledWith({
+      kind: 'cancel',
+      sessionKey: 'feishu:oc_chat:om_root:review-bot',
+      actor: { userId: 'ou_operator' }
     })
   })
 

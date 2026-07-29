@@ -5,6 +5,7 @@ import {
   buildCompletedReplyCard,
   buildStreamingReplyCard,
   FeishuConverger,
+  FEISHU_REPLY_ACTIONS_ELEMENT_ID,
   FEISHU_STREAMING_ELEMENT_ID
 } from '../src/feishu/render.js'
 
@@ -68,18 +69,33 @@ describe('Lark CardKit reply lifecycle', () => {
   })
 
   it('builds a streaming element and the canonical attribution footer', () => {
-    const initial = buildStreamingReplyCard() as {
+    const initial = buildStreamingReplyCard(attribution.sessionUrl) as {
       config: { streaming_mode: boolean }
-      body: { elements: { element_id?: string; content?: string }[] }
+      body: { elements: Record<string, unknown>[] }
     }
     expect(initial.config.streaming_mode).toBe(true)
     expect(initial.body.elements[0]).toMatchObject({
       element_id: FEISHU_STREAMING_ELEMENT_ID,
       content: 'Thinking…'
     })
+    expect(initial.body.elements[1]).toMatchObject({
+      tag: 'overflow',
+      element_id: FEISHU_REPLY_ACTIONS_ELEMENT_ID,
+      options: [
+        {
+          text: { tag: 'plain_text', content: 'Cancel run' },
+          value: 'cancel'
+        },
+        {
+          text: { tag: 'plain_text', content: 'View session' },
+          value: 'session',
+          multi_url: { url: attribution.sessionUrl }
+        }
+      ]
+    })
 
     const completed = buildCompletedReplyCard('Done', attribution) as {
-      body: { elements: { tag: string; content?: string; text_size?: string }[] }
+      body: { elements: Record<string, unknown>[] }
     }
     expect(completed.body.elements).toEqual([
       { tag: 'markdown', content: 'Done' },
@@ -88,6 +104,20 @@ describe('Lark CardKit reply lifecycle', () => {
         text_size: 'notation',
         content:
           'sent by [Review Bot](https://agentconnect.example/agents/review-bot) (Codex · gpt-5.6) · [open in session](https://agentconnect.example/sessions/123)'
+      },
+      {
+        tag: 'overflow',
+        element_id: FEISHU_REPLY_ACTIONS_ELEMENT_ID,
+        width: 'default',
+        options: [
+          {
+            text: { tag: 'plain_text', content: 'View session' },
+            value: 'session',
+            multi_url: { url: attribution.sessionUrl }
+          }
+        ],
+        value: { action: 'agentconnect_reply' },
+        margin: '8px 0px 0px 0px'
       }
     ])
   })
