@@ -84,6 +84,46 @@ automatic fallback to a restricted agent instead leaves the channel Off, because
 an authorized Console editor may enable it. Direct messages remain separate:
 restricted agents may independently enable or disable their own DM conversation rows.
 
+## Group direct messages
+
+A Slack multi-person DM is a conversation between people that the agent happens to sit
+in, not a room addressed to the agent. It therefore follows a channel's rule, not a
+DM's: the agent answers when explicitly @-mentioned, and follow-ups in a thread it has
+joined need no further mention. A group DM never activates on an unmentioned message the
+way a DM does.
+
+Slack never reports a group DM as bot membership, so one is surfaced the way a DM is —
+on observation, when an inbound message names the bot — and never through a membership
+snapshot. Conversation rows therefore exist only where observation creates them, which
+gives the two visibilities different surfaces, matching how DMs already behave:
+
+- An **org-visible** agent answers a group DM whenever it is @-mentioned, with no
+  per-conversation row and nothing to configure — the same way it always answers its
+  DMs.
+- A **restricted** agent's group DM is surfaced as a row that starts Off and stays
+  unroutable until a Console editor enables it, exactly like its DM rows. Because the
+  conversation is channel-like, that row carries a channel's trigger choice, so an
+  editor may also opt it into every message.
+
+A preserved row does not outlive the visibility that created it. When a restricted agent
+becomes org-visible its group-DM and DM rows go inert — the Console stops showing them,
+so honouring one would leave the agent answering a conversation with no visible control
+to stop it. It falls back to the same defaults every org-visible agent has: mention in a
+group DM, every message in a DM.
+
+A shared bot is one Slack identity, so a mention in a group DM cannot name which agent
+behind it is meant, and the slug that disambiguates a shared DM does not apply — a DM
+activates on any message, which a slug can outrank, while a group DM activates on the
+mention itself. A group DM served by a shared bot therefore converges on exactly one
+agent, the same way an ownerless channel does: the bot's earliest active install among
+those that enabled it.
+
+A conversation first mistaken for a channel converts to a group DM once resolved, and
+that conversion returns it to Off: the trigger it carried was a channel's default, never
+an operator's choice for this conversation. The resolved classification is durable — it
+lives on the conversation row, not in daemon memory, so a daemon restart that re-reports
+the conversation provisionally as a channel cannot flip an enabled group DM back to Off.
+
 ## No-response control marker
 
 Every agent session receives the same standing response-choice instruction, independent

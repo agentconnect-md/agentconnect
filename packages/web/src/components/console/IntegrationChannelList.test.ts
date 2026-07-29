@@ -37,9 +37,13 @@ describe('channelOwners', () => {
     expect(owners.get('C-deploys')).toBe('bob')
   })
 
-  it('ignores installs of other bots and DM rows', () => {
+  it('ignores installs of other bots and direct-conversation rows', () => {
     const other = { ...install('int_other', 'zoe', [chan('C-deploys', 'zoe')]), botId: 'bot_other' }
-    const dm = install('int_dm', 'bob', [{ ...chan('D-bob', 'bob'), kind: 'im' as const }])
+    // Neither a DM nor a group DM is a channel a shared bot can hand out ownership of.
+    const dm = install('int_dm', 'bob', [
+      { ...chan('D-bob', 'bob'), kind: 'im' as const },
+      { ...chan('G-team', 'bob'), kind: 'mpim' as const }
+    ])
     const owners = channelOwners('bot_shared', [other, dm, install('int_bob', 'bob', [chan('C-deploys', 'bob')])])
     expect([...owners]).toEqual([['C-deploys', 'bob']])
   })

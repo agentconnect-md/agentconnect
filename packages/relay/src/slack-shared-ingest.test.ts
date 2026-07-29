@@ -12,6 +12,7 @@ import {
   encodeSharedSlackStatusTarget
 } from '@agentconnect.md/protocol'
 import {
+  normalizeSlackMessage,
   parseSharedSlackAgentSelection,
   parseSharedSlackAgentSwitch,
   parseSharedSlackSessionAction,
@@ -455,6 +456,35 @@ describe('SlackSharedIngest channel membership events', () => {
     await ingest.handleEvent({ type, channel: 'CLEFT' })
 
     expect(onChannelsChanged).toHaveBeenCalledWith([{ id: 'C1', name: 'remaining' }])
+  })
+})
+
+// Mirrors the daemon's slack/normalize.ts: a group DM is classified but never
+// treated as addressed, so it stays mention-gated like a channel.
+describe('normalizeSlackMessage conversation kinds', () => {
+  const event = (channel: string, channelType?: string) => ({
+    type: 'message',
+    channel,
+    ...(channelType ? { channel_type: channelType } : {}),
+    ts: '1.1',
+    user: 'U1',
+    text: 'hi <@BOTA>'
+  })
+
+  it('flags a group DM without marking it a DM', () => {
+    const m = normalizeSlackMessage(event('G1', 'mpim'))
+    expect(m).toMatchObject({ isDm: false, isGroupDm: true })
+  })
+
+  it('marks a DM and leaves the group-DM flag unset', () => {
+    expect(normalizeSlackMessage(event('D1', 'im'))).toMatchObject({ isDm: true })
+    expect(normalizeSlackMessage(event('D1', 'im'))?.isGroupDm).toBeUndefined()
+  })
+
+  it('leaves both unset when the payload omits channel_type (app_mention)', () => {
+    const m = normalizeSlackMessage(event('G1'))
+    expect(m?.isDm).toBe(false)
+    expect(m?.isGroupDm).toBeUndefined()
   })
 })
 

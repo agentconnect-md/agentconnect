@@ -300,6 +300,60 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(u0.slack.bindRules).toEqual([])
   })
 
+  it('stores a group DM OFF and keeps a channel→group-DM conversion fail-closed (§14.3)', async () => {
+    // Slack classifies a group DM late: an `app_mention` payload carries no
+    // channel_type, so the conversation first lands as a channel with a channel's
+    // trigger. That is not an operator's choice for this conversation, so resolving it
+    // must reset to Off — and an authoritative channel snapshot (which can never list a
+    // group DM) must not delete the row.
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma)
+    const id = await install(running)
+
+    await report(DAEMON, id, [{ id: 'G1', name: 'mpim-alice--bob-1' }], undefined, undefined, false)
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'G1', 'any')
+    await report(DAEMON, id, [{ id: 'G1', name: 'mpim-alice--bob-1', kind: 'mpim' }], undefined, undefined, false)
+
+    const channelsOf = async () => {
+      const res = await running!.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+      const [dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
+      return new Map(dto!.channels.map((c) => [c.channelId, c]))
+    }
+    expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'off' })
+
+    // An operator enables it; a later authoritative channel snapshot leaves it alone.
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'G1', 'mention')
+    await report(DAEMON, id, [{ id: 'C1', name: 'general' }])
+    expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'mention' })
+
+    // A daemon restart loses the classification cache, so the next app_mention is
+    // re-reported as a provisional channel — and the daemon stamps a kind on every
+    // observed row, so this arrives as an EXPLICIT 'channel', not the absent-kind case
+    // the existing preservation rule covers. Accepting it would flip the row twice and
+    // reset the operator's trigger to Off on every restart.
+    await report(DAEMON, id, [{ id: 'G1', name: 'mpim-alice--bob-1', kind: 'channel' }], undefined, undefined, false)
+    expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'mention' })
+    // The daemon's own conversations.info correction lands afterwards and is a no-op.
+    await report(DAEMON, id, [{ id: 'G1', name: 'mpim-alice--bob-1', kind: 'mpim' }], undefined, undefined, false)
+    expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'mention' })
+  })
+
+  it('an enabled DM row survives a provisional channel re-report too (§14.3)', async () => {
+    // Same durability rule, on the kind that already existed: session-history discovery
+    // can re-observe a DM without knowing it is one.
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma)
+    const id = await install(running)
+
+    await report(DAEMON, id, [{ id: 'D1', name: '@alice', kind: 'im' }], undefined, undefined, false)
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'D1', 'any')
+    await report(DAEMON, id, [{ id: 'D1', name: '@alice', kind: 'channel' }], undefined, undefined, false)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    const [dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
+    expect(dto!.channels).toEqual([expect.objectContaining({ channelId: 'D1', kind: 'im', trigger: 'any' })])
+  })
+
   it('keeps the DM conversion fail-closed when a kind-less and an IM report OVERLAP (§14.3)', async () => {
     // Channel reports are fire-and-forget and their handlers run concurrently: a daemon
     // start emits a kind-less observed snapshot, and the resolver's later verdict emits

@@ -58,6 +58,14 @@ export interface NormalizedMessage {
   attachments?: Attachment[]
   isDm: boolean
   /**
+   * A multi-person direct conversation (Slack `mpim`) — several humans and the bot in a
+   * room with no channel identity. Deliberately NOT `isDm`: a one-to-one DM is addressed
+   * to the agent by construction, whereas a group DM is a conversation between people
+   * that the agent happens to sit in, so it stays mention-gated like a channel. The flag
+   * exists so the console can label the conversation row for what it is.
+   */
+  isGroupDm?: boolean
+  /**
    * Platform id of the message this one replies to, when the platform models replies
    * (Telegram `reply_to_message.message_id`). The daemon stitches a reply back to its
    * session with it (reply-based Telegram threading); absent when not a reply.

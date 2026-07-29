@@ -85,6 +85,9 @@ describe('buildInstallManifest', () => {
       'groups:history',
       'groups:read',
       'im:history',
+      'im:write',
+      'mpim:history',
+      'mpim:read',
       'reactions:write',
       'assistant:write',
       'users:read'
@@ -98,6 +101,7 @@ describe('buildInstallManifest', () => {
       'message.channels',
       'message.groups',
       'message.im',
+      'message.mpim',
       'member_joined_channel',
       'channel_left',
       'group_left'

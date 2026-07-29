@@ -361,7 +361,13 @@ export class SharedBotManager {
     // §14.3 DM discovery must NOT depend on the arbitration outcome: on a
     // mixed-visibility bot the public default agent wins every unslugged DM, yet
     // the gated installs still need their pending Off row to ever be enableable.
-    if (msg.isDm && !msg.sender.isBot && hasGatedMembers) await this.reportGatedDmConversation(botId, msg)
+    // A group DM is discovered the same way — Slack never lists one as membership, so
+    // an unreported one could never be enabled. It is only ever *addressed* by mention,
+    // so unlike a DM it is reported only when it names THIS bot: `mentionedBots` also
+    // holds the humans and other apps named in the same message.
+    const namesThisBot = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
+    const addressesBot = msg.isDm || (msg.isGroupDm === true && namesThisBot)
+    if (addressesBot && !msg.sender.isBot && hasGatedMembers) await this.reportGatedConversation(botId, msg)
     const prior = this.router.peekAffinity(botId, sessionKey)
     let tgt = this.router.route(botId, msg)
     if (tgt) {
@@ -432,20 +438,22 @@ export class SharedBotManager {
   }
 
   /**
-   * §14.3: surface one human DM conversation to the CP as an incremental
-   * `kind:'im'` report (fanned to gated installs as pending Off rows — the console
-   * enablement path). Fires for EVERY human DM on a bot with gated members,
-   * routed or not; latched per conversation per relay lifetime (the CP upsert is
-   * idempotent, this only bounds chatter — a relay restart re-reports harmlessly).
-   * Channel rows need no report here — membership snapshots already carry them.
+   * §14.3: surface one human direct conversation to the CP as an incremental
+   * `kind:'im'` / `kind:'mpim'` report (fanned to gated installs as pending Off rows —
+   * the console enablement path). Fires for EVERY human DM on a bot with gated members,
+   * routed or not, and for an addressed group DM; latched per conversation per relay
+   * lifetime (the CP upsert is idempotent, this only bounds chatter — a relay restart
+   * re-reports harmlessly). Channel rows need no report here — membership snapshots
+   * already carry them, and neither of these kinds appears in one.
    */
-  private async reportGatedDmConversation(botId: string, msg: WireNormalizedMessage): Promise<void> {
+  private async reportGatedConversation(botId: string, msg: WireNormalizedMessage): Promise<void> {
     const latch = `${botId}:${msg.channel}`
     if (this.gatedDmReported.has(latch)) return
-    const name = await this.ingests.get(botId)?.lookupUserName(msg.sender.id)
+    // A group DM's counterpart is the room, not the sender, so it carries no name here.
+    const name = msg.isDm ? await this.ingests.get(botId)?.lookupUserName(msg.sender.id) : undefined
     const sent = this.deps.reportBotConversation({
       botId,
-      conversation: { id: msg.channel, ...(name ? { name } : {}), kind: 'im' }
+      conversation: { id: msg.channel, ...(name ? { name } : {}), kind: msg.isDm ? 'im' : 'mpim' }
     })
     // Latch only a delivered report — a CP-link-down drop retries on the next DM.
     if (sent) this.gatedDmReported.add(latch)

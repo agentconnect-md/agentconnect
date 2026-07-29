@@ -11883,10 +11883,15 @@ export class Daemon {
     // discovery reports (a per-thread row would be a duplicate of it).
     const channel = (!isDm && msg.parentChannel) || msg.channel
     const current = existing.find((c) => c.id === channel)
-    const kind = isDm ? ('im' as const) : ('channel' as const)
+    // A group DM is neither: reported on observation like a DM, mention-gated like a
+    // channel. `app_mention` payloads carry no channel_type, so a row already resolved
+    // to 'mpim' must never be downgraded back to 'channel' by a later mention —
+    // otherwise the two classifications would fight and re-emit on every message.
+    const observed = isDm ? ('im' as const) : msg.isGroupDm ? ('mpim' as const) : ('channel' as const)
+    const kind = observed === 'channel' && current?.kind === 'mpim' ? ('mpim' as const) : observed
     const known = this.store.getDisplayNames([channel]).get(channel)
-    // Which Discord server the channel belongs to — see spaceFor. DM rows have none.
-    const found = !isDm && msg.platform === 'discord' ? this.spaceFor(channel) : undefined
+    // Which Discord server the channel belongs to — see spaceFor. Direct rows have none.
+    const found = kind === 'channel' && msg.platform === 'discord' ? this.spaceFor(channel) : undefined
     const space = found ? { spaceId: found.id, ...(found.name ? { space: found.name } : {}) } : undefined
     // Compare against what a write would actually change — a partially resolved space
     // (id known, name not yet) must not re-emit the snapshot on every message.
@@ -11902,24 +11907,59 @@ export class Daemon {
       authoritative: cached?.authoritative ?? false
     })
     this.cpClient?.emitIntegrationChannels({ integrationId, channels: next, authoritative: false })
-    if (!isDm || known || current?.name) return
     const conn = this.connForIntegration(integrationId)
     if (!(conn instanceof SlackConnection)) return
-    void conn
-      .getUserProfile(msg.sender.id)
-      .then((prof) => {
-        const name = prof.realName || prof.name
-        if (!name) return
-        const cached = this.channelSnapshots.get(integrationId)
-        const snap = cached?.channels ?? []
-        const updated = snap.map((c) => (c.id === channel && !c.name ? { ...c, name: `@${name}` } : c))
-        this.channelSnapshots.set(integrationId, {
-          channels: updated,
-          authoritative: cached?.authoritative ?? false
+    if (isDm) {
+      if (known || current?.name) return
+      void conn
+        .getUserProfile(msg.sender.id)
+        .then((prof) => {
+          const name = prof.realName || prof.name
+          if (!name) return
+          this.refineObservedConversation(integrationId, channel, (c) => (c.name ? null : { ...c, name: `@${name}` }))
         })
-        this.cpClient?.emitIntegrationChannels({ integrationId, channels: updated, authoritative: false })
+        .catch(() => {})
+      return
+    }
+    // Slack "G…" ids are shared by group DMs and legacy private channels, and an
+    // `app_mention` payload omits channel_type — so a conversation that reached us
+    // only through a mention is classified here rather than guessed from the id. One
+    // lookup per conversation: the resolved row short-circuits the next call above.
+    if (kind !== 'channel' || msg.platform !== 'slack') return
+    void conn
+      .getChannelInfo(channel)
+      .then((info) => {
+        if (!info.isMpim) return
+        this.refineObservedConversation(integrationId, channel, (c) => {
+          const name = c.name ?? info.name
+          if (c.kind === 'mpim' && c.name === name) return null
+          return { ...c, kind: 'mpim' as const, ...(name ? { name } : {}) }
+        })
       })
       .catch(() => {})
+  }
+
+  /** Apply a late-resolved detail (a DM counterpart's name, a group-DM classification)
+   *  to one observed conversation row and re-emit the snapshot. The updater returns
+   *  null when the row already carries the detail, so a no-op never re-emits. */
+  private refineObservedConversation(
+    integrationId: string,
+    channel: string,
+    update: (row: IntegrationChannel) => IntegrationChannel | null
+  ): void {
+    const cached = this.channelSnapshots.get(integrationId)
+    const snap = cached?.channels ?? []
+    let changed = false
+    const updated = snap.map((c) => {
+      if (c.id !== channel) return c
+      const next = update(c)
+      if (!next) return c
+      changed = true
+      return next
+    })
+    if (!changed) return
+    this.channelSnapshots.set(integrationId, { channels: updated, authoritative: cached?.authoritative ?? false })
+    this.cpClient?.emitIntegrationChannels({ integrationId, channels: updated, authoritative: false })
   }
 
   /** Re-assert cached reports after a CP reconnect without upgrading a partial

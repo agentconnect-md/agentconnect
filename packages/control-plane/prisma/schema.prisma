@@ -1450,11 +1450,14 @@ enum ChannelTrigger {
   any
 }
 
-// Conversation kind (resource-visibility.md §14.3): a member channel vs a DM
-// conversation. DM rows exist only for gated (restricted-agent) integrations.
+// Conversation kind (resource-visibility.md §14.3): a member channel vs a direct
+// conversation. `im` rows exist only for gated (restricted-agent) integrations.
+// `mpim` is a Slack multi-person DM — reported on observation like `im` (Slack
+// never lists them as bot membership), but mention-gated like a channel.
 enum ConversationKind {
   channel
   im
+  mpim
 }
 
 // One conversation the integration's bot participates in. `integration/channels`

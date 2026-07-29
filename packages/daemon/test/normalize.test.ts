@@ -15,6 +15,30 @@ describe('normalizeSlackEvent', () => {
     expect(m.sender).toEqual({ id: 'U1', isBot: false })
   })
 
+  // A group DM holds several humans, so it is classified but never treated as
+  // addressed — routing keeps it mention-gated like a channel.
+  it('classifies a group DM without making it a DM', () => {
+    const m = normalizeSlackEvent(
+      { type: 'message', channel: 'G1', channel_type: 'mpim', ts: '2.1', user: 'U1', text: 'hey <@BOTA>' },
+      { traceId: 't2' }
+    )
+    expect(m.isGroupDm).toBe(true)
+    expect(m.isDm).toBe(false)
+    expect(m.mentionedBots).toEqual(['BOTA'])
+  })
+
+  // `app_mention` payloads carry no channel_type; the daemon resolves those from the
+  // conversation lookup instead, so normalization must not guess from the "G…" id
+  // (legacy private channels share it).
+  it('leaves the group-DM flag unset when the payload omits channel_type', () => {
+    const m = normalizeSlackEvent(
+      { type: 'app_mention', channel: 'G1', ts: '2.2', user: 'U1', text: 'hey <@BOTA>' },
+      { traceId: 't3' }
+    )
+    expect(m.isGroupDm).toBeUndefined()
+    expect(m.isDm).toBe(false)
+  })
+
   it('uses visible Block Kit text when the top-level fallback omits the message body', () => {
     const m = normalizeSlackEvent(
       {

@@ -44,7 +44,7 @@ import {
   type OrgInviteLinkDto,
   type SlackBotRefreshDto
 } from '@/lib/api'
-import { agentLabel, type IntegrationRow } from '@/lib/data'
+import { agentLabel, isDirectConversation, type IntegrationRow } from '@/lib/data'
 import { slackAppSettingsUrl } from '@/lib/slack-manifest'
 import { slackRefreshNoticeState } from '@/lib/slack-refresh-notice'
 import { discordBotInviteUrl } from '@/lib/discord-invite'
@@ -111,7 +111,7 @@ type BotPlatform = (typeof BOT_PLATFORMS)[number]['platform']
 interface BotChannelView {
   channelId: string
   name: string
-  kind: 'channel' | 'im'
+  kind: 'channel' | 'im' | 'mpim'
   /** Effective per-channel owner; null only before legacy state converges. */
   agentId: string | null
   /** Any integration whose snapshot row backs this channel; ownership PATCHes
@@ -142,8 +142,11 @@ function botChannels(bot: BotDto, integrations: IntegrationRow[]): BotChannelVie
       }
     }
   }
+  // Channels first, then the direct conversations (DMs and group DMs) under one
+  // heading — the roster's second half is "places the bot was not invited to".
   return [...merged.values()].sort((a, b) => {
-    if (a.kind !== b.kind) return a.kind === 'channel' ? -1 : 1
+    const rank = (k: BotChannelView['kind']) => (isDirectConversation(k) ? 1 : 0)
+    if (rank(a.kind) !== rank(b.kind)) return rank(a.kind) - rank(b.kind)
     return a.name.localeCompare(b.name)
   })
 }
@@ -871,7 +874,7 @@ function BotsCard({
                     <div className="overflow-visible rounded-lg border border-(--border-subtle) bg-(--surface-card)">
                       {channels.map((c, index) => (
                         <Fragment key={c.channelId}>
-                          {c.kind === 'im' && channels[index - 1]?.kind !== 'im' && (
+                          {isDirectConversation(c.kind) && !isDirectConversation(channels[index - 1]?.kind) && (
                             <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-[6px] font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
                               Direct messages
                             </div>
@@ -881,13 +884,17 @@ function BotsCard({
                           >
                             <span className="mono flex min-w-0 items-center gap-[7px] text-[12px]">
                               <Icon
-                                name={c.kind === 'im' ? 'at-sign' : 'hash'}
+                                name={c.kind === 'mpim' ? 'users' : c.kind === 'im' ? 'at-sign' : 'hash'}
                                 size={12}
                                 color="var(--text-tertiary)"
                                 className="flex-none"
                               />
-                              <span className="sr-only">{c.kind === 'im' ? 'Direct message' : 'Channel'}: </span>
-                              <span className="truncate">{c.kind === 'im' ? c.name.replace(/^@+/, '') : c.name}</span>
+                              <span className="sr-only">
+                                {c.kind === 'mpim' ? 'Group DM' : c.kind === 'im' ? 'Direct message' : 'Channel'}:{' '}
+                              </span>
+                              <span className="truncate">
+                                {isDirectConversation(c.kind) ? c.name.replace(/^@+/, '') : c.name}
+                              </span>
                             </span>
                             {showDefaultDispatch && c.kind === 'channel' && (
                               <DefaultDispatchPicker

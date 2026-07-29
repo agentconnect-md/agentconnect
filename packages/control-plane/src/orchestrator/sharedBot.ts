@@ -41,6 +41,7 @@ import type {
 } from '../persistence/ports.js'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
+import { isDirectConversationKind } from '../persistence/ports.js'
 import { isGatedAgent, sharedIntegrationToSpec } from './placement.js'
 import { AgentId, BotId, DaemonId } from '../domain/ids.js'
 
@@ -338,10 +339,12 @@ export class SharedBotOrchestrator {
   }
 
   /**
-   * §14.3: fan an INCREMENTAL DM-conversation report across the bot's GATED installs
-   * as `kind:'im'` rows (default Off, owned by each install's agent) so console
-   * editors can enable the DM. Non-gated installs are untouched — their DMs already
-   * route via `defaultAgentId`. Idempotent, and no route recompile: an Off row
+   * §14.3: fan an INCREMENTAL direct-conversation report across the bot's GATED
+   * installs as `kind:'im'` / `kind:'mpim'` rows (default Off, owned by each install's
+   * agent) so console editors can enable it. The reported kind is preserved: a group DM
+   * stays mention-gated, and stamping it 'im' would compile an `auto` route that answers
+   * every message in a room full of people. Non-gated installs are untouched — their DMs
+   * already route via `defaultAgentId`. Idempotent, and no route recompile: an Off row
    * compiles nothing; the recompile happens when an editor enables it.
    */
   async reportConversation(botId: string, conversation: ReportedChannel): Promise<void> {
@@ -356,7 +359,7 @@ export class SharedBotOrchestrator {
       if (!agent || !isGatedAgent(agent)) continue
       await this.channels.upsertConversation(
         install.id,
-        { ...conversation, kind: 'im' },
+        { ...conversation, kind: conversation.kind === 'mpim' ? 'mpim' : 'im' },
         { agentId: AgentId(install.agentId), defaultTrigger: 'off' }
       )
     }
@@ -578,6 +581,26 @@ export class SharedBotOrchestrator {
     //    routes to that agent, respecting the channel's trigger (any → auto rule,
     //    mention → mention rule). Emitted FIRST so a scoped rule wins arbitration.
     const chans = await this.channels.listForBot(bot.id)
+    // A group DM has no owner picker — it is not a place the bot was invited to, so the
+    // observation fan-out gives every gated install its own row. Two agents enabling the
+    // same one would compile two IDENTICAL scoped mention routes and relay order would
+    // silently decide, permanently hiding the loser. Slug disambiguation cannot rescue
+    // it either: unlike a DM's `auto` base, the mention rung outranks keyword. So a group
+    // DM converges on ONE agent exactly as an ownerless channel does (§10.1) — the bot's
+    // earliest active install among those that enabled it.
+    //
+    // Only a GATED install can be a candidate. A preserved row of a now-org-visible agent
+    // is inert (it is skipped below), so letting it claim ownership would elect an owner
+    // that compiles nothing AND lock out the restricted agent that actually has the
+    // conversation enabled — leaving the group DM served by nobody.
+    const groupDmOwner = new Map<string, string>()
+    for (const p of placed) {
+      if (!p.gated) continue
+      for (const c of chans) {
+        if (c.kind !== 'mpim' || c.trigger === 'off' || c.agentId !== p.integration.agentId) continue
+        if (!groupDmOwner.has(c.channelId)) groupDmOwner.set(c.channelId, p.integration.agentId)
+      }
+    }
     for (const c of chans) {
       if (!c.agentId) continue
       const p = byAgent.get(c.agentId)
@@ -585,11 +608,15 @@ export class SharedBotOrchestrator {
       // Conversation gating (§14): an Off conversation compiles NO route for a
       // GATED owner (fail-closed until an editor enables it). For a non-gated
       // owner a preserved row is inert (§14.4): a channel keeps its
-      // mention-trigger ownership (matching integrationToSpec()), while an im
-      // row compiles nothing at all — §14 DM rows only steer gated members;
-      // non-gated DMs route via defaultAgentId as they always did.
-      if (c.kind === 'im' && (!p.gated || c.trigger === 'off')) continue
+      // mention-trigger ownership (matching integrationToSpec()), while a DIRECT
+      // row (a DM or a group DM) compiles nothing at all — §14 direct rows only
+      // steer gated members, and the console hides them for everyone else, so
+      // honouring one would be behaviour with no visible control. Non-gated DMs
+      // route via defaultAgentId as they always did, and a non-gated group DM via
+      // the unscoped mention default.
+      if (isDirectConversationKind(c.kind) && (!p.gated || c.trigger === 'off')) continue
       if (c.trigger === 'off' && p.gated) continue
+      if (c.kind === 'mpim' && groupDmOwner.get(c.channelId) !== c.agentId) continue
       // A DM conversation row activates on any message once enabled (no mention
       // inside a DM); channels follow their trigger.
       const match: BindMatch = c.kind === 'im' || c.trigger === 'any' ? { kind: 'auto' } : { kind: 'mention' }

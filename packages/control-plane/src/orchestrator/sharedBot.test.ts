@@ -398,6 +398,69 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       expect(ch.sends.filter((s) => s.type === 'rc/routes')).toHaveLength(0)
     })
 
+    // A group DM must survive the fan-out as itself. Stamping it 'im' would compile an
+    // `auto` route once enabled — the agent answering every message in a room full of
+    // people — instead of the mention rule a channel-like conversation gets.
+    it('reportConversation preserves a group DM and compiles a MENTION route once enabled', async () => {
+      gatedAgents = new Set([ALICE])
+      channels = []
+      const orch = makeOrch()
+      await orch.reportConversation(BOT, { id: 'G42', name: 'mpim-alice--bob-1', kind: 'mpim' })
+      const row = channels.find((c) => c.integrationId === INT_A && c.channelId === 'G42')
+      expect(row).toMatchObject({ kind: 'mpim', trigger: 'off', agentId: ALICE })
+
+      ch.sends.length = 0
+      row!.trigger = 'mention'
+      await orch.syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      const compiled = assign.routes.filter((r) => r.scope?.channel === 'G42')
+      // A mention rule, and none of the `auto` / slug-keyword pair an 'im' row gets.
+      expect(compiled).toEqual([expect.objectContaining({ agentId: ALICE, match: { kind: 'mention' } })])
+    })
+
+    // One Slack identity cannot say WHICH agent a group-DM mention meant, and the slug
+    // that disambiguates a shared DM does not apply (the mention rung outranks keyword).
+    // Two identical scoped mention routes would let relay order decide silently, so the
+    // conversation converges on the earliest install instead.
+    it('converges a group DM enabled by TWO gated agents onto the earliest install', async () => {
+      gatedAgents = new Set([ALICE, BOB])
+      channels = [
+        channel({ integrationId: INT_B, channelId: 'G42', kind: 'mpim', agentId: BOB, trigger: 'mention' }),
+        channel({ integrationId: INT_A, channelId: 'G42', kind: 'mpim', agentId: ALICE, trigger: 'mention' })
+      ]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      const g42 = assign.routes.filter((r) => r.scope?.channel === 'G42')
+      // ALICE is the earliest install (INT_A) — one route, hers, regardless of row order.
+      expect(g42).toEqual([expect.objectContaining({ agentId: ALICE, match: { kind: 'mention' } })])
+    })
+
+    // The two rules meet here: an INERT row must not win the convergence it is excluded
+    // from. Alice's preserved row is earlier, but she is org-visible and compiles
+    // nothing — electing her would leave the conversation served by nobody.
+    it('skips an org-visible agent when electing the group DM owner', async () => {
+      gatedAgents = new Set([BOB])
+      channels = [
+        channel({ integrationId: INT_A, channelId: 'G42', kind: 'mpim', agentId: ALICE, trigger: 'any' }),
+        channel({ integrationId: INT_B, channelId: 'G42', kind: 'mpim', agentId: BOB, trigger: 'mention' })
+      ]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.routes.filter((r) => r.scope?.channel === 'G42')).toEqual([
+        expect.objectContaining({ agentId: BOB, match: { kind: 'mention' } })
+      ])
+    })
+
+    // §14.4: the console hides a preserved direct row once its owner is org-visible, so
+    // compiling it would be behaviour the operator cannot see or stop.
+    it('makes a preserved group-DM row inert once its owner is no longer gated', async () => {
+      gatedAgents = new Set()
+      channels = [channel({ integrationId: INT_A, channelId: 'G42', kind: 'mpim', agentId: ALICE, trigger: 'any' })]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.routes.filter((r) => r.scope?.channel === 'G42')).toEqual([])
+    })
+
     it('recordNoticePosted re-stamps the pool with the DELIVERED conversation', async () => {
       gatedAgents = new Set([ALICE])
       const orch = makeOrch()

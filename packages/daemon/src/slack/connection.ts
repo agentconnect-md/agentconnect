@@ -254,9 +254,16 @@ type AppLike = {
       delete: (a: unknown) => Promise<unknown>
     }
     conversations: {
-      info: (
-        a: unknown
-      ) => Promise<{ channel?: { id?: string; name?: string; is_im?: boolean; is_private?: boolean; user?: string } }>
+      info: (a: unknown) => Promise<{
+        channel?: {
+          id?: string
+          name?: string
+          is_im?: boolean
+          is_mpim?: boolean
+          is_private?: boolean
+          user?: string
+        }
+      }>
       members: (a: unknown) => Promise<{ members?: string[] }>
       list: (a: unknown) => Promise<{ channels?: { id?: string; name?: string; is_private?: boolean }[] }>
       replies: (a: unknown) => Promise<{
@@ -1043,11 +1050,20 @@ export class SlackConnection {
 
   async getChannelInfo(
     channel: string
-  ): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean; user?: string }> {
+  ): Promise<{ id: string; name?: string; isIm?: boolean; isMpim?: boolean; isPrivate?: boolean; user?: string }> {
     const res = await this.app.client.conversations.info({ channel })
     const c = res.channel ?? {}
-    // `user` is the DM counterpart — only set on im ("D…") conversations.
-    return { id: c.id ?? channel, name: c.name, isIm: c.is_im, isPrivate: c.is_private, user: c.user }
+    // `user` is the DM counterpart — only set on im ("D…") conversations. `is_mpim`
+    // marks a multi-person DM, which shares the "G…" id space with legacy private
+    // channels and so cannot be told apart from the id alone.
+    return {
+      id: c.id ?? channel,
+      name: c.name,
+      isIm: c.is_im,
+      isMpim: c.is_mpim,
+      isPrivate: c.is_private,
+      user: c.user
+    }
   }
 
   async listMembers(channel: string): Promise<{ id: string; name?: string; isBot?: boolean }[]> {

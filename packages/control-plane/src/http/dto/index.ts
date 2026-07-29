@@ -698,7 +698,8 @@ export const CreateIntegrationBody = z
 /** One conversation the integration's bot is in + how it activates there.
  *  `off` = conversation gating (resource-visibility.md §14): the agent does not
  *  activate there — the default for every conversation of a restricted agent.
- *  `kind: 'im'` rows are DM conversations (gated integrations only). */
+ *  `kind: 'im'` rows are DM conversations and `kind: 'mpim'` rows are Slack group
+ *  DMs (both gated integrations only — neither is ever enumerated). */
 export const IntegrationChannelDto = z.object({
   channelId: z.string(),
   name: z.string().nullable(), // "#deploys" without the hash (or DM counterpart); null if lookup failed
@@ -709,7 +710,7 @@ export const IntegrationChannelDto = z.object({
   spaceId: z.string().nullable(),
   space: z.string().nullable(),
   isPrivate: z.boolean(),
-  kind: z.enum(['channel', 'im']),
+  kind: z.enum(['channel', 'im', 'mpim']),
   trigger: z.enum(['off', 'mention', 'any']),
   /** Effective per-channel owner for a shared bot (§10.1); null before convergence
    *  or when ownership does not apply. */

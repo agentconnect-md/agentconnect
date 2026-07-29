@@ -73,6 +73,12 @@ export function normalizeSlackEvent(event: SlackMessageEvent, ctx: { traceId: st
     text,
     mentionedBots,
     ...(attachments.length ? { attachments } : {}),
-    isDm: event.channel_type === 'im'
+    isDm: event.channel_type === 'im',
+    // A group DM is mention-gated like a channel, so this only classifies the
+    // conversation — it never makes the message addressed. `app_mention` payloads
+    // omit channel_type, so an unflagged mpim mention is classified later from the
+    // conversation lookup rather than guessed from the id (Slack "G…" ids are
+    // shared with legacy private channels).
+    ...(event.channel_type === 'mpim' ? { isGroupDm: true } : {})
   }
 }

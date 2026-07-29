@@ -25,7 +25,7 @@ const SECRET = { botToken: 'xoxb-abc', appToken: 'xapp-def' }
 const channel = (
   channelId: string,
   trigger: 'off' | 'mention' | 'any',
-  kind: 'channel' | 'im' = 'channel'
+  kind: 'channel' | 'im' | 'mpim' = 'channel'
 ): IntegrationChannelRecord => ({
   integrationId: INTEGRATION.id,
   channelId,
@@ -54,6 +54,22 @@ describe('integrationToSpec bindRules', () => {
       { match: { kind: 'dm' } },
       { channel: 'C2', match: { kind: 'auto' } },
       { channel: 'C3', match: { kind: 'auto' } }
+    ])
+  })
+
+  // §14.4: a direct row only exists because observation created it while the agent was
+  // restricted, and the console hides it once the agent is org-visible. Compiling its
+  // "any message" would leave the agent answering with no visible control to stop it.
+  it('ignores a preserved DM / group-DM row set to "any" for a non-gated agent', () => {
+    const spec = integrationToSpec(INTEGRATION, SECRET, [
+      channel('C1', 'any'),
+      channel('D1', 'any', 'im'),
+      channel('G1', 'any', 'mpim')
+    ])
+    expect(spec.slack.bindRules).toEqual([
+      { match: { kind: 'mention' } },
+      { match: { kind: 'dm' } },
+      { channel: 'C1', match: { kind: 'auto' } }
     ])
   })
 

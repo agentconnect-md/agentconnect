@@ -16,7 +16,12 @@
  */
 import { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
 
-/** Bot token scopes the daemon's Slack adapter requires. */
+/**
+ * Bot token scopes the Slack app requests. Widening this list later forces every
+ * workspace that already installed the app to re-authorize, so it covers group
+ * DMs (`mpim:*`) and agent-initiated DMs (`im:write`) alongside the channel and
+ * thread surfaces the adapter reads today.
+ */
 export const SLACK_BOT_SCOPES = [
   'files:read',
   'app_mentions:read',
@@ -29,6 +34,9 @@ export const SLACK_BOT_SCOPES = [
   'groups:history',
   'groups:read',
   'im:history',
+  'im:write',
+  'mpim:history',
+  'mpim:read',
   'reactions:write',
   'assistant:write',
   'users:read'
@@ -41,6 +49,7 @@ export const SLACK_BOT_EVENTS = [
   'message.channels',
   'message.groups',
   'message.im',
+  'message.mpim',
   'member_joined_channel',
   'channel_left',
   'group_left'

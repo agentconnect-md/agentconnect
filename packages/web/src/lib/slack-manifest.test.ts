@@ -1,5 +1,54 @@
 import { describe, expect, it } from 'vitest'
-import { buildSlackManifest, slackCreateAppUrl, SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from './slack-manifest'
+import {
+  buildSlackManifest,
+  slackCreateAppUrl,
+  SLACK_BOT_SCOPES,
+  SLACK_BOT_EVENTS,
+  SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID
+} from './slack-manifest'
+
+// The manual manifest must request exactly what the CP's auto-install manifest does, or
+// an app a user creates by hand is short a permission the daemon needs. The two lists
+// live in separate packages, so each pins the same literal: changing one side alone
+// fails its own drift guard, here or in
+// packages/control-plane/src/http/slack-manifest.test.ts.
+describe('manifest parity with the Control Plane', () => {
+  it('pins the exact bot scopes (drift guard)', () => {
+    expect([...SLACK_BOT_SCOPES]).toEqual([
+      'files:read',
+      'app_mentions:read',
+      'channels:history',
+      'channels:read',
+      'commands',
+      'chat:write',
+      'chat:write.customize',
+      'files:write',
+      'groups:history',
+      'groups:read',
+      'im:history',
+      'im:write',
+      'mpim:history',
+      'mpim:read',
+      'reactions:write',
+      'assistant:write',
+      'users:read'
+    ])
+  })
+
+  it('pins the exact bot events (drift guard)', () => {
+    expect([...SLACK_BOT_EVENTS]).toEqual([
+      'app_mention',
+      'assistant_thread_started',
+      'message.channels',
+      'message.groups',
+      'message.im',
+      'message.mpim',
+      'member_joined_channel',
+      'channel_left',
+      'group_left'
+    ])
+  })
+})
 
 describe('buildSlackManifest', () => {
   it('brands the app with the given background_color, and omits it otherwise', () => {
