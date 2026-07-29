@@ -756,6 +756,29 @@ describe('GithubRunReporter', () => {
     )
   })
 
+  it.each(['review-bot', 'review-bot-fast'])(
+    'qualifies the check name for concurrent reviewer %s',
+    async (agentName) => {
+      const p = projection({ agentName })
+      const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          return Response.json(
+            { id: '90071992547409931', external_id: p.externalId, status: 'queued', conclusion: null },
+            { status: 201 }
+          )
+        }
+        return Response.json({ id: '90071992547409931' })
+      })
+      const { reporter } = worker(p, fetchImpl)
+
+      await reporter.tick()
+
+      expect(JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body))).toEqual({
+        name: `AgentConnect PR Review: ${agentName}`
+      })
+    }
+  )
+
   it('omits details_url while a reused check awaits session confirmation', async () => {
     const p = projection({
       desiredState: 'in_progress',
@@ -1356,5 +1379,5 @@ describe('GithubRunReporter', () => {
   })
 })
 
-const CHECK_NAME_FOR_TEST = 'AgentConnect PR Review'
+const CHECK_NAME_FOR_TEST = 'AgentConnect PR Review: review-agent'
 const LEGACY_CHECK_NAME_PREFIX_FOR_TEST = 'agentconnect/info/review/'
