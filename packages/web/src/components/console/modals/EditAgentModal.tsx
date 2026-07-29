@@ -422,6 +422,14 @@ export default function EditAgentModal({
         setErr('Choose an online daemon that supports agent moves.')
         return
       }
+      // Placement is where a deferred runtime becomes mandatory (§3.2). Ahead of
+      // `runtimeUnavailable`, which an unset runtime also trips — a target that
+      // advertises profiles cannot advertise the empty one, and "does not
+      // advertise the — runtime" is not the problem to report.
+      if (initialPlacement && !runtime.trim()) {
+        setErr('Choose a runtime before placing this agent on a daemon.')
+        return
+      }
       if (runtimeUnavailable) {
         setErr(`${daemon.name} does not advertise the ${runtimeLabel(runtime, runtimeMeta?.name)} runtime.`)
         return
@@ -446,12 +454,6 @@ export default function EditAgentModal({
       setErr(
         'Move or repair the agent separately from configuration changes. Save those changes first, then reopen it.'
       )
-      return
-    }
-    // Placement is where a deferred runtime becomes mandatory. Say so here rather
-    // than surfacing the CP's 409 after the round trip.
-    if (initialPlacement && !runtime.trim()) {
-      setErr('Choose a runtime before placing this agent on a daemon.')
       return
     }
     setSaving(true)
