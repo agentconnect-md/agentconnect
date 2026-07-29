@@ -7,6 +7,7 @@ import {
   renderStatusReply,
   TELEGRAM_MESSAGE_LIMIT,
   TELEGRAM_CONTINUE_HINT,
+  TELEGRAM_CONTINUE_HINT_SUFFIX,
   type TelegramAction
 } from '../src/telegram/render.js'
 
@@ -203,11 +204,54 @@ describe('TelegramConverger continue hint', () => {
     expect(posts[1]!.hint).toBe(TELEGRAM_CONTINUE_HINT)
   })
 
-  it('leaves mid-turn flushes unannotated (only the final message is a reply target)', () => {
+  it('reserves the suffix in the body budget so a maximal section + hint still fits', () => {
+    const c = new TelegramConverger('medium', { continueHint: true })
+    // One unbroken line (no newline to split on) longer than the cap: the splitter hard-cuts
+    // at the budget, so section 1 is exactly maximal — the case that used to overflow.
+    c.onUpdate(chunk('x'.repeat(TELEGRAM_MESSAGE_LIMIT + 500)))
+    const posts = c.onFinal().filter((a) => a.kind === 'post') as { text: string; hint?: string }[]
+    expect(posts.length).toBeGreaterThan(1)
+    expect(posts[0]!.text.length).toBe(TELEGRAM_MESSAGE_LIMIT - TELEGRAM_CONTINUE_HINT_SUFFIX.length)
+    for (const p of posts) {
+      const sent = p.hint ? `${p.text}${TELEGRAM_CONTINUE_HINT_SUFFIX}` : p.text
+      expect(sent.length).toBeLessThanOrEqual(TELEGRAM_MESSAGE_LIMIT)
+    }
+  })
+
+  it('annotates the already-sent body when the turn ends with nothing left to flush', () => {
     const c = new TelegramConverger('low', { continueHint: true })
     c.onUpdate(chunk('before'))
+    // A tool boundary drains the body mid-turn; no further text arrives.
     const mid = c.onUpdate(toolCall({ toolCallId: 't1', title: 'Read' }))
     expect(mid.find((a) => a.kind === 'post')).toEqual({ kind: 'post', text: 'before' })
+    expect(c.onFinal()).toEqual([{ kind: 'continue-hint', hint: TELEGRAM_CONTINUE_HINT }])
+  })
+
+  it('annotates an idle-flushed reply the same way, and only once', () => {
+    const c = new TelegramConverger('medium', { continueHint: true })
+    c.onUpdate(chunk('streamed answer'))
+    expect(c.flushBuffered()).toEqual([{ kind: 'post', text: 'streamed answer' }])
+    const out = c.onFinal('https://app/s/1')
+    expect(kinds(out)).toEqual(['continue-hint', 'notice'])
+  })
+
+  it('carries the hint on the final post rather than a redundant edit', () => {
+    const c = new TelegramConverger('low', { continueHint: true })
+    c.onUpdate(chunk('before'))
+    c.onUpdate(toolCall({ toolCallId: 't1', title: 'Read' }))
+    c.onUpdate(chunk('after'))
+    expect(c.onFinal()).toEqual([{ kind: 'post', text: 'after', hint: TELEGRAM_CONTINUE_HINT }])
+  })
+
+  it('emits no hint for a turn that never sent a body', () => {
+    const c = new TelegramConverger('low', { continueHint: true })
+    c.onUpdate(toolCall({ toolCallId: 't1', title: 'Read' }))
+    expect(c.onFinal()).toEqual([])
+  })
+
+  it('emits no hint for a suppressed (AC_NO_RESPONSE) turn', () => {
+    const c = new TelegramConverger('low', { continueHint: true })
+    c.onUpdate(chunk('AC_NO_RESPONSE'))
     expect(c.onFinal()).toEqual([])
   })
 
