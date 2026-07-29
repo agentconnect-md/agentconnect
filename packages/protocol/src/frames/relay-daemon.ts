@@ -386,10 +386,27 @@ export type RdAgentMsg = z.infer<typeof RdAgentMsg>
 /**
  * R→D REQ → `rd/agentmsg/ack`. The relay forwards the validated call to the TARGET's
  * owning daemon, replacing the untrusted `claimedFromAgentId` with a TRUSTED caller
- * claim the relay minted after snapshot validation: `trustedFromAgentId` + the
- * asserted `orgId`/`platform`/`channel` the caller was verified in. The target daemon
- * TERMINAL-verifies this claim + both directional policies against its LOCAL
- * snapshot (defense in depth, §2.5 #4) before dispatching `source:'agent'`.
+ * claim the relay minted after snapshot validation: `trustedFromAgentId` + the `orgId`
+ * the caller's own directory entry places it in (never an org the frame asserted). The
+ * target daemon TERMINAL-verifies this claim + both directional policies against its
+ * LOCAL snapshot (defense in depth, §2.5 #4) before dispatching `source:'agent'`.
+ *
+ * What `coords` is and is NOT: it is the DELIVERY coordinate the target derives the woken
+ * session's key from, not evidence of a shared channel — A2A authorization is channel-free
+ * (postless delivery, #854), so caller and target need share no channel and the target may
+ * have no IM integration at all. It is still integrity-checked, on BOTH sides and by the
+ * identical rule (`coordsAdmit`): when the snapshot knows any non-empty placement at
+ * `(orgId, channel)` the caller must resolve in it, so it cannot name an IM channel it has
+ * no access to and resume a target session living there. The rule keys on the CHANNEL ID
+ * alone, deliberately NOT on `coords.platform`: the woken session's key is computed from a
+ * NARROWED platform (the daemon folds `feishu` and anything it does not recognise into
+ * `'slack'`) while snapshot rows are keyed by the integration platform, so a platform-keyed
+ * check would search a different key space than the key it protects — and its every miss
+ * would fall into the pass branch below. A coordinate the snapshot knows nothing about
+ * (webchat / any integration-less coords, and also a direct conversation or a channel whose
+ * row has gone — agent-collaboration §2.7 item 5) asserts nothing about a shared channel and
+ * carries no membership guarantee — read `coords` as "verified reachable-or-channel-free",
+ * never as "verified member of".
  */
 export const RdAgentMsgFwd = z.object({
   trustedFromAgentId: z.string().uuid(), // minted by the relay — the target may trust this

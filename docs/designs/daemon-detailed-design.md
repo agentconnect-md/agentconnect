@@ -79,7 +79,7 @@ This chapter summarizes the daemon's **modules and their responsibilities**. Eve
 | **Scheduler**                             | In process                      | Fires cron/loop **locally**, including while CP is offline, and injects synthetic messages into Router                                                            | sections 4.2/7.4    |
 | **ACP Host**                              | In process; local ACP client    | Starts and drives adapters through ACP; manages session lifecycles; **converges** streaming agent output                                                          | section 7           |
 | **ACP Adapters**                          | **Third-party child processes** | `claude-agent-acp` / `codex`: implement the ACP agent side and launch the local model harness                                                                     | sections 7.1/3.3    |
-| **MCP Tool Server**                       | In process; local MCP server    | Injects tools such as `sendPlatformMessage`, `listChannelAgents`, and `messageAgent`, filling ACP gaps                                                            | section 9.4         |
+| **MCP Tool Server**                       | In process; local MCP server    | Injects tools such as `sendMessage`, `listAgents` (org-scoped peer discovery), and `messageAgent`, filling ACP gaps                                               | section 9.4         |
 | **Workspace Manager**                     | In process                      | Manages `git-repo` and `from-scratch` workspaces, installs skills, and returns `cwd` from `prepareWorkspace`                                                      | section 4.3         |
 | **Local Store**                           | Embedded SQLite                 | Session state, route/cron cache for degradation, thread transcript, and pending telemetry buffer                                                                  | section 3.2         |
 | **Telemetry**                             | In process                      | Metrics/traces use direct OTLP side path (`startDaemonOpenTelemetry`, configured through `OTEL_*`); usage/facts use `usage/report` and `facts/*`; injects traceId | section 10.2        |
@@ -903,11 +903,21 @@ send-only SDK client under `src/feishu/`; see
 ACP can only reply to the current thread. Daemon's **MCP Tool Server** adds proactive platform send / agent calls. Declare it in `session/new.mcpServers`; platform tokens remain in the connection and invisible to the agent.
 
 Implemented tools in `src/mcp/tools.ts`: `sendPlatformMessage`; collaboration
-`listChannelAgents` / `messageAgent`; channel/user information
+`listAgents` (deprecated alias `listChannelAgents`) / `messageAgent`; channel/user information
 `getCurrentChannel`, `listChannels`, `listKnownUsers`, `listChannelMembers`,
 `getUserProfile`; attachment readers `readSlackFile`, `readTelegramFile`;
 memory `readMemory`, `writeMemory`, `searchMemory`; orchestration
 `startOrchestration`, `getOrchestration`, `cancelOrchestration`; and others.
+
+`listAgents` is **org**-scoped, not channel-scoped: it issues `channel/agents` with
+no channel and gets back every peer in the organization that the directional call
+policy admits, so a session with no IM integration (webchat, webhook, dreaming,
+memory-only) can still discover and wake peers. A `channel` argument is an optional
+filter. Authorization for a wake is that same call policy, evaluated against the
+daemon's copy of the collaboration snapshot (`CpCollabRoutes.admits`, fail-closed on
+an unknown agent); `channel` remains only the session/delivery coordinate. See
+[agent-collaboration-implementation.md](agent-collaboration-implementation.md) §2.2/§2.5
+and [daemon-cp-ws-protocol.md](daemon-cp-ws-protocol.md) §7.7.
 
 ---
 

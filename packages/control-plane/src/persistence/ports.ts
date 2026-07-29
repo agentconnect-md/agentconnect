@@ -729,6 +729,26 @@ export interface AgentRepo {
   /** Agents placed on a specific daemon — the reconcile roster (`register/ok.agents`).
    *  A daemon only ever receives the specs of the agents it owns (1 agent : 1 machine). */
   listForDaemon(daemonId: DaemonId): Promise<AgentRecord[]>
+  /**
+   * The org's PEER directory: every agent, with only the fields the collaboration
+   * roster filter needs. This is the channel-free discovery/authorization input —
+   * an agent with no IM integration (webchat, hook, dream, memory-only) reaches
+   * peers through this list and appears in NO channel-keyed structure at all.
+   *
+   * Deliberately NOT {@link AgentRepo.list}: that applies `visibilityWhere(viewer)`.
+   * `ResourceVisibility` governs HUMAN console access only — a `restricted` agent is
+   * still discoverable and callable by its peers. The only gate here is the
+   * directional agent-call policy, applied by the caller over the returned rows.
+   */
+  orgDirectory(orgId: OrgId): Promise<OrgAgentRecord[]>
+}
+
+/** One agent in the org peer directory — {@link ChannelAgentRecord} (so the roster
+ *  filter is literally the same code in both the org-wide and channel-filtered
+ *  scopes) plus the owning daemon, which the flat `CollabRoutesSnapshot.agents[]`
+ *  entry routes on. `daemonId` is null for an unplaced agent (not routable). */
+export interface OrgAgentRecord extends ChannelAgentRecord {
+  daemonId: string | null
 }
 
 // ───────────────────────────────────────────────────────────────────────────

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { planChannelIntros, buildIntroMessage, introPrompt, INTRO_MAX_BURST } from '../src/agents/channel-intro.js'
+import { Daemon } from '../src/daemon.js'
 
 const state = (seeded: boolean, introduced: string[] = []) => ({ seeded, introduced: new Set(introduced) })
 
@@ -57,13 +61,13 @@ describe('buildIntroMessage', () => {
     expect(msg.source).toBe('cron')
     expect(msg.platform).toBe('slack')
     // keyed to the REAL channel (headless ⇒ no channel output; ctx.channel drives
-    // listChannelAgents/sendMessage defaults and gives peers a real channel to inherit)
+    // sendMessage defaults and gives peers a real channel to inherit)
     expect(msg.channel).toBe('C1')
     // a distinct synthetic thread === transcriptTs (root) so no thread-history backfill runs
     expect(msg.thread).toBe(msg.transcriptTs)
     expect(msg.thread).toBe('intro:C1:trace-1')
     expect(msg.text).toContain('bot-a')
-    expect(msg.text).toContain('listChannelAgents')
+    expect(msg.text).toContain('listAgents')
     // Waking a peer is now a complete sendMessage agent-target call (a silent wake), not messageAgent.
     expect(msg.text).toContain('sendMessage')
     expect(msg.text).toContain('{"to":{"toAgent":"<their id>"},"message":"<short introduction>"}')
@@ -78,6 +82,17 @@ describe('introPrompt', () => {
     expect(p).toContain('do not post to the channel')
   })
 
+  // `listAgents` now defaults to the whole ORG directory, so the discovery step MUST pin
+  // the channel explicitly — otherwise one channel join fans an intro out to every agent
+  // in the organization.
+  it('pins discovery to THIS channel with an explicit filter (never the org-wide default)', () => {
+    const p = introPrompt('C1', 'bot-a')
+    expect(p).toContain('`listAgents`')
+    expect(p).toContain('{"channel":"C1"}')
+    expect(p).not.toContain('listChannelAgents')
+    expect(p).not.toContain('defaults to this channel')
+  })
+
   it('gives a complete sendMessage agent-target call (silent wake), not dotted pseudo-syntax', () => {
     const p = introPrompt('C1', 'bot-a')
     expect(p).toContain('sendMessage')
@@ -85,5 +100,75 @@ describe('introPrompt', () => {
     expect(p).toContain('silent wake')
     expect(p).not.toContain('to.toAgent')
     expect(p).not.toContain('messageAgent')
+  })
+})
+
+/**
+ * The prompt above asks the model for a channel filter; this is the part that does not
+ * depend on the model obeying. The dispatched intro turn carries `introChannel` on its
+ * trusted CallMeta, which the daemon's `channelAgents` dep turns into a forced filter —
+ * without it the org-wide default would wake every agent in the org on one channel join.
+ */
+describe('Daemon.maybeIntroduceOnJoin: the intro turn carries its own discovery bound', () => {
+  function scaffold(): string {
+    const root = mkdtempSync(join(tmpdir(), 'ac-daemon-intro-'))
+    writeFileSync(
+      join(root, 'config.json'),
+      JSON.stringify({
+        version: 1,
+        controlPlane: { enabled: false },
+        runtimes: { claude: { command: 'node', args: ['unused'] } }
+      })
+    )
+    const adir = join(root, 'agents', 'bot-a')
+    mkdirSync(adir, { recursive: true })
+    writeFileSync(
+      join(adir, 'agent.json'),
+      JSON.stringify({
+        id: 'bot-a',
+        name: 'bot-a',
+        status: 'active',
+        runtime: 'claude',
+        workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
+        // No integration on disk: the in-memory record below stands in for one, so the
+        // test never opens a real Slack socket.
+        integrations: [],
+        output: { mode: 'low' }
+      })
+    )
+    return root
+  }
+
+  it('stamps the joined channel on the dispatched turn’s CallMeta', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => ({}) as never })
+    await daemon.start()
+    const agent = (daemon as never as { agents: Map<string, Record<string, unknown>> }).agents.get('bot-a')!
+    agent.integrations = [{ id: 'int-1', platform: 'slack' }]
+    agent.introduceOnJoin = true
+    const calls: { agentId: string; msg: { channel: string }; callMeta?: { introChannel?: string } }[] = []
+    ;(daemon as never as { dispatch: unknown }).dispatch = async (
+      agentId: string,
+      msg: { channel: string },
+      _integrationId?: string,
+      _wc?: unknown,
+      callMeta?: { introChannel?: string }
+    ) => {
+      calls.push({ agentId, msg, callMeta })
+      return 'acp-1'
+    }
+    const introduce = (channels: string[]): void =>
+      (daemon as never as { maybeIntroduceOnJoin: (i: string, c: { id: string }[]) => void }).maybeIntroduceOnJoin(
+        'int-1',
+        channels.map((id) => ({ id }))
+      )
+    // First snapshot seeds the baseline silently; only a LATER channel is a genuine join.
+    introduce(['C_OLD'])
+    expect(calls).toHaveLength(0)
+    introduce(['C_OLD', 'C_JOINED'])
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.msg.channel).toBe('C_JOINED')
+    // THE bound: peer discovery in this turn is pinned to the joined channel in CODE.
+    expect(calls[0]!.callMeta?.introChannel).toBe('C_JOINED')
+    await daemon.stop()
   })
 })

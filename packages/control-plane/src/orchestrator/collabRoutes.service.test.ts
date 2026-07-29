@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { CollabRoutesSnapshot, RcCollabRoutes } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, IntegrationId, OrgId } from '../domain/ids.js'
-import type { ChannelPlacementRecord, DaemonRecord, DaemonRepo, IntegrationRepo } from '../persistence/ports.js'
+import type {
+  AgentRepo,
+  ChannelPlacementRecord,
+  DaemonRecord,
+  DaemonRepo,
+  IntegrationRepo,
+  OrgAgentRecord
+} from '../persistence/ports.js'
 import type { RelayControlSender } from './relayControl.js'
 import type { ControlSender } from './outbound.js'
 import { NoConnection } from './outbound.js'
@@ -47,6 +54,27 @@ function placement(orgId: OrgId, daemonId: string, suffix: string): ChannelPlace
   }
 }
 
+/** Flat org peer directory (agent-collaboration §2.5): one placed agent per org, with
+ *  NO integration — so it can only ever reach a snapshot through `agents[]`. */
+function agentRepo(byOrg: Record<string, OrgAgentRecord[]> = {}): AgentRepo {
+  return { orgDirectory: async (orgId: string) => byOrg[orgId] ?? [] } as unknown as AgentRepo
+}
+
+function orgAgent(orgId: string, daemonId: string, suffix: string): OrgAgentRecord {
+  return {
+    agentId: placement(OrgId(orgId), daemonId, suffix).agentId,
+    name: `agent-${suffix}`,
+    displayName: null,
+    description: null,
+    status: 'active',
+    daemonId,
+    callPolicy: 'all',
+    allowedCallerAgentIds: [],
+    outboundPolicy: 'all',
+    allowedTargetAgentIds: []
+  }
+}
+
 describe('CollabRoutesService placement broadcast', () => {
   it('sends an all-org full replacement to relays and org-scoped copies to daemons', async () => {
     let relay: RcCollabRoutes | undefined
@@ -57,6 +85,7 @@ describe('CollabRoutesService placement broadcast', () => {
         channelPlacements: async (orgId: string) =>
           orgId === ORG_A ? [placement(ORG_A, D_A, '1')] : [placement(ORG_B, D_B, '2')]
       } as unknown as IntegrationRepo,
+      agentRepo({ [ORG_A]: [orgAgent(ORG_A, D_A, '3')], [ORG_B]: [orgAgent(ORG_B, D_B, '4')] }),
       { collabRoutes: (snapshot: RcCollabRoutes) => void (relay = snapshot) } as unknown as RelayControlSender,
       {
         collaborationRoutes: async (daemonId: string, snapshot: CollabRoutesSnapshot) => {
@@ -74,6 +103,10 @@ describe('CollabRoutesService placement broadcast', () => {
     expect(daemonSends.find((s) => s.daemonId === D_A)?.snapshot.generation).toBe(5)
     expect(daemonSends.find((s) => s.daemonId === D_B)?.snapshot.generation).toBe(10)
     expect(relay?.generation).toBe(10)
+    // The flat directory is all-org too: the relay table is a FULL replacement, so a
+    // per-org emit would wipe the other tenant's peers just like `channels`.
+    expect(relay?.agents.map((a) => a.orgId).sort()).toEqual([ORG_A, ORG_B].sort())
+    expect(daemonSends.find((s) => s.daemonId === D_A)?.snapshot.agents.map((a) => a.orgId)).toEqual([ORG_A])
   })
 
   it('refreshes only the changed org daemons and tolerates disconnected ones', async () => {
@@ -81,6 +114,7 @@ describe('CollabRoutesService placement broadcast', () => {
     const service = new CollabRoutesService(
       daemonRepo(),
       { channelPlacements: async () => [] } as unknown as IntegrationRepo,
+      agentRepo(),
       { collabRoutes: () => undefined } as unknown as RelayControlSender,
       {
         collaborationRoutes: async (daemonId: string) => {
@@ -102,8 +136,8 @@ describe('CollabRoutesService placement broadcast', () => {
     } as unknown as RelayControlSender
     const integrations = { channelPlacements: async () => [] } as unknown as IntegrationRepo
 
-    await new CollabRoutesService(repo, integrations, relay).broadcast()
-    await new CollabRoutesService(repo, integrations, relay).broadcast()
+    await new CollabRoutesService(repo, integrations, agentRepo(), relay).broadcast()
+    await new CollabRoutesService(repo, integrations, agentRepo(), relay).broadcast()
 
     expect(generations).toEqual([10, 11])
   })
@@ -128,6 +162,7 @@ describe('CollabRoutesService placement broadcast', () => {
           return []
         }
       } as unknown as IntegrationRepo,
+      agentRepo(),
       {
         collabRoutes: (snapshot: RcCollabRoutes) => void generations.push(snapshot.generation)
       } as unknown as RelayControlSender

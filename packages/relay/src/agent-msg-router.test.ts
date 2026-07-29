@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
-import type { CollabRoutesSnapshot, RdAgentMsg, RdAgentMsgFwd, RdAgentMsgAck } from '@agentconnect.md/protocol'
+import type {
+  CollabAgentPlacement,
+  CollabOrgAgent,
+  CollabRoutesSnapshot,
+  RdAgentMsg,
+  RdAgentMsgFwd,
+  RdAgentMsgAck
+} from '@agentconnect.md/protocol'
 import { CollaborationRouter } from './collaboration-router.js'
 import { createAgentMsgRouter } from './agent-msg-router.js'
 import type { RelayDaemonServer } from './relay-daemon-server.js'
@@ -14,9 +21,36 @@ const INT = '00000000-0000-0000-0000-0000000000f1'
 
 const noopLog = { info() {}, warn() {}, error() {}, debug() {} }
 
+/** An org-scoped directory entry (the flat `agents[]` shape) with policy defaults. */
+function orgAgent(over: Partial<CollabOrgAgent> & { agentId: string; daemonId: string }): CollabOrgAgent {
+  return {
+    orgId: ORG,
+    callPolicy: 'all',
+    allowedCallerAgentIds: [],
+    outboundPolicy: 'all',
+    allowedTargetAgentIds: [],
+    ...over
+  }
+}
+
+/** One channel-row placement (the `channels[].agents[]` shape) with policy defaults. */
+function placement(over: Partial<CollabAgentPlacement> & { agentId: string; daemonId: string }): CollabAgentPlacement {
+  return {
+    integrationId: INT,
+    callPolicy: 'all',
+    allowedCallerAgentIds: [],
+    outboundPolicy: 'all',
+    allowedTargetAgentIds: [],
+    ...over
+  }
+}
+
 function snap(): CollabRoutesSnapshot {
   return {
     generation: 1,
+    // The flat directory is the authorization surface; `channels[]` below only carries the
+    // delivery/ingress facts (integration, bot app id).
+    agents: [orgAgent({ agentId: A, daemonId: D1 }), orgAgent({ agentId: B, daemonId: D2 })],
     channels: [
       {
         orgId: ORG,
@@ -167,10 +201,174 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(forwards).toHaveLength(0)
   })
 
+  it('coords integrity: caller asserting a KNOWN channel it is NOT in → not_allowed, nothing forwarded', async () => {
+    // F1 regression. Channel is no longer an AUTHORIZATION key, but it is still the woken
+    // peer's SESSION key, so the assertion still needs integrity: A lives only in C1, while
+    // B is in C1 *and* C_EXECS with a live C_EXECS session. Were the coords unchecked, the
+    // wake would land on the SAME computed childSessionId as that session and RESUME it —
+    // and with needsReply, report its content back into A's session. Policies are all 'all'
+    // here on purpose: the policy pair cannot see this, only the coordinate check can.
+    const s = snap()
+    s.channels.push({
+      orgId: ORG,
+      platform: 'slack',
+      channelId: 'C_EXECS',
+      agents: [placement({ agentId: B, daemonId: D2, integrationId: '00000000-0000-0000-0000-0000000000f2' })]
+    })
+    const router = new CollaborationRouter()
+    router.replace(s)
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+
+    const ack = await route(
+      D1,
+      baseMsg({
+        coords: { platform: 'slack', channel: 'C_EXECS', thread: '1784297789.871789' },
+        needsReply: true,
+        originSessionId: 'acp-parent-1'
+      })
+    )
+    expect(ack).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    expect(forwards).toHaveLength(0)
+  })
+
+  it('coords integrity: caller IS in the asserted channel → delivered, with that channel’s reply integration', async () => {
+    // The gate rejects only the channels the caller cannot reach; a legitimate second
+    // channel keeps working end to end.
+    const INT2 = '00000000-0000-0000-0000-0000000000f2'
+    const s = snap()
+    s.channels.push({
+      orgId: ORG,
+      platform: 'slack',
+      channelId: 'C_EXECS',
+      agents: [
+        placement({ agentId: A, daemonId: D1, integrationId: INT2 }),
+        placement({ agentId: B, daemonId: D2, integrationId: INT2 })
+      ]
+    })
+    const router = new CollaborationRouter()
+    router.replace(s)
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+
+    const ack = await route(D1, baseMsg({ coords: { platform: 'slack', channel: 'C_EXECS' } }))
+    expect(ack.delivered).toBe(true)
+    expect(forwards).toHaveLength(1)
+    expect(forwards[0].integrationId).toBe(INT2)
+    expect(forwards[0].coords).toEqual({ platform: 'slack', channel: 'C_EXECS' })
+  })
+
+  it('coords integrity: switching the coordinate PLATFORM does not dodge the gate', async () => {
+    // The bypass a platform-KEYED gate had. The target computes the woken session key with a
+    // NARROWED platform (`narrowPlatform` folds feishu — and any unrecognised value — into
+    // 'slack'), so looking the coordinate up under the raw wire platform searched a different
+    // key space than the key being protected, and the residual "unknown coordinate passes"
+    // branch turned the miss into a PASS. `feishu` is a legal value of the coords enum, so
+    // this was the same attack as above with one field changed.
+    const s = snap()
+    s.channels.push({
+      orgId: ORG,
+      platform: 'slack',
+      channelId: 'C_EXECS',
+      agents: [placement({ agentId: B, daemonId: D2, integrationId: '00000000-0000-0000-0000-0000000000f2' })]
+    })
+    const router = new CollaborationRouter()
+    router.replace(s)
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+
+    const ack = await route(
+      D1,
+      baseMsg({ coords: { platform: 'feishu', channel: 'C_EXECS', thread: '1784297789.871789' }, needsReply: true })
+    )
+    expect(ack).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    expect(forwards).toHaveLength(0)
+  })
+
+  it('coords integrity: holds in a FEISHU org, where honest coords are already narrowed to slack', async () => {
+    // The mirror of the same root cause, and the reason a platform-keyed gate was a NO-OP for
+    // a whole tenant class: channel rows are keyed by the INTEGRATION platform ('feishu'),
+    // while the source daemon narrows its own coords to 'slack' before sending them. So the
+    // attack needed no exotic value at all — every honest wake in such an org already carries
+    // a platform the gate would fail to find.
+    const router = new CollaborationRouter()
+    router.replace({
+      generation: 1,
+      agents: [orgAgent({ agentId: A, daemonId: D1 }), orgAgent({ agentId: B, daemonId: D2 })],
+      channels: [
+        {
+          orgId: ORG,
+          platform: 'feishu',
+          channelId: 'oc_pub',
+          agents: [placement({ agentId: A, daemonId: D1 }), placement({ agentId: B, daemonId: D2 })]
+        },
+        { orgId: ORG, platform: 'feishu', channelId: 'oc_execs', agents: [placement({ agentId: B, daemonId: D2 })] }
+      ]
+    })
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+
+    const ack = await route(D1, baseMsg({ coords: { platform: 'slack', channel: 'oc_execs', thread: '900.1' } }))
+    expect(ack).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    expect(forwards).toHaveLength(0)
+    // The channel they genuinely share still routes, with the same narrowed platform.
+    const shared = await route(
+      D1,
+      baseMsg({ deliveryId: 'd-2', coords: { platform: 'slack', channel: 'oc_pub', thread: '900.1' } })
+    )
+    expect(shared.delivered).toBe(true)
+    expect(forwards).toHaveLength(1)
+  })
+
+  it('coords integrity: an UNKNOWN coordinate passes untouched — the gate is not a membership requirement', async () => {
+    // The snapshot knows only slack:C1, so neither coordinate below names a shared IM
+    // channel it could make a claim about: a session-identity platform (webchat/hook/dream)
+    // and an IM channel with no placement at all must both route on policy alone, otherwise
+    // the channel-free directory would be dead on arrival for integration-less peers.
+    const router = new CollaborationRouter()
+    router.replace(snap())
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+
+    const webchat = await route(D1, baseMsg({ coords: { platform: 'webchat', channel: 'wc-1' } }))
+    expect(webchat.delivered).toBe(true)
+    expect(forwards[0].coords).toEqual({ platform: 'webchat', channel: 'wc-1' })
+    // No channel row for the coordinate ⇒ the reply integration falls back to the target's
+    // directory entry, which here has none.
+    expect(forwards[0].integrationId).toBeUndefined()
+
+    const unknownChannel = await route(
+      D1,
+      baseMsg({ deliveryId: 'd-2', coords: { platform: 'slack', channel: 'C_NOT_IN_SNAPSHOT' } })
+    )
+    expect(unknownChannel.delivered).toBe(true)
+    expect(forwards).toHaveLength(2)
+  })
+
   it('target callPolicy=selected, caller not allowed → NAK not_allowed at the relay', async () => {
     const s = snap()
-    s.channels[0].agents[1].callPolicy = 'selected'
-    s.channels[0].agents[1].allowedCallerAgentIds = [] // A not allowed
+    s.agents[1].callPolicy = 'selected'
+    s.agents[1].allowedCallerAgentIds = [] // A not allowed
     const router = new CollaborationRouter()
     router.replace(s)
     const forwards: RdAgentMsgFwd[] = []
@@ -187,8 +385,8 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
 
   it('caller outboundPolicy=selected, target not allowed → NAK not_allowed at the relay', async () => {
     const s = snap()
-    s.channels[0]!.agents[0]!.outboundPolicy = 'selected'
-    s.channels[0]!.agents[0]!.allowedTargetAgentIds = []
+    s.agents[0]!.outboundPolicy = 'selected'
+    s.agents[0]!.allowedTargetAgentIds = []
     const router = new CollaborationRouter()
     router.replace(s)
     const forwards: RdAgentMsgFwd[] = []
@@ -203,9 +401,10 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(forwards).toHaveLength(0)
   })
 
-  it('target not in any channel row → NAK not_found', async () => {
+  it('target absent from the org directory → NAK not_found', async () => {
     const s = snap()
-    s.channels[0].agents = s.channels[0].agents.filter((a) => a.agentId !== B) // drop B
+    s.agents = s.agents.filter((a) => a.agentId !== B) // drop B from the directory
+    s.channels[0].agents = s.channels[0].agents.filter((a) => a.agentId !== B)
     const router = new CollaborationRouter()
     router.replace(s)
     const route = createAgentMsgRouter({
@@ -231,18 +430,12 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(ack.reason).toBe('offline')
   })
 
-  it('cross-org target → rejected (caller/target never share a channel row)', async () => {
-    // Caller A is in ORG/C1; a same-id channel in ORG2 holds a different target — the
-    // caller does not resolve in ORG2, so its org binds to ORG and B-in-ORG2 is unseen.
+  it('cross-org target → rejected even though both sit in the same channel id', async () => {
+    // Org scoping is now the ONLY isolation boundary (channel is not consulted), so put
+    // B in ORG2 and leave the identical channel id in place: it must still not resolve,
+    // and the reason must be indistinguishable from "no such agent" (no cross-org probing).
     const s = snap()
-    s.channels.push({
-      orgId: ORG2,
-      platform: 'slack',
-      channelId: 'C1',
-      agents: [{ agentId: B, daemonId: D2, integrationId: INT, callPolicy: 'all', allowedCallerAgentIds: [] }]
-    })
-    // Remove B from ORG so it only exists cross-org.
-    s.channels[0].agents = s.channels[0].agents.filter((a) => a.agentId !== B)
+    s.agents[1].orgId = ORG2
     const router = new CollaborationRouter()
     router.replace(s)
     const route = createAgentMsgRouter({
@@ -252,7 +445,94 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     })
     const ack = await route(D1, baseMsg())
     expect(ack.delivered).toBe(false)
-    expect(ack.reason).toBe('not_found') // resolved in caller's org (ORG), where B is absent
+    expect(ack.reason).toBe('not_found')
+    expect(router.admits(A, B)).toBe(false)
+  })
+
+  it('org-scoped resolve: caller and target share NO channel at all → still delivered', async () => {
+    // The whole point of the org-scoped directory: an integration-less peer (webchat/hook/
+    // dream) appears in no `channels[]` row, so channel membership cannot be the gate.
+    const s: CollabRoutesSnapshot = {
+      generation: 1,
+      agents: [orgAgent({ agentId: A, daemonId: D1 }), orgAgent({ agentId: B, daemonId: D2 })],
+      channels: [] // nobody has an IM integration
+    }
+    const router = new CollaborationRouter()
+    router.replace(s)
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+
+    const ack = await route(D1, baseMsg({ coords: { platform: 'webchat', channel: 'wc-1' } }))
+    expect(ack.delivered).toBe(true)
+    expect(forwards[0].trustedFromAgentId).toBe(A)
+    expect(forwards[0].orgId).toBe(ORG)
+    // No channel placement ⇒ no reply integration, and coords ride through as the delivery
+    // coordinate regardless.
+    expect(forwards[0].integrationId).toBeUndefined()
+    expect(forwards[0].coords).toEqual({ platform: 'webchat', channel: 'wc-1' })
+  })
+
+  it('forged caller is still rejected with no channel in play (placement belongs to another daemon)', async () => {
+    const s: CollabRoutesSnapshot = {
+      generation: 1,
+      agents: [orgAgent({ agentId: A, daemonId: D1 }), orgAgent({ agentId: B, daemonId: D2 })],
+      channels: []
+    }
+    const router = new CollaborationRouter()
+    router.replace(s)
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+    // Socket authenticated as D2, but it claims A — whose directory placement is on D1.
+    const ack = await route(D2, baseMsg())
+    expect(ack).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    expect(forwards).toHaveLength(0)
+  })
+
+  it('unknown target id (never in the directory) → not_found, and admits() fails closed', async () => {
+    const router = new CollaborationRouter()
+    router.replace(snap())
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, []),
+      log: noopLog
+    })
+    const ghost = '00000000-0000-0000-0000-0000000000ff'
+    const ack = await route(D1, baseMsg({ toAgentId: ghost }))
+    expect(ack).toMatchObject({ delivered: false, reason: 'not_found' })
+    expect(router.admits(A, ghost)).toBe(false)
+    expect(router.admits(ghost, A)).toBe(false)
+    // A caller always admits ITSELF, even with a 'selected' outbound policy that omits it.
+    expect(router.admits(A, A)).toBe(true)
+  })
+
+  it('old CP (no flat agents[]): the directory is derived from the channel rows', async () => {
+    // Rolling upgrade: an old CP advertises no `agent-directory-org-scope-v1` and sends no
+    // `agents[]` (schema default `[]`), so an integration-backed pair must keep authorizing.
+    const s = snap()
+    s.agents = []
+    const router = new CollaborationRouter()
+    router.replace(s)
+    expect(router.orgForAgent(A)).toBe(ORG)
+    expect(router.admits(A, B)).toBe(true)
+
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+    const ack = await route(D1, baseMsg())
+    expect(ack.delivered).toBe(true)
+    expect(forwards[0].orgId).toBe(ORG)
+    expect(forwards[0].integrationId).toBe(INT)
   })
 
   it('per-hop dedup: same deliveryId twice → single forward', async () => {
@@ -278,13 +558,11 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     // Add a second caller A2 that lives on D2 so a call FROM D2 is a valid, distinct call.
     const A2 = '00000000-0000-0000-0000-0000000000a3'
     const s = snap()
-    s.channels[0].agents.push({
-      agentId: A2,
-      daemonId: D2,
-      integrationId: INT,
-      callPolicy: 'all',
-      allowedCallerAgentIds: []
-    })
+    s.agents.push(orgAgent({ agentId: A2, daemonId: D2, integrationId: INT }))
+    // A2 needs a C1 placement too: both calls below assert coords slack:C1, and the
+    // coordinate-integrity gate requires a caller asserting a KNOWN channel to actually
+    // be in it (see the F1 regression test above).
+    s.channels[0].agents.push(placement({ agentId: A2, daemonId: D2 }))
     // Target A is on D1 so the D2-originated call forwards to D1's connection.
     const router = new CollaborationRouter()
     router.replace(s)
@@ -321,19 +599,30 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     // The bot-agnostic snapshot co-locates them by (org, platform, channel).
     const s: CollabRoutesSnapshot = {
       generation: 1,
+      agents: [orgAgent({ agentId: A, daemonId: D1 }), orgAgent({ agentId: B, daemonId: D2 })],
       channels: [
         {
           orgId: ORG,
           platform: 'slack',
           channelId: 'C1',
           agents: [
-            { agentId: A, daemonId: D1, integrationId: INT, callPolicy: 'all', allowedCallerAgentIds: [] },
+            {
+              agentId: A,
+              daemonId: D1,
+              integrationId: INT,
+              callPolicy: 'all',
+              allowedCallerAgentIds: [],
+              outboundPolicy: 'all',
+              allowedTargetAgentIds: []
+            },
             {
               agentId: B,
               daemonId: D2,
               integrationId: '00000000-0000-0000-0000-0000000000f2', // different bot's integration
               callPolicy: 'all',
-              allowedCallerAgentIds: []
+              allowedCallerAgentIds: [],
+              outboundPolicy: 'all',
+              allowedTargetAgentIds: []
             }
           ]
         }

@@ -199,6 +199,8 @@ describe('toolsForIntegrations', () => {
     expect(tools.map((t) => t.name)).toEqual([
       'readMemory',
       'writeMemory',
+      'listAgents',
+      // still offered under the old name, for sessions already warm with it
       'listChannelAgents',
       'viewSessionStatus',
       'startOrchestration',
@@ -216,7 +218,9 @@ describe('toolsForIntegrations', () => {
 
     const tools = toolsForIntegrations([slackInt], { collaboration: false })
     const names = tools.map((tool) => tool.name)
-    expect(names).not.toEqual(expect.arrayContaining(['listChannelAgents', 'startOrchestration', 'getOrchestration']))
+    expect(names).not.toEqual(
+      expect.arrayContaining(['listAgents', 'listChannelAgents', 'startOrchestration', 'getOrchestration'])
+    )
     expect(names).toContain('sendMessage')
     const send = tools.find((tool) => tool.name === 'sendMessage')!
     const to = (send.inputSchema.properties as Record<string, ObjectSchema>).to

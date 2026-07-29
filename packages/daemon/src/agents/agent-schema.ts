@@ -212,7 +212,7 @@ export const AgentSchema = z.object({
   allowedTargetAgentIds: z.array(z.string()).default([]),
   // Opt-in (issue #536): when true, on a GENUINE new channel join the agent
   // proactively introduces itself to the other agents already there (via
-  // listChannelAgents → messageAgent) so peers can record it in memory. Default
+  // listAgents → a sendMessage wake) so peers can record it in memory. Default
   // off — the daemon seeds each integration's channel baseline silently, so only
   // channels joined AFTER the baseline (never a restart/re-list) trigger an intro.
   introduceOnJoin: z.boolean().default(false),

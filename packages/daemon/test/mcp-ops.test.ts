@@ -704,24 +704,29 @@ describe('executeTool: telegram tool names dispatch through the same gateway', (
   })
 })
 
-describe('executeTool: listChannelAgents', () => {
+describe('executeTool: listAgents', () => {
   // A deps bundle whose channelAgents dep records the request it received and
   // returns a canned roster. gatewayFor throws to prove discovery does NOT need a
   // platform gateway (it runs before the gateway gate).
   function discoveryDeps(over: Partial<OpsDeps> = {}): {
     deps: OpsDeps
-    calls: { platform: string; channel: string; requesterAgentId: string }[]
+    calls: { platform: string; channel?: string; currentChannel?: string; requesterAgentId: string }[]
   } {
-    const calls: { platform: string; channel: string; requesterAgentId: string }[] = []
+    const calls: { platform: string; channel?: string; currentChannel?: string; requesterAgentId: string }[] = []
     const d = makeDeps({
       gatewayFor: () => {
-        throw new Error('gatewayFor must not be called for listChannelAgents')
+        throw new Error('gatewayFor must not be called for listAgents')
       },
       channelAgents: async (req) => {
-        calls.push({ platform: req.platform, channel: req.channel, requesterAgentId: req.requesterAgentId })
-        return {
+        calls.push({
           platform: req.platform,
           channel: req.channel,
+          currentChannel: req.currentChannel,
+          requesterAgentId: req.requesterAgentId
+        })
+        return {
+          platform: req.platform,
+          ...(req.channel !== undefined ? { channel: req.channel } : {}),
           agents: [{ agentId: 'peer-1', name: 'peer', status: 'active' as const }]
         }
       },
@@ -731,32 +736,75 @@ describe('executeTool: listChannelAgents', () => {
     return { deps: d, calls }
   }
 
-  it('defaults platform+channel to the session coords and returns the roster', async () => {
+  // The whole point of the org-scoped directory: NO channel is sent unless the agent asked
+  // for one, so a session with no IM integration can still discover peers.
+  it('sends NO channel by default (org-wide scope) and returns a channel-less roster', async () => {
     const { deps: d, calls } = discoveryDeps()
-    const res = (await executeTool(ctx, 'listChannelAgents', {}, d)) as { channel: string; agents: unknown[] }
-    expect(calls).toEqual([{ platform: 'slack', channel: 'C_CURRENT', requesterAgentId: 'bot-a' }])
-    expect(res.channel).toBe('C_CURRENT')
+    const res = (await executeTool(ctx, 'listAgents', {}, d)) as { channel?: string; agents: unknown[] }
+    expect(calls).toEqual([
+      { platform: 'slack', channel: undefined, currentChannel: 'C_CURRENT', requesterAgentId: 'bot-a' }
+    ])
+    expect(res).not.toHaveProperty('channel')
     expect(res.agents).toEqual([{ agentId: 'peer-1', name: 'peer', status: 'active' }])
   })
 
-  it('lets `channel` be overridden but keeps the current channel by default', async () => {
+  it('passes `channel` through as a filter when the agent asks for one', async () => {
     const { deps: d, calls } = discoveryDeps()
-    await executeTool(ctx, 'listChannelAgents', { channel: 'C_OTHER' }, d)
-    expect(calls[0]).toMatchObject({ channel: 'C_OTHER' })
+    const res = (await executeTool(ctx, 'listAgents', { channel: 'C_OTHER' }, d)) as { channel?: string }
+    expect(calls[0]).toMatchObject({ channel: 'C_OTHER', currentChannel: 'C_CURRENT' })
+    expect(res.channel).toBe('C_OTHER')
+  })
+
+  it('still answers to the deprecated `listChannelAgents` name, with the same org-wide default', async () => {
+    const { deps: d, calls } = discoveryDeps()
+    const res = (await executeTool(ctx, 'listChannelAgents', {}, d)) as { agents: unknown[] }
+    expect(calls[0]).toEqual({
+      platform: 'slack',
+      channel: undefined,
+      currentChannel: 'C_CURRENT',
+      requesterAgentId: 'bot-a'
+    })
+    expect(res.agents).toHaveLength(1)
   })
 
   it('takes requesterAgentId + platform from the session context, NOT tool input', async () => {
     const { deps: d, calls } = discoveryDeps()
     // Attacker-controlled args attempt to impersonate another agent / probe another
     // platform — both must be ignored in favor of the trusted session context.
-    await executeTool(ctx, 'listChannelAgents', { requesterAgentId: 'someone-else', platform: 'telegram' }, d)
-    expect(calls[0]).toEqual({ platform: 'slack', channel: 'C_CURRENT', requesterAgentId: 'bot-a' })
+    await executeTool(ctx, 'listAgents', { requesterAgentId: 'someone-else', platform: 'telegram' }, d)
+    expect(calls[0]).toEqual({
+      platform: 'slack',
+      channel: undefined,
+      currentChannel: 'C_CURRENT',
+      requesterAgentId: 'bot-a'
+    })
+  })
+
+  // The daemon identifies the CALLING TURN by its logical sessionKey, which is how a turn
+  // whose discovery scope the daemon fixed itself (the #536 self-introduce turn) can be
+  // bounded in code rather than by prompt. All three coordinates are trusted context.
+  it('carries the trusted turn coordinates (thread + transport scope) so the daemon can identify the turn', async () => {
+    const calls: Record<string, unknown>[] = []
+    const d = makeDeps({
+      channelAgents: async (req) => {
+        calls.push({ ...req })
+        return { platform: req.platform, agents: [] }
+      }
+    })
+    await executeTool({ ...ctx, transportScope: 'bot-1' }, 'listAgents', {}, d)
+    expect(calls[0]).toMatchObject({
+      currentChannel: 'C_CURRENT',
+      currentThread: '111.1',
+      currentTransportScope: 'bot-1',
+      requesterAgentId: 'bot-a'
+    })
+    // A session with no physical-bot scope simply omits it (never a literal undefined on the wire).
+    await executeTool(ctx, 'listAgents', {}, d)
+    expect(calls[1]).not.toHaveProperty('currentTransportScope')
+    expect(calls[1]).toMatchObject({ currentThread: '111.1' })
   })
 })
 
-// The unified `sendMessage` tool's A2A/wake path (§4) and SessionTarget reply path (§5),
-// the former `messageAgent` tool. `to.toAgent` wakes a peer through `deps.messageAgent`;
-// `to.sessionId` replies into an origin session through `deps.replyToSession`.
 describe('executeTool: sendMessage (wake / reply)', () => {
   function wakeDeps(over: Partial<OpsDeps> = {}): {
     deps: OpsDeps

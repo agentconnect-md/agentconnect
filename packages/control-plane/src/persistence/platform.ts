@@ -13,10 +13,17 @@
 import type { Platform as ProtocolPlatform } from '@agentconnect.md/protocol'
 import type { Platform as DbPlatform } from '../generated/prisma/enums.js'
 
+/** True for the session-identity-only platforms, which have no persisted row. Lets a
+ *  caller decide BEFORE reaching persistence — a read whose answer is "nothing is
+ *  persisted for this platform" should return the empty answer, not raise. */
+export function isSessionIdentityPlatform(p: ProtocolPlatform): p is 'webchat' | 'hook' | 'dream' {
+  return p === 'webchat' || p === 'hook' || p === 'dream'
+}
+
 /** Narrow a protocol platform to a persisted (DB) platform, or throw on the
  *  session-identity-only members (`webchat`, `hook`, `dream`). */
 export function toDbPlatform(p: ProtocolPlatform): DbPlatform {
-  if (p === 'webchat' || p === 'hook' || p === 'dream') {
+  if (isSessionIdentityPlatform(p)) {
     throw new Error(`${p} is a session-identity platform and is never persisted`)
   }
   return p

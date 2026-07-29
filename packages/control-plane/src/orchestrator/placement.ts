@@ -458,8 +458,14 @@ export class Placement implements ReconcileService {
     // the org-wide channel placement/policy set, so THIS daemon can terminal-verify a
     // REMOTE agent caller (§2.5 #4). Org-scoped, bodiless. `generation` reuses the
     // routingEpoch as a monotonic version hook (fuller lifecycle is a follow-up, §6.5).
-    const placements = await this.integrations.channelPlacements(daemon.orgId)
-    const collabRoutes = buildCollabSnapshot(daemon.orgId, placements, Number(daemon.routingEpoch))
+    // `orgDirectory` is the flat companion: policy-only rows for EVERY org agent,
+    // including the integration-less ones no channel placement can express. One
+    // org-scoped query, not a per-agent fan-out.
+    const [placements, orgDirectory] = await Promise.all([
+      this.integrations.channelPlacements(daemon.orgId),
+      this.agents.orgDirectory(daemon.orgId)
+    ])
+    const collabRoutes = buildCollabSnapshot(daemon.orgId, placements, Number(daemon.routingEpoch), orgDirectory)
 
     // drop = localState − desired. Agent/integration replicas need an explicit
     // ownership proof so hand-authored local config survives. A legacy replica

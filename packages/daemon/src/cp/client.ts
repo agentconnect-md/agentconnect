@@ -561,12 +561,17 @@ export class CpClient {
   }
 
   /**
-   * `channel/agents` (D→C REQ) → the channel's agent roster. The peer-discovery
+   * `channel/agents` (D→C REQ) → the caller's callable peers. The peer-discovery
    * half of agent collaboration: the daemon asks the CP (the only authority for
-   * the full cross-daemon roster) who else is in a channel. State-GATED like
+   * the full cross-daemon roster) which peers this agent may reach. State-GATED like
    * `requestGitCred` (outside READY/DRAINING it fails fast, never queues on a dead
    * socket). `requesterAgentId` is set by the caller from the trusted MCP session
-   * context — the CP uses it for membership + call-policy filtering.
+   * context — the CP uses it for the bidirectional call-policy filter.
+   *
+   * `payload.channel` is optional (absent ⇒ the ORG-WIDE directory) and only a CP
+   * advertising `agent-directory-org-scope-v1` understands that form, so the CALLER
+   * negotiates it via {@link supportsServerFeature} — it owns the trusted current-channel
+   * coordinate to substitute for an older CP (see the daemon's `channelAgents` dep).
    */
   async channelAgents(payload: ChannelAgentsReq): Promise<ChannelAgentsOk> {
     if ((this.state !== 'READY' && this.state !== 'DRAINING') || !this.transport) {

@@ -59,7 +59,7 @@ export interface SessionContext {
   agentId: string
   /** The platform that triggered this session (slack/telegram/…). Trusted — set
    *  by the daemon from the real triggering message, never a tool input. Used to
-   *  build the coords for peer-discovery (`listChannelAgents`). */
+   *  build the coords for peer-discovery (`listAgents`). */
   platform: string
   /** The exact platform integration that delivered this session. Absent for a
    *  platform-free session; daemon-local universal tools still work there. */
@@ -279,6 +279,23 @@ export const MEMORY_WRITE_BLOCKED =
   'This session is private, so it cannot write to the agent memory shared with other users. Keep the information in ' +
   'this conversation instead; do not retry.'
 
+/**
+ * A peer-discovery request, i.e. `ChannelAgentsReq` plus the caller's own session
+ * coordinates. `channel` is what the AGENT asked for (absent ⇒ the org-wide directory);
+ * every `current*` field is the TRUSTED session context, never tool input, carried
+ * separately for two daemon-side jobs:
+ *  - substituting the current channel when the CP does not advertise
+ *    `agent-directory-org-scope-v1` (an old CP rejects a channel-less payload), and
+ *  - resolving the caller's LOGICAL sessionKey, so the daemon can recognize a turn whose
+ *    discovery scope it FIXED itself (the self-introduce-on-join turn, whose fan-out must
+ *    stay bounded to the joined channel however the model calls the tool).
+ */
+export interface ChannelAgentsRequest extends ChannelAgentsReq {
+  currentChannel?: string
+  currentThread?: string
+  currentTransportScope?: string
+}
+
 export interface OpsDeps {
   /** Fail-closed turn gate checked before every daemon bridge tool. Used to make
    *  pause/cancel/loop interrupts terminal even while the runtime is still unwinding. */
@@ -295,11 +312,12 @@ export interface OpsDeps {
    *  Backs `listKnownUsers` so an agent can find a user id to DM where there is no
    *  user directory to search. */
   observedUsers?: (agentId: string, platform: string) => { id: string; name?: string }[]
-  /** Ask the CP for the roster of agents in a channel (peer discovery). The daemon
-   *  fills `requesterAgentId` from the trusted session context, never tool input.
-   *  Rejects (throws) when the control plane isn't connected — discovery fails
-   *  closed rather than returning a partial/empty roster. */
-  channelAgents: (req: ChannelAgentsReq) => Promise<ChannelAgentsOk>
+  /** Ask the CP for the caller's callable peers (peer discovery). The daemon fills
+   *  `requesterAgentId` from the trusted session context, never tool input. An absent
+   *  `channel` asks for the ORG-WIDE directory; a present one narrows it to that
+   *  channel. Rejects (throws) when the control plane isn't connected — discovery
+   *  fails closed rather than returning a partial/empty roster. */
+  channelAgents: (req: ChannelAgentsRequest) => Promise<ChannelAgentsOk>
   /** Deliver a message into another agent's session (agent→agent wake). The daemon
    *  fills the trusted caller identity from the session context; this callback owns
    *  the same-daemon delivery (policy check, coord/integration resolution, dispatch)
@@ -648,18 +666,33 @@ export async function executeTool(
     }
   }
 
-  // Peer discovery is daemon→CP (not a platform gateway op) and coords-level, so it
-  // is handled before the gateway gate — a memory-only agent can still discover peers.
+  // Peer discovery is daemon→CP (not a platform gateway op) and org-level, so it is
+  // handled before the gateway gate — a memory-only agent can still discover peers.
+  // `channel` is now an OPTIONAL FILTER with NO default: omitted ⇒ the org-wide
+  // directory of peers the call policy admits, which is the only scope a session with
+  // no IM integration (webchat, hook, dream) can be listed in at all. `listChannelAgents`
+  // stays a working alias so sessions already warm with the old tool set keep working.
   // SECURITY: requesterAgentId + platform come from the trusted session context, never
-  // from tool input; only `channel` may be overridden (defaults to the current channel).
-  if (name === 'listChannelAgents') {
-    const channel = optionalString(args, 'channel') ?? ctx.channel
+  // from tool input; `channel` is the only agent-supplied field, and it can only narrow —
+  // and even that is overridden for a turn the daemon itself scoped (see the `current*`
+  // coords below / ChannelAgentsRequest).
+  if (name === 'listAgents' || name === 'listChannelAgents') {
+    const channel = optionalString(args, 'channel')
     const res = await deps.channelAgents({
       platform: ctx.platform as Platform,
-      channel,
+      ...(channel !== undefined ? { channel } : {}),
+      // Trusted coordinates, not a scope request — see ChannelAgentsRequest (they carry the
+      // old-CP fallback channel and identify THIS turn for a daemon-fixed discovery scope).
+      currentChannel: ctx.channel,
+      currentThread: ctx.thread,
+      ...(ctx.transportScope !== undefined ? { currentTransportScope: ctx.transportScope } : {}),
       requesterAgentId: ctx.agentId
     })
-    return { platform: res.platform, channel: res.channel, agents: res.agents }
+    return {
+      platform: res.platform,
+      ...(res.channel !== undefined ? { channel: res.channel } : {}),
+      agents: res.agents
+    }
   }
 
   // Unified outbound send (session-concept §3). One tool merges the old `sendPlatformMessage`

@@ -101,7 +101,7 @@ export const RegisterOk = z.object({
   // the reconnect BASELINE for this daemon's terminal-verify of REMOTE agent callers.
   // Scoped to channels this daemon's agents participate in. Hot changes ride the
   // `collaboration/routes` EVT. Defaulted so a pre-collab CP's snapshot still parses.
-  collabRoutes: CollabRoutesSnapshot.default({ generation: 0, channels: [] }),
+  collabRoutes: CollabRoutesSnapshot.default({ generation: 0, channels: [], agents: [] }),
   drop: z.object({
     // things in localState the CP says to release
     assignments: z.array(z.string()),

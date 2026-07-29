@@ -35,18 +35,19 @@ daemon remains on the message hot path and CP remains off it.
 
 ### 1.2 Current State
 
-| Stage                       | Current behavior                                                                                                                                                                                    |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Session identity**        | `sessionKey = platform:channel:thread:agentId`; the same platform thread maps to a separate session per agent.                                                                                      |
-| **Peer discovery**          | `listChannelAgents` uses the `channel/agents` control request and returns only peers visible to the authenticated requesting agent.                                                                 |
-| **Agent-to-agent delivery** | The `sendMessage` peer target invokes the internal `messageAgent` primitive locally or uses `rd/agentmsg` → `rd/agentmsg/fwd` → `rd/agentmsg/ack` across daemons. Message bodies never traverse CP. |
-| **Call authorization**      | The caller's outbound policy and target's inbound policy must both allow the edge; directory, source daemon, relay, and target daemon verify independently.                                         |
-| **Orchestration**           | `startOrchestration`, `getOrchestration`, and `cancelOrchestration` use durable daemon-local state, trusted correlation metadata, and deadline wakes.                                               |
-| **Concurrency**             | Different sessions run concurrently; a per-`sessionKey` admission gate serializes one conversation and enforces queue/capacity limits.                                                              |
+| Stage                       | Current behavior                                                                                                                                                                                                   |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Session identity**        | `sessionKey = platform:channel:thread:agentId`; the same platform thread maps to a separate session per agent.                                                                                                     |
+| **Peer discovery**          | `listAgents` (alias `listChannelAgents`) uses the `channel/agents` control request. Scope is the requester's **organization**, filtered by the directional call policy; `channel` is an optional narrowing filter. |
+| **Agent-to-agent delivery** | The `sendMessage` peer target invokes the internal `messageAgent` primitive locally or uses `rd/agentmsg` → `rd/agentmsg/fwd` → `rd/agentmsg/ack` across daemons. Message bodies never traverse CP.                |
+| **Call authorization**      | The caller's outbound policy and target's inbound policy must both allow the edge; directory, source daemon, relay, and target daemon verify independently.                                                        |
+| **Orchestration**           | `startOrchestration`, `getOrchestration`, and `cancelOrchestration` use durable daemon-local state, trusted correlation metadata, and deadline wakes.                                                              |
+| **Concurrency**             | Different sessions run concurrently; a per-`sessionKey` admission gate serializes one conversation and enforces queue/capacity limits.                                                                             |
 
 ### 1.3 Implemented Surface
 
-- `listChannelAgents` for authenticated peer discovery.
+- `listAgents` for authenticated, org-scoped peer discovery
+  (`listChannelAgents` remains a deprecated alias of the same handler).
 - `sendMessage` for peer wakes, parent-session replies, and visible platform
   posts; its peer branch uses the same-daemon or cross-daemon
   `messageAgent` delivery primitive.
@@ -58,7 +59,7 @@ daemon remains on the message hot path and CP remains off it.
 
 - Do **not** introduce synchronous "agent calls agent" RPC. Delivery is always an **asynchronous wake-up**: the message enters the peer's session and the peer handles it in its own turn, matching the asynchronous social-peer model.
 - Do **not** put CP on the message hot path. Cross-daemon message bodies use the **relay data plane (daemon -> relay -> daemon)** and **never pass through CP**. CP distributes only placement/routing metadata without message bodies through `rc/*`, including call policy.
-- Do **not** treat "same org + same channel" as authorization. Existing `callPolicy` / `allowedCallerAgentIds` determine authorization and are checked by a trusted endpoint against the authenticated caller (section 2.5).
+- Do **not** treat channel membership as authorization — not as a sufficient condition, and (since the org-scoped directory) not as a necessary one either. The directional call policy (`outboundPolicy` / `allowedTargetAgentIds` on the caller, `callPolicy` / `allowedCallerAgentIds` on the target) is the whole authorization predicate, org-scoped, and it is checked by a trusted endpoint against the authenticated caller (section 2.5).
 - Do **not** change ACP. The target agent processes an inbound agent message exactly as it processes a human message.
 
 ---
@@ -90,26 +91,61 @@ Two existing call sites **explicitly select an agent and bypass arbitration**:
 The daemon injects these tools from `packages/daemon/src/mcp/tools.ts`. It holds
 platform tokens and routing credentials; the agent never sees them.
 
-**`listChannelAgents`**
+**`listAgents`** (deprecated alias: `listChannelAgents`)
 
 ```ts
-// Input: { channel? }  // Omitted channel uses the current session coordinate.
+// Input: { channel? }  // OPTIONAL FILTER. Omitted => the whole org directory.
 // Output: [{ agentId, name, displayName?, description?, status }]
 ```
 
 The daemon derives `platform` and `requesterAgentId` from trusted session
-context, then sends `channel/agents` to the Control Plane. The Control Plane
-resolves the roster in the authenticated daemon's organization, returns an
-empty list unless the requester belongs to the target channel, and filters out
-peers blocked by either side's call policy. Tool input cannot override caller
-identity or platform.
+context, then sends `channel/agents` to the Control Plane. Tool input cannot
+override caller identity or platform; `channel` is the only agent-supplied
+field, and it can only narrow the answer.
+
+Two scopes, one roster (`packages/control-plane/src/ws/handlers/channel-agents.ts`):
+
+- **`channel` absent — the org-wide peer directory.** This is the default.
+  The CP reads `AgentRepo.orgDirectory(orgId)` for the _authenticated daemon's_
+  organization and applies the section 2.5 predicate. The reply omits `channel`.
+- **`channel` present — the same directory intersected with that channel's
+  membership** (`IntegrationRepo.agentsInChannel`). Literally a filter over the
+  org roster, never a substitute for it, which is what keeps an unroutable agent
+  out of _both_ scopes rather than only one of them. A session-identity platform
+  (`webchat` / `hook` / `dream`) has no persisted integration, so a channel
+  filter on one of those short-circuits to an empty roster instead of reaching
+  persistence.
+
+Both scopes are computed by the same `visibleToRequester()` filter, so they can
+never answer differently about a given agent.
+
+Why the default is org-wide, not the current channel:
+
+- **A2A delivery has been postless since #854.** A `sendMessage` with `toAgent`
+  and no `channel` publishes nothing, so the channel plays no part in _delivery_
+  and must not act as an authorization key either.
+- **Some sessions have no channel the CP has ever seen.** Webchat, webhook/`hook`,
+  dreaming, and memory-only agents have no IM integration at all, yet must still
+  collaborate. Under channel-gated discovery they were structurally undiscoverable.
+
+Rolling upgrade: the channel-less form exists only on a CP that advertises the
+`agent-directory-org-scope-v1` server feature in `register/ok.serverFeatures`.
+The daemon negotiates it — when the feature is absent it substitutes the caller's
+trusted _current_ channel (exactly the pre-change behavior) rather than sending a
+payload an older CP would reject. An explicitly requested `channel` filter is
+passed through to either CP unchanged.
+
+**Rename.** The tool is `listAgents`; `listChannelAgents` is kept as a
+deprecated alias with the same input schema, routed to the same handler, so a
+session already warm with the old tool set — and prompts or skills that learned
+the old name — keeps working.
 
 **`sendMessage` peer target**
 
 ```ts
 // Input: {
 //   to: {
-//     toAgent: string,          // From listChannelAgents.
+//     toAgent: string,          // From listAgents.
 //     channel?: string,         // Omit for a postless wake.
 //     thread?: string
 //   },
@@ -156,12 +192,32 @@ messageAgent(toAgentId, text, coords)
 **Cross daemon, where the target agent runs elsewhere:** use the **daemon -> relay -> daemon data plane**; the message body **does not pass through CP**. Reuse the physical shared-bot links—daemons connected to relays and relays holding connections by daemonId—described in [`shared-bot-relay.md`](shared-bot-relay.md), but **do not address through existing `members`**:
 
 - **Collaboration-routing snapshot:** CP sends bot-independent placement and
-  policy metadata to relays and daemons; it contains **no message bodies**:
-  - Key: channel membership by `(orgId, platform, channelId)`.
-  - Value per agent: `{ agentId, daemonId, integrationId?, callPolicy, allowedCallerAgentIds }`.
-  - Relay resolves `toAgentId` to its owning `daemonId`, then gets the connection through `relay-daemon-server.get(daemonId)`.
+  policy metadata to relays and daemons; it contains **no message bodies**. It has
+  two parallel parts, both FULL-REPLACE:
+  - `channels[]` — channel membership keyed by `(orgId, platform, channelId)`.
+    Value per agent: `{ agentId, daemonId, integrationId?, botAppId?, callPolicy,
+allowedCallerAgentIds, outboundPolicy, allowedTargetAgentIds, name?, displayName? }`.
+    Still the authority for the genuinely channel-shaped questions: which reply
+    integration to use for a visible post, and which inbound bot app belongs to
+    another AgentConnect agent.
+  - `agents[]` — the **flat, channel-free org directory** (`CollabOrgAgent` = a
+    placement plus its own `orgId`, minus the per-channel `integrationId` /
+    `botAppId`). This is the authorization input. The channel-keyed structure
+    _structurally cannot_ express an integration-less agent: such an agent appears
+    in no `channels[]` entry at all, so "which agents exist in this org" — exactly
+    the input channel-free authorization needs — is unanswerable from it. Unplaced
+    agents (`daemonId` null) are dropped from both parts: with no owning daemon
+    there is nothing to route to.
+  - Relay resolves `toAgentId` to its owning `daemonId` from `agents[]`, then gets the connection through `relay-daemon-server.get(daemonId)`.
   - `CollabRoutesSnapshot` travels to relay through `rc/collab-routes` and to
     daemons through `register/ok` plus `collaboration/routes`.
+  - **Old-CP fallback.** A CP that does not advertise
+    `agent-directory-org-scope-v1` sends no `agents[]` (it decodes to the schema
+    default `[]`). Relay and daemon then _derive_ the directory from the channel
+    rows — every row carries its `orgId` and its members are placements — so
+    integration-backed pairs keep resolving across a rolling upgrade. An
+    integration-less agent stays absent, and the predicate fails closed on it,
+    which is that CP's pre-existing behavior anyway.
 
 ```
 agentA@daemon-1
@@ -171,15 +227,16 @@ agentA@daemon-1
        over the direct rd/* data plane, not CP  // claimedFromAgentId is untrusted; see section 2.5.
   -> relay resolves B to owning daemonId through the collaboration-routing snapshot
      -> get(daemonId) obtains the connection
-  -> relay verifies that claimedFromAgentId belongs to the authenticated socket's daemonId,
-     is in the channel in the snapshot, and passes target call policy
-  -> relay then creates a trusted caller claim containing trustedFromAgentId + org/channel assertions
+  -> relay verifies that claimedFromAgentId belongs to the authenticated socket's daemonId
+     per the flat org directory, that caller and target are in the SAME org, and that both
+     directional call policies admit the edge  // channel membership is NOT consulted
+  -> relay then creates a trusted caller claim containing trustedFromAgentId + org assertions
      and sends it with the message to daemon-2
   -> daemon-2 handleRelayAgentMsg performs final verification of the trusted caller claim
      -> constructs NormalizedMessage -> dispatch(B, msg)
 ```
 
-- Relay op `rd/agentmsg` in `relay-daemon.ts` carries `{ claimedFromAgentId, toAgentId, text, coords, correlationId, hopCount }`. Because one authenticated daemon can host several agents, the socket's daemonId cannot identify which agent initiated a call. The frame therefore carries a **claimed, untrusted `fromAgentId`**. Relay verifies it against socket daemonId + snapshot membership for the channel, then and only then creates a trusted caller claim for forwarding.
+- Relay op `rd/agentmsg` in `relay-daemon.ts` carries `{ claimedFromAgentId, toAgentId, text, coords, correlationId, hopCount }`. Because one authenticated daemon can host several agents, the socket's daemonId cannot identify which agent initiated a call. The frame therefore carries a **claimed, untrusted `fromAgentId`**. Relay verifies it against socket daemonId + the flat org directory (the claimed id must exist and its placement must be owned by the authenticated sending daemon — that daemon-ownership check, not channel membership, is what makes the claim unforgeable), then and only then creates a trusted caller claim for forwarding. `msg.coords` rides along as the **delivery coordinate** for the woken session, never as an authorization input; the target's reply `integrationId` prefers its placement in the coords channel and falls back to its directory entry when it has no row there (an integration-less peer legitimately has none).
 - See section 2.5 for authorization, including target call policy and creation of trusted caller identity.
 
 ### 2.4 Target-Agent Experience
@@ -208,11 +265,94 @@ resetting chain depth.
 - The daemon rejects delivery above a threshold such as eight hops.
 - **Test:** omitting hop arguments or explicitly passing `hopCount:0` cannot reset chain depth; the daemon uses turn-bound hop + 1.
 
-### 2.5 Authorization: Target Call Policy, Not Merely Same Org + Channel
+### 2.5 Authorization: The Directional Call Policy, Org-Scoped
 
 Authorization is the intersection of the caller's outbound policy and the
-target's inbound policy. See
+target's inbound policy, within one organization. See
 [`directional-agent-visibility.md`](directional-agent-visibility.md).
+
+**The predicate.** Caller A may discover and wake target B iff **all** of:
+
+1. A and B are both **known in the org-scoped directory** — a missing entry fails
+   **CLOSED**, so a missing or stale snapshot never grants access;
+2. A and B are in the **same organization** (a cross-org pair never resolves, and
+   is reported indistinguishably from a nonexistent target so there is no
+   cross-org probing);
+3. **A's `outboundPolicy`** is `all`, or `allowedTargetAgentIds` contains B;
+4. **B's `callPolicy`** is `all`, or `allowedCallerAgentIds` contains A.
+
+A caller **always sees itself** in a _listing_: an agent whose `outboundPolicy`
+is `selected` does not normally name itself in its own allow-list, yet it must
+still appear in its own directory answer. (A self-_wake_ is still rejected
+separately, with `reason:'self'`.)
+
+**Channel membership is not part of the predicate** — in either direction. It is
+not sufficient (a `selected` policy still denies a channel-mate) and it is no
+longer necessary (peers that share no channel, and peers with no IM integration
+at all, are legitimate). The single implementation is
+`CpCollabRoutes.admits()` on the daemon and `CollaborationRouter.admits()` on the
+relay; `visibleToRequester()` is the CP-side twin used for both discovery scopes.
+
+**Two unrelated things are both called "visibility" — keep them apart:**
+
+| Field                                                                        | Governs                                                                          | Affects the peer directory?                                             |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `Agent.visibility` / `sharedWith` (`ResourceVisibility` org \| restricted)   | **Human** console access, see [`resource-visibility.md`](resource-visibility.md) | **Never.** A `restricted` agent is still a discoverable, callable peer. |
+| `callPolicy` / `outboundPolicy` (labelled "Agent visibility" in the console) | **Agent-to-agent** discovery and wakes                                           | **Yes — it is the whole gate.**                                         |
+
+The CP's `orgDirectory` read deliberately omits the `visibilityWhere` clause for
+exactly this reason.
+
+**Coordinate integrity is a separate check, not a removed one.** Channel checks
+did not disappear; they moved from _authorization_ to _coordinate validation_. An
+asserted coordinate channel that the snapshot knows about still requires the
+caller to be in it, and a visible post still resolves through the channel's
+definite reply integration (section 6.2). What changed is the consequence: a
+channel the directory has never heard of no longer makes a peer _unreachable_, it
+only makes the visible-post half of the request unsatisfiable.
+
+The rule is one predicate, `coordsAdmit(orgId, channelId, callerAgentId)`: **if the
+snapshot knows any non-empty membership at that coordinate, the caller must be in one of
+them; if it knows none, the coordinate is not a claim about a shared IM channel and needs
+no membership evidence.** It is implemented **identically** in
+`CollaborationRouter.coordsAdmit` (relay) and `CpCollabRoutes.coordsAdmit` (daemon), and
+called from **all three** wake paths so none can drift:
+
+| Wake path                       | Call site                                |
+| ------------------------------- | ---------------------------------------- |
+| cross-daemon ingress            | `AgentMsgRouter.route()` step (b2)       |
+| cross-daemon terminal-verify    | `Daemon.handleRelayAgentMsg`             |
+| same-daemon (and its preflight) | `Daemon.localWakeAuthorizationRejection` |
+
+Two properties of the key are load-bearing:
+
+- **Platform-free.** The coordinate platform is deliberately _not_ part of the key. The
+  woken session's key is computed from `Daemon.narrowPlatform`, which folds `feishu` — and
+  any value it does not recognise — into `'slack'`, while snapshot channel rows are keyed
+  by the **integration** platform. A platform-keyed check therefore searched a different
+  key space than the session key it protects, and the residual "unknown coordinate passes"
+  branch turned every miss into a **pass**: `coords.platform:'feishu'` over a Slack channel
+  id sailed through and still computed a bit-identical child session key, and in a Feishu
+  org (rows keyed `feishu`, honest coords already narrowed to `slack`) the gate was a
+  complete no-op. Matching on the channel id alone closes both directions and needs no
+  `narrowPlatform` twin on the relay, which has none. It over-blocks only if one org uses
+  the same channel id on two platforms — which then demands membership in one of them.
+- **Non-empty membership counts as "known".** An agent-less row is a channel nobody in the
+  org can reach, so treating it as known would reject every call naming it while
+  protecting nothing.
+
+The same-daemon path needs this as much as the relay hop, not less: `to.channel` and
+`to.thread` reach `MessageAgentReq` from the **model**, so without the check a
+prompt-injected agent could name a channel it cannot reach and resume a co-located peer's
+session living there. On that path the rule is strictly **weaker** than the
+`hasMembers(caller, target)` membership check it replaced — which is the point, since that
+check rejected every wake from a session with no channel row at all.
+
+**Known limit (see §2.7).** "Unknown coordinate" cannot distinguish _"not an IM channel"_
+from _"an IM channel the CP does not record"_. Slack DMs and group DMs are deliberately
+never channel rows (`listBotChannels` skips `is_im`/`is_mpim`), and a row disappears when
+the bot leaves a channel or the integration goes inactive while the session stays
+resumable. Those coordinates take the pass branch.
 
 The data model stores:
 
@@ -222,33 +362,80 @@ The data model stores:
   which peers the caller may select.
 
 `AgentSpec` carries local target policy, while the versioned collaboration
-snapshot supplies remote caller/target organization, channel, placement, and
-policy data. Missing or stale policy fails closed.
+snapshot supplies caller/target organization, placement, and policy data for
+_every_ agent in the org — local or remote. Missing or stale policy fails closed,
+which is also why a local-only daemon that has never received a snapshot cannot
+authorize an agent call at all.
 
 Checking only same org + same channel would bypass policy. A target may reject
 all calls or allow only specific callers. Both internal `messageAgent` delivery
 paths enforce call policy from the sources above:
 
-- **Same daemon:** the target spec carries policy fields, and the daemon checks
-  both directional policies before `dispatch`. Caller identity is the current
-  session agentId that invoked the tool and is locally trusted.
+- **Same daemon:** the daemon evaluates the org-scoped predicate against its
+  snapshot _before_ looking the target up locally — so the same verdict covers a
+  remote target and an id in no directory at all — and then also re-checks a
+  local target's spec policy. Caller identity is the current session agentId that
+  invoked the tool and is locally trusted. A local agent id is **not** sufficient
+  authority on its own.
 - **Cross daemon: never trust `claimedFromAgentId` from the frame.** `rd/hello` authenticates only the connection's **daemonId** through `relay-daemon-connection.ts` states AUTHENTICATING -> READY; one daemon can host multiple agents, so the socket cannot attest the agent:
   1. Relay binds the request to the socket's authenticated daemon identity.
-  2. Relay uses the trusted collaboration-routing snapshot to verify that `claimedFromAgentId` actually belongs to that daemon and channel.
-  3. Relay then creates a trusted caller claim (trustedFromAgentId + org/channel assertions, or a verifiable capability) and checks B's `callPolicy` / `allowedCallerAgentIds`; only an allowed caller proceeds.
-  4. The **target daemon performs final defense-in-depth verification** with its distributed policy/snapshot or relay-verifiable capability. It verifies caller org/placement and the target spec rather than trusting raw forwarded fields. Missing policy data fails closed.
+  2. Relay uses the trusted collaboration-routing snapshot to verify that `claimedFromAgentId` exists in the flat org directory and that its placement is owned by that daemon. Org is bound from the caller's own entry — the frame carries no `orgId`.
+  3. Relay resolves B in the **same org** (absent or cross-org ⇒ `not_found`), then checks A's outbound and B's inbound policy. The two halves stay separate calls (`outboundAdmits` / `inboundAdmits`) so each denial keeps its own log line. Only then does it create a trusted caller claim (trustedFromAgentId + org assertion, or a verifiable capability).
+  4. The **target daemon performs final defense-in-depth verification** with its distributed policy/snapshot or relay-verifiable capability. Terminal-verify is **org**-scoped, not `(org, channel)`-scoped: the relay's asserted org must equal the org the daemon's own directory records for the target, and `admits(trustedFromAgentId, toAgentId)` must hold. Missing snapshot / unknown agent fails closed.
 - On rejection, return `delivered:false, reason:'not_allowed'` and **do not wake** the target.
 - **Tests:** a caller outside a `selected` allowlist is rejected locally and cross-daemon; `all` permits it; cross-org is rejected; missing or stale policy/snapshot **fails closed**.
 
 ### 2.6 Implementation Map
 
-| Layer         | Current responsibility                                                                                                                                                                                     |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Protocol      | Defines `channel/agents`, relay `rd/agentmsg`, versioned collaboration-routing snapshots, and policy fields on `AgentSpec`; hop and claimed caller values remain untrusted until verified                  |
-| Daemon        | Injects `listChannelAgents` and unified `sendMessage`, performs local delivery and target-side verification, maintains trusted call metadata, and receives the versioned collaboration snapshot            |
-| Relay         | Routes `rd/agentmsg` using the bot-independent snapshot, binds the authenticated daemon, verifies claimed caller ownership, creates the trusted caller claim, and enforces policy                          |
-| Control plane | Distributes versioned membership, placement, route, and policy snapshots to relays and daemons without message bodies                                                                                      |
-| Tests         | Cover tool validation, local and relay delivery, directional-policy rejection, forged caller claims, missing/stale snapshots, cross-organization rejection, trusted correlation, and hop-depth enforcement |
+| Layer         | Current responsibility                                                                                                                                                                                                             |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Protocol      | Defines `channel/agents`, relay `rd/agentmsg`, versioned collaboration-routing snapshots, and policy fields on `AgentSpec`; hop and claimed caller values remain untrusted until verified                                          |
+| Daemon        | Injects `listAgents` (alias `listChannelAgents`) and unified `sendMessage`, performs local delivery and org-scoped target-side verification, maintains trusted call metadata, and receives the versioned collaboration snapshot    |
+| Relay         | Routes `rd/agentmsg` using the bot-independent snapshot, binds the authenticated daemon, verifies claimed caller ownership, creates the trusted caller claim, and enforces policy                                                  |
+| Control plane | Distributes versioned membership, placement, route, and policy snapshots (channel-keyed `channels[]` **plus** the flat org `agents[]`) to relays and daemons without message bodies, and advertises `agent-directory-org-scope-v1` |
+| Tests         | Cover tool validation, local and relay delivery, directional-policy rejection, forged caller claims, missing/stale snapshots, cross-organization rejection, trusted correlation, and hop-depth enforcement                         |
+
+### 2.7 Follow-Ups (Explicitly Not Done Here)
+
+Org-scoped discovery removed channel from **authorization**. These items are known
+remaining work and are deliberately out of that change's scope:
+
+1. **Channel-free session coordinates.** `channel` is still the _session key_:
+   `sessionKey = platform:channel:thread:agentId`, and a wake's `msgId` /
+   fallback thread are still `agentcall:<channel>:…`. So a peer with no IM
+   integration is discoverable and callable, but the woken session still carries
+   the caller's channel coordinate. Making the coordinate itself channel-free
+   (see open question 1 in section 5, `dm:`-style sessions) is a separate change.
+2. **`ws/connection.ts` handler-throw hardening.** A throwing daemon↔CP WS handler
+   still closes the whole control socket (`close(1011)`), which is why the
+   `channel/agents` handler must short-circuit a session-identity platform before
+   reaching persistence rather than letting the repo throw. Turning a handler
+   fault into a per-request error is a separate change.
+3. **Optional org-level discovery-scope switch.** Org-wide is currently the only
+   default. An operator who wants the old channel-scoped default back has no
+   setting for it; an explicit per-org policy switch is a possible follow-up.
+4. Snapshot lifecycle (§6.5): per-entry tombstones, TTL after a CP disconnect,
+   and fail-closed-on-stale remain unimplemented for the flat directory exactly
+   as for `channels[]` — `generation` is the version hook, a live CP is assumed.
+5. **Coordinate integrity cannot see conversations the CP does not record.**
+   `coordsAdmit` classifies any coordinate with no channel row as "not a claim about a
+   shared IM channel" and passes it. That is correct for webchat/dream session ids, but it
+   also covers (a) Slack **DMs and group DMs**, which `listBotChannels` deliberately never
+   reports, and (b) a channel whose row has gone — bot removed, integration set inactive,
+   or a snapshot that has not caught up — while the session remains resumable. A caller
+   that already knows such a conversation id can therefore still name it. Closing this
+   needs a positive notion of "coordinates this agent may assert" (recording direct
+   conversations, or checking the asserted coordinate against the target's existing
+   **session** rows rather than the membership snapshot), not a tweak to this rule.
+6. **The flat directory is pushed org-wide to every daemon.**
+   `collabRoutes.broadcast` ships every placed agent's id, daemonId, name and all four
+   policy fields to _every_ daemon in the org, because terminal-verify needs the (remote
+   caller, local target) pair. So the `channel/agents` daemon-ownership bind is an
+   **integrity** control (only the owning daemon may speak as an agent) plus
+   confidentiality for `description`/`status` — it is _not_ what keeps
+   `callPolicy: 'selected'` unreadable, since a daemon can compute any org agent's
+   policy-filtered peer set from the pushed snapshot offline. Narrowing the per-daemon
+   push to the peers that daemon can actually reach is the follow-up.
 
 ---
 
@@ -332,7 +519,7 @@ else                                  -> remain pending; end the turn and yield.
 ```
 Human in thread T: @main please upgrade these three RPC nodes.
   main turn #1:
-    listChannelAgents() -> [workerA, workerB, workerC]
+    listAgents() -> [workerA, workerB, workerC]   // org-wide; no channel filter
     plan: three subtasks
     1. Persist orchestration o1 first:
        {mainSessionKey, subtasks:[o1.0->A, o1.1->B, o1.2->C all status=pending], deadline=null}
@@ -538,13 +725,22 @@ section is part of the contract, not an optional optimization.
   `session/new`. The daemon derives these fields from the real trigger; tools
   never trust caller-supplied identity or platform claims.
 - Caller identity, `mainSessionKey`, origin, and reply target for
-  `listChannelAgents`, the `sendMessage` peer branch, and orchestration tools
-  come entirely from trusted `SessionContext`.
+  `listAgents`, the `sendMessage` peer branch, and orchestration tools
+  come entirely from trusted `SessionContext`. `listAgents` takes only an
+  optional `channel` **filter** from tool input; the trusted current channel is
+  carried separately, and is used solely to build a compatible request for a CP
+  that lacks `agent-directory-org-scope-v1`.
 
 ### 6.2 Target Addressing: Deterministic `(platform, channel, toAgentId) -> {daemonId, integrationId}`
 
 - The destination snapshot must provide a **deterministic target `integrationId`** for `(platform, channel, toAgentId)`. It cannot be optional or fall back to the first connection. Propagate it through local/relay dispatch; otherwise a multi-platform / multi-integration agent can use the wrong platform or `replyConnFor` can fall back to the wrong connection.
 - Returning to the current session coordinates likewise depends on the true platform/integrationId injected by section 6.1.
+- Since the org-scoped directory the two halves of this lookup come from different
+  parts of the snapshot: **`daemonId` from the flat `agents[]`** (identity /
+  ownership, channel-free) and **`integrationId` from the channel row** for the
+  requested coordinates, falling back to the directory entry when the target has
+  no row there. That keeps "deterministic reply integration" intact for a
+  channel-backed target without making an integration-less target unroutable.
 
 ### 6.3 Stable deliveryId + Monotonic ts + Shared Admission Idempotency
 
