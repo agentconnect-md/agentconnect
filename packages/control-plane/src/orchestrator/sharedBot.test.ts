@@ -776,7 +776,9 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
 
     expect(botRevokedAt).toBeInstanceOf(Date)
     expect(integrations.map((i) => i.status)).toEqual(['revoked', 'revoked'])
-    expect(ch.sends).toEqual([{ type: 'rc/bot-unassign', payload: { botId: BOT } }])
+    // The release carries the generation it revoked, so a relay that already holds
+    // a newer assignment (a re-install that overtook this broadcast) drops it.
+    expect(ch.sends).toEqual([{ type: 'rc/bot-unassign', payload: { botId: BOT, credentialRevision: 1 } }])
     // Both member agents are placed (ALICE→D1, BOB→D2): each daemon loses its spec.
     expect(removals).toEqual([
       { daemonId: D1, integrationId: INT_A },
@@ -852,6 +854,6 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     await orch.revokeBot(BOT, 'tokens_revoked')
 
     expect(removals).toEqual([]) // nothing left to pull
-    expect(ch.sends).toEqual([{ type: 'rc/bot-unassign', payload: { botId: BOT } }]) // re-stamp only
+    expect(ch.sends).toEqual([{ type: 'rc/bot-unassign', payload: { botId: BOT, credentialRevision: 1 } }]) // re-stamp only
   })
 })

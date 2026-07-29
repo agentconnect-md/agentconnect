@@ -71,7 +71,7 @@ export interface SharedBotManagerDeps {
    *  SharedBotManager.flushPendingReports}) — this report is NOT droppable: Slack
    *  acked the HTTP event before this ran and never redelivers it, and a dead token
    *  gives the CP nothing to observe. */
-  reportBotRevoked: (m: RcBotRevoked) => boolean
+  reportBotRevoked: (m: RcBotRevoked) => Promise<boolean>
   /** Report the thread's now-resolved owner to the CP (→ `rc/thread-assign`). Returns
    *  `false` if the CP link was not READY and the frame was dropped, so the manager can
    *  retry it when the link recovers ({@link SharedBotManager.flushPendingReports}). */
@@ -212,10 +212,19 @@ export class SharedBotManager {
     else this.pendingChannelReports.set(m.botId, m)
   }
 
-  /** Emit a revocation report; on a non-READY CP link queue it for reconnect. */
+  /** Report a revocation and keep it queued until the CP ACKNOWLEDGES the commit.
+   *  Queued FIRST, cleared only on the ack: a send the socket accepted is not
+   *  evidence the CP persisted anything, and this report has no other source. */
   private reportRevoked(m: RcBotRevoked): void {
-    if (this.deps.reportBotRevoked(m)) this.pendingRevokedReports.delete(m.botId)
-    else this.pendingRevokedReports.set(m.botId, m)
+    this.pendingRevokedReports.set(m.botId, m)
+    void this.deps
+      .reportBotRevoked(m)
+      .then((committed) => {
+        if (committed) this.pendingRevokedReports.delete(m.botId)
+      })
+      .catch(() => {
+        /* stays queued for the next flush */
+      })
   }
 
   /** Re-emit reports, channel snapshots, and revocations dropped while the CP link
@@ -232,11 +241,9 @@ export class SharedBotManager {
     }
     // Replayed AS OBSERVED — `credentialRevision`/`eventAtMs` still describe the
     // generation that was live when Slack sent the event, which is exactly what
-    // the CP's fence needs after an outage that spanned a re-install.
-    for (const [botId, m] of [...this.pendingRevokedReports]) {
-      if (!this.deps.reportBotRevoked(m)) break
-      this.pendingRevokedReports.delete(botId)
-    }
+    // the CP's fence needs after an outage that spanned a re-install. Async: each
+    // entry clears only when the CP acknowledges the commit.
+    for (const [, m] of [...this.pendingRevokedReports]) this.reportRevoked(m)
   }
 
   /** `rc/bot-assign` — (re)load the routing table + (re)build the bot's HTTP ingest. */
@@ -321,7 +328,18 @@ export class SharedBotManager {
   }
 
   /** `rc/bot-unassign` — drop the routes + close the ingest. */
-  async unassign(botId: string): Promise<void> {
+  async unassign(botId: string, credentialRevision?: number): Promise<void> {
+    // A revocation stamps the generation it revoked. If this pod already holds a
+    // NEWER assignment, the release describes a credential that has since been
+    // replaced — the CP decided and broadcast in that order, and a re-install's
+    // assign can overtake it. Dropping the stale release here is what keeps a
+    // live ingest alive; an unstamped release (transport flip, un-share, last
+    // install removed) is unconditional as before.
+    const held = this.router.get(botId)?.credentialRevision
+    if (credentialRevision !== undefined && held !== undefined && held > credentialRevision) {
+      this.deps.log.warn(`shared-bot(${botId}): ignoring stale unassign (rev ${credentialRevision} < held ${held})`)
+      return
+    }
     this.clearGatedDmLatches(botId)
     this.forgetAppTeam(botId)
     this.router.remove(botId)

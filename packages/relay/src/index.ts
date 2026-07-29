@@ -143,7 +143,9 @@ async function main(): Promise<void> {
         ?.assign(toBotAssignment(a))
         .catch((err) => log.error(`relay: bot-assign failed: ${String(err)}`)),
     onBotUnassign: (a) =>
-      void held.sharedBot?.unassign(a.botId).catch((err) => log.error(`relay: bot-unassign failed: ${String(err)}`)),
+      void held.sharedBot
+        ?.unassign(a.botId, a.credentialRevision)
+        .catch((err) => log.error(`relay: bot-unassign failed: ${String(err)}`)),
     onRoutes: (r) =>
       held.sharedBot?.updateRoutes(r.botId, {
         members: r.members,
@@ -184,7 +186,7 @@ async function main(): Promise<void> {
     reportBotChannels: (m) => client.emitBotChannels(m),
     reportBotConversation: (m) => client.emitBotConversation(m),
     reportNoticePosted: (m) => client.emitNoticePosted(m),
-    reportBotRevoked: (m) => client.emitBotRevoked(m),
+    reportBotRevoked: (m) => client.reportBotRevoked(m),
     selfRelayId: () => client.relayId,
     reportThreadAssign: (m) => client.emitThreadAssign(m),
     lookupThread: (m) => client.lookupThread(m),

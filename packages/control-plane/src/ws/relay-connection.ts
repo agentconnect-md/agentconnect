@@ -67,8 +67,12 @@ export interface RelayConnDeps {
    *  Fire-and-forget. */
   onNoticePosted: (m: RcNoticePosted) => Promise<void>
   /** Apply a workspace uninstall / token revocation (`rc/bot-revoked`): mark the
-   *  Bot + its installs revoked and release the bot. Fire-and-forget. */
-  onBotRevoked: (m: RcBotRevoked) => Promise<void>
+   *  Bot + its installs revoked and release the bot. ACKNOWLEDGED — resolve only
+   *  after the decision is COMMITTED (`applied: false` = the generation fence
+   *  refused a stale report, which is equally terminal). A throw answers a
+   *  retryable error so the relay reports again rather than losing the only
+   *  signal a dead credential ever produces. */
+  onBotRevoked: (m: RcBotRevoked) => Promise<{ applied: boolean }>
   /** Fired after this relay left the connected registry (socket closed) — the
    *  connected roster changed, so §14.3 notice authorities must re-converge on the
    *  survivors. Best-effort; never throws. */
@@ -167,7 +171,7 @@ export class RelayConnection implements RelayChannel {
           await this.deps.onNoticePosted(frame.payload)
           return
         case 'rc/bot-revoked':
-          await this.deps.onBotRevoked(frame.payload)
+          await this.handleBotRevoked(frame, frame.payload)
           return
         case 'rc/thread-assign':
           await this.handleThreadAssign(frame.payload)
@@ -275,6 +279,21 @@ export class RelayConnection implements RelayChannel {
     } catch {
       // swallowed — affinity bookkeeping only, never worth the socket
     }
+  }
+
+  /** `rc/bot-revoked` is the one rc/* REPORT that is acknowledged: Slack never
+   *  redelivers the lifecycle event and no CP-side probe can find a dead token, so
+   *  a handler failure must NOT look like success to the relay. Answer a retryable
+   *  error (not a link close) and let it re-report. */
+  private async handleBotRevoked(frame: RelayCpFrame, req: RcBotRevoked): Promise<void> {
+    let result: { applied: boolean }
+    try {
+      result = await this.deps.onBotRevoked(req)
+    } catch {
+      this.sendError(frame.id, 'INTERNAL', 'bot revocation failed', true)
+      return
+    }
+    this.reply(frame, 'rc/bot-revoked/ok', { botId: req.botId, applied: result.applied })
   }
 
   private async handleThreadLookup(frame: RelayCpFrame, req: RcThreadLookup): Promise<void> {

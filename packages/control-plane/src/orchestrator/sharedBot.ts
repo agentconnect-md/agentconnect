@@ -175,8 +175,17 @@ export class SharedBotOrchestrator {
 
   /** Release a bot from the relay pool (transport flipped / uninstalled / last
    *  install removed): broadcast `rc/bot-unassign` to every connected relay. */
-  async unassign(bot: BotRecord): Promise<void> {
-    this.broadcast((ch) => ch.send('rc/bot-unassign', { botId: bot.id }))
+  async unassign(bot: BotRecord, opts?: { credentialRevision?: number }): Promise<void> {
+    this.broadcast((ch) =>
+      ch.send('rc/bot-unassign', {
+        botId: bot.id,
+        // Only a REVOCATION stamps this: it is the one release that races a
+        // re-install, and the relay drops it if it already holds a newer
+        // assignment. Transport flips / un-shares / last-install-removed are
+        // unconditional (they do not describe a credential generation).
+        ...(opts?.credentialRevision !== undefined ? { credentialRevision: opts.credentialRevision } : {})
+      })
+    )
   }
 
   /**
@@ -205,9 +214,11 @@ export class SharedBotOrchestrator {
     botId: string,
     reason: 'app_uninstalled' | 'tokens_revoked',
     fence: { revision?: number; eventAtMs?: number } = {}
-  ): Promise<void> {
+  ): Promise<{ applied: boolean }> {
     const bot = await this.bots.get(BotId(botId))
-    if (!bot) return
+    // Unknown bot: nothing to apply and nothing that will ever change that, so
+    // this is terminal for the reporting relay — not a reason to keep retrying.
+    if (!bot) return { applied: false }
     // Snapshot members BEFORE the flip — listForBot is active-only.
     const installs = await this.integrations.listForBot(bot.id)
     const { applied } = await this.botCredential.revoke(bot.id, new Date(), {
@@ -219,7 +230,7 @@ export class SharedBotOrchestrator {
         { botId: bot.id, reason, reportedRevision: fence.revision, currentRevision: bot.credentialRevision },
         'shared-bot: stale revoke ignored — credential was replaced since the event'
       )
-      return
+      return { applied: false }
     }
     // Re-check after the commit: a re-install may have taken the row lock the
     // moment we released it, in which case IT owns the live state and has
@@ -231,9 +242,15 @@ export class SharedBotOrchestrator {
         { botId: bot.id, reason, from: bot.credentialRevision, to: after.credentialRevision },
         'shared-bot: revoke committed but the credential was replaced — skipping teardown effects'
       )
-      return
+      // The revocation itself DID commit, so the report is settled.
+      return { applied: true }
     }
-    await this.unassign(bot)
+    // The re-read above narrows the race but cannot close it: a re-install can
+    // still commit N+1 and broadcast its assign between that read and this send.
+    // Stamping the revoked generation moves the decision to the point of
+    // APPLICATION — the relay drops this release if it already holds a newer
+    // assignment, so a stale teardown can never kill a live ingest.
+    await this.unassign(bot, { credentialRevision: bot.credentialRevision })
     for (const integration of installs) {
       const agent = await this.agents.get(integration.agentId)
       if (!agent?.daemonId) continue
@@ -245,6 +262,7 @@ export class SharedBotOrchestrator {
       }
     }
     this.log.info({ botId: bot.id, reason, installs: installs.length }, 'shared-bot: bot revoked by workspace')
+    return { applied: true }
   }
 
   /** Converge EVERY http+active bot — the failover / broad-change worklist. */

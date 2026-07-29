@@ -1226,8 +1226,14 @@ export default function AddIntegrationModal({
   }, [agent.name, createdHook, daemonsLoading, firstSupportedBotPlatform, selectedBotPlatformSupported])
 
   // A bot serves one agent at a time; freed (or prebuilt, never-installed) bots of
-  // THIS platform are offered for reuse instead of forcing a re-create.
-  const freeBots = bots.filter((b) => b.platform === platform && !b.inUseByAgentId)
+  // THIS platform are offered for reuse instead of forcing a re-create. Two kinds
+  // look "free" (`inUseByAgentId` clears with the last install) but are not, and the
+  // server rejects both — don't offer what cannot be picked:
+  //   • revoked — the workspace uninstalled the app, so its token is dead;
+  //   • a platform-app install (`teamId`) — non-shareable by construction, one
+  //     workspace serves one agent (preset-agents.md §5.5); reuse is the dedicated
+  //     "Add to Slack" flow, or a Slack app of this agent's own.
+  const freeBots = bots.filter((b) => b.platform === platform && !b.inUseByAgentId && !b.revokedAt && !b.teamId)
   const mode = modePick ?? 'create'
   const selectedBotId = freeBots.some((b) => b.id === botPick) ? botPick : (freeBots[0]?.id ?? null)
   const selectedBot = freeBots.find((b) => b.id === selectedBotId) ?? null

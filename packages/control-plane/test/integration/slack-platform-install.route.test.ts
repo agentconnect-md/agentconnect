@@ -8,7 +8,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
-import { seedAgent } from '../fixtures/seed.js'
+import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { provisionPresetAgents } from '../../src/persistence/index.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
@@ -547,6 +547,60 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
 
     expect((await status(app, started.id)).json()).toMatchObject({ status: 'failed', failureReason: 'denied' })
     expect(await prisma.bot.count()).toBe(0)
+  })
+
+  // `inUseByAgentId` clears with the last install, so both of these look "free"
+  // to the generic bot picker. Reusing them through POST /integrations would flip
+  // the platform bot to shareable (breaking §5.5) or mint an install on a token
+  // Slack already rejects.
+  it('the generic reuse path refuses a platform-app bot and a revoked bot', async () => {
+    const { app } = withPlatform()
+    // The generic reuse route requires a PLACED agent before it reaches the
+    // bot checks, so give the reuse target a daemon.
+    const daemonId = randomUUID()
+    await seedDaemon(prisma, daemonId)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const started = await startInstall(app, agentId)
+    await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c1&state=${started.id}`
+    })
+    const bot = await prisma.bot.findFirstOrThrow({ where: { slackAppId: PLATFORM.appId } })
+    // Free it: remove the install, exactly as the console's "remove integration" does.
+    await prisma.integration.deleteMany({ where: { botId: bot.id } })
+
+    const other = randomUUID()
+    await seedAgent(prisma, other, { daemonId })
+    const reuse = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'slack', agentId: other, botId: bot.id }
+    })
+    expect(reuse.statusCode).toBe(409)
+    expect((reuse.json() as { message: string }).message).toMatch(/one agent per workspace/)
+    // Not widened behind our back.
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).shareable).toBe(false)
+    expect(await prisma.integration.count({ where: { botId: bot.id } })).toBe(0)
+
+    // A revoked NON-platform bot is refused too — its token is dead.
+    const plain = await prisma.bot.create({
+      data: {
+        id: randomUUID(),
+        orgId: DEFAULT_ORG_ID,
+        name: 'freed-and-revoked',
+        platform: 'slack',
+        transport: 'http',
+        revokedAt: new Date()
+      }
+    })
+    const reuseRevoked = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'slack', agentId: other, botId: plain.id }
+    })
+    expect(reuseRevoked.statusCode).toBe(409)
+    expect((reuseRevoked.json() as { message: string }).message).toMatch(/uninstalled|revoked/)
   })
 
   it('404s for another org’s install id', async () => {

@@ -279,18 +279,32 @@ export class RelayCpClient {
     return true
   }
 
-  /** Emit one workspace uninstall / token-revocation report (`rc/bot-revoked`).
-   *  Returns `false` (without sending) if the link isn't READY so the manager can
-   *  retry on reconnect — NOT droppable: Slack acked the event before the relay's
-   *  handler ran and never redelivers it, and no CP-side probe can discover a dead
-   *  token, so a lost report leaves an uninstalled app shown as active forever. */
-  emitBotRevoked(m: RcBotRevoked): boolean {
+  /** Report one workspace uninstall / token revocation and WAIT for the CP to
+   *  commit it (`rc/bot-revoked` → `/ok`). Returns false — keep it queued and retry
+   *  — when the link isn't READY or no ack came back. This is the only rc/* report
+   *  that is acknowledged: Slack acked the event before the relay's handler ran and
+   *  never redelivers it, and no CP-side probe can discover a dead token, so a
+   *  send that the socket accepted but the CP failed to persist would silently
+   *  leave an uninstalled app shown as active forever. Re-applying is a no-op. */
+  async reportBotRevoked(m: RcBotRevoked): Promise<boolean> {
     if (this.state !== 'READY' || !this.transport) {
       this.deps.log.warn(`relay: deferring rc/bot-revoked for ${m.botId} (link ${this.state})`)
       return false
     }
-    this.transport.send(JSON.stringify(buildRelayCpFrame('rc/bot-revoked', m)))
-    return true
+    try {
+      const rep = await this.sendRequest(buildRelayCpFrame('rc/bot-revoked', m), {
+        maxTries: 1,
+        ackTimeoutMs: ACK_TIMEOUT_MS
+      })
+      // Any reply is terminal: `applied:false` means the CP's generation fence
+      // refused a stale report, which is just as settled as applying it.
+      return rep.type === 'rc/bot-revoked/ok'
+    } catch (err) {
+      // No COMMIT ack — keep it queued. A socket that accepted the bytes proves
+      // nothing about the CP having persisted the revocation.
+      this.deps.log.warn(`relay: rc/bot-revoked for ${m.botId} unacknowledged: ${(err as Error).message}`)
+      return false
+    }
   }
 
   /** Emit `rc/thread-assign` — REPORT leg of the affinity dance: the relay tells the CP

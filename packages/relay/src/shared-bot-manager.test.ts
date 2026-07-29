@@ -434,24 +434,31 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
   // token gives the CP nothing to probe, and assignment reconciliation would just
   // republish the stale active state — the console would show an uninstalled app
   // as live forever.
-  it('retries a revocation report received while the CP link was down', () => {
-    let ready = false
-    const reportBotRevoked = vi.fn(() => ready)
+  it('retries a revocation report until the CP acknowledges the commit', async () => {
+    let committed = false
+    const reportBotRevoked = vi.fn(async () => committed)
     const manager = new SharedBotManager(deps({ reportBotRevoked }))
     const internals = manager as unknown as ManagerInternals
     const report = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 3 }
 
+    // Attempted, but the CP did not commit (link down, or its handler failed) —
+    // a send the socket accepted is NOT evidence of a commit, so it stays queued.
     internals.reportRevoked(report)
-    expect(reportBotRevoked).toHaveBeenCalledTimes(1) // attempted, refused by the link
+    await vi.waitFor(() => expect(reportBotRevoked).toHaveBeenCalledTimes(1))
 
-    ready = true
     manager.flushPendingReports()
-    // Replayed verbatim — the revision still describes the generation that was
-    // live when Slack sent the event, which is what the CP's fence needs.
-    expect(reportBotRevoked).toHaveBeenCalledTimes(2)
+    await vi.waitFor(() => expect(reportBotRevoked).toHaveBeenCalledTimes(2))
+
+    // Now the CP acks: replayed verbatim (the revision still names the generation
+    // that observed the event) and the queue drains.
+    committed = true
+    manager.flushPendingReports()
+    await vi.waitFor(() => expect(reportBotRevoked).toHaveBeenCalledTimes(3))
     expect(reportBotRevoked).toHaveBeenLastCalledWith(report)
+
     manager.flushPendingReports()
-    expect(reportBotRevoked).toHaveBeenCalledTimes(2) // queue drained
+    await new Promise((r) => setTimeout(r, 0))
+    expect(reportBotRevoked).toHaveBeenCalledTimes(3)
   })
 
   it('pulls the persisted owner from the CP on an un-mentioned thread follow-up and forwards it', async () => {
@@ -939,6 +946,36 @@ describe('SharedBotManager.resolveVerified composite demux', () => {
     expect(resolve(manager, { apiAppId: 'ALEGACY', teamId: 'T9', secret: 'legacy-secret' })).toBe(
       internals.ingests.get(BOT_LEGACY)
     )
+  })
+
+  // A revocation decides, commits, then broadcasts — and a re-install can land in
+  // that gap, commit N+1, and broadcast its assign FIRST. Applying the stale
+  // release would tear down the ingest of a credential it never described.
+  it('unassign carrying an OLDER generation than the held assignment is ignored', async () => {
+    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    const internals = manager as unknown as DemuxInternals
+    internals.ingests.set(BOT_T1, { signingSecret: SHARED_SECRET, stop: async () => {} })
+    internals.router.upsert({
+      ...assignment(),
+      botId: BOT_T1,
+      secrets: { botToken: 'xoxb', signingSecret: SHARED_SECRET },
+      apiAppId: PLATFORM_APP,
+      teamId: 'T1',
+      credentialRevision: 2 // the re-install's assign already landed here
+    })
+    internals.demuxByAppTeam.set(`${PLATFORM_APP}\u0000T1`, BOT_T1)
+
+    await manager.unassign(BOT_T1, 1) // the revoke of the REPLACED credential
+
+    // Still serving: routing table, ingest, and demux index all intact.
+    expect(internals.router.get(BOT_T1)).toBeDefined()
+    expect(internals.ingests.has(BOT_T1)).toBe(true)
+    expect(internals.demuxByAppTeam.size).toBe(1)
+
+    // The matching generation still releases it.
+    await manager.unassign(BOT_T1, 2)
+    expect(internals.router.get(BOT_T1)).toBeUndefined()
+    expect(internals.ingests.has(BOT_T1)).toBe(false)
   })
 
   it('unassign drops the composite index entries', async () => {

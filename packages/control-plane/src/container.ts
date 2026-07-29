@@ -1059,16 +1059,15 @@ export function buildContainer(
     // A workspace uninstalled the app / revoked its tokens — mark the Bot + its
     // installs revoked and release the bot from the pool, unless the report is
     // stale (the fence fields; Slack does not order lifecycle events). Swallow+log.
-    onBotRevoked: async (m) => {
-      try {
-        await sharedBot.revokeBot(m.botId, m.reason, {
-          ...(m.credentialRevision !== undefined ? { revision: m.credentialRevision } : {}),
-          ...(m.eventAtMs !== undefined ? { eventAtMs: m.eventAtMs } : {})
-        })
-      } catch (err) {
-        http.log.error({ err, botId: m.botId }, 'relay: bot-revoked handling failed')
-      }
-    },
+    // ACKNOWLEDGED: the relay keeps retrying until this resolves, so a failure
+    // must PROPAGATE (the connection answers a retryable error) rather than be
+    // swallowed — swallowing would look like success and lose the only signal a
+    // dead credential ever produces.
+    onBotRevoked: async (m) =>
+      sharedBot.revokeBot(m.botId, m.reason, {
+        ...(m.credentialRevision !== undefined ? { revision: m.credentialRevision } : {}),
+        ...(m.eventAtMs !== undefined ? { eventAtMs: m.eventAtMs } : {})
+      }),
     // A relay delivered a §14.3 DM gating notice — record + re-stamp the pool's
     // latch. Swallow+log.
     onNoticePosted: async (m) => {
