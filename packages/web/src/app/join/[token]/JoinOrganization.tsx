@@ -26,7 +26,7 @@ export default function JoinOrganization({ token }: { token: string }) {
         }
 
         const result = await acceptOrgInviteLink(token)
-        if (!cancelled) router.replace(`/${encodeURIComponent(result.org.slug)}/agents`)
+        if (!cancelled) router.replace(`/${encodeURIComponent(result.org.slug)}/home`)
       } catch (e) {
         if (cancelled) return
         setError(

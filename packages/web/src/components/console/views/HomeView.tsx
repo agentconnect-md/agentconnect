@@ -20,9 +20,14 @@ import {
   agentLabel,
   modelLabel,
   runtimeLabel,
-  effortField,
-  permissionModeOptions,
   effectiveAgentStatus,
+  preferredModelFor,
+  modelCapability,
+  effortChoicesFor,
+  displayedEffort,
+  permissionModeChoicesFor,
+  resolvedPermissionMode,
+  supportsModes,
   type Agent
 } from '@/lib/data'
 import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
@@ -86,14 +91,18 @@ export default function HomeView() {
   const { agents, daemons, crons, allSessions, usage24h, getAgent, loading } = useConsoleData()
   const { openPlayground, pgSend, pgSetModel, pgSetEffort, pgSetPermissionMode } = usePlayground()
 
-  // An agent can only take a session when its owning daemon is serving.
+  // An agent can take a session only when its owning daemon is serving AND that
+  // runtime is signed in (its last probe wasn't rejected with ACP auth-required).
   const isOnline = (a: Agent) =>
     effectiveAgentStatus(a.status, daemons.find((d) => d.daemonId === a.daemon)?.status) === 'online'
+  const authRequiredFor = (a: Agent) =>
+    !!daemons.find((d) => d.daemonId === a.daemon)?.runtimeModels.find((r) => r.runtime === a.runtime)?.authRequired
+  const agentReady = (a: Agent) => isOnline(a) && !authRequiredFor(a)
 
   // Preferred default agent: the "agentconnect" preset if present, else the first
-  // ONLINE agent, else the first (so the composer defaults to something startable).
+  // READY one, else the first (so the composer defaults to something startable).
   const preferred = useMemo(
-    () => agents.find((a) => a.name === 'agentconnect') ?? agents.find(isOnline) ?? agents[0],
+    () => agents.find((a) => a.name === 'agentconnect') ?? agents.find(agentReady) ?? agents[0],
     [agents, daemons]
   )
   const [agentId, setAgentId] = useState<string | undefined>(undefined)
@@ -111,54 +120,73 @@ export default function HomeView() {
 
   // The selected agent's owning daemon supplies the model catalog + defaults.
   const owningDaemon = agent ? daemons.find((d) => d.daemonId === agent.daemon) : undefined
-  const runtimeModels = owningDaemon?.runtimeModels.find((r) => r.runtime === agent?.runtime)?.models ?? []
-  const modelChoices = (runtimeModels.length ? runtimeModels : agent?.model ? [agent.model] : []).map((m) => ({
-    value: m,
-    label: modelLabel(m)
-  }))
-  const effortChoices = agent ? effortField(agent.runtime).options.map((o) => ({ value: o.v, label: o.l })) : []
-  const permissionChoices = agent ? permissionModeOptions(agent.runtime).map((o) => ({ value: o.v, label: o.l })) : []
+  const runtimeProfile = owningDaemon?.runtimeModels.find((r) => r.runtime === agent?.runtime)
+  const models = runtimeProfile?.models ?? []
+  const modelCatalog = runtimeProfile?.modelCatalog ?? undefined
 
-  // Selected-agent readiness. Starting a session needs the agent's owning daemon
-  // serving AND its runtime signed in — the daemon's last probe of that runtime
-  // wasn't rejected with the ACP "authentication required" error (authRequired).
-  const runtimeAuthRequired =
-    agentOnline && !!owningDaemon?.runtimeModels.find((r) => r.runtime === agent?.runtime)?.authRequired
+  // Effective model = explicit override, else the agent's stored model when the daemon
+  // still advertises it, else the daemon's RESOLVED default (preferredModelFor). We stage
+  // this on send, so the pill's label is exactly the model the turn runs — not a display
+  // that silently differs from the daemon default for a blank/stale stored model.
+  const defaultModel =
+    agent && models.includes(agent.model)
+      ? agent.model
+      : preferredModelFor(owningDaemon, agent?.runtime ?? '') || agent?.model || ''
+  const model = runtime.model ?? defaultModel
+  const modelChoices = (models.length ? models : model ? [model] : []).map((m) => ({ value: m, label: modelLabel(m) }))
+
+  // Effort + permission come from the SELECTED model's discovered capability / the
+  // runtime catalog — the same catalog-aware helpers the session and add/edit controls
+  // use — not the static tables. So a runtime with no such vocabulary (e.g. opencode)
+  // shows no effort/permission control instead of Claude-style values it doesn't accept.
+  const capability = agent ? modelCapability(owningDaemon, agent.runtime, model) : undefined
+  const effortList = agent ? effortChoicesFor(agent.runtime, capability) : []
+  const showEffort = capability?.efforts ? effortList.length > 0 : agent ? supportsModes(agent.runtime) : false
+  const effort = showEffort
+    ? displayedEffort(runtime.effort ?? agent?.reasoning ?? '', effortList, capability?.defaultEffort)
+    : ''
+  const effortChoices = effortList.map((o) => ({ value: o.value, label: o.label, description: o.description }))
+
+  const permissionList = agent ? permissionModeChoicesFor(agent.runtime, modelCatalog) : []
+  const showPermission = agent ? !!modelCatalog?.permissionModes?.length || supportsModes(agent.runtime) : false
+  const permission = showPermission
+    ? resolvedPermissionMode(runtime.permission ?? agent?.permissionMode ?? '', permissionList, modelCatalog)
+    : ''
+  const permissionChoices = permissionList.map((o) => ({ value: o.v, label: o.l, description: o.description }))
+
   // Why the composer can't start a session for the selected agent (null ⇒ it can).
   const blocked: 'offline' | 'auth' | null = !agent
     ? null
     : !agentOnline
       ? 'offline'
-      : runtimeAuthRequired
+      : authRequiredFor(agent)
         ? 'auth'
         : null
   const canSend = !!agent && blocked === null
   const daemonHref = owningDaemon ? orgPath(`/daemons/${owningDaemon.daemonId}`) : null
 
-  // Effective run runtime = override, else the agent's own config. Resolve the model
-  // against the available choices the SAME way ComposerMenu does (value ?? options[0]),
-  // so the pill's icon matches the label shown even when the agent's stored model isn't
-  // in the daemon's advertised list (else ModelMark gets an unmatched value → wrong icon).
-  const rawModel = runtime.model ?? agent?.model ?? ''
-  const model = modelChoices.find((c) => c.value === rawModel)?.value ?? modelChoices[0]?.value ?? rawModel
-  const effort = runtime.effort ?? agent?.reasoning ?? ''
-  const permission = runtime.permission ?? agent?.permissionMode ?? ''
-
   const send = () => {
     const text = input.trim()
     if (!text || !agent || !canSend) return // offline / unsigned-in agents can't take a session
     const id = openPlayground(agent) // pg_ session; pgSend awaits the socket, so no race
-    // Apply run-runtime overrides before the turn — stageRuntimeChange is a synchronous
-    // ref write, so pgSend's payload picks them up (PlaygroundProvider).
-    if (runtime.model) pgSetModel(id, agent.id, runtime.model)
-    if (runtime.effort) pgSetEffort(id, agent.id, runtime.effort)
-    if (runtime.permission) pgSetPermissionMode(id, agent.id, runtime.permission)
+    // Stage the EFFECTIVE (displayed) runtime before the turn — not just explicit
+    // overrides — so the session runs exactly what the composer showed. stageRuntimeChange
+    // is a synchronous ref write, so pgSend's payload picks it up (PlaygroundProvider).
+    if (model) pgSetModel(id, agent.id, model)
+    if (effort) pgSetEffort(id, agent.id, effort)
+    if (permission) pgSetPermissionMode(id, agent.id, permission)
     pgSend(id, agent.id, text)
     setInput('')
     router.push(orgPath(`/sessions/${id}`))
   }
 
+  // Same readiness gate as the composer: starting a chat with a not-ready agent would
+  // open a dead session, so select it in Home instead and let the banner explain why.
   const startChat = (a: Agent) => {
+    if (!agentReady(a)) {
+      setAgentId(a.id)
+      return
+    }
     const id = openPlayground(a)
     router.push(orgPath(`/sessions/${id}`))
   }
@@ -179,18 +207,21 @@ export default function HomeView() {
   if (loading && agents.length === 0 && allSessions.length === 0) return <LoadingState fill />
 
   const agentOptions = agents.map((a) => {
-    const online = isOnline(a)
+    const ready = agentReady(a)
+    const reason = !isOnline(a)
+      ? `${agentLabel(a)} is offline — its daemon isn't serving`
+      : `${agentLabel(a)} has no AI runtime signed in`
     return {
       value: a.id,
       label: agentLabel(a),
-      dimmed: !online,
-      description: online ? 'Pick the agent to ask' : `${agentLabel(a)} is offline — its daemon isn't serving`,
+      dimmed: !ready,
+      description: ready ? 'Pick the agent to ask' : reason,
       leading: (
         <span className="relative flex-none">
           <span className="av h-[18px] w-[18px] rounded-xs">
             <AgentIconView icon={a.icon} runtime={a.runtime} size={18} />
           </span>
-          {!online && (
+          {!ready && (
             <span
               className="dot absolute -right-[2px] -bottom-[2px] h-[7px] w-[7px] ring-2 ring-(--surface-card)"
               style={{ background: 'var(--status-error)' }}
@@ -224,81 +255,86 @@ export default function HomeView() {
           placeholder="Ask agentconnect to connect a workspace, deploy an agent, or check on a run"
           className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-4 pt-[14px] pb-2 font-sans text-[14px] leading-normal text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
         />
-        <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
-          {agent ? (
-            <>
-              <ComposerMenu
-                title="Agent"
-                value={agent.id}
-                options={agentOptions}
-                open={menu === 'agent'}
-                align="left"
-                placement="down"
-                triggerClassName="inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
-                leading={
-                  <span className="av h-4 w-4 rounded-xs">
-                    <AgentIconView icon={agent.icon} runtime={agent.runtime} size={16} />
-                  </span>
-                }
-                onOpenChange={(o) => setMenu(o ? 'agent' : null)}
-                onChange={setAgentId}
-              />
-              {modelChoices.length > 0 && (
+        {/* items-start + a wrapping selector group so the controls reflow onto a second
+            row at phone widths instead of overflowing (mobile .content clips overflow-x);
+            the send button stays pinned top-right. */}
+        <div className="flex items-start gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+            {agent ? (
+              <>
                 <ComposerMenu
-                  title="Model"
-                  value={model}
-                  options={modelChoices}
-                  open={menu === 'model'}
+                  title="Agent"
+                  value={agent.id}
+                  options={agentOptions}
+                  open={menu === 'agent'}
                   align="left"
                   placement="down"
-                  triggerClassName="inline-flex h-7 items-center gap-[3px] rounded-full px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
-                  tooltips={false}
+                  triggerClassName="inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
                   leading={
-                    <span className="inline-flex h-4 w-4 flex-none items-center justify-center">
-                      <ModelMark model={model} fallbackRuntime={agent.runtime} />
+                    <span className="av h-4 w-4 rounded-xs">
+                      <AgentIconView icon={agent.icon} runtime={agent.runtime} size={16} />
                     </span>
                   }
-                  onOpenChange={(o) => setMenu(o ? 'model' : null)}
-                  onChange={(m) => setRuntime((r) => ({ ...r, model: m }))}
+                  onOpenChange={(o) => setMenu(o ? 'agent' : null)}
+                  onChange={setAgentId}
                 />
-              )}
-              {effortChoices.length > 0 && (
-                <ComposerMenu
-                  title="Effort"
-                  value={effort}
-                  options={effortChoices}
-                  open={menu === 'effort'}
-                  align="left"
-                  placement="down"
-                  triggerClassName={CHIP}
-                  tooltips={false}
-                  onOpenChange={(o) => setMenu(o ? 'effort' : null)}
-                  onChange={(v) => setRuntime((r) => ({ ...r, effort: v }))}
-                />
-              )}
-              {permissionChoices.length > 0 && (
-                <ComposerMenu
-                  title="Permission"
-                  value={permission}
-                  options={permissionChoices}
-                  open={menu === 'permission'}
-                  align="left"
-                  placement="down"
-                  triggerClassName={CHIP}
-                  tooltips={false}
-                  onOpenChange={(o) => setMenu(o ? 'permission' : null)}
-                  onChange={(v) => setRuntime((r) => ({ ...r, permission: v }))}
-                />
-              )}
-            </>
-          ) : (
-            <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
-              No agents yet
-            </span>
-          )}
+                {modelChoices.length > 0 && (
+                  <ComposerMenu
+                    title="Model"
+                    value={model}
+                    options={modelChoices}
+                    open={menu === 'model'}
+                    align="left"
+                    placement="down"
+                    triggerClassName="inline-flex h-7 items-center gap-[3px] rounded-full px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
+                    tooltips={false}
+                    leading={
+                      <span className="inline-flex h-4 w-4 flex-none items-center justify-center">
+                        <ModelMark model={model} fallbackRuntime={agent.runtime} />
+                      </span>
+                    }
+                    onOpenChange={(o) => setMenu(o ? 'model' : null)}
+                    onChange={(m) => setRuntime((r) => ({ ...r, model: m, effort: undefined }))}
+                  />
+                )}
+                {showEffort && effortChoices.length > 0 && (
+                  <ComposerMenu
+                    title="Effort"
+                    value={effort}
+                    options={effortChoices}
+                    open={menu === 'effort'}
+                    align="left"
+                    placement="down"
+                    triggerClassName={CHIP}
+                    tooltips={false}
+                    onOpenChange={(o) => setMenu(o ? 'effort' : null)}
+                    onChange={(v) => setRuntime((r) => ({ ...r, effort: v }))}
+                  />
+                )}
+                {showPermission && permissionChoices.length > 0 && (
+                  <ComposerMenu
+                    title="Permission"
+                    value={permission}
+                    options={permissionChoices}
+                    open={menu === 'permission'}
+                    align="left"
+                    placement="down"
+                    triggerClassName={CHIP}
+                    tooltips={false}
+                    onOpenChange={(o) => setMenu(o ? 'permission' : null)}
+                    onChange={(v) => setRuntime((r) => ({ ...r, permission: v }))}
+                  />
+                )}
+              </>
+            ) : (
+              <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
+                No agents yet
+              </span>
+            )}
+          </div>
           <button
             type="button"
-            className="sendbtn ml-auto h-7 w-7 rounded-[7px]"
+            className="sendbtn h-7 w-7 flex-none rounded-[7px]"
             disabled={!input.trim() || !canSend}
             onClick={send}
             title={
@@ -394,30 +430,37 @@ export default function HomeView() {
             {rankedAgents.length === 0 ? (
               <EmptyRow>No agents yet.</EmptyRow>
             ) : (
-              rankedAgents.map((a) => (
-                <button
-                  key={a.id}
-                  type="button"
-                  onClick={() => startChat(a)}
-                  title={`Start a chat with ${agentLabel(a)}`}
-                  className="row click w-full grid-cols-[auto_1fr_auto] gap-3 text-left"
-                >
-                  <span className="av h-7 w-7 rounded-md">
-                    <AgentIconView icon={a.icon} runtime={a.runtime} size={28} />
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block truncate font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
-                      {agentLabel(a)}
+              rankedAgents.map((a) => {
+                const ready = agentReady(a)
+                return (
+                  <button
+                    key={a.id}
+                    type="button"
+                    onClick={() => startChat(a)}
+                    title={
+                      ready
+                        ? `Start a chat with ${agentLabel(a)}`
+                        : `${agentLabel(a)} isn't ready — select it to see why`
+                    }
+                    className={`row click w-full grid-cols-[auto_1fr_auto] gap-3 text-left ${ready ? '' : 'opacity-60'}`}
+                  >
+                    <span className="av h-7 w-7 rounded-md">
+                      <AgentIconView icon={a.icon} runtime={a.runtime} size={28} />
                     </span>
-                    <span className="mono block truncate text-[11px] text-(--text-tertiary)">
-                      {runtimeLabel(a.runtime)} · {modelLabel(a.model)}
+                    <span className="min-w-0">
+                      <span className="block truncate font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
+                        {agentLabel(a)}
+                      </span>
+                      <span className="mono block truncate text-[11px] text-(--text-tertiary)">
+                        {runtimeLabel(a.runtime)} · {modelLabel(a.model)}
+                      </span>
                     </span>
-                  </span>
-                  <span className="mono whitespace-nowrap text-[12px] text-(--text-secondary)">
-                    {sessionsByAgent.get(a.id) ?? 0}
-                  </span>
-                </button>
-              ))
+                    <span className="mono whitespace-nowrap text-[12px] text-(--text-secondary)">
+                      {sessionsByAgent.get(a.id) ?? 0}
+                    </span>
+                  </button>
+                )
+              })
             )}
           </Card>
 

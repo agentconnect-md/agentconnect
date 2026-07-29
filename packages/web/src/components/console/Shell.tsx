@@ -47,10 +47,10 @@ const NAV_ITEMS: NavItem[] = [
 // destinations as equal columns plus a "More" slot that opens a bottom sheet.
 // (Schedules uses `alarm-clock` per the design, not `calendar-clock`.)
 const MOBILE_NAV: NavItem[] = [
+  { href: '/home', label: 'Home', icon: 'house' },
   { href: '/agents', label: 'Agents', icon: 'bot' },
   { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
-  { href: '/crons', label: 'Schedules', icon: 'alarm-clock' },
-  { href: '/daemons', label: 'Daemons', icon: 'server' }
+  { href: '/crons', label: 'Schedules', icon: 'alarm-clock' }
 ]
 
 // The "More" sheet's destinations — Analytics / Tools & Skills / Settings (the desktop rail
@@ -58,14 +58,16 @@ const MOBILE_NAV: NavItem[] = [
 // bar as a top-right avatar (mirroring the desktop top bar). The org switcher is
 // prepended separately, in the sheet itself.
 const MORE_ROWS: NavItem[] = [
+  { href: '/daemons', label: 'Daemons', icon: 'server' },
   { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
   { href: '/tools', label: 'Tools & Skills', icon: 'book-open' },
   { href: '/settings', label: 'Settings', icon: 'settings' }
 ]
 
-// List routes own the tab-bar + list app bar; every other route is a "push" screen
-// (back-button app bar, no bottom nav) on mobile.
-const LIST_ROUTES = ['/agents', '/sessions', '/crons', '/daemons']
+// Top-level routes own the tab-bar + list app bar (no back button, bottom nav shown);
+// every other route is a "push" screen (back-button app bar, no bottom nav) on mobile.
+// Home is a top-level surface (the default landing), not a push screen.
+const LIST_ROUTES = ['/home', '/agents', '/sessions', '/crons', '/daemons']
 const SESSION_FILTER_KEYS = ['agent', 'integration', 'channel', 'trigger']
 const CONSOLE_SWR_CONFIG = {
   dedupingInterval: 2_000,
