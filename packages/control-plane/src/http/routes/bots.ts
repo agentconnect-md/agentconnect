@@ -5,8 +5,9 @@
  * A bot outlives the integration installing it: the console's "Add integration"
  * picker reads this list to offer freed / prebuilt bots for reuse instead of
  * forcing a re-create. Metadata only — token material never leaves the
- * `BotSecretStore`. Deleting is refused while the bot is installed (the
- * integration's Restrict FK backstops).
+ * `BotSecretStore`. Legacy Feishu/Lark rows may recover their public App ID
+ * through that store and persist it back onto `bot`. Deleting is refused while
+ * the bot is installed (the integration's Restrict FK backstops).
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
@@ -31,7 +32,7 @@ import { resolveUserConfigAccessToken } from '../slack-user-config.js'
 import { mergeManagedSlackManifest, slackOAuthRedirectUri, SLACK_BOT_SCOPES } from '../slack-manifest.js'
 import { relayHttpBase } from './slack-install.js'
 
-function toDto(b: BotRecord): BotDtoT {
+function toDto(b: BotRecord, feishuAppId: string | null = b.feishuAppId): BotDtoT {
   return {
     id: b.id,
     name: b.name,
@@ -39,7 +40,7 @@ function toDto(b: BotRecord): BotDtoT {
     prebuilt: b.prebuilt,
     slackAppId: b.slackAppId,
     discordAppId: b.discordAppId,
-    feishuAppId: b.feishuAppId,
+    feishuAppId,
     feishuRegion: b.feishuRegion,
     // Creator's userId (web resolves to a name / "You"); synthetic-email placeholder ⇒
     // non-human creator ⇒ null (the console shows the prebuilt/"—" fallback).
@@ -87,6 +88,27 @@ export function slackAppLinks(
 export function botRoutes(deps: HttpDeps) {
   return async function botRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+    const toRecoveredDto = async (bot: BotRecord): Promise<BotDtoT> => {
+      if (bot.platform !== 'feishu' || bot.feishuAppId) return toDto(bot)
+
+      let appId: string | null = null
+      try {
+        appId = (await deps.repos.botSecret.get(bot.id))?.appToken ?? null
+      } catch (err) {
+        app.log.warn({ err, botId: bot.id }, 'failed to recover legacy Feishu app id')
+        return toDto(bot)
+      }
+      if (!appId || !/^cli_[A-Za-z0-9]+$/.test(appId)) return toDto(bot)
+
+      try {
+        await deps.repos.bot.setFeishuAppIdIfMissing(bot.id, appId)
+      } catch (err) {
+        // The recovered public id is still safe and useful for this response;
+        // a later roster read can retry the durable metadata backfill.
+        app.log.warn({ err, botId: bot.id }, 'failed to backfill legacy Feishu app id')
+      }
+      return toDto(bot, appId)
+    }
 
     r.get(
       '/bots',
@@ -102,7 +124,7 @@ export function botRoutes(deps: HttpDeps) {
       },
       async (req) => {
         const rows = await deps.repos.bot.listForOrg(orgOf(req))
-        return rows.map(toDto)
+        return Promise.all(rows.map(toRecoveredDto))
       }
     )
 
@@ -123,7 +145,7 @@ export function botRoutes(deps: HttpDeps) {
         if (!bot || bot.orgId !== req.orgCtx!.orgId) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
-        return toDto(bot)
+        return toRecoveredDto(bot)
       }
     )
 
@@ -287,7 +309,7 @@ export function botRoutes(deps: HttpDeps) {
         if (!bot || bot.orgId !== req.orgCtx!.orgId) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
-        if (req.body.shareable === bot.shareable) return toDto(bot) // no-op
+        if (req.body.shareable === bot.shareable) return toRecoveredDto(bot) // no-op
         const observedAgentIds = [...bot.agentIds].sort()
         const release = deps.agentMutations.tryBeginMutation(observedAgentIds)
         if (!release) {
@@ -350,7 +372,7 @@ export function botRoutes(deps: HttpDeps) {
           // ingest re-open; the transport, hence the ingest, is unchanged).
           await deps.httpBot.syncRoutes(bot.id)
           const updated = await deps.repos.bot.get(bot.id)
-          return toDto(updated!)
+          return toRecoveredDto(updated!)
         } finally {
           release()
         }

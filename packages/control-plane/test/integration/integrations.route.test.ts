@@ -19,7 +19,7 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { IntegrationUpsert, IntegrationRemove } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
-import { OrgId } from '../../src/domain/ids.js'
+import { BotId, OrgId } from '../../src/domain/ids.js'
 import type { SlackConfigApi } from '../../src/http/slack-config-api.js'
 import { SLACK_BOT_EVENTS, SLACK_BOT_SCOPES } from '../../src/http/slack-manifest.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
@@ -787,6 +787,34 @@ describe('bot roster (GET/DELETE /bots)', () => {
     // Slack's app settings); an unexpected token shape leaves it null.
     expect(freed.slackAppId).toBe('A0TESTAPP1')
     expect(busy.slackAppId).toBeNull()
+  })
+
+  it('GET /bots recovers and backfills a legacy Feishu app id through the secret store', async () => {
+    const { app } = withSpy()
+    const botId = BotId(randomUUID())
+    const appId = 'cli_legacylark123'
+    const appSecret = 'legacy-lark-secret'
+    await prisma.bot.create({
+      data: {
+        id: botId,
+        orgId: DEFAULT_ORG_ID,
+        platform: 'feishu',
+        name: 'legacy-lark',
+        feishuRegion: 'lark'
+      }
+    })
+    await app.deps.repos.botSecret.put(botId, {
+      botToken: appSecret,
+      appToken: appId,
+      signingSecret: null
+    })
+
+    const res = await app.app.inject({ method: 'GET', url: `${ORG}/bots` })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([expect.objectContaining({ id: botId, feishuAppId: appId, feishuRegion: 'lark' })])
+    expect(res.body).not.toContain(appSecret)
+    expect(await prisma.bot.findUnique({ where: { id: botId } })).toMatchObject({ feishuAppId: appId })
   })
 
   it('DELETE /bots refuses while installed (409), succeeds once freed, and drops the secret', async () => {

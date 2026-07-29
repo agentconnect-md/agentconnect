@@ -1862,6 +1862,8 @@ export interface BotRepo {
   listHttpMissingSlackAppId(): Promise<BotRecord[]>
   /** Backfill only a missing id; never replace an established Slack app identity. */
   setSlackAppIdIfMissing(id: BotId, slackAppId: string): Promise<boolean>
+  /** Recover a legacy Feishu/Lark public App ID without replacing established metadata. */
+  setFeishuAppIdIfMissing(id: BotId, feishuAppId: string): Promise<boolean>
   /** Stamp the freed-bot display hints when its LAST integration is removed. */
   markFreed(id: BotId, at: Date, lastAgentName: string | null): Promise<void>
   /** Flip the shared-bot (multi-agent) opt-in (console toggle). Serialized on the
@@ -2022,9 +2024,10 @@ export interface AgentRepoAuthorizationRepo {
 // routes, protocol, or the daemon.
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Token material for one bot. `appToken` is Slack Socket Mode's app-level token
- *  (null for Telegram / http transport). `signingSecret` is Slack's Events API
- *  request-verification key (http transport; null for socket / Telegram). */
+/** Token material for one bot. `appToken` is Slack Socket Mode's app-level token,
+ *  or Feishu/Lark's public App ID (null for Telegram / http transport).
+ *  `signingSecret` is Slack's Events API request-verification key (http transport;
+ *  null for socket / Telegram). */
 export interface BotSecretMaterial {
   botToken: string
   appToken: string | null

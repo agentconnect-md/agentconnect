@@ -135,6 +135,14 @@ export class PgBotRepo implements BotRepo {
     return result.count === 1
   }
 
+  async setFeishuAppIdIfMissing(id: BotId, feishuAppId: string): Promise<boolean> {
+    const result = await this.db.bot.updateMany({
+      where: { id, platform: 'feishu', feishuAppId: null },
+      data: { feishuAppId }
+    })
+    return result.count === 1
+  }
+
   async markFreed(id: BotId, at: Date, lastAgentName: string | null): Promise<void> {
     await this.db.bot.update({ where: { id }, data: { lastUsedAt: at, lastAgentName } })
   }

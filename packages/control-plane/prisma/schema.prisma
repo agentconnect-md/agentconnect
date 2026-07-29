@@ -1362,8 +1362,9 @@ model Relay {
 //   read/write path for tokens. `none` stores plaintext; an encrypting provider
 //   stores ciphertext. `integration` is the install: it binds ONE bot to
 //   ONE agent (`botId` unique ⇒ a bot serves at most one agent at a time) and
-//   is what the owning daemon opens the socket from. The metadata read paths
-//   (GET /bots, GET /integrations) never select the secret table.
+//   is what the owning daemon opens the socket from. Metadata reads never join
+//   the secret table. GET /bots may recover a legacy Feishu/Lark public App ID
+//   through BotSecretStore, then persist it on bot for subsequent reads.
 // ───────────────────────────────────────────────────────────────────────────
 
 model Bot {
