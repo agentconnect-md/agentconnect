@@ -63,7 +63,7 @@ function botSubline(b: BotDto): string {
 
 function feishuAppSettingsUrl(appId: string | null | undefined, region: 'feishu' | 'lark'): string {
   const host = region === 'lark' ? 'https://open.larksuite.com' : 'https://open.feishu.cn'
-  return appId ? `${host}/app/${encodeURIComponent(appId)}/baseinfo` : `${host}/page/launcher`
+  return appId ? `${host}/app/${encodeURIComponent(appId)}/baseinfo` : `${host}/app`
 }
 
 // One rendered member row, precomputed from the wire DTO.
