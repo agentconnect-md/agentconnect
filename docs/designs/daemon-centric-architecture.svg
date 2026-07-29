@@ -70,6 +70,9 @@
         font: 700 29px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         fill: #0f172a;
       }
+      .box-title-compact {
+        font-size: 26px;
+      }
       .box-copy {
         font: 500 21px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         fill: #334155;
@@ -209,7 +212,9 @@
       stroke-width="2"
     />
   </g>
-  <text x="96" y="701" class="box-title">Direct platform connections</text>
+  <text x="96" y="701" class="box-title box-title-compact">
+    Direct platform connections
+  </text>
   <text x="96" y="745" class="box-copy">Slack Socket Mode</text>
   <text x="96" y="782" class="box-copy">Telegram · Discord</text>
   <text x="96" y="817" class="box-copy">Lark / Feishu Long Connection</text>
