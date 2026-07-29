@@ -21,9 +21,9 @@ The target shape:
 
 1. `agentconnect run` connects the org's first daemon.
 2. Two preset agents appear automatically: **`agentconnect-admin`**, a built-in
-   setup/operations assistant wired to the AgentConnect MCP and private to the owner,
-   and **`agentconnect`**, a general-purpose agent (coding, code review, everyday
-   tasks).
+   setup/operations assistant wired to the AgentConnect MCP and available to every
+   member, and **`agentconnect`**, a general-purpose agent (coding, code review,
+   everyday tasks).
 3. The console shows a **Getting-started checklist** derived from real system state.
    Every remaining step has two paths: click through the console, or ask the admin
    agent to do it conversationally — it drives the same control-plane operations
@@ -42,7 +42,7 @@ re-triggered agent-assistant (§4), the predefined Slack app (§5), and the chec
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Admin agent identity       | Reuse agent-assistant `kind='assistant'` (P3) wholesale; this design only changes when it is provisioned and its slug                                                                                                                                                                                  | A parallel "preset admin agent" type — two built-ins with admin-tool access doubles the security surface for no product gain                                                                                                                                                                                                                                                                                            |
 | Provisioning trigger       | Automatic, CP-side, typically after the org's **first** daemon completes `register/ok` (async, never blocking the handshake). Mechanically the hook runs on any daemon's register / runtime-facts event while a preset remains unsettled, so a deferred preset completes when a capable daemon appears | At org creation — rejected in agent-assistant v2 because no placement target exists and enabling consumes a daemon's budget. First-daemon-online resolves both objections: the placement _is_ the daemon that just connected, and at that moment the org is typically just the owner. Owner-manual-only (v2 status quo) remains as the disable/move/re-enable path                                                      |
-| Admin agent visibility     | `restricted` — private to the org's owner(s), locked; sharing and visibility writes are rejected, and the row carries **no creator grant** (§3.2)                                                                                                                                                      | `org` per agent-assistant v2's assistant-for-everyone positioning — superseded by this design's product call: the admin agent is the owner's setup/operations assistant. Restricted visibility also adds defense-in-depth on top of delegated credentials. Amend v2's fixed-visibility decision at implementation time                                                                                                  |
+| Admin agent visibility     | `org` — available to every member, fixed per agent-assistant v2; sharing/call-policy writes stay rejected (the lock guards openness), and the row carries no personal creator (§3.2)                                                                                                                   | `restricted` / private-to-owner (an earlier revision of this design): delegated credentials already make per-message authority exactly the caller's own, so the privacy bought no security and cost every non-owner the conversational entry. If ever revisited: `restricted` admits the **creator**, and collaborators can enroll daemons — a restricted admin agent must carry no creator grant                       |
 | Credential model           | **Minimal P4 is a prerequisite**: delegated-key minting at webchat-token verification, webchat/Playground only. The IM identity-binding half of P4 stays deferred                                                                                                                                      | A static owner-scoped key, even with owner-locked reachability: an org can have several owners, and a static key authorizes and audits as the key's user rather than the actual initiating owner — breaking the inherited credential-is-identity model and §7's acting-user audit guarantee. Any repair (a request/session-bound, non-substitutable actor credential) is the minimal delegated minting already required |
 | Preset deletion            | Admin agent: disable, never delete (v2 §3.2 semantics). General agent: freely deletable and **never auto-recreated**                                                                                                                                                                                   | Existence-check provisioning — it resurrects what the user deleted                                                                                                                                                                                                                                                                                                                                                      |
 | Idempotency                | **Per-preset durable state**: a `preset_agent` row keyed `(orgId, preset)` with `status ∈ {created, skipped}`, written in the same transaction as the agent row. Absent row = retry-eligible; a row of either status is permanent                                                                      | A single org-level stamp — it cannot encode the partial states this design allows (a one-slot daemon creates only the admin agent; a codex-only daemon only the general one): stamping loses the deferred preset forever, withholding the stamp makes a retry indistinguishable from resurrecting a deletion. Existence check (resurrection); a per-daemon flag (a second daemon would re-provision)                    |
@@ -54,17 +54,17 @@ re-triggered agent-assistant (§4), the predefined Slack app (§5), and the chec
 
 ### 3.1 The two agents
 
-|                       | `agentconnect-admin`                                                                                                        | `agentconnect`                                                                                    |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| Kind                  | `assistant` (P3)                                                                                                            | `standard`                                                                                        |
-| Visibility            | `restricted`, owner-role only — no creator grant, `sharedWith` locked empty, sharing writes rejected (§3.2)                 | `org`, editable                                                                                   |
-| Runtime               | A **ready** runtime (§3.2) from the assistant allowlist (`claude`, v2 §8.2)                                                 | First **ready** runtime (§3.2) among the daemon's reported ones                                   |
-| Profile               | Restricted: no shell/file tools, locked scratch workspace (v2 §8.2)                                                         | Ordinary agent profile                                                                            |
-| Workspace             | Locked scratch                                                                                                              | Scratch; attaching a repository is a checklist step                                               |
-| MCP                   | Exactly one injected server: the CP AgentConnect MCP with a per-session delegated key (P4). No memory/collab/platform tools | Daemon defaults, nothing extra                                                                    |
-| Icon                  | Fixed brand glyph + color (stable, recognizable — not the random default)                                                   | Fixed brand glyph + color                                                                         |
-| Persona               | CP-generated immutable prompt (v2 §8.3) + onboarding opening (§6.4)                                                         | Preset description: general dev agent — code review, coding tasks, everyday questions             |
-| Integrations at birth | None, ever (v1)                                                                                                             | None; it is the default bind target for the predefined Slack app (§5) and the GitHub install flow |
+|                       | `agentconnect-admin`                                                                                                                  | `agentconnect`                                                                                    |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Kind                  | `assistant` (P3)                                                                                                                      | `standard`                                                                                        |
+| Visibility            | `org`, fixed; sharing/call-policy writes rejected (v2 guards). Mutable only through the owner-only `/orgs/:orgId/assistant` endpoints | `org`, editable                                                                                   |
+| Runtime               | A **ready** runtime (§3.2) from the assistant allowlist (`claude`, v2 §8.2)                                                           | First **ready** runtime (§3.2) among the daemon's reported ones                                   |
+| Profile               | Restricted: no shell/file tools, locked scratch workspace (v2 §8.2)                                                                   | Ordinary agent profile                                                                            |
+| Workspace             | Locked scratch                                                                                                                        | Scratch; attaching a repository is a checklist step                                               |
+| MCP                   | Exactly one injected server: the CP AgentConnect MCP with a per-session delegated key (P4). No memory/collab/platform tools           | Daemon defaults, nothing extra                                                                    |
+| Icon                  | Fixed brand glyph + color (stable, recognizable — not the random default)                                                             | Fixed brand glyph + color                                                                         |
+| Persona               | CP-generated immutable prompt (v2 §8.3) + onboarding opening (§6.4)                                                                   | Preset description: general dev agent — code review, coding tasks, everyday questions             |
+| Integrations at birth | None, ever (v1)                                                                                                                       | None; it is the default bind target for the predefined Slack app (§5) and the GitHub install flow |
 
 ### 3.2 Provisioning mechanics
 
@@ -129,17 +129,14 @@ provisioner is part of this work — a raw repo write is not acceptable.
 admin agent (the guide); the other preset stays absent and completes when capacity
 appears.
 
-**Attribution.** The two presets differ deliberately. The **general** agent stamps
-`createdByUserId` from `Daemon.createdByUserId` (the user who provisioned the daemon
-key) when present — it is org-visible, so the creator grant adds nothing. The **admin**
-agent's `createdByUserId` is **null** and `sharedWith` stays locked empty: on the
-current base, `restricted` admits owners **plus the creator** plus `sharedWith`
-(`http/visibility.ts`), and a collaborator may enroll a daemon (`POST /daemons/token`
-is only viewer-gated) — copying that collaborator into the creator slot would hand a
-non-owner the owner-only agent. Owner-only therefore means the **role arm alone**. The
-triggering user is recorded in the audit row, which is where attribution belongs. The
-implementation contract includes the authorization case "a collaborator enrolls the
-org's first daemon".
+**Attribution.** The **general** agent stamps `createdByUserId` from
+`Daemon.createdByUserId` (the user who provisioned the daemon key) when present. The
+**admin** agent's `createdByUserId` is **null**: a built-in carries no personal
+creator, and its mutable surface is the owner-gated `/orgs/:orgId/assistant`
+endpoints regardless of any grant — generic agent-write routes reject
+`kind='assistant'` (v2 fixed-property guards) — so conversing is org-wide while
+configuring stays with owners. The triggering user is recorded in the audit row,
+which is where attribution belongs.
 
 **Opt-out.** An org-level setting (default on) checked at trigger time. Self-hosted
 fleets that want it off globally can set the org default at deploy time.
@@ -190,12 +187,10 @@ Changes this design introduces:
 4. **P4 scope**: only the webchat-token delegated-minting half is required here. IM
    identity binding — and with it any Slack presence for the admin agent — stays
    deferred.
-5. **Visibility**: fixed `restricted` (owner-role only, no creator grant, §3.2)
-   instead of v2's fixed `org` (§2). The guards that rejected sharing writes now lock
-   privacy rather than openness; the Playground pins it for owners only, and v2's
-   non-owner "ask an owner to enable it" surface goes away. Session privacy by
-   `initiatorUserId` becomes belt-and-suspenders — only owners can initiate a
-   conversation at all.
+
+Visibility deliberately matches v2 (`org`, fixed): every member gets the
+conversational entry, the Playground pins the assistant for everyone, and session
+privacy by `initiatorUserId` carries the cross-user isolation (§7).
 
 ## 5. Predefined Slack app
 
@@ -291,10 +286,6 @@ bit is a per-user dismissal.
 | Finish your first conversation | a completed standard-agent session exists                                                                                                                                                |
 | Invite teammates               | org member count > 1                                                                                                                                                                     |
 
-Items that reference the admin agent render only for users who can see it — the
-org's owner(s), given its restricted visibility. Other members see the remaining
-items.
-
 ### 6.3 One state, two consumers
 
 A single BFF endpoint — `GET /orgs/:orgId/onboarding` → items with status — consumed
@@ -313,14 +304,21 @@ through MCP tools with their existing confirm-gates.
 ## 7. Security considerations
 
 - **Confused deputy / actor identity**: per-session delegated credentials are a
-  prerequisite, not an option. Restricted visibility is defense-in-depth, never a
-  substitute — an org can have several owners, and any static key would authorize and
-  audit as its key user rather than the actual initiating owner. Visibility and
-  sharing writes are rejected at the route layer so the owner-only surface cannot be
-  widened.
-- **No creator grant** on the admin agent (§3.2): `restricted` admits the creator, and
-  daemons can be enrolled by collaborators — the creator slot must stay empty for
-  owner-only to hold.
+  prerequisite, not an option — with the assistant open to every member they are the
+  entire guarantee: each tool call executes through the REST layer as the initiating
+  user, so RBAC and visibility are evaluated live per message and a member can never
+  do through the assistant what they could not do in the console. Roles resolve live,
+  so a demotion applies immediately. Any static key would authorize and audit as its
+  key user rather than the actual actor.
+- **Owner-only mutability**: the assistant is configured solely through the
+  owner-gated `/orgs/:orgId/assistant` endpoints; generic writes targeting
+  `kind='assistant'` are rejected, and delegated principals cannot modify the
+  assistant through the assistant (v2 §6.3) — nobody talks the assistant into
+  unlocking itself.
+- **Cross-user content isolation**: assistant sessions are private to their
+  `initiatorUserId` (owners keep the governance exemption), and memory tools stay
+  removed — agent memory is shared state, so one member's information must not
+  surface in another member's conversation (v2 decisions, unchanged).
 - **Provisioning parity**: presets are created through the same validation core as
   `POST /agents` (§3.2), never a raw repo write.
 - **Reserved slugs** prevent impersonating built-ins (§3.3).
