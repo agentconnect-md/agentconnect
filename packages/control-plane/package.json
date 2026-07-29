@@ -44,7 +44,6 @@
     "@fastify/otel": "^0.20.1",
     "@fastify/swagger": "^9.8.1",
     "@fastify/swagger-ui": "^6.1.0",
-    "@larksuiteoapi/node-sdk": "^1.71.1",
     "@modelcontextprotocol/server": "2.0.0",
     "@octokit/auth-app": "^8.2.0",
     "@opentelemetry/api": "^1.9.1",

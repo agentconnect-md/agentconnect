@@ -1,10 +1,9 @@
 /**
  * One-click Feishu/Lark self-built app registration.
  *
- * The official SDK gives the Console a deeplink and polls the provider's OAuth
- * device flow inside the Control Plane. When the user confirms, credentials go
- * directly into the existing bot-secret install seam; neither endpoint returns
- * App Secret.
+ * The provider gives the Console a deeplink. Its device cursor and provisional
+ * credentials are encrypted in Postgres so any Control Plane replica can
+ * continue the poll and install; neither endpoint returns App Secret.
  */
 import type { FastifyInstance } from 'fastify'
 import type { ZodTypeProvider } from '../plugins/zod.js'
@@ -14,7 +13,7 @@ import { AgentId, OrgId } from '../../domain/ids.js'
 import { denyViewerWrite, ctxOf } from '../rbac.js'
 import { canEdit, canView } from '../visibility.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
-import { FeishuRegistrationSetupError } from '../feishu-registration.js'
+import { FeishuRegistrationConflictError, FeishuRegistrationSetupError } from '../feishu-registration.js'
 import { installNewFeishuBot } from '../install-feishu.js'
 import {
   ErrorDto,
@@ -95,36 +94,22 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
             agentId: targetAgentId,
             fallbackRegion: req.body.region,
             appName,
-            onRegistered: async ({ appId, appSecret, region }) => {
-              // Authorization may take minutes. Re-read the target before writing:
-              // deletion/unplacement during the other-tab flow must fail closed.
-              const current = await deps.repos.agent.get(targetAgentId)
-              if (!current || current.orgId !== orgId || !current.daemonId) {
-                throw new FeishuRegistrationSetupError('agent_unavailable')
-              }
-              const check = deps.verifyFeishuBot ? await deps.verifyFeishuBot(appId, appSecret, region) : null
-              if (check?.status === 'invalid') {
-                throw new FeishuRegistrationSetupError('invalid_credentials')
-              }
-              const name = providedName || (check?.status === 'ok' ? check.name : null) || current.name
-              const integration = await installNewFeishuBot(deps, app.log, {
-                orgId,
-                agent: current,
-                name,
-                appId,
-                appSecret,
-                region,
-                createdByUserId
-              })
-              return integration.id
-            }
+            ...(providedName ? { requestedName: providedName } : {}),
+            createdByUserId
           })
           return reply.code(201).send({
             id: started.id,
             authorizationUrl: started.authorizationUrl,
             expiresAt: started.expiresAt.toISOString()
           })
-        } catch {
+        } catch (error) {
+          if (error instanceof FeishuRegistrationConflictError) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: error.message
+            })
+          }
           return reply.code(502).send({
             error: 'Bad Gateway',
             statusCode: 502,
@@ -148,8 +133,34 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const session = deps.feishuAppRegistration.get(req.params.id)
-        if (!session || session.orgId !== orgIdOf(req)) {
+        const orgId = orgIdOf(req)
+        const session = await deps.feishuAppRegistration.get(req.params.id, orgId, async (registration) => {
+          // Authorization may take minutes or cross a CP restart. Re-read the
+          // target before the idempotent write so deletion/unplacement fails closed.
+          const current = await deps.repos.agent.get(registration.agentId)
+          if (!current || current.orgId !== registration.orgId || !current.daemonId) {
+            throw new FeishuRegistrationSetupError('agent_unavailable')
+          }
+          const check = deps.verifyFeishuBot
+            ? await deps.verifyFeishuBot(registration.appId, registration.appSecret, registration.region)
+            : null
+          if (check?.status === 'invalid') {
+            throw new FeishuRegistrationSetupError('invalid_credentials')
+          }
+          const name = registration.requestedName || (check?.status === 'ok' ? check.name : null) || current.name
+          await installNewFeishuBot(deps, app.log, {
+            orgId: registration.orgId,
+            agent: current,
+            botId: registration.botId,
+            integrationId: registration.integrationId,
+            name,
+            appId: registration.appId,
+            appSecret: registration.appSecret,
+            region: registration.region,
+            createdByUserId: registration.createdByUserId
+          })
+        })
+        if (!session) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'registration not found' })
         }
         return {

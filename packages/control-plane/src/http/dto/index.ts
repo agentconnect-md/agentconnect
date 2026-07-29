@@ -1159,9 +1159,10 @@ export const SlackAppStartDto = z.object({
   transport: z.enum(['socket', 'http'])
 })
 
-/** Start Feishu/Lark's one-click self-built app registration. The SDK returns a
- * deeplink; App ID/Secret stay server-side and are installed when authorization
- * completes. `region` is only a fallback when the provider omits tenant_brand. */
+/** Start Feishu/Lark's one-click self-built app registration. The provider
+ * returns a deeplink; App ID/Secret stay server-side and are installed when
+ * authorization completes. `region` is only a fallback when tenant_brand is
+ * omitted. */
 export const FeishuAppRegistrationStartBody = z.object({
   agentId: z.string().uuid(),
   name: z.string().min(1).optional(),

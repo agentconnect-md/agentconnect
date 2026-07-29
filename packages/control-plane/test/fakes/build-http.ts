@@ -48,6 +48,7 @@ import {
   PgExternalMemoryGrantRepo,
   PgSlackInstallStore,
   PgSlackPlatformInstallStore,
+  PgFeishuAppRegistrationStore,
   PgThreadAffinityStore,
   PgSlackUserConfigStore,
   PgPresetAgentStore,
@@ -145,6 +146,7 @@ export function buildHttpApp(
   const botRepo = new PgBotRepo(prisma)
   const botSecretStore = new PgBotSecretStore(prisma, cipher)
   const botCredentialWriter = new PgBotCredentialWriter(prisma, cipher)
+  const feishuAppRegistrationStore = new PgFeishuAppRegistrationStore(prisma, cipher)
   const integrationChannelRepo = new PgIntegrationChannelRepo(prisma)
   const agentRepo = new PgAgentRepo(prisma)
   const hookRepo = new PgHookRepo(prisma)
@@ -188,6 +190,7 @@ export function buildHttpApp(
       externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, cipher),
       slackInstall: new PgSlackInstallStore(prisma, cipher),
       slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
+      feishuAppRegistration: feishuAppRegistrationStore,
       slackUserConfig: new PgSlackUserConfigStore(prisma, cipher),
       presetAgent: new PgPresetAgentStore(prisma),
       integrationChannel: integrationChannelRepo,
@@ -234,7 +237,7 @@ export function buildHttpApp(
     events,
     mcpRateLimit: new McpRateLimiter(clock),
     readiness: createReadiness(() => pingDb(prisma)),
-    feishuAppRegistration: new FeishuAppRegistrationService(),
+    feishuAppRegistration: new FeishuAppRegistrationService(feishuAppRegistrationStore),
     config: { DEFAULT_OWNER_ID, ...configOverrides },
     ...depsOverrides
   }
@@ -247,7 +250,6 @@ export function buildHttpApp(
     events,
     relayReg,
     close: async () => {
-      deps.feishuAppRegistration.shutdown()
       await app.close()
     }
   }

@@ -1,34 +1,16 @@
 /**
- * Short-lived broker for Feishu/Lark's OAuth device registration flow.
+ * Durable coordinator for Feishu/Lark's one-click app registration.
  *
- * The official SDK owns the device-code polling. The browser receives only the
- * authorization deeplink plus an opaque registration id; App Secret stays in
- * this process just long enough for `onRegistered` to persist it through the
- * normal bot-secret path.
- *
- * These sessions are deliberately transient control operations. They are
- * bounded by the provider's expiry and disappear after a short terminal-state
- * retention window.
+ * Provider cursors and provisional credentials live behind a SecretCipher
+ * persistence seam, so a browser poll can continue on any Control Plane
+ * replica. A short DB claim leases each provider/finalize step to one replica.
  */
 import { randomUUID } from 'node:crypto'
-import { registerApp } from '@larksuiteoapi/node-sdk'
 import type { FeishuRegion } from '@agentconnect.md/protocol'
+import { AgentId, BotId, IntegrationId, type OrgId } from '../domain/ids.js'
+import type { FeishuAppRegistrationRecord, FeishuAppRegistrationStore } from '../persistence/ports.js'
+import { OfficialFeishuRegistrationProvider, type FeishuRegistrationProvider } from './feishu-registration-provider.js'
 
-export const AGENTCONNECT_FEISHU_SCOPES = [
-  'contact:contact.base:readonly',
-  'contact:user.base:readonly',
-  'im:chat:read',
-  'im:chat.members:bot_access',
-  'im:message',
-  'im:message.group_at_msg:readonly',
-  'im:message.p2p_msg:readonly',
-  'im:message:send_as_bot',
-  'im:resource'
-] as const
-
-export const AGENTCONNECT_FEISHU_EVENTS = ['im.message.receive_v1'] as const
-
-export type FeishuRegisterApp = typeof registerApp
 export type FeishuRegistrationFailure =
   'denied' | 'expired' | 'agent_unavailable' | 'invalid_credentials' | 'setup_failed'
 
@@ -39,217 +21,229 @@ export class FeishuRegistrationSetupError extends Error {
   }
 }
 
-export interface RegisteredFeishuApp {
+export class FeishuRegistrationConflictError extends Error {
+  constructor() {
+    super('another user is already setting up a Feishu/Lark app for this agent')
+    this.name = 'FeishuRegistrationConflictError'
+  }
+}
+
+export interface StartFeishuRegistration {
+  orgId: OrgId
+  agentId: AgentId
+  fallbackRegion: FeishuRegion
+  appName: string
+  requestedName?: string
+  createdByUserId: string
+}
+
+export interface FinalizeFeishuRegistration {
+  orgId: OrgId
+  agentId: AgentId
+  requestedName: string | null
+  createdByUserId: string
+  botId: BotId
+  integrationId: IntegrationId
   appId: string
   appSecret: string
   region: FeishuRegion
 }
 
-export interface StartFeishuRegistration {
-  orgId: string
-  agentId: string
-  fallbackRegion: FeishuRegion
-  appName: string
-  onRegistered(app: RegisteredFeishuApp): Promise<string>
-}
-
 export interface FeishuRegistrationSnapshot {
   id: string
-  orgId: string
-  agentId: string
+  orgId: OrgId
+  agentId: AgentId
   authorizationUrl: string
   expiresAt: Date
   status: 'pending' | 'completed' | 'failed'
   failureReason: FeishuRegistrationFailure | null
-  integrationId: string | null
+  integrationId: IntegrationId | null
 }
 
-interface InternalSession extends FeishuRegistrationSnapshot {
-  targetKey: string
-  retainUntil: number
-  ready: Promise<FeishuRegistrationSnapshot>
-  resolveReady(snapshot: FeishuRegistrationSnapshot): void
-  rejectReady(error: Error): void
-  abort: AbortController
-}
+const CLAIM_MS = 2 * 60 * 1000
 
-const DEFAULT_EXPIRES_MS = 10 * 60 * 1000
-const TERMINAL_RETENTION_MS = 10 * 60 * 1000
-
-function registrationErrorCode(error: unknown): string | undefined {
-  if (typeof error !== 'object' || error === null) return undefined
-  const code = Reflect.get(error, 'code')
-  return typeof code === 'string' ? code : undefined
+function targetKey(orgId: OrgId, agentId: AgentId): string {
+  return `${orgId}:${agentId}`
 }
 
 function failureReason(error: unknown): FeishuRegistrationFailure {
-  if (error instanceof FeishuRegistrationSetupError) return error.reason
-  switch (registrationErrorCode(error)) {
-    case 'access_denied':
-      return 'denied'
-    case 'expired_token':
-    case 'abort':
-      return 'expired'
-    default:
-      return 'setup_failed'
+  return error instanceof FeishuRegistrationSetupError ? error.reason : 'setup_failed'
+}
+
+function publicSnapshot(row: FeishuAppRegistrationRecord): FeishuRegistrationSnapshot {
+  const status = row.status === 'authorized' ? 'pending' : row.status
+  return {
+    id: row.id,
+    orgId: row.orgId,
+    agentId: row.agentId,
+    authorizationUrl: row.authorizationUrl,
+    expiresAt: row.expiresAt,
+    status,
+    failureReason:
+      status === 'failed' ? ((row.failureReason as FeishuRegistrationFailure | null) ?? 'setup_failed') : null,
+    integrationId: status === 'completed' ? row.integrationId : null
   }
 }
 
-function publicSnapshot(session: InternalSession): FeishuRegistrationSnapshot {
-  return {
-    id: session.id,
-    orgId: session.orgId,
-    agentId: session.agentId,
-    authorizationUrl: session.authorizationUrl,
-    expiresAt: session.expiresAt,
-    status: session.status,
-    failureReason: session.failureReason,
-    integrationId: session.integrationId
-  }
+function isUniqueConstraint(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && Reflect.get(error, 'code') === 'P2002'
 }
 
 export class FeishuAppRegistrationService {
-  private readonly sessions = new Map<string, InternalSession>()
-  private readonly activeByTarget = new Map<string, string>()
-
   constructor(
-    private readonly register: FeishuRegisterApp = registerApp,
+    private readonly store: FeishuAppRegistrationStore,
+    private readonly provider: FeishuRegistrationProvider = new OfficialFeishuRegistrationProvider(),
     private readonly now: () => number = Date.now
   ) {}
 
   async start(input: StartFeishuRegistration): Promise<FeishuRegistrationSnapshot> {
-    this.prune()
-    const targetKey = `${input.orgId}:${input.agentId}`
-    const activeId = this.activeByTarget.get(targetKey)
-    const active = activeId ? this.sessions.get(activeId) : undefined
-    if (active?.status === 'pending') return active.ready
+    const key = targetKey(input.orgId, input.agentId)
+    const now = new Date(this.now())
+    await this.store.expireTarget(key, now)
+    const existing = await this.store.getActiveTarget(key)
+    if (existing) return this.reuseOrConflict(existing, input.createdByUserId)
 
-    const id = randomUUID()
-    let resolveReady!: (snapshot: FeishuRegistrationSnapshot) => void
-    let rejectReady!: (error: Error) => void
-    const ready = new Promise<FeishuRegistrationSnapshot>((resolve, reject) => {
-      resolveReady = resolve
-      rejectReady = reject
-    })
-    const startedAt = this.now()
-    const session: InternalSession = {
-      id,
-      orgId: input.orgId,
-      agentId: input.agentId,
-      targetKey,
-      authorizationUrl: '',
-      expiresAt: new Date(startedAt + DEFAULT_EXPIRES_MS),
-      status: 'pending',
-      failureReason: null,
-      integrationId: null,
-      retainUntil: startedAt + DEFAULT_EXPIRES_MS + TERMINAL_RETENTION_MS,
-      ready,
-      resolveReady,
-      rejectReady,
-      abort: new AbortController()
-    }
-    this.sessions.set(id, session)
-    this.activeByTarget.set(targetKey, id)
-
-    let registration: ReturnType<FeishuRegisterApp>
+    const begun = await this.provider.begin(input.appName)
     try {
-      registration = this.register({
-        source: 'agentconnect',
-        createOnly: true,
-        signal: session.abort.signal,
-        appPreset: {
-          name: input.appName,
-          desc: 'Connect this bot to an AgentConnect agent.'
-        },
-        addons: {
-          // Keep the official PersonalAgent base and explicitly layer every
-          // capability AgentConnect uses. In particular, the second contact
-          // scope is what lets sessions show a participant name instead of ou_….
-          preset: true,
-          scopes: { tenant: [...AGENTCONNECT_FEISHU_SCOPES] },
-          events: { items: { tenant: [...AGENTCONNECT_FEISHU_EVENTS] } }
-        },
-        onQRCodeReady: ({ url, expireIn }) => {
-          session.authorizationUrl = url
-          session.expiresAt = new Date(this.now() + expireIn * 1000)
-          session.retainUntil = session.expiresAt.getTime() + TERMINAL_RETENTION_MS
-          session.resolveReady(publicSnapshot(session))
-        }
+      const row = await this.store.create({
+        id: randomUUID(),
+        targetKey: key,
+        orgId: input.orgId,
+        agentId: input.agentId,
+        ...(input.requestedName ? { requestedName: input.requestedName } : {}),
+        fallbackRegion: input.fallbackRegion,
+        authorizationUrl: begun.authorizationUrl,
+        providerDomain: begun.providerDomain,
+        deviceCode: begun.deviceCode,
+        intervalMs: begun.intervalMs,
+        nextPollAt: now,
+        expiresAt: new Date(now.getTime() + begun.expiresInMs),
+        botId: BotId(randomUUID()),
+        integrationId: IntegrationId(randomUUID()),
+        createdByUserId: input.createdByUserId
       })
-    } catch {
-      this.failBeforeReady(session)
-      throw new Error('could not start Feishu app registration')
+      return publicSnapshot(row)
+    } catch (error) {
+      if (!isUniqueConstraint(error)) throw error
+      const winner = await this.store.getActiveTarget(key)
+      if (!winner) throw error
+      return this.reuseOrConflict(winner, input.createdByUserId)
+    }
+  }
+
+  async get(
+    id: string,
+    orgId: OrgId,
+    finalize: (input: FinalizeFeishuRegistration) => Promise<void>
+  ): Promise<FeishuRegistrationSnapshot | null> {
+    let row = await this.store.get(id)
+    if (!row || row.orgId !== orgId) return null
+
+    const now = new Date(this.now())
+    if (row.status === 'pending' && row.expiresAt <= now) {
+      await this.store.expire(id, now)
+      row = (await this.store.get(id)) ?? row
+    }
+    if (row.status === 'completed' || row.status === 'failed') return publicSnapshot(row)
+
+    const claimToken = randomUUID()
+    const claimed = await this.store.claim(id, claimToken, now, new Date(now.getTime() + CLAIM_MS))
+    if (!claimed) return publicSnapshot((await this.store.get(id)) ?? row)
+
+    let current = claimed
+    if (current.status === 'pending') {
+      current = await this.poll(current, claimToken)
+      if (current.status !== 'authorized') return publicSnapshot(current)
     }
 
-    void registration.then(
-      async (result) => {
-        try {
-          const integrationId = await input.onRegistered({
-            appId: result.client_id,
-            appSecret: result.client_secret,
-            region: result.user_info?.tenant_brand ?? input.fallbackRegion
-          })
-          this.complete(session, integrationId)
-        } catch (error) {
-          this.fail(session, failureReason(error))
-        }
-      },
-      (error) => {
-        if (!session.authorizationUrl) session.rejectReady(new Error('could not start Feishu app registration'))
-        this.fail(session, failureReason(error))
+    if (!current.appId || !current.appSecret || !current.resolvedRegion || !current.createdByUserId) {
+      await this.store.settle(id, claimToken, { status: 'failed', failureReason: 'setup_failed' })
+    } else {
+      try {
+        await finalize({
+          orgId: current.orgId,
+          agentId: current.agentId,
+          requestedName: current.requestedName,
+          createdByUserId: current.createdByUserId,
+          botId: current.botId,
+          integrationId: current.integrationId,
+          appId: current.appId,
+          appSecret: current.appSecret,
+          region: current.resolvedRegion
+        })
+        await this.store.settle(id, claimToken, { status: 'completed' })
+      } catch (error) {
+        await this.store.settle(id, claimToken, {
+          status: 'failed',
+          failureReason: failureReason(error)
+        })
       }
-    )
-
-    return ready
-  }
-
-  get(id: string): FeishuRegistrationSnapshot | null {
-    this.prune()
-    const session = this.sessions.get(id)
-    if (!session) return null
-    if (session.status === 'pending' && session.authorizationUrl && session.expiresAt.getTime() <= this.now()) {
-      session.abort.abort()
-      this.fail(session, 'expired')
     }
-    return publicSnapshot(session)
+    return publicSnapshot((await this.store.get(id)) ?? current)
   }
 
-  shutdown(): void {
-    for (const session of this.sessions.values()) {
-      if (session.status === 'pending') session.abort.abort()
+  private async poll(row: FeishuAppRegistrationRecord, claimToken: string): Promise<FeishuAppRegistrationRecord> {
+    if (!row.deviceCode) {
+      await this.store.settle(row.id, claimToken, { status: 'failed', failureReason: 'setup_failed' })
+      return (await this.store.get(row.id)) ?? row
     }
-    this.sessions.clear()
-    this.activeByTarget.clear()
-  }
 
-  private complete(session: InternalSession, integrationId: string): void {
-    if (session.status !== 'pending') return
-    session.status = 'completed'
-    session.integrationId = integrationId
-    session.retainUntil = this.now() + TERMINAL_RETENTION_MS
-    this.activeByTarget.delete(session.targetKey)
-  }
-
-  private fail(session: InternalSession, reason: FeishuRegistrationFailure): void {
-    if (session.status !== 'pending') return
-    session.status = 'failed'
-    session.failureReason = reason
-    session.retainUntil = this.now() + TERMINAL_RETENTION_MS
-    this.activeByTarget.delete(session.targetKey)
-  }
-
-  private failBeforeReady(session: InternalSession): void {
-    this.sessions.delete(session.id)
-    this.activeByTarget.delete(session.targetKey)
-  }
-
-  private prune(): void {
-    const now = this.now()
-    for (const [id, session] of this.sessions) {
-      if (session.retainUntil > now) continue
-      if (session.status === 'pending') session.abort.abort()
-      this.sessions.delete(id)
-      if (this.activeByTarget.get(session.targetKey) === id) this.activeByTarget.delete(session.targetKey)
+    let result
+    try {
+      result = await this.provider.poll(row.providerDomain, row.deviceCode)
+    } catch {
+      await this.release(row, claimToken, row.intervalMs)
+      return (await this.store.get(row.id)) ?? row
     }
+
+    switch (result.outcome) {
+      case 'pending':
+        await this.release(row, claimToken, row.intervalMs)
+        break
+      case 'slow_down':
+        await this.release(row, claimToken, row.intervalMs + 5000)
+        break
+      case 'switch_domain':
+        await this.release(row, claimToken, row.intervalMs, result.providerDomain, 0)
+        break
+      case 'authorized': {
+        const authorized = await this.store.authorize(row.id, claimToken, {
+          appId: result.appId,
+          appSecret: result.appSecret,
+          region: result.region ?? row.fallbackRegion
+        })
+        if (authorized) return authorized
+        break
+      }
+      case 'denied':
+        await this.store.settle(row.id, claimToken, { status: 'failed', failureReason: 'denied' })
+        break
+      case 'expired':
+        await this.store.settle(row.id, claimToken, { status: 'failed', failureReason: 'expired' })
+        break
+      case 'failed':
+        await this.store.settle(row.id, claimToken, { status: 'failed', failureReason: 'setup_failed' })
+        break
+    }
+    return (await this.store.get(row.id)) ?? row
+  }
+
+  private async release(
+    row: FeishuAppRegistrationRecord,
+    claimToken: string,
+    intervalMs: number,
+    providerDomain?: string,
+    delayMs = intervalMs
+  ): Promise<void> {
+    await this.store.release(row.id, claimToken, {
+      ...(providerDomain ? { providerDomain } : {}),
+      intervalMs,
+      nextPollAt: new Date(this.now() + delayMs)
+    })
+  }
+
+  private reuseOrConflict(existing: FeishuAppRegistrationRecord, createdByUserId: string): FeishuRegistrationSnapshot {
+    if (existing.createdByUserId !== createdByUserId) throw new FeishuRegistrationConflictError()
+    return publicSnapshot(existing)
   }
 }

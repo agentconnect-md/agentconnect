@@ -16,6 +16,10 @@ import { NoConnection } from '../orchestrator/outbound.js'
 export interface InstallFeishuBotArgs {
   orgId: OrgId
   agent: AgentRecord
+  /** Pre-reserved by durable one-click registration for restart-idempotency. */
+  botId?: BotId
+  /** Pre-reserved by durable one-click registration for restart-idempotency. */
+  integrationId?: IntegrationId
   name: string
   appId: string
   appSecret: string
@@ -33,16 +37,34 @@ export async function installNewFeishuBot(
   args: InstallFeishuBotArgs
 ): Promise<IntegrationRecord> {
   const { orgId, agent, name, appId, appSecret, region, createdByUserId } = args
-  const botId = BotId(randomUUID())
-  await deps.repos.bot.create({
-    id: botId,
-    orgId,
-    platform: 'feishu',
-    name,
-    feishuAppId: appId,
-    feishuRegion: region,
-    ...(createdByUserId ? { createdByUserId } : {})
-  })
+  const botId = args.botId ?? BotId(randomUUID())
+  const id = args.integrationId ?? IntegrationId(randomUUID())
+  let integration = await deps.repos.integration.get(id)
+  if (
+    integration &&
+    (integration.orgId !== orgId ||
+      integration.agentId !== agent.id ||
+      integration.botId !== botId ||
+      integration.platform !== 'feishu')
+  ) {
+    throw new Error('reserved Feishu integration id is already in use')
+  }
+  if (!integration) {
+    const bot = await deps.repos.bot.get(botId)
+    if (!bot) {
+      await deps.repos.bot.create({
+        id: botId,
+        orgId,
+        platform: 'feishu',
+        name,
+        feishuAppId: appId,
+        feishuRegion: region,
+        ...(createdByUserId ? { createdByUserId } : {})
+      })
+    } else if (bot.orgId !== orgId || bot.platform !== 'feishu' || bot.feishuAppId !== appId) {
+      throw new Error('reserved Feishu bot id is already in use')
+    }
+  }
   // Feishu reuses the established two-slot secret shape:
   // botToken = appSecret (secret), appToken = appId (identifier).
   await deps.repos.botSecret.put(botId, {
@@ -51,17 +73,18 @@ export async function installNewFeishuBot(
     signingSecret: null
   })
 
-  const id = IntegrationId(randomUUID())
-  const integration = await deps.repos.integration.create({
-    id,
-    orgId,
-    agentId: agent.id,
-    botId,
-    platform: 'feishu',
-    name,
-    feishuRegion: region,
-    ...(createdByUserId ? { createdByUserId } : {})
-  })
+  if (!integration) {
+    integration = await deps.repos.integration.create({
+      id,
+      orgId,
+      agentId: agent.id,
+      botId,
+      platform: 'feishu',
+      name,
+      feishuRegion: region,
+      ...(createdByUserId ? { createdByUserId } : {})
+    })
+  }
 
   const [secret, channels] = await Promise.all([
     deps.repos.botSecret.get(botId),

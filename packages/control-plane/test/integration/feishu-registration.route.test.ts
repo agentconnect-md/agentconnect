@@ -1,16 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { gunzipSync } from 'node:zlib'
 import { randomUUID } from 'node:crypto'
 import type { IntegrationUpsert } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
+import { AGENTCONNECT_FEISHU_EVENTS, AGENTCONNECT_FEISHU_SCOPES } from '../../src/http/feishu-app-template.js'
 import {
-  AGENTCONNECT_FEISHU_EVENTS,
-  AGENTCONNECT_FEISHU_SCOPES,
-  FeishuAppRegistrationService,
-  type FeishuRegisterApp
-} from '../../src/http/feishu-registration.js'
+  OfficialFeishuRegistrationProvider,
+  type FeishuRegistrationProvider
+} from '../../src/http/feishu-registration-provider.js'
+import { FeishuAppRegistrationService, FeishuRegistrationConflictError } from '../../src/http/feishu-registration.js'
+import { PgFeishuAppRegistrationStore } from '../../src/persistence/index.js'
+import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
+import { AgentId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -39,31 +43,48 @@ async function placedAgent(): Promise<string> {
   return agentId
 }
 
-describe('Feishu/Lark one-click app registration', () => {
-  it('opens the official deeplink with AgentConnect scopes, then installs credentials without returning them', async () => {
-    const agentId = await placedAgent()
-    let options: Parameters<FeishuRegisterApp>[0] | undefined
-    const register: FeishuRegisterApp = async (input) => {
-      options = input
-      input.onQRCodeReady({
-        url: 'https://accounts.feishu.cn/device?user_code=SAFE-CODE',
-        expireIn: 600
-      })
-      return {
-        client_id: 'cli_oneclick',
-        client_secret: 'one-click-secret',
-        user_info: { tenant_brand: 'lark' }
-      }
-    }
-    const service = new FeishuAppRegistrationService(register)
-    const spy = new SpyControl()
-    const app = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender, {
-      feishuAppRegistration: service,
-      verifyFeishuBot: async () => ({ status: 'ok', name: 'One-click Bot' })
-    })
-    running = app
+function service(fetcher: typeof fetch): FeishuAppRegistrationService {
+  return new FeishuAppRegistrationService(
+    new PgFeishuAppRegistrationStore(prisma, new PlaintextSecretCipher()),
+    new OfficialFeishuRegistrationProvider(fetcher)
+  )
+}
 
-    const started = await app.app.inject({
+function decodeAddons(encoded: string): unknown {
+  return JSON.parse(gunzipSync(Buffer.from(encoded, 'base64url')).toString('utf8'))
+}
+
+describe('Feishu/Lark one-click app registration', () => {
+  it('survives a CP restart, installs the full template, and never returns credentials', async () => {
+    const agentId = await placedAgent()
+    const requests: URLSearchParams[] = []
+    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+      const form = new URLSearchParams(String(init?.body))
+      requests.push(form)
+      if (form.get('action') === 'begin') {
+        return new Response(
+          JSON.stringify({
+            verification_uri_complete: 'https://accounts.feishu.cn/device?user_code=SAFE-CODE',
+            device_code: 'encrypted-device-code',
+            expires_in: 600,
+            interval: 1
+          })
+        )
+      }
+      return new Response(
+        JSON.stringify({
+          client_id: 'cli_oneclick',
+          client_secret: 'one-click-secret',
+          user_info: { tenant_brand: 'lark' }
+        })
+      )
+    })
+
+    // Replica A begins the flow, then disappears before the browser's first poll.
+    const first = buildHttpApp(prisma, undefined, undefined, undefined, {
+      feishuAppRegistration: service(fetcher)
+    })
+    const started = await first.app.inject({
       method: 'POST',
       url: `${ORG}/integrations/feishu/app`,
       // The provider-reported tenant brand must win over this UI fallback.
@@ -71,25 +92,29 @@ describe('Feishu/Lark one-click app registration', () => {
     })
     expect(started.statusCode).toBe(201)
     const startDto = started.json() as { id: string; authorizationUrl: string }
-    expect(startDto.authorizationUrl).toBe('https://accounts.feishu.cn/device?user_code=SAFE-CODE')
     expect(JSON.stringify(startDto)).not.toContain('one-click-secret')
     expect(JSON.stringify(startDto)).not.toContain('cli_oneclick')
-    expect(options).toMatchObject({
-      source: 'agentconnect',
-      createOnly: true,
-      appPreset: { name: 'AgentConnect Lark' },
-      addons: {
-        preset: true,
-        scopes: { tenant: [...AGENTCONNECT_FEISHU_SCOPES] },
-        events: { items: { tenant: [...AGENTCONNECT_FEISHU_EVENTS] } }
-      }
+
+    const authorizationUrl = new URL(startDto.authorizationUrl)
+    expect(authorizationUrl.searchParams.get('createOnly')).toBe('true')
+    expect(authorizationUrl.searchParams.get('name')).toBe('AgentConnect Lark')
+    expect(decodeAddons(authorizationUrl.searchParams.get('addons')!)).toMatchObject({
+      preset: true,
+      scopes: { tenant: [...AGENTCONNECT_FEISHU_SCOPES] },
+      events: { items: { tenant: [...AGENTCONNECT_FEISHU_EVENTS] } }
     })
-    expect(options?.addons?.scopes?.tenant).toEqual(
-      expect.arrayContaining(['contact:user.base:readonly', 'im:chat:read'])
-    )
+    await first.close()
+
+    // Replica B reconstructs the coordinator from the shared row and completes.
+    const spy = new SpyControl()
+    const second = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender, {
+      feishuAppRegistration: service(fetcher),
+      verifyFeishuBot: async () => ({ status: 'ok', name: 'One-click Bot' })
+    })
+    running = second
 
     await vi.waitFor(async () => {
-      const polled = await app.app.inject({
+      const polled = await second.app.inject({
         method: 'GET',
         url: `${ORG}/integrations/feishu/app/${startDto.id}`
       })
@@ -99,11 +124,20 @@ describe('Feishu/Lark one-click app registration', () => {
       expect(JSON.stringify(polled.json())).not.toContain('cli_oneclick')
     })
 
+    // The first successful Feishu-domain response identifies a Lark tenant;
+    // the durable cursor switches domains, then a later browser poll resumes it.
+    expect(requests.map((request) => request.get('action'))).toEqual(['begin', 'poll', 'poll'])
     const bot = await prisma.bot.findFirst({ where: { feishuAppId: 'cli_oneclick' } })
     expect(bot).toMatchObject({ name: 'AgentConnect Lark', feishuRegion: 'lark' })
     expect(await prisma.botSecret.findUnique({ where: { botId: bot!.id } })).toMatchObject({
       botToken: 'one-click-secret',
       appToken: 'cli_oneclick'
+    })
+    expect(await prisma.feishuAppRegistration.findUnique({ where: { id: startDto.id } })).toMatchObject({
+      status: 'completed',
+      deviceCode: null,
+      appSecret: null,
+      targetKey: null
     })
     expect(spy.upserts).toHaveLength(1)
     expect(spy.upserts[0]).toMatchObject({
@@ -116,14 +150,24 @@ describe('Feishu/Lark one-click app registration', () => {
     })
   })
 
-  it('reports a denied authorization without creating a bot', async () => {
+  it('persists a denied authorization as a terminal status without creating a bot', async () => {
     const agentId = await placedAgent()
-    const register: FeishuRegisterApp = async (input) => {
-      input.onQRCodeReady({ url: 'https://accounts.feishu.cn/device?user_code=DENIED', expireIn: 600 })
-      throw { code: 'access_denied', description: 'denied' }
-    }
+    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+      const form = new URLSearchParams(String(init?.body))
+      if (form.get('action') === 'begin') {
+        return new Response(
+          JSON.stringify({
+            verification_uri_complete: 'https://accounts.feishu.cn/device?user_code=DENIED',
+            device_code: 'denied-device-code',
+            expires_in: 600,
+            interval: 1
+          })
+        )
+      }
+      return new Response(JSON.stringify({ error: 'access_denied', error_description: 'denied' }), { status: 400 })
+    })
     const app = buildHttpApp(prisma, undefined, undefined, undefined, {
-      feishuAppRegistration: new FeishuAppRegistrationService(register)
+      feishuAppRegistration: service(fetcher)
     })
     running = app
 
@@ -135,11 +179,39 @@ describe('Feishu/Lark one-click app registration', () => {
     expect(started.statusCode).toBe(201)
     const { id } = started.json() as { id: string }
 
-    await vi.waitFor(async () => {
-      const polled = await app.app.inject({ method: 'GET', url: `${ORG}/integrations/feishu/app/${id}` })
-      expect(polled.json()).toMatchObject({ status: 'failed', failureReason: 'denied', integrationId: null })
-    })
+    const polled = await app.app.inject({ method: 'GET', url: `${ORG}/integrations/feishu/app/${id}` })
+    expect(polled.json()).toMatchObject({ status: 'failed', failureReason: 'denied', integrationId: null })
     expect(await prisma.bot.count()).toBe(0)
     expect(await prisma.integration.count()).toBe(0)
+  })
+
+  it('does not reuse one user’s pending setup for a different requester', async () => {
+    const begin = vi.fn(async () => ({
+      authorizationUrl: 'https://accounts.feishu.cn/device?user_code=ONE',
+      deviceCode: 'one-device-code',
+      providerDomain: 'accounts.feishu.cn',
+      intervalMs: 1000,
+      expiresInMs: 600_000
+    }))
+    const provider: FeishuRegistrationProvider = {
+      begin,
+      poll: async () => ({ outcome: 'pending' })
+    }
+    const coordinator = new FeishuAppRegistrationService(
+      new PgFeishuAppRegistrationStore(prisma, new PlaintextSecretCipher()),
+      provider
+    )
+    const common = {
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId: AgentId(randomUUID()),
+      fallbackRegion: 'lark' as const,
+      appName: 'AgentConnect'
+    }
+
+    await coordinator.start({ ...common, createdByUserId: 'user-a' })
+    await expect(coordinator.start({ ...common, createdByUserId: 'user-b' })).rejects.toBeInstanceOf(
+      FeishuRegistrationConflictError
+    )
+    expect(begin).toHaveBeenCalledOnce()
   })
 })

@@ -155,14 +155,20 @@ IntegrationFeishuConfig }`.
   Discord branch.
 - Add `POST /integrations/feishu/app` and
   `GET /integrations/feishu/app/:id` for the default one-click path. The first
-  route starts the official SDK's `registerApp` device flow and returns only a
+  route starts the official app-registration device flow and returns only a
   direct authorization URL plus an opaque registration ID. The second polls
-  the short-lived registration status.
-- Configure `registerApp` with `createOnly: true`, the platform
-  `PersonalAgent` preset, AgentConnect's tenant scopes, and
-  `im.message.receive_v1`. After approval, pass the returned App ID and App
-  Secret directly to the same bot-secret installation helper used by the
-  manual route. Never return either credential from the registration routes.
+  the durable registration status.
+- Keep the reviewable template in `src/http/feishu-app-template.ts`: use
+  `createOnly: true`, the platform `PersonalAgent` preset, AgentConnect's
+  tenant scopes, and `im.message.receive_v1`.
+- Persist the provider device cursor and provisional App Secret through
+  `SecretCipher` in `feishu_app_registration`. A short database claim lets any
+  Control Plane replica resume polling/finalization without duplicate installs;
+  pre-reserved bot/integration IDs make retries idempotent. Clear both secrets
+  on every terminal outcome and TTL-reap old rows.
+- After approval, pass the returned App ID and App Secret directly to the same
+  bot-secret installation helper used by the manual route. Never return either
+  credential from the registration routes.
 - In `src/http/dto/index.ts`:
   - Add `'feishu'` to the `platform` `[enum]` in `CreateIntegrationBody`; add
     optional `feishu: z.object({ appId, appSecret })`; and update both
@@ -461,9 +467,11 @@ and links to [open.feishu.cn](https://open.feishu.cn).
   authorization deeplink and keeps App ID/App Secret entry as an advanced
   fallback. It also includes Feishu marks, a manual setup checklist, Settings
   card, and API types.
-- **Control Plane:** a short-lived registration broker owns SDK polling and
-  installs credentials server-side through the same secret-store helper as the
-  manual route. App Secret never enters a browser response.
+- **Control Plane:** a durable registration coordinator resumes the official
+  device flow across replicas, leases each poll/finalize step, and installs
+  credentials server-side through the same secret-store helper as the manual
+  route. App Secret never enters a browser response and is cleared from the
+  pending row after settlement.
 - **Attachments and topics:** `downloadFile` uses authenticated
   `im.messageResource.get`; topic replies use
   `im.message.reply(reply_in_thread)` and group sessions keyed by topic root.
@@ -481,9 +489,10 @@ and links to [open.feishu.cn](https://open.feishu.cn).
 - **Control Plane integration:** apply the migration and exercise the Feishu
   path in `integrations.route.test.ts` with `verifyFeishuBot` stubbed to
   success, invalid, and unreachable.
-- **One-click integration:** stub `registerApp`, verify the complete scope/event
-  preset, complete and denied states, secret persistence, and that registration
-  responses never contain App ID or App Secret.
+- **One-click integration:** stub the official provider endpoint, verify the
+  complete scope/event preset, completion after reconstructing a second
+  Control Plane instance, denied state, terminal secret clearing, and that
+  registration responses never contain App ID or App Secret.
 - **Live:** use a real custom application with long connection,
   `im.message.receive_v1`, permissions, and group membership. Like Discord, this
   does not block the contract phase.

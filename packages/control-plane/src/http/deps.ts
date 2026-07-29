@@ -35,6 +35,7 @@ import type {
   ExternalMemoryGrantRepo,
   SlackInstallStore,
   SlackPlatformInstallStore,
+  FeishuAppRegistrationStore,
   SlackUserConfigStore,
   PresetAgentStore,
   GithubInstallationRepo,
@@ -173,6 +174,8 @@ export interface HttpDeps {
     slackInstall: SlackInstallStore
     /** Pending platform-app installs (preset-agents.md §5.3): OAuth state → tenancy, no secrets. */
     slackPlatformInstall: SlackPlatformInstallStore
+    /** Durable, encrypted Feishu/Lark one-click device registrations. */
+    feishuAppRegistration: FeishuAppRegistrationStore
     /** One org's stored Slack App Configuration token (§Tier B); holds secret material, never DTO'd. */
     slackUserConfig: SlackUserConfigStore
     /** Per-org preset provisioning state (preset-agents.md §3.2) — read surface
