@@ -223,13 +223,6 @@ const FEISHU_REQS: { icon: string; title: string; desc: string }[] = [
   }
 ]
 
-const CREATE_DESC: Record<BotPlatform, string> = {
-  slack: 'Create a Slack app from our manifest and paste its tokens.',
-  telegram: 'Create a bot with @BotFather and paste its token.',
-  discord: 'Create an app in the Developer Portal and paste its bot token.',
-  feishu: 'Create a self-built app in the Feishu console and paste its App ID & Secret.'
-}
-
 // The copy-paste test delivery shown once a webhook is created. The body follows
 // the payload-is-the-message convention (a `message` field speaks for the caller);
 // the X-AC-Signature is the REAL HMAC of exactly this body, so the command runs
@@ -1006,6 +999,12 @@ export default function AddIntegrationModal({
   // Feishu/Lark gateway: new installs default to international Lark.
   const [feishuRegion, setFeishuRegion] = useState<'feishu' | 'lark'>('lark')
   const feishuBrand = feishuRegion === 'lark' ? 'Lark' : 'Feishu'
+  const botIdentityCopy: Record<BotPlatform, { create: string; existing: string }> = {
+    slack: { create: 'Create with a Slack manifest', existing: 'An unused Slack app' },
+    telegram: { create: 'Create a bot with @BotFather', existing: 'An unused Telegram bot' },
+    discord: { create: 'Create a bot in Discord', existing: 'An unused Discord bot' },
+    feishu: { create: `Create a bot in ${feishuBrand}`, existing: `An unused ${feishuBrand} bot` }
+  }
   const [saving, setSaving] = useState(false)
   const [showErrors, setShowErrors] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -2574,23 +2573,20 @@ export default function AddIntegrationModal({
             reuse a freed / prebuilt one, or create a new bot for this platform.
             (Webhook and GitHub are bot-less — their bodies render above instead.) */}
         {platform !== 'webhook' && platform !== 'github' && (
-          <div className="mb-3 grid grid-cols-1 gap-[10px] min-[440px]:grid-cols-2">
+          <div className="mb-3 grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
             {(
               [
                 {
                   key: 'create' as const,
                   icon: 'key-round',
                   title: 'Create a new bot',
-                  desc:
-                    platform === 'feishu'
-                      ? `Create a self-built app in the ${feishuBrand} console and paste its App ID & Secret.`
-                      : CREATE_DESC[platform]
+                  desc: botIdentityCopy[platform].create
                 },
                 {
                   key: 'existing' as const,
                   icon: 'bot',
                   title: 'Use an existing bot',
-                  desc: "A bot you've created that no agent is using."
+                  desc: botIdentityCopy[platform].existing
                 }
               ] as const
             ).map((t) => {
@@ -2610,7 +2606,7 @@ export default function AddIntegrationModal({
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="font-sans text-[13px] font-semibold leading-normal">{t.title}</div>
-                    <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
+                    <div className="mt-[3px] whitespace-nowrap font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
                       {t.desc}
                     </div>
                   </div>
