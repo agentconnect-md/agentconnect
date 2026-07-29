@@ -5514,20 +5514,26 @@ export class Daemon {
     }
     // COORDINATE INTEGRITY (§2.5 #4), the second half of terminal-verify and the reason
     // dropping channel from the POLICY predicate is not the same as dropping it entirely:
-    // `coords` is still the woken peer's SESSION key (see childSessionId below), so a caller
+    // `coords` is still the woken peer's SESSION key (see sessionChannel below), so a caller
     // that could assert any channel could compute its way INTO an existing session of the
     // target in a channel the caller has no access to — resuming that conversation and, with
-    // `needsReply`, reporting its content back. `coordsAdmit` is the single mirrored
-    // predicate the relay's ingress applies too, and it is keyed on the CHANNEL ID without
-    // the platform on purpose: `narrowPlatform` below folds feishu/unknown into 'slack' when
-    // computing the session key, so a platform-keyed check would search a different key
-    // space than the key it protects.
-    if (!this.cpCollab.coordsAdmit(msg.orgId, channel, msg.trustedFromAgentId)) {
+    // `needsReply`, reporting its content back. `coordsDecision` is the single mirrored
+    // decision the relay's ingress applies too (see CpCollabRoutes.coordsDecision for the
+    // three branches and why the LOOKUP is platform-free while the branch is not).
+    const coordsVerdict = this.cpCollab.coordsDecision(msg.orgId, platform, channel, msg.trustedFromAgentId)
+    if (coordsVerdict.verdict === 'reject') {
       this.log.warn(
-        `relay: rd/agentmsg/fwd not_allowed — ${msg.trustedFromAgentId} asserted coords ${platform}:${channel} it is not in`
+        `relay: rd/agentmsg/fwd not_allowed — ${msg.trustedFromAgentId} may not assert coords ${platform}:${channel}`
       )
       return record(nak('not_allowed'))
     }
+    // Branch 3: a channel-free coordinate is admitted but must NOT become the session key —
+    // this is where that key is minted, so it is where the substitution belongs (the relay
+    // forwards `coords` verbatim, so only one side may rewrite them or the two would disagree
+    // about the `childSessionId` this ACK reports). The replacement is derived from the
+    // RELAY-MINTED trusted caller, so it cannot alias any existing platform session, and every
+    // wake from that caller collapses onto the one pairwise session.
+    const sessionChannel = coordsVerdict.verdict === 'synthetic' ? coordsVerdict.channel : channel
 
     // Build the trusted turn context + NormalizedMessage (source:'agent'), reusing the
     // same shape as the same-daemon path. callFrom = the RELAY-minted trusted caller.
@@ -5560,8 +5566,17 @@ export class Daemon {
     const childTransportScope =
       integrationId !== undefined ? this.transportScopeForIntegrationIds([integrationId]) : undefined
     // Mirror `transcriptCoords` exactly: an absent thread resolves to the msgId, NOT ''.
-    const childMsgId = `agentcall:${channel}:${msg.deliveryId}`
-    const childSessionId = sessionKey(narrowed, channel, thread ?? childMsgId, msg.toAgentId, childTransportScope)
+    // `sessionChannel` — not the raw asserted `channel` — is the coordinate from here on, so the
+    // key, the msgId and the dispatched message all agree on one channel (branches 1 and 2 leave
+    // it exactly as asserted; only the channel-free branch 3 substitutes).
+    const childMsgId = `agentcall:${sessionChannel}:${msg.deliveryId}`
+    const childSessionId = sessionKey(
+      narrowed,
+      sessionChannel,
+      thread ?? childMsgId,
+      msg.toAgentId,
+      childTransportScope
+    )
     if (msg.originSessionId !== undefined) {
       if (this.childSessionLinks.size >= 2000) this.childSessionLinks.clear()
       this.childSessionLinks.set(childSessionId, {
@@ -5575,7 +5590,7 @@ export class Daemon {
       traceId: msg.deliveryId,
       source: 'agent',
       platform: narrowed,
-      channel,
+      channel: sessionChannel,
       ...(thread !== undefined ? { thread } : {}),
       sender: { id: msg.trustedFromAgentId, isBot: true },
       // The forwarded text already names the caller (`@caller: …`, built on the caller's
@@ -5665,24 +5680,26 @@ export class Daemon {
    * orchestration correlation.
    */
   /**
-   * Side-effect-free preflight for a peer wake — returns the typed reason {@link messageAgent}
-   * would reject this wake with for a LOCALLY-decidable cause, else null. `sendMessage` uses it
-   * to avoid leaving a visible channel post for a `toAgent`+`channel` wake that will never be
-   * delivered. MUST stay in sync with the fail-closed guards in {@link messageAgent}: a reason
-   * added there but not here would let a doomed wake still post. A remote target's LOCAL
-   * agent config is not readable here (that verdict lives on the owning daemon) — but the
-   * org-scoped directory below covers a remote target too, because the CP snapshot is
-   * org-wide rather than per-daemon.
+   * Side-effect-free authorization for a peer wake on the SAME-DAEMON path — the typed reason
+   * {@link messageAgent} would reject it with for a LOCALLY-decidable cause, or, when it is
+   * admitted, the CHANNEL the woken session may key off. `sendMessage` uses the rejection half
+   * as a preflight, so it never leaves a visible channel post for a `toAgent`+`channel` wake
+   * that will never be delivered; `messageAgent` uses BOTH halves, which is why they are one
+   * method — a coordinate decided twice could be decided differently. MUST stay in sync with
+   * the fail-closed guards in {@link messageAgent}: a reason added there but not here would let
+   * a doomed wake still post. A remote target's LOCAL agent config is not readable here (that
+   * verdict lives on the owning daemon) — but the org-scoped directory below covers a remote
+   * target too, because the CP snapshot is org-wide rather than per-daemon.
    *
    * Two independent checks, in order: the directional call POLICY (`admits`, channel-free)
-   * and the COORDINATE INTEGRITY of `req.channel` (`coordsAdmit`). Dropping channel from
+   * and the COORDINATE INTEGRITY of `req.channel` (`coordsDecision`). Dropping channel from
    * the policy predicate did not drop it as a session coordinate, and this is the
    * same-daemon twin of the relay/terminal-verify gate.
    */
-  private localWakeAuthorizationRejection(req: MessageAgentReq): string | null {
+  private localWakeDecision(req: MessageAgentReq): { rejection: string } | { rejection: null; channel: string } {
     const caller = this.agents.get(req.callerAgentId)
     if (!caller || (caller.outboundPolicy === 'selected' && !caller.allowedTargetAgentIds.includes(req.toAgentId))) {
-      return 'not_allowed'
+      return { rejection: 'not_allowed' }
     }
 
     // A local id is not sufficient authority: the org-scoped directional call policy must
@@ -5692,29 +5709,36 @@ export class Daemon {
     // BEFORE the local-target lookup so it also decides a REMOTE target and an id that is
     // in no directory at all (previously the latter fell through to a misleading
     // 'offline'). Fails closed on an absent/stale snapshot, as before.
-    if (!this.cpCollab.admits(req.callerAgentId, req.toAgentId)) return 'not_allowed'
+    if (!this.cpCollab.admits(req.callerAgentId, req.toAgentId)) return { rejection: 'not_allowed' }
 
-    // COORDINATE INTEGRITY — the SAME predicate the relay's ingress and this daemon's
+    // COORDINATE INTEGRITY — the SAME decision the relay's ingress and this daemon's
     // `rd/agentmsg` terminal-verify apply, so all three wake paths enforce one rule. Channel
     // stopped AUTHORIZING the call, but `req.channel` (a model-supplied `to.channel`, or the
     // turn's own channel) is still the woken peer's session coordinate, so without this a
     // model could name a channel its agent cannot reach and RESUME a co-located peer's
     // session there. Org comes from the caller's own directory entry, never from the
     // request; `admits` above already proved the entry exists, so undefined is unreachable
-    // and fails closed anyway. STRICTLY WEAKER than the membership check this replaced,
-    // which demanded caller AND target in the channel and so rejected every wake from a
-    // session with no channel row (webchat/hook/dream) — the case this PR exists to allow.
+    // and fails closed anyway.
+    //
+    // The platform is the RAW trusted session platform, deliberately NOT `narrowPlatform`'s
+    // output: that helper folds `dream` (and any value the NormalizedMessage union does not
+    // carry) into 'slack', which would classify a genuinely channel-free session as a
+    // persisted IM coordinate and fail it closed. Only the branch-2/branch-3 split reads the
+    // platform at all — the row lookup itself stays platform-free — so passing the raw value
+    // cannot re-open the platform-relabelling dodge.
     const callerOrg = this.cpCollab.orgForAgent(req.callerAgentId)
-    if (callerOrg === undefined || !this.cpCollab.coordsAdmit(callerOrg, req.channel, req.callerAgentId)) {
-      return 'not_allowed'
-    }
+    if (callerOrg === undefined) return { rejection: 'not_allowed' }
+    const coords = this.cpCollab.coordsDecision(callerOrg, req.platform, req.channel, req.callerAgentId)
+    if (coords.verdict === 'reject') return { rejection: 'not_allowed' }
 
     const target = this.agents.get(req.toAgentId)
-    if (!target) return null
-    if (target.callPolicy === 'selected' && !target.allowedCallerAgentIds.includes(req.callerAgentId)) {
-      return 'not_allowed'
+    if (target?.callPolicy === 'selected' && !target.allowedCallerAgentIds.includes(req.callerAgentId)) {
+      return { rejection: 'not_allowed' }
     }
-    return null
+    // Branch 3 substitutes the coordinate rather than refusing the wake; branch 1 hands back
+    // `req.channel` untouched so a wake into a shared channel still lands in the thread a
+    // human sees.
+    return { rejection: null, channel: coords.verdict === 'synthetic' ? coords.channel : req.channel }
   }
 
   private wakeRejectionReason(req: MessageAgentReq): string | null {
@@ -5733,7 +5757,7 @@ export class Daemon {
     )
     const inbound = this.activeTurnCallMeta.get(callerKey)
     if (inbound !== undefined && inbound.hopCount >= MAX_AGENT_CALL_HOPS) return 'hop_limit'
-    return this.localWakeAuthorizationRejection(req)
+    return this.localWakeDecision(req).rejection
   }
 
   private async messageAgent(req: MessageAgentReq): Promise<MessageAgentResult> {
@@ -5834,13 +5858,23 @@ export class Daemon {
     const integrationId = resolved?.integrationId
     const targetTransportScope =
       integrationId !== undefined ? this.transportScopeForIntegrationIds([integrationId]) : undefined
+    // The same side-effect-free authorization sendMessage's preflight ran (caller existence +
+    // outbound policy, the org-scoped directional call policy, a local target's inbound policy,
+    // and COORDINATE INTEGRITY). It is resolved BEFORE the coordinate is minted because it also
+    // decides WHICH channel may be minted: a channel-free coordinate the snapshot knows nothing
+    // about is admitted but must not become the session key, so `localWakeDecision` hands back a
+    // caller-derived channel (`a2a:<callerAgentId>`) that cannot alias any platform session. The
+    // rejection path keeps reporting the ASSERTED channel — nothing was opened, and the reason,
+    // not the coordinate, is what the caller acts on.
+    const wake = this.localWakeDecision(req)
+    const coordChannel = wake.rejection === null ? wake.channel : req.channel
     // A2A delivery is direct and postless (#854): the woken peer receives a caller-framed
     // message and nothing is left in any channel. session-concept case 2c (pure wake) is thus
     // the default — a `sendMessage` with `toAgent` never posts, regardless of `channel`.
     const event = this.prepareAgentDelivery(req)
     const { deliveryId } = event
-    const msgId = `agentcall:${req.channel}:${deliveryId}`
-    const targetSession = sessionKey(platform, req.channel, event.thread, req.toAgentId, targetTransportScope)
+    const msgId = `agentcall:${coordChannel}:${deliveryId}`
+    const targetSession = sessionKey(platform, coordChannel, event.thread, req.toAgentId, targetTransportScope)
 
     const prior = this.agentCallDeliveries.get(deliveryId)
     if (prior) return observe('collaboration.delivery.deduplicated', prior, deliveryId)
@@ -5854,10 +5888,7 @@ export class Daemon {
       )
     }
 
-    // Repeat the same side-effect-free authorization used by sendMessage's
-    // preflight. This covers caller existence/outbound policy, the org-scoped
-    // directional call policy, and a local target's inbound policy before any local wake.
-    if (this.localWakeAuthorizationRejection(req) !== null) {
+    if (wake.rejection !== null) {
       this.log.info(`messageAgent: ${req.callerAgentId} not allowed to call ${req.toAgentId} in ${req.channel}`)
       return record({ delivered: false, targetSession, reason: 'not_allowed' })
     }
@@ -5870,6 +5901,9 @@ export class Daemon {
         { ...req, text: event.text, thread: event.thread },
         {
           platform: coordPlatform,
+          // The ASSERTED coordinate, not `coordChannel`: the relay validates what the caller
+          // named, and the OWNING daemon mints the session key (and any channel-free
+          // substitution) — we take that canonical key back off the ACK below.
           channel: req.channel,
           thread: event.thread,
           deliveryId,
@@ -5930,8 +5964,10 @@ export class Daemon {
       msgId,
       traceId: deliveryId,
       source: 'agent',
+      // `coordChannel`, so the dispatched turn lands on exactly the key `targetSession`
+      // reports (identical to `req.channel` outside the channel-free branch).
       platform,
-      channel: req.channel,
+      channel: coordChannel,
       thread: event.thread,
       ...(targetTransportScope !== undefined ? { transportScope: targetTransportScope } : {}),
       sender: { id: req.callerAgentId, isBot: true },

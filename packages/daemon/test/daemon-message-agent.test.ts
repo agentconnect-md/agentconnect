@@ -379,15 +379,64 @@ describe('messageAgent: same-daemon delivery', () => {
     await daemon.stop()
   })
 
-  // Channel-free collaboration is unaffected: a coordinate the snapshot knows nothing about
-  // (a webchat/dream session id, an integration-less agent's own channel) asserts nothing.
-  it('allows a coordinate the snapshot knows nothing about (channel-free session)', async () => {
+  // The same-daemon half of the review finding. `localWakeDecision` is BOTH the sendMessage
+  // preflight and the enforcement gate, so the identical three-branch rule must hold here.
+  it('rejects an UNKNOWN IM coordinate on the same-daemon path too (fail closed)', async () => {
+    // The snapshot knows only slack C1 (seeded by bootWithDispatchSpy), so `C_GHOST` is an
+    // unrecorded IM coordinate: a DM, a departed row, or a guess. Admitting it is what let a
+    // model land on a co-located peer's existing session at that channel:thread.
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    for (const platform of ['slack', 'telegram', 'discord', 'feishu']) {
+      const attack = baseReq({ platform, channel: 'C_GHOST', thread: '900.1' })
+      // The preflight must agree, or `sendMessage` leaves a visible post for a doomed wake.
+      expect((daemon as any).wakeRejectionReason(attack)).toBe('not_allowed')
+      expect(await call(attack)).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    }
+    expect(calls).toHaveLength(0)
+    // The channel they genuinely share still delivers.
+    expect(await call(baseReq())).toMatchObject({ delivered: true, targetSession: 'slack:C1:100.1:bot-b' })
+    await daemon.stop()
+  })
+
+  // Channel-free collaboration is unaffected in the sense that matters — the wake is still
+  // ADMITTED — but the asserted coordinate no longer becomes the session key.
+  it('keys a channel-free wake off the trusted caller, and collapses two asserted channels into one session', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
     const req = baseReq({ platform: 'webchat', callerChannel: 'wc-1', channel: 'wc-1' })
     expect((daemon as any).wakeRejectionReason(req)).toBeNull()
-    expect(await call(req)).toMatchObject({ delivered: true })
-    expect(calls).toHaveLength(1)
+    const first = await call(req)
+    // `a2a:bot-a`, NOT `webchat:wc-1:…` — the webchat conversation id is the caller's own
+    // session coordinate and must not be able to name the woken peer's.
+    expect(first).toMatchObject({ delivered: true, targetSession: 'webchat:a2a:bot-a:100.1:bot-b' })
+    expect(calls[0]!.msg.channel).toBe('a2a:bot-a')
+    expect(calls[0]!.msg.msgId).toMatch(/^agentcall:a2a:bot-a:\d+$/)
+
+    // A2A is postless (#854), so the conversation is the PAIR: a second wake naming a
+    // different channel-free coordinate resumes the same pairwise session.
+    const second = await call(baseReq({ platform: 'webchat', callerChannel: 'wc-1', channel: 'wc-9' }))
+    expect(second.targetSession).toBe(first.targetSession)
+    expect(calls).toHaveLength(2)
+    await daemon.stop()
+  })
+
+  // A `dream` turn's platform is folded to 'slack' by `narrowPlatform` when the session key is
+  // computed, so the coordinate decision must read the RAW session platform — otherwise a
+  // genuinely channel-free session would be classified as a persisted IM coordinate and fail
+  // closed. (`hook` is the same shape: a target-less hook session's channel is the hook id.)
+  it('treats a raw session-identity platform as channel-free even though the session key narrows it', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, call } = await bootWithDispatchSpy(root)
+    const dream = baseReq({ platform: 'dream', callerChannel: 'memory', channel: 'memory', thread: 'dream-1' })
+    expect((daemon as any).wakeRejectionReason(dream)).toBeNull()
+    // narrowPlatform('dream') === 'slack', hence the slack prefix — but the CHANNEL is the
+    // caller-derived one, not 'memory'.
+    expect(await call(dream)).toMatchObject({ delivered: true, targetSession: 'slack:a2a:bot-a:dream-1:bot-b' })
+
+    const hook = baseReq({ platform: 'hook', callerChannel: 'hook-1', channel: 'hook-1', thread: 'delivery-1' })
+    expect((daemon as any).wakeRejectionReason(hook)).toBeNull()
+    expect(await call(hook)).toMatchObject({ delivered: true, targetSession: 'hook:a2a:bot-a:delivery-1:bot-b' })
     await daemon.stop()
   })
 
@@ -946,17 +995,86 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     await daemon.stop()
   })
 
-  it('passes coords the snapshot knows NOTHING about (webchat/hook/integration-less wake)', async () => {
-    // Channel-free collaboration must keep working: a coordinate that names no known IM
-    // channel is not a claim about a shared channel, so it needs no membership evidence.
+  it('rejects an UNKNOWN IM coordinate — fail closed, not "unknown ⇒ pass"', async () => {
+    // The review finding on the target side. "Unknown coordinate passes" also admitted Slack
+    // DMs and channels whose row has gone, so a compromised source daemon could name any
+    // conversation, land on the target's EXISTING session at that channel:thread and (with
+    // `needsReply`) read it back. Nothing in the snapshot vouches for `C_GHOST`, so the wake
+    // is refused rather than silently keyed to it. Policies are 'all' — only this can stop it.
+    const root = scaffold([{ id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    withSnapshot(daemon) // knows only slack C1
+    for (const [i, platform] of ['slack', 'telegram', 'discord', 'feishu'].entries()) {
+      const ack = await (daemon as any).handleRelayAgentMsg(
+        fwd({ deliveryId: `d-im-${i}`, coords: { platform, channel: 'C_GHOST', thread: '900.1' }, needsReply: true })
+      )
+      expect(ack).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    }
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('admits a channel-free coordinate but keys the child off the TRUSTED CALLER, not the asserted channel', async () => {
+    // Channel-free collaboration must keep working — but not by trusting the coordinate.
+    // The wake is admitted and the child session key is derived from `trustedFromAgentId`,
+    // so it can no longer alias any session living at the asserted coordinate.
     const root = scaffold([{ id: 'bot-b' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
     withSnapshot(daemon) // knows only slack C1
     const ack = await (daemon as any).handleRelayAgentMsg(
-      fwd({ coords: { platform: 'webchat', channel: 'wc-session-1' } })
+      fwd({ coords: { platform: 'webchat', channel: 'wc-session-1', thread: 'wc-session-1' } })
     )
     expect(ack.delivered).toBe(true)
+    // THE assertion: the exact key handed back to the caller. `a2a:bot-a` — never
+    // `webchat:wc-session-1:…`, which is what a webchat session of bot-b would be keyed by.
+    expect(ack.childSessionId).toBe('webchat:a2a:bot-a:wc-session-1:bot-b')
+    expect(ack.childSessionId).not.toContain('wc-session-1:wc-session-1')
     expect(calls).toHaveLength(1)
+    // The dispatched turn lands on the SAME coordinate the ACK reports, or the row the child
+    // creates would not be the one the caller was told to follow.
+    expect(calls[0]!.msg.channel).toBe('a2a:bot-a')
+    expect(calls[0]!.msg.thread).toBe('wc-session-1')
+    expect(calls[0]!.msg.msgId).toBe('agentcall:a2a:bot-a:d-1')
+    await daemon.stop()
+  })
+
+  it('two channel-free wakes from one caller asserting DIFFERENT channels converge on ONE pairwise session', async () => {
+    // A2A is postless (#854), so the "conversation" between two agents is the pair, not a
+    // channel. Since the substituted channel is derived from the caller alone, a caller that
+    // names two different channel-free coordinates in one thread resumes the same session
+    // instead of forking a fresh one per asserted string.
+    const root = scaffold([{ id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    withSnapshot(daemon)
+    const first = await (daemon as any).handleRelayAgentMsg(
+      fwd({ deliveryId: 'd-1', coords: { platform: 'webchat', channel: 'wc-1', thread: 'T' } })
+    )
+    const second = await (daemon as any).handleRelayAgentMsg(
+      fwd({ deliveryId: 'd-2', coords: { platform: 'webchat', channel: 'wc-2', thread: 'T' } })
+    )
+    expect(first.delivered).toBe(true)
+    expect(second.delivered).toBe(true)
+    expect(second.childSessionId).toBe(first.childSessionId)
+    expect(first.childSessionId).toBe('webchat:a2a:bot-a:T:bot-b')
+    expect(calls).toHaveLength(2)
+    // A DIFFERENT caller is a different pair, so it must NOT collapse into that session.
+    ;(daemon as any).cpCollab.replace({
+      generation: 2,
+      channels: [],
+      agents: [
+        { agentId: 'bot-a', daemonId: 'd1', orgId: ORG, callPolicy: 'all', allowedCallerAgentIds: [] },
+        { agentId: 'bot-c', daemonId: 'd3', orgId: ORG, callPolicy: 'all', allowedCallerAgentIds: [] },
+        { agentId: 'bot-b', daemonId: 'd2', orgId: ORG, callPolicy: 'all', allowedCallerAgentIds: [] }
+      ]
+    })
+    const other = await (daemon as any).handleRelayAgentMsg(
+      fwd({
+        deliveryId: 'd-3',
+        trustedFromAgentId: 'bot-c',
+        coords: { platform: 'webchat', channel: 'wc-1', thread: 'T' }
+      })
+    )
+    expect(other.childSessionId).toBe('webchat:a2a:bot-c:T:bot-b')
     await daemon.stop()
   })
 

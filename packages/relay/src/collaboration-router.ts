@@ -17,10 +17,9 @@
  * holds it and answers the three questions the `rd/agentmsg` router asks:
  *  - is the CLAIMED caller actually this daemon's agent? (§6.2)
  *  - who OWNS the target, and do caller outbound + target inbound policies agree?
- *  - is the asserted `coords` a shared IM channel the caller can actually reach?
- *    ({@link coordsAdmit}) — channel stopped being an authorization key but is still the
- *    woken peer's SESSION key, so the assertion still needs integrity even though
- *    membership no longer grants anything.
+ *  - may the caller assert the `coords` it named? ({@link coordsDecision}) — channel
+ *    stopped being an authorization key but is still the woken peer's SESSION key, so the
+ *    assertion still needs integrity even though membership no longer grants anything.
  *
  * FOLLOW-UP (P2 scope-down, §6.5): per-entry tombstone / TTL-after-CP-disconnect /
  * fail-closed-on-stale is not implemented — `generation` is tracked but a live CP is
@@ -39,9 +38,46 @@ const SEP = '\u0000'
 function key(orgId: string, platform: string, channelId: string): string {
   return orgId + SEP + platform + SEP + channelId
 }
-/** Coordinate-integrity key: deliberately PLATFORM-FREE — see {@link CollaborationRouter.coordsAdmit}. */
+/** Coordinate-integrity key: deliberately PLATFORM-FREE — see {@link CollaborationRouter.coordsDecision}. */
 function coordsKey(orgId: string, channelId: string): string {
   return orgId + SEP + channelId
+}
+
+/**
+ * The verdict of {@link CollaborationRouter.coordsDecision} (agent-collaboration §6.2).
+ * Three outcomes, not two, because a channel-free wake must neither be rejected nor be
+ * allowed to keep the coordinate it named:
+ *  - `reject`    — the assertion is not admissible; NAK `not_allowed`.
+ *  - `asserted`  — use the coordinate as given (a channel row the caller is in).
+ *  - `synthetic` — admissible, but the woken session must key off `channel` (derived from
+ *                  the TRUSTED caller) instead of the asserted one.
+ *
+ * The relay only ever acts on `reject`; the `synthetic` channel is minted where the session
+ * key actually is (the target daemon), so the two sides cannot disagree about the result.
+ * The daemon carries a BYTE-IDENTICAL twin of this type and of {@link coordsDecision} in
+ * `packages/daemon/src/cp/cp-collab-routes.ts` — change one, change both.
+ */
+export type CoordsVerdict = { verdict: 'reject' } | { verdict: 'asserted' } | { verdict: 'synthetic'; channel: string }
+
+/**
+ * The platforms whose conversations are PERSISTED as `integration_channel` rows and
+ * therefore appear in this snapshot — i.e. the protocol `Platform` enum minus the
+ * session-identity members (`webchat`/`hook`/`dream`, which have no persisted row; see the
+ * CP's `isSessionIdentityPlatform`). An UNKNOWN coordinate on one of these is evidence of a
+ * problem, not of a channel-free session, so it fails closed ({@link coordsDecision}).
+ */
+const PERSISTED_IM_PLATFORMS: ReadonlySet<string> = new Set(['slack', 'telegram', 'discord', 'feishu'])
+
+/**
+ * The coordinate a channel-free wake lands on: derived from the TRUSTED caller, never from
+ * anything the caller asserted. Collision-free against every real conversation id by
+ * construction — Slack/Telegram/Discord/Feishu channel ids never contain `:` and webchat
+ * conversation ids are UUIDs — so it can never alias an existing platform session. Two
+ * different asserted channels from one caller therefore collapse onto ONE pairwise session,
+ * which is the right shape for a postless agent-to-agent conversation (#854).
+ */
+export function a2aCoordChannel(callerAgentId: string): string {
+  return `a2a:${callerAgentId}`
 }
 
 /** Caller-side half of the directional predicate: does A's outbound policy admit B? */
@@ -59,7 +95,7 @@ export class CollaborationRouter {
   // (orgId,platform,channel) → (agentId → placement)
   private readonly channels = new Map<string, Map<string, CollabResolved>>()
   // (orgId,channel) → the member maps of EVERY platform row sharing that channel id.
-  // The coordinate-integrity index; platform-free on purpose ({@link coordsAdmit}).
+  // The coordinate-integrity index; platform-free on purpose ({@link coordsDecision}).
   private readonly byOrgChannel = new Map<string, Map<string, CollabResolved>[]>()
   // agentId → org-scoped directory entry. Agent ids are globally unique UUIDs, so one
   // agent belongs to exactly one org and a flat index loses no addressing precision.
@@ -107,49 +143,86 @@ export class CollaborationRouter {
 
   /**
    * COORDINATE INTEGRITY for `rd/agentmsg` (agent-collaboration §6.2), as ONE atomic
-   * predicate: may `callerAgentId` assert the delivery coordinate `(orgId, channelId)`?
+   * decision: may `callerAgentId` assert the delivery coordinate `(orgId, platform,
+   * channelId)`, and if so, which channel may the woken session actually key off?
    *
    * Channel is no longer an authorization key, but it is still the woken peer's SESSION
    * key, so an asserted `coords` the caller cannot reach would let it resume (and, with
-   * `needsReply`, read back) a target session in a channel it has no access to. The rule:
-   * if the snapshot knows any NON-EMPTY membership at that coordinate, the caller must be
-   * in one of them; if it knows none, the coordinate is not a claim about a shared IM
-   * channel and needs no membership evidence. The target daemon's terminal-verify applies
-   * the IDENTICAL predicate — the two must never disagree.
+   * `needsReply`, read back) a target session in a channel it has no access to. Three
+   * branches, evaluated in this order:
    *
-   * PLATFORM-FREE ON PURPOSE. The coordinate platform must NOT be part of the key: the
-   * woken session's key is computed from a NARROWED platform (the daemon's
-   * `narrowPlatform` folds `feishu` — and any value it does not recognise — into
-   * `'slack'`), while snapshot rows are keyed by the INTEGRATION platform. Keying this
-   * check on the raw wire platform therefore searched a different key space than the
-   * session key it protects, and the "unknown coordinate passes" branch silently
-   * swallowed the mismatch: `coords.platform:'feishu'` over a Slack channel id (or, in a
-   * Feishu org, an honest narrowed `'slack'` over a `feishu` row) missed the row, passed,
-   * and still computed a bit-identical child session key. Matching on the channel id
-   * alone closes both directions and needs no `narrowPlatform` twin on the relay side. It
-   * over-blocks only if one org uses the same channel id on two platforms — which then
-   * requires membership in one of them, not a bypass.
+   * (1) KNOWN coordinate — the snapshot holds a NON-EMPTY membership at (org, channel id):
+   *     the caller must be in one of them, else `reject`. Otherwise `asserted`: the wake
+   *     deliberately lands in the same thread a human sees. This branch is PLATFORM-FREE
+   *     (below), so a DIRECT conversation counts wherever its row exists:
+   *     `IntegrationChannel.kind` is `channel | im | mpim` and `channelPlacements` selects
+   *     the rows with NO `kind` filter, so an `im`/`mpim` row is an ordinary KNOWN
+   *     coordinate with its owning integration's agent as a member.
+   *
+   * (2) UNKNOWN on a PERSISTED IM platform ({@link PERSISTED_IM_PLATFORMS}) — `reject`,
+   *     FAIL CLOSED. An unrecorded IM coordinate is either a channel the caller cannot
+   *     reach or a stale/departed row; admitting it is exactly what let a caller alias an
+   *     existing platform session. A brief snapshot lag can therefore transiently reject a
+   *     genuine wake — the correct direction for a security boundary, and the caller retries.
+   *     ACCEPTED RECALL LOSS (agent-collaboration §2.5 "what the fail-closed branch actually
+   *     covers", §2.7 item 5): a direct-conversation row is only WRITTEN where something
+   *     observed it — Slack's authoritative membership snapshot enumerates
+   *     `public_channel,private_channel` only, and the two paths that DO emit `im`/`mpim`
+   *     (the daemon's `reportGatedConversation` and the CP's shared-bot
+   *     `reportConversation`) both fire only for a GATED integration/install's
+   *     not-yet-enabled conversations — so an ordinary integration's DM has no row and a
+   *     wake asserting it is refused here.
+   *     Deliberate, and not a regression: the `hasMembers(caller, target)` check this
+   *     replaced refused the identical wake.
+   *
+   * (3) UNKNOWN and channel-free (anything else — on the wire, where `coords.platform` is
+   *     `slack | telegram | webchat | discord | feishu`, only `webchat` can reach here; a
+   *     `dream`/`hook` session's own platform reaches the daemon's twin on its same-daemon
+   *     path) — `synthetic`. NOT a reject: this is the case the org-scoped directory exists
+   *     for. Instead the asserted channel never becomes the session coordinate at all;
+   *     {@link a2aCoordChannel} derives it from the trusted caller, which cannot alias any
+   *     platform session. The relay does not apply the substitution (see below), only skips
+   *     the rejection.
+   *
+   * Branch (1) running FIRST and platform-free is what keeps (3) from being an escape
+   * hatch: relabelling a real channel's coordinate as `webchat` still hits branch 1 and
+   * still demands membership.
+   *
+   * PLATFORM-FREE KEY, platform-keyed BRANCH. The lookup key must NOT include the
+   * coordinate platform: the woken session's key is computed from a NARROWED platform (the
+   * daemon's `narrowPlatform` folds `feishu` — and any value it does not recognise — into
+   * `'slack'`), while snapshot rows are keyed by the INTEGRATION platform. Keying the
+   * LOOKUP on the raw wire platform searched a different key space than the session key it
+   * protects, and the old "unknown coordinate passes" branch silently swallowed the
+   * mismatch: `coords.platform:'feishu'` over a Slack channel id (or, in a Feishu org, an
+   * honest narrowed `'slack'` over a `feishu` row) missed the row, passed, and still
+   * computed a bit-identical child session key. Matching on the channel id alone closes
+   * both directions and needs no `narrowPlatform` twin on the relay side; it over-blocks
+   * only if one org uses the same channel id on two platforms, which then requires
+   * membership in one of them, not a bypass. The platform is consulted ONLY to pick between
+   * branch 2 and branch 3, and only for a coordinate branch 1 already found nothing for —
+   * where the collapse cannot help an attacker, because branch 3 hands back a
+   * caller-derived channel rather than the asserted one.
    *
    * A NON-EMPTY member map is what counts as "known": an agent-less row is not a channel
    * anyone in this org can reach, so gating on it would reject every call naming it while
    * protecting nothing.
    *
-   * KNOWN LIMIT (follow-up, not closed here): "unknown coordinate" cannot distinguish
-   * "not an IM channel" from "an IM channel the CP does not record". Slack DMs and group
-   * DMs are deliberately never channel rows, and a row disappears when the bot leaves or
-   * the integration goes inactive while the session stays resumable — such coordinates
-   * take the pass branch.
+   * The target daemon applies a BYTE-IDENTICAL twin of this on its terminal-verify
+   * (`CpCollabRoutes.coordsDecision`) and is the side that MINTS the synthetic channel —
+   * the relay only rejects.
    */
-  coordsAdmit(orgId: string, channelId: string, callerAgentId: string): boolean {
+  coordsDecision(orgId: string, platform: string, channelId: string, callerAgentId: string): CoordsVerdict {
     const sharing = this.byOrgChannel.get(coordsKey(orgId, channelId))
-    if (sharing === undefined) return true
     let known = false
-    for (const members of sharing) {
+    for (const members of sharing ?? []) {
       if (members.size === 0) continue
       known = true
-      if (members.has(callerAgentId)) return true
+      if (members.has(callerAgentId)) return { verdict: 'asserted' }
     }
-    return !known
+    if (known) return { verdict: 'reject' }
+    if (PERSISTED_IM_PLATFORMS.has(platform)) return { verdict: 'reject' }
+    return { verdict: 'synthetic', channel: a2aCoordChannel(callerAgentId) }
   }
 
   /** The org-scoped directory entry for `agentId`, or undefined if the directory has

@@ -102,6 +102,17 @@ None of these consult channel membership. `coords` still travels with a wake, bu
 **delivery coordinate** for the woken session — and as the preferred source of the target's
 reply integration for a visible post — not as an authorization input.
 
+`coords` is nonetheless validated, because it is still the woken peer's session key: a
+caller that could assert any coordinate could compute its way into an existing session of
+the target and read it back. Every wake path runs one three-way **coordinate-integrity**
+verdict: a coordinate the snapshot records with non-empty membership requires the caller to
+be in it (else `not_allowed`) and is then used verbatim; an **unrecorded** coordinate on a
+persisted IM platform is refused — fail closed; and an unrecorded coordinate on a
+channel-free platform (`webchat` / `dream`) is neither refused nor used, the woken session
+instead keying on the caller-derived `a2a:<callerAgentId>`, which cannot alias a platform
+session. See
+[agent-collaboration-implementation.md](agent-collaboration-implementation.md) §2.5.
+
 All policy denials return `delivered:false, reason:'not_allowed'` and create no visible
 platform message or shared-transcript row. Live routing still carries only
 placement and policy metadata through the control plane; message bodies remain

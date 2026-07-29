@@ -13,8 +13,9 @@
  *     key is computed from a narrowed platform — the caller must be a member of one of
  *     them. Membership no longer AUTHORIZES the call, but `coords` is still the woken
  *     peer's session key, so an unchecked assertion would let a caller resume a session in
- *     a channel it cannot reach. A coordinate the snapshot knows nothing about (webchat,
- *     and any conversation the CP records no channel row for) asserts nothing and passes;
+ *     a channel it cannot reach. An UNKNOWN coordinate on a persisted IM platform fails
+ *     CLOSED; an unknown one on a channel-free platform (webchat/dream) is admitted and the
+ *     TARGET daemon keys the woken session off the trusted caller instead;
  *  c) resolve the TARGET `toAgentId` in the SAME org → owning daemonId. Channel-free:
  *     A2A delivery is postless, so caller and target need share no channel (and an
  *     integration-less peer has none). `msg.coords` still rides along as the DELIVERY
@@ -94,14 +95,19 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
     // existing session there (with `needsReply`, reading that conversation back into its own).
     // Same threat model as the `caller.daemonId !== fromDaemonId` check above: a compromised or
     // buggy source daemon asserting something the relay is the only one able to falsify.
-    // One atomic predicate, keyed on (org, CHANNEL ID) and deliberately NOT on the coordinate
-    // platform — the woken session's key is computed from a narrowed platform while rows are
-    // keyed by the integration platform, so a platform-keyed check searched a different key
-    // space than the key it protects (see CollaborationRouter.coordsAdmit). The target daemon
-    // applies the IDENTICAL predicate on its terminal verify, so the two never disagree.
-    if (!router.coordsAdmit(orgId, msg.coords.channel, msg.claimedFromAgentId)) {
+    // ONE decision (see CollaborationRouter.coordsDecision): a KNOWN coordinate demands
+    // membership; an UNKNOWN one on a PERSISTED IM platform fails CLOSED, because an
+    // unrecorded Slack/Telegram/Discord/Feishu conversation — a DM whose row this snapshot
+    // has not caught up with, a channel the bot left, an id the caller simply guessed — is
+    // precisely how a caller aliases an existing platform session; an UNKNOWN one on a
+    // channel-free platform is admitted, and the TARGET DAEMON (not the relay) replaces the
+    // asserted channel with a caller-derived one when it mints the session key. The relay
+    // therefore forwards `coords` verbatim and acts only on `reject`.
+    if (
+      router.coordsDecision(orgId, msg.coords.platform, msg.coords.channel, msg.claimedFromAgentId).verdict === 'reject'
+    ) {
       deps.log.warn(
-        `relay: rd/agentmsg not_allowed — ${msg.claimedFromAgentId} asserted ${msg.coords.platform}:${msg.coords.channel} it is not in`
+        `relay: rd/agentmsg not_allowed — ${msg.claimedFromAgentId} may not assert coords ${msg.coords.platform}:${msg.coords.channel}`
       )
       return nak(msg.deliveryId, 'not_allowed')
     }

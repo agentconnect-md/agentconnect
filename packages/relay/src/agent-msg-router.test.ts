@@ -295,6 +295,21 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     )
     expect(ack).toMatchObject({ delivered: false, reason: 'not_allowed' })
     expect(forwards).toHaveLength(0)
+
+    // The new label worth trying now that channel-free coordinates are admitted: claim the
+    // real Slack channel is a `webchat` conversation. The KNOWN-row branch runs FIRST and is
+    // platform-free, so the row is still found and membership is still demanded — the
+    // channel-free branch is only reachable for a coordinate no row exists for.
+    const asWebchat = await route(
+      D1,
+      baseMsg({
+        deliveryId: 'd-webchat',
+        coords: { platform: 'webchat', channel: 'C_EXECS', thread: '1784297789.871789' },
+        needsReply: true
+      })
+    )
+    expect(asWebchat).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    expect(forwards).toHaveLength(0)
   })
 
   it('coords integrity: holds in a FEISHU org, where honest coords are already narrowed to slack', async () => {
@@ -336,13 +351,17 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(forwards).toHaveLength(1)
   })
 
-  it('coords integrity: an UNKNOWN coordinate passes untouched — the gate is not a membership requirement', async () => {
-    // The snapshot knows only slack:C1, so neither coordinate below names a shared IM
-    // channel it could make a claim about: a session-identity platform (webchat/hook/dream)
-    // and an IM channel with no placement at all must both route on policy alone, otherwise
-    // the channel-free directory would be dead on arrival for integration-less peers.
+  it('coords integrity: an UNKNOWN IM coordinate FAILS CLOSED, while a channel-free one still routes', async () => {
+    // The review finding, and the assertion this test used to make. "Unknown coordinate
+    // passes" was too wide: it admitted not only the intended channel-free coordinates but
+    // any Slack channel the snapshot happens not to hold — a DM, a channel the bot left, or
+    // one the caller simply guessed. An authenticated-but-compromised source daemon could
+    // therefore land on the target's EXISTING session at that platform:channel:thread and use
+    // `needsReply` to pull its context back. So the two coordinates below must now split:
+    // the IM one is refused, the channel-free one is not (rejecting it would kill the
+    // integration-less collaboration the org-scoped directory exists for).
     const router = new CollaborationRouter()
-    router.replace(snap())
+    router.replace(snap()) // knows only slack:C1
     const forwards: RdAgentMsgFwd[] = []
     const route = createAgentMsgRouter({
       router,
@@ -352,6 +371,8 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
 
     const webchat = await route(D1, baseMsg({ coords: { platform: 'webchat', channel: 'wc-1' } }))
     expect(webchat.delivered).toBe(true)
+    // The relay forwards `coords` VERBATIM — the target daemon is the side that replaces a
+    // channel-free coordinate when it mints the session key, so the two cannot disagree.
     expect(forwards[0].coords).toEqual({ platform: 'webchat', channel: 'wc-1' })
     // No channel row for the coordinate ⇒ the reply integration falls back to the target's
     // directory entry, which here has none.
@@ -361,7 +382,75 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
       D1,
       baseMsg({ deliveryId: 'd-2', coords: { platform: 'slack', channel: 'C_NOT_IN_SNAPSHOT' } })
     )
-    expect(unknownChannel.delivered).toBe(true)
+    expect(unknownChannel).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    expect(forwards).toHaveLength(1) // nothing forwarded for the IM coordinate
+
+    // …on every persisted IM platform, not just Slack.
+    for (const [i, platform] of ['telegram', 'discord', 'feishu'].entries()) {
+      const ack = await route(
+        D1,
+        baseMsg({ deliveryId: `d-im-${i}`, coords: { platform: platform as 'telegram', channel: 'NOT_A_ROW' } })
+      )
+      expect(ack).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    }
+    expect(forwards).toHaveLength(1)
+  })
+
+  it('coords integrity: a DM / group-DM row the caller owns is KNOWN, so DM-origin A2A still routes', async () => {
+    // The over-block this fail-closed branch could have caused, and the claim it rests on: a
+    // direct conversation is an ORDINARY channel row wherever one exists. `IntegrationChannel
+    // .kind` is `channel | im | mpim` and `IntegrationRepo.channelPlacements` selects the
+    // channels with NO filter on `kind`, so a recorded DM arrives in this snapshot as a plain
+    // row with its owning agent in it — branch 1, not the fail-closed one. (Only a GATED
+    // integration's not-yet-enabled conversations get such a row; an ungated integration's DM
+    // has none and takes branch 2 — the same answer the membership check this replaced gave.)
+    const INT_DM = '00000000-0000-0000-0000-0000000000f3'
+    const s = snap()
+    s.channels.push(
+      // Slack "D…" one-to-one DM between the human and A's bot.
+      { orgId: ORG, platform: 'slack', channelId: 'D01ALICE', agents: [placement({ agentId: A, daemonId: D1 })] },
+      // Slack "G…" mpim (group DM) the same bot sits in.
+      {
+        orgId: ORG,
+        platform: 'slack',
+        channelId: 'G01TEAM',
+        agents: [placement({ agentId: A, daemonId: D1, integrationId: INT_DM })]
+      }
+    )
+    const router = new CollaborationRouter()
+    router.replace(s)
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+
+    const dm = await route(D1, baseMsg({ coords: { platform: 'slack', channel: 'D01ALICE', thread: '900.1' } }))
+    expect(dm.delivered).toBe(true)
+    expect(forwards[0].coords).toEqual({ platform: 'slack', channel: 'D01ALICE', thread: '900.1' })
+
+    const groupDm = await route(
+      D1,
+      baseMsg({ deliveryId: 'd-2', coords: { platform: 'slack', channel: 'G01TEAM', thread: '900.2' } })
+    )
+    expect(groupDm.delivered).toBe(true)
+    expect(forwards).toHaveLength(2)
+
+    // A DM row the caller does NOT own is still not assertable — the branch is membership,
+    // not "any DM goes".
+    s.channels.push({
+      orgId: ORG,
+      platform: 'slack',
+      channelId: 'D02BOB',
+      agents: [placement({ agentId: B, daemonId: D2 })]
+    })
+    router.replace({ ...s, generation: 2 })
+    const foreignDm = await route(
+      D1,
+      baseMsg({ deliveryId: 'd-3', coords: { platform: 'slack', channel: 'D02BOB', thread: '900.3' } })
+    )
+    expect(foreignDm).toMatchObject({ delivered: false, reason: 'not_allowed' })
     expect(forwards).toHaveLength(2)
   })
 

@@ -915,7 +915,11 @@ policy admits, so a session with no IM integration (webchat, webhook, dreaming,
 memory-only) can still discover and wake peers. A `channel` argument is an optional
 filter. Authorization for a wake is that same call policy, evaluated against the
 daemon's copy of the collaboration snapshot (`CpCollabRoutes.admits`, fail-closed on
-an unknown agent); `channel` remains only the session/delivery coordinate. See
+an unknown agent); `channel` remains only the session/delivery coordinate — but as that
+coordinate it is checked for **integrity**: a recorded coordinate must have the caller in
+its membership, an unrecorded one on a persisted IM platform is refused, and an unrecorded
+one on a channel-free platform is replaced by the caller-derived `a2a:<callerAgentId>`
+before the session key is minted. See
 [agent-collaboration-implementation.md](agent-collaboration-implementation.md) §2.2/§2.5
 and [daemon-cp-ws-protocol.md](daemon-cp-ws-protocol.md) §7.7.
 

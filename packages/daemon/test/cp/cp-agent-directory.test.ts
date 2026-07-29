@@ -100,14 +100,13 @@ describe('CpCollabRoutes: org-scoped directory', () => {
     expect(r.admits('a', 'x')).toBe(false)
     // The channel-keyed lookups other call sites use keep working, so coordinate integrity
     // is enforced against an old CP's derived snapshot exactly as against a current one.
-    expect(r.coordsAdmit(ORG, 'C1', 'a')).toBe(true)
-    expect(r.coordsAdmit(ORG, 'C1', 'b')).toBe(false)
+    expect(r.coordsDecision(ORG, 'slack', 'C1', 'a')).toEqual({ verdict: 'asserted' })
+    expect(r.coordsDecision(ORG, 'slack', 'C1', 'b')).toEqual({ verdict: 'reject' })
   })
 
-  it('coordsAdmit gates a KNOWN coordinate on caller membership and passes an unknown one', () => {
-    // The coordinate-integrity gate for a wake: a KNOWN coordinate demands caller membership,
-    // an UNKNOWN one is no claim about a shared IM channel. An EMPTY row is not "known" —
-    // nobody in this org can reach it, so gating on it would protect nothing.
+  it('coordsDecision: KNOWN coordinate ⇒ membership required, and it is used as asserted', () => {
+    // Branch 1. An EMPTY row is not "known" — nobody in this org can reach it, so gating on
+    // it would protect nothing (it falls through to the unknown-coordinate branches).
     const r = new CpCollabRoutes()
     r.replace({
       generation: 1,
@@ -117,22 +116,83 @@ describe('CpCollabRoutes: org-scoped directory', () => {
       ],
       agents: [agent('a'), agent('b')]
     } as never)
-    expect(r.coordsAdmit(ORG, 'C1', 'a')).toBe(true)
+    expect(r.coordsDecision(ORG, 'slack', 'C1', 'a')).toEqual({ verdict: 'asserted' })
     // 'b' is a callable directory-only peer, but it cannot ASSERT C1 as a coordinate.
-    expect(r.coordsAdmit(ORG, 'C1', 'b')).toBe(false)
-    expect(r.coordsAdmit(ORG, 'C_EMPTY', 'b')).toBe(true)
-    expect(r.coordsAdmit(ORG, 'C_NEVER_SEEN', 'b')).toBe(true)
-    expect(r.coordsAdmit(ORG, 'wc-1', 'b')).toBe(true)
-    // Org-scoped like every other lookup here: another org's row is not this org's coordinate.
-    expect(r.coordsAdmit(OTHER_ORG, 'C1', 'b')).toBe(true)
+    expect(r.coordsDecision(ORG, 'slack', 'C1', 'b')).toEqual({ verdict: 'reject' })
+    // Org-scoped like every other lookup here: another org's row is not this org's coordinate,
+    // so this is an UNKNOWN slack coordinate — which now fails closed rather than passing.
+    expect(r.coordsDecision(OTHER_ORG, 'slack', 'C1', 'b')).toEqual({ verdict: 'reject' })
     // A directory-only agent (no channel row) is callable but reaches no channel coordinate.
     expect(r.resolve(ORG, 'slack', 'C1', 'b')).toBeUndefined()
   })
 
-  it('coordsAdmit ignores the coordinate PLATFORM — the session key narrows it away', () => {
+  it('coordsDecision: an UNKNOWN coordinate on a PERSISTED IM platform FAILS CLOSED', () => {
+    // Branch 2 — the review finding. "Unknown ⇒ pass" admitted not only channel-free
+    // coordinates but Slack DMs/group DMs and channels whose row has since disappeared, which
+    // is exactly how a caller lands on an EXISTING platform session of the target and, with
+    // `needsReply`, reads it back. An unrecorded IM coordinate is now refused on every one of
+    // the four persisted platforms; a transient snapshot lag rejecting a genuine wake is the
+    // correct direction, and the caller retries.
+    const r = new CpCollabRoutes()
+    r.replace({
+      generation: 1,
+      channels: [{ orgId: ORG, platform: 'slack', channelId: 'C1', agents: [agent('a')] }],
+      agents: [agent('a'), agent('b')]
+    } as never)
+    for (const platform of ['slack', 'telegram', 'discord', 'feishu']) {
+      expect(r.coordsDecision(ORG, platform, 'C_NEVER_SEEN', 'a')).toEqual({ verdict: 'reject' })
+      expect(r.coordsDecision(ORG, platform, 'D0PPELGANGER', 'a')).toEqual({ verdict: 'reject' })
+    }
+  })
+
+  it('coordsDecision: a DM row the caller owns is KNOWN, so DM-origin A2A keeps working', () => {
+    // The over-block guard. A DM or group DM is an ORDINARY channel row wherever one exists —
+    // `IntegrationChannel.kind` is `channel | im | mpim` and `channelPlacements` selects with
+    // no `kind` filter — so branch 1 covers it and fail-closed does not strand a caller whose
+    // session lives in a recorded DM. (Such a row is only written for a GATED integration's
+    // not-yet-enabled conversations; an ungated integration's DM has none and takes branch 2,
+    // which is what the channel-membership check this replaced did too — §2.7 item 5.) This
+    // case therefore only goes red if that premise breaks, which is exactly what it guards.
+    const r = new CpCollabRoutes()
+    r.replace({
+      generation: 1,
+      channels: [
+        { orgId: ORG, platform: 'slack', channelId: 'D01ALICE', agents: [agent('a')] }, // a "D…" DM row
+        { orgId: ORG, platform: 'slack', channelId: 'G01TEAM', agents: [agent('a')] } // an mpim row
+      ],
+      agents: [agent('a'), agent('b')]
+    } as never)
+    expect(r.coordsDecision(ORG, 'slack', 'D01ALICE', 'a')).toEqual({ verdict: 'asserted' })
+    expect(r.coordsDecision(ORG, 'slack', 'G01TEAM', 'a')).toEqual({ verdict: 'asserted' })
+    // …and someone else's DM is still not assertable.
+    expect(r.coordsDecision(ORG, 'slack', 'D01ALICE', 'b')).toEqual({ verdict: 'reject' })
+  })
+
+  it('coordsDecision: an UNKNOWN channel-free coordinate is admitted with a CALLER-derived channel', () => {
+    // Branch 3 — the feature this rule exists to keep alive. A webchat/dream/hook session has
+    // no channel row at all, so rejecting would kill channel-free collaboration; instead the
+    // asserted channel never becomes the session coordinate. `a2a:<caller>` cannot collide
+    // with a real conversation id (no platform channel id contains ':'), so two different
+    // asserted channels from one caller collapse onto ONE pairwise session.
+    const r = new CpCollabRoutes()
+    r.replace({
+      generation: 1,
+      channels: [{ orgId: ORG, platform: 'slack', channelId: 'C1', agents: [agent('a')] }],
+      agents: [agent('a'), agent('b')]
+    } as never)
+    expect(r.coordsDecision(ORG, 'webchat', 'wc-1', 'a')).toEqual({ verdict: 'synthetic', channel: 'a2a:a' })
+    expect(r.coordsDecision(ORG, 'webchat', 'wc-2', 'a')).toEqual({ verdict: 'synthetic', channel: 'a2a:a' })
+    expect(r.coordsDecision(ORG, 'dream', 'memory', 'a')).toEqual({ verdict: 'synthetic', channel: 'a2a:a' })
+    expect(r.coordsDecision(ORG, 'hook', 'hook-id-1', 'a')).toEqual({ verdict: 'synthetic', channel: 'a2a:a' })
+    // A KNOWN row still wins: relabelling a real channel as channel-free is not an escape —
+    // branch 1 runs first and is platform-free.
+    expect(r.coordsDecision(ORG, 'webchat', 'C1', 'b')).toEqual({ verdict: 'reject' })
+  })
+
+  it('coordsDecision ignores the coordinate PLATFORM when LOOKING UP the row', () => {
     // `Daemon.narrowPlatform` folds `feishu` (and any unrecognised value) into 'slack' when
     // computing the woken session key, while snapshot rows are keyed by the INTEGRATION
-    // platform. A platform-keyed check therefore searched a different key space than the key
+    // platform. A platform-keyed lookup therefore searched a different key space than the key
     // it protects, and "unknown coordinate passes" swallowed the mismatch in BOTH directions.
     const r = new CpCollabRoutes()
     r.replace({
@@ -144,14 +204,17 @@ describe('CpCollabRoutes: org-scoped directory', () => {
       agents: [agent('a'), agent('b')]
     } as never)
     // (1) A Slack row asserted as 'feishu' coords — still that Slack channel's coordinate.
-    expect(r.coordsAdmit(ORG, 'C_EXECS', 'a')).toBe(false)
-    expect(r.coordsAdmit(ORG, 'C_EXECS', 'b')).toBe(true)
+    expect(r.coordsDecision(ORG, 'feishu', 'C_EXECS', 'a')).toEqual({ verdict: 'reject' })
+    expect(r.coordsDecision(ORG, 'feishu', 'C_EXECS', 'b')).toEqual({ verdict: 'asserted' })
     // (2) The mirror: a Feishu org, where an honest daemon narrows its own coords to 'slack'.
-    expect(r.coordsAdmit(ORG, 'oc_execs', 'a')).toBe(false)
-    expect(r.coordsAdmit(ORG, 'oc_execs', 'b')).toBe(true)
+    expect(r.coordsDecision(ORG, 'slack', 'oc_execs', 'a')).toEqual({ verdict: 'reject' })
+    expect(r.coordsDecision(ORG, 'slack', 'oc_execs', 'b')).toEqual({ verdict: 'asserted' })
+    // (3) …and the channel-free label does not dodge either row.
+    expect(r.coordsDecision(ORG, 'webchat', 'C_EXECS', 'a')).toEqual({ verdict: 'reject' })
+    expect(r.coordsDecision(ORG, 'webchat', 'oc_execs', 'a')).toEqual({ verdict: 'reject' })
   })
 
-  it('coordsAdmit accepts membership in ANY platform row sharing one channel id', () => {
+  it('coordsDecision accepts membership in ANY platform row sharing one channel id', () => {
     // Two platforms colliding on one channel id inside one org is not a real configuration,
     // but the rule must stay a membership test rather than an accidental reject-all.
     const r = new CpCollabRoutes()
@@ -163,9 +226,9 @@ describe('CpCollabRoutes: org-scoped directory', () => {
       ],
       agents: [agent('a'), agent('b')]
     } as never)
-    expect(r.coordsAdmit(ORG, 'SHARED', 'a')).toBe(true)
-    expect(r.coordsAdmit(ORG, 'SHARED', 'b')).toBe(true)
-    expect(r.coordsAdmit(ORG, 'SHARED', 'c')).toBe(false)
+    expect(r.coordsDecision(ORG, 'slack', 'SHARED', 'a')).toEqual({ verdict: 'asserted' })
+    expect(r.coordsDecision(ORG, 'slack', 'SHARED', 'b')).toEqual({ verdict: 'asserted' })
+    expect(r.coordsDecision(ORG, 'slack', 'SHARED', 'c')).toEqual({ verdict: 'reject' })
   })
 
   it('FULL-REPLACE rebuilds the coordinate index too', () => {
@@ -175,11 +238,13 @@ describe('CpCollabRoutes: org-scoped directory', () => {
       channels: [{ orgId: ORG, platform: 'slack', channelId: 'C1', agents: [agent('a')] }],
       agents: [agent('a'), agent('b')]
     } as never)
-    expect(r.coordsAdmit(ORG, 'C1', 'b')).toBe(false)
-    // The channel is gone from the newer snapshot — the stale row must not linger and keep
-    // rejecting (nor keep gating, which is the fail-OPEN half of the same staleness).
+    expect(r.coordsDecision(ORG, 'slack', 'C1', 'b')).toEqual({ verdict: 'reject' })
+    // The channel is gone from the newer snapshot — the stale row must not linger. It becomes
+    // an UNKNOWN slack coordinate, which fails closed for a different reason; the point is
+    // that the index no longer holds the departed row.
     r.replace({ generation: 2, channels: [], agents: [agent('a'), agent('b')] } as never)
-    expect(r.coordsAdmit(ORG, 'C1', 'b')).toBe(true)
+    expect(r.coordsDecision(ORG, 'slack', 'C1', 'b')).toEqual({ verdict: 'reject' })
+    expect(r.coordsDecision(ORG, 'webchat', 'C1', 'b')).toEqual({ verdict: 'synthetic', channel: 'a2a:b' })
   })
 
   it('FULL-REPLACE applies to the flat index too — a later snapshot drops removed agents', () => {

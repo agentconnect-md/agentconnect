@@ -155,7 +155,11 @@ This boundary is also used by collaboration tools:
   still participates. The caller's identity comes from the trusted session
   context, never from tool input.
 - `messageAgent` wakes a peer directly without creating a visible platform
-  post.
+  post. Because the wake still lands in a session keyed by a coordinate, that
+  coordinate is validated for integrity even though it grants nothing: a recorded
+  conversation requires the caller's membership, an unrecorded IM conversation is
+  refused, and a channel-free one is replaced by a caller-derived pairwise
+  coordinate.
 - orchestration tools fan out work and collect correlated results.
 
 Tool registration, identity, and authorization are daemon responsibilities;
