@@ -211,6 +211,25 @@ effective state (§5.1). The response/UI must surface the memory caveat from
 §5.1: tightening stops future capture but does not scrub what agent memory
 already distilled while the session was org-visible.
 
+### 4.4 Web API launch provenance
+
+The Web API rule in §4.2 is not implementable from what exists today:
+`AgentLaunch` has no creator column, its `launchId` is an agent-runtime
+lifecycle fence (part of the `sessionEpoch`/`seq`/`launchId` fencing tuple),
+and daemon `event/session` telemetry does not populate it. Ownership therefore
+needs explicit provenance:
+
+- The Web API session-launch flow is CP-mediated: the authenticated principal
+  (personal API key → `userId`) is known at the moment the CP issues the
+  launch command. The CP mints a **launch correlation id** and records
+  `correlationId → user:<userId>` (new column or side table on the launch
+  record — distinct from the fencing `launchId`).
+- The daemon echoes the correlation id in the session's `event/session` frame
+  (optional protocol field, added alongside `conversationKind` in §4.1).
+- At ingest, a frame carrying a known correlation id classifies the session
+  `private` with that owner. A Web API launch whose correlation cannot be
+  resolved fails closed per §4.2.
+
 ### 4.5 A2A inheritance: durable reconciliation semantics
 
 Inheritance must survive out-of-order arrival and later human changes without
@@ -235,25 +254,6 @@ state marker:
 - **Parent widened later (`private` → `org`).** Never cascades. Each
   descendant stays as classified; widening a child remains a per-session §4.3
   decision by its owner or an org owner.
-
-### 4.4 Web API launch provenance
-
-The Web API rule in §4.2 is not implementable from what exists today:
-`AgentLaunch` has no creator column, its `launchId` is an agent-runtime
-lifecycle fence (part of the `sessionEpoch`/`seq`/`launchId` fencing tuple),
-and daemon `event/session` telemetry does not populate it. Ownership therefore
-needs explicit provenance:
-
-- The Web API session-launch flow is CP-mediated: the authenticated principal
-  (personal API key → `userId`) is known at the moment the CP issues the
-  launch command. The CP mints a **launch correlation id** and records
-  `correlationId → user:<userId>` (new column or side table on the launch
-  record — distinct from the fencing `launchId`).
-- The daemon echoes the correlation id in the session's `event/session` frame
-  (optional protocol field, added alongside `conversationKind` in §4.1).
-- At ingest, a frame carrying a known correlation id classifies the session
-  `private` with that owner. A Web API launch whose correlation cannot be
-  resolved fails closed per §4.2.
 
 ## 5. Enforcement points (control-plane)
 
