@@ -74,25 +74,34 @@ first-connect behavior is the hostname name-seed in `daemon.repo.ts`. The task r
 async; the handshake never waits on it. Once every preset is settled (§State) the hook
 is a cheap no-op read.
 
-**Ready runtime.** Presence is not readiness: the daemon deliberately reports
-installed-but-logged-out runtimes, flagged `authRequired` on the profile
-(`FactsRuntimeProfile`), and the BFF DTO preserves that flag to render "Login
-required". A runtime is **ready** iff it has a reported profile whose latest probe did
-not flag auth-required; a runtime with no reported profile, or whose probe has not
-resolved, is not ready. Readiness is derived and may regress — some logged-out
-runtimes are only discovered on a live turn, not by the probe — and a regression
-simply flips the derived state back. This one predicate gates provisioning here and
-derives the checklist item (§6.2); the implementation contract includes the case
-"daemon online, every profile auth-required" — the checklist item stays incomplete
-and provisioning stays deferred.
+**Ready runtime.** Presence is not readiness — and the current facts cannot even
+express readiness. `FactsRuntimeProfile.authRequired` is absent both before a probe
+resolves and after a successful one (the CP stores absence as `false`,
+`runtime-profile.repo.ts`), so "unprobed" and "probed fine" are indistinguishable;
+`modelsSource` is cache-vs-live provenance, set to `probed` for failed probes too.
+This design therefore adds an explicit per-runtime **probe status** to
+`facts/daemon-runtimes` (additive protocol field, persisted on the profile row):
+`pending | ready | auth_required | failed`, stamped by the daemon on each probe
+sweep. A runtime is **ready** iff its stored profile carries `status: 'ready'`
+**observed on the daemon's current connection** — the facts channel is already
+seq-fenced per connection, so the row records the observing connection alongside the
+status. Readiness may regress: some logged-out runtimes are only discovered on a live
+turn, not by the probe, and the discovery flips the derived state back.
 
-**Timing.** `RegisterReq.capabilities.runtimes` is a bare id list with no auth
-information, so readiness is evaluated from stored runtime profiles: at `register/ok`
-against the rows persisted from a previous session, and afresh on every
-`facts/daemon-runtimes` report (which also re-fires after a login flips
-`authRequired`). A preset that cannot be created yet writes **no state at all** —
-absence is what makes the next event retry it — and the checklist's first item
-("Sign in a runtime") explains the wait.
+**Provisioning gate.** Creation requires a _current-connection_ `ready` observation.
+Rows persisted from a previous session may still say ready after the runtime logged
+out, so `register/ok` alone never settles a preset — the daemon probes and re-emits
+facts on every CP (re)connect, so waiting for the first current-connection report
+costs seconds and no new machinery. (`RegisterReq.capabilities.runtimes` is a bare id
+list with no auth information and never enters the predicate.) The checklist item
+(§6.2) reads the latest stored status — an offline daemon is already surfaced by the
+checklist's first item. A preset that cannot be created yet writes **no state at
+all** — absence is what makes the next report retry it — and the checklist's
+"Sign in a runtime" item explains the wait. The implementation contract includes:
+pre-probe (`pending` ⇒ not ready), a non-auth probe failure (`failed` ⇒ not ready,
+surfaced as runtime trouble rather than "signed in"), every-profile-auth-required
+(item incomplete, provisioning deferred), and ready→logged-out across a reconnect
+(the stale prior-session `ready` must not settle a preset).
 
 **State.** Idempotency and deletion-permanence live in a small per-preset table —
 `preset_agent (orgId, preset, agentId?, status, at)`, additive migration:
@@ -270,17 +279,17 @@ view — non-blocking, dismissible, reopenable from Help.
 Every item derives from live resources; nothing stores "step done". The only persisted
 bit is a per-user dismissal.
 
-| Item                           | Derivation                                                                                                                                                         |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Daemon connected               | daemon status `ready`                                                                                                                                              |
-| Runtime signed in              | at least one **ready** runtime (§3.2) — non-empty profiles are not enough: the list deliberately includes installed-but-logged-out runtimes flagged `authRequired` |
-| Meet your agents               | every preset settled — a `preset_agent` row per preset, `created` or `skipped` (§3.2)                                                                              |
-| Talk to your admin agent       | an assistant session exists                                                                                                                                        |
-| Connect Slack                  | a Slack integration exists                                                                                                                                         |
-| Connect GitHub                 | a GitHub App installation exists                                                                                                                                   |
-| Give your agent a repository   | general agent's workspace ≠ scratch                                                                                                                                |
-| Finish your first conversation | a completed standard-agent session exists                                                                                                                          |
-| Invite teammates               | org member count > 1                                                                                                                                               |
+| Item                           | Derivation                                                                                                                                                                               |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Daemon connected               | daemon status `ready`                                                                                                                                                                    |
+| Runtime signed in              | at least one **ready** runtime (§3.2, latest stored probe status) — non-empty profiles are not enough: they include installed-but-logged-out (`auth_required`) and failed-probe runtimes |
+| Meet your agents               | every preset settled — a `preset_agent` row per preset, `created` or `skipped` (§3.2)                                                                                                    |
+| Talk to your admin agent       | an assistant session exists                                                                                                                                                              |
+| Connect Slack                  | a Slack integration exists                                                                                                                                                               |
+| Connect GitHub                 | a GitHub App installation exists                                                                                                                                                         |
+| Give your agent a repository   | general agent's workspace ≠ scratch                                                                                                                                                      |
+| Finish your first conversation | a completed standard-agent session exists                                                                                                                                                |
+| Invite teammates               | org member count > 1                                                                                                                                                                     |
 
 Items that reference the admin agent render only for users who can see it — the
 org's owner(s), given its restricted visibility. Other members see the remaining
@@ -322,12 +331,12 @@ through MCP tools with their existing confirm-gates.
 
 ## 8. Phasing
 
-| Phase       | Contents                                                                                                                                                                            | Depends on                                                                       |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| M0          | `RESERVED_AGENT_SLUGS`; provisioning seam + `preset_agent` state + **general** preset agent; checklist + `/onboarding` endpoint + `needsOnboarding` rework; Fulfillment A auto-bind | Nothing new — ships value alone: install daemon → agent exists → one-click Slack |
-| M1          | agent-assistant P3 + minimal P4 (webchat delegated key); admin agent auto-provision; `getOnboardingStatus` tool + prompt hook                                                       | M0 seam                                                                          |
-| M2 (hosted) | Distributed Slack app: platform env creds, install route + state, `teamId` schema + composite relay demux, uninstall/revoke lifecycle                                               | Independent of M1; relay pool                                                    |
-| M3          | IM identity binding → admin agent Slack DMs; guided per-agent app upgrades                                                                                                          | M1, M2                                                                           |
+| Phase       | Contents                                                                                                                                                                                                               | Depends on                                                                       |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| M0          | `RESERVED_AGENT_SLUGS`; provisioning seam + `preset_agent` state + runtime probe-status facts field + **general** preset agent; checklist + `/onboarding` endpoint + `needsOnboarding` rework; Fulfillment A auto-bind | Nothing new — ships value alone: install daemon → agent exists → one-click Slack |
+| M1          | agent-assistant P3 + minimal P4 (webchat delegated key); admin agent auto-provision; `getOnboardingStatus` tool + prompt hook                                                                                          | M0 seam                                                                          |
+| M2 (hosted) | Distributed Slack app: platform env creds, install route + state, `teamId` schema + composite relay demux, uninstall/revoke lifecycle                                                                                  | Independent of M1; relay pool                                                    |
+| M3          | IM identity binding → admin agent Slack DMs; guided per-agent app upgrades                                                                                                                                             | M1, M2                                                                           |
 
 ## 9. Open questions
 
