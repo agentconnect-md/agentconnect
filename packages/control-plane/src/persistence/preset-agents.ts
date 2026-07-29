@@ -44,8 +44,10 @@ export const GENERAL_PRESET = {
   description:
     'A general-purpose development agent for this organization: code review, coding tasks, and everyday questions.',
   // Fixed brand identity (stable and recognizable — NOT the random default):
-  // the AgentConnect diamond on the neutral dark plate, rendered by the console
-  // and the icon-PNG endpoint via the special-cased 'agentconnect' glyph.
+  // the native AgentConnect diamond, rendered plateless by the console and the
+  // icon-PNG endpoint via the special-cased 'agentconnect' glyph. The `color` is
+  // inert for this glyph (renderers ignore it); it exists only because the wire
+  // schema requires one — keep it the neutral dark plate.
   icon: { kind: 'glyph', glyph: 'agentconnect', color: '#1a212b' } satisfies AgentIcon
 } as const
 

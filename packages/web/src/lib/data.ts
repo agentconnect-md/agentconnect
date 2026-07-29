@@ -188,6 +188,8 @@ export interface Agent {
   name: string
   /** Optional human-readable label ("Acme Network Bot"); render via agentLabel(). */
   displayName?: string
+  /** True for a built-in preset agent: shows the "builtin" label and hides Delete. */
+  builtin?: boolean
   /** Console avatar descriptor; null ⇒ legacy default (the runtime mark). Rendered by <AgentIconView>. */
   icon?: AgentIcon | null
   model: string
@@ -819,6 +821,58 @@ const tagTitle = <T extends { title: string }>(x: T): T => ({ ...x, title: MOCK_
 
 export const AGENTS: Agent[] = (
   [
+    {
+      // The built-in `agentconnect` preset every org is born with (preset-agents.md
+      // §3): native brand diamond icon, "builtin" label, no Delete, unplaced
+      // (deferred runtime) until placement picks a daemon.
+      id: 'agentconnect',
+      visibility: 'org',
+      sharedWith: [],
+      canManageSharing: true,
+      callPolicy: 'all',
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'all',
+      allowedTargetAgentIds: [],
+      introduceOnJoin: false,
+      restrictFileAccess: false,
+      sandboxSupported: false,
+      sandboxRequired: false,
+      name: 'agentconnect',
+      builtin: true,
+      icon: { kind: 'glyph', glyph: 'agentconnect', color: '#1a212b' },
+      model: '',
+      runtime: '',
+      desc: 'A general-purpose development agent for this organization: code review, coding tasks, and everyday questions.',
+      outputMode: '—',
+      showFooter: true,
+      reasoning: '',
+      fastMode: false,
+      pause: false,
+      memoryProvider: 'managed',
+      memoryAutoDistill: false,
+      permissionMode: '',
+      allowRuntimeChangesInChat: false,
+      env: [],
+      secretKeys: [],
+      daemon: '—',
+      region: '—',
+      repo: '—',
+      workdir: '—',
+      status: 'offline',
+      tokens: '0',
+      cost: '$0.00',
+      createdBy: '',
+      createdAt: 'Jun 1, 2026',
+      lastModifiedBy: '',
+      lastModifiedAt: 'Jun 1, 2026',
+      integrations: [],
+      workspace: {
+        mode: 'scratch',
+        created: '—',
+        size: '0 B',
+        files: []
+      }
+    },
     {
       id: 'deploy',
       visibility: 'restricted',

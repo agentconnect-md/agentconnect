@@ -92,11 +92,12 @@ function centered(inner24: string, fraction: number, extraGroupAttrs = ''): stri
 export function buildAgentIconSvg(icon: AgentIcon | null, runtime: string | null): string {
   const open = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">'
   if (icon?.kind === 'glyph') {
-    const color = HEX_COLOR_RE.test(icon.color) ? icon.color : DARK_PLATE
     if (icon.glyph === 'agentconnect') {
-      // Brand diamond: multi-color fills of its own — no white-stroke treatment.
-      return `${open}<rect width="64" height="64" fill="${color}"/>${centered(BRAND_GLYPH_INNER, 0.66)}</svg>`
+      // Brand diamond: the native logo, plateless — transparent background,
+      // `color` inert, no white-stroke treatment (it carries its own facet fills).
+      return `${open}${centered(BRAND_GLYPH_INNER, 1)}</svg>`
     }
+    const color = HEX_COLOR_RE.test(icon.color) ? icon.color : DARK_PLATE
     const glyph = GLYPH_SVG_INNER[icon.glyph] ?? GLYPH_SVG_INNER.bot ?? ''
     const stroke = ' fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
     return `${open}<rect width="64" height="64" fill="${color}"/>${centered(glyph, 0.56, stroke)}</svg>`

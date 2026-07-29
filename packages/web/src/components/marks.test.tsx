@@ -13,6 +13,17 @@ describe('icon views', () => {
     expect(markup).not.toContain('box-shadow')
   })
 
+  it('renders the brand diamond plateless — the native logo, its stored color inert', () => {
+    const markup = renderToStaticMarkup(
+      <AgentIconView icon={{ kind: 'glyph', glyph: 'agentconnect', color: '#1a212b' }} runtime="" size={44} />
+    )
+
+    expect(markup).toContain('data-agent-icon-glyph="true"')
+    expect(markup).toContain('#f2c64a') // a facet fill of the diamond
+    expect(markup).not.toContain('background') // no plate behind the native logo
+    expect(markup).not.toContain('#1a212b')
+  })
+
   it('renders uploaded images on a white plate so transparent pixels stay neutral', () => {
     const markup = renderToStaticMarkup(
       <AgentIconView icon={{ kind: 'image', url: 'https://cdn.example.test/icon.webp' }} runtime="" size={44} />

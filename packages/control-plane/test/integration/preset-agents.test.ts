@@ -22,6 +22,7 @@ interface AgentBody {
   id: string
   name: string
   displayName: string | null
+  builtin: boolean
   runtime: string | null
   daemonId: string | null
   icon: { kind: string; glyph?: string; color?: string } | null
@@ -42,6 +43,7 @@ describe('org-creation seam (POST /orgs)', () => {
       const preset = agents[0]!
       expect(preset.name).toBe('agentconnect')
       expect(preset.displayName).toBe('AgentConnect')
+      expect(preset.builtin).toBe(true) // derived from its preset_agent row
       expect(preset.runtime).toBeNull() // deferred exec config
       expect(preset.daemonId).toBeNull() // unplaced
       expect(preset.icon).toEqual(GENERAL_PRESET.icon) // fixed brand glyph, not random
@@ -55,7 +57,7 @@ describe('org-creation seam (POST /orgs)', () => {
     }
   })
 
-  it('deleting the preset settles it — the state row survives with the stamp', async () => {
+  it('DELETE refuses the built-in preset (403) but still deletes ordinary agents', async () => {
     const { app, close } = buildHttpApp(prisma)
     try {
       const created = await app.inject({ method: 'POST', url: '/api/v1/orgs', payload: { slug: 'del-org' } })
@@ -64,14 +66,32 @@ describe('org-creation seam (POST /orgs)', () => {
         id: string
       }[]
 
+      // The preset is a permanent org fixture (preset-agents.md §2, 2026-07-29).
       const del = await app.inject({ method: 'DELETE', url: `/api/v1/orgs/${orgId}/agents/${agents[0]!.id}` })
-      expect(del.statusCode).toBe(204)
+      expect(del.statusCode).toBe(403)
+      expect((del.json() as { message: string }).message).toMatch(/built-in/)
 
+      // Untouched: the agent row and its preset marker both survive, unsettled.
+      expect(await prisma.agent.findUnique({ where: { id: agents[0]!.id } })).not.toBeNull()
       const row = await prisma.presetAgent.findUnique({
         where: { orgId_preset: { orgId, preset: 'general' } }
       })
-      expect(row?.agentId).toBeNull() // FK SetNull
-      expect(row?.placementSettledAt).toBeInstanceOf(Date) // explicit opt-out settles
+      expect(row).toMatchObject({ agentId: agents[0]!.id, placementSettledAt: null })
+
+      // The guard is preset-scoped: an ordinary sibling still deletes cleanly.
+      const sibling = await app.inject({
+        method: 'POST',
+        url: `/api/v1/orgs/${orgId}/agents`,
+        payload: { name: 'ordinary', runtime: 'claude' }
+      })
+      expect(sibling.statusCode).toBe(201)
+      const siblingBody = sibling.json() as AgentBody
+      expect(siblingBody.builtin).toBe(false)
+      const delSibling = await app.inject({
+        method: 'DELETE',
+        url: `/api/v1/orgs/${orgId}/agents/${siblingBody.id}`
+      })
+      expect(delSibling.statusCode).toBe(204)
     } finally {
       await close()
     }

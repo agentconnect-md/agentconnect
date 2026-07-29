@@ -159,6 +159,7 @@ export interface AgentDto {
   orgId: string
   name: string // slug — lowercase [a-z0-9-], unique per org
   displayName: string | null // human-readable label; null when the slug is the only name
+  builtin: boolean // built-in preset agent — labeled "builtin", not deletable
   icon: AgentIcon | null // console avatar; null ⇒ legacy default (runtime mark)
   iconUrl: string | null // resolved URL for an uploaded `image` icon; null otherwise
   description: string | null
@@ -1353,6 +1354,7 @@ export function agentFromDto(d: AgentDto): Agent {
     id: d.id,
     name: d.name,
     ...(d.displayName ? { displayName: d.displayName } : {}),
+    ...(d.builtin ? { builtin: true } : {}),
     icon: withIconUrl(d.icon, d.iconUrl),
     // Blank when the agent has no explicit model — the UI shows "Default" (runtime
     // default). Never fall back to the runtime id: that would fabricate a model.

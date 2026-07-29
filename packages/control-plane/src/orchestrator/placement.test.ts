@@ -124,6 +124,7 @@ describe('integrationToSpec conversation gating (§14)', () => {
 describe('agentRecordToSpec runtime overrides', () => {
   it('ships displayName as either its value or explicit null so clearing it replicates', () => {
     const agent: AgentRecord = {
+      builtin: false,
       id: AgentId('77777777-7777-4777-8777-777777777777'),
       orgId: OrgId('org'),
       name: 'deploy-bot',
@@ -159,6 +160,7 @@ describe('agentRecordToSpec runtime overrides', () => {
 
   it('carries permissionMode to the daemon spec', () => {
     const agent: AgentRecord = {
+      builtin: false,
       id: AgentId('77777777-7777-4777-8777-777777777777'),
       orgId: OrgId('org'),
       name: 'deploy-bot',
@@ -190,6 +192,7 @@ describe('agentRecordToSpec runtime overrides', () => {
 
   it('carries pause to the daemon spec, and omits it when null (#288)', () => {
     const base: AgentRecord = {
+      builtin: false,
       id: AgentId('77777777-7777-4777-8777-777777777777'),
       orgId: OrgId('org'),
       name: 'deploy-bot',
@@ -226,6 +229,7 @@ describe('agentRecordToSpec runtime overrides', () => {
 
   it('carries the memory backend to the daemon spec, and omits it when null', () => {
     const base: AgentRecord = {
+      builtin: false,
       id: AgentId('88888888-8888-4888-8888-888888888888'),
       orgId: OrgId('org'),
       name: 'mem-bot',
@@ -261,6 +265,7 @@ describe('agentRecordToSpec runtime overrides', () => {
 
   it('ships a cleared model/effort/permissionMode as explicit null so a runtime switch replicates the clear', () => {
     const base: AgentRecord = {
+      builtin: false,
       id: AgentId('77777777-7777-4777-8777-777777777777'),
       orgId: OrgId('org'),
       name: 'deploy-bot',
@@ -301,6 +306,7 @@ describe('agentRecordToSpec runtime overrides', () => {
 
   it('ships the caller-fetched secrets (AgentSecretStore) on the spec — even {} so a removed secret replicates', () => {
     const base: AgentRecord = {
+      builtin: false,
       id: AgentId('77777777-7777-4777-8777-777777777777'),
       orgId: OrgId('org'),
       name: 'deploy-bot',

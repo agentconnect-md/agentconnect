@@ -50,9 +50,13 @@ export function AgentIconPicker({
   const fileRef = useRef<HTMLInputElement>(null)
 
   const shown = open ? draft : value
-  // The working glyph/color, so picking one axis preserves the other.
+  // The brand diamond (built-in presets) is the native plateless logo: its stored
+  // color is inert, so the Color row is hidden and the plate stays transparent.
+  const isBrand = shown?.kind === 'glyph' && shown.glyph === 'agentconnect'
+  // The working glyph/color, so picking one axis preserves the other. Leaving the
+  // brand icon starts from the palette default, not its inert stored color.
   const curGlyph = shown?.kind === 'glyph' ? shown.glyph : AGENT_ICON_GLYPHS[0]
-  const curColor = shown?.kind === 'glyph' ? shown.color : AGENT_ICON_COLORS[0]
+  const curColor = shown?.kind === 'glyph' && !isBrand ? shown.color : AGENT_ICON_COLORS[0]
 
   const openPopover = () => {
     setDraft(value)
@@ -99,7 +103,7 @@ export function AgentIconPicker({
         // clipped. The glyph plate / <img> self-round via rounded-[inherit], and the
         // button's own background is clipped by its border-radius regardless.
         className={`relative flex items-center justify-center border-0 p-0 ${shown?.kind === 'image' ? 'bg-white' : shown?.kind === 'glyph' ? '' : 'bg-(--surface-inverse)'} ${radiusClass}`}
-        style={{ width: size, height: size, background: shown?.kind === 'glyph' ? shown.color : undefined }}
+        style={{ width: size, height: size, background: shown?.kind === 'glyph' && !isBrand ? shown.color : undefined }}
       >
         <AgentIconView icon={shown} runtime={runtime} size={size} />
         <span
@@ -137,25 +141,29 @@ export function AgentIconPicker({
                 )
               })}
             </div>
-            <div className="mb-[9px] font-mono text-[11px] font-semibold uppercase tracking-[0.06em] text-(--text-tertiary)">
-              Color
-            </div>
-            <div className="mb-[14px] flex gap-[8px]">
-              {AGENT_ICON_COLORS.map((c) => {
-                const sel = shown?.kind === 'glyph' && curColor === c
-                return (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => pick({ kind: 'glyph', glyph: curGlyph, color: c })}
-                    className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[8px] border-2 p-0"
-                    style={{ background: c, borderColor: sel ? 'var(--text-primary)' : c }}
-                  >
-                    {sel && <Icon name="check" size={15} color="#fff" />}
-                  </button>
-                )
-              })}
-            </div>
+            {!isBrand && (
+              <>
+                <div className="mb-[9px] font-mono text-[11px] font-semibold uppercase tracking-[0.06em] text-(--text-tertiary)">
+                  Color
+                </div>
+                <div className="mb-[14px] flex gap-[8px]">
+                  {AGENT_ICON_COLORS.map((c) => {
+                    const sel = shown?.kind === 'glyph' && curColor === c
+                    return (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => pick({ kind: 'glyph', glyph: curGlyph, color: c })}
+                        className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[8px] border-2 p-0"
+                        style={{ background: c, borderColor: sel ? 'var(--text-primary)' : c }}
+                      >
+                        {sel && <Icon name="check" size={15} color="#fff" />}
+                      </button>
+                    )
+                  })}
+                </div>
+              </>
+            )}
             {onUploadImage && (
               <>
                 <div className="-mx-[14px] mb-[12px] h-px bg-(--border-subtle)" />

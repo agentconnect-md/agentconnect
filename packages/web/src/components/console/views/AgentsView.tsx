@@ -9,6 +9,7 @@ import { useConsoleData } from '@/lib/data-context'
 import { IntegrationMarks } from '@/components/console/IntegrationMarks'
 import { useModal } from '@/components/console/ModalProvider'
 import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
+import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { RestrictedLock } from '@/components/console/VisibilityField'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -407,6 +408,7 @@ export default function AgentsView() {
                       <span className="truncate font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
                         {agentLabel(a)}
                       </span>
+                      <BuiltinBadge show={!!a.builtin} />
                       <RestrictedLock
                         show={a.visibility === 'restricted'}
                         title="Selected — only shared members can see this agent"
@@ -589,6 +591,7 @@ export default function AgentsView() {
                       <span className="truncate font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
                         {agentLabel(a)}
                       </span>
+                      <BuiltinBadge show={!!a.builtin} />
                       <RestrictedLock
                         show={a.visibility === 'restricted'}
                         title="Selected — only shared members can see this agent"

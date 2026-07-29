@@ -539,6 +539,9 @@ export const AgentDto = z.object({
   orgId: z.string(),
   name: z.string(),
   displayName: z.string().nullable(),
+  /** True for a built-in preset agent (preset-agents.md §3): the console shows a
+   *  "builtin" label and the CP refuses to delete it. */
+  builtin: z.boolean(),
   icon: AgentIconDto.nullable(), // console avatar; null ⇒ legacy default (runtime mark)
   // Resolved absolute URL for an uploaded `image` icon (object-store public URL,
   // cache-busted). Null for glyph/runtime (the console renders those locally) and

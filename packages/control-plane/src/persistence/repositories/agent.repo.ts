@@ -27,10 +27,15 @@ import {
 import { PgHookRepo } from './hook.repo.js'
 import { AgentWorkspaceIntegrationConflict } from '../errors.js'
 
-// The agent row plus its joined creator + last-modifier users. Reads pull both
-// relations so `toRecord` can surface each one's display name/email.
-type AgentWithUsers = Agent & { createdBy: User | null; lastModifiedBy: User | null }
-const withUsers = { createdBy: true, lastModifiedBy: true } as const
+// The agent row plus its joined creator + last-modifier users, and the preset
+// rows referencing it (⇒ `builtin`). Reads pull all three so `toRecord` can
+// surface the users' display name/email and derive the built-in flag.
+type AgentWithUsers = Agent & {
+  createdBy: User | null
+  lastModifiedBy: User | null
+  presetRecords: { preset: string }[]
+}
+const withUsers = { createdBy: true, lastModifiedBy: true, presetRecords: { select: { preset: true } } } as const
 
 async function assertWorkspaceIntegrationCompatible(
   tx: Prisma.TransactionClient,
@@ -123,6 +128,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     orgId: OrgId(a.orgId),
     name: a.name,
     displayName: a.displayName,
+    builtin: a.presetRecords.length > 0,
     icon: parseAgentIcon(a.icon),
     description: a.description,
     runtime: a.runtime,

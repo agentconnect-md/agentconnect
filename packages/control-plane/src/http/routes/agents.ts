@@ -183,6 +183,7 @@ function toDto(
     orgId: a.orgId,
     name: a.name,
     displayName: a.displayName,
+    builtin: a.builtin,
     icon: a.icon,
     // Only `image` icons resolve to a URL (the object-store public URL); glyph/runtime
     // render locally in the console, so null there. Cache-busted by lastModified.
@@ -1822,6 +1823,13 @@ export function agentRoutes(deps: HttpDeps) {
         if (!existing) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!canEdit(existing, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        }
+        // Built-in preset agents are permanent org fixtures (preset-agents.md §3):
+        // deletion is refused on every surface (console, REST, MCP all land here).
+        if (existing.builtin) {
+          return reply
+            .code(403)
+            .send({ error: 'Forbidden', statusCode: 403, message: 'built-in agent cannot be deleted' })
         }
         const release = deps.agentMutations.tryBeginMutation(existing.id)
         if (!release) {

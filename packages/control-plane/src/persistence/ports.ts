@@ -598,6 +598,9 @@ export interface AgentRecord {
   orgId: OrgId
   name: string
   displayName: string | null
+  // True when a preset_agent row references this agent (preset-agents.md §3):
+  // a built-in preset — labeled "builtin" in the console and protected from delete.
+  builtin: boolean
   icon: AgentIcon | null // console avatar descriptor; null ⇒ legacy default (runtime mark)
   description: string | null
   runtime: string | null // null ⇒ deferred exec config (unplaced preset; set at placement)

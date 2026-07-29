@@ -38,6 +38,12 @@ describe('agentIconBackgroundColor', () => {
     expect(agentIconBackgroundColor(null)).toBe(AGENT_ICON_DARK_PLATE)
     expect(agentIconBackgroundColor({ kind: 'glyph', glyph: 'bot', color: 'red' })).toBe(AGENT_ICON_DARK_PLATE)
   })
+
+  it('falls back to the dark plate for the plateless brand diamond (its color is inert)', () => {
+    expect(agentIconBackgroundColor({ kind: 'glyph', glyph: 'agentconnect', color: '#2a6fdb' })).toBe(
+      AGENT_ICON_DARK_PLATE
+    )
+  })
 })
 
 describe('parseAgentIcon', () => {
@@ -67,10 +73,11 @@ describe('glyph vocabulary', () => {
     for (const g of AGENT_ICON_GLYPHS) expect(GLYPH_SVG_INNER[g], `missing SVG for "${g}"`).toBeTruthy()
   })
 
-  it('renders the brand diamond with its own facet fills, not the white-stroke treatment', () => {
+  it('renders the brand diamond plateless — native logo, no white-stroke treatment, color inert', () => {
     const svg = buildAgentIconSvg({ kind: 'glyph', glyph: 'agentconnect', color: '#1a212b' }, null)
     expect(svg).toContain('#f2c64a') // a facet fill survives
-    expect(svg).toContain('fill="#1a212b"') // the plate keeps the chosen color
+    expect(svg).not.toContain('<rect') // no background plate — transparent PNG
+    expect(svg).not.toContain('#1a212b') // the stored color is ignored
     expect(svg).not.toContain('stroke="#fff"')
   })
 })
