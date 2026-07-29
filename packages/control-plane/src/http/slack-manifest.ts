@@ -115,7 +115,7 @@ function buildManagedManifest(name: string, httpRelayBase?: string, backgroundCo
       },
       shortcuts: [
         {
-          name: 'Manage AgentConnect session',
+          name: 'Manage session',
           type: 'message',
           callback_id: SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
           description: 'View or update the AgentConnect session for this conversation'

@@ -168,7 +168,7 @@ describe('mergeManagedSlackManifest', () => {
     expect(merged.features.slash_commands).toEqual(current.features.slash_commands)
     expect(merged.features.shortcuts).toEqual([
       expect.objectContaining({
-        name: 'Manage AgentConnect session',
+        name: 'Manage session',
         callback_id: SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID
       }),
       current.features.shortcuts[0]
