@@ -14,7 +14,7 @@ import { Avatar, Button, Icon } from '@/components/ui'
 import { useModal } from '@/components/console/ModalProvider'
 import ApiKeysCard from '@/components/console/ApiKeysCard'
 import SlackConfigCard from '@/components/console/SlackConfigCard'
-import { isAuthConfigured, logout } from '@/lib/auth'
+import { accountSecurityUrl, isAuthConfigured, logout } from '@/lib/auth'
 import { useProfile } from '@/lib/profile'
 import { MOCK_MODE } from '@/lib/data'
 import { useIsMobile } from '@/lib/use-is-mobile'
@@ -40,6 +40,7 @@ export default function ProfileView() {
   // Merged identity (token claims + the CP /me overlay) — repaints live when
   // the edit-profile dialog saves a new name/photo.
   const { user, me: meProfile } = useProfile()
+  const authOn = isAuthConfigured()
   // The signed-in user's membership — the same row the Settings page lists.
   // Matched by userId when the CP profile is known (exact), by email otherwise.
   // With no match (mock mode / CP down) the fields fall back to the design's
@@ -59,8 +60,13 @@ export default function ProfileView() {
     .join(' · built ')
 
   const signOut = () => {
-    if (isAuthConfigured()) void logout()
+    if (authOn) void logout()
     else router.push('/login')
+  }
+
+  const manageSignIns = () => {
+    const url = accountSecurityUrl(`${window.location.origin}${window.location.pathname}`)
+    if (url) window.location.assign(url)
   }
 
   if (isMobile) {
@@ -109,6 +115,17 @@ export default function ProfileView() {
               <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">Email</span>
               <span className="font-mono text-[12px] font-medium leading-normal">{user.email}</span>
             </div>
+            {authOn && (
+              <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
+                <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
+                  Sign-in methods
+                </span>
+                <Button variant="secondary" size="xs" onClick={manageSignIns}>
+                  <Icon name="link-2" size={13} />
+                  Link social account
+                </Button>
+              </div>
+            )}
             <div className="flex items-center justify-between gap-4 px-4 py-3">
               <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
                 Member since
@@ -167,6 +184,14 @@ export default function ProfileView() {
           <KvRow label="Email">
             <span className="mono text-[12.5px]">{user.email}</span>
           </KvRow>
+          {authOn && (
+            <KvRow label="Sign-in methods">
+              <Button variant="secondary" size="xs" onClick={manageSignIns}>
+                <Icon name="link-2" size={13} />
+                Link social account
+              </Button>
+            </KvRow>
+          )}
           <KvRow label="Role">
             <span className={`badge ${roleBadge}`}>{roleLabel}</span>
           </KvRow>

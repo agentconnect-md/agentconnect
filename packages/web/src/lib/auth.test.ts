@@ -82,3 +82,27 @@ describe('getToken', () => {
     expect(logto.replace).toHaveBeenCalledOnce()
   })
 })
+
+describe('accountSecurityUrl', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    vi.stubGlobal('window', {
+      __AC_ENV: {
+        LOGTO_ENDPOINT: 'https://login.example.test/',
+        LOGTO_APP_ID: 'web-app'
+      }
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('returns to the current AgentConnect profile after account management', async () => {
+    const { accountSecurityUrl } = await import('./auth')
+
+    expect(accountSecurityUrl('https://console.example.test/acme/profile')).toBe(
+      'https://login.example.test/account/security?redirect=https%3A%2F%2Fconsole.example.test%2Facme%2Fprofile'
+    )
+  })
+})
