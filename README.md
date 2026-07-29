@@ -116,7 +116,7 @@ where work already happens.
 
 ## Architecture
 
-![AgentConnect daemon-centric message paths](docs/designs/daemon-centric-message-paths.png)
+![AgentConnect daemon-centric message paths](docs/designs/daemon-centric-architecture.svg)
 
 | Component                  | Responsibility                                                                                                                                 |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
