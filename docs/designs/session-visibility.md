@@ -108,7 +108,13 @@ orgId            String            // denormalized from agent.orgId at ingest
 visibility       SessionVisibility @default(org)
 ownerIdentity    String?           // §2 format; null for automation/legacy rows
 visibilitySource VisibilitySource  @default(default)
+visibilityRev    Int               @default(0) // monotonic, bumped in the same
+                                               // tx as any visibility change (§5.1)
 ```
+
+`visibilityRev` is a **dedicated counter**: the existing transcript revision
+and WS sequence numbers version different things and are not reused for the
+privacy gate.
 
 ```prisma
 enum VisibilitySource {
@@ -272,15 +278,21 @@ after the parent has been tightened, retaining stale org visibility. Both
 operations must serialize on the parent row:
 
 - Child ingest classifies inside the same transaction as the child insert and
-  takes a shared row lock on the parent (`SELECT … FOR SHARE`).
-- The §4.3 tightening handler locks the parent `FOR UPDATE` and updates all
-  descendants in the same transaction.
+  takes a shared row lock on its **immediate parent** (`SELECT … FOR SHARE`).
+- The §4.3 tightening handler cascades **lock-then-scan, level by level, to a
+  fixpoint**: lock the tightened session `FOR UPDATE`; then repeatedly lock
+  the current frontier's children `FOR UPDATE` and update them, re-scanning
+  each level _after_ its parent locks are held, until no new descendants
+  appear. A scan-everything-then-update cascade is **not** sufficient: a
+  grandchild insert holding `FOR SHARE` on its mid-level parent could commit
+  a stale snapshot after a one-shot scan missed it.
 
-Either the child commits first — and the cascade, which enumerates
-descendants inside its transaction, includes it — or the cascade commits
-first and the child's classification reads `private`. No interleaving can
-produce an org-visible child of a private parent. The integration test plan
-(§9) exercises this with concurrent ingest + tighten.
+This closes the race at every depth by induction on the level: for any
+descendant D with parent P, either the cascade acquires `FOR UPDATE` on P
+first — D's `FOR SHARE` waits and D then reads P as `private` — or D's
+insert commits first, and the cascade's post-lock re-scan of P's children
+sees D and updates it. The integration test plan (§9) exercises both commit
+orders, including the depth-2 grandchild interleaving.
 
 ## 5. Enforcement points (control-plane)
 
@@ -346,18 +358,40 @@ two layers:
    The push must be **durable, not fire-and-forget**, or races and restarts
    reopen the bypass:
 
-   - Each frame carries a **monotonic revision** per session (the CP already
-     versions session state); the daemon ignores stale revisions.
+   - Each frame carries the session's **`visibilityRev`** (§3) — a dedicated
+     durable counter bumped atomically in the same transaction as every
+     visibility change, settlement, and cascade. It is deliberately **not**
+     the transcript revision (a daemon-local cursor) nor the WS
+     `sessionEpoch`/`seq` fences (connection-scoped); neither advances with
+     visibility. The daemon ignores frames whose rev is ≤ its stored rev.
    - The daemon **acknowledges** the frame and persists the gate state (with
-     its revision) in its local store alongside the session; the CP retries
+     its rev) in its local store alongside the session; the CP retries
      unacked frames, per the WS channel's existing command semantics.
-   - On daemon **register/reconnect**, the CP replays the current privacy
-     state for the daemon's active sessions (a snapshot, not a diff), closing
-     the window where a change happened while the daemon was offline.
-   - **Fail closed:** a session whose gate state is missing or whose pending
-     update is unconfirmed (e.g. right after a restart, before the snapshot
-     lands) is treated as private for capture purposes until the CP confirms
+   - On daemon **register/reconnect**, the CP replays the current
+     `(sessionId, private?, visibilityRev)` set for the daemon's active
+     sessions (a snapshot, not a diff), closing the window where a change
+     happened while the daemon was offline.
+   - **Fail closed on known-unknown state:** a session whose _locally stored_
+     gate state is missing or pre-snapshot (e.g. right after a daemon
+     restart) is treated as private for capture until the snapshot confirms
      otherwise. A missed or delayed frame can only under-capture, never leak.
+
+   **Tightening cutover is staged, not instantaneous.** A daemon cannot fail
+   closed for an update it has not yet learned exists: between the CP
+   committing `private` and the daemon applying the frame, the daemon
+   legitimately holds confirmed `org` state — a concurrent turn can still be
+   captured, and an A2A delegation can carry the stale bit. The design makes
+   this window explicit rather than pretending it away:
+
+   - **CP-side read gates apply at commit**: list/detail/SSE hide the session
+     immediately.
+   - **The memory boundary takes effect at daemon ACK.** The §4.3 endpoint
+     reports the tighten as `pending` until every affected daemon has acked
+     the new rev, then `applied`; the console shows that state. Turns
+     captured inside the window fall under the existing "already captured is
+     not scrubbed" caveat — the promise is "capture stops at daemon
+     acknowledgement, typically sub-second", not "at the moment of the API
+     call".
 
 **Already-captured memory is not scrubbed.** Distilled memory cannot be
 reliably attributed back to source turns, so tightening a session stops
@@ -420,4 +454,6 @@ link ends public access without touching the session row.
   `org` channel session may pull it private; a non-owner collaborator may
   not); the §4.5 serialization race — concurrent child ingest and parent
   tightening in either commit order never yields an org-visible child of a
-  private parent.
+  private parent, including the depth-2 interleaving (grandchild insert
+  racing an ancestor cascade); tighten-cutover staging — the §4.3 response
+  stays `pending` until daemon ACK and flips to `applied`.
