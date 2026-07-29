@@ -8,9 +8,14 @@ import type {
   WireNormalizedMessage
 } from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
-import { SharedBotManager, type SharedBotManagerDeps, sharedSlackActionMsgId } from './shared-bot-manager.js'
+import {
+  SharedBotManager,
+  type SharedBotManagerDeps,
+  sharedSlackActionMsgId,
+  sharedSlackShortcutMsgId
+} from './shared-bot-manager.js'
 import { SharedBotRouter, type BotAssignment } from './shared-bot-router.js'
-import type { SharedSlackSessionAction } from './slack-shared-ingest.js'
+import type { SharedSlackSessionAction, SharedSlackSessionShortcut } from './slack-shared-ingest.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { Logger } from './log.js'
 
@@ -79,6 +84,7 @@ interface ManagerInternals {
   reportChannels(snapshot: RcBotChannels): void
   selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
   forwardSessionAction(botId: string, action: SharedSlackSessionAction): void
+  forwardSessionShortcut(botId: string, shortcut: SharedSlackSessionShortcut): boolean
   forward(botId: string, msg: WireNormalizedMessage): Promise<void>
 }
 
@@ -161,6 +167,45 @@ describe('SharedBotManager shared Slack session actions', () => {
     })
     expect(second.msgId).toBe(first.msgId)
     expect(first.msgId).toMatch(/^slack-action:[a-f0-9]{64}$/)
+  })
+
+  it('forwards a message shortcut through the current thread affinity', () => {
+    const sendMsg = vi.fn(async (msg: RdMsgSlackAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
+    const daemon = { sendMsg } as unknown as RelayDaemonConnection
+    const manager = new SharedBotManager(
+      deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
+    )
+    const internals = manager as unknown as ManagerInternals
+    internals.router.upsert(assignment())
+    internals.router.setAffinity(BOT_ID, 'C123/T1', {
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID,
+      integrationId: INTEGRATION_ID
+    })
+    const shortcut: SharedSlackSessionShortcut = {
+      triggerId: 'trigger-shortcut',
+      channelId: 'C123',
+      threadTs: 'T1',
+      interactionId: 'trigger-shortcut',
+      userId: 'U-ALICE'
+    }
+
+    expect(internals.forwardSessionShortcut(BOT_ID, shortcut)).toBe(true)
+    expect(sendMsg).toHaveBeenCalledWith({
+      source: 'slack_action',
+      agentId: AGENT_ID,
+      integrationId: INTEGRATION_ID,
+      sessionKey: 'C123/T1',
+      msgId: sharedSlackShortcutMsgId(BOT_ID, shortcut),
+      botId: BOT_ID,
+      userId: 'U-ALICE',
+      payload: {
+        kind: 'open-config-for-thread',
+        triggerId: 'trigger-shortcut',
+        channelId: 'C123',
+        threadTs: 'T1'
+      }
+    })
   })
 
   it('forwards the tapping user, and omits it entirely when the interaction named none', () => {

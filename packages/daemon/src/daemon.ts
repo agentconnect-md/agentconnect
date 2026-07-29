@@ -2107,6 +2107,7 @@ export class Daemon {
           this.onInbound(msg, this.srcIntegrationIds(conn))
         },
         onChannelsChanged: () => void this.refreshChannels(conn),
+        onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
         onStatusAction: (a) => this.handleStatusAction(a),
         onStatusInfo: (key) => this.statusInfoForKey(key),
         onPermissionChoice: (a) => this.handlePermissionChoice(a),
@@ -2599,6 +2600,7 @@ export class Daemon {
             this.onInbound(msg, this.srcIntegrationIds(conn))
           },
           onChannelsChanged: () => void this.refreshChannels(conn),
+          onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
           onStatusAction: (a) => this.handleStatusAction(a),
           onStatusInfo: (key) => this.statusInfoForKey(key),
           onPermissionChoice: (a) => this.handlePermissionChoice(a),
@@ -3229,7 +3231,7 @@ export class Daemon {
     this.log.info(
       `slack: background retry for appToken (${group.integrations.length} integration(s): ${group.integrations.map((i) => i.agentId).join(', ')})…`
     )
-    const conn = new SlackConnection({
+    const conn: SlackConnection = new SlackConnection({
       group,
       newTraceId: () => randomUUID(),
       onMessage: (msg) => {
@@ -3239,6 +3241,7 @@ export class Daemon {
         this.onInbound(msg, this.srcIntegrationIds(conn))
       },
       onChannelsChanged: () => void this.refreshChannels(conn),
+      onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
       onStatusAction: (a) => this.handleStatusAction(a),
       onStatusInfo: (key) => this.statusInfoForKey(key),
       onPermissionChoice: (a) => this.handlePermissionChoice(a),
@@ -4748,10 +4751,10 @@ export class Daemon {
     return { msgId: msg.msgId, accepted: true }
   }
 
-  /** Apply one shared-bot status interaction after the relay has validated the opaque
-   *  target against its live bot assignment. Re-check every daemon-owned boundary before
-   *  opening or mutating anything: the agent, shared Slack integration, local connection,
-   *  session owner, and (when retained) exact delivery binding must all still agree. */
+  /** Apply one shared-bot interaction after relay routing. Re-check every daemon-owned
+   *  boundary before opening or mutating anything: the agent, shared Slack integration,
+   *  local connection, session owner, and (when retained) exact delivery binding must all
+   *  still agree. Message shortcuts resolve their channel/thread coordinates here. */
   private handleRelaySlackAction(msg: RdMsgSlackAction): RdAck {
     const agent = this.agents.get(msg.agentId)
     if (!agent) {
@@ -4773,6 +4776,33 @@ export class Daemon {
       this.log.warn(`relay: Slack action for unavailable integration ${msg.integrationId} — dropping`)
       return { msgId: msg.msgId, accepted: false, reason: 'unavailable' }
     }
+    const payload = msg.payload
+    if (payload.kind === 'open-config-for-thread') {
+      const routing = integrationRouting(integration)
+      const unauthorized =
+        (routing.allowedUserIds.length > 0 && (!msg.userId || !routing.allowedUserIds.includes(msg.userId))) ||
+        (routing.gated && !routing.bindRules.some((rule) => rule.channel === payload.channelId))
+      const transportScope = this.transportScopeForIntegrationIds([integration.id])
+      const rec = unauthorized
+        ? undefined
+        : this.store.latestSessionForTransport(msg.agentId, payload.channelId, transportScope, payload.threadTs)
+      const binding = rec ? this.sessionDeliveryBindings.get(rec.key) : undefined
+      const validBinding =
+        !binding ||
+        (binding.agentId === msg.agentId && binding.platform === 'slack' && binding.integrationId === msg.integrationId)
+      if (!rec || rec.platform !== 'slack' || !validBinding) {
+        void conn.openStatusModal(payload.triggerId)
+        return { msgId: msg.msgId, accepted: true }
+      }
+      const privateMetadata = encodeSharedSlackStatusTarget({
+        agentId: msg.agentId,
+        integrationId: msg.integrationId,
+        sessionKey: rec.key
+      })
+      void conn.openStatusModal(payload.triggerId, rec.key, privateMetadata)
+      return { msgId: msg.msgId, accepted: true }
+    }
+
     const rec = this.store.getSession(msg.sessionKey)
     if (!rec || rec.agentId !== msg.agentId || rec.platform !== 'slack') {
       this.log.warn(`relay: Slack action for stale or foreign session ${msg.sessionKey} — dropping`)
@@ -4787,7 +4817,6 @@ export class Daemon {
       return { msgId: msg.msgId, accepted: false, reason: 'stale' }
     }
 
-    const payload = msg.payload
     // The relay forwards the tapping user when it knows one; an older relay omits it
     // and the action records as an unknown actor rather than a guessed one.
     const actor = msg.userId ? { userId: msg.userId } : undefined
@@ -7349,6 +7378,28 @@ export class Daemon {
     candidates.sort((a, b) => b.updatedAt - a.updatedAt || a.agentId.localeCompare(b.agentId))
     const latest = candidates[0]
     return latest ? { agentId: latest.agentId, key: latest.key, acpSessionId: latest.acpSessionId ?? undefined } : null
+  }
+
+  /** Resolve a direct Slack message shortcut to the newest addressable session in
+   *  that exact bot-scoped conversation, retaining routing gates and user allowlists. */
+  private slackShortcutSession(
+    shortcut: { channel: string; thread: string; userId: string },
+    srcIntegrationIds: readonly string[]
+  ): string | undefined {
+    const transportScope = this.transportScopeForIntegrationIds(srcIntegrationIds)
+    const candidates: SessionRecord[] = []
+    for (const [agentId, agent] of this.agents) {
+      for (const integration of agent.integrations) {
+        if (integration.platform !== 'slack' || !srcIntegrationIds.includes(integration.id)) continue
+        const routing = integrationRouting(integration)
+        if (routing.allowedUserIds.length > 0 && !routing.allowedUserIds.includes(shortcut.userId)) continue
+        if (routing.gated && !routing.bindRules.some((rule) => rule.channel === shortcut.channel)) continue
+        const session = this.store.latestSessionForTransport(agentId, shortcut.channel, transportScope, shortcut.thread)
+        if (session) candidates.push(session)
+      }
+    }
+    candidates.sort((a, b) => b.updatedAt - a.updatedAt || a.agentId.localeCompare(b.agentId))
+    return candidates[0]?.key
   }
 
   /** Local layer (agent.json) ∪ resolved CP layer; unservable CP rules are dropped + warn-logged. */

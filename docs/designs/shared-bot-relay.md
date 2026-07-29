@@ -348,9 +348,11 @@ Channel membership changes trigger a coalesced Slack membership refresh. The
 relay reports the complete channel snapshot through `rc/bot-channels`; CP
 updates control metadata and recompiles routes.
 
-Interactive session actions carry an opaque target bound to the exact agent,
-integration, and session that rendered the control. They do not follow a later
-channel-owner change.
+Interactive controls rendered by a session carry an opaque target bound to the
+exact agent, integration, and session that rendered them. They do not follow a
+later channel-owner change. The app-level message shortcut starts only with the
+selected message's channel and thread: the relay resolves current conversation
+ownership, then the daemon resolves and authorizes the exact bot-scoped session.
 
 ### 10.2 Durable thread affinity
 
@@ -440,8 +442,9 @@ relay has already returned 200. Duplicate deliveries that reach different
 instances are absorbed by daemon-side idempotency.
 
 Slack interactions are also HMAC-verified. Handlers that must return options in
-the HTTP response complete before the 200 response; other actions are forwarded
-to the exact session target.
+the HTTP response complete before the 200 response. Rendered controls are
+forwarded to their exact session target; message shortcuts are forwarded by
+conversation coordinates and resolved to an exact session by the daemon.
 
 Hook ingress responds quickly after verification and admission. Stable
 `deliveryKey` values support idempotency and observable run accounting, but

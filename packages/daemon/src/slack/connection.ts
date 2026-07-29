@@ -4,7 +4,8 @@ import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'
 import {
   decodeSlackStatusOverflowValue,
   extractSlackMessageText,
-  isSlackSystemMessage
+  isSlackSystemMessage,
+  SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import { normalizeSlackEvent, toAttachment, type SlackFile, type SlackMessageEvent } from './normalize.js'
@@ -19,6 +20,7 @@ import {
   PERMISSION_UPDATE_ACTION,
   buildPermissionUpdateCard,
   buildStatusModal,
+  buildStatusUnavailableModal,
   decodePermValue,
   type StatusBarInfo,
   type StatusModalIdentity
@@ -160,6 +162,9 @@ export interface SlackDeps {
   onStatusInfo?: (
     sessionKey: string
   ) => { info: StatusBarInfo; identity?: StatusModalIdentity; link?: string; cancellable: boolean } | undefined
+  /** Resolve the exact local session owned by the selected Slack conversation.
+   *  Runs synchronously so the one-shot shortcut trigger can open its modal promptly. */
+  onMessageShortcut?: (a: { channel: string; thread: string; userId: string }) => string | undefined
   /** Fired when a user taps a button on an interactive permission card
    *  (render.buildPermissionCard). The decoded `requestId` ties the click back to the
    *  pending ACP `session/request_permission`; `optionId` is the chosen option. */
@@ -208,6 +213,16 @@ type BlockActionArgs = {
   }
 }
 
+type MessageShortcutArgs = {
+  ack: () => Promise<void>
+  shortcut: {
+    trigger_id?: string
+    channel?: { id?: string }
+    message?: { ts?: string; thread_ts?: string }
+    user?: { id?: string }
+  }
+}
+
 /** The clicking user off a `block_actions` payload, for the action's audit record. */
 function actorOf(body: BlockActionArgs['body']): InteractionActor | undefined {
   return body?.user?.id ? { userId: body.user.id } : undefined
@@ -217,6 +232,7 @@ type AppLike = {
   message: (handler: (args: { message: unknown }) => Promise<void> | void) => void
   event: (type: string, handler: (args: { event: unknown }) => Promise<void> | void) => void
   action: (actionId: string | RegExp, handler: (args: BlockActionArgs) => Promise<void> | void) => void
+  shortcut: (callbackId: string, handler: (args: MessageShortcutArgs) => Promise<void> | void) => void
   client: {
     views: {
       open: (a: unknown) => Promise<unknown>
@@ -380,6 +396,7 @@ function sendOnlyApp(botToken: string): AppLike {
     message: () => {},
     event: () => {},
     action: () => {},
+    shortcut: () => {},
     client: client as unknown as AppLike['client'],
     start: async () => {},
     stop: async () => {}
@@ -530,6 +547,17 @@ export class SlackConnection {
         this.deps.onChannelsChanged?.()
       })
     }
+    this.app.shortcut(SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID, async ({ ack, shortcut }) => {
+      await ack()
+      const triggerId = shortcut.trigger_id
+      if (!triggerId) return
+      const channel = shortcut.channel?.id
+      const thread = shortcut.message?.thread_ts ?? shortcut.message?.ts
+      const userId = shortcut.user?.id
+      const sessionKey =
+        channel && thread && userId ? this.deps.onMessageShortcut?.({ channel, thread, userId }) : undefined
+      await this.openStatusModal(triggerId, sessionKey)
+    })
     // Status-bar interactivity (Block Kit block_actions over Socket Mode). Each handler
     // MUST ack() promptly (Slack drops the interaction / trigger_id after ~3s). Configure
     // opens the controls modal; the modal's select/Cancel carry the session key in
@@ -632,13 +660,15 @@ export class SlackConnection {
    *  local Socket Mode action handler; shared bots call it after the relay forwards the
    *  click over `rd/msg(slack_action)`. `privateMetadata` stays opaque to Slack and lets the
    *  relay route subsequent select/cancel interactions back to this daemon. */
-  async openStatusModal(triggerId: string, sessionKey: string, privateMetadata = sessionKey): Promise<void> {
-    const data = this.deps.onStatusInfo?.(sessionKey)
-    if (!data) return // session gone / not ours
+  async openStatusModal(triggerId: string, sessionKey?: string, privateMetadata = sessionKey ?? ''): Promise<void> {
+    const data = sessionKey ? this.deps.onStatusInfo?.(sessionKey) : undefined
     try {
       await this.app.client.views.open({
         trigger_id: triggerId,
-        view: buildStatusModal(data.info, sessionKey, data.link, privateMetadata, data.cancellable, data.identity)
+        view:
+          data && sessionKey
+            ? buildStatusModal(data.info, sessionKey, data.link, privateMetadata, data.cancellable, data.identity)
+            : buildStatusUnavailableModal()
       })
     } catch (err) {
       this.deps.log?.debug(`slack: views.open failed: ${(err as Error).message}`)

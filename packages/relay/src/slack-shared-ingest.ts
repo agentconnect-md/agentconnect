@@ -23,6 +23,7 @@ import {
   PERMISSION_ACTION_PREFIX,
   SHARED_AGENT_SELECT_ACTION_ID,
   SHARED_CONFIG_ACTION_ID,
+  SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
   SLACK_STATUS_ACTION,
   decodePermValue,
   decodeSlackStatusOverflowValue,
@@ -47,6 +48,7 @@ export interface SlackInteractiveBody {
   team?: { id?: string }
   user?: { id?: string }
   trigger_id?: string
+  callback_id?: string
   action_id?: string
   block_id?: string
   value?: string
@@ -79,7 +81,14 @@ export type SharedSlackSessionAction = SharedSlackInteractionReceipt & {
   /** Who tapped it (Slack `body.user`), forwarded so the daemon can attribute the
    *  session change. Absent when the payload names no user. */
   userId?: string
-} & RdSlackAction
+} & Exclude<RdSlackAction, { kind: 'open-config-for-thread' }>
+
+export interface SharedSlackSessionShortcut extends SharedSlackInteractionReceipt {
+  channelId: string
+  threadTs: string
+  triggerId: string
+  userId?: string
+}
 
 type SharedSlackAgent = { agentId: string; name: string }
 
@@ -383,6 +392,9 @@ export interface SlackSharedIngestDeps {
   onSelectThreadAgent: (channelId: string, threadTs: string, agentId: string) => void
   /** Forward the current agent/session controls to its owning daemon. */
   onSessionAction: (action: SharedSlackSessionAction) => void
+  /** Resolve and forward the app-level message shortcut. False opens a local
+   *  unavailable modal while the one-shot trigger id is still valid. */
+  onSessionShortcut: (shortcut: SharedSlackSessionShortcut) => boolean
   /** Test seam for the bot-token Web API client. */
   webClientFactory?: (botToken: string, options?: WebClientOptions) => WebClient
   log: Logger
@@ -548,6 +560,24 @@ export class SlackSharedIngest {
         // The one branch whose result rides the 200 body (replaces `ack({ options })`).
         return { options: sharedSlackAgentOptions(this.deps.agents(), body.value) }
       }
+      if (body.type === 'message_action' && body.callback_id === SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID) {
+        const triggerId = body.trigger_id
+        const channelId = body.channel?.id
+        const threadTs = body.message?.thread_ts ?? body.message?.ts
+        const forwarded =
+          !!triggerId &&
+          !!channelId &&
+          !!threadTs &&
+          this.deps.onSessionShortcut({
+            triggerId,
+            channelId,
+            threadTs,
+            interactionId: triggerId,
+            ...(body.user?.id ? { userId: body.user.id } : {})
+          })
+        if (triggerId && !forwarded) void this.openUnavailableModal(triggerId)
+        return ''
+      }
       if (
         body.type === 'block_actions' &&
         body.actions?.some((action) => action.action_id === SHARED_AGENT_SELECT_ACTION_ID)
@@ -594,6 +624,30 @@ export class SlackSharedIngest {
     } catch (err) {
       this.deps.log.warn(`shared-ingest(${this.botId}): interactive error: ${(err as Error).message}`)
       return ''
+    }
+  }
+
+  private async openUnavailableModal(triggerId: string): Promise<void> {
+    try {
+      await this.web?.views.open({
+        trigger_id: triggerId,
+        view: {
+          type: 'modal',
+          title: { type: 'plain_text', text: 'Session options' },
+          close: { type: 'plain_text', text: 'Close' },
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: 'No AgentConnect session was found for this conversation.'
+              }
+            }
+          ]
+        }
+      } as never)
+    } catch (err) {
+      this.deps.log.warn(`shared-ingest(${this.botId}): views.open failed: ${(err as Error).message}`)
     }
   }
 

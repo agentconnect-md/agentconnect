@@ -7,6 +7,7 @@ import {
   SLACK_BOT_EVENTS,
   DEFAULT_SLACK_APP_NAME
 } from './slack-manifest.js'
+import { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
 
 // The PUBLIC form — `/v1`, not the internal `/api/v1` (see SLACK_OAUTH_CALLBACK_PATH).
 const REDIRECT = 'https://cp.example/v1/integrations/slack/oauth/callback'
@@ -21,12 +22,19 @@ describe('buildInstallManifest', () => {
 
   it('enables Socket Mode and carries the daemon scopes + events', () => {
     const m = buildInstallManifest('acme-bot', REDIRECT) as {
+      features: { shortcuts: { callback_id: string; type: string }[] }
       oauth_config: { scopes: { bot: string[] } }
       settings: { socket_mode_enabled: boolean; event_subscriptions: { bot_events: string[] } }
     }
     expect(m.settings.socket_mode_enabled).toBe(true)
     expect(m.oauth_config.scopes.bot).toEqual([...SLACK_BOT_SCOPES])
     expect(m.settings.event_subscriptions.bot_events).toEqual([...SLACK_BOT_EVENTS])
+    expect(m.features.shortcuts).toEqual([
+      expect.objectContaining({
+        callback_id: SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+        type: 'message'
+      })
+    ])
   })
 
   it('http mode: disables Socket Mode and points the Events API request_urls at the relay', () => {
@@ -70,6 +78,7 @@ describe('buildInstallManifest', () => {
       'app_mentions:read',
       'channels:history',
       'channels:read',
+      'commands',
       'chat:write',
       'chat:write.customize',
       'files:write',
@@ -104,7 +113,11 @@ describe('mergeManagedSlackManifest', () => {
       features: {
         bot_user: { display_name: 'Custom bot', always_online: false },
         app_home: { home_tab_enabled: true },
-        slash_commands: [{ command: '/custom', description: 'Keep me' }]
+        slash_commands: [{ command: '/custom', description: 'Keep me' }],
+        shortcuts: [
+          { name: 'Keep shortcut', type: 'message', callback_id: 'custom_shortcut' },
+          { name: 'Old managed name', type: 'message', callback_id: SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID }
+        ]
       },
       oauth_config: {
         redirect_urls: ['https://custom.example/slack/callback'],
@@ -134,6 +147,7 @@ describe('mergeManagedSlackManifest', () => {
         }
         agent_view: { agent_description: string }
         slash_commands: unknown[]
+        shortcuts: { name: string; callback_id: string }[]
       }
       oauth_config: { redirect_urls: string[]; scopes: { bot: string[]; user: string[] } }
       settings: {
@@ -148,6 +162,13 @@ describe('mergeManagedSlackManifest', () => {
     expect(merged.display_information).toEqual({ name: 'Custom app', description: 'Keep this description' })
     expect(merged.features.bot_user).toEqual({ display_name: 'Custom bot', always_online: true })
     expect(merged.features.slash_commands).toEqual(current.features.slash_commands)
+    expect(merged.features.shortcuts).toEqual([
+      expect.objectContaining({
+        name: 'Manage AgentConnect session',
+        callback_id: SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID
+      }),
+      current.features.shortcuts[0]
+    ])
     expect(merged.features.app_home.home_tab_enabled).toBe(true)
     expect(merged.features.app_home.messages_tab_enabled).toBe(true)
     expect(merged.features.app_home.messages_tab_read_only_enabled).toBe(false)

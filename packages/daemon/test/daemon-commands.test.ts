@@ -1268,8 +1268,9 @@ describe('Slack interactive status bar', () => {
     integration.slack.mode = 'shared'
     delete integration.slack.appToken
 
-    const KEY = SESSION_KEY
-    const FOREIGN_KEY = sessionKey('slack', 'C1', 'T2', 'bot-a', TRANSPORT_SCOPE)
+    const sharedTransportScope = `slack:${createHash('sha256').update('slack\0b').digest('hex').slice(0, 24)}`
+    const KEY = sessionKey('slack', 'C1', 'T1', 'bot-a', sharedTransportScope)
+    const FOREIGN_KEY = sessionKey('slack', 'C1', 'T2', 'bot-a', sharedTransportScope)
     const openStatusModal = vi.fn(async () => {})
     const updateBlocks = vi.fn(async () => true)
     ;(daemon as any).connByIntegration.set('int-a', { openStatusModal, updateBlocks })
@@ -1279,6 +1280,7 @@ describe('Slack interactive status bar', () => {
       platform: 'slack',
       channel: 'C1',
       thread: 'T1',
+      transportScope: sharedTransportScope,
       acpSessionId: 'acp-1',
       state: 'idle',
       lastDeliveredTs: null,
@@ -1290,7 +1292,7 @@ describe('Slack interactive status bar', () => {
       platform: 'slack',
       channel: 'C1',
       thread: 'T2',
-      transportScope: TRANSPORT_SCOPE,
+      transportScope: sharedTransportScope,
       acpSessionId: 'acp-2',
       state: 'idle',
       lastDeliveredTs: null,
@@ -1310,6 +1312,31 @@ describe('Slack interactive status bar', () => {
 
     expect((daemon as any).handleRelayMsg(action(), () => {})).toEqual({ msgId: 'action-ok', accepted: true })
     expect(openStatusModal).toHaveBeenCalledTimes(1)
+    expect(
+      (daemon as any).handleRelayMsg(
+        action({
+          sessionKey: 'C1/T1',
+          msgId: 'action-shortcut',
+          userId: 'U1',
+          payload: {
+            kind: 'open-config-for-thread',
+            triggerId: 'trig-shortcut',
+            channelId: 'C1',
+            threadTs: 'T1'
+          }
+        }),
+        () => {}
+      )
+    ).toEqual({ msgId: 'action-shortcut', accepted: true })
+    expect(openStatusModal).toHaveBeenCalledTimes(2)
+    const [, shortcutSessionKey, shortcutMetadata] = openStatusModal.mock.calls[1]!
+    expect(shortcutSessionKey).toBe(KEY)
+    expect(decodeSharedSlackStatusTarget(shortcutMetadata)).toEqual({
+      v: 1,
+      agentId: 'bot-a',
+      integrationId: 'int-a',
+      sessionKey: KEY
+    })
 
     const permissionResolved = vi.fn()
     const permissionRequestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -1385,7 +1412,7 @@ describe('Slack interactive status bar', () => {
     // HTTP interactions may be redelivered. A replayed receipt must
     // not consume the same trigger_id by opening a second modal.
     expect((daemon as any).handleRelayMsg(action(), () => {})).toEqual({ msgId: 'action-ok', accepted: true })
-    expect(openStatusModal).toHaveBeenCalledTimes(1)
+    expect(openStatusModal).toHaveBeenCalledTimes(2)
 
     const rejected = [
       action({ sessionKey: 'slack:C1:missing:bot-a', msgId: 'action-missing' }),
@@ -1399,7 +1426,7 @@ describe('Slack interactive status bar', () => {
         reason: 'not_found'
       })
     }
-    expect(openStatusModal).toHaveBeenCalledTimes(1)
+    expect(openStatusModal).toHaveBeenCalledTimes(2)
 
     await daemon.stop()
   })

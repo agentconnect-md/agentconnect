@@ -25,12 +25,16 @@
 // agent_view turns on Slack's Agent experience for newly-created apps (side panel,
 // app threads, and agent-oriented thread affordances).
 
+/** Kept in lock-step with the protocol callback consumed by daemon + relay. */
+export const SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID = 'ac_manage_session'
+
 /** Bot token scopes the daemon's Slack adapter requires. */
 export const SLACK_BOT_SCOPES = [
   'files:read',
   'app_mentions:read',
   'channels:history',
   'channels:read',
+  'commands',
   'chat:write',
   'chat:write.customize',
   'files:write',
@@ -65,6 +69,7 @@ export interface SlackAppManifest {
     bot_user: { display_name: string; always_online: boolean }
     app_home: { home_tab_enabled: boolean; messages_tab_enabled: boolean; messages_tab_read_only_enabled: boolean }
     agent_view: { agent_description: string; suggested_prompts: { title: string; message: string }[] }
+    shortcuts: { name: string; type: 'message'; callback_id: string; description: string }[]
   }
   oauth_config: { scopes: { bot: string[] }; pkce_enabled: boolean }
   settings: {
@@ -121,7 +126,15 @@ export function buildSlackManifest(names: SlackAppNames, opts?: SlackManifestOpt
       agent_view: {
         agent_description: `${displayName} is an AgentConnect agent that responds to Slack conversations and works in threads.`,
         suggested_prompts: []
-      }
+      },
+      shortcuts: [
+        {
+          name: 'Manage AgentConnect session',
+          type: 'message',
+          callback_id: SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+          description: 'View or update the AgentConnect session for this conversation'
+        }
+      ]
     },
     oauth_config: { scopes: { bot: [...SLACK_BOT_SCOPES] }, pkce_enabled: false },
     settings: {

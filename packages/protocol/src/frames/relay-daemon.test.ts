@@ -207,6 +207,12 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     }
     const actions = [
       { kind: 'open-config', triggerId: 'trigger-1' },
+      {
+        kind: 'open-config-for-thread',
+        triggerId: 'trigger-2',
+        channelId: 'C123',
+        threadTs: '1720000000.000100'
+      },
       { kind: 'set-model', model: 'opus-4.8' },
       { kind: 'set-effort', effort: 'high' },
       { kind: 'set-permission-mode', permissionMode: 'plan' },
@@ -223,6 +229,12 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     }
     expect(RdMsg.safeParse({ ...base, payload: { kind: 'set-output', outputMode: 'verbose' } }).success).toBe(false)
     expect(RdMsg.safeParse({ ...base, payload: { kind: 'open-config', triggerId: '' } }).success).toBe(false)
+    expect(
+      RdMsg.safeParse({
+        ...base,
+        payload: { kind: 'open-config-for-thread', triggerId: 'trigger-2', channelId: 'C123', threadTs: '' }
+      }).success
+    ).toBe(false)
     expect(RdMsg.safeParse({ ...base, integrationId: 'not-a-uuid', payload: { kind: 'cancel' } }).success).toBe(false)
   })
 

@@ -6,6 +6,7 @@ import {
   PERMISSION_ACTION_PREFIX,
   SHARED_AGENT_SELECT_ACTION_ID,
   SHARED_CONFIG_ACTION_ID,
+  SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
   SLACK_STATUS_ACTION,
   encodeSlackStatusOverflowValue,
   encodeSharedSlackStatusTarget
@@ -330,6 +331,7 @@ describe('SlackSharedIngest.handleInteraction', () => {
     onSetChannelAgent: vi.fn(),
     onSelectThreadAgent: vi.fn(),
     onSessionAction: vi.fn(),
+    onSessionShortcut: vi.fn(() => false),
     log: silentLog,
     ...over
   })
@@ -360,6 +362,32 @@ describe('SlackSharedIngest.handleInteraction', () => {
     expect(result).toBe('')
     expect(onSelectThreadAgent).toHaveBeenCalledWith('C123', '1720000000.000100', AGENT_ID)
   })
+
+  it('forwards a message shortcut with the selected conversation coordinates', async () => {
+    const onSessionShortcut = vi.fn(() => true)
+    const ingest = new SlackSharedIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      ingestDeps({ onSessionShortcut })
+    )
+    const result = await ingest.handleInteraction({
+      type: 'message_action',
+      callback_id: SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+      trigger_id: 'trigger-shortcut',
+      channel: { id: 'C123' },
+      message: { ts: '1720000000.000200', thread_ts: '1720000000.000100' },
+      user: { id: 'U-ALICE' }
+    })
+
+    expect(result).toBe('')
+    expect(onSessionShortcut).toHaveBeenCalledWith({
+      triggerId: 'trigger-shortcut',
+      channelId: 'C123',
+      threadTs: '1720000000.000100',
+      interactionId: 'trigger-shortcut',
+      userId: 'U-ALICE'
+    })
+  })
 })
 
 describe('SlackSharedIngest channel membership events', () => {
@@ -373,6 +401,7 @@ describe('SlackSharedIngest channel membership events', () => {
     onSetChannelAgent: vi.fn(),
     onSelectThreadAgent: vi.fn(),
     onSessionAction: vi.fn(),
+    onSessionShortcut: vi.fn(() => false),
     webClientFactory: () => web as never,
     log: silentLog,
     ...over
@@ -446,6 +475,7 @@ describe('SlackSharedIngest message events', () => {
         onSetChannelAgent: vi.fn(),
         onSelectThreadAgent: vi.fn(),
         onSessionAction: vi.fn(),
+        onSessionShortcut: vi.fn(() => false),
         webClientFactory: () => web as never,
         log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
       }
