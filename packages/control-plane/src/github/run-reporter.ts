@@ -560,7 +560,7 @@ export class GithubRunReporter {
           {
             method: 'PATCH',
             auth: token,
-            body: { name: checkName(), ...payload },
+            body: { name: checkName(projection), ...payload },
             fetchImpl: this.deps.fetchImpl,
             baseUrl: this.deps.baseUrl,
             bigIdsAsStrings: true
@@ -861,7 +861,7 @@ export class GithubRunReporter {
         {
           method: 'PATCH',
           auth: token,
-          body: { name: checkName() },
+          body: { name: checkName(projection) },
           fetchImpl: this.deps.fetchImpl,
           baseUrl: this.deps.baseUrl,
           bigIdsAsStrings: true
@@ -972,8 +972,8 @@ function reviewDesiredState(run: HookRunRecord): ProjectionDesiredState | null {
   return null
 }
 
-function checkName(): string {
-  return CHECK_NAME
+function checkName(projection: HookReviewProjectionRecord): string {
+  return projection.agentName ? `${CHECK_NAME}: ${projection.agentName}` : CHECK_NAME
 }
 
 function legacyCheckName(projection: HookReviewProjectionRecord): string {

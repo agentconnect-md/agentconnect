@@ -8,7 +8,6 @@ import {
   hasChecksWritePermission,
   hasPullRequestsReadPermission,
   hasPullRequestsWritePermission,
-  informationalCheckName,
   installationForRepo,
   isWorkspaceRepo,
   repoAccessSatisfies,
@@ -187,8 +186,7 @@ describe('R1/R2a GitHub review settings', () => {
     ).toBe('write')
   })
 
-  it('derives the readable informational check name and installation by repo owner', () => {
-    expect(informationalCheckName()).toBe('AgentConnect PR Review')
+  it('finds the installation by repo owner', () => {
     expect(
       installationForRepo('Acme/infra', [
         { accountLogin: 'other', id: 1 },

@@ -191,10 +191,6 @@ export function effectiveRepoAccess(input: {
   return input.authorizations.find((row) => !!wanted && row.repoFullName.toLowerCase() === wanted)?.access ?? 'none'
 }
 
-export function informationalCheckName(): string {
-  return 'AgentConnect PR Review'
-}
-
 export function installationForRepo<T extends { accountLogin: string }>(
   repoFullName: string | null | undefined,
   installations: readonly T[]
