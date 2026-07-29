@@ -56,7 +56,7 @@ and search.
 
 ```
  Public callbacks and browsers                    Control Plane + Web UI
- Slack / Feishu HTTP · GitHub · generic hooks · webchat   (control only)
+ Slack HTTP · Lark / Feishu HTTP · GitHub · generic hooks · webchat   (control only)
                  │ HTTPS / WSS                         │
                  ▼                                     │ routes + config
         ┌─────────────────────┐                        │
@@ -67,23 +67,23 @@ and search.
  Direct platforms ┌──────────────────────────────────────────┐
  Slack Socket  ◀─▶│ daemon instances                         │◀── CP WebSocket
  Telegram          │ platform + hook routing                  │    control,
- Discord / Feishu  │              │ local ACP                 │    telemetry,
- Long Connection   │              ▼                           │    bounded reads
-                   │       Claude / Codex / ACP agents        │
+ Discord           │              │ local ACP                 │    telemetry,
+ Lark / Feishu     │              ▼                           │    bounded reads
+ Long Connection   │       Claude / Codex / ACP agents        │
                    └──────────────────────────────────────────┘
                       └─ direct Slack/GitHub/provider API egress
 ```
 
 ### Components
 
-| Component             | Role                                                                                                                                                                                                                                                       |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Control Plane**     | Orchestration, scheduling, scaling, Web UI, and registry; does not handle live platform message traffic or integrate with platforms                                                                                                                        |
-| **daemon**            | Direct platform integration, relay-delivered routing, and agent runtime; a self-contained message-processing and execution unit                                                                                                                            |
-| **relay**             | Optional public ingress plane: Slack and Feishu HTTP callbacks, GitHub and generic webhooks, and webchat pass through the relay pool to daemons; daemons still send ordinary provider API traffic directly. See [shared-bot-relay.md](shared-bot-relay.md) |
-| **Platform adapters** | `slack-adapter`, `telegram-adapter`, Discord, Feishu, and others; handle platform I/O and message normalization                                                                                                                                            |
-| **ACP adapters**      | `claude-agent-acp` and `codex-acp`; implement ACP and drive models locally                                                                                                                                                                                 |
-| **Agent instances**   | Claude and Codex model processes                                                                                                                                                                                                                           |
+| Component             | Role                                                                                                                                                                                                                                                              |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Control Plane**     | Orchestration, scheduling, scaling, Web UI, and registry; does not handle live platform message traffic or integrate with platforms                                                                                                                               |
+| **daemon**            | Direct platform integration, relay-delivered routing, and agent runtime; a self-contained message-processing and execution unit                                                                                                                                   |
+| **relay**             | Optional public ingress plane: Slack and Lark / Feishu HTTP callbacks, GitHub and generic webhooks, and webchat pass through the relay pool to daemons; daemons still send ordinary provider API traffic directly. See [shared-bot-relay.md](shared-bot-relay.md) |
+| **Platform adapters** | `slack-adapter`, `telegram-adapter`, Discord, Lark / Feishu, and others; handle platform I/O and message normalization                                                                                                                                            |
+| **ACP adapters**      | `claude-agent-acp` and `codex-acp`; implement ACP and drive models locally                                                                                                                                                                                        |
+| **Agent instances**   | Claude and Codex model processes                                                                                                                                                                                                                                  |
 
 ---
 
@@ -103,9 +103,9 @@ Its responsibilities are deliberately narrow:
 
 A daemon is a **self-contained message-processing + agent-execution unit**:
 
-- It owns direct platform connections such as Slack Socket Mode, Feishu Long
-  Connection, and Telegram, and receives pre-addressed Slack/Feishu HTTP, hook,
-  and webchat items from the relay.
+- It owns direct platform connections such as Slack Socket Mode, Lark / Feishu
+  Long Connection, and Telegram, and receives pre-addressed Slack and
+  Lark / Feishu HTTP, hook, and webchat items from the relay.
 - It routes and dispatches messages locally, then drives the agent through **local
   ACP**.
 - It maintains one WebSocket to the Control Plane for control/telemetry and
@@ -132,7 +132,7 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
 ### 5.1 Platform ↔ daemon: Direct or Relay-Assisted Ingress
 
 - Dedicated-bot ingress connects directly to the daemon.
-- Slack and Feishu HTTP callbacks, GitHub and generic webhooks, and webchat ingress enter through the relay pool, which forwards the normalized request to the owning daemon.
+- Slack and Lark / Feishu HTTP callbacks, GitHub and generic webhooks, and webchat ingress enter through the relay pool, which forwards the normalized request to the owning daemon.
 - Outbound platform traffic is sent directly by the daemon.
 - Neither ingress model puts the Control Plane on the message hot path. See [shared-bot-relay.md](shared-bot-relay.md).
 
@@ -159,12 +159,12 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
 
 ```
 Direct:
-  Slack Socket Mode / Telegram / Discord / Feishu
+  Slack Socket Mode / Telegram / Discord / Lark / Feishu
     ↔ daemon direct adapter
     → daemon local routing → [local ACP] → agent
 
 Relay-assisted:
-  Slack HTTP / Feishu HTTP / GitHub / generic webhook / webchat
+  Slack HTTP · Lark / Feishu HTTP · GitHub · generic webhook · webchat
     → optional relay → rd/* → owning daemon
     → daemon local routing → [local ACP] → agent
     → direct Slack/GitHub/provider API egress, or webchat output via the relay

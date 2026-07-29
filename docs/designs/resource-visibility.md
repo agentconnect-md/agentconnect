@@ -713,7 +713,7 @@ non-creator, non-owner collaborator has `canManageSharing=false`; and
 
 > **Status:** Proposed — product design agreed, implementation not started.
 > Scope: protocol + daemon + control-plane + web. Slack is the driving case;
-> the mechanism is platform-generic (Telegram / Discord / Feishu integrations
+> the mechanism is platform-generic (Telegram / Discord / Lark / Feishu integrations
 > share the same bind-rule shape).
 
 ### 14.1 Problem
@@ -840,7 +840,7 @@ conversation are blocked by the same mechanism. Non-gated integrations keep
 _Implementation check:_ confirm the daemon's normalized DM messages carry the
 platform DM conversation id as `msg.channel` on every platform, so a
 channel-scoped `dm` rule matches. (True for Slack `D…` ids; verify Telegram /
-Discord / Feishu DM id shape when extending.)
+Discord / Lark / Feishu DM id shape when extending.)
 
 **Spec flag: `gated`.** `IntegrationSpec` gains a boolean (working name
 `gated`) so the daemon knows this integration is fail-closed. The daemon needs

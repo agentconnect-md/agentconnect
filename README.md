@@ -24,7 +24,7 @@
 
 AgentConnect is an open-source, daemon-centric platform for operating AI coding
 agents across your own infrastructure. Claude, Codex, and other ACP-compatible
-runtimes can participate in Slack, Telegram, Discord, Feishu, webchat, GitHub
+runtimes can participate in Slack, Telegram, Discord, Lark / Feishu, webchat, GitHub
 events, webhooks, and scheduled tasks.
 
 The execution daemon stays beside the agent and its workspace. The Control Plane
@@ -109,7 +109,7 @@ where work already happens.
 | Surface           | Supported options                                                                   |
 | ----------------- | ----------------------------------------------------------------------------------- |
 | Agent runtimes    | Claude, Codex, and other ACP-compatible runtimes                                    |
-| Team channels     | Slack, Telegram, Discord, Feishu, and webchat                                       |
+| Team channels     | Slack, Telegram, Discord, Lark / Feishu, and webchat                                |
 | Event sources     | GitHub events, generic webhooks, and scheduled tasks                                |
 | Persistent memory | Managed AgentConnect memory, runtime-native memory, external providers, or disabled |
 | Collaboration     | Directional agent discovery and policy-controlled delegation                        |
@@ -118,11 +118,11 @@ where work already happens.
 
 ![AgentConnect daemon-centric message paths](docs/designs/daemon-centric-message-paths.png)
 
-| Component                  | Responsibility                                                                                                                          |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| **Daemon**                 | Runs agents, owns local ACP sessions and workspaces, connects direct platform bots, and sends provider API traffic                      |
-| **Relay** (optional)       | Accepts Slack and Feishu HTTP callbacks, GitHub and generic webhooks, and webchat traffic, then routes it directly to the owning daemon |
-| **Control Plane + Web UI** | Manages authentication, configuration, placement, metadata, and observability                                                           |
+| Component                  | Responsibility                                                                                                                                 |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Daemon**                 | Runs agents, owns local ACP sessions and workspaces, connects direct platform bots, and sends provider API traffic                             |
+| **Relay** (optional)       | Accepts Slack and Lark / Feishu HTTP callbacks, GitHub and generic webhooks, and webchat traffic, then routes it directly to the owning daemon |
+| **Control Plane + Web UI** | Manages authentication, configuration, placement, metadata, and observability                                                                  |
 
 The Control Plane does not persist message bodies, ACP update streams, or
 attachment bytes. Authorized console reads are proxied from the owning daemon on

@@ -181,7 +181,7 @@ over stdio; they do not create source-level coupling to TypeScript.
 - **Key interfaces**:
   - Downstream (platform→daemon): submit a **normalized message** (§6.6 `NormalizedMessage`) to D4.
   - Upstream (daemon→platform): provide `reply(threadRef, content)` and `sendMessage(target, content)`. The latter implements the tool injected into the agent, while the adapter retains the token.
-- **Platform coverage**: daemon adapters support Slack, Telegram, Discord, and Feishu. Webchat and hook are session-level sources. Shared-bot, webchat, and webhook ingress is accepted by the relay and delivered to the owning daemon; see [`shared-bot-relay.md`](shared-bot-relay.md).
+- **Platform coverage**: daemon adapters support Slack, Telegram, Discord, and Lark / Feishu. Webchat and hook are session-level sources. Shared-bot, webchat, and webhook ingress is accepted by the relay and delivered to the owning daemon; see [`shared-bot-relay.md`](shared-bot-relay.md).
 
 ### D4. Message Normalizer & Local Router
 

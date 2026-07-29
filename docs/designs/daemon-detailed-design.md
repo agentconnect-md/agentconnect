@@ -16,7 +16,7 @@
 > **Current implementation notes:** the frame table in section 10 is only an
 > overview; [daemon-cp-ws-protocol.md](daemon-cp-ws-protocol.md) and
 > `packages/protocol/src/frame.ts` are authoritative for the wire. Telegram,
-> Discord, and Feishu platform drivers are implemented. Slack additionally
+> Discord, and Lark / Feishu platform drivers are implemented. Slack additionally
 > supports shared-bot relay ingress; see
 > [shared-bot-relay.md](shared-bot-relay.md) and
 > [feishu-integration.md](feishu-integration.md).
@@ -531,7 +531,7 @@ A daemon can host many agents, each with many integrations. **Do not open one in
 - Usually one agent = one bot = one Slack App, but two agents sharing one App and `appToken` use **one connection**, with inbound events routed by channel binding.
 - **Telegram:** One grammY long-polling `getUpdates` connection per bot token.
 - **Discord:** One gateway connection per bot token.
-- **Feishu:** One SDK client per app (`appId` + `appSecret`); direct mode opens
+- **Lark / Feishu:** One SDK client per app (`appId` + `appSecret`); direct mode opens
   `WSClient`, while HTTP mode keeps the client send-only and receives
   pre-addressed relay ingress. See [feishu-integration.md](feishu-integration.md).
 
@@ -561,7 +561,7 @@ After a Slack event reaches a connection:
 
 - Integration add/delete/credential change makes Reconciler open a new connection, close the old, or reconnect without affecting others.
 - A disconnected platform connection reconnects directly with exponential backoff, bypassing CP. Persistent failure reports an `event/session` alert.
-- ConnectionManager dispatches by platform through `{open,close,send}` drivers. Slack, Telegram, Discord, and Feishu each have implemented connection/normalize/render modules under `src/{slack,telegram,discord,feishu}/`. A new platform adds a driver without changing routing/consolidation.
+- ConnectionManager dispatches by platform through `{open,close,send}` drivers. Slack, Telegram, Discord, and Lark / Feishu each have implemented connection/normalize/render modules under `src/{slack,telegram,discord,feishu}/`. A new platform adds a driver without changing routing/consolidation.
 
 ---
 
@@ -795,11 +795,11 @@ This is daemon-local and bypasses CP. It differs from CP `agent/stop`, which sto
 
 ---
 
-## 9. Platform Message Translation: ACP <-> Slack / Telegram / Discord / Feishu
+## 9. Platform Message Translation: ACP <-> Slack / Telegram / Discord / Lark / Feishu
 
 Two directions are implemented: outbound ACP `session/update` -> platform,
 inbound platform -> ACP content, plus active MCP send. Slack, Telegram,
-Discord, and Feishu use the common platform-driver boundary.
+Discord, and Lark / Feishu use the common platform-driver boundary.
 
 ### 9.1 Outbound: ACP `session/update` -> Slack (Convergence + Translation)
 
@@ -844,7 +844,7 @@ Thread semantics: main progress goes at the thread anchor or, for a subscribed t
 - Decode a relay-delivered, size-bounded webchat image locally and feed it through the same ACP attachment-block builder. Keep the bounded image only in the daemon-local transcript so an authorized console history read can display it again; the Control Plane proxies that read without persisting the bytes.
 - Normalize to `NormalizedMessage`, then `session/prompt`.
 
-### 9.3 Telegram / Discord / Feishu Mapping (Implemented)
+### 9.3 Telegram / Discord / Lark / Feishu Mapping (Implemented)
 
 Drivers implement `{ open, close, reply(threadRef, content), sendMessage(target, content), normalizeInbound(event) }`. ACP convergence is platform-independent; only final rendering differs.
 
@@ -856,7 +856,7 @@ Drivers implement `{ open, close, reply(threadRef, content), sendMessage(target,
 | Active send  | `chat.postMessage`              | `sendMessage`          | channel webhook / REST     |
 | Limit        | <=12000 per markdown block      | split at 4096          | split at 2000              |
 
-Feishu uses the same interface with a direct `WSClient` or an HTTP-mode
+Lark / Feishu uses the same interface with a direct `WSClient` or an HTTP-mode
 send-only SDK client under `src/feishu/`; see
 [feishu-integration.md](feishu-integration.md).
 
