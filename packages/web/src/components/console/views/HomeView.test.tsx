@@ -180,6 +180,45 @@ describe('HomeView run-selectors (catalog-aware)', () => {
     expect(mocks.pgSend).toHaveBeenCalled()
   })
 
+  it('stages an offered level for blank reasoning when the catalog entry has no defaultEffort', async () => {
+    // Phase-2 shape: efforts present, defaultEffort intentionally absent.
+    const noDefault = {
+      models: [
+        {
+          id: 'm-nodef',
+          efforts: [
+            { value: 'low', label: 'Low' },
+            { value: 'medium', label: 'Medium' }
+          ]
+        }
+      ],
+      permissionModes: [{ value: 'default', name: 'Default' }],
+      defaultModel: 'm-nodef',
+      source: 'acp',
+      observedAt: ''
+    }
+    mocks.agents = [agent({ model: 'm-nodef', reasoning: '' })] // blank stored effort
+    mocks.daemons = [
+      daemon({
+        runtimeModels: [{ runtime: 'claude', models: ['m-nodef'], modelCatalog: noDefault, authRequired: false }]
+      })
+    ]
+    await render()
+    // Not blank: falls back to the first offered level, so the pill can't claim a level the turn won't run.
+    expect(menu('Effort')?.value).toBe('low')
+    const ta = host.querySelector('textarea')!
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+    await act(async () => {
+      setValue.call(ta, 'hi')
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('button.sendbtn')!.click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(mocks.pgSetEffort).toHaveBeenCalledWith('pg_1', 'a1', 'low') // displayed == staged
+  })
+
   it('hides Effort/Permission for a runtime with no such vocabulary (opencode)', async () => {
     mocks.agents = [agent({ id: 'a2', runtime: 'opencode', daemon: 'd2' })]
     mocks.daemons = [

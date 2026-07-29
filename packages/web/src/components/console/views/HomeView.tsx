@@ -146,13 +146,18 @@ export default function HomeView() {
   // Resolve the raw effort (override → agent default) against the SELECTED model's
   // offered levels, so the shown value is always one send can stage — never a phantom
   // the new model doesn't offer (e.g. keeping `xhigh` after switching to a low/medium
-  // model). Blank resolves to the model's own default level. This also makes a model
-  // change auto-correct effort without a special reset.
+  // model), and never a blank that displays as `options[0]` while send skips staging.
+  // Precedence: resolved raw value → the vocabulary's Default sentinel / model default
+  // → the first offered level. So the pill's level is ALWAYS exactly what send stages,
+  // even for phase-2 catalog entries that carry efforts but no `defaultEffort`. Also
+  // makes a model change auto-correct effort without a special reset.
   const rawEffort = runtime.effort ?? agent?.reasoning ?? ''
   const effort =
     agent && showEffort
       ? resolveEffortForModel(agent.runtime, capability, rawEffort) ||
-        displayedEffort('', effortList, capability?.defaultEffort)
+        displayedEffort('', effortList, capability?.defaultEffort) ||
+        effortList[0]?.value ||
+        ''
       : ''
   const effortChoices = effortList.map((o) => ({ value: o.value, label: o.label, description: o.description }))
 
