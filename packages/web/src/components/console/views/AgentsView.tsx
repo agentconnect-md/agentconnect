@@ -612,8 +612,9 @@ export default function AgentsView() {
                 {/* Daemon and repo are the two cells that routinely truncate, so they keep
                   a hint — it carries the full value, which the row does not show. An
                   UNPLACED agent (the preset before placement) gets an Add CTA instead of
-                  the dash — same affordance as the Integrations cell; the edit modal
-                  carries the daemon picker. */}
+                  the dash — same affordance as the Integrations cell (preset-agents.md
+                  §3.4): with no daemon in the org yet it launches the join-command
+                  dialog; otherwise the edit modal carries the daemon picker. */}
                 {daemonName(a.daemon) === '—' ? (
                   <div className="min-w-0 pr-3">
                     <span
@@ -621,7 +622,8 @@ export default function AgentsView() {
                       onClick={(e) => {
                         e.preventDefault()
                         e.stopPropagation()
-                        openModal('editAgent', a)
+                        if (daemons.length === 0) openModal('daemon')
+                        else openModal('editAgent', a)
                       }}
                     >
                       <Icon name="plus" size={13} />

@@ -497,12 +497,15 @@ export default function AgentDetailView() {
               </Link>
             ) : da.daemon === '—' ? (
               // Unplaced (the preset before placement): an Add CTA instead of the
-              // dash — same affordance as the Integrations cell; the edit modal
-              // carries the daemon picker + the deferred runtime choice.
+              // dash (preset-agents.md §3.4). With no daemon in the org yet it
+              // launches the join-command dialog; otherwise the edit modal carries
+              // the daemon picker + the deferred runtime choice.
               <button
                 type="button"
                 className="addchip border-0"
-                onClick={() => openModal('editAgent', da, { focusSection: 'runtime' })}
+                onClick={() =>
+                  daemons.length === 0 ? openModal('daemon') : openModal('editAgent', da, { focusSection: 'runtime' })
+                }
               >
                 <Icon name="plus" size={13} />
                 Add daemon
@@ -746,7 +749,11 @@ export default function AgentDetailView() {
                     <button
                       type="button"
                       className="addchip border-0"
-                      onClick={() => openModal('editAgent', da, { focusSection: 'runtime' })}
+                      onClick={() =>
+                        daemons.length === 0
+                          ? openModal('daemon')
+                          : openModal('editAgent', da, { focusSection: 'runtime' })
+                      }
                     >
                       <Icon name="plus" size={13} />
                       Add
