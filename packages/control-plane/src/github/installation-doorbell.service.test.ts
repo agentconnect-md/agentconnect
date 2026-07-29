@@ -38,7 +38,12 @@ function facts(over: Partial<GithubInstallationFacts> = {}): GithubInstallationF
   }
 }
 
-function make(opts: { known?: boolean; pull?: () => Promise<GithubInstallationFacts | null>; cooldownMs?: number }) {
+function make(opts: {
+  known?: boolean
+  pull?: () => Promise<GithubInstallationFacts | null>
+  onFactsChanged?: (installationId: bigint, orgId: OrgId) => void | Promise<void>
+  cooldownMs?: number
+}) {
   const clock = new FakeClock()
   const pullInstallation = vi.fn(opts.pull ?? (async () => facts()))
   const getByInstallationId = vi.fn(async () => ((opts.known ?? true) ? row() : null))
@@ -49,6 +54,7 @@ function make(opts: { known?: boolean; pull?: () => Promise<GithubInstallationFa
     github: { pullInstallation },
     installations: { getByInstallationId, upsertFromGithub, markRevokedByInstallationId },
     recompileOrg,
+    ...(opts.onFactsChanged ? { onFactsChanged: opts.onFactsChanged } : {}),
     clock,
     log: silentLog,
     ...(opts.cooldownMs !== undefined ? { cooldownMs: opts.cooldownMs } : {})
@@ -88,6 +94,24 @@ describe('GithubInstallationDoorbell', () => {
     await h.doorbell.settle()
     expect(h.markRevokedByInstallationId).toHaveBeenCalledWith(INS)
     expect(h.upsertFromGithub).not.toHaveBeenCalled()
+    expect(h.recompileOrg).toHaveBeenCalledWith(OrgId('org-a'))
+  })
+
+  it('settle waits for async fact-change side effects before recompiling', async () => {
+    let release!: () => void
+    const onFactsChanged = vi.fn(() => new Promise<void>((resolve) => (release = resolve)))
+    const h = make({ onFactsChanged })
+    h.doorbell.poke({ installationId: INS.toString(), action: 'repositories_added' })
+    let settled = false
+    const settling = h.doorbell.settle().then(() => {
+      settled = true
+    })
+
+    await vi.waitFor(() => expect(onFactsChanged).toHaveBeenCalledWith(INS, OrgId('org-a')))
+    expect(settled).toBe(false)
+    expect(h.recompileOrg).not.toHaveBeenCalled()
+    release()
+    await settling
     expect(h.recompileOrg).toHaveBeenCalledWith(OrgId('org-a'))
   })
 
