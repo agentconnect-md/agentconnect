@@ -103,7 +103,7 @@ import { WebchatTokenService } from './registry/webchatToken.js'
 import { OrgInviteLinkCodec } from './registry/orgInviteLink.js'
 import { OrgInviteLinkService } from './registry/orgInviteLinkService.js'
 import { WaitlistService } from './registry/waitlistService.js'
-import { AgentId, DaemonId, HookId } from './domain/ids.js'
+import { AgentId, DaemonId, HookId, type OrgId } from './domain/ids.js'
 import { HookService } from './hooks/hook.service.js'
 import { RelayAuthService } from './registry/relayAuthService.js'
 import { DaemonRegistryService } from './registry/registryService.js'
@@ -489,6 +489,26 @@ export function buildContainer(
   // Readiness gate: `/readyz` pings the DB and reports 503 once shutdown begins
   // (issue #240). Owned here (has `prisma` for the ping); the bootstrap flips it.
   const readiness = createReadiness(() => pingDb(prisma))
+  // Best-effort, but never detached: shutdown must not disconnect Prisma while
+  // these projection wakeups are still running.
+  const wakeGithubReviewProjections = async (installationId: bigint, orgId: OrgId): Promise<void> => {
+    const at = new Date(clock.now())
+    const results = await Promise.allSettled([
+      repos.hook.wakeReviewProjectionsForInstallation(installationId, at),
+      repos.hook.wakeReviewProjectionsForOrg(orgId, at)
+    ])
+    for (const [scope, result] of [
+      ['installation', results[0]],
+      ['org', results[1]]
+    ] as const) {
+      if (result.status === 'rejected') {
+        http.log.warn(
+          { err: result.reason, installationId: installationId.toString(), orgId, scope },
+          'github: review projection wake failed'
+        )
+      }
+    }
+  }
   // github-app workspaces (opt-in): assembled only when GITHUB_APP_* is fully
   // configured; absent ⇒ routes 404 and the WS gitcred handler denies.
   const github = githubAppCfg
@@ -499,11 +519,7 @@ export function buildContainer(
         installState: repos.githubInstallState,
         repoAuths: repos.agentRepoAuth,
         agents: repos.agent,
-        onInstallationFactsChanged: (installationId, orgId) => {
-          const at = new Date(clock.now())
-          void repos.hook.wakeReviewProjectionsForInstallation(installationId, at)
-          void repos.hook.wakeReviewProjectionsForOrg(orgId, at)
-        },
+        onInstallationFactsChanged: wakeGithubReviewProjections,
         pepper: config.API_KEY_PEPPER,
         log: { warn: (message) => http.log.warn(message) },
         ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
@@ -562,11 +578,10 @@ export function buildContainer(
         github,
         installations: repos.githubInstallation,
         recompileOrg: (orgId) => hookService.rebroadcastGithubForOrg(orgId),
-        onFactsChanged: (installationId, orgId) => {
+        onFactsChanged: async (installationId, orgId) => {
           github.tokens.invalidateInstallation(installationId)
           github.invalidateRepositoryRoster(installationId)
-          void repos.hook.wakeReviewProjectionsForInstallation(installationId, new Date(clock.now()))
-          void repos.hook.wakeReviewProjectionsForOrg(orgId, new Date(clock.now()))
+          await wakeGithubReviewProjections(installationId, orgId)
           githubRunReporter?.kick()
         },
         clock,
@@ -1157,7 +1172,10 @@ export function buildContainer(
       feishuRegistrationReaper.stop()
       relaySweeper.stop()
       slackBotIdentityReconciler.stop()
-      await Promise.allSettled([...relayRegistrationTasks])
+      await Promise.allSettled([
+        ...relayRegistrationTasks,
+        ...(installationDoorbell ? [installationDoorbell.settle()] : [])
+      ])
       await prisma.$disconnect()
     }
   }

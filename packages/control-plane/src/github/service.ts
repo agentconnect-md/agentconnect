@@ -85,7 +85,7 @@ export interface GithubServiceDeps {
   repoAuths?: AgentRepoAuthorizationRepo
   /** Optional lazy repair of the workspace's rename-proof numeric repo id. */
   agents?: Pick<AgentRepo, 'setWorkspaceRepoId'>
-  onInstallationFactsChanged?: (installationId: bigint, orgId: OrgId) => void
+  onInstallationFactsChanged?: (installationId: bigint, orgId: OrgId) => void | Promise<void>
   pepper: string
   fetchImpl?: FetchLike
   baseUrl?: string
@@ -213,7 +213,7 @@ export class GithubService {
     const row = await this.deps.installations.upsertFromGithub(OrgIdOf(parsed.orgId), toFacts(ins))
     this.tokens.invalidateInstallation(row.installationId)
     this.invalidateRepositoryRoster(row.installationId)
-    this.deps.onInstallationFactsChanged?.(row.installationId, row.orgId)
+    await this.deps.onInstallationFactsChanged?.(row.installationId, row.orgId)
     return row
   }
 
@@ -237,7 +237,7 @@ export class GithubService {
       const row = await this.deps.installations.upsertFromGithub(orgId, toFacts(ins))
       this.tokens.invalidateInstallation(BigInt(ins.id))
       this.invalidateRepositoryRoster(row.installationId)
-      this.deps.onInstallationFactsChanged?.(row.installationId, row.orgId)
+      await this.deps.onInstallationFactsChanged?.(row.installationId, row.orgId)
     }
     await this.deps.installations.markRevokedExcept(
       orgId,
@@ -247,7 +247,7 @@ export class GithubService {
       this.tokens.invalidateInstallation(row.installationId)
       this.invalidateRepositoryRoster(row.installationId)
     }
-    for (const row of before) this.deps.onInstallationFactsChanged?.(row.installationId, row.orgId)
+    for (const row of before) await this.deps.onInstallationFactsChanged?.(row.installationId, row.orgId)
     return this.deps.installations.listForOrg(orgId)
   }
 
@@ -517,7 +517,7 @@ export class GithubService {
     }
     this.tokens.invalidateInstallation(installationId)
     this.invalidateRepositoryRoster(installationId)
-    this.deps.onInstallationFactsChanged?.(installationId, claimed.orgId)
+    await this.deps.onInstallationFactsChanged?.(installationId, claimed.orgId)
     return refreshed
   }
 

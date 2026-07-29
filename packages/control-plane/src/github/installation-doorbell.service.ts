@@ -44,7 +44,7 @@ export interface InstallationDoorbellDeps {
   recompileOrg: (orgId: OrgId) => Promise<void>
   /** Invalidate purpose-token caches and wake durable reporters after any
    * installation permission/lifecycle fact changes. */
-  onFactsChanged?: (installationId: bigint, orgId: OrgId) => void
+  onFactsChanged?: (installationId: bigint, orgId: OrgId) => void | Promise<void>
   clock: Clock
   log: DoorbellLog
   cooldownMs?: number
@@ -120,7 +120,7 @@ export class GithubInstallationDoorbell {
     this.trailing.clear()
   }
 
-  /** Await quiescence — tests only. */
+  /** Await quiescence — used by tests and graceful shutdown. */
   async settle(): Promise<void> {
     await Promise.all([...this.inflight.values()])
   }
@@ -142,7 +142,7 @@ export class GithubInstallationDoorbell {
       } else {
         await this.deps.installations.markRevokedByInstallationId(installationId)
       }
-      this.deps.onFactsChanged?.(installationId, row.orgId)
+      await this.deps.onFactsChanged?.(installationId, row.orgId)
       await this.deps.recompileOrg(row.orgId)
       this.deps.log.info(
         { installationId: key, action, orgId: row.orgId, revoked: !facts },
