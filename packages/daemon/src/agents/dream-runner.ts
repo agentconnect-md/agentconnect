@@ -91,7 +91,6 @@ export interface DreamStorePort {
 
 export interface DreamExtractionResult {
   output: string
-  trustedChannel: boolean
   /** The short-lived ACP id is retained for correlation after the runtime
    *  session itself is discarded. */
   sessionId?: string
@@ -188,10 +187,6 @@ export class DreamRunner {
    *  aborts it so daemon.ts can drive the host's session-cancel path and the
    *  extraction promise settles promptly (releasing the reservation). */
   private readonly aborters = new Map<string, AbortController>()
-
-  /** Trust verdict of the host that produced each dream's proposal, captured at
-   *  extraction time. Auto-adopt reads THIS, never the agent's current host. */
-  private readonly extractionTrust = new Map<string, boolean>()
 
   /** Per-agent serial mutex over the mutating critical sections (snapshot+reserve,
    *  the adopt fence/swap, discard). Ordering matters: the adopt swap must not
@@ -327,7 +322,6 @@ export class DreamRunner {
         // while a dream is in flight, and this dream holds that slot until here.
         .then(() => this.maybeAutoAdopt(agentId, dream.dreamId))
         .catch(() => {})
-        .finally(() => this.extractionTrust.delete(dream.dreamId))
       return dream
     })
   }
@@ -401,11 +395,6 @@ export class DreamRunner {
         outputBytes: Buffer.byteLength(output),
         ...(extracted.usage ?? {})
       }
-      // Bind auto-adopt's gate to the host that ACTUALLY produced this proposal.
-      // Re-reading the agent's current host later would let a host replacement
-      // between extraction and adoption authorize an untrusted proposal.
-      this.extractionTrust.set(dreamId, extracted.trustedChannel)
-
       // The mined session ids are what grounds a skill candidate — a citation the
       // model invented can't be used to justify a recommendation (design §7).
       const proposal = parseDreamProposal(output, mineSkills ? sources.map((s) => s.sessionId) : [])
@@ -475,7 +464,7 @@ export class DreamRunner {
     prompt: string,
     signal: AbortSignal,
     mineSkills = false
-  ): Promise<({ abandoned: false } & DreamExtractionResult) | { abandoned: true; output: ''; trustedChannel: false }> {
+  ): Promise<({ abandoned: false } & DreamExtractionResult) | { abandoned: true; output: '' }> {
     const graceMs = this.deps.cancelGraceMs ?? 30_000
     const extraction = this.deps
       .extract(dream.agentId, dreamSystemPrompt(mineSkills), prompt, signal, {
@@ -485,9 +474,9 @@ export class DreamRunner {
       })
       .then((result) => ({ abandoned: false as const, ...result }))
     let timer: ReturnType<typeof setTimeout> | undefined
-    const backstop = new Promise<{ abandoned: true; output: ''; trustedChannel: false }>((resolve) => {
+    const backstop = new Promise<{ abandoned: true; output: '' }>((resolve) => {
       const arm = () => {
-        timer = setTimeout(() => resolve({ abandoned: true, output: '', trustedChannel: false }), graceMs)
+        timer = setTimeout(() => resolve({ abandoned: true, output: '' }), graceMs)
       }
       if (signal.aborted) arm()
       else signal.addEventListener('abort', arm, { once: true })
@@ -765,26 +754,19 @@ export class DreamRunner {
 
   /**
    * Adopt a just-completed dream without review when the agent opted in
-   * (`dreaming.autoAdopt`) AND its runtime carries a trusted system-prompt
-   * channel. Unattended adoption has distillation-equivalent blast radius, so it
-   * inherits distillation's gate: an untrusted-channel runtime keeps the dream
-   * reviewable instead (design §2/§6). Never throws — a fence conflict or a
-   * failed swap just leaves the dream `completed` and awaiting review.
+   * (`dreaming.autoAdopt`). The user explicitly opted out of reviewing completed
+   * results, so the runtime's system-prompt transport does not add a second
+   * review gate. Never throws — a live-memory fence conflict or failed swap
+   * still leaves the dream `completed` and awaiting review.
    */
   private async maybeAutoAdopt(agentId: string, dreamId: string): Promise<void> {
     const dream = this.deps.store.getDream(agentId, dreamId)
     if (dream?.status !== 'completed') return
     const policy = this.deps.dreamingPolicyFor(agentId)
     if (!policy?.autoAdopt) return
-    if (!this.extractionTrust.get(dreamId)) {
-      this.deps.log.warn(
-        `dream ${dreamId}: auto-adopt skipped for agent ${agentId} — the extraction ran on a runtime without a trusted system-prompt channel; review it manually`
-      )
-      return
-    }
     try {
-      // Never force: a fence conflict the rebase can't explain must fall back to
-      // human review rather than clobber a live tool/console write.
+      // Never force: a fence conflict the rebase can't explain must still fall
+      // back to human review rather than clobber a live tool/console write.
       await this.adopt(agentId, dreamId, false)
       this.deps.log.info(`dream ${dreamId} auto-adopted for agent ${agentId}`)
     } catch (err) {

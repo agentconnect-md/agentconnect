@@ -257,10 +257,12 @@ describe('MemoryPanel settings draft', () => {
 
     expect(checkboxFor('Enable dreaming')?.checked).toBe(true)
     expect(checkboxFor('Run on a schedule')?.checked).toBe(true)
-    expect(checkboxFor('Automatically accept completed results')?.checked).toBe(true)
+    expect(checkboxFor('Automatically adopt completed memory results')?.checked).toBe(true)
     expect(container.textContent).toContain('Daily')
+    expect(container.textContent).toContain('Dream memory results can be inaccurate')
 
-    await act(async () => checkboxFor('Automatically accept completed results')?.click())
+    await act(async () => checkboxFor('Automatically adopt completed memory results')?.click())
+    expect(container.textContent).not.toContain('Dream memory results can be inaccurate')
     const save = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
       (button) => button.textContent === 'Save memory settings'
     )

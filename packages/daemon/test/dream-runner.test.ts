@@ -79,7 +79,6 @@ async function setup(opts: {
   extract?: (agentId: string, systemPrompt: string, prompt: string, signal: AbortSignal) => Promise<string>
   policy?: MemoryDreamingPolicy
   cancelGraceMs?: number
-  trustedExtraction?: boolean
   extractionResult?: DreamExtractionResult
   onEvent?: (event: DreamLifecycleEvent) => void
 }) {
@@ -96,9 +95,7 @@ async function setup(opts: {
       prompts.push({ systemPrompt, prompt })
       if (opts.extractionResult) return opts.extractionResult
       const output = opts.extract ? await opts.extract(agentId, systemPrompt, prompt, signal) : PROPOSAL
-      // The producing host's verdict rides WITH the output (a later host swap
-      // must not be able to retro-authorize an untrusted proposal).
-      return { output, trustedChannel: opts.trustedExtraction ?? false }
+      return { output }
     },
     ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),
     ...(opts.cancelGraceMs !== undefined ? { cancelGraceMs: opts.cancelGraceMs } : {}),
@@ -144,7 +141,6 @@ describe('DreamRunner pipeline', () => {
     const { store, runner } = await setup({
       extractionResult: {
         output: PROPOSAL,
-        trustedChannel: false,
         sessionId: 'dream-session-1',
         runtime: 'codex',
         model: 'gpt-5.6',
@@ -227,7 +223,7 @@ describe('DreamRunner pipeline', () => {
       agentDirByAgent: () => dir,
       dreamingPolicyFor: () => ({ enabled: true }),
       store,
-      extract: async () => ({ output: PROPOSAL, trustedChannel: false }),
+      extract: async () => ({ output: PROPOSAL }),
       log: silent
     })
     const started = await runner.start('a1', { trigger: 'manual' })
@@ -256,7 +252,7 @@ describe('DreamRunner pipeline', () => {
       agentDirByAgent: () => dir,
       dreamingPolicyFor: () => ({ enabled: true }),
       store,
-      extract: async () => ({ output: PROPOSAL, trustedChannel: false }),
+      extract: async () => ({ output: PROPOSAL }),
       onStaged: (agentId, dreamId) => {
         runner.cancel(agentId, dreamId) // cancel after staging, before completion
       },
@@ -515,7 +511,7 @@ describe('DreamRunner adoption', () => {
     )
   })
 
-  it('auto-adopts on a trusted runtime, but leaves an untrusted one for review', async () => {
+  it('auto-adopts completed results without a runtime trust gate', async () => {
     const settleAdoption = async (store: FakeStore, dreamId: string) => {
       // Auto-adopt runs after the run promise settles (the reservation must be
       // free first), so poll past `completed` for the terminal state.
@@ -526,26 +522,17 @@ describe('DreamRunner adoption', () => {
       return store.dreams.get(dreamId)!
     }
 
-    const trusted = await setup({ policy: { enabled: true, autoAdopt: true }, trustedExtraction: true })
-    const a = await trusted.runner.start('a1', { trigger: 'schedule' })
-    await settle(trusted.store, a.dreamId)
-    expect((await settleAdoption(trusted.store, a.dreamId)).status).toBe('adopted')
+    const result = await setup({ policy: { enabled: true, autoAdopt: true } })
+    const started = await result.runner.start('a1', { trigger: 'schedule' })
+    await settle(result.store, started.dreamId)
+    expect((await settleAdoption(result.store, started.dreamId)).status).toBe('adopted')
     // The live store really was replaced, unattended.
-    expect(await readMemoryFile(trusted.dir, 'prefs.md')).toContain('Uses tabs, not spaces (2026-07-24).')
-
-    // Same policy, untrusted channel ⇒ gate holds; the dream stays reviewable.
-    const untrusted = await setup({ policy: { enabled: true, autoAdopt: true }, trustedExtraction: false })
-    const b = await untrusted.runner.start('a1', { trigger: 'schedule' })
-    await settle(untrusted.store, b.dreamId)
-    await new Promise((r) => setTimeout(r, 40))
-    expect(untrusted.store.dreams.get(b.dreamId)?.status).toBe('completed')
-    expect(await readMemoryFile(untrusted.dir, 'prefs.md')).toBe('- uses tabs\n- uses tabs again\n')
+    expect(await readMemoryFile(result.dir, 'prefs.md')).toContain('Uses tabs, not spaces (2026-07-24).')
   })
 
   it('leaves the dream reviewable when auto-adopt hits an unrebasable fence', async () => {
     const { dir, store, runner } = await setup({
       policy: { enabled: true, autoAdopt: true },
-      trustedExtraction: true,
       // Hold the extraction open so a console write lands inside the dream window.
       extract: async () => {
         await writeMemoryFile(dir, 'notes.md', '- human note mid-dream\n', undefined, 'console')
@@ -777,7 +764,7 @@ describe('DreamRunner crash recovery', () => {
       agentDirByAgent: (agentId) => (agentId === 'a1' ? dir : undefined),
       dreamingPolicyFor: () => undefined,
       store,
-      extract: async () => ({ output: '', trustedChannel: false }),
+      extract: async () => ({ output: '' }),
       log: silent
     })
     for (let i = 0; i < 20; i++) {
@@ -790,7 +777,7 @@ describe('DreamRunner crash recovery', () => {
   })
 })
 
-describe('DreamRunner store + trust binding', () => {
+describe('DreamRunner store persistence', () => {
   it('round-trips snapshotWrites through the real LocalStore (not just the fake)', async () => {
     // Regression: the runner wrote `snapshotWrites`, but if LocalStore's schema
     // and mappers omit it the value is dropped on insert and EVERY production
@@ -843,7 +830,7 @@ describe('DreamRunner store + trust binding', () => {
       agentDirByAgent: () => dir,
       dreamingPolicyFor: () => ({ enabled: true }),
       store,
-      extract: async () => ({ output: PROPOSAL, trustedChannel: false }),
+      extract: async () => ({ output: PROPOSAL }),
       log: silent
     })
     const started = await runner.start('a1', { trigger: 'manual' })
@@ -855,32 +842,6 @@ describe('DreamRunner store + trust binding', () => {
     }
     expect(store.getDream('a1', started.dreamId)?.snapshotWrites).toBeDefined()
     store.close()
-  })
-
-  it('binds auto-adopt to the extracting host, so a later trust flip cannot authorize it', async () => {
-    // The untrusted host produced the proposal; the agent's host is replaced by a
-    // trusted one while staging runs. Auto-adopt must honor the ORIGINAL verdict.
-    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
-    ensureMemory(dir, 'bot')
-    await writeMemoryFile(dir, 'prefs.md', '- uses tabs\n', undefined, 'tool')
-    const store = new FakeStore()
-    let hostIsTrusted = false
-    const runner = new DreamRunner({
-      agentDirByAgent: () => dir,
-      dreamingPolicyFor: () => ({ enabled: true, autoAdopt: true }),
-      store,
-      extract: async () => ({ output: PROPOSAL, trustedChannel: hostIsTrusted }),
-      onStaged: () => {
-        hostIsTrusted = true // host replaced mid-flight by a trusted one
-      },
-      log: silent
-    })
-    const started = await runner.start('a1', { trigger: 'manual' })
-    await settle(store, started.dreamId)
-    await new Promise((r) => setTimeout(r, 40))
-
-    expect(store.dreams.get(started.dreamId)?.status).toBe('completed') // NOT adopted
-    expect(await readMemoryFile(dir, 'prefs.md')).toBe('- uses tabs\n')
   })
 })
 
@@ -964,7 +925,7 @@ describe('DreamRunner skill mining (D-3)', () => {
       agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
       dreamingPolicyFor: () => ({ enabled: true, mineSkills: true }),
       store,
-      extract: async () => ({ output: proposal, trustedChannel: false }),
+      extract: async () => ({ output: proposal }),
       ...(onEvent ? { onEvent } : {}),
       log: silent
     })
@@ -998,7 +959,7 @@ describe('DreamRunner skill mining (D-3)', () => {
       store,
       extract: async (_a, systemPrompt) => {
         prompts.push(systemPrompt)
-        return { output: grounded, trustedChannel: false }
+        return { output: grounded }
       },
       log: silent
     })
@@ -1088,7 +1049,7 @@ describe('DreamRunner skill mining — review findings', () => {
       store,
       extract: async (_a, _s, prompt) => {
         prompts.push(prompt)
-        return { output: opts.proposal ?? proposalWith([candidate()]), trustedChannel: false }
+        return { output: opts.proposal ?? proposalWith([candidate()]) }
       },
       log: silent
     })
@@ -1120,7 +1081,7 @@ describe('DreamRunner skill mining — review findings', () => {
       store,
       extract: async (_a, _s, prompt) => {
         prompts.push(prompt)
-        return { output: PROPOSAL, trustedChannel: false }
+        return { output: PROPOSAL }
       },
       log: silent
     })
