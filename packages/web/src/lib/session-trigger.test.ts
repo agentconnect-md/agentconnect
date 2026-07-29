@@ -6,7 +6,7 @@ import {
   type SessionDetailDto,
   type SessionDto
 } from './api'
-import { sessionPlatform } from './data'
+import { platName, sessionPlatform } from './data'
 import {
   githubRepoIdFromSessionTriggerFilter,
   sessionSenderLabel,
@@ -82,6 +82,7 @@ describe('sessionTriggerKind', () => {
     expect(sessionPlatform(slashNamedWebhook)).toBe('hook')
     expect(sessionPlatform({ platform: 'hook', hookKind: 'github' })).toBe('github')
     expect(sessionPlatform({ platform: 'playground' })).toBe('webchat')
+    expect(platName(sessionPlatform({ platform: 'feishu' }))).toBe('Lark')
   })
 
   it('labels dream execution sessions without exposing their synthetic routing key', () => {

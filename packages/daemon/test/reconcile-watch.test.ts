@@ -483,7 +483,7 @@ describe('Daemon.reconcileSlackConnections', () => {
   })
 })
 
-describe('Daemon.refreshObservedChannels (Telegram/Discord discovery)', () => {
+describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', () => {
   it('reports observed Telegram chats as a non-authoritative integration/channels update', async () => {
     const root = root1()
     const { daemon } = makeStubDaemon(root)
@@ -548,6 +548,117 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord discovery)', () => {
     const channels = [{ id: '900123', name: 'general' }, { id: '900456' }]
     expect(emit).toHaveBeenCalledWith({ integrationId: 'dc-int', channels, authoritative: false })
     expect((daemon as any).channelSnapshots.get('dc-int')).toEqual({ channels, authoritative: false })
+    await daemon.stop()
+  })
+
+  it('backfills a Feishu participant and reports the resolved chat name', async () => {
+    const root = root1()
+    const { daemon } = makeStubDaemon(root)
+    await daemon.start()
+
+    const emit = vi.fn()
+    const conn = {
+      getChannelInfo: vi.fn(),
+      getUserProfile: vi.fn()
+    }
+    ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    ;(daemon as any).agents = new Map([
+      [
+        'bot-fs',
+        {
+          id: 'bot-fs',
+          integrations: [
+            {
+              id: 'fs-int',
+              platform: 'feishu',
+              feishu: { appId: 'cli_fs', appSecret: 'secret', region: 'lark' }
+            }
+          ]
+        }
+      ]
+    ])
+    ;(daemon as any).fsConnByIntegration.set('fs-int', conn)
+    vi.spyOn((daemon as any).store, 'listSessions').mockReturnValue([
+      { agentId: 'bot-fs', platform: 'feishu', channel: 'oc_group', triggeredBy: 'ou_sender' }
+    ])
+    const observed = vi
+      .spyOn((daemon as any).store, 'observedChannels')
+      .mockReturnValue([{ id: 'oc_group', name: 'Product Chat' }])
+    const noteMessage = vi.spyOn((daemon as any).channelNameResolver, 'noteMessage').mockImplementation(() => {})
+
+    ;(daemon as any).backfillChannelNames()
+
+    expect(noteMessage).toHaveBeenCalledWith(conn, {
+      channel: 'oc_group',
+      sender: { id: 'ou_sender', isBot: false }
+    })
+    expect(observed).toHaveBeenCalledWith('bot-fs', 'feishu')
+    const channels = [{ id: 'oc_group', name: 'Product Chat' }]
+    expect(emit).toHaveBeenCalledWith({ integrationId: 'fs-int', channels, authoritative: false })
+    expect((daemon as any).channelSnapshots.get('fs-int')).toEqual({ channels, authoritative: false })
+    await daemon.stop()
+  })
+
+  it('reports a new Feishu chat after its cold session row is committed', async () => {
+    const root = root1()
+    writeAgentJson(root, 'bot-fs', {})
+    let releaseSession!: () => void
+    const sessionGate = new Promise<void>((resolve) => (releaseSession = resolve))
+    const host = {
+      start: vi.fn().mockResolvedValue(undefined),
+      newSession: vi.fn(async () => {
+        await sessionGate
+        return 'acp-fs-1'
+      }),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn().mockResolvedValue('end_turn'),
+      cancel: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined)
+    }
+    const daemon = new Daemon({ root, hostFactory: () => host as any })
+    await daemon.start()
+
+    const emit = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    ;(daemon as any).agents.get('bot-fs').integrations = [
+      {
+        id: 'fs-int',
+        platform: 'feishu',
+        feishu: { appId: 'cli_fs', appSecret: 'secret', region: 'lark' }
+      }
+    ]
+    const dispatch = (daemon as any).dispatch(
+      'bot-fs',
+      {
+        msgId: 'feishu:oc_group:om_1',
+        traceId: 'trace-fs-1',
+        source: 'user',
+        platform: 'feishu',
+        channel: 'oc_group',
+        sender: { id: 'ou_sender', isBot: false },
+        text: 'hello',
+        mentionedBots: [],
+        isDm: false,
+        trigger: 'mention'
+      },
+      'fs-int'
+    )
+    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledOnce())
+
+    // Model the Lark lookup finishing while cold ACP startup is still blocked: there
+    // is a resolved name, but no session row for discovery to publish yet.
+    ;(daemon as any).store.setDisplayName('oc_group', 'Product Chat', Date.now())
+    ;(daemon as any).refreshObservedChannels()
+    expect(emit).not.toHaveBeenCalled()
+
+    releaseSession()
+    await dispatch
+
+    expect(emit).toHaveBeenCalledWith({
+      integrationId: 'fs-int',
+      channels: [{ id: 'oc_group', name: 'Product Chat' }],
+      authoritative: false
+    })
     await daemon.stop()
   })
 
