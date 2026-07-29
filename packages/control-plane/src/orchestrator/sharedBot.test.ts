@@ -7,6 +7,7 @@ import type {
   BotRepo,
   BotRecord,
   BotSecretStore,
+  BotCredentialWriter,
   IntegrationRepo,
   IntegrationRecord,
   IntegrationChannelRepo,
@@ -114,14 +115,24 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
   let removals: { daemonId: string; integrationId: string }[]
   // One-shot barrier for deterministic channel-mutation concurrency tests.
   let blockNextChannelList: (() => Promise<void>) | null
+  // When set, `bots.get` reports a BUMPED generation from its second call on —
+  // a re-install landing between revokeBot's commit and its external effects.
+  let bumpRevisionAfterFirstGet: boolean
 
   function makeOrch(): SharedBotOrchestrator {
     const agents: Record<string, AgentRecord> = {
       [ALICE]: agent(ALICE, 'alice', D1),
       [BOB]: agent(BOB, 'bob', D2)
     }
+    let getCalls = 0
     const bots: Pick<BotRepo, 'get' | 'listHttpActive' | 'revokeIfCurrent'> = {
-      get: async () => botRow,
+      get: async () => {
+        getCalls += 1
+        if (bumpRevisionAfterFirstGet && getCalls > 1) {
+          return { ...botRow, credentialRevision: botRow.credentialRevision + 1 }
+        }
+        return botRow
+      },
       listHttpActive: async () => [botRow],
       // Mirrors the SQL CAS: both arms conjunctive, each skipped when the report
       // didn't carry it, and `credentialInstalledAt: null` passes the time arm.
@@ -230,9 +241,24 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
         return threadOwner
       }
     }
+    // The credential writer is the transaction owner in prod; here it stands in
+    // for that one atomic step — CAS, then (only if it applied) the integration
+    // flip, which is exactly what the real transaction commits together.
+    const botCredential: BotCredentialWriter = {
+      install: async () => {
+        botRow = { ...botRow, credentialRevision: botRow.credentialRevision + 1 }
+        return botRow.credentialRevision
+      },
+      revoke: async (id, at, fence) => {
+        const applied = await bots.revokeIfCurrent!(id, at, fence)
+        if (!applied) return { applied: false, integrationIds: [] }
+        return { applied: true, integrationIds: await intRepo.markRevokedForBot!(id) }
+      }
+    }
     return new SharedBotOrchestrator(
       bots as BotRepo,
       botSecret as BotSecretStore,
+      botCredential,
       intRepo as IntegrationRepo,
       chRepo as IntegrationChannelRepo,
       agentRepo as AgentRepo,
@@ -257,6 +283,7 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     gatedAgents = new Set()
     threadBinding = null
     blockNextChannelList = null
+    bumpRevisionAfterFirstGet = false
     botRevokedAt = null
     removals = []
   })
@@ -800,6 +827,20 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     expect(botRevokedAt).toBeInstanceOf(Date)
     expect(integrations.map((i) => i.status)).toEqual(['revoked', 'revoked'])
     expect(removals).toHaveLength(2)
+  })
+
+  // The revoke commits, but a re-install wins the bot row the instant it is
+  // released and broadcasts its own assign. Emitting the teardown then would tear
+  // down a credential this report no longer describes.
+  it('revokeBot skips its teardown effects when the credential moved after the commit', async () => {
+    // `bumpRevisionAfterFirstGet` makes the post-commit re-read observe a newer
+    // generation — exactly what a re-install that won the row lock leaves behind.
+    bumpRevisionAfterFirstGet = true
+
+    await makeOrch().revokeBot(BOT, 'app_uninstalled')
+
+    expect(ch.sends).toEqual([]) // no bot-unassign racing the fresh assign
+    expect(removals).toEqual([]) // no spec pulled off the re-installed bot
   })
 
   it('revokeBot is idempotent — a duplicate report finds no active installs', async () => {

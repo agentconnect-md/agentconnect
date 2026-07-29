@@ -1878,7 +1878,9 @@ export interface BotRepo {
    */
   bumpCredential(id: BotId, at: Date): Promise<number>
   /**
-   * Compare-and-set revocation — the ONLY way `rc/bot-revoked` is applied.
+   * Compare-and-set revocation. Callers go through {@link BotCredentialWriter},
+   * which pairs this with the integration flip in one transaction — on its own
+   * it settles only the bot row.
    * Refuses (returns false, writing nothing) when the reported generation is no
    * longer current, so a delayed uninstall from a prior install cannot kill the
    * credential that replaced it:
@@ -2023,6 +2025,35 @@ export interface BotSecretStore {
   put(botId: BotId, material: BotSecretMaterial): Promise<void>
   get(botId: BotId): Promise<BotSecretMaterial | null>
   delete(botId: BotId): Promise<void>
+}
+
+/** Outcome of a fenced revocation: `applied: false` ⇒ the report was stale and
+ *  NOTHING was written, so the caller must skip its external effects too. */
+export interface RevokeBotResult {
+  applied: boolean
+  /** Installs this revocation flipped (empty when refused or already revoked) —
+   *  the worklist for pulling send-only specs off member daemons. */
+  integrationIds: IntegrationId[]
+}
+
+/**
+ * The two credential-lifecycle transitions of a shared bot, each ATOMIC and
+ * mutually serialized (preset-agents.md §5.3). Both span two tables and are
+ * fenced by `bot.credentialRevision`; committing their halves separately opens
+ * windows the fence cannot see (a fresh token under a stale generation; a
+ * revocation flipping an install a concurrent re-install just activated). Both
+ * write the `bot` row, so its row lock also orders install against revoke.
+ *
+ * Callers use THIS port, not `BotSecretStore.put` + `BotRepo.bumpCredential` /
+ * `revokeIfCurrent` in sequence.
+ */
+export interface BotCredentialWriter {
+  /** A fresh credential landed (platform re-install / rotation): store it and
+   *  advance the generation as one step. Returns the new revision. */
+  install(botId: BotId, material: BotSecretMaterial, at: Date): Promise<number>
+  /** Apply `rc/bot-revoked` behind its generation fence, flipping the bot and
+   *  its active installs together. */
+  revoke(botId: BotId, at: Date, fence: { revision?: number; eventAt?: Date }): Promise<RevokeBotResult>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

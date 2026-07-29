@@ -35,6 +35,7 @@ import {
   PgIntegrationRepo,
   PgBotRepo,
   PgBotSecretStore,
+  PgBotCredentialWriter,
   PgAgentSecretStore,
   PgAgentConfigWriter,
   PgMcpProviderRepo,
@@ -142,6 +143,7 @@ export function buildHttpApp(
   const integrationRepo = new PgIntegrationRepo(prisma)
   const botRepo = new PgBotRepo(prisma)
   const botSecretStore = new PgBotSecretStore(prisma, cipher)
+  const botCredentialWriter = new PgBotCredentialWriter(prisma, cipher)
   const integrationChannelRepo = new PgIntegrationChannelRepo(prisma)
   const agentRepo = new PgAgentRepo(prisma)
   const hookRepo = new PgHookRepo(prisma)
@@ -172,6 +174,7 @@ export function buildHttpApp(
       integration: integrationRepo,
       bot: botRepo,
       botSecret: botSecretStore,
+      botCredential: botCredentialWriter,
       agentSecret: agentSecretStore,
       agentConfig: new PgAgentConfigWriter(prisma, cipher),
       mcpProvider: new PgMcpProviderRepo(prisma),
@@ -198,6 +201,7 @@ export function buildHttpApp(
     sharedBot: new SharedBotOrchestrator(
       botRepo,
       botSecretStore,
+      botCredentialWriter,
       integrationRepo,
       integrationChannelRepo,
       agentRepo,

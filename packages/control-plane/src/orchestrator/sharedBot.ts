@@ -27,6 +27,7 @@ import type {
   BotRepo,
   BotRecord,
   BotSecretStore,
+  BotCredentialWriter,
   BotSecretMaterial,
   IntegrationRepo,
   IntegrationRecord,
@@ -86,6 +87,7 @@ export class SharedBotOrchestrator {
   constructor(
     private readonly bots: BotRepo,
     private readonly botSecret: BotSecretStore,
+    private readonly botCredential: BotCredentialWriter,
     private readonly integrations: IntegrationRepo,
     private readonly channels: IntegrationChannelRepo,
     private readonly agents: AgentRepo,
@@ -187,9 +189,17 @@ export class SharedBotOrchestrator {
    * GENERATION-FENCED. Slack does not order `app_uninstalled`/`tokens_revoked`,
    * so a delayed event from a prior install can arrive after the workspace has
    * re-installed; applying it would revoke a live, freshly-authorized bot and
-   * silently kill its integrations. The compare-and-set in `revokeIfCurrent`
-   * refuses that report, and the rest of this method — which is what actually
-   * tears the bot down — is skipped with it.
+   * silently kill its integrations. The compare-and-set refuses that report, and
+   * the rest of this method — which is what actually tears the bot down — is
+   * skipped with it.
+   *
+   * The decision and the integration flip are ONE transaction serialized on the
+   * bot row (`BotCredentialWriter.revoke`). Committing them separately let a
+   * re-install slip in between: it would bump to N+1 and re-activate an install,
+   * and the flip would then revoke that FRESH install, leaving a live bot with
+   * nothing installed. The external effects below run only after that commit,
+   * and re-check the generation first — a re-install that won the row lock
+   * broadcasts its own assign, which our `bot-unassign` must not race past.
    */
   async revokeBot(
     botId: string,
@@ -200,7 +210,7 @@ export class SharedBotOrchestrator {
     if (!bot) return
     // Snapshot members BEFORE the flip — listForBot is active-only.
     const installs = await this.integrations.listForBot(bot.id)
-    const applied = await this.bots.revokeIfCurrent(bot.id, new Date(), {
+    const { applied } = await this.botCredential.revoke(bot.id, new Date(), {
       ...(fence.revision !== undefined ? { revision: fence.revision } : {}),
       ...(fence.eventAtMs !== undefined ? { eventAt: new Date(fence.eventAtMs) } : {})
     })
@@ -211,7 +221,18 @@ export class SharedBotOrchestrator {
       )
       return
     }
-    await this.integrations.markRevokedForBot(bot.id)
+    // Re-check after the commit: a re-install may have taken the row lock the
+    // moment we released it, in which case IT owns the live state and has
+    // already broadcast a fresh assign. Emitting the teardown now would tear
+    // down a credential we no longer describe.
+    const after = await this.bots.get(bot.id)
+    if (after && after.credentialRevision !== bot.credentialRevision) {
+      this.log.info(
+        { botId: bot.id, reason, from: bot.credentialRevision, to: after.credentialRevision },
+        'shared-bot: revoke committed but the credential was replaced — skipping teardown effects'
+      )
+      return
+    }
     await this.unassign(bot)
     for (const integration of installs) {
       const agent = await this.agents.get(integration.agentId)

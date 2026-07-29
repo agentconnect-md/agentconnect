@@ -278,6 +278,22 @@ function fetchWithDispatcher(dispatcher: Dispatcher): FetchFunction {
   return (url, init) => undiciFetch(url, { ...(init as Parameters<typeof undiciFetch>[1]), dispatcher })
 }
 
+/**
+ * Slack error codes that mean THIS TOKEN IS DEAD, as opposed to a transient
+ * failure. Deliberately narrow: a false positive would revoke a live bot, so
+ * network errors, rate limits, and `missing_scope` must NOT match.
+ *
+ * `account_inactive` is what a workspace uninstall leaves behind;
+ * `token_revoked` / `invalid_auth` cover an explicitly killed token.
+ */
+const DEAD_CREDENTIAL_ERRORS = new Set(['account_inactive', 'token_revoked', 'invalid_auth'])
+
+function isDeadCredentialError(err: unknown): boolean {
+  // @slack/web-api puts the API's `error` string on `err.data.error`.
+  const code = (err as { data?: { error?: unknown } })?.data?.error
+  return typeof code === 'string' && DEAD_CREDENTIAL_ERRORS.has(code)
+}
+
 /** The subset of a Slack file element carried through as attachment metadata. */
 interface SlackFile {
   id?: string
@@ -479,6 +495,22 @@ export class SlackSharedIngest {
       }
     } catch (err) {
       this.deps.log.warn(`shared-ingest(${this.botId}): auth.test failed: ${(err as Error).message}`)
+      // A DEAD-credential answer is positive evidence, not a transient miss: it
+      // says the token this very assignment carries no longer works. Report it as
+      // a revocation so the CP converges even when the `app_uninstalled` event
+      // itself was lost — Slack acks that event before the handler runs and never
+      // redelivers it, and a relay that crashed holding a queued report would
+      // otherwise leave an uninstalled app shown as active forever. Every
+      // (re)assign and every pod restart re-probes here, so this is the backstop
+      // the in-memory retry queue cannot be.
+      //
+      // No `eventAtMs`: we don't know WHEN the workspace pulled the app. The
+      // revision arm alone is the correct fence here anyway — it identifies the
+      // exact credential this probe just found dead.
+      if (isDeadCredentialError(err)) {
+        this.deps.log.warn(`shared-ingest(${this.botId}): credential is dead — reporting revocation`)
+        this.deps.onBotRevoked?.('tokens_revoked')
+      }
     }
   }
 

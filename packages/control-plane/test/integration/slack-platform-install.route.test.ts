@@ -104,6 +104,11 @@ async function startInstall(app: HttpApp, agentId?: string): Promise<{ id: strin
   return res.json() as { id: string; installUrl: string }
 }
 
+/** Poll one install's terminal state — the console's completion signal. */
+async function status(app: HttpApp, id: string) {
+  return app.app.inject({ method: 'GET', url: `${ORG}/integrations/slack/platform-install/${id}` })
+}
+
 describe('POST /integrations/slack/platform-install', () => {
   it('404s when the platform app is not configured (self-hosted default)', async () => {
     const { app } = withPlatform({ configured: false })
@@ -176,8 +181,10 @@ describe('GET /integrations/slack/platform/callback', () => {
     })
     expect(bot).toMatchObject({
       orgId: DEFAULT_ORG_ID,
+      // Always http (a distributed app has no per-workspace xapp) and always
+      // NON-shareable (one workspace install ⇒ exactly one agent, §5.5).
       transport: 'http',
-      shareable: true,
+      shareable: false,
       prebuilt: true,
       botUserId: 'U0BOT',
       name: 'AgentConnect (Acme)',
@@ -227,7 +234,7 @@ describe('GET /integrations/slack/platform/callback', () => {
         platform: 'slack',
         name: 'AgentConnect (Theirs)',
         transport: 'http',
-        shareable: true,
+        shareable: false,
         prebuilt: true,
         slackAppId: PLATFORM.appId,
         teamId: 'T0WORKSPACE'
@@ -331,6 +338,69 @@ describe('GET /integrations/slack/platform/callback', () => {
     expect(await prisma.integration.count({ where: { botId: bot.id, status: 'revoked' } })).toBe(1)
   })
 
+  // The secret and the generation it belongs to must land together: a reader that
+  // sees the new token under the old revision (restart reconciliation does NOT
+  // filter on revokedAt) would broadcast the fresh credential with a stale fence,
+  // and a delayed uninstall would then pass the CAS and kill it.
+  it('a re-install never leaves the fresh token under the old generation', async () => {
+    const { app } = withPlatform()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const first = await startInstall(app, agentId)
+    await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c1&state=${first.id}`
+    })
+    const bot = await prisma.bot.findFirstOrThrow({ where: { slackAppId: PLATFORM.appId } })
+
+    const second = await startInstall(app, agentId)
+    await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c2&state=${second.id}`
+    })
+
+    // Both halves advanced as one: token, generation, and its timestamp agree.
+    const after = await prisma.bot.findUniqueOrThrow({ where: { id: bot.id }, include: { secret: true } })
+    expect(after.credentialRevision).toBe(bot.credentialRevision + 1)
+    expect(after.credentialInstalledAt).toBeInstanceOf(Date)
+    expect(after.credentialInstalledAt!.getTime()).toBeGreaterThanOrEqual(bot.credentialInstalledAt!.getTime())
+    expect(after.secret?.botToken).toBe('xoxb-workspace-token')
+    expect(after.revokedAt).toBeNull()
+  })
+
+  // The platform bot is NON-shareable (§5.5): one workspace install backs exactly
+  // one agent. Re-installing with a DIFFERENT agent selected must not quietly add
+  // a second install — that is the cap the classic reuse path answers 409 for.
+  it('a re-install aimed at another agent is refused, leaving the original binding intact', async () => {
+    const { app } = withPlatform()
+    const first = randomUUID()
+    await seedAgent(prisma, first)
+    const started = await startInstall(app, first)
+    await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c1&state=${started.id}`
+    })
+    const bot = await prisma.bot.findFirstOrThrow({ where: { slackAppId: PLATFORM.appId } })
+
+    // Same workspace, different target agent.
+    const other = randomUUID()
+    await seedAgent(prisma, other)
+    const second = await startInstall(app, other)
+    const cb = await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c2&state=${second.id}`
+    })
+
+    expect(cb.body).toContain('already connected to another agent')
+    expect((await status(app, second.id)).json()).toMatchObject({ status: 'failed', failureReason: 'agent_taken' })
+    // Exactly one install, still the original agent — the cap held.
+    const installs = await prisma.integration.findMany({ where: { botId: bot.id } })
+    expect(installs).toHaveLength(1)
+    expect(installs[0]).toMatchObject({ agentId: first, status: 'active' })
+    // …and the credential still rotated, so the workspace keeps working.
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).credentialRevision).toBe(2)
+  })
+
   it('rejects an exchange for the wrong app or a missing team id', async () => {
     const { app, stub } = withPlatform()
     const agentId = randomUUID()
@@ -372,9 +442,6 @@ describe('GET /integrations/slack/platform/callback', () => {
  * "a new integration appeared" would leave that (common) path polling forever.
  */
 describe('GET /integrations/slack/platform-install/:id (completion signal)', () => {
-  const status = async (app: HttpApp, id: string) =>
-    app.app.inject({ method: 'GET', url: `${ORG}/integrations/slack/platform-install/${id}` })
-
   it('pending → completed across the callback', async () => {
     const { app } = withPlatform()
     const agentId = randomUUID()
@@ -443,7 +510,7 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
         name: 'AgentConnect (Theirs)',
         platform: 'slack',
         transport: 'http',
-        shareable: true,
+        shareable: false,
         slackAppId: PLATFORM.appId,
         teamId: 'T0WORKSPACE'
       }
@@ -461,6 +528,25 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
       status: 'failed',
       failureReason: 'workspace_taken'
     })
+  })
+
+  // Slack sends `?error=access_denied&state=…` — the state is present, so the row
+  // must settle. Left pending, the console would poll until the TTL reaper turned
+  // it into a 404 and then report "expired" for what was a plain cancellation.
+  it('a user denial settles the row as failed/denied, not pending', async () => {
+    const { app } = withPlatform()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const started = await startInstall(app, agentId)
+
+    const cb = await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?error=access_denied&state=${started.id}`
+    })
+    expect(cb.body).toContain('cancelled')
+
+    expect((await status(app, started.id)).json()).toMatchObject({ status: 'failed', failureReason: 'denied' })
+    expect(await prisma.bot.count()).toBe(0)
   })
 
   it('404s for another org’s install id', async () => {

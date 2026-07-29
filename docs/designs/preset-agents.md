@@ -69,7 +69,7 @@ preset.
 | Preset deletion            | The general preset is **freely deletable and never auto-recreated**                                                                                                                                                                                                                                                                                                      | Existence-check provisioning — it resurrects what the user deleted                                                                                                                                                                                                                                                                                        |
 | Idempotency                | **Per-preset `preset_agent` row** (`status ∈ {created, skipped}`, `placementSettledAt`), written with the agent row. Creation is transactional with the org (or the one-time backfill) and never retries; auto-placement retries on register events only while the preset is unplaced and unsettled. A deleted preset is never recreated — creation has no later trigger | A single org-level stamp (cannot express per-preset placement); existence-check provisioning (resurrection); creating at daemon time (see the Creation & placement row)                                                                                                                                                                                   |
 | Non-empty orgs             | **The preset for every org** — new orgs at creation, existing orgs via a one-time backfill — whatever agents they already have: the general agent must exist deterministically because both Slack fulfillments and the GitHub flow bind to it by default                                                                                                                 | Creating it only for empty orgs — leaves the predefined Slack app without a deterministic bind target, and an org that pre-created agents still benefits from the branded default; creating none at all                                                                                                                                                   |
-| Predefined Slack app count | **One** shareable app backing the general agent; dedicated per-agent apps remain the guided upgrade via quick-install                                                                                                                                                                                                                                                    | One app per preset agent; a second app for a separate built-in assistant (§4)                                                                                                                                                                                                                                                                             |
+| Predefined Slack app count | **One** app backing the general agent, installed per workspace as an **http + non-shareable** bot (one workspace ⇒ one agent, §5.5); dedicated per-agent apps remain the guided upgrade via quick-install                                                                                                                                                                | One app per preset agent; a second app for a separate built-in assistant (§4)                                                                                                                                                                                                                                                                             |
 
 ## 3. Preset agents
 
@@ -352,13 +352,26 @@ workspace to re-authorize. The pinned lists (currently 17 bot scopes including
 are the launch contract, enforced by the cross-package drift guards. Any future
 widening is a product event — a coordinated re-auth — not a routine PR.
 
-### 5.5 One app, shareable
+### 5.5 One app, http + non-shareable
 
-The platform app backs the general preset agent as the default owner of a **shareable**
-bot (`Bot.shareable`); additional agents can ride the same bot later via channel
-ownership and mention arbitration (shared-bot-relay.md). Dedicated per-agent Slack
-identities remain the upgrade path through quick-install, surfaced by the console's
-integration flow.
+Every workspace install of the platform app produces a Bot that is **always
+`transport: 'http'` and always `shareable: false`** — neither is a per-install
+choice:
+
+- **http** is forced by the platform: a distributed app has no per-workspace
+  app-level (xapp) token, so Socket Mode is impossible and inbound must arrive
+  over the relay pool's shared Events API endpoint.
+- **non-shareable** is the product decision: one workspace install backs exactly
+  **one agent**, keeping the classic 1-install cap. The bot is a fixed part of the
+  platform's onboarding surface, not a multi-agent hub — widening one Slack
+  identity across several agents stays the quick-install upgrade (a dedicated app
+  per agent), where the operator owns the app and its scopes.
+
+Consequence for re-authorization: a re-install aimed at a **different** agent than
+the workspace's current binding does not silently add a second install. The
+credential still rotates (the workspace keeps working), and the callback answers
+`agent_taken` — moving the binding is a deliberate console action, not a side
+effect of clicking "Add to Slack" with another agent selected.
 
 ## 6. Onboarding checklist
 

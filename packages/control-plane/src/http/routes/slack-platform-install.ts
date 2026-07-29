@@ -2,9 +2,12 @@
  * `http/routes/slack-platform-install.ts` (docs/designs/preset-agents.md §5.3) —
  * the PLATFORM-published (distributed) Slack app install: the true "Add to
  * Slack". One deployment-level app (SLACK_PLATFORM_* env) that every org
- * installs into its own workspace via standard OAuth v2; the resulting Bot is
- * shareable/http and auto-binds to the org's `agentconnect` preset agent (or an
- * explicitly chosen one).
+ * installs into its own workspace via standard OAuth v2. The resulting Bot is
+ * always **http + NON-shareable** — Events-API-only because a distributed app has
+ * no per-workspace xapp token, and one-agent because a workspace install keeps the
+ * classic 1-install cap — and auto-binds to the org's `agentconnect` preset agent
+ * (or an explicitly chosen one). Serving several agents from one Slack identity
+ * remains the quick-install upgrade (a dedicated app per agent).
  *
  * TWO plugins, mirroring the quick-install funnel's split:
  *  - `slackPlatformInstallRoutes` mounts inside `/orgs/:orgId` (humanAuth +
@@ -178,20 +181,30 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
         const back = (note: Parameters<typeof closePageHtml>[0]): FastifyReply =>
           reply.type('text/html').send(closePageHtml(note, consoleUrl))
 
-        if (req.query.error || !req.query.code || !req.query.state) return back('denied')
-        const row = await deps.repos.slackPlatformInstall.get(req.query.state)
         // Single-use state. The row now SURVIVES the callback (it is the console's
         // completion signal), so "already consumed" is a status check rather than
         // absence — without it a replayed callback would re-run the whole install
         // and advance the credential generation a second time.
-        if (!row || row.status !== 'pending') return back('expired')
+        const state = req.query.state
+        const row = state ? await deps.repos.slackPlatformInstall.get(state) : null
         // Settle the row with the SAME note the close page shows: it is the
         // console's completion signal (the poll can't infer success from a new
-        // integration — a re-authorization need not create one).
+        // integration — a re-authorization need not create one). Safe to call
+        // with no pending row (a bare denial, an already-settled replay) — it
+        // just renders the page.
         const fail = async (note: Parameters<typeof closePageHtml>[0]): Promise<FastifyReply> => {
-          await deps.repos.slackPlatformInstall.settle(row.id, { status: 'failed', failureReason: note })
+          if (row?.status === 'pending') {
+            await deps.repos.slackPlatformInstall.settle(row.id, { status: 'failed', failureReason: note })
+          }
           return back(note)
         }
+
+        // A user denial DOES carry the state (`?error=access_denied&state=…`), so
+        // settle the row rather than leaving the console polling a `pending` row
+        // until the TTL reaper turns it into a 404 "expired".
+        if (req.query.error) return fail('denied')
+        if (!req.query.code || !state) return fail('denied')
+        if (!row || row.status !== 'pending') return back('expired')
 
         const exchanged = await api.exchangeOAuth({
           clientId: platform.clientId,
@@ -232,19 +245,36 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
           // rotate to the fresh token, clear any uninstall marker, and make sure
           // the target agent has an active install; then reconverge the pool.
           botId = existing.id
-          await deps.repos.botSecret.put(BotId(existing.id), {
-            botToken: result.botToken,
-            appToken: null,
-            signingSecret: platform.signingSecret
-          })
-          // Advance the install GENERATION (and clear the revocation marker with
-          // it, in one statement). MUST happen before the syncBot below so the
-          // pool is re-assigned with the new revision: any `app_uninstalled` from
-          // the install this one replaces is now fenced out (§5.3 lifecycle).
-          const revision = await deps.repos.bot.bumpCredential(BotId(existing.id), new Date())
+          // ONE transition: the fresh token and the generation it belongs to
+          // commit together, so no reader (notably restart reconciliation, which
+          // does not filter on `revokedAt`) can broadcast the new credential
+          // under the old fence and let a delayed uninstall kill it. Also clears
+          // the revocation marker, and serializes against a concurrent revoke on
+          // the bot row. MUST precede the syncBot below (§5.3 lifecycle).
+          const revision = await deps.repos.botCredential.install(
+            BotId(existing.id),
+            { botToken: result.botToken, appToken: null, signingSecret: platform.signingSecret },
+            new Date()
+          )
           req.log.info({ botId: existing.id, revision }, 'slack platform re-install: credential generation advanced')
           const installs = await deps.repos.integration.listForBot(existing.id)
-          if (!installs.some((i) => i.agentId === agent.id)) {
+          const otherAgent = installs.find((i) => i.agentId !== agent.id)
+          if (otherAgent) {
+            // The platform bot is NON-shareable: one workspace install serves
+            // exactly one agent, so a re-install aimed at a DIFFERENT agent
+            // cannot just add a second row (that is the cap the classic reuse
+            // path enforces with a 409). The credential above still rotated —
+            // the workspace's existing binding keeps working, it just did not
+            // move. Moving it is a deliberate console action, not a side effect
+            // of clicking "Add to Slack" with another agent selected.
+            req.log.warn(
+              { installId: row.id, botId: existing.id, boundAgentId: otherAgent.agentId, targetAgentId: agent.id },
+              'slack platform re-install: workspace already bound to another agent'
+            )
+            await deps.sharedBot.syncBot(existing.id)
+            return fail('agent_taken')
+          }
+          if (installs.length === 0) {
             await deps.repos.integration.create({
               id: IntegrationId(randomUUID()),
               orgId: OrgId(row.orgId),
@@ -262,8 +292,13 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
             agent,
             name: result.teamName ? `AgentConnect (${result.teamName})` : 'AgentConnect',
             botToken: result.botToken,
+            // Always http (a distributed app is Events-API-only — there is no
+            // per-workspace xapp token for Socket Mode) and always NON-shareable:
+            // one workspace install backs exactly one agent, keeping the classic
+            // 1-install cap. Widening a workspace to several agents is the
+            // quick-install upgrade path (its own Slack app), not this one.
             transport: 'http',
-            shareable: true,
+            shareable: false,
             prebuilt: true,
             slackAppId: platform.appId,
             teamId: result.teamId,

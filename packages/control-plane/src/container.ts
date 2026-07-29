@@ -52,6 +52,7 @@ import {
   PgIntegrationChannelRepo,
   PgBotRepo,
   PgBotSecretStore,
+  PgBotCredentialWriter,
   PgMcpProviderRepo,
   PgMcpProviderSecretStore,
   PgMcpGrantRepo,
@@ -212,6 +213,9 @@ export function buildContainer(
     integrationChannel: new PgIntegrationChannelRepo(prisma),
     bot: new PgBotRepo(prisma),
     botSecret: new PgBotSecretStore(prisma, secretCipher),
+    // Owns its transaction: install/revoke each write two tables behind the
+    // credential-generation fence, and serialize on the bot row (§5.3).
+    botCredential: new PgBotCredentialWriter(prisma, secretCipher),
     agentSecret: new PgAgentSecretStore(prisma, secretCipher),
     agentConfig: new PgAgentConfigWriter(prisma, secretCipher),
     mcpProvider: new PgMcpProviderRepo(prisma),
@@ -403,6 +407,7 @@ export function buildContainer(
   const sharedBot = new SharedBotOrchestrator(
     repos.bot,
     repos.botSecret,
+    repos.botCredential,
     repos.integration,
     repos.integrationChannel,
     repos.agent,
@@ -600,6 +605,7 @@ export function buildContainer(
       integrationChannel: repos.integrationChannel,
       bot: repos.bot,
       botSecret: repos.botSecret,
+      botCredential: repos.botCredential,
       agentSecret: repos.agentSecret,
       agentConfig: repos.agentConfig,
       mcpProvider: repos.mcpProvider,

@@ -565,7 +565,7 @@ export function slackConfigRoutes(deps: HttpDeps) {
   }
 }
 
-export type SlackCallbackNote = 'connected' | 'denied' | 'expired' | 'error' | 'workspace_taken'
+export type SlackCallbackNote = 'connected' | 'denied' | 'expired' | 'error' | 'workspace_taken' | 'agent_taken'
 
 /**
  * The callback tab is a THROWAWAY — the real flow continues in the ORIGINAL
@@ -576,7 +576,8 @@ export type SlackCallbackNote = 'connected' | 'denied' | 'expired' | 'error' | '
  * link origin comes from config), so there's nothing to escape.
  *
  * Exported for the platform-app callback (slack-platform-install.ts), which
- * shares the throwaway-tab UX (and adds the `workspace_taken` outcome).
+ * shares the throwaway-tab UX (and adds the `workspace_taken` / `agent_taken`
+ * outcomes — the platform bot is non-shareable, so a workspace backs one agent).
  */
 export function closePageHtml(note: SlackCallbackNote, consoleUrl?: string): string {
   const ok = note === 'connected'
@@ -590,7 +591,9 @@ export function closePageHtml(note: SlackCallbackNote, consoleUrl?: string): str
           ? 'The install was cancelled. Close this tab and try again in AgentConnect.'
           : note === 'workspace_taken'
             ? 'This Slack workspace is already connected to a different AgentConnect organization. Remove that connection first, then try again.'
-            : 'Something went wrong finishing the install. Close this tab and try again in AgentConnect.'
+            : note === 'agent_taken'
+              ? 'This Slack workspace is already connected to another agent in your organization. Remove that integration first, then try again.'
+              : 'Something went wrong finishing the install. Close this tab and try again in AgentConnect.'
   // Auto-close only on success (a failure needs reading). window.close() is allowed
   // for script-opened tabs (this one was window.open'd); the text is the fallback.
   const autoClose = ok ? '<script>setTimeout(function(){try{window.close()}catch(e){}},1500)</script>' : ''

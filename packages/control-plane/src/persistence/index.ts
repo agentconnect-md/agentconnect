@@ -25,6 +25,7 @@ export { PgLaunchRepo } from './repositories/launch.repo.js'
 export { PgSecretLeaseRepo } from './repositories/secret-lease.repo.js'
 export { PgAgentSecretStore } from './repositories/agent-secret.repo.js'
 export { PgAgentConfigWriter } from './repositories/agent-config.writer.js'
+export { PgBotCredentialWriter } from './repositories/bot-credential.writer.js'
 export {
   PgBotRepo,
   PgBotSecretStore,

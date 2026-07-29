@@ -22,6 +22,7 @@ import type {
   IntegrationChannelRepo,
   BotRepo,
   BotSecretStore,
+  BotCredentialWriter,
   AgentSecretStore,
   AgentConfigWriter,
   McpProviderRepo,
@@ -144,6 +145,7 @@ export interface HttpDeps {
     bot: BotRepo
     /** The ONLY token read/write path (values pass the SecretCipher seam). */
     botSecret: BotSecretStore
+    botCredential: BotCredentialWriter
     /** The ONLY read/write path for agent write-only secret env vars — key names
      *  via `keys` for DTOs, values via `get` for wire projection only. */
     agentSecret: AgentSecretStore
