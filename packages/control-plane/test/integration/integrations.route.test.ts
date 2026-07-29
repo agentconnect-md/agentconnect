@@ -397,13 +397,86 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect(dto.region).toBe('lark')
   })
 
+  it('POST an HTTP Feishu app assigns callback-only secrets and keeps API egress on the daemon', async () => {
+    const agentId = await placedAgent()
+    const { app, spy } = withSpy()
+    const relaySends: Array<{ type: string; payload: unknown }> = []
+    app.relayReg.add({
+      relayId: 'r1',
+      send: (type: string, payload: unknown) => relaySends.push({ type, payload }),
+      close() {}
+    } as RelayChannel)
+    app.deps.verifyFeishuBot = async () => ({
+      status: 'ok',
+      name: 'HTTP Lark Bot',
+      openId: 'ou_http_bot'
+    })
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: {
+        platform: 'feishu',
+        agentId,
+        transport: 'http',
+        feishu: {
+          appId: 'cli_http_app',
+          appSecret: 'app-secret',
+          region: 'lark',
+          verificationToken: 'verify-token',
+          encryptKey: 'encrypt-key'
+        }
+      }
+    })
+
+    expect(res.statusCode).toBe(201)
+    const dto = res.json() as { botId: string }
+    expect(await prisma.bot.findUnique({ where: { id: dto.botId } })).toMatchObject({
+      platform: 'feishu',
+      transport: 'http',
+      botUserId: 'ou_http_bot'
+    })
+    expect(await prisma.botSecret.findUnique({ where: { botId: dto.botId } })).toMatchObject({
+      botToken: 'app-secret',
+      appToken: 'cli_http_app',
+      verificationToken: 'verify-token',
+      encryptKey: 'encrypt-key'
+    })
+
+    const assign = relaySends.find((send) => send.type === 'rc/bot-assign')?.payload as {
+      platform: string
+      apiAppId: string
+      botUserId: string
+      secrets: Record<string, unknown>
+    }
+    expect(assign).toMatchObject({
+      platform: 'feishu',
+      apiAppId: 'cli_http_app',
+      botUserId: 'ou_http_bot',
+      secrets: { verificationToken: 'verify-token', encryptKey: 'encrypt-key' }
+    })
+    expect(assign.secrets).not.toHaveProperty('botToken')
+    expect(assign.secrets).not.toHaveProperty('appSecret')
+
+    expect(spy.upserts).toHaveLength(1)
+    const upsert = spy.upserts[0]!.u
+    if (upsert.platform !== 'feishu') throw new Error('expected Feishu upsert')
+    expect(upsert.feishu).toMatchObject({
+      mode: 'shared',
+      appId: 'cli_http_app',
+      appSecret: 'app-secret',
+      botOpenId: 'ou_http_bot',
+      region: 'lark'
+    })
+  })
+
   it("POST feishu with region 'feishu' verifies against + pushes the China gateway", async () => {
     const agentId = await placedAgent()
     const { app, spy } = withSpy()
     const verifierCalls: Array<string | undefined> = []
     app.deps.verifyFeishuBot = async (_appId, _appSecret, region) => {
       verifierCalls.push(region)
-      return { status: 'ok', name: null }
+      return { status: 'ok', name: null, openId: 'ou_feishu_bot' }
     }
 
     const FEISHU = { appId: 'cli_feishu123', appSecret: 's3cr3t-feishu-xyz', region: 'feishu' as const }
@@ -449,7 +522,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST feishu derives the bot name from bot/v3/info, and proceeds when Feishu is unreachable', async () => {
     const agentId = await placedAgent()
     const { app } = withSpy()
-    app.deps.verifyFeishuBot = async () => ({ status: 'ok', name: 'Matrix Bot' })
+    app.deps.verifyFeishuBot = async () => ({ status: 'ok', name: 'Matrix Bot', openId: 'ou_matrix_bot' })
 
     const named = await app.app.inject({
       method: 'POST',

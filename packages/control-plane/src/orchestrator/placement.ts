@@ -250,6 +250,7 @@ export function integrationToSpec(
       // two-slot bot_secret: botToken = appSecret (the secret), appToken = appId. The
       // region (feishu.cn vs larksuite.com) rides on the integration row; NULL ⇒ 'feishu'.
       feishu: {
+        mode: 'direct',
         appId: secret.appToken ?? '',
         appSecret: secret.botToken,
         region: i.feishuRegion ?? 'feishu',
@@ -283,10 +284,9 @@ export function integrationToSpec(
 /**
  * Assemble the send-only {@link IntegrationSpec} for a member agent of an HTTP bot
  * (shared-bot-relay.md §7.3). The wire keeps `mode: 'shared'` for compatibility.
- * The daemon gets xoxb ONLY (send path) — no
- * appToken (the relay owns the event stream) and no bindRules (the relay
- * arbitrates inbound and delivers it pre-addressed). Slack-only for now; a
- * shareable Telegram/Discord bot lands in milestone C. Token-bearing — NEVER log.
+ * The daemon keeps provider API credentials for send/download operations, but
+ * opens no inbound socket. The relay arbitrates callback ingress and delivers
+ * it pre-addressed. Token-bearing — NEVER log.
  *
  * GATED exception (resource-visibility.md §14.3): a restricted agent's install
  * ships its conversation-scoped rules + `gated: true` even in relay-managed mode — the
@@ -300,8 +300,26 @@ export function httpIntegrationToSpec(
   shareable: boolean,
   channels: IntegrationChannelRecord[] = [],
   gated = false,
-  slackAppId?: string
+  providerAppId?: string,
+  botUserId?: string
 ): IntegrationSpec {
+  if (i.platform === 'feishu') {
+    return {
+      integrationId: i.id,
+      agentId: i.agentId,
+      platform: 'feishu',
+      feishu: {
+        mode: 'shared',
+        appId: secret.appToken ?? '',
+        appSecret: secret.botToken,
+        ...(botUserId ? { botOpenId: botUserId } : {}),
+        region: i.feishuRegion ?? 'feishu',
+        allowedUserIds: [],
+        bindRules: gated ? gatedBindRules(channels) : [],
+        gated
+      }
+    }
+  }
   return {
     integrationId: i.id,
     agentId: i.agentId,
@@ -313,7 +331,7 @@ export function httpIntegrationToSpec(
       mode: 'shared',
       shareable,
       botToken: secret.botToken,
-      ...(slackAppId ? { appId: slackAppId } : {}),
+      ...(providerAppId ? { appId: providerAppId } : {}),
       allowedUserIds: [],
       bindRules: gated ? gatedBindRules(channels) : [],
       gated
@@ -391,7 +409,15 @@ export class Placement implements ReconcileService {
           // reconciles it send-only (no Socket Mode). Socket bots reconcile as direct.
           const gated = gatedAgentIds.has(i.agentId)
           return bot?.transport === 'http'
-            ? httpIntegrationToSpec(i, secret, bot.shareable, channels, gated, bot.slackAppId ?? undefined)
+            ? httpIntegrationToSpec(
+                i,
+                secret,
+                bot.shareable,
+                channels,
+                gated,
+                bot.slackAppId ?? undefined,
+                bot.botUserId ?? undefined
+              )
             : integrationToSpec(i, secret, channels, gated)
         })
       )

@@ -531,7 +531,9 @@ A daemon can host many agents, each with many integrations. **Do not open one in
 - Usually one agent = one bot = one Slack App, but two agents sharing one App and `appToken` use **one connection**, with inbound events routed by channel binding.
 - **Telegram:** One grammY long-polling `getUpdates` connection per bot token.
 - **Discord:** One gateway connection per bot token.
-- **Feishu:** One WSClient per app (`appId` + `appSecret`); see [feishu-integration.md](feishu-integration.md).
+- **Feishu:** One SDK client per app (`appId` + `appSecret`); direct mode opens
+  `WSClient`, while HTTP mode keeps the client send-only and receives
+  pre-addressed relay ingress. See [feishu-integration.md](feishu-integration.md).
 
 ### 6.2 Startup Consolidation
 
@@ -854,7 +856,9 @@ Drivers implement `{ open, close, reply(threadRef, content), sendMessage(target,
 | Active send  | `chat.postMessage`              | `sendMessage`          | channel webhook / REST     |
 | Limit        | <=12000 per markdown block      | split at 4096          | split at 2000              |
 
-Feishu uses the same interface with WSClient under `src/feishu/`; see [feishu-integration.md](feishu-integration.md).
+Feishu uses the same interface with a direct `WSClient` or an HTTP-mode
+send-only SDK client under `src/feishu/`; see
+[feishu-integration.md](feishu-integration.md).
 
 ### 9.4 Active Send / Agent-to-Agent: MCP Tool Injection
 

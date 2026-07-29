@@ -8,7 +8,7 @@
 import { randomUUID } from 'node:crypto'
 import type { FeishuRegion } from '@agentconnect.md/protocol'
 import type { HttpDeps } from './deps.js'
-import type { AgentRecord, IntegrationRecord } from '../persistence/ports.js'
+import type { AgentRecord, IntegrationRecord, SlackTransport } from '../persistence/ports.js'
 import { BotId, IntegrationId, type OrgId } from '../domain/ids.js'
 import { integrationToSpec, isGatedAgent } from '../orchestrator/placement.js'
 import { NoConnection } from '../orchestrator/outbound.js'
@@ -24,6 +24,10 @@ export interface InstallFeishuBotArgs {
   appId: string
   appSecret: string
   region: FeishuRegion
+  transport?: SlackTransport
+  botUserId?: string
+  verificationToken?: string
+  encryptKey?: string
   createdByUserId?: string
 }
 
@@ -37,6 +41,7 @@ export async function installNewFeishuBot(
   args: InstallFeishuBotArgs
 ): Promise<IntegrationRecord> {
   const { orgId, agent, name, appId, appSecret, region, createdByUserId } = args
+  const transport = args.transport ?? 'socket'
   const botId = args.botId ?? BotId(randomUUID())
   const id = args.integrationId ?? IntegrationId(randomUUID())
   let integration = await deps.repos.integration.get(id)
@@ -59,9 +64,16 @@ export async function installNewFeishuBot(
         name,
         feishuAppId: appId,
         feishuRegion: region,
+        transport,
+        ...(args.botUserId ? { botUserId: args.botUserId } : {}),
         ...(createdByUserId ? { createdByUserId } : {})
       })
-    } else if (bot.orgId !== orgId || bot.platform !== 'feishu' || bot.feishuAppId !== appId) {
+    } else if (
+      bot.orgId !== orgId ||
+      bot.platform !== 'feishu' ||
+      bot.feishuAppId !== appId ||
+      bot.transport !== transport
+    ) {
       throw new Error('reserved Feishu bot id is already in use')
     }
   }
@@ -70,7 +82,9 @@ export async function installNewFeishuBot(
   await deps.repos.botSecret.put(botId, {
     botToken: appSecret,
     appToken: appId,
-    signingSecret: null
+    signingSecret: null,
+    verificationToken: args.verificationToken ?? null,
+    encryptKey: args.encryptKey ?? null
   })
 
   if (!integration) {
@@ -84,6 +98,11 @@ export async function installNewFeishuBot(
       feishuRegion: region,
       ...(createdByUserId ? { createdByUserId } : {})
     })
+  }
+
+  if (transport === 'http') {
+    await deps.httpBot.syncBot(botId)
+    return integration
   }
 
   const [secret, channels] = await Promise.all([

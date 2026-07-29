@@ -501,14 +501,20 @@ export const AttributedRoute = z.object({
 })
 export type AttributedRoute = z.infer<typeof AttributedRoute>
 
-// Bot credentials handed to the relay. `signingSecret` (Slack) is the Events API
-// request-verification key the relay HMACs inbound POSTs with; it lives ONLY here +
-// the CP db (§14 credential domaining) — daemons never get it. The relay no longer
-// runs Socket Mode, so the old xapp `appToken` is gone. Secret — NEVER log this frame.
-export const RcBotSecrets = z.object({
-  botToken: z.string(), // xoxb / BotFather token — the relay sends outbound with it
-  signingSecret: z.string() // Slack signing secret — verifies inbound Events API POSTs (HMAC)
-})
+// Ingress-only credentials handed to the relay. Slack currently keeps its bot
+// token here for the existing HTTP interaction/channel APIs. Feishu deliberately
+// sends only callback verification material: its app secret and all provider API
+// egress stay on the daemon. Secret — NEVER log this frame.
+export const RcBotSecrets = z.union([
+  z.object({
+    botToken: z.string(),
+    signingSecret: z.string()
+  }),
+  z.object({
+    verificationToken: z.string(),
+    encryptKey: z.string().optional()
+  })
+])
 export type RcBotSecrets = z.infer<typeof RcBotSecrets>
 
 // One member agent's display info — the relay holds no DB, so it can't resolve a
@@ -517,7 +523,10 @@ export type RcBotSecrets = z.infer<typeof RcBotSecrets>
 export const RcAgentDirEntry = z.object({
   agentId: z.string().uuid(),
   name: z.string(), // the slug; the modal shows it (displayName folded in by the CP if set)
-  daemonId: z.string().uuid()
+  daemonId: z.string().uuid(),
+  // Rolling optional: new CPs include the install id so a receive-only relay can
+  // hand an unroutable gated callback to the daemon that owns provider egress.
+  integrationId: z.string().uuid().optional()
 })
 export type RcAgentDirEntry = z.infer<typeof RcAgentDirEntry>
 
@@ -530,12 +539,11 @@ export type RcAgentDirEntry = z.infer<typeof RcAgentDirEntry>
 // relay expects). NEVER log.
 export const RcBotAssign = z.object({
   botId: z.string().uuid(),
-  platform: z.enum(['slack', 'telegram', 'discord']),
+  platform: z.enum(['slack', 'telegram', 'discord', 'feishu']),
   botUserId: z.string().optional(), // resolved by CP; for echo suppression + mention match
-  // Slack app id ("A…", == the Events API envelope `api_app_id`) — lets the relay
-  // demux an inbound POST to this bot in O(1). Optional: an http bot installed by
-  // manual paste (xoxb + signing secret, no xapp to parse) may lack it, in which
-  // case the relay falls back to a signing-secret verify-scan and learns it.
+  // Platform app id (Slack "A…", Feishu "cli_…") — lets the relay demux an
+  // inbound POST to this bot in O(1). Slack may omit it for a legacy manual
+  // install, in which case the relay falls back to a signing-secret scan.
   apiAppId: z.string().optional(),
   // Slack workspace id ("T…", == the Events API envelope `team_id`). REQUIRED for a
   // distributed (platform-published) app: every workspace install shares one

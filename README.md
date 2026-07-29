@@ -118,11 +118,11 @@ where work already happens.
 
 ![AgentConnect daemon-centric message paths](docs/designs/daemon-centric-message-paths.png)
 
-| Component                  | Responsibility                                                                                                               |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| **Daemon**                 | Runs agents, owns local ACP sessions and workspaces, connects direct platform bots, and sends provider API traffic           |
-| **Relay** (optional)       | Accepts Slack HTTP callbacks, GitHub and generic webhooks, and webchat traffic, then routes it directly to the owning daemon |
-| **Control Plane + Web UI** | Manages authentication, configuration, placement, metadata, and observability                                                |
+| Component                  | Responsibility                                                                                                                          |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| **Daemon**                 | Runs agents, owns local ACP sessions and workspaces, connects direct platform bots, and sends provider API traffic                      |
+| **Relay** (optional)       | Accepts Slack and Feishu HTTP callbacks, GitHub and generic webhooks, and webchat traffic, then routes it directly to the owning daemon |
+| **Control Plane + Web UI** | Manages authentication, configuration, placement, metadata, and observability                                                           |
 
 The Control Plane does not persist message bodies, ACP update streams, or
 attachment bytes. Authorized console reads are proxied from the owning daemon on

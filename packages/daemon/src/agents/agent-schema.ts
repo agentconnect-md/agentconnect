@@ -67,7 +67,10 @@ export const DiscordConfigSchema = z.object({
 export type DiscordConfig = z.infer<typeof DiscordConfigSchema>
 
 export const FeishuConfigSchema = z.object({
-  appId: z.string(), // cli_… app identifier (semi-public); needed to open the WSClient
+  // Direct opens the Feishu long connection. Shared is send-only: relay HTTP
+  // ingress is delivered pre-addressed while this daemon keeps provider egress.
+  mode: z.enum(['direct', 'shared']).default('direct'),
+  appId: z.string(), // cli_… app identifier (semi-public); needed for REST and direct WS
   appSecret: z.string(), // app secret (single secret; no app token / signing secret)
   botOpenId: z.string().optional(), // bot's own open_id for mention detection; filled at connect via bot/info if absent
   region: FeishuRegion.default('feishu'), // open-platform gateway: feishu.cn (default) vs larksuite.com

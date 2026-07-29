@@ -492,9 +492,25 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     if (r.frame.payload.platform !== 'feishu') throw new Error('expected feishu integration')
     expect(r.frame.payload.feishu.appId).toBe('cli_abc123')
     expect(r.frame.payload.feishu.appSecret).toBe('secret-xyz')
+    expect(r.frame.payload.feishu.mode).toBe('direct') // backwards-compatible default
     expect(r.frame.payload.feishu.region).toBe('feishu') // zod default — China gateway
     expect(r.frame.payload.feishu.allowedUserIds).toEqual([]) // zod default
     expect(r.frame.payload.feishu.bindRules).toEqual([]) // zod default
+  })
+
+  it('integration/upsert preserves Feishu shared mode for daemon send-only API access', () => {
+    const r = decodeEnvelope(
+      envelope('integration/upsert', {
+        integrationId: INTEGRATION_ID,
+        agentId: AGENT_ID,
+        platform: 'feishu',
+        feishu: { mode: 'shared', appId: 'cli_abc123', appSecret: 'secret-xyz', botOpenId: 'ou_bot' }
+      })
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
+    if (r.frame.payload.platform !== 'feishu') throw new Error('expected feishu integration')
+    expect(r.frame.payload.feishu).toMatchObject({ mode: 'shared', botOpenId: 'ou_bot' })
   })
 
   it("integration/upsert preserves an explicit feishu region 'lark' (international gateway)", () => {

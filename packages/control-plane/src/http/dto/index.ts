@@ -629,9 +629,8 @@ export const CreateIntegrationBody = z
     /** Opt the (new or reused) bot into multi-agent shared mode (default false).
      *  Requires `transport: 'http'` (a socket bot is single-agent). */
     shareable: z.boolean().optional(),
-    /** Slack inbound transport (slack-http-mode): 'socket' ⇒ daemon-owned Socket
-     *  Mode (needs appToken); 'http' ⇒ relay-pool Events API ingress (needs
-     *  signingSecret). Default 'socket'. */
+    /** Inbound transport for Slack and Feishu. `socket` uses the platform's
+     *  daemon-owned long connection; `http` uses callback ingress. */
     transport: z.enum(['socket', 'http']).optional(),
     /** Register a new Slack bot from its tokens. Socket transport needs the
      *  app-level token (Socket Mode); http transport needs the signing secret
@@ -664,7 +663,9 @@ export const CreateIntegrationBody = z
       .object({
         appId: z.string().min(1),
         appSecret: z.string().min(1),
-        region: FeishuRegion.default('lark')
+        region: FeishuRegion.default('lark'),
+        verificationToken: z.string().min(1).optional(),
+        encryptKey: z.string().min(1).optional()
       })
       .optional()
   })
@@ -701,6 +702,11 @@ export const CreateIntegrationBody = z
           ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'http transport requires slack.signingSecret' })
       } else if (!b.slack.appToken) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'socket transport requires slack.appToken' })
+      }
+    }
+    if (b.platform === 'feishu' && b.botId === undefined && b.feishu && b.transport === 'http') {
+      if (!b.feishu.verificationToken) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'http transport requires feishu.verificationToken' })
       }
     }
   })
@@ -1135,11 +1141,11 @@ export const SlackConfigDto = z.object({
   /** ISO-8601 expiry of the stored access token; drives the "expires / expired" copy
    *  on the config card. Null when unconfigured. (Meaningful mainly when !durable.) */
   accessExpiresAt: z.string().nullable(),
-  /** Slack HTTP mode is offerable here: PUBLIC_RELAY_URL is set AND ≥1 relay is
-   *  connected to receive the Events API POSTs (slack-http-mode). */
+  /** HTTP callback delivery is offerable here: PUBLIC_RELAY_URL is set AND ≥1
+   *  relay is connected to receive platform callbacks. */
   relayAvailable: z.boolean(),
   /** The relay pool's public HTTPS base (PUBLIC_RELAY_URL, ws→http normalized) —
-   *  the console shows the Events API request_url to paste into Slack. Null when
+   *  the console derives each platform's callback URL from it. Null when
    *  PUBLIC_RELAY_URL is unset. */
   relayPublicUrl: z.string().nullable(),
   /** The platform-published "Add to Slack" app is installable here: SLACK_PLATFORM_*

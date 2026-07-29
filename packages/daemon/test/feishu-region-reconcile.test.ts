@@ -49,7 +49,7 @@ function fakeFeishuConn(appId: string, region: 'feishu' | 'lark', botOpenId: str
   }
   const conn = new FeishuConnection(
     {
-      group: { appId, appSecret: 's', region, botOpenId, integrations: [] },
+      group: { appId, appSecret: 's', mode: 'direct', region, botOpenId, integrations: [] },
       onMessage: () => {},
       newTraceId: () => 't'
     },
@@ -66,7 +66,7 @@ function seedAgent(daemon: Daemon, agentId: string, integrationId: string, appId
       {
         id: integrationId,
         platform: 'feishu',
-        feishu: { appId, appSecret: 's', region, allowedUserIds: [], bindRules: [] }
+        feishu: { mode: 'direct', appId, appSecret: 's', region, allowedUserIds: [], bindRules: [] }
       }
     ]
   })

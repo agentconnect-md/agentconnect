@@ -5,11 +5,10 @@
  * onto the target daemon (`rd/msg` `im`).
  *
  * Flow: `rc/bot-assign` loads the bot's inbound routing + credentials; inbound
- * arrives via the public HTTP `/slack/events` + `/slack/interactions` routes, which
- * demux to a bot via {@link RelayIngressManager.resolveVerified} (Slack HMAC is the
- * authenticator), normalize, arbitrate, and forward to the resolved daemon as a
- * pre-addressed `rd/msg(im)`. A daemon that is offline / has no connection here is a
- * TYPED delivery miss → bounded-loss drop + count (never a silent success, §17).
+ * arrives via the public Slack or Feishu callback routes, which authenticate,
+ * normalize, arbitrate, and forward to the resolved daemon as a pre-addressed
+ * `rd/msg(im)`. A daemon that is offline / has no connection here is a TYPED
+ * delivery miss → bounded-loss drop + count (never a silent success, §17).
  *
  * Affinity (§10 step 3, the 3-leg dance): on the FIRST route of a (channel, thread)
  * `sessionKey` (or a Switch-agent) the manager REPORTS it to the CP (`rc/thread-assign`);
@@ -31,6 +30,8 @@ import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from './log.js'
 import { BotArbitrationRouter, sessionKeyOf, type BotAssignment, type RouteTarget } from './bot-arbitration.js'
 import { SlackHttpIngest, type HttpSlackSessionAction, type HttpSlackSessionShortcut } from './slack-http-ingest.js'
+import { FeishuHttpIngest } from './feishu-http-ingest.js'
+import type { FeishuVerifiedDelivery } from './feishu-http-ingress.js'
 import { verifySlackSignature } from './hooks/signature.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 
@@ -181,6 +182,9 @@ export function httpSlackShortcutMsgId(botId: string, shortcut: HttpSlackSession
 export class RelayIngressManager {
   private readonly router = new BotArbitrationRouter()
   private readonly ingests = new Map<string, SlackHttpIngest>()
+  private readonly feishuIngests = new Map<string, FeishuHttpIngest>()
+  private readonly feishuBotByAppId = new Map<string, string>()
+  private readonly feishuAppIdByBot = new Map<string, string>()
   /** Learned/assigned `api_app_id → botId` index — O(1) HTTP demux (self-populates on
    *  first verified delivery when the CP didn't stamp `apiAppId`). Bounded flush.
    *  Team-scoped bots (a distributed app's installs) NEVER enter this map — they
@@ -323,16 +327,36 @@ export class RelayIngressManager {
     // DM-report latches would starve a later gated install of its pending row.
     this.clearGatedDmLatches(a.botId)
     this.router.upsert(a)
+    // Rebuild the ingest (secrets or transport may have rotated). Idempotent.
+    await this.stopIngest(a.botId)
+    this.forgetAppTeam(a.botId)
+    this.forgetFeishuApp(a.botId)
+
+    if (a.platform === 'feishu') {
+      if (!a.apiAppId || !('verificationToken' in a.secrets)) {
+        this.deps.log.warn(`relay-ingress(${a.botId}): incomplete Feishu HTTP assignment`)
+        return
+      }
+      const ingest = new FeishuHttpIngest(a.botId, a.apiAppId, a.secrets, {
+        onMessage: (message) => this.forward(a.botId, message),
+        now: () => this.deps.clock.now()
+      })
+      this.feishuIngests.set(a.botId, ingest)
+      this.feishuBotByAppId.set(a.apiAppId, a.botId)
+      this.feishuAppIdByBot.set(a.botId, a.apiAppId)
+      return
+    }
     if (a.platform !== 'slack') {
       this.deps.log.warn(`relay-ingress(${a.botId}): platform '${a.platform}' ingest not yet supported (milestone C)`)
       return
     }
-    // Rebuild the ingest (secrets may have rotated). Idempotent: stop any existing.
-    await this.stopIngest(a.botId)
+    if (!('botToken' in a.secrets)) {
+      this.deps.log.warn(`relay-ingress(${a.botId}): incomplete Slack HTTP assignment`)
+      return
+    }
     // Deterministic demux when the CP stamped the app id. A team-scoped bot (a
     // distributed app's install) goes ONLY into the composite index — an app-only
     // entry would serve every sibling workspace's events to this one bot.
-    this.forgetAppTeam(a.botId)
     if (a.apiAppId && a.teamId) {
       this.demuxByAppTeam.set(appTeamKey(a.apiAppId, a.teamId), a.botId)
       this.appTeamKeyByBot.set(a.botId, appTeamKey(a.apiAppId, a.teamId))
@@ -413,6 +437,7 @@ export class RelayIngressManager {
     }
     this.clearGatedDmLatches(botId)
     this.forgetAppTeam(botId)
+    this.forgetFeishuApp(botId)
     this.router.remove(botId)
     await this.stopIngest(botId)
   }
@@ -424,6 +449,13 @@ export class RelayIngressManager {
     if (key === undefined) return
     this.appTeamKeyByBot.delete(botId)
     if (this.demuxByAppTeam.get(key) === botId) this.demuxByAppTeam.delete(key)
+  }
+
+  private forgetFeishuApp(botId: string): void {
+    const appId = this.feishuAppIdByBot.get(botId)
+    if (!appId) return
+    this.feishuAppIdByBot.delete(botId)
+    if (this.feishuBotByAppId.get(appId) === botId) this.feishuBotByAppId.delete(appId)
   }
 
   /** `rc/assign` — durable thread affinity seed. */
@@ -475,6 +507,28 @@ export class RelayIngressManager {
     return undefined
   }
 
+  /** Demux + authenticate one Feishu callback. Unencrypted v2 callbacks carry
+   *  `header.app_id` for O(1) lookup; encrypted callbacks are verified/decrypted
+   *  against the bounded active assignment set because the outer body has no id. */
+  resolveFeishuVerified(args: {
+    appId?: string
+    rawBody: Buffer
+    body: unknown
+    headers: import('./feishu-http-ingest.js').FeishuCallbackHeaders
+  }): FeishuVerifiedDelivery | undefined {
+    if (args.appId) {
+      const botId = this.feishuBotByAppId.get(args.appId)
+      const ingest = botId ? this.feishuIngests.get(botId) : undefined
+      const callback = ingest?.decode(args.rawBody, args.body, args.headers)
+      if (ingest && callback) return { ingest, callback }
+    }
+    for (const ingest of this.feishuIngests.values()) {
+      const callback = ingest.decode(args.rawBody, args.body, args.headers)
+      if (callback) return { ingest, callback }
+    }
+    return undefined
+  }
+
   private rememberApiApp(apiAppId: string, botId: string): void {
     if (this.demuxByApiApp.size >= MAX_DEMUX_ENTRIES) this.demuxByApiApp.clear()
     this.demuxByApiApp.set(apiAppId, botId)
@@ -508,7 +562,9 @@ export class RelayIngressManager {
       clearTimeout(this.revokeRetryTimer)
       this.revokeRetryTimer = undefined
     }
-    await Promise.all([...this.ingests.keys()].map((id) => this.stopIngest(id)))
+    await Promise.all(
+      [...new Set([...this.ingests.keys(), ...this.feishuIngests.keys()])].map((id) => this.stopIngest(id))
+    )
   }
 
   private async stopIngest(botId: string): Promise<void> {
@@ -517,6 +573,7 @@ export class RelayIngressManager {
       this.ingests.delete(botId)
       await cur.stop()
     }
+    this.feishuIngests.delete(botId)
   }
 
   private isAgentBotMessage(botId: string, msg: import('@agentconnect.md/protocol').WireNormalizedMessage): boolean {
@@ -572,26 +629,36 @@ export class RelayIngressManager {
       if (!msg.sender.isBot && hasGatedMembers) {
         const mentioned = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
         if (msg.isDm || mentioned) {
-          await this.noticeGatedUnrouted(botId, msg)
-          return
+          // Feishu callback credentials are receive-only. For its currently
+          // single-install HTTP bot, hand the addressed Off-conversation event to
+          // the owning daemon: the daemon reports discovery, posts through its API
+          // client, and drops before agent dispatch. Slack keeps its existing
+          // relay-owned notice path because that ingest already owns bot egress.
+          if (assignment?.platform === 'feishu') tgt = this.router.soleGatedTarget(botId) ?? null
+          if (!tgt) {
+            await this.noticeGatedUnrouted(botId, msg)
+            return
+          }
         }
       }
       // Backstop leg: only a real un-mentioned threaded follow-up is worth a CP lookup.
-      if (!this.router.isUnmentionedThreadFollowup(botId, msg)) return
-      let target: { agentId: string; daemonId: string } | null
-      try {
-        target = (await this.deps.lookupThread({ botId, sessionKey })).target
-      } catch {
-        return // CP down — drop (bounded loss); a mention re-anchors the thread.
+      if (!tgt) {
+        if (!this.router.isUnmentionedThreadFollowup(botId, msg)) return
+        let target: { agentId: string; daemonId: string } | null
+        try {
+          target = (await this.deps.lookupThread({ botId, sessionKey })).target
+        } catch {
+          return // CP down — drop (bounded loss); a mention re-anchors the thread.
+        }
+        if (!target) {
+          this.router.rememberNoAffinity(botId, sessionKey)
+          return
+        }
+        // Seeded from the CP — do NOT report it back (it came from the CP).
+        if (!this.router.seedLookupTarget(botId, sessionKey, target)) return
+        tgt = this.router.route(botId, msg)
+        if (!tgt) return
       }
-      if (!target) {
-        this.router.rememberNoAffinity(botId, sessionKey)
-        return
-      }
-      // Seeded from the CP — do NOT report it back (it came from the CP).
-      if (!this.router.seedLookupTarget(botId, sessionKey, target)) return
-      tgt = this.router.route(botId, msg)
-      if (!tgt) return
     }
     const daemon = this.deps.getDaemon(tgt.daemonId)
     if (!daemon) {
@@ -671,15 +738,18 @@ export class RelayIngressManager {
     }
     const key = `${botId}:${msg.channel}`
     if (this.gatedNoticesSent.has(key)) return
+    const ingest = this.ingests.get(botId)
+    // Feishu relay ingress is receive-only. Its caller first tries the assignment
+    // directory's sole gated daemon target; an old CP that did not include the
+    // integration id safely lands here and drops instead of leaking API secrets.
+    if (!ingest) return
     this.gatedNoticesSent.add(key)
     try {
-      await this.ingests
-        .get(botId)
-        ?.postText(
-          msg.channel,
-          '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.',
-          msg.isDm ? undefined : msg.thread
-        )
+      await ingest.postText(
+        msg.channel,
+        '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.',
+        msg.isDm ? undefined : msg.thread
+      )
       // Pool-wide DM latch = DELIVERY, reported after the post succeeds.
       if (msg.isDm) this.deps.reportNoticePosted({ botId, channel: msg.channel })
     } catch (err) {

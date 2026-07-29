@@ -4,7 +4,10 @@
 > authenticated attachment downloads. It supports **both** the mainland China
 > Feishu region (`open.feishu.cn`) and the international Lark region
 > (`open.larksuite.com`), selected per integration by a `region` field (see
-> section 10).
+> section 10). Inbound delivery supports daemon-owned Long Connection and
+> relay-assisted HTTP callbacks. The Console prefers HTTP when public callback
+> delivery is available; outbound messages and attachment downloads remain on
+> the daemon in both modes.
 >
 > Related documents:
 > [daemon-centric-architecture.md](daemon-centric-architecture.md),
@@ -20,9 +23,9 @@ message then drives the local coding agent, whose response streams back to
 Feishu.
 
 **Non-goals for v1:** Feishu Base, Docs, Approvals, and other Open API
-capabilities; marketplace distribution of custom enterprise applications; and
-shared bots with relay-managed ingress, described in section 9. v1 supports
-only a custom application, one tenant, and text messages, matching Discord v1.
+capabilities; marketplace distribution or a prebuilt one-click application;
+and one Feishu bot serving multiple agents. v1 supports a custom application,
+one tenant, and text messages, matching Discord v1.
 
 > **Region (Feishu vs Lark):** the integration supports **both** the mainland
 > China Feishu region (`open.feishu.cn`) and the international Lark region
@@ -32,34 +35,44 @@ only a custom application, one tenant, and text messages, matching Discord v1.
 > (`@larksuiteoapi/node-sdk`), and message shapes — only the open-platform
 > gateway host differs.
 
-## 2. Key decision: use Feishu `WSClient` long connections with the direct template
+## 2. Key decision: support both Long Connection and HTTP callback ingress
 
-The daemon-centric architecture has a hard constraint: **the daemon must
-establish every inbound connection outbound**, because it runs behind NAT or on
-an internal network with no public ingress endpoint. The three existing
-platforms already comply:
+The daemon-centric architecture has a hard constraint: **the daemon exposes no
+public ingress endpoint**, because it may run behind NAT or on an internal
+network. A direct platform transport therefore establishes its connection
+outbound from the daemon; a platform that requires callbacks terminates them on
+the optional public relay:
 
-| Platform   | Inbound transport                        | Connection direction | Credentials             |
-| ---------- | ---------------------------------------- | -------------------- | ----------------------- |
-| Slack      | Socket Mode over WebSocket               | Outbound             | `botToken` + `appToken` |
-| Telegram   | Long polling with `getUpdates`           | Outbound             | One `botToken`          |
-| Discord    | Gateway over WebSocket                   | Outbound             | One `botToken`          |
-| **Feishu** | **Long-lived `WSClient` over WebSocket** | **Outbound**         | `appId` + `appSecret`   |
+| Platform   | Inbound transport                    | Connection direction          | Credentials                                                  |
+| ---------- | ------------------------------------ | ----------------------------- | ------------------------------------------------------------ |
+| Slack      | Socket Mode over WebSocket           | Outbound                      | `botToken` + `appToken`                                      |
+| Telegram   | Long polling with `getUpdates`       | Outbound                      | One `botToken`                                               |
+| Discord    | Gateway over WebSocket               | Outbound                      | One `botToken`                                               |
+| **Feishu** | **Long Connection or HTTP callback** | **Outbound or inbound HTTPS** | `appId` + `appSecret`; callback verification values for HTTP |
 
-In addition to traditional webhooks that require a public callback URL, Feishu
-offers a **long-connection mode**. `Lark.WSClient` in the official
+Feishu offers a **long-connection mode**. `Lark.WSClient` in the official
 `@larksuiteoapi/node-sdk` version 1.24.0 or later establishes a full-duplex
 WebSocket to the platform with `appId` and `appSecret`. Events arrive through
 that socket with **no public IP, tunneling, or custom callback signature and
 decryption work**. This is structurally equivalent to Slack Socket Mode and the
 Discord Gateway.
 
+When a relay pool and stable public callback address are available, Feishu may
+instead use HTTP callbacks. The relay verifies the exact raw request, decrypts
+encrypted envelopes when configured, checks the Verification Token, deduplicates
+the event ID, normalizes the message, and forwards a pre-addressed `rd/msg` to
+the owning daemon. The daemon keeps an API-only Feishu client for replies,
+identity lookup, and authenticated attachment downloads; it does not open
+`WSClient` in this mode.
+
 See Feishu's "Receive events through WebSocket" documentation and the
 `WSClient` plus `EventDispatcher` implementation in
 [larksuite/node-sdk](https://github.com/larksuite/node-sdk).
 
-**Feishu uses a direct daemon connection, not relay or webhook ingress.** Shared
-relay ingress is not part of the current Feishu integration.
+HTTP is the Console default when callback delivery is available. Long
+Connection remains the fallback and an explicit operator choice. HTTP transport
+does not imply a multi-agent bot: Feishu remains one bot to one agent in this
+phase.
 
 Feishu v1 differs from Discord v1 in only three important ways, expanded in
 section 7:
@@ -99,6 +112,7 @@ capability invariant in section 5.
 
     ```ts
     export const IntegrationFeishuConfig = z.object({
+      mode: z.enum(['direct', 'shared']).default('direct'),
       appId: z.string(), // cli_... application ID; a semi-public identifier
       appSecret: z.string(), // Secret; never log it
       botOpenId: z.string().optional(), // Bot open_id for mention routing; resolve lazily through bot/info
@@ -124,14 +138,12 @@ IntegrationFeishuConfig }`.
 
 - In `prisma/schema.prisma`:
   - Add `'feishu'` to `[enum] enum Platform { slack telegram discord feishu }`.
-  - Optionally add `feishuAppId String?` to `model Bot`, following
-    `discordAppId`, as public metadata for a Console "Add to Feishu" link. See
-    the tradeoff in section 7.1.
-  - Do **not** change `model BotSecret`. Feishu maps `appSecret` to `botToken`
-    and `appId` to `appToken`. `appToken` has been nullable since Telegram.
-- Add a `prisma/migrations/2026..._feishu_platform/` migration:
-  `ALTER TYPE "Platform" ADD VALUE IF NOT EXISTS 'feishu';`. If
-  `feishuAppId` is selected, add its column in this or a separate migration.
+  - Keep Feishu's API credentials in the existing slots: `appSecret` maps to
+    `botToken` and `appId` maps to `appToken`.
+  - Add encrypted nullable `verificationToken` and `encryptKey` fields to
+    `BotSecret` for HTTP callback verification. These values are sent only to
+    the relay; the App Secret is sent only to the daemon.
+- Add migrations for the Feishu platform and callback credential columns.
 - Run `prisma:generate`. The generated client under
   `src/generated/prisma` is committed.
 
@@ -147,12 +159,10 @@ IntegrationFeishuConfig }`.
     installation.** Never log the secret.
 - Add a Feishu branch to `POST /integrations` in
   `src/http/routes/integrations.ts`: verify credentials, call
-  `botRepo.create({ ..., feishuAppId? })`, store
+  `botRepo.create(...)`, store
   `{ botToken: appSecret, appToken: appId }` through `botSecret.put`, create the
-  integration, and call
-  `replicateUpsert(integration, agent.daemonId)`, which sends
-  `integrationUpsert(daemonId, integrationToSpec(...))`. This nearly copies the
-  Discord branch.
+  integration, then either send a direct spec or synchronize the HTTP bot with
+  the relay and its send-only daemon spec.
 - Add `POST /integrations/feishu/app` and
   `GET /integrations/feishu/app/:id` for the default one-click path. The first
   route starts the official app-registration device flow and returns only a
@@ -203,6 +213,7 @@ IntegrationFeishuConfig }`.
       agentId: i.agentId,
       platform: 'feishu',
       feishu: {
+        mode: 'direct',
         appId: secret.appToken ?? '',
         appSecret: secret.botToken,
         allowedUserIds: [],
@@ -214,6 +225,10 @@ IntegrationFeishuConfig }`.
 
   Observe the two-slot mapping from section 7.1:
   `botToken = appSecret`, `appToken = appId`.
+
+- `httpIntegrationToSpec()` emits the same API credentials with
+  `mode: 'shared'` plus the verified bot `open_id`. This tells the daemon to
+  initialize API egress without opening `WSClient`.
 
 - Pass `'feishu'` through unchanged in `toDbPlatform()` in
   `src/persistence/platform.ts`. It is a persisted platform, unlike
@@ -230,12 +245,12 @@ IntegrationFeishuConfig }`.
 
 - `connection.ts` defines `FeishuConnection`, `FeishuDeps`,
   `ConsolidatedFeishuGroup`, and `consolidateFeishu(agents)`. Consolidation
-  groups by `appId`, with one `WSClient` per app.
-  - `start()` constructs `Lark.WSClient({ appId, appSecret })`, registers
-    `im.message.receive_v1` and optionally `card.action.trigger` on a
-    `Lark.EventDispatcher`, and calls `wsClient.start(...)`. It also constructs
-    `Lark.Client(...)` for outbound APIs: messages, resources, and bot info.
-    Resolve `botOpenId` lazily.
+  groups by `appId`; connection identity also includes region and ingress mode.
+  - `start()` always constructs `Lark.Client(...)` for outbound APIs:
+    messages, resources, and bot info. In direct mode it also constructs
+    `Lark.WSClient({ appId, appSecret })`, registers
+    `im.message.receive_v1` on a `Lark.EventDispatcher`, and calls
+    `wsClient.start(...)`. Shared mode stops after API-client initialization.
   - Outbound methods include `postMessage` through `im.message.create` with
     `msg_type: 'text'` and chunking at Feishu limits, `postChrome`,
     `updateMessage` through `im.message.patch` or card
@@ -329,11 +344,12 @@ IntegrationFeishuConfig }`.
     list when setup completes. This is a direct deeplink; the user does not
     need to scan a QR code.
   - Keep **Manual** as the advanced fallback. It renders App ID and App Secret
-    inputs and submits
-    `{ platform: 'feishu', feishu: { appId, appSecret } }`.
-  - Show `FEISHU_CHECKLIST` only for manual or existing-app setup: enable bot
-    capability, subscribe to `im.message.receive_v1`, select long connection,
-    grant required scopes, and add the bot to a group.
+    inputs and defaults to Long Connection.
+  - When public callback delivery is available, Manual may switch to HTTP and
+    additionally collect the Verification Token plus optional Encrypt Key. Show
+    the stable `/feishu/events` Request URL.
+  - Show the setup checklist only for manual or existing-app setup and keep it
+    synchronized with the selected transport.
   - Optionally derive an "Add to group" link from `feishuAppId`.
 - Add
   `<PlatformBotsCard platform="feishu" label="Feishu" ...>` to
@@ -360,20 +376,21 @@ All three must include `'feishu'` for end-to-end selection.
 
 ## 6. Credential flow and security
 
-At one-click installation:
-Console starts registration -> the Control Plane returns a provider
-authorization deeplink -> the user confirms the app and requested permissions
-in Feishu/Lark -> the SDK returns `appId` and `appSecret` only to the Control
-Plane -> `verifyFeishuBot` validates them -> `botSecret.put` stores
-`{ botToken: appSecret, appToken: appId }` -> `integrationToSpec` constructs
-`IntegrationSpec.feishu` -> `integration/upsert`, with
-`RegisterOk.integrations[]` as reconciliation fallback, distributes it to the
-daemon -> the daemon persists it in `agent.json` and starts `WSClient`.
+At one-click installation, the Console starts registration and the Control
+Plane returns a provider authorization deeplink. After the user confirms the
+app and permissions, the SDK returns `appId` and `appSecret` only to the
+Control Plane. `verifyFeishuBot` validates them and `botSecret.put` stores
+`{ botToken: appSecret, appToken: appId }`; `integrationToSpec` then distributes
+the integration to the daemon, which persists it in `agent.json` and starts
+`WSClient`.
 
 The browser receives only the authorization URL, expiry, status, and final
 integration ID. The manual fallback enters at `verifyFeishuBot` with an App ID
-and App Secret supplied by the user and then follows the same installation
-path.
+and App Secret supplied by the user. Long Connection follows the same direct
+path. HTTP additionally stores `verificationToken` and optional `encryptKey`,
+broadcasts only those callback credentials plus `appId` to the relay, and sends
+the daemon a `mode: 'shared'` spec containing `appId` + `appSecret` for provider
+API egress.
 
 - `appSecret` is a plaintext secret. Wire frames and `agent.json` share the
   existing trust boundary, and the secret **must never be logged**. Preserve the
@@ -391,13 +408,17 @@ path.
 ### 7.1 Store two credentials in the existing Slack slots
 
 `bot_secret` already has `botToken` and nullable `appToken`, introduced for
-Slack Socket Mode and made nullable for Telegram. Feishu fits exactly and
-requires **no table change**:
+Slack Socket Mode and made nullable for Telegram. Feishu maps its API
+credentials onto those slots:
 
 - `botToken` <- secret `appSecret`, the primary slot
 - `appToken` <- identifier `appId`, the secondary slot
 
-`integrationToSpec`, `write-integration`, and `verifyFeishuBot` follow that
+HTTP callback mode adds encrypted-at-rest `verificationToken` and optional
+`encryptKey` fields to the same secret row. These are sent only to the relay;
+the App Secret is never part of the relay assignment.
+
+`integrationToSpec`, `write-integration`, and `verifyFeishuBot` follow the
 mapping. Because `appId` is semi-public, it may be additionally mirrored into
 `bot.feishuAppId`, following `discordAppId`, for Console links only. It never
 participates in authentication from that public column.
@@ -465,9 +486,10 @@ origin must do the same, because the Lark launcher rasterizes the avatar
 in-browser. If neither public base is configured, avatar prefill is omitted and
 app creation continues normally.
 
-Manual setup must configure the same bot capability, long-connection event,
-scopes, and publication state. In both paths, adding the bot to a target group
-remains a user action. `FEISHU_CHECKLIST` documents those manual prerequisites
+Manual setup must configure the same bot capability, scopes, publication state,
+and `im.message.receive_v1` event, selecting either **Long Connection** or
+**HTTP callbacks** for delivery. In both paths, adding the bot to a target group
+remains a user action. The setup checklist documents those manual prerequisites
 and links to [open.feishu.cn](https://open.feishu.cn).
 
 ## 8. Current implementation and remaining scope
@@ -476,21 +498,26 @@ and links to [open.feishu.cn](https://open.feishu.cn).
   protocol, Control Plane persistence and routes, daemon agent schema, and
   capability declaration.
 - **Daemon runtime:** `feishu/{connection,normalize,render}.ts` uses `WSClient`
-  for inbound normalization, outbound messages, and reconciliation.
+  for direct inbound delivery and an API-only client for HTTP mode. Both paths
+  share normalization, CardKit rendering, outbound messages, and reconciliation.
 - **Web:** `AddIntegrationModal` defaults to the official one-click
   authorization deeplink and keeps App ID/App Secret entry as an advanced
-  fallback. It also includes Feishu marks, a manual setup checklist, Settings
-  card, and API types.
+  fallback with a Long Connection / HTTP selector. It also includes Feishu
+  marks, a manual setup checklist, Settings card, and API types.
 - **Control Plane:** a durable registration coordinator resumes the official
   device flow across replicas, leases each poll/finalize step, and installs
   credentials server-side through the same secret-store helper as the manual
   route. App Secret never enters a browser response and is cleared from the
   pending row after settlement.
+- **HTTP ingress:** the relay endpoint `/feishu/events` verifies/decrypts and
+  deduplicates callbacks before forwarding normalized messages directly to the
+  owning daemon.
 - **Attachments and topics:** `downloadFile` uses authenticated
   `im.messageResource.get`; topic replies use
   `im.message.reply(reply_in_thread)` and group sessions keyed by topic root.
 - **Remaining optional work:** interactive-card status and callbacks, an
-  add-to-group link, and relay-managed shared-bot ingress.
+  add-to-group link, a prebuilt app with one-click installation, and multi-agent
+  Feishu bots.
 
 ## 9. Tests
 
@@ -507,8 +534,9 @@ and links to [open.feishu.cn](https://open.feishu.cn).
   complete scope/event preset, completion after reconstructing a second
   Control Plane instance, denied state, terminal secret clearing, and that
   registration responses never contain App ID or App Secret.
-- **Live:** use a real custom application with long connection,
-  `im.message.receive_v1`, permissions, and group membership. Like Discord, this
+- **Live:** use a real custom application with either Long Connection or the
+  `/feishu/events` Request URL, `im.message.receive_v1`, permissions, and group
+  membership. Like Discord, this
   does not block the contract phase.
 
 ## 10. Region: Feishu vs Lark

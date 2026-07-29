@@ -129,7 +129,7 @@ export function integrationRoutes(deps: HttpDeps) {
           body: {
             error: 'Conflict',
             statusCode: 409,
-            message: 'no relay is connected — HTTP bots need a relay to receive messages'
+            message: 'HTTP callback delivery is unavailable on this deployment'
           }
         }
       }
@@ -280,12 +280,20 @@ export function integrationRoutes(deps: HttpDeps) {
               })
             }
             // Reuse keeps the bot's existing transport (immutable post-create). An
-            // An HTTP bot routes via the relay pool; adding a second agent makes it shareable.
+            // HTTP bot routes via the relay pool; only Slack may add a second agent.
             const wantHttp = bot.transport === 'http'
             if (wantHttp) {
-              const shareableErr = await validateShareableInstall(bot, agent.id, req.body.platform)
-              if (shareableErr) return reply.code(shareableErr.code).send(shareableErr.body)
-              if (!bot.shareable) await deps.repos.bot.setShareable(bot.id, true)
+              if (bot.agentIds.length > 0) {
+                const shareableErr = await validateShareableInstall(bot, agent.id, req.body.platform)
+                if (shareableErr) return reply.code(shareableErr.code).send(shareableErr.body)
+                if (!bot.shareable) await deps.repos.bot.setShareable(bot.id, true)
+              } else if (!deps.httpBot.hasConnectedRelay()) {
+                return reply.code(409).send({
+                  error: 'Conflict',
+                  statusCode: 409,
+                  message: 'HTTP callback delivery is unavailable on this deployment'
+                })
+              }
               // Membership admission is ATOMIC with the bot row — the same
               // primitive as the platform callback. The checks above are the
               // optimistic UX layer; only under the lock are `shareable` and the
@@ -348,13 +356,13 @@ export function integrationRoutes(deps: HttpDeps) {
             return reply.code(201).send(toDto(integration))
           }
 
-          // Registering a NEW bot with http transport (relay ingest) is Slack-only for
-          // now (Telegram/Discord relay ingest is milestone C) — reject early.
-          if (req.body.transport === 'http' && req.body.platform !== 'slack') {
+          // HTTP callback ingress is implemented for Slack and Feishu. Telegram and
+          // Discord keep their daemon-owned long-lived transports.
+          if (req.body.transport === 'http' && req.body.platform !== 'slack' && req.body.platform !== 'feishu') {
             return reply.code(400).send({
               error: 'Bad Request',
               statusCode: 400,
-              message: 'HTTP-mode (relay ingress) bots currently support Slack only'
+              message: 'HTTP callback delivery currently supports Slack and Feishu only'
             })
           }
 
@@ -480,6 +488,14 @@ export function integrationRoutes(deps: HttpDeps) {
           if (req.body.platform === 'feishu') {
             const feishu = req.body.feishu! // superRefine guarantees it when botId is absent
             const region = feishu.region // zod-defaulted to 'lark' for new installs
+            const transport = req.body.transport ?? 'socket'
+            if (transport === 'http' && !deps.httpBot.hasConnectedRelay()) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: 'HTTP callback delivery is unavailable on this deployment'
+              })
+            }
             const check = deps.verifyFeishuBot
               ? await deps.verifyFeishuBot(feishu.appId, feishu.appSecret, region)
               : null
@@ -489,6 +505,17 @@ export function integrationRoutes(deps: HttpDeps) {
                 statusCode: 400,
                 message:
                   'Feishu rejected the credentials — check the App ID (cli_…) and App Secret from the Developer Console (Credentials & Basic Info).'
+              })
+            }
+            // HTTP ingress cannot call Feishu with the app secret, so the CP must
+            // resolve the bot's own open_id now. The relay uses it to distinguish
+            // @bot from mentions of ordinary users in group messages.
+            if (transport === 'http' && (check?.status !== 'ok' || !check.openId)) {
+              return reply.code(503).send({
+                error: 'Service Unavailable',
+                statusCode: 503,
+                message:
+                  'Could not resolve this app’s bot identity. Enable the bot capability in Feishu, then try again.'
               })
             }
             const provided = req.body.name?.trim()
@@ -501,6 +528,10 @@ export function integrationRoutes(deps: HttpDeps) {
               appId: feishu.appId,
               appSecret: feishu.appSecret,
               region,
+              transport,
+              ...(check?.status === 'ok' && check.openId ? { botUserId: check.openId } : {}),
+              ...(feishu.verificationToken ? { verificationToken: feishu.verificationToken } : {}),
+              ...(feishu.encryptKey ? { encryptKey: feishu.encryptKey } : {}),
               ...(req.principal ? { createdByUserId: req.principal.userId } : {})
             })
             return reply.code(201).send(toDto(integration))
@@ -547,7 +578,7 @@ export function integrationRoutes(deps: HttpDeps) {
               return reply.code(409).send({
                 error: 'Conflict',
                 statusCode: 409,
-                message: 'no relay is connected — HTTP-mode bots need a relay to receive messages'
+                message: 'HTTP callback delivery is unavailable on this deployment'
               })
             }
           }

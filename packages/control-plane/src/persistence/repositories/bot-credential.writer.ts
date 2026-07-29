@@ -51,7 +51,9 @@ export class PgBotCredentialWriter implements BotCredentialWriter {
     const sealed = {
       botToken: await this.cipher.seal(material.botToken),
       appToken: material.appToken === null ? null : await this.cipher.seal(material.appToken),
-      signingSecret: material.signingSecret === null ? null : await this.cipher.seal(material.signingSecret)
+      signingSecret: material.signingSecret === null ? null : await this.cipher.seal(material.signingSecret),
+      verificationToken: material.verificationToken == null ? null : await this.cipher.seal(material.verificationToken),
+      encryptKey: material.encryptKey == null ? null : await this.cipher.seal(material.encryptKey)
     }
     return withTx(this.prisma, async (tx) => {
       // Read the generation being replaced while taking the same bot-row lock as

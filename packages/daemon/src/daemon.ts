@@ -271,12 +271,13 @@ import type {
 /** Format an error for logs, surfacing a JSON-RPC/ACP RequestError's `code` and
  *  `data` — for an agent-side `Internal error` the actionable detail (the adapter's
  *  underlying exception) lives in `data`, which a bare `.stack` discards. */
-/** Identity of a desired Feishu connection: appId + gateway region. A region change on
- *  the same appId yields a different key, so it is treated as a distinct connection for
- *  reuse-matching, mapping-eviction, and the in-flight guard (`|` can't collide — an
- *  appId `cli_…` and the region literals `feishu`/`lark` contain none). */
-function feishuConnKey(appId: string, region: string): string {
-  return `${appId}|${region}`
+/** Identity of a desired Feishu connection: appId + gateway region + ingress mode.
+ *  A region or mode change on the same appId yields a different key, so it is
+ *  treated as a distinct connection for reuse-matching, mapping-eviction, and
+ *  the in-flight guard (`|` can't collide — an appId `cli_…` and the region/mode
+ *  literals contain none). */
+function feishuConnKey(appId: string, region: string, mode: 'direct' | 'shared'): string {
+  return `${appId}|${region}|${mode}`
 }
 
 function formatErr(err: unknown): string {
@@ -2470,12 +2471,12 @@ export class Daemon {
     const discordByIntegration = new Map<string, string>()
     for (const group of discord.values())
       for (const { integrationId } of group.integrations) discordByIntegration.set(integrationId, group.botToken)
-    // Feishu keys on appId (one WSClient per self-built app), not a bot token — plus the
-    // region, so a gateway change on the same appId is treated as a different desired conn.
+    // Feishu keys on appId (one provider client per self-built app), not a bot token —
+    // plus region and mode, so either change produces a different desired connection.
     const feishuByIntegration = new Map<string, string>()
     for (const group of feishu.values())
       for (const { integrationId } of group.integrations)
-        feishuByIntegration.set(integrationId, feishuConnKey(group.appId, group.region))
+        feishuByIntegration.set(integrationId, feishuConnKey(group.appId, group.region, group.mode))
 
     const allDesiredIds = new Set([
       ...directByIntegration.keys(),
@@ -2522,7 +2523,7 @@ export class Daemon {
       // Compare appId AND region: a region flip on the same appId must evict the stale
       // mapping here (not only when a replacement start succeeds), so a failed replacement
       // never leaves an integration routed at the stopped old-domain client.
-      if (feishuConnKey(conn.appId, conn.region) !== feishuByIntegration.get(integrationId)) {
+      if (feishuConnKey(conn.appId, conn.region, conn.mode) !== feishuByIntegration.get(integrationId)) {
         this.fsConnByIntegration.delete(integrationId)
         dropIdentity(integrationId)
       }
@@ -2569,11 +2570,11 @@ export class Daemon {
       this.discordConns = this.discordConns.filter((candidate) => candidate !== conn)
     }
     for (const conn of [...this.feishuConns]) {
-      // Keep only a conn whose appId is still desired AND whose region is unchanged —
-      // a region flip on the same appId must drop the old-domain client so the open
-      // loop dials the new gateway (feishu.cn ↔ larksuite.com).
+      // Keep only a conn whose appId is still desired and whose region/mode are
+      // unchanged. A region or transport flip must drop the old client so the open
+      // loop initializes the correct gateway and inbound ownership.
       const want = feishu.get(conn.appId)
-      if (want && want.region === conn.region) continue
+      if (want && want.region === conn.region && want.mode === conn.mode) continue
       await this.waitForConnectionUses(conn)
       await conn.stop()
       this.feishuConns = this.feishuConns.filter((candidate) => candidate !== conn)
@@ -2863,16 +2864,16 @@ export class Daemon {
    *  currently has a feishu integration on that appId. Lets an in-flight connect detect a
    *  region change (or removal) that landed during its handshake and self-discard instead
    *  of publishing an old-domain mapping. */
-  private desiredFeishuRegion(appId: string): FeishuRegion | undefined {
+  private desiredFeishuConfig(appId: string): { region: FeishuRegion; mode: 'direct' | 'shared' } | undefined {
     for (const group of consolidateFeishu([...this.agents.values()]).values())
-      if (group.appId === appId) return group.region
+      if (group.appId === appId) return { region: group.region, mode: group.mode }
     return undefined
   }
 
   /**
    * Reconcile the connection-derived Feishu state (`botUserIds`, `fsConnByIntegration`,
-   * open WSClient long-connections) against the live `agents`. Parallel to
-   * reconcileDiscordConnections (one WSClient per appId), but mention-routing matches
+   * provider clients and direct WSClient long-connections) against the live `agents`.
+   * Parallel to reconcileDiscordConnections, but mention-routing matches
    * the bot's own `open_id` (normalize's `mentionedBots` are Feishu open_ids). A failed
    * start is logged and leaves other connections intact (never throws out); a removed
    * appId is NOT torn down here (same deferred-close reasoning as Slack/Telegram/Discord).
@@ -2882,7 +2883,9 @@ export class Daemon {
     for (const group of groups.values()) {
       // Match on appId AND region: a region change on the same appId must NOT reuse the
       // old-domain client (the prune pass drops it; this guards a same-pass race too).
-      const existing = this.feishuConns.find((c) => c.appId === group.appId && c.region === group.region)
+      const existing = this.feishuConns.find(
+        (c) => c.appId === group.appId && c.region === group.region && c.mode === group.mode
+      )
       if (existing) {
         for (const { integrationId } of group.integrations) {
           if (this.fsConnByIntegration.get(integrationId) !== existing) {
@@ -2897,7 +2900,7 @@ export class Daemon {
       // feishuConns, so `find()` above can't see it). Skip to avoid opening a duplicate;
       // that connect binds this group's integrations when it resolves. Keyed on region
       // too, so a NEW-region reconcile is NOT blocked by an in-flight OLD-region connect.
-      const connectKey = feishuConnKey(group.appId, group.region)
+      const connectKey = feishuConnKey(group.appId, group.region, group.mode)
       if (this.feishuConnecting.has(connectKey)) continue
       const conn: FeishuConnection = new FeishuConnection({
         group,
@@ -2920,16 +2923,19 @@ export class Daemon {
         // The handshake can take seconds; a region change for this appId may have landed
         // meanwhile. Re-check the live desired region before publishing — otherwise this
         // now-stale (old-domain) connect would bind its mapping over the newer region.
-        const desired = this.desiredFeishuRegion(group.appId)
-        if (desired !== group.region) {
+        const desired = this.desiredFeishuConfig(group.appId)
+        if (!desired || desired.region !== group.region || desired.mode !== group.mode) {
           await conn.stop().catch(() => {})
           this.log.info(
             `feishu: discarding connect for app ${conn.appId} (${group.region}) — desired region is now ` +
-              `${desired ?? 'none'} (superseded mid-handshake)`
+              `${desired ? `${desired.region}/${desired.mode}` : 'none'} (superseded mid-handshake)`
           )
           continue
         }
-        this.log.info(`feishu: WSClient connected for app ${conn.appId} (bot ${conn.botOpenId || '?'})`)
+        this.log.info(
+          `feishu: ${conn.mode === 'shared' ? 'send-only HTTP client ready' : 'WSClient connected'} for app ` +
+            `${conn.appId} (bot ${conn.botOpenId || '?'})`
+        )
         for (const { integrationId } of group.integrations) {
           // Mention-routing matches the bot's own open_id (normalize's mentionedBots are open_ids).
           this.botUserIds[integrationId] = conn.botOpenId
@@ -2938,7 +2944,7 @@ export class Daemon {
         this.feishuConns.push(conn)
       } catch (err) {
         await conn.stop().catch(() => {})
-        this.log.error(`feishu: failed to open WSClient for an appId — leaving others intact: ${formatErr(err)}`)
+        this.log.error(`feishu: failed to initialize an appId — leaving others intact: ${formatErr(err)}`)
       } finally {
         this.feishuConnecting.delete(connectKey)
       }
@@ -2950,11 +2956,11 @@ export class Daemon {
 
   /**
    * Resolve display names for the channels and triggering users of already-stored
-   * Discord/Telegram/Feishu sessions
-   * so the console labels them without waiting for a new inbound message (the per-message
-   * ChannelNameResolver only fires on fresh traffic). The Slack analog is refreshChannels'
-   * bulk membership snapshot; here we resolve each live session's channel individually
-   * via its bot connection. Best-effort +
+   * Discord/Telegram/Feishu sessions so the console labels them without waiting
+   * for a new inbound message (the per-message ChannelNameResolver only fires on
+   * fresh traffic). The Slack analog is refreshChannels' bulk membership snapshot;
+   * these platforms have no cheap channel enumeration, so we resolve each live
+   * session's channel individually via its bot connection. Best-effort +
    * TTL-guarded by the resolver, so calling it on every reconcile is cheap.
    */
   private backfillChannelNames(): void {
@@ -2999,10 +3005,11 @@ export class Daemon {
   }
 
   /**
-   * Observed-conversation discovery for Telegram, Discord, and Feishu. Stored session
-   * history is merged with explicitly-addressed Off conversations already cached for
-   * the integration. Reports carry `authoritative:false`: the CP upserts what we know
-   * but never treats an absent row as a leave.
+   * Observed-conversation discovery for Telegram, Discord, and Feishu. These platforms do
+   * not give us an authoritative set of chats the bot is engaged in, so stored
+   * session history is merged with explicitly-addressed Off conversations already
+   * cached for the integration. Reports carry `authoritative:false`: the CP upserts
+   * what we know but never treats an absent row as a leave.
    *
    * Names fill in lazily through ChannelNameResolver. Re-merging the cached rows
    * here is important for Off conversations: they have no session row, so without
@@ -4743,7 +4750,7 @@ export class Daemon {
   /**
    * An HTTP-bot inbound (`rd/msg` `im`): the relay already arbitrated the target
    * agent + integration, so this is the explicit-agent path — no local routing. The
-   * reply flows out-of-band through the agent's send-only Slack connection
+   * reply flows out-of-band through the agent's send-only provider connection
    * (`replyConnFor`), NOT `rd/chat` (that is webchat-only). The `rd/ack` is a plain
    * receipt; the turn runs async.
    */
@@ -4755,17 +4762,25 @@ export class Daemon {
     // The wire payload is structurally the daemon's NormalizedMessage.
     const normalized = msg.payload as NormalizedMessage
     normalized.transportScope ??= this.transportScopeForIntegrationIds([msg.integrationId])
-    // Socket-mode ingress resolves Slack ids before onInbound(); relay ingress
-    // bypasses that callback, but its send-only connection exposes the same Web
-    // API. Mirror the lookup here so session metadata/history can label the sender.
+    // Direct ingress resolves provider ids before onInbound(); HTTP ingress
+    // bypasses that callback, but its send-only connection exposes the same API.
+    // Mirror the lookup here so session metadata/history can label the sender.
     const conn = this.connByIntegration.get(msg.integrationId)
     if (conn) this.nameResolver?.noteMessage(conn, normalized)
+    const feishuConn = this.fsConnByIntegration.get(msg.integrationId)
+    if (feishuConn) this.channelNameResolver?.noteMessage(feishuConn, normalized)
     // HTTP-bot ingress is pre-addressed and bypasses onInbound(), so repeat the
     // terminal agent-bot suppression here before commands or model admission.
     if (this.isAgentBotMessage(normalized)) {
       this.log.debug(`relay: consumed AgentConnect bot message ${msg.msgId} without waking ${msg.agentId}`)
       return { msgId: msg.msgId, accepted: true }
     }
+    // Relay arbitration normally forwards only enabled routes. A receive-only
+    // Feishu relay may also hand the sole gated install an explicitly-addressed
+    // Off-conversation event so provider egress remains daemon-owned. Discover it
+    // before the last-hop gate drops it; the notice below then uses the send-only
+    // Feishu connection without ever exposing the app secret to the relay.
+    this.discoverGatedConversations(normalized, [msg.integrationId])
     // Conversation gating (§14) last-hop backstop: the relay arbitrates HTTP-bot
     // routing, but a stale relay route snapshot must not activate a private agent in
     // an Off conversation. Admission = a bindRule scoped to this conversation (the

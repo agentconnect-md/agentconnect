@@ -894,6 +894,52 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     expect(ingest.postText.mock.calls[0]![2]).toBe('123.456') // threaded, no channel spam
   })
 
+  it('hands an unrouted gated Feishu mention to its daemon for discovery and notice egress', async () => {
+    const sendMsg = vi.fn(async (m: { msgId: string }): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+    const manager = new RelayIngressManager(
+      deps({ getDaemon: () => ({ sendMsg }) as unknown as RelayDaemonConnection })
+    )
+    const internals = manager as unknown as ManagerInternals
+    internals.router.upsert({
+      botId: BOT_ID,
+      platform: 'feishu',
+      secrets: { verificationToken: 'verify-token' },
+      apiAppId: 'cli_http_app',
+      botUserId: 'ou_bot',
+      members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
+      agents: [
+        {
+          agentId: AGENT_ID,
+          name: 'Agent',
+          daemonId: DAEMON_ID,
+          integrationId: INTEGRATION_ID
+        }
+      ],
+      routes: [],
+      gatedAgentIds: [AGENT_ID]
+    })
+
+    const payload = dm({
+      msgId: 'feishu:oc_1:om_1',
+      platform: 'feishu',
+      channel: 'oc_1',
+      isDm: false,
+      thread: 'om_1',
+      text: '@Agent hello',
+      mentionedBots: ['ou_bot']
+    })
+    await internals.forward(BOT_ID, payload)
+
+    expect(sendMsg).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: 'im',
+        agentId: AGENT_ID,
+        integrationId: INTEGRATION_ID,
+        payload
+      })
+    )
+  })
+
   /** Two manager instances = two relay pods; only the authority pod may post. */
   const pod = (authority: boolean) => {
     const manager = new RelayIngressManager(deps({ selfRelayId: () => (authority ? SELF_RELAY : PEER_RELAY) }))

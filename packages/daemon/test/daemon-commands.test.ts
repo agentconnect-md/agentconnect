@@ -272,6 +272,44 @@ describe('Daemon in-conversation commands', () => {
     expect(dispatch).toHaveBeenCalledWith('bot-a', payload, 'int-a')
   })
 
+  it('discovers an unroutable gated Feishu callback before the last-hop gate drops it', () => {
+    const daemon = new Daemon()
+    const discover = vi.fn()
+    const notice = vi.fn()
+    const dispatch = vi.fn(async () => {})
+    ;(daemon as any).agents.set('bot-a', {})
+    ;(daemon as any).discoverGatedConversations = discover
+    ;(daemon as any).gatedAdmission = () => false
+    ;(daemon as any).maybeGatedNotice = notice
+    ;(daemon as any).dispatch = dispatch
+    const payload = {
+      ...dm('relay-feishu-gated', '@Agent hello'),
+      platform: 'feishu' as const,
+      channel: 'oc_1',
+      thread: 'om_1',
+      mentionedBots: ['ou_bot'],
+      isDm: false
+    }
+    const msg: RdMsgIm = {
+      source: 'im',
+      agentId: 'bot-a',
+      sessionKey: 'oc_1/om_1',
+      msgId: 'relay-feishu-gated',
+      botId: '11111111-1111-4111-8111-111111111111',
+      integrationId: 'int-a',
+      chatId: 'oc_1',
+      payload
+    }
+
+    expect((daemon as any).handleRelayMsg(msg, () => {})).toEqual({
+      msgId: 'relay-feishu-gated',
+      accepted: true
+    })
+    expect(discover).toHaveBeenCalledWith(payload, ['int-a'])
+    expect(notice).toHaveBeenCalledWith(payload, ['int-a'])
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+
   it('shared-bot rd/msg(im) honors a !stop thread mute: implicit traffic drops, an @mention un-mutes', async () => {
     const blocked = blockingHost()
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })

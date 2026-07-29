@@ -10,7 +10,7 @@ function stubFetch(urls: string[]) {
       urls.push(url)
       const body = url.includes('tenant_access_token')
         ? { code: 0, tenant_access_token: 'tkn' }
-        : { code: 0, bot: { app_name: 'Acme' } }
+        : { code: 0, bot: { app_name: 'Acme', open_id: 'ou_bot' } }
       return { ok: true, json: async () => body } as unknown as Response
     })
   )
@@ -23,7 +23,7 @@ describe('verifyFeishuBot gateway selection', () => {
     const urls: string[] = []
     stubFetch(urls)
     const r = await verifyFeishuBot('cli_x', 'secret')
-    expect(r).toEqual({ status: 'ok', name: 'Acme' })
+    expect(r).toEqual({ status: 'ok', name: 'Acme', openId: 'ou_bot' })
     expect(urls.every((u) => u.startsWith('https://open.feishu.cn/open-apis'))).toBe(true)
   })
 
@@ -31,7 +31,7 @@ describe('verifyFeishuBot gateway selection', () => {
     const urls: string[] = []
     stubFetch(urls)
     const r = await verifyFeishuBot('cli_x', 'secret', 'lark')
-    expect(r).toEqual({ status: 'ok', name: 'Acme' })
+    expect(r).toEqual({ status: 'ok', name: 'Acme', openId: 'ou_bot' })
     expect(urls.length).toBeGreaterThan(0)
     expect(urls.every((u) => u.startsWith('https://open.larksuite.com/open-apis'))).toBe(true)
   })

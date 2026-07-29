@@ -32,6 +32,7 @@ const ID = '11111111-1111-4111-8111-111111111111'
 const RELAY_ID = '55555555-5555-4555-8555-555555555555'
 const DAEMON_ID = '22222222-2222-4222-8222-222222222222'
 const AGENT_ID = '33333333-3333-4333-8333-333333333333'
+const INTEGRATION_ID = '44444444-4444-4444-8444-444444444444'
 const HOOK_ID = '88888888-8888-4888-8888-888888888888'
 const TS = '2026-07-07T00:00:00.000Z'
 
@@ -328,7 +329,28 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     if (!r.ok) throw new Error('expected ok')
     if (r.frame.type !== 'rc/bot-assign') throw new Error('narrow')
     expect(r.frame.payload.routes).toHaveLength(2)
+    if (!('signingSecret' in r.frame.payload.secrets)) throw new Error('expected Slack secrets')
     expect(r.frame.payload.secrets.signingSecret).toBe('sign-x')
+  })
+
+  it('round-trips a Feishu HTTP assignment without provider API credentials', () => {
+    const r = decodeRelayCpFrame(
+      envelope('rc/bot-assign', {
+        botId: DAEMON_ID,
+        platform: 'feishu',
+        apiAppId: 'cli_example',
+        botUserId: 'ou_bot',
+        secrets: { verificationToken: 'verify-x', encryptKey: 'encrypt-x' },
+        members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
+        agents: [{ agentId: AGENT_ID, name: 'alice', daemonId: DAEMON_ID, integrationId: INTEGRATION_ID }],
+        routes: []
+      })
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || r.frame.type !== 'rc/bot-assign') throw new Error('expected Feishu assignment')
+    expect(r.frame.payload.secrets).toEqual({ verificationToken: 'verify-x', encryptKey: 'encrypt-x' })
+    expect(r.frame.payload.agents[0]?.integrationId).toBe(INTEGRATION_ID)
+    expect('botToken' in r.frame.payload.secrets).toBe(false)
   })
 
   it('rc/bot-assign requires signingSecret (Events API verification key)', () => {

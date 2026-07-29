@@ -19,9 +19,9 @@ import type { AttributedRoute, WireNormalizedMessage } from '@agentconnect.md/pr
 /** A bot's full relay-side assignment (from `rc/bot-assign`). Secret material. */
 export interface BotAssignment {
   botId: string
-  platform: 'slack' | 'telegram' | 'discord'
-  secrets: { botToken: string; signingSecret: string }
-  /** Slack app id (== Events API `api_app_id`) — the O(1) HTTP demux key when present. */
+  platform: 'slack' | 'telegram' | 'discord' | 'feishu'
+  secrets: { botToken: string; signingSecret: string } | { verificationToken: string; encryptKey?: string }
+  /** Provider app id — the O(1) HTTP demux key when present. */
   apiAppId?: string
   /** Slack workspace id (== Events API `team_id`). Present ⇒ this bot is one
    *  workspace install of a DISTRIBUTED app: every sibling install shares the app
@@ -32,11 +32,11 @@ export interface BotAssignment {
    *  so the CP can refuse a revocation that was observed under a credential a
    *  re-install has since replaced — Slack does not order lifecycle events. */
   credentialRevision?: number
-  /** Resolved lazily by the ingest (auth.test) — used for mention + echo suppression. */
+  /** Provider bot identity — used for mention + echo suppression. */
   botUserId?: string
   members: { daemonId: string; agentIds: string[] }[]
   /** Member directory (id→name) — the options for the config modal's agent selector. */
-  agents: { agentId: string; name: string }[]
+  agents: { agentId: string; name: string; daemonId?: string; integrationId?: string }[]
   routes: AttributedRoute[]
   defaultAgentId?: string
   defaultDaemonId?: string
@@ -248,6 +248,29 @@ export class BotArbitrationRouter {
    *  the config modal's initial selection. */
   channelOwner(botId: string, channelId: string): string | undefined {
     return this.bots.get(botId)?.routes.find((r) => r.scope?.channel === channelId)?.agentId
+  }
+
+  /**
+   * Resolve the sole gated install without relying on a routing rule. A fully
+   * gated bot deliberately compiles no unscoped route, but Feishu callback
+   * credentials are receive-only: its daemon must still receive an addressed
+   * Off-conversation message so it can discover the row and post the notice.
+   */
+  soleGatedTarget(botId: string): RouteTarget | undefined {
+    const a = this.bots.get(botId)
+    if (!a) return undefined
+    const gated = new Set(a.gatedAgentIds ?? [])
+    const candidates = a.agents.flatMap((entry) =>
+      gated.has(entry.agentId) && entry.daemonId && entry.integrationId
+        ? [{ agentId: entry.agentId, daemonId: entry.daemonId, integrationId: entry.integrationId }]
+        : []
+    )
+    if (candidates.length !== 1) return undefined
+    const candidate = candidates[0]!
+    if (!a.members.some((m) => m.daemonId === candidate.daemonId && m.agentIds.includes(candidate.agentId))) {
+      return undefined
+    }
+    return candidate
   }
 
   /** True iff `channelId` has a channel-scoped `auto` owner — a rule that fires on

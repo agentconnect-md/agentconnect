@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { FeishuRegion } from '@agentconnect.md/protocol'
 import type { Agent } from '../src/agents/agent-schema.js'
 import {
@@ -16,7 +16,7 @@ function feishuAgent(id: string, appId: string, region: FeishuRegion): Agent {
       {
         id: `int-${id}`,
         platform: 'feishu',
-        feishu: { appId, appSecret: 'secret', region, allowedUserIds: [], bindRules: [] }
+        feishu: { mode: 'direct', appId, appSecret: 'secret', region, allowedUserIds: [], bindRules: [] }
       }
     ]
   } as unknown as Agent
@@ -59,6 +59,7 @@ describe('feishu region → gateway plumbing', () => {
     const group: ConsolidatedFeishuGroup = {
       appId: 'cli_intl',
       appSecret: 'secret',
+      mode: 'direct',
       region: 'lark',
       botOpenId: 'ou_bot',
       integrations: [{ agentId: 'a', integrationId: 'int-a' }]
@@ -76,5 +77,33 @@ describe('feishu region → gateway plumbing', () => {
     // reconnect against the new gateway instead of reusing the old-domain client.
     expect(conn.region).toBe('lark')
     expect(seen).toEqual(['lark'])
+  })
+
+  it('shared mode initializes provider egress without opening a second inbound connection', async () => {
+    const startWs = vi.fn(async () => {})
+    const handle = fakeHandle()
+    handle.startWs = startWs
+    const conn = new FeishuConnection(
+      {
+        group: {
+          appId: 'cli_http',
+          appSecret: 'secret',
+          mode: 'shared',
+          region: 'lark',
+          botOpenId: 'ou_bot',
+          integrations: [{ agentId: 'a', integrationId: 'int-a' }]
+        },
+        onMessage: () => {},
+        newTraceId: () => 't',
+        sendIntervalMs: 0
+      },
+      () => handle
+    )
+
+    await conn.start()
+
+    expect(startWs).not.toHaveBeenCalled()
+    expect(conn.mode).toBe('shared')
+    await expect(conn.postMessage('oc_chat', 'hello')).resolves.toBeUndefined()
   })
 })

@@ -1774,9 +1774,9 @@ export interface HookSecretStore {
 // console can offer it for reuse instead of forcing a re-create.
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Slack inbound transport axis (mirrors the Prisma `SlackTransport` enum).
- *  `socket` ⇒ daemon-owned Socket Mode (direct spec); `http` ⇒ relay-pool Events
- *  API ingress (send-only shared spec). Slack-http-mode. */
+/** IM inbound transport axis (mirrors the historical Prisma `SlackTransport`
+ *  enum). `socket` ⇒ daemon-owned long connection; `http` ⇒ relay-pool callback
+ *  ingress with a send-only daemon spec. */
 export type SlackTransport = 'socket' | 'http'
 
 export interface CreateBotInput {
@@ -1804,7 +1804,7 @@ export interface CreateBotInput {
   feishuRegion?: FeishuRegion
   /** Opt into shared-bot mode at create (shared-bot-relay.md §4.1). Default false. */
   shareable?: boolean
-  /** Slack inbound transport (slack-http-mode). Default 'socket'. */
+  /** Inbound transport. Default 'socket'. */
   transport?: SlackTransport
   createdByUserId?: string
 }
@@ -1847,8 +1847,7 @@ export interface BotRecord {
   feishuRegion: FeishuRegion | null
   /** Shared-bot opt-in (§4.1): true ⇒ may serve MANY agents (http transport only). */
   shareable: boolean
-  /** Slack inbound transport (slack-http-mode): 'http' ⇒ relay-pool Events API
-   *  ingress; 'socket' ⇒ classic daemon-owned Socket Mode. */
+  /** Inbound transport: 'http' ⇒ relay callbacks; 'socket' ⇒ daemon long connection. */
   transport: SlackTransport
   /** Creator (WebUI user), joined for the console picker; null for prebuilt/CLI. */
   createdBy: { userId: string; displayName: string | null; email: string } | null
@@ -2037,13 +2036,15 @@ export interface AgentRepoAuthorizationRepo {
 // routes, protocol, or the daemon.
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Token material for one bot. `appToken` is Slack Socket Mode's app-level token
- *  (null for Telegram / http transport). `signingSecret` is Slack's Events API
- *  request-verification key (http transport; null for socket / Telegram). */
+/** Secret material for one bot. Feishu HTTP callback credentials are optional
+ *  for compatibility with every existing platform row and are stored through
+ *  the same cipher boundary. */
 export interface BotSecretMaterial {
   botToken: string
   appToken: string | null
   signingSecret: string | null
+  verificationToken?: string | null
+  encryptKey?: string | null
 }
 
 export interface BotSecretStore {

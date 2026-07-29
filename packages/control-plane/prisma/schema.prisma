@@ -1410,12 +1410,10 @@ model Bot {
   // INBOUND migrates to a relay and it may serve MULTIPLE agents (one Integration
   // row per agent). Per-bot, not per-install — a uniform rule, no mode switching.
   shareable             Boolean        @default(false)
-  // Slack ingress transport (slack-http-mode). `socket` ⇒ classic Socket Mode: the
-  // owning daemon holds the xapp connection (direct spec). `http` ⇒ the relay pool
-  // receives inbound over the stable PUBLIC_RELAY_URL Events API endpoint and the
-  // daemon gets a send-only (shared) spec. This is the direct-vs-shared axis;
-  // `shareable` is now the multi-agent-within-http sub-flag. Immutable post-create
-  // (the Slack app's request_url is set once at app creation).
+  // IM ingress transport. `socket` means the daemon owns the platform's outbound
+  // long connection (Slack Socket Mode or Feishu WSClient). `http` means the relay
+  // receives callbacks and the daemon gets a send-only spec. This is the
+  // direct-vs-shared axis; `shareable` is the multi-agent-within-http sub-flag.
   transport             SlackTransport @default(socket)
   createdByUserId       String? // WebUI user who registered it (audit)
   lastUsedAt            DateTime?      @db.Timestamptz(6) // stamped when its integration is removed
@@ -1440,7 +1438,8 @@ model Bot {
 }
 
 /**
- * Slack inbound transport for a bot (slack-http-mode). See Bot.transport.
+ * Inbound transport for a bot. The historical enum name is retained to avoid a
+ * destructive PostgreSQL enum rename; see Bot.transport.
  */
 enum SlackTransport {
   socket
@@ -1453,7 +1452,12 @@ model BotSecret {
   appToken      String? // xapp-… for Slack Socket Mode; Feishu/Lark reuses this slot for its app id; NULL for single-token platforms
   // Slack signing secret — verifies inbound Events API POSTs (HMAC). Lives ONLY here
   // + is shipped to the relay in rc/bot-assign (http transport); daemons never get it.
-  signingSecret String? // Slack signing secret (http transport); NULL for socket/Telegram
+  signingSecret     String? // Slack signing secret (http transport); NULL for socket/Telegram
+  // Feishu callback credentials. The verification token is required in HTTP mode;
+  // encryptKey is optional and enables signed/encrypted callback bodies. Neither is
+  // sent to daemons, while the Feishu app secret remains daemon-only.
+  verificationToken String?
+  encryptKey        String?
 
   bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
 
