@@ -3,7 +3,12 @@
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { RepositoryAccessField, WorkspaceModeField } from './WorkspaceFormFields'
+import {
+  GithubRepositoryField,
+  GithubRepositoryOption,
+  RepositoryAccessField,
+  WorkspaceModeField
+} from './WorkspaceFormFields'
 
 let root: Root | undefined
 let container: HTMLDivElement | undefined
@@ -59,5 +64,35 @@ describe('WorkspaceFormFields', () => {
 
     await act(async () => writeButton?.click())
     expect(onChange).toHaveBeenCalledWith('write')
+  })
+
+  it('keeps a portalled repository menu open while its list scrolls', async () => {
+    const onClose = vi.fn()
+    await render(
+      <div className="modalbody">
+        <GithubRepositoryField
+          value="agentconnect-md/agentconnect"
+          loading={false}
+          open
+          query=""
+          onToggle={() => undefined}
+          onClose={onClose}
+          onQueryChange={() => undefined}
+        >
+          <GithubRepositoryOption
+            fullName="agentconnect-md/agentconnect"
+            description="Repository"
+            onSelect={() => undefined}
+          />
+        </GithubRepositoryField>
+      </div>
+    )
+
+    const menu = document.body.querySelector('.fmenu')
+    await act(async () => menu?.dispatchEvent(new Event('scroll')))
+    expect(onClose).not.toHaveBeenCalled()
+
+    await act(async () => container?.querySelector('.modalbody')?.dispatchEvent(new Event('scroll')))
+    expect(onClose).toHaveBeenCalledOnce()
   })
 })
