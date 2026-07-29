@@ -58,7 +58,7 @@ re-triggered agent-assistant (§4), the predefined Slack app (§5), and the chec
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | Kind                  | `assistant` (P3)                                                                                                            | `standard`                                                                                        |
 | Visibility            | `restricted`, owner-role only — no creator grant, `sharedWith` locked empty, sharing writes rejected (§3.2)                 | `org`, editable                                                                                   |
-| Runtime               | From the assistant allowlist (`claude`, v2 §8.2)                                                                            | First available from the daemon's reported runtimes                                               |
+| Runtime               | A **ready** runtime (§3.2) from the assistant allowlist (`claude`, v2 §8.2)                                                 | First **ready** runtime (§3.2) among the daemon's reported ones                                   |
 | Profile               | Restricted: no shell/file tools, locked scratch workspace (v2 §8.2)                                                         | Ordinary agent profile                                                                            |
 | Workspace             | Locked scratch                                                                                                              | Scratch; attaching a repository is a checklist step                                               |
 | MCP                   | Exactly one injected server: the CP AgentConnect MCP with a per-session delegated key (P4). No memory/collab/platform tools | Daemon defaults, nothing extra                                                                    |
@@ -74,10 +74,23 @@ first-connect behavior is the hostname name-seed in `daemon.repo.ts`. The task r
 async; the handshake never waits on it. Once every preset is settled (§State) the hook
 is a cheap no-op read.
 
-**Runtime availability.** `RegisterReq.capabilities.runtimes` is known at register
-time; the richer `facts/daemon-runtimes` snapshot arrives after `register/ok`,
-asynchronously. Provisioning fires at whichever moment first shows a usable runtime
-for a given preset. A preset that cannot be created yet writes **no state at all** —
+**Ready runtime.** Presence is not readiness: the daemon deliberately reports
+installed-but-logged-out runtimes, flagged `authRequired` on the profile
+(`FactsRuntimeProfile`), and the BFF DTO preserves that flag to render "Login
+required". A runtime is **ready** iff it has a reported profile whose latest probe did
+not flag auth-required; a runtime with no reported profile, or whose probe has not
+resolved, is not ready. Readiness is derived and may regress — some logged-out
+runtimes are only discovered on a live turn, not by the probe — and a regression
+simply flips the derived state back. This one predicate gates provisioning here and
+derives the checklist item (§6.2); the implementation contract includes the case
+"daemon online, every profile auth-required" — the checklist item stays incomplete
+and provisioning stays deferred.
+
+**Timing.** `RegisterReq.capabilities.runtimes` is a bare id list with no auth
+information, so readiness is evaluated from stored runtime profiles: at `register/ok`
+against the rows persisted from a previous session, and afresh on every
+`facts/daemon-runtimes` report (which also re-fires after a login flips
+`authRequired`). A preset that cannot be created yet writes **no state at all** —
 absence is what makes the next event retry it — and the checklist's first item
 ("Sign in a runtime") explains the wait.
 
@@ -257,17 +270,17 @@ view — non-blocking, dismissible, reopenable from Help.
 Every item derives from live resources; nothing stores "step done". The only persisted
 bit is a per-user dismissal.
 
-| Item                           | Derivation                                                                            |
-| ------------------------------ | ------------------------------------------------------------------------------------- |
-| Daemon connected               | daemon status `ready`                                                                 |
-| Runtime signed in              | runtime profiles non-empty (a real, high-frequency stumbling block — its own item)    |
-| Meet your agents               | every preset settled — a `preset_agent` row per preset, `created` or `skipped` (§3.2) |
-| Talk to your admin agent       | an assistant session exists                                                           |
-| Connect Slack                  | a Slack integration exists                                                            |
-| Connect GitHub                 | a GitHub App installation exists                                                      |
-| Give your agent a repository   | general agent's workspace ≠ scratch                                                   |
-| Finish your first conversation | a completed standard-agent session exists                                             |
-| Invite teammates               | org member count > 1                                                                  |
+| Item                           | Derivation                                                                                                                                                         |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Daemon connected               | daemon status `ready`                                                                                                                                              |
+| Runtime signed in              | at least one **ready** runtime (§3.2) — non-empty profiles are not enough: the list deliberately includes installed-but-logged-out runtimes flagged `authRequired` |
+| Meet your agents               | every preset settled — a `preset_agent` row per preset, `created` or `skipped` (§3.2)                                                                              |
+| Talk to your admin agent       | an assistant session exists                                                                                                                                        |
+| Connect Slack                  | a Slack integration exists                                                                                                                                         |
+| Connect GitHub                 | a GitHub App installation exists                                                                                                                                   |
+| Give your agent a repository   | general agent's workspace ≠ scratch                                                                                                                                |
+| Finish your first conversation | a completed standard-agent session exists                                                                                                                          |
+| Invite teammates               | org member count > 1                                                                                                                                               |
 
 Items that reference the admin agent render only for users who can see it — the
 org's owner(s), given its restricted visibility. Other members see the remaining
