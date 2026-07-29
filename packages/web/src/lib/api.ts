@@ -1987,8 +1987,15 @@ export async function startDream(
   return apiPost<DreamDto>(dreamBase(agentId), opts)
 }
 
-export async function listDreams(agentId: string, limit?: number): Promise<DreamDto[]> {
-  const q = limit ? `?limit=${limit}` : ''
+export async function listDreams(
+  agentId: string,
+  limit?: number,
+  opts: { pendingSkills?: boolean } = {}
+): Promise<DreamDto[]> {
+  const params = new URLSearchParams()
+  if (limit) params.set('limit', String(limit))
+  if (opts.pendingSkills) params.set('pendingSkills', '1')
+  const q = params.toString() ? `?${params.toString()}` : ''
   return (await apiGet<{ dreams: DreamDto[] }>(`${dreamBase(agentId)}${q}`)).dreams
 }
 
@@ -2003,6 +2010,36 @@ export async function cancelDream(agentId: string, dreamId: string): Promise<Dre
 /** Adopt a completed dream's staged store. `force` overrides the snapshot fence. */
 export async function adoptDream(agentId: string, dreamId: string, force = false): Promise<DreamDto> {
   return apiPost<DreamDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/adopt`, force ? { force } : {})
+}
+
+export interface DreamSkillContentDto {
+  name: string
+  exists: boolean
+  skill: string | null
+  scripts: { path: string; content: string }[]
+}
+
+/** Read a candidate's FULL staged body — what accepting would install. */
+export async function fetchDreamSkill(agentId: string, dreamId: string, name: string): Promise<DreamSkillContentDto> {
+  return apiGet<DreamSkillContentDto>(
+    `${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/skills/${encodeURIComponent(name)}`
+  )
+}
+
+/** Accept one mined skill candidate — installs it for this agent (design §7). */
+export async function acceptDreamSkill(agentId: string, dreamId: string, name: string): Promise<DreamDto> {
+  return apiPost<DreamDto>(
+    `${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/skills/${encodeURIComponent(name)}/accept`,
+    {}
+  )
+}
+
+/** Dismiss one mined skill candidate — drops its staging and records the call. */
+export async function dismissDreamSkill(agentId: string, dreamId: string, name: string): Promise<DreamDto> {
+  return apiPost<DreamDto>(
+    `${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/skills/${encodeURIComponent(name)}/dismiss`,
+    {}
+  )
 }
 
 export async function discardDream(agentId: string, dreamId: string): Promise<DreamDto> {

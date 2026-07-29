@@ -18,7 +18,10 @@ const api = vi.hoisted(() => ({
   listDreamFiles: vi.fn(),
   fetchDreamFileFull: vi.fn(),
   fetchAgentMemoryFull: vi.fn(),
-  listAgentMemory: vi.fn()
+  listAgentMemory: vi.fn(),
+  acceptDreamSkill: vi.fn(),
+  dismissDreamSkill: vi.fn(),
+  fetchDreamSkill: vi.fn()
 }))
 
 vi.mock('@/lib/api', () => ({
@@ -69,6 +72,14 @@ beforeEach(() => {
   api.listAgentMemory.mockResolvedValue({ exists: true, files: [{ name: 'MEMORY.md', size: 10, mtime: 'x' }] })
   api.adoptDream.mockResolvedValue(dream({ status: 'adopted' }))
   api.discardDream.mockResolvedValue(dream({ status: 'discarded' }))
+  api.acceptDreamSkill.mockResolvedValue(dream())
+  api.dismissDreamSkill.mockResolvedValue(dream())
+  api.fetchDreamSkill.mockResolvedValue({
+    name: 'deploy-staging',
+    exists: true,
+    skill: '---\nname: deploy-staging\n---\n# Deploy\nrun the thing',
+    scripts: [{ path: 'run.sh', content: '#!/bin/sh\necho deploying' }]
+  })
 })
 
 afterEach(async () => {
@@ -319,5 +330,173 @@ describe('DreamPanel', () => {
 
     expect(host.textContent).toContain('rerun the dream')
     expect(host.textContent).not.toContain('already running')
+  })
+
+  it('recommends mined skills and never installs one without an explicit click', async () => {
+    const skills = [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
+    api.listDreams.mockResolvedValue([dream({ skills })])
+    const host = await render()
+    // Pending proposals come from their OWN query, not the history page.
+    expect(api.listDreams).toHaveBeenCalledWith(AGENT, 50, { pendingSkills: true })
+
+    expect(host.textContent).toContain('Suggested skills')
+    expect(host.textContent).toContain('deploy-staging')
+    expect(host.textContent).toContain('Deploy to staging')
+    // Nothing happens until the human acts — skills are never auto-installed.
+    expect(api.acceptDreamSkill).not.toHaveBeenCalled()
+
+    // Accept is GATED on reading the body — the safety argument for mined
+    // skills is that a human reviewed the executable content, and a
+    // model-authored description is not evidence for itself.
+    expect(button(host, 'Accept')?.disabled).toBe(true)
+
+    const disclosure = host.querySelector<HTMLDetailsElement>('details')
+    await act(async () => {
+      disclosure!.open = true
+      disclosure!.dispatchEvent(new Event('toggle'))
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    // The ACTUAL executable content is on screen, not just the description.
+    expect(host.textContent).toContain('# Deploy')
+    expect(host.textContent).toContain('echo deploying')
+    expect(host.textContent).toContain('scripts/run.sh')
+
+    await act(async () => button(host, 'Accept')?.click())
+    expect(api.acceptDreamSkill).toHaveBeenCalledWith(AGENT, 'drm-1', 'deploy-staging')
+  })
+
+  it('dismisses a recommendation without installing it', async () => {
+    const skills = [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
+    api.listDreams.mockResolvedValue([dream({ skills })])
+    const host = await render()
+    await act(async () => button(host, 'Dismiss')?.click())
+    expect(api.dismissDreamSkill).toHaveBeenCalledWith(AGENT, 'drm-1', 'deploy-staging')
+    expect(api.acceptDreamSkill).not.toHaveBeenCalled()
+  })
+
+  it('only recommends candidates still awaiting review', async () => {
+    api.listDreams.mockResolvedValue([
+      dream({
+        skills: [
+          { name: 'already-in', description: 'x', state: 'accepted' },
+          { name: 'already-out', description: 'y', state: 'dismissed' }
+        ]
+      })
+    ])
+    const host = await render()
+    expect(host.textContent).not.toContain('Suggested skills')
+  })
+
+  it('reaches a pending candidate that has aged out of the history page entirely', async () => {
+    // Beyond the route's real cap: the history page is FULL of newer dreams and
+    // does not contain the pending one at all. It must still be offered, because
+    // its own query does not depend on history depth.
+    const older = dream({
+      dreamId: 'drm-old',
+      status: 'adopted',
+      skills: [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
+    })
+    const fullPage = Array.from({ length: 50 }, (_, i) => dream({ dreamId: `drm-${i}`, status: 'adopted' }))
+    api.listDreams.mockImplementation(async (_a: string, _l: number, opts?: { pendingSkills?: boolean }) =>
+      opts?.pendingSkills ? [older] : fullPage
+    )
+    const host = await render()
+    expect(host.textContent).toContain('deploy-staging')
+  })
+
+  it('never lets a delayed older refresh re-offer an already-reviewed candidate', async () => {
+    // The pending query resolves separately from the history page, so a slow
+    // request N can land after a newer N+1. If its result is written before the
+    // staleness fence, a candidate the user just reviewed comes back.
+    const stale = dream({
+      dreamId: 'drm-old',
+      status: 'adopted',
+      skills: [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
+    })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let releaseFirst!: (rows: unknown[]) => void
+    let pendingCall = 0
+    api.listDreams.mockImplementation(async (_a: string, _l: number, opts?: { pendingSkills?: boolean }) => {
+      if (!opts?.pendingSkills) return []
+      pendingCall += 1
+      // First pending request hangs; later ones report nothing pending.
+      if (pendingCall === 1) return new Promise((resolve) => (releaseFirst = resolve as typeof releaseFirst))
+      return []
+    })
+
+    const host = await render()
+    // A newer refresh completes first and publishes "nothing pending".
+    await act(async () => {
+      vi.advanceTimersByTime(30_000)
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    // Now the ORIGINAL request finally resolves with the stale candidate.
+    await act(async () => {
+      releaseFirst([stale])
+      await Promise.resolve()
+    })
+
+    expect(host.textContent).not.toContain('Suggested skills')
+    expect(host.textContent).not.toContain('deploy-staging')
+    vi.useRealTimers()
+  })
+
+  it('keeps Accept disabled while the body is loading, and on error or missing staging', async () => {
+    const skills = [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
+    api.listDreams.mockResolvedValue([dream({ skills })])
+
+    // 1. Never-resolving fetch: opening the disclosure must NOT enable Accept.
+    api.fetchDreamSkill.mockReturnValue(new Promise(() => {}))
+    let host = await render()
+    let details = host.querySelector<HTMLDetailsElement>('details')!
+    await act(async () => {
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+    })
+    expect(button(host, 'Accept')?.disabled).toBe(true)
+    await act(async () => root?.unmount())
+    container?.remove()
+
+    // 2. Error.
+    api.fetchDreamSkill.mockRejectedValue(new Error('nope'))
+    host = await render()
+    details = host.querySelector<HTMLDetailsElement>('details')!
+    await act(async () => {
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(button(host, 'Accept')?.disabled).toBe(true)
+    await act(async () => root?.unmount())
+    container?.remove()
+
+    // 3. Staging vanished.
+    api.fetchDreamSkill.mockResolvedValue({ name: 'deploy-staging', exists: false, skill: null, scripts: [] })
+    host = await render()
+    details = host.querySelector<HTMLDetailsElement>('details')!
+    await act(async () => {
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(button(host, 'Accept')?.disabled).toBe(true)
+    expect(host.textContent).toContain('no longer staged')
+    expect(api.acceptDreamSkill).not.toHaveBeenCalled()
+  })
+
+  it('keeps recommendations actionable for a viewer but disabled', async () => {
+    const skills = [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
+    api.listDreams.mockResolvedValue([dream({ skills })])
+    const host = await render({ canEdit: false })
+    expect(button(host, 'Accept')?.disabled).toBe(true)
+    expect(button(host, 'Dismiss')?.disabled).toBe(true)
   })
 })

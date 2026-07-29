@@ -401,7 +401,14 @@ export type DreamCancelReq = z.infer<typeof DreamCancelReq>
 
 /** C→D REQ: list dream jobs for one agent (newest first; bounded). */
 export const DreamListReq = z
-  .object({ agentId: z.string().min(1), limit: z.number().int().positive().max(50).default(20) })
+  .object({
+    agentId: z.string().min(1),
+    limit: z.number().int().positive().max(50).default(20),
+    /** Only dreams still holding an unreviewed skill candidate. These deliberately
+     *  outlive store adoption/discard, so they must be reachable independently of
+     *  how deep the newest-first history has grown. */
+    pendingSkills: z.boolean().optional()
+  })
   .strict()
 export type DreamListReq = z.infer<typeof DreamListReq>
 
@@ -471,6 +478,35 @@ export const DreamFileReadContent = z
   })
   .strict()
 export type DreamFileReadContent = z.infer<typeof DreamFileReadContent>
+
+/** C→D REQ: read one staged skill candidate's FULL body for review. Acceptance
+ *  installs executable instruction content, so the reviewer must be able to see
+ *  the actual `SKILL.md` and every script — a model-authored name and
+ *  description cannot be evidence for itself (design §7). */
+export const DreamSkillReadReq = z
+  .object({
+    agentId: z.string().min(1),
+    dreamId: z.string().min(1),
+    name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/)
+  })
+  .strict()
+export type DreamSkillReadReq = z.infer<typeof DreamSkillReadReq>
+
+export const DreamSkillContent = z
+  .object({
+    agentId: z.string().min(1),
+    dreamId: z.string().min(1),
+    name: z.string().min(1),
+    /** false ⇒ nothing staged under that name (DATA, not an error). */
+    exists: z.boolean(),
+    skill: z.string().optional(),
+    scripts: z
+      .array(z.object({ path: z.string(), content: z.string() }))
+      .max(8)
+      .optional()
+  })
+  .strict()
+export type DreamSkillContent = z.infer<typeof DreamSkillContent>
 
 /** C→D REQ: accept or dismiss one mined skill candidate (design §7). */
 export const DreamSkillReviewReq = z

@@ -66,7 +66,8 @@ import type {
   DreamDiscardReq,
   DreamFilesReq,
   DreamFileReadReq,
-  DreamSkillReviewReq
+  DreamSkillReviewReq,
+  DreamSkillReadReq
 } from '@agentconnect.md/protocol'
 import {
   buildEnvelope,
@@ -1055,6 +1056,14 @@ export class CpClient {
           .fileRead(frame.payload as DreamFileReadReq)
           .then((content) => this.reply(frame, 'memory/dream/file/read/content', content))
           .catch((err) => this.dreamError(frame.id, 'memory/dream/file/read', err))
+        return
+      }
+      case 'memory/dream/skill/read': {
+        const req = frame.payload as DreamSkillReadReq
+        this.deps.dreamReader
+          .skillRead(req)
+          .then((content) => this.reply(frame, 'memory/dream/skill/read/ok', content))
+          .catch((err) => this.dreamError(frame.id, 'memory/dream/skill/read', err))
         return
       }
       case 'memory/dream/skill/accept': {

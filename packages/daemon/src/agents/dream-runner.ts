@@ -63,6 +63,9 @@ export interface DreamStorePort {
   updateDream(dream: DreamInfo): void
   getDream(agentId: string, dreamId: string): DreamInfo | undefined
   listDreams(agentId: string, limit: number): DreamInfo[]
+  /** Dreams still holding an unreviewed skill candidate, independent of the
+   *  bounded history page — a proposal outlives the store lifecycle. */
+  pendingSkillDreams(agentId: string, limit: number): DreamInfo[]
   /** Non-terminal dreams (pending|running) for crash recovery at boot. */
   openDreams(): DreamInfo[]
   /** Every completed store proposal for one agent, without the public list cap. */
@@ -585,6 +588,12 @@ export class DreamRunner {
   get(agentId: string, dreamId: string): DreamInfo {
     this.dirFor(agentId)
     return this.getDream(agentId, dreamId)
+  }
+
+  /** Dreams whose skill candidates are still awaiting review. */
+  listPendingSkills(agentId: string, limit: number): DreamInfo[] {
+    this.dirFor(agentId)
+    return this.deps.store.pendingSkillDreams(agentId, limit)
   }
 
   list(agentId: string, limit: number): DreamInfo[] {

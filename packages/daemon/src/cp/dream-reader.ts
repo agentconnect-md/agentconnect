@@ -18,6 +18,8 @@ import type {
   DreamFileReadReq,
   DreamFileReadContent,
   DreamSkillReviewReq,
+  DreamSkillReadReq,
+  DreamSkillContent,
   DreamState
 } from '@agentconnect.md/protocol'
 import { fitToBudget, utf8Boundary } from './wire-slice.js'
@@ -32,6 +34,9 @@ export interface DreamReader {
   discard(req: DreamDiscardReq): Promise<DreamState>
   files(req: DreamFilesReq): Promise<DreamFilesPage>
   fileRead(req: DreamFileReadReq): Promise<DreamFileReadContent>
+  /** Full staged body of one candidate, so the console can show what accepting
+   *  would install. Bounded by the miner's own caps; missing staging is DATA. */
+  skillRead(req: DreamSkillReadReq): Promise<DreamSkillContent>
   skillAccept(req: DreamSkillReviewReq): Promise<DreamState>
   skillDismiss(req: DreamSkillReviewReq): Promise<DreamState>
 }
@@ -53,7 +58,12 @@ export function createDreamReader(runner: DreamRunner): DreamReader {
     },
 
     async list(req) {
-      return { agentId: req.agentId, dreams: runner.list(req.agentId, req.limit) }
+      return {
+        agentId: req.agentId,
+        dreams: req.pendingSkills
+          ? runner.listPendingSkills(req.agentId, req.limit)
+          : runner.list(req.agentId, req.limit)
+      }
     },
 
     async get(req) {
@@ -101,6 +111,12 @@ export function createDreamReader(runner: DreamRunner): DreamReader {
       }
     },
 
+    async skillRead(req) {
+      const staged = await runner.stagedSkill(req.agentId, req.dreamId, req.name)
+      return staged
+        ? { agentId: req.agentId, dreamId: req.dreamId, name: req.name, exists: true, ...staged }
+        : { agentId: req.agentId, dreamId: req.dreamId, name: req.name, exists: false }
+    },
     async skillAccept(req) {
       return { dream: await runner.skillAccept(req.agentId, req.dreamId, req.name) }
     },

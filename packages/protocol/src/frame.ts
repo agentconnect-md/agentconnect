@@ -96,7 +96,9 @@ import {
   DreamFilesPage,
   DreamFileReadReq,
   DreamFileReadContent,
-  DreamSkillReviewReq
+  DreamSkillReviewReq,
+  DreamSkillReadReq,
+  DreamSkillContent
 } from './frames/memory.js'
 import {
   Heartbeat,
@@ -270,6 +272,8 @@ export const FRAME_SCHEMAS = {
   'memory/dream/files/page': DreamFilesPage,
   'memory/dream/file/read': DreamFileReadReq,
   'memory/dream/file/read/content': DreamFileReadContent,
+  'memory/dream/skill/read': DreamSkillReadReq,
+  'memory/dream/skill/read/ok': DreamSkillContent,
   'memory/dream/skill/accept': DreamSkillReviewReq,
   'memory/dream/skill/accept/ok': DreamState,
   'memory/dream/skill/dismiss': DreamSkillReviewReq,
@@ -442,6 +446,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('memory/dream/files/page', FRAME_SCHEMAS['memory/dream/files/page']),
   frame('memory/dream/file/read', FRAME_SCHEMAS['memory/dream/file/read']),
   frame('memory/dream/file/read/content', FRAME_SCHEMAS['memory/dream/file/read/content']),
+  frame('memory/dream/skill/read', FRAME_SCHEMAS['memory/dream/skill/read']),
+  frame('memory/dream/skill/read/ok', FRAME_SCHEMAS['memory/dream/skill/read/ok']),
   frame('memory/dream/skill/accept', FRAME_SCHEMAS['memory/dream/skill/accept']),
   frame('memory/dream/skill/accept/ok', FRAME_SCHEMAS['memory/dream/skill/accept/ok']),
   frame('memory/dream/skill/dismiss', FRAME_SCHEMAS['memory/dream/skill/dismiss']),

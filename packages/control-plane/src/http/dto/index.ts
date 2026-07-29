@@ -2224,6 +2224,17 @@ export const DreamFileDto = z.object({
   nextOffset: z.number().nullable(),
   truncated: z.boolean().nullable()
 })
+export const DreamSkillContentDto = z.object({
+  name: z.string(),
+  exists: z.boolean(),
+  skill: z.string().nullable(),
+  scripts: z.array(z.object({ path: z.string(), content: z.string() }))
+})
+export const DreamSkillParam = z.object({
+  id: z.string().uuid(),
+  dreamId: z.string().min(1).max(128),
+  name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/)
+})
 export const DreamIdParam = z.object({ id: z.string().uuid(), dreamId: z.string().min(1).max(128) })
 
 export const WorkspaceGitFileDto = z.object({
