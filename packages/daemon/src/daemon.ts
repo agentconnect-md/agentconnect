@@ -3602,9 +3602,8 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     const host = await this.ensureHostAsync(agentId)
-    // Captured from THIS host, and returned with the output — the runner binds
-    // auto-adopt's gate to the extraction that actually produced the proposal,
-    // so a later host replacement can't retro-authorize an untrusted one.
+    // Capture the transport capability from THIS host so the extraction policy
+    // uses the same dedicated-system-prompt or inline path as the proposal run.
     const trusted = host.usesMetaSystemPrompt()
     let cwd = this.memoryExtractionDirs.get(agentId)
     if (!cwd) {
