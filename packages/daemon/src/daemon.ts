@@ -13688,10 +13688,8 @@ export class Daemon {
     const runtime = agent?.runtime
     return {
       agentName: agent?.displayName?.trim() || agent?.name || agentId,
-      agentUrl: this.agentLink(agentId),
       runtime: runtime ? (this.runtimeNames[runtime] ?? runtime) : 'unknown',
       model: this.hosts.get(agentId)?.modelOptions?.(sessionId)?.current ?? agent?.runtimeOverrides?.model ?? 'default',
-      sessionUrl: this.sessionLink(sessionId),
       // Same CP-resolved public avatar Slack uses for icon_url; GitHub renders it
       // inline ahead of the footer sentence.
       ...(agent?.iconUrl ? { iconUrl: agent.iconUrl } : {})

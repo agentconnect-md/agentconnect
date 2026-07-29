@@ -45,10 +45,8 @@ export interface GithubFinalPosterDeps {
 
 export interface GithubCommentAttribution {
   agentName: string
-  agentUrl: string
   runtime: string
   model: string
-  sessionUrl: string
   /** Public agent avatar PNG (the CP's unauthenticated icon endpoint / uploaded-image
    * URL — the same URL Slack uses for icon_url). Absent ⇒ text-only footer. */
   iconUrl?: string
@@ -236,12 +234,6 @@ function safeHttpUrl(raw: string): string | undefined {
   }
 }
 
-function markdownUrl(raw: string): string | undefined {
-  const normalized = safeHttpUrl(raw)
-  if (normalized === undefined) return undefined
-  return `<${normalized.replace(/</g, '%3C').replace(/>/g, '%3E')}>`
-}
-
 /** Small inline avatar ahead of the agent name. GitHub's comment sanitizer
  * keeps `img` (src/width/height/alt) and proxies src through camo, so the same
  * public URL Slack fetches for icon_url renders here too. The nested `sub`
@@ -260,14 +252,13 @@ export function githubAttributionFooter(attribution?: GithubCommentAttribution):
   const name = escapeMarkdownText(attribution.agentName)
   const runtime = escapeMarkdownText(attribution.runtime)
   const model = escapeMarkdownText(attribution.model)
-  const agentUrl = markdownUrl(attribution.agentUrl)
-  const sessionUrl = markdownUrl(attribution.sessionUrl)
-  const agent = `${attributionIconImage(attribution.iconUrl)}${agentUrl ? `[${name}](${agentUrl})` : name}`
+  // GitHub comments and reviews may be public. Keep their attribution tenant-neutral:
+  // org-scoped console links expose the owning org slug and are inaccessible to most readers.
+  const agent = `${attributionIconImage(attribution.iconUrl)}${name}`
   const message = renderAttributionMessage({
     agent,
     runtime,
-    model,
-    renderSession: sessionUrl ? (label) => `[${escapeMarkdownText(label)}](${sessionUrl})` : undefined
+    model
   })
   return `\n\n<sub>${message}\n</sub>`
 }

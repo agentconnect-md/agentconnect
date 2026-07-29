@@ -28,10 +28,8 @@ const comment: SubmitGithubReviewInput = {
 
 const attribution = {
   agentName: 'review-bot',
-  agentUrl: 'https://app.example.test/acme/agents/review-bot',
   runtime: 'Codex',
-  model: 'gpt-5.6-luna',
-  sessionUrl: 'https://app.example.test/acme/sessions/session-1'
+  model: 'gpt-5.6-luna'
 }
 
 describe('GithubReviewClient', () => {
@@ -96,14 +94,12 @@ describe('GithubReviewClient', () => {
       comments: Array<Record<string, unknown>>
     }
     expect(body.commit_id).toBe(target.expectedHeadSha)
-    const footerAt = body.body.indexOf('sent by [review-bot]')
+    const footerAt = body.body.indexOf('sent by review-bot')
     const markerAt = body.body.indexOf('<!-- agentconnect-review:')
     expect(body.body.startsWith('Looks good overall.')).toBe(true)
     expect(footerAt).toBeGreaterThan(0)
-    expect(body.body).toContain(
-      '[review-bot](<https://app.example.test/acme/agents/review-bot>) (Codex · gpt-5.6-luna) · ' +
-        '[open in session](<https://app.example.test/acme/sessions/session-1>)'
-    )
+    expect(body.body).toContain('sent by review-bot (Codex · gpt-5.6-luna)')
+    expect(body.body).not.toContain('https://app.example.test/acme')
     expect(markerAt).toBeGreaterThan(footerAt)
     expect(body.body.slice(markerAt)).toMatch(/^<!-- agentconnect-review:[^>]+-->$/)
     expect(body.body.match(/sent by/g)).toHaveLength(1)
@@ -138,7 +134,7 @@ describe('GithubReviewClient', () => {
 
     const [, init] = fetchImpl.mock.calls[2]!
     const body = (JSON.parse(String(init?.body)) as { body: string }).body
-    const footerAt = body.indexOf('sent by [review-bot]')
+    const footerAt = body.indexOf('sent by review-bot')
     const markerAt = body.indexOf('<!-- agentconnect-review:')
     expect(body).toContain(`const answer = 42\n${fence}\n\n<sub>sent by `)
     expect(body.split(fence)).toHaveLength(3)

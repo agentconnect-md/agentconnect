@@ -29,6 +29,16 @@ last message. If streaming, retries, or later output change which message is las
 or re-anchor the footer so it remains attached to the latest response message without
 leaving a stale footer on an earlier message.
 
+## GitHub attribution footer
+
+GitHub comments and reviews may be publicly visible. Their attribution footer must be
+tenant-neutral: it may show the agent's public avatar, name, runtime, and model, but it
+must not link to organization-scoped agent or session pages in the console. For example:
+
+```text
+sent by review-bot (Codex · model-name)
+```
+
 ## Slack multi-agent mention routing
 
 An explicit Slack mention wakes only the AgentConnect agent represented by that bot.

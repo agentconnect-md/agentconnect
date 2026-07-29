@@ -119,10 +119,8 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 const attribution: GithubCommentAttribution = {
   agentName: 'review-bot',
-  agentUrl: 'https://app.example.test/acme/agents/review-bot',
   runtime: 'Codex',
-  model: 'gpt-5.6-luna',
-  sessionUrl: 'https://app.example.test/acme/sessions/session-1'
+  model: 'gpt-5.6-luna'
 }
 
 function make(
@@ -351,36 +349,27 @@ describe('GithubFinalPoster', () => {
       {
         method: 'POST',
         url: 'https://api.github.com/repos/acme/infra/pulls/42/comments/3565283658/replies',
-        body:
-          'Paths must stay in the archive directory.\n\n<sub>sent by ' +
-          '[review-bot](<https://app.example.test/acme/agents/review-bot>) (Codex · gpt-5.6-luna) · ' +
-          '[open in session](<https://app.example.test/acme/sessions/session-1>)\n</sub>'
+        body: 'Paths must stay in the archive directory.\n\n<sub>sent by review-bot (Codex · gpt-5.6-luna)\n</sub>'
       }
     ])
   })
 
-  it('omits an unsafe session link without leaving dangling separator chrome', () => {
-    expect(githubAttributionFooter({ ...attribution, sessionUrl: 'file:///tmp/session-1' })).toBe(
-      '\n\n<sub>sent by [review-bot](<https://app.example.test/acme/agents/review-bot>) ' +
-        '(Codex · gpt-5.6-luna)\n</sub>'
-    )
+  it('keeps public GitHub attribution tenant-neutral', () => {
+    expect(githubAttributionFooter(attribution)).toBe('\n\n<sub>sent by review-bot (Codex · gpt-5.6-luna)\n</sub>')
   })
 
   it('renders the agent avatar inline ahead of the agent name when attribution carries an icon URL', () => {
     const iconUrl = 'https://api.example.test/v1/agents/agent-1/icon?v=1700000000000'
     expect(githubAttributionFooter({ ...attribution, iconUrl })).toBe(
       `\n\n<sub>sent by <sub><img src="${iconUrl}" width="11" height="11" alt=""></sub> ` +
-        '[review-bot](<https://app.example.test/acme/agents/review-bot>) (Codex · gpt-5.6-luna) · ' +
-        '[open in session](<https://app.example.test/acme/sessions/session-1>)\n</sub>'
+        'review-bot (Codex · gpt-5.6-luna)\n</sub>'
     )
   })
 
   it('drops a non-http icon URL and keeps the text-only footer', () => {
     for (const iconUrl of ['data:image/png;base64,AAAA', 'javascript:alert(1)', 'not a url', '']) {
       expect(githubAttributionFooter({ ...attribution, iconUrl })).toBe(
-        '\n\n<sub>sent by [review-bot](<https://app.example.test/acme/agents/review-bot>) ' +
-          '(Codex · gpt-5.6-luna) · ' +
-          '[open in session](<https://app.example.test/acme/sessions/session-1>)\n</sub>'
+        '\n\n<sub>sent by review-bot (Codex · gpt-5.6-luna)\n</sub>'
       )
     }
   })
@@ -403,18 +392,15 @@ describe('GithubFinalPoster', () => {
     expect(parse).not.toHaveBeenCalled()
   })
 
-  it('adds agent attribution and the session deep link to the completed body', async () => {
+  it('adds tenant-neutral agent attribution to the completed body', async () => {
     const clock = fakeScheduler()
     const f = fakeFetch()
     const poster = make(f.fetchImpl, clock.sched, { attribution })
 
     await poster.publish('Answer')
 
-    expect(f.calls[0]!.body).toBe(
-      'Answer\n\n<sub>sent by [review-bot](<https://app.example.test/acme/agents/review-bot>) ' +
-        '(Codex · gpt-5.6-luna) · [open in session](<https://app.example.test/acme/sessions/session-1>)\n</sub>'
-    )
-    expect(f.calls[0]!.body.match(/open in session/g)).toHaveLength(1)
+    expect(f.calls[0]!.body).toBe('Answer\n\n<sub>sent by review-bot (Codex · gpt-5.6-luna)\n</sub>')
+    expect(f.calls[0]!.body).not.toContain('https://app.example.test/acme')
   })
 
   it('resolves attribution at publish time so the final session model is shown', async () => {
@@ -441,13 +427,7 @@ describe('GithubFinalPoster', () => {
     const body = f.calls[0]!.body
     expect(body).toHaveLength(60_000)
     expect(body).toContain('_(truncated — see the session transcript for the full reply)_')
-    expect(
-      body.endsWith(
-        '<sub>sent by [review-bot](<https://app.example.test/acme/agents/review-bot>) ' +
-          '(Codex · gpt-5.6-luna) · ' +
-          '[open in session](<https://app.example.test/acme/sessions/session-1>)\n</sub>'
-      )
-    ).toBe(true)
+    expect(body.endsWith('<sub>sent by review-bot (Codex · gpt-5.6-luna)\n</sub>')).toBe(true)
   })
 
   it.each([String.fromCharCode(96).repeat(3), '~~~'])(
@@ -469,7 +449,7 @@ describe('GithubFinalPoster', () => {
       expect(beforeMarker.trimEnd().endsWith(fence)).toBe(true)
       expect(body.split(fence)).toHaveLength(3) // one opener + one synthetic closer
       expect(hasUnpairedSurrogate(body)).toBe(false)
-      expect(body.indexOf('open in session')).toBeGreaterThan(markerAt)
+      expect(body.indexOf('<sub>sent by review-bot')).toBeGreaterThan(markerAt)
     }
   )
 
