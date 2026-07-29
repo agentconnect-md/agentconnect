@@ -1,0 +1,1504 @@
+# GitLab.com Integration
+
+> Status: **Proposed**
+>
+> Platform assumptions last verified: **2026-07-28**
+>
+> Scope: **GitLab.com Free and Premium**. GitLab Self-Managed, GitLab
+> Dedicated, and Ultimate-only capabilities are outside the v1 support
+> contract.
+
+This design adds GitLab.com as a first-class code-host provider with semantic
+parity to AgentConnect's current GitHub integration. The user experience is a
+single OAuth authorization followed by project selection. Internally, OAuth is
+only the administration identity: normal agent and webhook execution uses a
+project-owned service account, managed project webhooks, and purpose-separated
+credentials.
+
+The central architectural invariant does not change: the Control Plane is not
+on the webhook message hot path. GitLab sends a signed webhook to the relay,
+the relay verifies and routes it directly to the owning daemon, and the daemon
+runs the agent. The Control Plane stores and transports only configuration,
+authorization facts, secrets, and body-free run metadata.
+
+## 1. Decision Summary
+
+1. Support **GitLab.com only** in v1. Do not add a configurable host, custom
+   certificate handling, version negotiation, or administrator APIs for
+   self-managed instances.
+2. Use the OAuth authorization-code flow with PKCE and the `api` scope for
+   project discovery and installation administration. OAuth access and refresh
+   tokens stay encrypted in the Control Plane and never reach a relay, daemon,
+   agent process, repository, or diagnostic bundle.
+3. Provision or reuse **one Project Service Account per active AgentConnect
+   project binding**. It is the stable, non-human GitLab identity for comments,
+   reviews, approvals, and Git operations. It does not consume a billable seat.
+4. Create three service-account personal access tokens with separate purposes:
+   a read token, a Git-write token, and an API-effect token. The broad `api`
+   token is available only to trusted broker code and never enters the agent
+   environment.
+5. Install and reconcile one **project webhook** for the union of enabled
+   AgentConnect hooks in that project. Use a GitLab signing token and verify the
+   Standard Webhooks HMAC over the raw body at the relay.
+6. Reuse the existing repository authorization, hook fencing, per-thread
+   session, ordinary-reply, formal-review, and durable run-projection
+   semantics through a provider adapter. Do not build an unrelated second
+   automation stack.
+7. Represent run state on a merge request with one bot-authored, updatable
+   status note. Do not use commit statuses by default because they create or
+   mutate pipeline jobs, and do not depend on Ultimate-only external status
+   checks.
+8. Treat parity as **product-semantic parity**, not identical provider UI or
+   API names. Provider constraints and Free/Premium differences must be
+   visible rather than silently approximated.
+
+## 2. Goals
+
+1. Connect a GitLab.com account with one browser redirect, browse accessible
+   projects, and select a project without copying a personal access token.
+2. Materialize private GitLab workspaces and additional repositories with the
+   same `read`, `comment`, and `write` authorization model used for GitHub.
+3. Support issues, merge requests, conversation comments, diff comments, and
+   pushes as hook sources, including created, updated, and mention-only modes.
+4. Preserve numeric, rename-stable project identity and per-thread session
+   continuity.
+5. Publish exactly one ordinary final reply or one formal review for a
+   numbered hook turn, with the same mutual-exclusion rule as GitHub.
+6. Support formal review outcomes equivalent to comment, request changes, and
+   approve, including single-line and multi-line diff comments.
+7. Publish durable queued, running, completed, failed, and skipped run state,
+   and support an authorized re-request on the current merge-request revision.
+8. Automatically install, repair, rotate, and remove AgentConnect-owned
+   webhooks and service-account credentials.
+9. Keep user OAuth credentials, webhook signing keys, and service-account
+   credentials out of normal DTOs, logs, agent prompts, and persistent daemon
+   state.
+10. Preserve existing GitHub behavior throughout a rolling deployment.
+
+## 3. Non-Goals
+
+- GitLab Self-Managed, GitLab Dedicated, custom GitLab hosts, custom TLS roots,
+  or version-specific compatibility branches.
+- Ultimate-only external status checks, security approval policies, or other
+  Ultimate-only APIs.
+- Group webhooks. Project webhooks are available on both Free and Premium and
+  give each binding an independent lifecycle and signing key.
+- Project access tokens. They require Premium on GitLab.com; Project Service
+  Accounts provide a common Free/Premium path.
+- Creating or modifying customer approval rules, protected branches,
+  `CODEOWNERS`, merge checks, CI configuration, or subscription tier.
+- Giving each logical agent a different GitLab user. All agents bound to one
+  project act through that project's service account, just as GitHub effects
+  use one App identity.
+- Exposing a broad service-account `api` token through `GITLAB_TOKEN`, a
+  `glab` configuration file, an environment snapshot, or a general token
+  vending tool.
+- Perfect parity with arbitrary `gh` commands. The parity target is the
+  supported AgentConnect integration surface, implemented through Git
+  credentials, read-only provider access, and controlled effect brokers.
+- Required code-review gates beyond the currently delivered GitHub product
+  contract.
+
+## 4. Product Parity Contract
+
+The target is the current supported GitHub behavior, not reserved or future
+GitHub modes.
+
+| AgentConnect capability                | GitLab.com implementation                                                      | Parity                                                         |
+| -------------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------- |
+| Browser connection                     | OAuth authorization code + PKCE                                                | Equivalent                                                     |
+| Repository discovery                   | Paginated OAuth project search, keyed by numeric project ID                    | Equivalent                                                     |
+| Stable bot identity                    | Project Service Account                                                        | Equivalent; project-scoped rather than installation-scoped     |
+| Private clone/fetch/pull               | HTTPS credential helper using the read token                                   | Equivalent                                                     |
+| Push                                   | HTTPS credential helper using the Git-write token                              | Equivalent, subject to GitLab branch permissions               |
+| Additional repository grants           | Provider-qualified `read`, `comment`, or `write` authorization                 | Equivalent                                                     |
+| Issue and merge-request reads          | Read-only `glab` wrapper or provider read tools                                | Equivalent                                                     |
+| Controlled comments and mutations      | Daemon-owned effect broker                                                     | Equivalent                                                     |
+| Managed event ingress                  | Automatically reconciled project webhook                                       | Equivalent                                                     |
+| Created, updated, mention-only cadence | GitLab issue, merge-request, note, and push event mapping                      | Equivalent                                                     |
+| Label filter                           | Current issue or merge-request labels from the verified event/API              | Equivalent                                                     |
+| Collaborator gate                      | Live target-project membership check; Developer or higher                      | Equivalent                                                     |
+| External merge-request gate            | Target-project membership or explicit maintainer request                       | Equivalent                                                     |
+| Per-thread sessions                    | Numeric project ID + subject kind + IID                                        | Equivalent                                                     |
+| Ordinary final reply                   | One service-account note                                                       | Equivalent                                                     |
+| Inline formal review                   | Draft Notes API + bulk publish                                                 | Equivalent                                                     |
+| Approve                                | Bulk-published review plus SHA-fenced approval API call                        | Equivalent unless policy requires interactive reauthentication |
+| Request changes                        | Human-requested bot reviewer, then `reviewer_state=requested_changes`          | Equivalent on Premium once requested; advisory on Free         |
+| Informational run state                | One updated merge-request status note                                          | Semantically equivalent; not a native Check                    |
+| Re-request                             | Re-request the service-account reviewer, authorized mention, or Console action | Equivalent                                                     |
+| Required run gate                      | Not in the current GitHub delivery contract                                    | Not introduced                                                 |
+
+Ordinary final replies and formal reviews remain mutually exclusive. The
+status note is a separate daemon-owned projection and may coexist with either.
+
+## 5. GitLab Tier Contract
+
+The core path deliberately uses only features common to Free and Premium.
+
+| Capability                                     | Free                                        | Premium                                       | Design consequence                                          |
+| ---------------------------------------------- | ------------------------------------------- | --------------------------------------------- | ----------------------------------------------------------- |
+| Project Service Accounts                       | Supported                                   | Supported                                     | Common bot identity                                         |
+| Service-account seats                          | Non-billable                                | Non-billable                                  | No regular user is required                                 |
+| Service-account quantity                       | Up to 100 per top-level group on GitLab.com | Unlimited                                     | Surface the Free quota error; reuse one account per project |
+| Project webhooks                               | Supported                                   | Supported                                     | Always use project webhooks                                 |
+| Draft review notes                             | Supported                                   | Supported                                     | Common inline-review transport                              |
+| Approval API                                   | Supported; approval is optional             | Supported; approval rules may be required     | Approval action works on both                               |
+| Request changes                                | Visible but non-blocking                    | Can block merging                             | Show the effective behavior                                 |
+| Multiple reviewers and required approval rules | Limited                                     | Supported                                     | AgentConnect never mutates the reviewer list                |
+| Approval reauthentication                      | Project setting may disable bot approval    | Project/group policy may disable bot approval | Detect and report; never borrow a human credential          |
+| Group webhooks                                 | Not used                                    | Available                                     | No Premium-only branch in v1                                |
+| Project access tokens on GitLab.com            | Not available                               | Available                                     | Do not use                                                  |
+| External status checks                         | Not available                               | Not available                                 | Ultimate-only; do not use                                   |
+
+An Ultimate namespace can use the Premium-compatible path, but Ultimate-only
+behavior is neither required nor separately certified.
+
+GitLab.com may require the top-level group Owner to complete identity
+verification before a service account can be created. A failed provision must
+surface that prerequisite without falling back to a regular user account.
+
+## 6. Architecture and Trust Boundaries
+
+```mermaid
+flowchart LR
+  Browser["Console browser"] -->|"OAuth redirect"| GitLabOAuth["GitLab.com OAuth"]
+  Browser -->|"project selection"| CP["Control Plane"]
+  GitLabOAuth -->|"code callback"| CP
+  CP -->|"admin API: project, service account, token, webhook"| GitLabAPI["GitLab.com API"]
+
+  GitLabHook["GitLab.com webhook"] -->|"signed raw payload"| Relay["Relay"]
+  CP -->|"rules + signing key; no message body"| Relay
+  Relay -->|"verified rd/msg"| Daemon["Owning daemon"]
+  CP <-->|"authorization + body-free run/projection metadata"| Daemon
+  Daemon -->|"Git + read API + controlled effects + status note"| GitLabAPI
+  Daemon -->|"ACP"| Agent["Agent runtime"]
+```
+
+### 6.1 Control Plane
+
+The Control Plane owns:
+
+- OAuth application configuration and OAuth connection lifecycle;
+- organization/project bindings and numeric GitLab identities;
+- encrypted OAuth, webhook, and service-account credentials;
+- project-service-account and webhook reconciliation;
+- repository authorization and action-time policy decisions;
+- body-free hook run and desired/observed status-note projection metadata; and
+- feature negotiation and daemon/relay assignment.
+
+The Control Plane does not receive or persist issue bodies, merge-request
+bodies, note bodies, diff comments, agent replies, or review text. It stores
+and sends only the fixed projection fields and fences described in Section 16;
+it never calls the GitLab Notes API or writes into a merge-request
+conversation.
+
+### 6.2 Relay
+
+The relay owns public webhook ingress. It:
+
+- receives the raw request under a bounded body limit;
+- selects the candidate project binding from minimal untrusted JSON;
+- verifies the signing-token HMAC and timestamp before full decoding;
+- maps `webhook-id` to the stable downstream delivery identity without owning
+  authoritative deduplication;
+- applies provider-specific event, bot, mention, label, and collaborator gates;
+- routes the bounded, explicitly untrusted context directly to the owning
+  daemon; and
+- reports only delivery metadata to the Control Plane.
+
+The signing token is sent only to relays. It is never sent to a daemon.
+
+### 6.3 Daemon
+
+The daemon owns:
+
+- workspace materialization and host-scoped Git credential injection;
+- read-only GitLab CLI/API access for the agent;
+- the ordinary final-answer poster;
+- the single status-note projection writer;
+- controlled issue, merge-request, pipeline, and formal-review effects;
+- exact active-turn and revision fencing; and
+- prompt fencing for untrusted GitLab content.
+
+The daemon holds granted credentials in memory only and purges them on lease
+expiry, project authorization changes, agent moves, disconnect, or credential
+epoch changes. It does not write GitLab tokens to `agent.json`, repository
+configuration, shell profiles, or `glab` configuration.
+
+### 6.4 Agent Runtime
+
+The agent may receive:
+
+- a repository-scoped read or Git-write credential indirectly through the
+  hidden Git credential helper;
+- a read-only API token indirectly for one `glab` invocation; and
+- structured tools whose targets are supplied by trusted daemon state.
+
+The agent never receives the OAuth token, webhook signing token, or API-effect
+token. Targets for a hook reply or formal review are not model-controlled tool
+arguments.
+
+## 7. Identity and Credential Model
+
+### 7.1 OAuth Is the Administration Identity
+
+The deployment registers one GitLab.com OAuth application. A human connects it
+to an AgentConnect organization with the `api` scope. That scope is broad, so
+the server constrains its use:
+
+- project discovery;
+- current-user and current-project permission checks;
+- Project Service Account creation or recovery;
+- service-account PAT creation, rotation, and revocation;
+- project webhook creation, repair, test, and deletion; and
+- cleanup during project disconnect.
+
+Every administration request names a selected, organization-owned numeric
+project binding. There is no generic authenticated proxy. The OAuth bearer is
+never returned by an API or forwarded over a WebSocket.
+
+An organization may have multiple user connections. Each project binding
+records the connection currently responsible for administration. A different
+Maintainer or Owner may explicitly take over that responsibility. Removing or
+revoking the human connection does not silently transfer its authority.
+
+### 7.2 Project Service Account Is the Runtime Identity
+
+One Project Service Account is created or reused for each active GitLab project
+binding:
+
+- the external identity is owned by that project;
+- it cannot sign in through the GitLab UI;
+- it does not consume a licensed seat;
+- it cannot be invited outside the project in which it was created; and
+- all AgentConnect contributions in that project have a recognizable,
+  non-human author.
+
+The account is assigned the Developer role. GitLab branch rules, approval
+eligibility, author/committer restrictions, and protected-resource rules still
+apply. AgentConnect never raises the role automatically to bypass project
+policy.
+
+The account is shared by all AgentConnect agents connected to that project.
+Agent identity is recorded in the generated note/review marker and
+AgentConnect audit metadata, not represented as another GitLab user.
+
+Within one AgentConnect deployment, a GitLab project may have only one active
+project binding. A second organization must use an explicit ownership transfer
+after the first binding is released. This matches the existing one-organization
+claim over a GitHub App installation and prevents two tenants from managing
+competing bots, credentials, and webhooks in the same project. The
+deployment-global claim in Section 8.1 enforces this invariant before any
+provider mutation; an organization-scoped repository row is not itself an
+ownership claim.
+
+### 7.3 Three Credential Purposes
+
+| Purpose     | Service-account PAT scopes    | Consumer                                                                                               | Agent-visible                       |
+| ----------- | ----------------------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------- |
+| `read`      | `read_api`, `read_repository` | Git helper for clone/fetch and read-only provider wrapper                                              | Only per invocation/helper response |
+| `git_write` | `write_repository`            | Git helper for push                                                                                    | Only per Git operation              |
+| `effect`    | `api`                         | Trusted daemon broker for external effects; Control Plane broker for allowlisted metadata/policy reads | Never                               |
+
+The separation matters because a service-account personal access token with
+`api` can perform broad API operations within the project and can also access
+Git over HTTPS. A `write_repository` token, by contrast, supports Git push but
+does not authenticate API requests. A write-capable workspace therefore does
+not imply a broad API bearer in the agent environment.
+
+Every service-account PAT creation, including a replacement, sends an explicit
+ISO `expires_at`. The v1 policy is 90 calendar days from creation in UTC. It is
+finite even when a top-level group has disabled GitLab's service-account token
+expiration requirement; AgentConnect never relies on the provider default.
+
+Before a returned token can be sealed or activated, the response must identify
+the expected project service account, exact scopes, active token, and requested
+non-null expiry date. A null, later, or otherwise mismatched expiry is
+out-of-policy. The reconciler immediately revokes that returned token by ID,
+records any ambiguous revocation as restricted cleanup debt, and fails closed;
+the token is never granted to a daemon. AgentConnect grants remain shorter
+**authorization/cache leases** and expire locally even while the finite PAT is
+still provider-valid.
+
+### 7.4 Rotation
+
+Each credential has an external token ID, expiration date, purpose, and local
+credential epoch. Before expiry, the reconciler:
+
+1. creates a replacement PAT with the same purpose, scopes, and an explicit new
+   90-day `expires_at`, then validates the returned expiry and identity;
+2. seals it before making it active in application state;
+3. atomically switches the active credential record and increments its epoch;
+4. broadcasts invalidation so daemon caches purge the old value; and
+5. revokes the old PAT.
+
+Creating a replacement before revocation avoids the immediate outage caused by
+GitLab's rotate-in-place behavior. If OAuth administration is unavailable,
+the Console warns before expiry and runtime continues only until the existing
+credential expires.
+
+Webhook signing-key rotation uses a different overlap:
+
+1. generate and seal the next signing key;
+2. distribute both current and next verification keys to every eligible relay;
+3. update the GitLab project webhook to the next key;
+4. trigger or observe one successfully verified delivery using the next key;
+5. promote it and remove the old relay key.
+
+GitLab sends with only the configured key, so the overlap belongs at the
+receiver. Rotation never falls back to the weaker plain-text secret-token
+header.
+
+## 8. Resource Model
+
+The implementation should introduce one narrow provider-neutral repository
+reference rather than duplicate GitHub authorization and hook logic.
+
+### 8.1 `CodeHostRepository`
+
+`CodeHostRepository` is organization-scoped metadata:
+
+- internal UUID;
+- provider: `github | gitlab`;
+- provider numeric repository/project ID;
+- current display path;
+- canonical HTTPS clone URL;
+- default branch; and
+- optional provider-binding reference.
+
+Its unique identity is `(orgId, provider, externalId)`. Display paths and clone
+URLs are mutable hints. Authorization, hook matching, and run effects use the
+provider-qualified numeric identity.
+
+That uniqueness is only the organization-scoped catalog identity. A separate
+`CodeHostRepositoryClaim` is deployment-scoped and has a unique
+`(provider, externalId)` key plus owning organization, binding, claim
+generation, and lifecycle state (`provisioning`, `active`, `transferring`, or
+`cleanup_pending`). It contains no path, content, or credential. GitLab v1
+acquires this row transactionally before provisioning; the existing GitHub
+installation claim remains unchanged until a separate migration.
+
+Existing GitHub workspace, `AgentRepoAuthorization`, and `HookDef.repoId`
+references migrate to this resource without changing behavior. During rolling
+compatibility, legacy GitHub fields remain readable; new GitLab resources
+require the new negotiated feature and never fall back to an unqualified
+numeric ID.
+
+### 8.2 GitLab-Specific Resources
+
+| Resource                  | Non-secret contents                                                                                                                                                    |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GitlabConnection`        | org, AgentConnect user, GitLab user ID/username, granted scopes, access expiry, state, token version, refresh lease, last sync                                         |
+| `GitlabProjectBinding`    | org, numeric project ID, current path, installer connection, service-account user ID/username, role, webhook ID, desired event hash, credential epoch, lifecycle state |
+| `GitlabProjectCredential` | binding, purpose, external token ID, scopes, provider expiry, active generation                                                                                        |
+| `GitlabReviewPublication` | binding, MR IID, service-account user ID, active attempt, lease owner/expiry, monotonic fence, phase, head SHA, external draft/note IDs, normalized outcome            |
+| `GitlabWebhookSecret`     | binding relation only in normal reads                                                                                                                                  |
+| `GitlabConnectionSecret`  | connection relation only in normal reads                                                                                                                               |
+
+`GitlabProjectCredential` stores its sealed token value behind a dedicated
+secret-store port. `GitlabWebhookSecret` stores the sealed signing token.
+`GitlabConnectionSecret` stores sealed OAuth access and refresh tokens. None is
+joined by list/get DTO queries.
+
+`GitlabReviewPublication` has a unique key of
+`(bindingId, mergeRequestIid, serviceAccountUserId)`. It is a durable
+publication coordinator, not a content ledger: it stores no review body,
+inline-comment body, diff, or prompt. Attempt records keep only signed-marker
+digests and provider IDs needed to reconcile effects. Its publication phases
+are `idle`, `preparing`, `publishing`, `reconciling`, `ambiguous_locked`, and
+`published`; an abandoned attempt must reconcile or delete its marked drafts
+before the row can return to `idle`.
+
+Suggested project-binding states are:
+
+- `provisioning`;
+- `ready`;
+- `admin_degraded` — runtime identity still works, but OAuth repair is needed;
+- `runtime_degraded` — service account, role, or credentials no longer satisfy
+  runtime requirements; and
+- `cleanup_pending` — local authority is disabled, but external cleanup still
+  needs a Maintainer or Owner connection.
+
+Do not collapse these states into one generic connected boolean.
+
+### 8.3 Existing Agent and Hook Resources
+
+- An agent workspace and each `AgentRepoAuthorization` reference a
+  `CodeHostRepository`.
+- `RepoAccess` remains `read | comment | write`.
+- A code-host hook references a `CodeHostRepository` and a provider
+  discriminator. Common cadence, labels, session, review, reporting, revision,
+  placement, and output-target fields stay on `HookDef`.
+- GitLab-only connection, service-account, credential, and webhook state stays
+  on `GitlabProjectBinding`, not in nullable columns on `HookDef`.
+- Creating a hook never creates a general repository grant. The watched project
+  must already be the workspace repository or an explicit additional
+  authorization.
+
+## 9. OAuth Flow and Correctness
+
+The visible flow can be one link while still enforcing the complete OAuth
+lifecycle.
+
+### 9.1 Start
+
+`POST /api/v1/gitlab/oauth/start`:
+
+1. authenticates the AgentConnect user and organization;
+2. generates a random, single-use state nonce, PKCE verifier, and S256
+   challenge;
+3. stores a short-lived state row bound to the organization, user, browser
+   session hash, exact return path, and sealed verifier;
+4. returns or redirects to GitLab.com's authorization endpoint with the exact
+   registered callback, `response_type=code`, `scope=api`, state, and PKCE
+   challenge.
+
+For a reconnect or takeover already bound to a known top-level namespace, the
+server also supplies GitLab's `root_namespace_id`. The client cannot provide an
+unverified namespace ID. This lets GitLab apply the intended group SAML context
+without making the initial general connection depend on a guessed namespace.
+
+State is opaque. It must not contain raw organization IDs, user IDs, return
+URLs, or reusable bearer claims.
+
+### 9.2 Callback
+
+The callback:
+
+1. consumes the state row exactly once;
+2. verifies expiry, browser binding, user, organization, and allowlisted return
+   path;
+3. exchanges the code with the stored PKCE verifier;
+4. fetches the authenticated GitLab user from the API;
+5. seals the access and refresh tokens before persistence;
+6. upserts only the matching user's organization connection; and
+7. redirects to the stored local return path with a non-sensitive result code.
+
+Callback errors and logs never include the code, state value, token response,
+or upstream response body.
+
+### 9.3 Refresh Rotation
+
+GitLab OAuth access tokens normally expire after two hours. Refreshing
+invalidates both the old access token and the old refresh token and returns a
+new pair. This creates a distributed single-writer requirement:
+
+1. one process claims a short refresh lease for the connection;
+2. it decrypts the current pair and performs one refresh request;
+3. it seals both returned tokens and commits them with a token-version CAS;
+4. other callers reload the committed version instead of refreshing the old
+   pair; and
+5. the lease is released or expires after a crash.
+
+An ambiguous refresh timeout is not blindly retried because the old refresh
+token might already be invalid. Mark the connection `reauth_required` and ask
+the user to reconnect. Existing project service accounts continue runtime
+operations while their credentials remain valid; only administration is
+degraded.
+
+### 9.4 Disconnect and User Removal
+
+Disconnecting a user OAuth connection revokes the OAuth grant when possible
+and removes the sealed token pair. Project bindings are not deleted
+implicitly. Bindings assigned to that connection become `admin_degraded` and
+can be taken over by another current Maintainer or Owner.
+
+Removing the AgentConnect user from the organization follows the same rule.
+Their OAuth authority must not survive organization membership.
+
+## 10. Project Provisioning and Reconciliation
+
+Project setup is a resumable external-resource saga, not one database
+transaction.
+
+### 10.1 Project Selection
+
+The project picker searches the connected user's accessible GitLab.com
+projects with server-side pagination. The client submits only the selected
+numeric project ID and connection ID. The server re-fetches the project and
+requires:
+
+- the same GitLab.com host;
+- a current project;
+- Maintainer or Owner access for managed installation;
+- organization ownership of the selected OAuth connection; and
+- a canonical HTTPS clone URL.
+
+Projects below Maintainer may appear as visible but not installable, with the
+required role stated explicitly. Maintainer or Owner is the user's current
+effective project membership, including inherited and invited-group access,
+with the same active-state and expiry validation defined in Section 12.2.
+
+### 10.2 Desired-State Provisioning
+
+After the read-only project and permission checks, the Control Plane opens one
+database transaction that inserts the deployment-global
+`CodeHostRepositoryClaim`, creates the organization-scoped repository and
+binding rows, and attaches the claim to that binding. The claim's unique
+`(provider, externalId)` key selects one winner. A uniqueness loser returns
+`project_already_claimed` and may not begin any external mutation. Every
+provisioning step checks the owning binding and claim generation.
+
+The reconciler converges these steps:
+
+1. refresh `CodeHostRepository` by numeric project ID;
+2. find the binding's deterministically marked Project Service Account or
+   create it;
+3. ensure that account is a Developer member of the project;
+4. create or recover the `read`, `git_write`, and `effect` PATs;
+5. seal each returned value and persist its external token ID and expiry;
+6. if at least one enabled GitLab hook exists, create or reconcile the project
+   webhook and signing token;
+7. test a newly created or explicitly repaired webhook within GitLab's rate
+   limit;
+8. mark the binding ready and broadcast the new desired configuration.
+
+External names include a stable, non-secret binding marker and purpose. After
+an ambiguous create response, reconciliation lists resources by that marker:
+
+- an unrecorded PAT whose plaintext cannot be recovered is revoked and
+  recreated;
+- an existing service account is reused;
+- an existing webhook is updated with the locally stored signing token and
+  tested; and
+- foreign service accounts, PATs, and webhooks are never adopted by name alone.
+
+The reconciler also refreshes the current project path by numeric ID, detects
+role or service-account membership drift, checks PAT expiry, and repairs the
+union of desired webhook events.
+
+The claim remains held through `provisioning`, `ready`, degraded states, and
+`cleanup_pending`. It can be released only when the operation ledger proves
+that no provider mutation began or a current Maintainer/Owner connection has
+verified that every managed webhook, PAT, and service account is absent. Local
+disablement, elapsed time, a failed cleanup, or an administrator assertion
+without provider verification never releases it.
+
+A cross-organization ownership transfer locks this same claim row, changes it
+to `transferring`, and increments its generation before disabling the old
+binding. The transfer saga definitively removes the old binding's external
+credentials, webhook, and Project Service Account before atomically moving the
+claim to the new organization and allowing fresh provisioning. A crash or
+ambiguous cleanup keeps the claim in `transferring` or `cleanup_pending`; it
+cannot be stolen or independently re-created by a competing binding.
+
+### 10.3 Webhook Ownership
+
+There is at most one AgentConnect-managed project webhook per project binding.
+Its enabled event flags are the union of all enabled GitLab hooks in that
+project. Removing or disabling a hook can narrow the union; deleting the final
+hook removes the managed webhook but leaves workspace credentials intact.
+
+Ownership requires both the stored GitLab webhook ID and the stable
+AgentConnect marker. Reconciliation must not modify another integration's
+webhook that happens to use a similar URL.
+
+## 11. Webhook Ingress
+
+### 11.1 Installation
+
+The Control Plane generates a 32-byte signing key, encodes it in GitLab's
+`whsec_<base64>` form, seals it, and creates the project webhook through the
+OAuth administration connection. The URL is derived from deployment
+configuration, for example:
+
+```text
+https://relay.example.com/webhooks/gitlab
+```
+
+The managed webhook enables only the union required by active hooks:
+
+- issue events;
+- merge-request events;
+- note events; and
+- push events.
+
+SSL verification is always enabled. Secret-token-only
+`X-Gitlab-Token` authentication is not the steady-state path.
+
+### 11.2 Verification
+
+The relay:
+
+1. enforces HTTPS deployment configuration and a 1 MiB raw-body limit;
+2. parses only enough bounded JSON to obtain the numeric project ID;
+3. looks up the current relay assignment and signing token for that project;
+4. requires `webhook-id`, `webhook-timestamp`, and `webhook-signature`;
+5. rejects timestamps outside the configured replay window;
+6. constructs `"{webhook-id}.{webhook-timestamp}.{raw-body}"`;
+7. strips the `whsec_` prefix, base64-decodes the signing key, and accepts any
+   timing-safe matching `v1` signature from the space-separated signature
+   list; and
+8. only then fully decodes and matches the payload.
+
+`webhook-id` is the delivery key and remains stable across retries. The relay
+has no database and does not own authoritative deduplication. It preserves
+fan-out to every matching AgentConnect hook and emits the same `deliveryKey`
+and `${hookId}:${deliveryKey}` message ID on each provider retry. The daemon's
+durable `(sessionKey, msgId)` inbox absorbs the repeated turn, and the Control
+Plane's unique `(hookId, deliveryKey)` `HookRun` absorbs repeated delivery
+reports. An optional relay-local cache may suppress obvious same-process
+repeats, but correctness never depends on it and a retry landing on another
+relay remains safe.
+
+Verified unmatched deliveries return success without starting an agent.
+Invalid signatures, stale timestamps, unknown projects, and malformed bodies
+have indistinguishable public failures and never disclose whether a project is
+connected.
+
+### 11.3 Compiled Rule
+
+The Control Plane sends each relay:
+
+- hook, organization, agent, daemon, and repository identifiers;
+- provider `gitlab`;
+- current project path for display only;
+- service-account numeric user ID and username;
+- event patterns, label filter, comment families, and mention mode;
+- session, review, reporting, configuration, dispatch, and projection
+  revisions; and
+- the project signing token through the relay-only secret projection.
+
+The project ID, not path, is the match key. The relay cannot invent a rule,
+placement, or revision.
+
+## 12. Event Mapping and Routing
+
+Stored code-host patterns remain provider-neutral. The GitLab adapter maps:
+
+| Product family                     | GitLab webhook source                  |
+| ---------------------------------- | -------------------------------------- |
+| `issues:*`                         | Issue Hook actions                     |
+| `merge_request:*`                  | Merge Request Hook actions             |
+| issue conversation comment         | Note Hook with an issue subject        |
+| merge-request conversation comment | Note Hook with a merge-request subject |
+| merge-request diff comment         | Note Hook with a diff-note position    |
+| `push:*`                           | Push Hook                              |
+
+The Console keeps the same cadence:
+
+- **created**: issue or merge request opened; later authorized explicit mention
+  remains additive;
+- **updated**: opened plus supported substantive updates, new source commits,
+  and selected comment families; and
+- **mention only**: authored text must mention the assigned agent name or the
+  project's service-account username.
+
+Close, reopen, and pure edit noise follow the existing GitHub vetoes unless a
+future product decision changes both providers. Merge-request source revision,
+draft/ready transitions, reviewer re-request, and label changes are normalized
+to the existing semantic events.
+
+### 12.1 Loop Prevention
+
+Reject an event when its author ID is the binding's service-account user ID.
+Also reject system-generated notes known to be AgentConnect status or attempt
+markers. This prevents ordinary replies, reviews, status updates, and
+agent-to-agent mentions from recursively triggering hooks.
+
+### 12.2 Collaborator and External-Merge-Request Gate
+
+GitLab webhook payloads do not provide GitHub's trusted
+`author_association`. For comments and external merge requests, the relay sends
+only project ID, hook fences, and sender/author numeric user ID to the Control
+Plane. The Control Plane performs a current target-project membership lookup
+with the project effect identity using
+`GET /projects/:id/members/all/:user_id`, or a semantic equivalent that includes
+direct, ancestor-group, and invited-group membership and returns the highest
+effective access level. It accepts only the requested numeric user ID with
+`state=active`, `expires_at` absent or later than the current UTC date, and
+`access_level >= 30`. Awaiting, expired, lower, missing, ambiguous, or
+unavailable membership fails closed. The lookup never carries authored text.
+
+A merge request from an untrusted source author does not start automatically.
+A current Maintainer or Owner may explicitly request it through:
+
+- a mention in the merge-request thread;
+- assignment or re-request of the Project Service Account as reviewer; or
+- an authorized Console action.
+
+Each path revalidates membership and the complete hook/revision fence before a
+generation starts.
+
+### 12.3 Session Affinity and Prompt Boundary
+
+GitLab hooks always use `perThread`. A rename-stable key is derived from:
+
+```text
+issue or merge request: gitlab:<numeric-project-id>:<issue-or-merge-request>:<iid>
+push:                   gitlab:<numeric-project-id>:push:<ref>
+```
+
+Issue and merge-request events require a positive numeric IID and the exact
+subject discriminator. Standalone push events instead require the non-empty
+canonical Git ref from the signed payload, such as `refs/heads/main`. Missing
+or wrong-branch identity is rejected before constructing `RdMsgHook`; the
+adapter never substitutes `undefined`, a display path, or a delivery ID into a
+session key.
+
+The trusted `gitlab` member on `RdMsgHook` is also the daemon normalization
+discriminator. Before generic session-key fallback, `splitSessionKey()` must
+recompute and validate the key from that metadata, then map a headless GitLab
+turn to:
+
+```text
+channel = <hook-id>
+thread  = <complete provider-qualified session key>
+```
+
+The complete thread value is opaque to the daemon; it is not split on colons.
+`msgId` remains the delivery identity and transcript ordering suffix, never a
+thread fallback. Consequently, different webhook IDs delivered to one hook for
+one MR or ref resolve to the same durable ACP session, while different IIDs,
+subject kinds, projects, or refs remain disjoint. A daemon without this mapping
+cannot advertise `gitlab-com-v1` and cannot receive a GitLab assignment.
+
+The relay sends only bounded excerpts. The daemon wraps them in the same
+explicit untrusted-content boundary used for GitHub. The agent reads current
+project, subject, discussion, diff, and pipeline state through the authorized
+read path when more context is needed.
+
+## 13. Repository Authorization and Git Access
+
+### 13.1 Authorization
+
+The existing authorization meanings remain:
+
+| Access    | GitLab behavior                                                                                     |
+| --------- | --------------------------------------------------------------------------------------------------- |
+| `read`    | clone/fetch and read-only project, issue, merge-request, discussion, diff, and pipeline access      |
+| `comment` | `read` plus controlled issue/MR comments and formal `COMMENT`; no push, approve, or request changes |
+| `write`   | `read` plus Git push, controlled mutations, pipeline actions, and full configured review policy     |
+
+Workspace `gitAccess` remains `read | write`. The daemon-owned ordinary hook
+poster is authorized by the enabled hook, not by an agent-visible general
+grant. This preserves the existing behavior where a read-only workspace can
+return one final comment without receiving a write credential.
+
+Every broker request is re-resolved by:
+
+1. current agent placement on the requesting daemon;
+2. provider-qualified numeric repository identity;
+3. workspace or explicit authorization;
+4. requested capability under the access clamp;
+5. active project binding, service-account membership, and credential epoch;
+6. current hook/action fence when applicable.
+
+### 13.2 HTTPS Credential Helper
+
+Managed GitLab workspaces use HTTPS only. The existing hidden credential-helper
+path becomes provider-aware:
+
+- the helper accepts `gitlab.com` only for a GitLab grant;
+- subgroup paths of arbitrary depth are preserved;
+- `useHttpPath=true` prevents a token for one project from satisfying another;
+- the grant echoes provider, numeric project ID, canonical path, username,
+  access, credential epoch, and local lease TTL;
+- the consumer verifies every echoed field before returning the password; and
+- the token never appears in argv, a remote URL, `.git/config`, or a shell
+  environment snapshot.
+
+Credential injection must cover all three existing paths:
+
+1. clone-time `GIT_CONFIG_*`;
+2. long-lived agent-session host configuration; and
+3. repository-local helper configuration.
+
+Each path resets inherited helpers for `https://gitlab.com` before installing
+the daemon helper, preventing fallback to a developer's personal credentials.
+
+The managed feature allows only the exact `https://gitlab.com` origin. An
+operator-supplied `workspaceGitAllowedOrigins` remains authoritative; the
+feature readiness check must explain when that explicit policy excludes
+GitLab.com rather than silently widening it.
+
+### 13.3 Read-Only Provider CLI
+
+Core GitLab support does not depend on a separately installed CLI. The daemon
+provides bounded read operations for project, issue, merge-request, discussion,
+diff, and pipeline source-of-truth data.
+
+When `glab` is installed, a hidden wrapper additionally resolves the target
+project using explicit repository arguments, environment, and the current
+remote in provider-defined precedence. It requests the binding's `read`
+credential for that invocation and starts the real CLI with a read-only token.
+It refuses an unbound or unauthorized project.
+
+Mutating CLI commands do not receive the effect token and fail at GitLab.
+Supported mutations use structured broker tools so the target and authorization
+cannot be changed by prompt content. A user-supplied GitLab token is outside
+the managed credential guarantee and should be warned about consistently with
+the existing user-supplied GitHub token boundary.
+
+## 14. Output Ownership
+
+### 14.1 Ordinary Final Reply
+
+The GitLab final poster follows the current single-writer contract:
+
+1. collect ACP output in daemon memory;
+2. wait for the turn and tools to finish;
+3. choose the authoritative final-answer message;
+4. obtain an action-time, purpose-bound effect lease;
+5. post one issue or merge-request note as the Project Service Account; and
+6. report only note ID, target IDs, outcome, and normalized error code.
+
+It never publishes commentary, progress, tool output, an incomplete answer, or
+a second fallback after an ambiguous write. Retry once only after a definite
+authentication rejection and a credential-epoch refresh.
+
+### 14.2 Controlled Non-Review Effects
+
+Provider-neutral structured operations cover the currently supported
+integration surface:
+
+- create or update an issue/MR comment;
+- read and reply to a discussion;
+- create or update a merge request where the repository grant permits it;
+- inspect pipelines and jobs; and
+- retry or cancel a pipeline/job when `write` authority permits it.
+
+Each operation has an allowlisted endpoint and method. The broker does not
+expose an arbitrary path, GraphQL query, request body, or bearer token.
+
+## 15. Formal Merge-Request Reviews
+
+The agent calls a provider-neutral structured review tool. The target project,
+merge-request IID, base/head revision, hook, and policy come from
+daemon-private active-turn state, not tool input.
+
+The common input remains:
+
+```ts
+submitCodeReview({
+  event: 'COMMENT' | 'REQUEST_CHANGES' | 'APPROVE',
+  verdict: 'pass' | 'fail' | 'neutral',
+  body: string,
+  comments?: Array<{
+    path: string,
+    body: string,
+    line: number,
+    side: 'LEFT' | 'RIGHT',
+    startLine?: number,
+    startSide?: 'LEFT' | 'RIGHT'
+  }>
+})
+```
+
+`COMMENT` accepts `pass`, `fail`, or `neutral`.
+`REQUEST_CHANGES` requires `fail`, and `APPROVE` requires `pass`; contradictory
+pairs are rejected before any provider effect.
+
+`COMMENT` and `APPROVE` neither require nor create a reviewer record.
+`REQUEST_CHANGES` requires the Project Service Account to be a current reviewer.
+AgentConnect never assigns itself: GitLab's REST reviewer update replaces the
+list, and GraphQL `APPEND` also snapshots, unions, and replaces the complete
+list, so either can lose a concurrent human assignment. The MR author or another
+authorized user must request or re-request the service account through GitLab's
+native reviewer control. Until then, active-turn policy omits
+`REQUEST_CHANGES`, the adapter rejects a stale invocation before any review
+draft, and advisory `COMMENT + fail` remains available.
+
+The GitLab adapter:
+
+1. synchronously reserves one review attempt for the active turn;
+2. acquires the durable publication lease for
+   `(project, MR IID, service-account user)` and receives its monotonic fence;
+3. asks the Control Plane to authorize the exact hook, project, IID, event,
+   policy, configuration/dispatch revisions, and current placement;
+4. reconciles every pending draft owned by the service account on that merge
+   request, as described below;
+5. re-fetches the current merge request and rejects a changed head;
+6. reads the service account's current record from
+   `GET /projects/:id/merge_requests/:iid/reviewers`;
+7. for `REQUEST_CHANGES` only, requires that reviewer record or returns
+   `reviewer_assignment_required` before drafts;
+8. creates regular and diff draft notes with the exact diff refs, putting a
+   signed hidden attempt-and-ordinal marker in every draft and recording each
+   returned draft ID;
+9. re-lists drafts and verifies that the current attempt owns the complete set;
+10. immediately before publication, re-reads reviewer state; if the service
+    account has been removed from a `REQUEST_CHANGES` attempt, deletes the
+    current attempt's drafts and returns `reviewer_assignment_required`;
+11. bulk-publishes the drafts with a summary, signed hidden attempt marker, and
+    the event-specific reviewer-state parameter below;
+12. re-reads the reviewers endpoint and the merge request's refreshed
+    `detailed_merge_status`; a missing or mismatched reviewer record after
+    `REQUEST_CHANGES` is an unknown, potentially blocking provider effect on
+    Premium, not evidence of an advisory-only outcome; and
+13. for `APPROVE`, only after the unchanged-state postcondition holds, waits
+    until
+    `detailed_merge_status` is neither `checking` nor `approvals_syncing` and the
+    merge-request diff has a non-null `patch_id_sha`, and calls the approval
+    endpoint with the exact head SHA, then requires the service-account user ID
+    in the approval readback's `approved_by` set for that head.
+
+Reviewer-state mapping is:
+
+| Input                               | `bulk_publish.reviewer_state` | Required postcondition                                                 |
+| ----------------------------------- | ----------------------------- | ---------------------------------------------------------------------- |
+| `COMMENT` + `pass`/`neutral`/`fail` | omit                          | reviewer record remains absent or state is unchanged                   |
+| `REQUEST_CHANGES` + `fail`          | `requested_changes`           | state is `requested_changes`; otherwise classify the effect as unknown |
+| `APPROVE` + `pass`                  | omit                          | reviewer record remains absent or state is unchanged                   |
+
+Approval is deliberately a separate call because GitLab's review publication
+does not record a formal approval and the approval API provides the required
+SHA fence. The API requires an eligible approver, not prior reviewer
+assignment. A passing `COMMENT` is still commentary and never supersedes a
+prior change request; only the explicit `APPROVE` operation can record that
+passing transition. Therefore no `COMMENT`, and no pre-approval publication,
+can clear an existing `requested_changes`.
+
+### 15.1 Publication Serialization and Orphan Recovery
+
+GitLab's bulk-publish endpoint publishes every pending draft on the merge
+request that belongs to the authenticated user. It has no attempt identifier.
+Because all AgentConnect agents on a project share one service account, the
+publication lease is a correctness boundary, not an optimization.
+
+The lease and attempt phase live in the Control Plane database. Acquisition is
+compare-and-swap, increments the fence, and permits only one owner across
+agents and daemons. Every draft create/delete and bulk-publish operation
+requires a durable single-use operation record bound to the current attempt,
+fence, method, target, and operation ordinal. Before the outbound request, the
+trusted daemon broker atomically moves that record from `issued` to
+`request_started`. It then records the deterministic response or
+`response_ambiguous`. Review content still travels directly from the daemon to
+GitLab, so the Control Plane sees only metadata. The broker and its HTTP client
+disable automatic retries for these non-idempotent review mutations. One
+`request_started` record permits exactly one outbound provider request.
+
+The fence prevents a stale broker from obtaining another operation record, but
+it is not presented as a GitLab-side fence. In particular, checking or starting
+an operation record does not make an outbound request revocable: the broker
+could pause immediately afterward. Consequently, elapsed time, a disconnected
+daemon, an expired lease, and absence of a marker after a convergence window
+are never sufficient to transfer publication authority once an operation
+record has been issued.
+
+The coordinator may transfer ownership only when:
+
+- no provider-mutation operation record was issued for the attempt;
+- the same live broker durably returns every issued record as unused before
+  any request starts;
+- every started request has a deterministic response and its provider effect
+  has been reconciled; or
+- a previously ambiguous request is positively identified by its signed
+  provider marker and fully reconciled.
+
+Otherwise the row moves to `ambiguous_locked` and retains the old attempt
+indefinitely. No new review attempt may create drafts or publish under that
+service account on the merge request. Recovery waits for the old broker to
+report a definite outcome or for positive provider evidence; a timeout-based
+or operator “force unlock” is deliberately absent. This fail-closed state can
+make one merge request's automated reviews unavailable, but it cannot let an
+old request consume a newer attempt's drafts.
+
+While holding the lease, the owner lists all service-account drafts on the
+merge request before creating any new draft:
+
+- a draft with a valid signed marker for the same attempt is recovered by its
+  ordinal and recorded provider ID;
+- drafts for an expired, definitively unpublished attempt are deleted
+  individually, with read-after-ambiguous-delete, before a new attempt starts;
+- a prior attempt whose publish result is uncertain is reconciled against both
+  pending drafts and published notes by its signed marker; and
+- an unmarked draft, an invalid marker, an unknown attempt, or a cleanup result
+  that remains uncertain fails closed as `review_reconciliation_required`.
+
+Immediately before bulk publish, the broker renews the lease, verifies the
+head and fence again, and re-lists drafts. Bulk publish is allowed only when
+every pending draft has the current signed attempt marker and the expected
+ordinal set is exact. The coordinator remains owned until publication,
+reviewer state, and any approval outcome are durably classified. If the
+publish operation becomes ambiguous, it remains owned even when the lease
+expires. This prevents a concurrent agent's drafts or crash-left drafts from
+being published under the wrong verdict.
+
+### 15.2 Partial and Ambiguous Effects
+
+GitLab note APIs do not offer an idempotency key. Every review summary carries
+a signed hidden marker derived from the random attempt ID. Each draft also
+carries its attempt-and-ordinal marker so an ambiguous create can be recovered
+without guessing from its text. On an ambiguous publish, the daemon retains
+publication ownership and searches the target merge request for that exact
+summary marker:
+
+- found: record the external IDs and do not publish again;
+- a deterministic provider rejection, or an operation record durably returned
+  unused by the same broker before `request_started`: classify as
+  `not_submitted`, from which the same attempt may retry while it still owns
+  the lease; and
+- no marker after the bounded observation window, even with the complete
+  marked draft set still pending: classify as `ambiguous_locked`, suppress the
+  ordinary fallback, and keep new publication blocked indefinitely.
+
+If review comments publish but approval deterministically fails, a public
+effect already exists. Record a submitted comment review with
+`approval_not_recorded`; do not publish an ordinary fallback. A later approval
+retry must revalidate the same head and attempt marker.
+
+The same public-effect rule applies when `bulk_publish` returns `204` but the
+required reviewer-state readback is missing, unavailable, or mismatched. Do not
+repeat bulk publication, do not publish an ordinary fallback, and do not call
+the approval endpoint.
+
+For `COMMENT` or `APPROVE`, record `review_state_not_recorded` or
+`review_state_changed_unexpectedly`. For `REQUEST_CHANGES`, reviewer absence is
+not evidence that the state transition failed: GitLab persists the
+requested-changes merge block separately from the reviewer assignment, and a
+concurrent removal can race after that record is created. Request a merge-status
+recheck and read `detailed_merge_status` after it leaves `checking` and
+`approvals_syncing`:
+
+- `requested_changes` confirms that the merge request is currently blocked,
+  but does not by itself attribute the block to this attempt; record
+  `requested_changes_block_observed`;
+- any other, unavailable, or unstable value does not prove absence because
+  another mergeability reason can mask it; record
+  `requested_changes_state_ambiguous`; and
+- on Premium, the first result is surfaced as currently blocking and the second
+  as potentially blocking until GitLab's native merge widget shows the change
+  request removed, approved, or bypassed. On Free, the state is still unknown
+  but the tier contract makes it non-blocking.
+
+Publication success and reviewer absence are therefore both insufficient to
+claim that GitLab did or did not record the requested state transition.
+
+Review bodies and inline comments stay relay/daemon-to-GitLab. The Control
+Plane stores attempt ID, external IDs, event, verdict, head SHA, and normalized
+state only.
+
+### 15.3 Tier Semantics
+
+- On Free, `APPROVE` records an optional approval without requiring reviewer
+  assignment. `REQUEST_CHANGES` is available only while the service account is
+  a current reviewer, records reviewer state, and does not block merging.
+  Otherwise AgentConnect exposes `COMMENT + fail` as the advisory outcome.
+- On Premium, existing approval rules may make approval required, and request
+  changes can block merging until addressed or bypassed under project policy,
+  but only after a user requests or re-requests the service account through
+  GitLab's native reviewer control. AgentConnect never edits the reviewer list.
+- If project or group policy requires interactive password or SAML
+  reauthentication for approval, the non-interactive Project Service Account
+  cannot satisfy it. Mark `APPROVE` unavailable for that binding while keeping
+  comment and request-changes review outcomes available. Never ask for or reuse
+  a human approval credential.
+- Author, committer, and eligible-approver rules can also reject the service
+  account. This is especially relevant when the same bot pushed the source
+  branch. Report the current policy denial; never weaken project policy or
+  substitute the installing user's identity.
+- AgentConnect reports the observed outcome. It never claims that a Free
+  change request is blocking and never changes approval rules to manufacture
+  that behavior.
+
+## 16. Informational Run Projection
+
+GitLab Free and Premium have no direct equivalent of a GitHub Check Run.
+AgentConnect uses one service-account note per
+`(hook, project, merge-request IID, head SHA, projection epoch)`.
+
+The note contains only fixed control information:
+
+- queued, running, completed, failed, or skipped state;
+- agent display name;
+- current revision abbreviation;
+- timestamps and a bounded normalized reason;
+- a Console session/run link when available; and
+- a hidden stable projection marker.
+
+The link is an ordinary authenticated Console URL and never contains a bearer
+token, webhook secret, or capability query parameter.
+
+The Control Plane records the desired projection generation and sends its
+fixed fields plus the hook, project, MR, head, placement, and credential fences
+to the owning daemon. The daemon renders and updates the same note in place
+through its trusted effect broker, then reports only the observed note ID,
+generation, normalized result, and timestamps. It never copies agent output,
+review text, issue/MR content, logs, or tool bodies into the projection.
+
+The daemon is the only GitLab Notes API writer for this surface. The Control
+Plane never posts or updates the note, and an offline daemon leaves the desired
+projection pending rather than creating a second provider egress path.
+
+The durable projection reuses the existing generation, lease, pending-intent,
+write-marker, tombstone, and out-of-order completion rules. If a create/update
+response is ambiguous, the owning daemon lists notes and reconciles by the
+hidden marker before retrying. Projection ownership may move only when no
+provider mutation is in flight or every started mutation has a deterministic,
+reconciled outcome. An ambiguous mutation remains fail-closed on the old
+writer; daemon loss or lease expiry alone cannot authorize another writer.
+
+### 16.1 Re-request
+
+A new generation may start only for the current head and current enabled hook
+after an authorized:
+
+- reviewer request or re-request targeting the Project Service Account;
+- explicit mention from a Maintainer or Owner; or
+- Console "Run again" action.
+
+The requester is checked live and all hook, placement, project, head, and
+projection fences are revalidated. A stale status note cannot authorize a new
+turn.
+
+### 16.2 Why Not Commit Statuses or External Status Checks
+
+GitLab commit statuses are represented as external CI jobs. Posting one can
+append to an existing pipeline or create a new external pipeline, and
+concurrent pipelines can make placement ambiguous. That is materially
+different from an informational agent-run projection.
+
+External status checks are Ultimate-only and pending checks automatically fail
+after two minutes. They are outside the Free/Premium contract.
+
+The note projection therefore provides the current informational parity
+without changing CI or merge policy. A future native transport must be an
+explicit, mutually exclusive mode with its own acceptance tests.
+
+## 17. Protocol and Compatibility
+
+### 17.1 Provider-Qualified Git Credentials
+
+The credential protocol gains a negotiated v2 form:
+
+- request: provider, agent, repository identity, access, reason, and purpose;
+- grant: provider, numeric repository identity, canonical path, username,
+  token, access, credential epoch, provider expiry for observability, and
+  local lease TTL.
+
+Existing absent-provider frames continue to mean GitHub v1. A daemon may not
+request GitLab credentials until the Control Plane advertises
+`gitcred-provider-v2`, and a consumer must reject a grant whose provider or
+numeric project ID differs from the request. This prevents an older server
+from stripping new fields and returning a workspace credential for the wrong
+provider.
+
+### 17.2 Hook and Review Frames
+
+Provider-specific trusted metadata is a discriminated union:
+
+- GitHub keeps its existing repository, installation, PR, and SHA fields;
+- GitLab carries numeric project ID, current path, current webhook ID, and a
+  discriminated target: issue/MR subject kind plus IID and applicable
+  source-project, base/head, draft, and reviewer facts, or a standalone push
+  ref.
+
+`RcHookAssign` and `RdMsgHook` gain `gitlab` members. Common configuration and
+dispatch fields remain unchanged. Membership checks use a metadata-only
+provider-neutral authorization request. Formal review authorization/result
+frames become provider-neutral while preserving the existing GitHub frame
+until every active daemon supports the replacement.
+
+The GitLab member is trusted, signature-verified metadata and includes the
+numeric project ID plus the discriminated subject/IID or push ref needed to
+recompute the complete session key. Daemon normalization uses that
+discriminator for the explicit `channel=hookId`, `thread=sessionKey` mapping in
+Section 12.3; it never infers GitLab identity from model-visible context.
+
+Status projection adds a body-free desired/result frame pair. The desired
+frame carries only fixed state, timestamps, normalized reason, identifiers,
+link, generation, and the complete placement/effect fence. The result returns
+the provider note ID, observed generation, normalized outcome, and timestamps.
+Neither frame can carry an agent reply, review body, issue/MR text, or arbitrary
+Markdown.
+
+### 17.3 Feature Negotiation
+
+New capabilities are gated by explicit features, including:
+
+- `gitlab-com-v1`;
+- `gitcred-provider-v2`; and
+- `codehost-review-v1`; and
+- `codehost-note-projection-v1`.
+
+The Console permits a GitLab hook only when its selected daemon and every live
+relay eligible to receive public ingress advertise the required features.
+Mixed versions fail closed for GitLab while GitHub and generic webhooks
+continue normally.
+
+## 18. Console and REST Surface
+
+### 18.1 Console
+
+The Connections page shows:
+
+- connected GitLab username and GitLab.com host;
+- OAuth state: connected, reconnect required, or disconnected;
+- project search with current path and role;
+- project binding state and service-account username;
+- webhook state: not needed, installed, repairing, or failed;
+- credential expiry and rotation warning without token values; and
+- actions to refresh projects, reconnect, repair, transfer administration, or
+  disconnect.
+
+Webhook setup is automatic. The UI may show the desired endpoint and last
+verification result for diagnosis, but v1 does not make a manually copied
+secret a second source of truth.
+
+Agent workspace and additional-repository pickers use the same provider-aware
+project list. Hook configuration retains the existing family, cadence, label,
+review, reporting, and output controls. Premium-only effective behavior is
+described where relevant; the UI does not imply that Free request changes
+block merges.
+
+User-facing copy says GitLab, connection, project, webhook, and bot. It does
+not expose internal Control Plane or relay terminology.
+
+### 18.2 REST
+
+The proposed authenticated routes are:
+
+```text
+POST   /api/v1/gitlab/oauth/start
+GET    /api/v1/gitlab/oauth/callback
+GET    /api/v1/gitlab/connections
+DELETE /api/v1/gitlab/connections/:connectionId
+GET    /api/v1/gitlab/connections/:connectionId/projects
+POST   /api/v1/gitlab/projects
+POST   /api/v1/gitlab/projects/:bindingId/repair
+POST   /api/v1/gitlab/projects/:bindingId/transfer
+DELETE /api/v1/gitlab/projects/:bindingId
+```
+
+Project list routes return metadata only. Create/repair routes return
+provisioning state and non-secret external identifiers. They never return OAuth
+tokens, PAT values, signing tokens, or token hashes.
+
+Existing agent repository-authorization and hook routes gain a provider-aware
+repository reference rather than GitLab-only copies. Every new or changed route
+must include OpenAPI tags, summary, description, and a unique operation ID.
+
+### 18.3 Deployment Configuration
+
+The feature is enabled only when the deployment supplies:
+
+- `GITLAB_CLIENT_ID`;
+- `GITLAB_CLIENT_SECRET`;
+- an exact HTTPS OAuth callback URL; and
+- the existing public relay origin used to derive the webhook URL.
+
+The OAuth client secret remains operator-supplied process secret material. The
+implementation has no `GITLAB_BASE_URL` or host override in v1: OAuth, API, and
+Git remotes are pinned to GitLab.com. The Web UI learns availability from the
+authenticated API instead of a build-time public environment flag.
+
+## 19. Failure, Recovery, and Removal
+
+### 19.1 Control Plane Unavailable
+
+- Existing webhook assignments continue routing relay-to-daemon.
+- Local agent work and ACP sessions continue.
+- Cached GitLab grants work only until their local lease expires.
+- New remote Git/API operations, ordinary replies, and formal reviews fail
+  closed after lease expiry because the daemon cannot reauthorize them.
+- The daemon retains body-free report outbox entries for later reconciliation.
+
+This is the same bounded degradation model as GitHub credentials, with a
+shorter application lease over a longer-lived provider PAT.
+
+### 19.2 OAuth Unavailable
+
+An expired, revoked, or ambiguously refreshed OAuth connection marks its
+projects `admin_degraded`. Existing service-account runtime credentials and
+already installed webhooks continue. Provisioning, rotation, webhook repair,
+and external cleanup wait for a Maintainer or Owner to reconnect or take over.
+
+### 19.3 Runtime Drift
+
+If the service account is removed, blocked, loses Developer membership, or its
+tokens expire:
+
+- increment the credential epoch and purge daemon grants;
+- stop new external effects;
+- keep inbound delivery metadata but fail the turn with a normalized
+  integration reason; and
+- show `runtime_degraded` with the exact repair category.
+
+Do not fall back to the human OAuth token for runtime.
+
+### 19.4 Disconnect
+
+Disconnecting a project immediately:
+
+1. disables its hooks and new credential grants;
+2. increments credential and dispatch epochs;
+3. tombstones active status projections to a non-passing terminal state;
+4. purges relay assignments and daemon caches; and
+5. begins external cleanup with a current Maintainer/Owner OAuth connection.
+
+External cleanup deletes the managed webhook, revokes all managed PATs, and
+deletes the managed Project Service Account after an explicit warning that
+GitLab retains its prior contributions under GitLab's account-deletion rules.
+
+If external cleanup cannot complete, retain a sealed, access-restricted
+tombstone only for bounded cleanup retries and mark `cleanup_pending`. Local
+authority remains disabled. The Console provides the exact GitLab resources
+an administrator must remove if cleanup is abandoned. The deployment-global
+project claim remains held until current provider reads verify that cleanup is
+complete; `cleanup_pending` never frees the project for another organization.
+
+## 20. Security Analysis
+
+| Threat                                            | Control                                                                                               |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| OAuth login CSRF or callback mix-up               | Random one-time state, browser/user/org binding, PKCE, exact callback, allowlisted local return path  |
+| Concurrent refresh invalidates the token pair     | Distributed refresh lease, token-version CAS, no retry after ambiguous refresh                        |
+| Broad human OAuth bearer reaches runtime          | OAuth secrets remain in the Control Plane and are accepted only by allowlisted administration methods |
+| Broad service-account API bearer reaches an agent | Separate `write_repository` and `api` tokens; effect token only in trusted broker memory              |
+| Credential theft at rest                          | Dedicated stores using the configured `SecretCipher`; metadata-only DTOs                              |
+| Credential leakage through Git                    | Hidden helper, host/path scoping, helper reset, no token in URL/argv/config                           |
+| Cross-project token confusion                     | Provider-qualified numeric project identity echoed and verified on every grant                        |
+| Webhook spoofing or body tampering                | Raw-body Standard Webhooks HMAC with timing-safe comparison                                           |
+| Webhook replay                                    | Recent timestamp plus stable delivery identity; daemon inbox and unique `HookRun` absorb retries      |
+| Project rename or path reuse                      | Numeric project ID is authoritative; path is display only                                             |
+| Self-trigger loop                                 | Service-account user-ID veto plus generated-marker veto                                               |
+| Untrusted issue/MR prompt injection               | Bounded excerpts, explicit prompt fence, source-of-truth read path                                    |
+| External contributor starts privileged work       | Live target-project membership or explicit current-maintainer request                                 |
+| Stale hook or daemon performs an effect           | Config, dispatch, placement, project, subject, head, attempt, and credential-epoch fences             |
+| Duplicate note/review after timeout               | Signed random markers and read-after-ambiguous reconciliation                                         |
+| Shared service account cross-publishes drafts     | Durable per-MR ownership, no timeout transfer after a permit, exact marked-draft set, orphan cleanup  |
+| Reviewer prerequisite overwrites human choices    | Never mutate reviewers; require a native human request or re-request                                  |
+| Cross-tenant access                               | Transactional deployment-global project claim plus org-owned connection/binding and placement checks  |
+| Secret or content logging                         | Log identifiers, scope/purpose, status, latency, and normalized codes only                            |
+
+Residual risks are explicit:
+
+- the daemon host is one OS-user trust domain;
+- the underlying service-account PAT remains provider-valid longer than the
+  local AgentConnect lease;
+- a Control Plane compromise can expose the selected projects' stored
+  credentials;
+- an ambiguous GitLab review mutation can leave automated reviews fail-closed
+  for that merge request indefinitely and can leave a Premium merge request
+  potentially blocked;
+- Free request changes cannot become blocking without Premium project
+  behavior; and
+- a lost OAuth refresh response requires human reconnection.
+
+## 21. Rollout
+
+1. Add provider-neutral repository identity and protocol schemas, backfill
+   existing GitHub numeric identities, and keep GitHub v1 behavior unchanged.
+2. Deploy Control Plane persistence, secret stores, OAuth, project
+   reconciliation, and hidden API routes.
+3. Deploy relay signing verification, event mapping, feature advertisement,
+   and GitLab rule handling.
+4. Deploy daemon GitLab credential routing, read wrapper, effect broker,
+   poster, review adapter, and cache invalidation.
+5. Enable the Console only after the required daemon and relay features are
+   live.
+6. Run a private contract pilot on GitLab.com Free and Premium.
+7. Enable project creation generally; keep Ultimate-specific and self-managed
+   options absent.
+
+Rollback disables new GitLab project creation, removes GitLab relay
+assignments, and leaves existing GitHub behavior untouched. Existing GitLab
+bindings remain visible for repair or disconnect; rollback must not orphan
+external credentials by deleting only local metadata.
+
+## 22. Validation
+
+Use focused unit tests for pure boundaries only:
+
+- OAuth state/PKCE binding and refresh single-writer transitions;
+- Standard Webhooks signature, timestamp, and multi-signature verification;
+- event normalization, mention targeting, bot veto, labels, and membership
+  gates, including effective direct, inherited, invited-group, expired, and
+  awaiting membership;
+- disjoint issue, merge-request, and push session-key derivation with missing
+  target/ref rejection, plus daemon normalization that keeps one MR/ref on one
+  channel/thread pair across different delivery IDs;
+- provider-qualified repository authorization and grant mismatch rejection;
+- review-policy, reviewer-state mapping, human reviewer prerequisites,
+  fail-before-draft gating, and exact-head fencing;
+- review-publication lease, fence, attempt ownership, and reconciliation state
+  transitions; and
+- status-projection generation and marker reconciliation.
+
+Use integration tests for:
+
+- secret-store sealing and metadata-only DTOs;
+- transactional global project-claim races, retention through
+  `cleanup_pending`, and serialized ownership transfer;
+- project provisioning saga recovery after every external side effect;
+- explicit PAT expiry on create/replacement, including null or mismatched
+  provider responses and ambiguous revocation cleanup;
+- unassigned-reviewer handling: comment and approval without assignment,
+  request-changes rejection before drafts, and reviewer removal before or
+  after the final state check, including potentially blocking Premium
+  classification from refreshed mergeability;
+- daemon/relay feature negotiation and mixed-version rejection;
+- two-relay redelivery with the same `webhook-id`, preserving per-hook fan-out
+  while the daemon inbox and unique `HookRun` absorb retries;
+- credential epoch invalidation on role, token, project, agent-placement, and
+  disconnect changes;
+- daemon-only status-note creation/update, offline pending intent, and
+  fail-closed writer transfer after an ambiguous provider mutation;
+- durable review-publication serialization and non-transferable ambiguous
+  ownership after a simulated daemon loss, including a permit issued
+  immediately before the broker pauses; and
+- message/content absence from Control Plane frames and persistence.
+
+The release contract suite runs against real GitLab.com Free and Premium test
+projects and covers:
+
+1. OAuth connect, refresh, ambiguous-refresh recovery, and takeover;
+2. project discovery, nested namespaces, rename, permission loss, and direct,
+   inherited, invited-group, mixed-source-highest, expired, and awaiting
+   effective membership;
+3. two organizations concurrently binding one numeric project, where only the
+   global-claim winner may begin provider provisioning;
+4. service-account creation, Free quota failure, PAT creation and rotation with
+   group expiration enforcement disabled, null/out-of-policy expiry rejection,
+   and cleanup;
+5. signed webhook creation, test, cross-relay retry deduplication, drift
+   repair, and deletion;
+6. private clone, pull, push, additional repositories, and unauthorized path
+   rejection;
+7. issue/MR created, updated, comment, diff comment, push, mention, label,
+   reviewer re-request, and external-MR gates;
+8. same-MR/ref session reuse across distinct webhook IDs and disjoint
+   sessions for different IIDs, subject kinds, projects, and refs;
+9. ordinary reply versus formal-review mutual exclusion;
+10. inline `COMMENT`, `REQUEST_CHANGES`, and SHA-fenced `APPROVE`, including an
+    initially unassigned service account, request-changes fail-before-draft,
+    native request or re-request enabling request-changes, existing
+    `requested_changes` followed by any `COMMENT`, approval without reviewer
+    assignment, reviewer removal immediately before and immediately after
+    publication with the actual Premium merge status checked, and a published
+    review whose reviewer-state postcondition is absent;
+11. simultaneous reviews from multiple agents on the same MR, including agents
+    placed on different daemons, with no cross-attempt publication;
+12. crashes after draft creation and immediately before bulk publish, including
+    orphan cleanup, same-attempt recovery, and ambiguous-publish
+    reconciliation; a broker paused after permit validation must keep
+    ownership and prevent a newer attempt until its request is positively
+    classified;
+13. Free advisory versus Premium blocking behavior; and
+14. queued/running/terminal daemon-owned status-note convergence, daemon
+    failover fencing, and authorized rerun.
+
+Validation must also scan source, generated examples, fixtures, logs, and PR
+prose for real deployment addresses, account identifiers, OAuth application
+IDs, tokens, and signing secrets.
+
+## 23. References
+
+- [GitLab OAuth 2.0 identity provider API](https://docs.gitlab.com/api/oauth2/)
+- [GitLab service accounts](https://docs.gitlab.com/user/profile/service_accounts/)
+- [GitLab service accounts API](https://docs.gitlab.com/api/service_accounts/)
+- [GitLab access token scopes](https://docs.gitlab.com/security/tokens/access_token_scopes/)
+- [GitLab project access tokens](https://docs.gitlab.com/user/project/settings/project_access_tokens/)
+- [GitLab project members API](https://docs.gitlab.com/api/project_members/)
+- [GitLab merge requests API](https://docs.gitlab.com/api/merge_requests/)
+- [GitLab project webhooks API](https://docs.gitlab.com/api/project_webhooks/)
+- [GitLab webhooks and signing tokens](https://docs.gitlab.com/user/project/integrations/webhooks/)
+- [GitLab webhook events](https://docs.gitlab.com/user/project/integrations/webhook_events/)
+- [GitLab Draft Notes API](https://docs.gitlab.com/api/draft_notes/)
+- [GitLab Draft Notes API implementation](https://gitlab.com/gitlab-org/gitlab/-/blob/master/lib/api/draft_notes.rb)
+- [GitLab merge request approvals API](https://docs.gitlab.com/api/merge_request_approvals/)
+- [GitLab merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
+- [GitLab merge request reviews](https://docs.gitlab.com/user/project/merge_requests/reviews/)
+- [GitLab external commit statuses](https://docs.gitlab.com/ci/ci_cd_for_external_repos/external_commit_statuses/)
+- [GitLab external status checks API](https://docs.gitlab.com/api/status_checks/)
