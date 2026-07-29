@@ -1,7 +1,7 @@
 # Design: Memory Dreaming Mode — Offline Consolidation for Managed Memory
 
 > Status: D-1 shipped (protocol, daemon runner, CP REST, console config); D-2
-> shipped (auto-adopt gate, distillation rebase, scheduled dreams). D-3 (skill
+> shipped (auto-accept policy, distillation rebase, scheduled dreams). D-3 (skill
 > mining) remains a proposal — see §12.
 > Prerequisites: [memory-evolution.md](memory-evolution.md),
 > [memory-system-plan.md](memory-system-plan.md),
@@ -69,8 +69,9 @@ Three invariants:
 
 1. **The live store is never modified by a running dream.** The dream reads a
    snapshot and writes only into its own staging directory.
-2. **Adoption is explicit and reversible.** Adopting renames the live store to
-   a timestamped backup and moves the staged tree into place, appending a
+2. **Adoption is configured and reversible.** A user either reviews a proposal
+   explicitly or enables auto-accept. Adopting renames the live store to a
+   timestamped backup and moves the staged tree into place, appending a
    `dream-adopt` event to `.history`. The backup is retained until the next
    successful adoption.
 3. **The model proposes; the daemon disposes.** The runtime returns the
@@ -79,9 +80,11 @@ Three invariants:
    traversal) and performs all filesystem writes itself. `.history` is never
    part of the proposal — it is carried over verbatim and appended to.
 
-Invariant 3 bounds only what the dream _output_ can do: a bad proposal can at
-worst become a staged candidate a human reviews. It says nothing about what the
-_extraction run itself_ can do — the mined transcript is attacker-controlled, so
+Invariant 3 bounds only what the dream _output_ can do: a bad proposal can
+change only the managed-memory store, and only after staging and validation.
+Auto-accept deliberately skips a human content-quality check, as its console
+warning makes clear. The invariant says nothing about what the _extraction run
+itself_ can do — the mined transcript is attacker-controlled, so
 a prompt injection could drive the runtime's native shell/file/network tools
 before the model ever emits JSON, and staged-output review cannot undo those
 side effects. The executor therefore separates two independent gates:
@@ -92,12 +95,12 @@ side effects. The executor therefore separates two independent gates:
   rather than running with write access. This is what keeps the executor safe
   on runtimes without a trusted system-prompt channel (Codex has read-only
   mode), and it is stricter than "staging contains everything."
-- **Trusted system-prompt channel — SOFT.** When the runtime carries the system
+- **Trusted system-prompt channel — OBSERVED.** When the runtime carries the system
   prompt via `_meta.systemPrompt` the dream policy rides it; otherwise the
-  policy is prepended to the user prompt. That fallback is acceptable because
-  invariant 3 already contains bad _content_. The trusted channel gates only
-  **auto-adopt** (§6), the one unattended path with distillation-equivalent
-  blast radius.
+  policy is prepended to the user prompt. Auto-accept is the user's explicit
+  choice to apply a completed proposal without content review, so this transport
+  distinction does not override that choice. The verified non-mutating mode
+  above still gates the extraction run itself.
 
 ## 3. Configuration
 
@@ -119,9 +122,8 @@ export const MemoryDreamingPolicy = z
     instructions: z.string().max(4096).optional(),
     /** Also mine reusable procedures into candidate skills (§7). Default false. */
     mineSkills: z.boolean().optional(),
-    /** Adopt the memory store automatically on completion. Default true. Honored only when the
-     *  extraction ran on a trusted-channel runtime — the config still saves, but
-     *  an untrusted run leaves the dream reviewable instead of adopting it.
+    /** Adopt the memory store automatically on completion without content
+     *  review. Default true. Live-memory fence conflicts remain reviewable.
      *  Never applies to skills (§7). */
     autoAdopt: z.boolean().optional()
   })
@@ -206,8 +208,8 @@ interface DreamRecord {
    `failed`, with the partial staging left in place for inspection.
 5. **Finish.** Mark `completed`; emit `memory.dream.completed` on the
    evaluation-events channel (alongside the existing `memory.capture.*`
-   events). If `autoAdopt` is set and admissible, run §6 adoption for the
-   store — never for skills.
+   events). If `autoAdopt` is set, run §6 adoption for the store — never for
+   skills.
 
 Cancel moves `pending|running → canceled` and aborts the ACP prompt (same
 cancellation path as a turn).
@@ -247,13 +249,13 @@ with the same injection posture and a five-phase pipeline:
 
 Where the runtime has no trusted system-prompt channel (today: Codex ACP),
 the policy text is prepended to the user prompt instead. That is acceptable
-_only_ because of invariant 3 + staged output: a prompt-injected dream can at
-worst produce a bad candidate the review step catches. Independently, the
-extraction session is **hard-gated on a verified read-only / plan mode** (§2) —
-so even on that untrusted-channel path a prompt injection cannot cause tool
-side effects during the run; a runtime with no non-mutating mode fails the
-dream. `autoAdopt` remains gated on `trustedExtractionMode` (§6), so the
-unattended path never runs on an untrusted channel.
+because invariant 3 + staged output constrain the proposal to validated
+managed-memory content. Independently, the extraction session is **hard-gated
+on a verified read-only / plan mode** (§2) — so even on that untrusted-channel
+path a prompt injection cannot cause tool side effects during the run; a
+runtime with no non-mutating mode fails the dream. When `autoAdopt` is enabled,
+a valid completed proposal is accepted on either prompt transport; the console
+warns that this skips content review.
 
 ## 6. Adoption (memory store)
 
@@ -277,10 +279,9 @@ unattended path never runs on an untrusted channel.
 `discardDream` deletes the staging directory and marks `discarded`. Backups
 are pruned to the most recent one on each successful adoption.
 
-`autoAdopt` runs the same path immediately on completion, and is admissible
-only when (a) the runtime passes `trustedExtractionMode` and (b) the fence in
-step 2 passes — on fence conflict the dream completes as reviewable instead of
-failing.
+`autoAdopt` runs the same path immediately on completion without content
+review. The fence in step 2 still applies — on conflict the dream completes as
+reviewable instead of failing, preserving newer live-memory changes.
 
 ## 7. Skill mining and recommendations
 
@@ -335,10 +336,11 @@ Distillation and dreaming are two layers of one background-memory system —
 per-turn additive capture and periodic reconstructive consolidation. The
 constraints are deliberately coupled: distillation may write to the live store
 unreviewed _because_ it is additive-only and rides a trusted channel; dreaming
-may rewrite and delete _because_ its output is staged and reviewed. Neither
-subsumes the other: capture keeps facts available in near-real-time; dreaming
-compacts what capture accumulates and catches cross-session patterns capture
-cannot see. On runtimes where distillation is unavailable (no trusted
+may rewrite and delete because its output is staged, validated, reversible, and
+either reviewed or covered by the user's auto-accept policy. Neither subsumes
+the other: capture keeps facts available in near-real-time; dreaming compacts
+what capture accumulates and catches cross-session patterns capture cannot see.
+On runtimes where distillation is unavailable (no trusted
 system-prompt channel — Codex today), dreaming's transcript mining is the
 only automatic capture path, which is why the dream pipeline mines transcripts
 directly rather than assuming distillation output exists.
@@ -376,7 +378,8 @@ Concrete unification points:
     caps (the swap bypasses `writeMemoryFile`, so its limits are re-enforced
     here).
 
-  Any write with a tool, console, or other source hard-fences to manual review.
+  Any write with a tool, console, or other source hard-fences to manual review,
+  including when auto-accept is enabled.
 
 - **Serialization.** Snapshot and adoption take the shared per-memory-dir lock,
   and a distillation batch holds that same lock end to end — it reads the index
@@ -465,7 +468,7 @@ input metadata, not the Dream session's history or usage.
 | Phase | Scope                                                                                                                                                                                |
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | D-1   | Protocol schema (`MemoryDreamingPolicy`), shared extraction-session helper, daemon `DreamRunner` + staged store pipeline, manual trigger via frames, console review + adopt/discard. |
-| D-2a  | `autoAdopt` behind `trustedExtractionMode`, the distillation rebase rule, backup pruning. **Done.**                                                                                  |
+| D-2a  | `autoAdopt` independent of prompt-channel trust, the distillation rebase rule, backup pruning. **Done.**                                                                             |
 | D-2b  | Scheduled dreams (`DreamScheduler` cron trigger + reconciliation) and the console schedule control. **Done.** Evaluation-event dashboards remain.                                    |
 | D-3   | Skill mining (`mineSkills`): extract-procedures phase, staged skill candidates, console recommendations with accept/dismiss, integration with the shared-skills install flow.        |
 | D-4   | Idle-trigger heuristic; revisit external-provider dreaming.                                                                                                                          |

@@ -182,7 +182,7 @@ describe('Daemon evaluation surface', () => {
     let dream
     await vi.waitFor(() => {
       dream = (daemon as any).store.getDream(AGENT_ID, started.dreamId)
-      expect(dream?.status).toBe('completed')
+      expect(dream?.status).toBe('adopted')
     })
 
     expect(dream).toMatchObject({
@@ -209,7 +209,11 @@ describe('Daemon evaluation surface', () => {
     expect(history).not.toContain('source session')
     expect(history).toContain('Dream completed.')
     expect(history).not.toContain(proposal)
-    expect(collector.events().map((event) => event.type)).toEqual(['memory.dream.started', 'memory.dream.completed'])
+    expect(collector.events().map((event) => event.type)).toEqual([
+      'memory.dream.started',
+      'memory.dream.completed',
+      'memory.dream.adopted'
+    ])
     expect(host.discardSession).toHaveBeenCalledWith('dream-session-1')
 
     ;(daemon as any).recordDreamLifecycle({
@@ -269,7 +273,7 @@ describe('Daemon evaluation surface', () => {
     let dream
     await vi.waitFor(() => {
       dream = (daemon as any).store.getDream(AGENT_ID, started.dreamId)
-      expect(dream?.status).toBe('completed')
+      expect(dream?.status).toBe('adopted')
     })
 
     expect(dream).not.toHaveProperty('model')

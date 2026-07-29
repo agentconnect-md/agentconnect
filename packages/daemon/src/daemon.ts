@@ -3579,11 +3579,11 @@ export class Daemon {
    *   mode and throw if the runtime has none or the switch doesn't take — the
    *   dream then fails rather than running with write access. (Passing `[]`
    *   mcpServers only drops our MCP tools, not the runtime's built-ins.)
-   * - **Trusted system-prompt channel — SOFT.** When the runtime carries the
+   * - **Trusted system-prompt channel — OBSERVED.** When the runtime carries the
    *   system prompt via `_meta.systemPrompt` the dream policy rides it; otherwise
-   *   the policy is prepended to the user prompt. That fallback is acceptable
-   *   because the output is staged and reviewed — bad *content* can't reach the
-   *   live store. `autoAdopt` (D-2) is what stays gated on the trusted channel.
+   *   the policy is prepended to the user prompt. Auto-accept is the user's
+   *   explicit choice to skip content review, so this transport distinction does
+   *   not override it; the verified non-mutating mode above still gates the run.
    */
   private async runDreamExtraction(
     agentId: string,
@@ -3593,7 +3593,6 @@ export class Daemon {
     context: { dreamId: string; trigger: 'manual' | 'schedule' | 'auto'; sessionIds: string[] }
   ): Promise<{
     output: string
-    trustedChannel: boolean
     sessionId: string
     runtime: string
     model?: string
@@ -3603,9 +3602,8 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     const host = await this.ensureHostAsync(agentId)
-    // Captured from THIS host, and returned with the output — the runner binds
-    // auto-adopt's gate to the extraction that actually produced the proposal,
-    // so a later host replacement can't retro-authorize an untrusted one.
+    // Capture the transport capability from THIS host so the extraction policy
+    // uses the same dedicated-system-prompt or inline path as the proposal run.
     const trusted = host.usesMetaSystemPrompt()
     let cwd = this.memoryExtractionDirs.get(agentId)
     if (!cwd) {
@@ -3729,7 +3727,6 @@ export class Daemon {
         const usage = this.store.getUsage(executionKey)
         return {
           output: chunks.join(''),
-          trustedChannel: trusted,
           sessionId,
           runtime: agent.runtime,
           ...(model ? { model } : {}),

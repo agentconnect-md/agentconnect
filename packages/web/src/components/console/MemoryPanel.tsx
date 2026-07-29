@@ -714,22 +714,29 @@ export function MemoryPanel({
                         setProviderError(null)
                       }}
                     />
-                    <label className="flex items-start gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-                      <input
-                        type="checkbox"
-                        checked={settings.dreaming.autoAdopt}
-                        disabled={!canEdit || savingProvider}
-                        onChange={() => {
-                          setSettings((current) => ({
-                            ...current,
-                            dreaming: { ...current.dreaming, autoAdopt: !current.dreaming.autoAdopt }
-                          }))
-                          setProviderError(null)
-                        }}
-                      />
-                      Automatically accept completed results and replace live memory. If a result cannot be applied
-                      safely, it stays ready for review.
-                    </label>
+                    <div className="flex flex-col gap-1">
+                      <label className="flex items-start gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+                        <input
+                          type="checkbox"
+                          checked={settings.dreaming.autoAdopt}
+                          disabled={!canEdit || savingProvider}
+                          onChange={() => {
+                            setSettings((current) => ({
+                              ...current,
+                              dreaming: { ...current.dreaming, autoAdopt: !current.dreaming.autoAdopt }
+                            }))
+                            setProviderError(null)
+                          }}
+                        />
+                        Automatically adopt completed memory results without review.
+                      </label>
+                      {settings.dreaming.autoAdopt ? (
+                        <div className="ml-6 font-sans text-[11px] font-normal leading-[1.5] text-(--amber-500)">
+                          Warning: Dream memory results can be inaccurate. Conflicting changes to live memory while a
+                          dream runs still pause the result for review.
+                        </div>
+                      ) : null}
+                    </div>
                     <label className="flex flex-col gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
                       Instructions (optional — steer what the dream focuses on)
                       <textarea
@@ -897,7 +904,13 @@ export function MemoryPanel({
               persisted policy is on; otherwise its trigger would be noise. */}
           {persistedSettings.dreaming.enabled ? (
             <div className="mt-4">
-              <DreamPanel key={agentId} agentId={agentId} canEdit={canEdit} sessionBasePath={sessionBasePath} />
+              <DreamPanel
+                key={agentId}
+                agentId={agentId}
+                canEdit={canEdit}
+                autoAcceptMemory={persistedSettings.dreaming.autoAdopt}
+                sessionBasePath={sessionBasePath}
+              />
             </div>
           ) : null}
         </>

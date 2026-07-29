@@ -107,10 +107,12 @@ function fmtBytes(bytes: number): string {
 export function DreamPanel({
   agentId,
   canEdit,
+  autoAcceptMemory,
   sessionBasePath
 }: {
   agentId: string
   canEdit: boolean
+  autoAcceptMemory: boolean
   sessionBasePath?: string
 }) {
   const [dreams, setDreams] = useState<DreamDto[] | null>(null)
@@ -428,8 +430,11 @@ export function DreamPanel({
               void run(() => startDream(agentId), 'start')
             }}
           >
-            This runs a model over the agent’s memory and recent sessions. It takes a few minutes and uses model tokens.
-            Nothing changes until you review and adopt the result.
+            {`This runs a model over the agent’s memory and recent sessions. It takes a few minutes and uses model tokens. ${
+              autoAcceptMemory
+                ? 'The memory result is adopted automatically unless live-memory changes conflict. Suggested skills still require review.'
+                : 'Nothing changes until you review and adopt the memory result. Suggested skills still require review.'
+            }`}
           </ConfirmationDialog>
         ) : null}
 
@@ -594,8 +599,8 @@ function DreamReview({
 /**
  * Skills this dream mined and is RECOMMENDING. Never auto-installed: a skill is
  * executable instruction content that steers every later session, so acceptance
- * is always an explicit human act (design §7) — unlike the memory store, which
- * can auto-adopt on a trusted runtime.
+ * is always an explicit human act (design §7), independent of the memory store's
+ * auto-accept policy.
  */
 function DreamSkills({
   agentId,
@@ -622,8 +627,8 @@ function DreamSkills({
         Suggested skills
       </span>
       <span className="font-sans text-[11px] font-normal leading-[1.5] text-(--text-tertiary)">
-        Procedures this agent kept repeating. Accepting one installs it for this agent so later sessions can reuse it —
-        it is never installed for you.
+        Generated skills always require review before installation. Accepting one installs it for this agent so later
+        sessions can reuse it.
       </span>
       {proposed.map((skill) => (
         <div

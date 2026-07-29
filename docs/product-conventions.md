@@ -243,9 +243,11 @@ timezone and automatically accepting the completed store proposal. Users can tur
 dreaming off, remove its schedule to keep only manual runs, or turn automatic acceptance
 off independently.
 
-Automatic acceptance remains a safe best-effort path: a runtime without a trusted
-extraction channel, an adoption fence conflict, or another failed swap leaves the
-completed result available for manual review instead of replacing live memory.
+Automatic acceptance applies to every successfully completed proposal, regardless of
+whether the runtime carries the dream policy through a dedicated system-prompt channel.
+The console must warn that these results replace live memory without content review.
+An adoption fence conflict or failed swap still leaves the completed result available
+for manual review instead of replacing newer live-memory changes.
 
 Dream proposals preserve existing topic boundaries, filenames, and byte-identical
 content by default. Small wording, formatting, ordering, or consistency changes do

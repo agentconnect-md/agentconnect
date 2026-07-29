@@ -90,12 +90,19 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
-async function render(props: { canEdit?: boolean; sessionBasePath?: string } = {}) {
+async function render(props: { canEdit?: boolean; autoAcceptMemory?: boolean; sessionBasePath?: string } = {}) {
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
   await act(async () => {
-    root?.render(<DreamPanel agentId={AGENT} canEdit={props.canEdit ?? true} sessionBasePath={props.sessionBasePath} />)
+    root?.render(
+      <DreamPanel
+        agentId={AGENT}
+        canEdit={props.canEdit ?? true}
+        autoAcceptMemory={props.autoAcceptMemory ?? false}
+        sessionBasePath={props.sessionBasePath}
+      />
+    )
   })
   return container
 }
@@ -108,10 +115,20 @@ describe('DreamPanel', () => {
     const host = await render()
     await act(async () => button(host, 'Dream now')?.click())
     expect(document.body.textContent).toContain('uses model tokens')
+    expect(document.body.textContent).toContain('review and adopt the memory result')
+    expect(document.body.textContent).toContain('Suggested skills still require review')
     expect(api.startDream).not.toHaveBeenCalled()
 
     await act(async () => button(document.body, 'Start dream')?.click())
     expect(api.startDream).toHaveBeenCalledWith(AGENT)
+  })
+
+  it('explains memory auto-accept without implying that generated skills are installed', async () => {
+    const host = await render({ autoAcceptMemory: true })
+    await act(async () => button(host, 'Dream now')?.click())
+    expect(document.body.textContent).toContain('memory result is adopted automatically')
+    expect(document.body.textContent).toContain('Suggested skills still require review')
+    expect(document.body.textContent).not.toContain('Nothing changes until you review')
   })
 
   it('keeps terminal history collapsed by default', async () => {
@@ -340,6 +357,7 @@ describe('DreamPanel', () => {
     expect(api.listDreams).toHaveBeenCalledWith(AGENT, 50, { pendingSkills: true })
 
     expect(host.textContent).toContain('Suggested skills')
+    expect(host.textContent).toContain('Generated skills always require review before installation')
     expect(host.textContent).toContain('deploy-staging')
     expect(host.textContent).toContain('Deploy to staging')
     // Nothing happens until the human acts — skills are never auto-installed.

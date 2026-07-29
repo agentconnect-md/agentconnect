@@ -43,8 +43,9 @@ export type MemoryCapturePolicy = z.infer<typeof MemoryCapturePolicy>
  * Dreaming — periodic offline consolidation of the MANAGED store
  * (design: docs/designs/memory-dreaming.md). Valid only with
  * `provider: 'managed'`; the daemon stages a rebuilt store per dream and the
- * user (or the gated auto-adopt path) reviews and adopts it. Bounds mirror the
- * design: sessionWindow ≤ 100 mined transcripts, instructions ≤ 4096 chars.
+ * user reviews and adopts it, or an enabled auto-accept policy adopts it.
+ * Bounds mirror the design: sessionWindow ≤ 100 mined transcripts,
+ * instructions ≤ 4096 chars.
  */
 export const MemoryDreamingPolicy = z
   .object({
@@ -61,9 +62,9 @@ export const MemoryDreamingPolicy = z
     instructions: z.string().max(4096).optional(),
     /** Also mine reusable procedures into candidate skills (never auto-installed). */
     mineSkills: z.boolean().optional(),
-    /** Adopt the staged store automatically on completion. Admissible only on
-     *  runtimes with a trusted extraction channel; the daemon enforces that.
-     *  Absent defaults to true for effective managed-memory policies. */
+    /** Adopt the staged store automatically on completion without content
+     *  review. Live-memory fence conflicts remain reviewable. Absent defaults
+     *  to true for effective managed-memory policies. */
     autoAdopt: z.boolean().optional()
   })
   .strict()
