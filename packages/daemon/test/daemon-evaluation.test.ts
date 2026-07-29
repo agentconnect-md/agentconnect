@@ -139,7 +139,7 @@ describe('Daemon evaluation surface', () => {
     collector.assertValid()
   }, 15_000)
 
-  it('records a dream as a metered session with lifecycle-only history', async () => {
+  it('records a dream as a metered session with its original ACP activity', async () => {
     const collector = new EvaluationEventCollector()
     let onUpdate!: (sessionId: string, update: unknown) => void
     const proposal = JSON.stringify({ index: '# Memory', files: [] })
@@ -152,6 +152,24 @@ describe('Daemon evaluation surface', () => {
       permissionModeOptions: vi.fn(() => ({ modes: ['read-only'] })),
       setSessionPermissionMode: vi.fn(async () => true),
       prompt: vi.fn(async (sessionId: string) => {
+        onUpdate(sessionId, {
+          sessionUpdate: 'agent_thought_chunk',
+          content: { type: 'text', text: 'PRIVATE MEMORY REASONING' }
+        })
+        onUpdate(sessionId, {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'dream-tool-1',
+          title: 'Read PRIVATE /memory/preferences.md',
+          kind: 'read',
+          status: 'in_progress',
+          rawInput: { path: '/memory/preferences.md', secret: 'PRIVATE TOOL INPUT' }
+        })
+        onUpdate(sessionId, {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'dream-tool-1',
+          status: 'completed',
+          rawOutput: { secret: 'PRIVATE TOOL OUTPUT' }
+        })
         onUpdate(sessionId, {
           sessionUpdate: 'usage_update',
           used: 12,
@@ -201,20 +219,53 @@ describe('Daemon evaluation surface', () => {
       costAmount: 0.05,
       costCurrency: 'USD'
     })
-    const history = (daemon as any).store
-      .threadTranscript('memory', started.dreamId)
-      .map((row: { text: string }) => row.text)
-      .join('\n')
+    const transcript = (daemon as any).store.threadTranscript('memory', started.dreamId) as Array<{
+      kind: string
+      text: string
+      body?: string
+      sender: string
+      recipient?: string
+    }>
+    const history = transcript.map((row) => row.text).join('\n')
+    const originalPrompt = host.prompt.mock.calls[0]![1][0]!.text
     expect(history).toContain('Memory dream started.')
-    expect(history).not.toContain('source session')
     expect(history).toContain('Dream completed.')
-    expect(history).not.toContain(proposal)
+    expect(transcript).toContainEqual(
+      expect.objectContaining({ kind: 'text', sender: 'memory', recipient: AGENT_ID, text: originalPrompt })
+    )
+    expect(transcript).toContainEqual(expect.objectContaining({ kind: 'reasoning', text: 'PRIVATE MEMORY REASONING' }))
+    const tool = transcript.find((row) => row.kind === 'tool')
+    expect(tool).toMatchObject({ text: 'Read PRIVATE /memory/preferences.md' })
+    expect(JSON.parse(tool!.body!)).toMatchObject({
+      toolCallId: 'dream-tool-1',
+      kind: 'read',
+      status: 'completed',
+      rawInput: { path: '/memory/preferences.md', secret: 'PRIVATE TOOL INPUT' },
+      rawOutput: { secret: 'PRIVATE TOOL OUTPUT' }
+    })
+    expect(transcript).toContainEqual(expect.objectContaining({ kind: 'text', text: proposal }))
     expect(collector.events().map((event) => event.type)).toEqual([
       'memory.dream.started',
       'memory.dream.completed',
       'memory.dream.adopted'
     ])
+    expect(JSON.stringify(collector.events())).not.toContain('PRIVATE')
+    expect(JSON.stringify(collector.events())).not.toContain(proposal)
     expect(host.discardSession).toHaveBeenCalledWith('dream-session-1')
+
+    const eventCount = collector.events().length
+    onUpdate('dream-session-1', {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: 'PRIVATE LATE DREAM UPDATE' }
+    })
+    expect((daemon as any).memoryExtractionQuarantines.size).toBe(1)
+    expect(collector.events()).toHaveLength(eventCount)
+    expect(
+      (daemon as any).store
+        .threadTranscript('memory', started.dreamId)
+        .map((row: { text: string }) => row.text)
+        .join('\n')
+    ).not.toContain('PRIVATE LATE DREAM UPDATE')
 
     ;(daemon as any).recordDreamLifecycle({
       type: 'memory.dream.skill_accepted',
@@ -341,12 +392,13 @@ describe('Daemon evaluation surface', () => {
 
       settlePrompt({ stopReason: 'end_turn' })
       await vi.advanceTimersByTimeAsync(0)
-      expect((daemon as any).memoryExtractionQuarantines.size).toBe(0)
+      expect((daemon as any).memoryExtractionQuarantines.size).toBe(1)
     } finally {
       settlePrompt({ stopReason: 'end_turn' })
       vi.useRealTimers()
       await daemon.stop()
     }
+    expect((daemon as any).memoryExtractionQuarantines.size).toBe(0)
     collector.assertValid()
   }, 15_000)
 

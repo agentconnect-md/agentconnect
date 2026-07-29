@@ -878,6 +878,15 @@ interface HookCompletionOwner {
   hookTerminalReceipt?: boolean
 }
 
+interface MemoryExtractionCollector {
+  chunks: string[]
+  sessionKey?: string
+  runtimeCostReported?: boolean
+  /** Dream sessions expose the same original reasoning/tool activity as ordinary
+   *  sessions. Background distillation has no transcript and leaves this unset. */
+  transcript?: { channel: string; thread: string; recorder: TranscriptRecorder }
+}
+
 function isSlackStatusBarText(text: string): boolean {
   return text.startsWith(':bar_chart:') || text.startsWith('\uD83D\uDCCA')
 }
@@ -1193,15 +1202,12 @@ export class Daemon {
   )
   /** Provider-neutral serialized post-turn work. Managed distills; external enqueues capture. */
   private memoryPostTurnChains = new Map<string, Promise<void>>()
-  private memoryExtractionCollectors = new Map<
-    string,
-    { chunks: string[]; sessionKey?: string; runtimeCostReported?: boolean }
-  >()
-  /** Sessions whose cancel backstop fired while the runtime prompt is still
-   *  executing. Keep dropping every late update until that exact prompt settles:
-   *  otherwise a delayed Dream proposal can escape into generic evaluation or
-   *  transcript surfaces after its collector has been released. */
-  private memoryExtractionQuarantines = new Set<string>()
+  private memoryExtractionCollectors = new Map<string, MemoryExtractionCollector>()
+  /** Finished/discarded extraction sessions. ACP adapters may emit callbacks even
+   *  after prompt() resolves, so retain this lightweight terminal fence until the
+   *  owning host stops; otherwise late private content can escape into generic
+   *  evaluation or transcript surfaces after its collector has been released. */
+  private memoryExtractionQuarantines = new Map<string, string>()
   /** One isolated extractor session per agent/host lifetime (never shown to users). */
   private memoryExtractionSessions = new Map<string, string>()
   private memoryExtractionDirs = new Map<string, string>()
@@ -3578,6 +3584,7 @@ export class Daemon {
     }
     const key = pendingTurnKey(agentId, sessionId)
     const chunks: string[] = []
+    this.memoryExtractionQuarantines.delete(key)
     this.memoryExtractionCollectors.set(key, { chunks })
     try {
       // Extraction runs read-only and shouldn't touch the config files, but keep
@@ -3589,6 +3596,7 @@ export class Daemon {
       if (this.memoryExtractionSessions.get(agentId) === sessionId) this.memoryExtractionSessions.delete(agentId)
       throw err
     } finally {
+      this.memoryExtractionQuarantines.set(key, agentId)
       this.memoryExtractionCollectors.delete(key)
     }
   }
@@ -3705,6 +3713,7 @@ export class Daemon {
     else signal.addEventListener('abort', onAbort, { once: true })
     let promptCompleted = false
     let extractionMode: string | undefined
+    let collector: MemoryExtractionCollector | undefined
     try {
       if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
       // HARD GATE: require a verified non-mutating mode. Fail closed if the
@@ -3721,22 +3730,37 @@ export class Daemon {
 
       const key = pendingTurnKey(agentId, sessionId)
       const chunks: string[] = []
-      const collector = { chunks, sessionKey: executionKey, runtimeCostReported: false }
+      collector = {
+        chunks,
+        sessionKey: executionKey,
+        runtimeCostReported: false,
+        transcript: { channel: 'memory', thread: context.dreamId, recorder: new TranscriptRecorder() }
+      }
+      this.memoryExtractionQuarantines.delete(key)
       this.memoryExtractionCollectors.set(key, collector)
       try {
         this.rematerializeConfigFiles(agentId)
         const text = trusted ? prompt : `${systemPrompt}\n\n${prompt}`
+        this.store.appendTranscript({
+          channel: 'memory',
+          thread: context.dreamId,
+          ts: monotonicTs(),
+          sender: 'memory',
+          recipient: agentId,
+          kind: 'text',
+          text
+        })
         // Bounded backstop: if the runtime ignores `session/cancel` and never
         // yields, stop awaiting after DREAM_CANCEL_FORCE_MS from the abort so the
         // `finally` discards the ACP session instead of leaking it. The runner's
         // own grace window already releases the reservation independently.
         const result = await this.promptWithCancelBackstop(host, sessionId, text, signal, (prompt) => {
           // Release the potentially large proposal chunks once the backstop wins,
-          // but retain a key-only tombstone until the ignored prompt truly ends.
+          // but retain a key-only tombstone until the owning host stops. Some ACP
+          // adapters can still emit callbacks after the prompt promise settles.
           if (this.memoryExtractionCollectors.get(key) === collector) this.memoryExtractionCollectors.delete(key)
-          this.memoryExtractionQuarantines.add(key)
-          const release = () => this.memoryExtractionQuarantines.delete(key)
-          void prompt.then(release, release)
+          this.memoryExtractionQuarantines.set(key, agentId)
+          void prompt.catch(() => {})
         })
         promptCompleted = true
         if (result.usage) {
@@ -3764,10 +3788,26 @@ export class Daemon {
           ...(Object.keys(usage).length ? { usage } : {})
         }
       } finally {
-        if (!this.memoryExtractionQuarantines.has(key)) this.memoryExtractionCollectors.delete(key)
+        this.memoryExtractionQuarantines.set(key, agentId)
+        if (this.memoryExtractionCollectors.get(key) === collector) this.memoryExtractionCollectors.delete(key)
       }
     } finally {
       signal.removeEventListener('abort', onAbort)
+      if (collector?.transcript) {
+        const { channel, thread, recorder } = collector.transcript
+        for (const ev of recorder.onFinal()) this.recordEvent(agentId, channel, thread, ev)
+        const output = collector.chunks.join('')
+        if (output) {
+          this.store.appendTranscript({
+            channel,
+            thread,
+            ts: monotonicTs(),
+            sender: agentId,
+            kind: 'text',
+            text: output
+          })
+        }
+      }
       // Report even on failed/canceled prompts: a runtime may have streamed a
       // native cost/context snapshot before the terminal error. The CP upsert is
       // latest-wins, so the success path and this failure-safe path share one
@@ -3829,9 +3869,9 @@ export class Daemon {
   }
 
   /** Bridge the dream engine's metadata-only lifecycle into evaluation telemetry
-   *  and the safe transcript of its background execution session. Memory bodies,
-   *  source transcript text, prompts, model output, and error prose never enter
-   *  either surface. */
+   *  and the transcript of its background execution session. Raw ACP activity is
+   *  recorded separately by the extraction collector; it never enters evaluation
+   *  events, platform delivery, or logs. */
   private recordDreamLifecycle(event: DreamLifecycleEvent): void {
     const { dream } = event
     this.emitEvaluation({
@@ -11429,10 +11469,16 @@ export class Daemon {
       if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
         extraction.chunks.push(String(update.content.text ?? ''))
       }
-      // Distillation uses an unlisted cached extractor and therefore has no
-      // sessionKey. A dream does: retain the native context/cost snapshot while
-      // still suppressing every body-bearing ACP update from ordinary transcript
-      // and evaluation surfaces.
+      if (extraction.transcript) {
+        const { channel, thread, recorder } = extraction.transcript
+        for (const ev of recorder.onUpdate(update)) {
+          this.recordEvent(agentId, channel, thread, ev)
+        }
+      }
+      // Distillation uses an unlisted cached extractor and therefore has neither
+      // sessionKey nor transcript. A Dream has both: retain native usage and the
+      // ordinary raw activity timeline while keeping extraction output out of
+      // platform delivery and evaluation telemetry.
       if (update?.sessionUpdate === 'usage_update' && extraction.sessionKey) {
         if (update.cost?.amount !== undefined) extraction.runtimeCostReported = true
         this.store.setUsageSnapshot(extraction.sessionKey, {
@@ -11445,9 +11491,9 @@ export class Daemon {
       return
     }
     // A runtime can ignore session/cancel and keep streaming after the bounded
-    // Dream await has detached. The collector is gone by then, but the content is
-    // still private extraction output and must never fall through to generic ACP
-    // evaluation, transcript, or delivery handling.
+    // Dream await has detached. The collector is gone by then, so late output no
+    // longer has a trustworthy transcript owner and must not fall through to
+    // generic ACP evaluation, transcript, or delivery handling.
     if (this.memoryExtractionQuarantines.has(extractionKey)) return
     const p = this.pending.get(pendingTurnKey(agentId, sessionId))
     this.emitEvaluation({
@@ -12163,6 +12209,11 @@ export class Daemon {
         if (binding.agentId === agentId) this.sessionDeliveryBindings.delete(key)
       }
     }
+    const clearMemoryExtractionQuarantines = () => {
+      for (const [key, ownerAgentId] of this.memoryExtractionQuarantines) {
+        if (ownerAgentId === agentId) this.memoryExtractionQuarantines.delete(key)
+      }
+    }
     // Once the child (and its process group) is gone, nothing can read the
     // materialized config-file secrets (KUBECONFIG & co.) — remove them so the
     // secret material stops resting on disk between sessions. Safe against the
@@ -12175,6 +12226,7 @@ export class Daemon {
     }
     if (!host) {
       clearDeliveryBindings()
+      clearMemoryExtractionQuarantines()
       removeConfigFiles()
       return
     }
@@ -12190,6 +12242,7 @@ export class Daemon {
       // Keep exact routes alive until the adapter's notification stream has closed;
       // some runtimes flush a final title while session/stop is unwinding.
       clearDeliveryBindings()
+      clearMemoryExtractionQuarantines()
       removeConfigFiles()
     }
   }
