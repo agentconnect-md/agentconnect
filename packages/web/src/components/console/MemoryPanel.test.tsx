@@ -277,6 +277,52 @@ describe('MemoryPanel settings draft', () => {
     })
   })
 
+  // Skill mining is off unless the policy says otherwise, and the daemon keys
+  // three separate things off that one flag (the extract-procedures phase, the
+  // tool rows in the prompt, and the grounding set). Without a control here it
+  // could never be turned on, so a dream would silently mine nothing forever.
+  it('turns skill mining on and sends it with the memory binding', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <MemoryPanel
+          agentId="22222222-2222-4222-8222-222222222222"
+          canEdit
+          memoryProvider="managed"
+          autoDistill={false}
+        />
+      )
+    })
+
+    await openSettings(container)
+    const checkboxFor = (text: string) =>
+      [...container!.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((box) =>
+        box.parentElement?.textContent?.includes(text)
+      )
+
+    expect(checkboxFor('Also mine reusable skills')?.checked).toBe(false)
+    expect(container.textContent).not.toContain('at least two sessions')
+
+    await act(async () => checkboxFor('Also mine reusable skills')?.click())
+    expect(container.textContent).toContain('at least two sessions')
+
+    const save = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === 'Save memory settings'
+    )
+    await act(async () => save?.click())
+
+    expect(mocks.updateAgent).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', {
+      memory: {
+        provider: 'managed',
+        autoDistill: false,
+        dreaming: { enabled: true, schedule: '0 4 * * *', autoAdopt: true, mineSkills: true }
+      }
+    })
+  })
+
   it('collapses the settings form behind a summary of the persisted backend', async () => {
     container = document.createElement('div')
     document.body.append(container)
