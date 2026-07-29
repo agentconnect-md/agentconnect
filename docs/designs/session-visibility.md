@@ -111,7 +111,8 @@ enum VisibilitySource {
   default           // classified by the §4.2 rules
   inherited_pending // A2A child awaiting parent resolution (§4.5)
   inherited         // settled from (or cascaded by) its parent
-  explicit          // set by a human via §4.3 — never auto-overwritten
+  explicit          // set by a human via §4.3; only a §4.5 tightening
+                    // cascade may override it (privacy wins)
 }
 ```
 
@@ -255,6 +256,26 @@ state marker:
   descendant stays as classified; widening a child remains a per-session §4.3
   decision by its owner or an org owner.
 
+`explicit` is therefore protected against **settlement** (the automatic
+reconciliation above) but not against a **tightening cascade** — the §3 enum
+semantics are exactly these two rules, and privacy wins on the conflict.
+
+**Serialization.** Child classification and parent tightening race: a child
+milestone that reads its parent's `visibility = 'org'` could otherwise commit
+after the parent has been tightened, retaining stale org visibility. Both
+operations must serialize on the parent row:
+
+- Child ingest classifies inside the same transaction as the child insert and
+  takes a shared row lock on the parent (`SELECT … FOR SHARE`).
+- The §4.3 tightening handler locks the parent `FOR UPDATE` and updates all
+  descendants in the same transaction.
+
+Either the child commits first — and the cascade, which enumerates
+descendants inside its transaction, includes it — or the cascade commits
+first and the child's classification reads `private`. No interleaving can
+produce an org-visible child of a private parent. The integration test plan
+(§9) exercises this with concurrent ingest + tighten.
+
 ## 5. Enforcement points (control-plane)
 
 The authoritative predicate, mirroring `canView`:
@@ -316,6 +337,22 @@ two layers:
    channel's stated purpose — and carries a single privacy bit per session,
    not message content.
 
+   The push must be **durable, not fire-and-forget**, or races and restarts
+   reopen the bypass:
+
+   - Each frame carries a **monotonic revision** per session (the CP already
+     versions session state); the daemon ignores stale revisions.
+   - The daemon **acknowledges** the frame and persists the gate state (with
+     its revision) in its local store alongside the session; the CP retries
+     unacked frames, per the WS channel's existing command semantics.
+   - On daemon **register/reconnect**, the CP replays the current privacy
+     state for the daemon's active sessions (a snapshot, not a diff), closing
+     the window where a change happened while the daemon was offline.
+   - **Fail closed:** a session whose gate state is missing or whose pending
+     update is unconfirmed (e.g. right after a restart, before the snapshot
+     lands) is treated as private for capture purposes until the CP confirms
+     otherwise. A missed or delayed frame can only under-capture, never leak.
+
 **Already-captured memory is not scrubbed.** Distilled memory cannot be
 reliably attributed back to source turns, so tightening a session stops
 _future_ capture but does not retract what was distilled while it was
@@ -375,4 +412,6 @@ link ends public access without touching the session row.
   stability under the new predicate; migration backfill (`org` + `orgId`) on
   seeded legacy rows; visibility PUT authorization matrix (initiator of an
   `org` channel session may pull it private; a non-owner collaborator may
-  not).
+  not); the §4.5 serialization race — concurrent child ingest and parent
+  tightening in either commit order never yields an org-visible child of a
+  private parent.
