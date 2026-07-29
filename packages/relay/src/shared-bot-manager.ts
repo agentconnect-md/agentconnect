@@ -29,7 +29,11 @@ import type {
 import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from './log.js'
 import { SharedBotRouter, sessionKeyOf, type BotAssignment, type RouteTarget } from './shared-bot-router.js'
-import { SlackSharedIngest, type SharedSlackSessionAction } from './slack-shared-ingest.js'
+import {
+  SlackSharedIngest,
+  type SharedSlackSessionAction,
+  type SharedSlackSessionShortcut
+} from './slack-shared-ingest.js'
 import { verifySlackSignature } from './hooks/signature.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 
@@ -113,6 +117,21 @@ export function sharedSlackActionMsgId(botId: string, action: SharedSlackSession
         interactionId,
         kind,
         value
+      })
+    )
+    .digest('hex')
+  return `slack-action:${digest}`
+}
+
+export function sharedSlackShortcutMsgId(botId: string, shortcut: SharedSlackSessionShortcut): string {
+  const digest = createHash('sha256')
+    .update(
+      JSON.stringify({
+        v: 1,
+        botId,
+        channelId: shortcut.channelId,
+        threadTs: shortcut.threadTs,
+        interactionId: shortcut.interactionId
       })
     )
     .digest('hex')
@@ -207,6 +226,7 @@ export class SharedBotManager {
         onSelectThreadAgent: (channelId, threadTs, agentId) =>
           this.selectThreadAgent(a.botId, channelId, threadTs, agentId),
         onSessionAction: (action) => this.forwardSessionAction(a.botId, action),
+        onSessionShortcut: (shortcut) => this.forwardSessionShortcut(a.botId, shortcut),
         log: this.deps.log
       }
     )
@@ -509,5 +529,58 @@ export class SharedBotManager {
       .catch((err) =>
         this.deps.log.warn(`shared-bot(${botId}): session action forward failed: ${(err as Error).message}`)
       )
+  }
+
+  /** Resolve a message shortcut from live conversation ownership, then let the
+   *  daemon resolve the exact bot-scoped session before it opens the modal. */
+  private forwardSessionShortcut(botId: string, shortcut: SharedSlackSessionShortcut): boolean {
+    const sessionKey = sessionKeyOf({ channel: shortcut.channelId, thread: shortcut.threadTs })
+    const assignment = this.router.get(botId)
+    if (!assignment) return false
+    const allowedInChannel = (agentId: string): boolean =>
+      !assignment.gatedAgentIds?.includes(agentId) ||
+      assignment.routes.some((route) => route.agentId === agentId && route.scope?.channel === shortcut.channelId)
+    const affinity = this.router.peekAffinity(botId, sessionKey)
+    const affinityRoute =
+      affinity && allowedInChannel(affinity.agentId)
+        ? this.router.targetForAgent(botId, affinity.agentId, affinity.integrationId)
+        : undefined
+    const channelOwner = this.router.channelOwner(botId, shortcut.channelId)
+    const route =
+      affinityRoute ??
+      (channelOwner && allowedInChannel(channelOwner)
+        ? this.router.targetForAgentId(botId, channelOwner)
+        : undefined) ??
+      (assignment.defaultAgentId && allowedInChannel(assignment.defaultAgentId)
+        ? this.router.targetForAgentId(botId, assignment.defaultAgentId)
+        : undefined)
+    if (!route) return false
+    const daemon = this.deps.getDaemon(route.daemonId)
+    if (!daemon) return false
+    const rd: RdMsgSlackAction = {
+      source: 'slack_action',
+      agentId: route.agentId,
+      integrationId: route.integrationId,
+      sessionKey,
+      msgId: sharedSlackShortcutMsgId(botId, shortcut),
+      botId,
+      ...(shortcut.userId ? { userId: shortcut.userId } : {}),
+      payload: {
+        kind: 'open-config-for-thread',
+        triggerId: shortcut.triggerId,
+        channelId: shortcut.channelId,
+        threadTs: shortcut.threadTs
+      }
+    }
+    void daemon
+      .sendMsg(rd)
+      .then((ack) => {
+        if (!ack.accepted)
+          this.deps.log.warn(`shared-bot(${botId}): daemon rejected session shortcut (${ack.reason ?? 'unknown'})`)
+      })
+      .catch((err) =>
+        this.deps.log.warn(`shared-bot(${botId}): session shortcut forward failed: ${(err as Error).message}`)
+      )
+    return true
   }
 }

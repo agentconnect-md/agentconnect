@@ -23,6 +23,7 @@ function fakeApp(actions: Map<string, Handler>) {
     message: () => {},
     event: () => {},
     action: (id: string | RegExp, handler: Handler) => actions.set(String(id), handler),
+    shortcut: () => {},
     start: async () => {},
     stop: async () => {},
     client: { auth: { test: async () => ({ user_id: 'UBOT', bot_id: 'BBOT', url: 'https://x.slack.test/' }) } }

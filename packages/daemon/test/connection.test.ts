@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest'
-import { encodeSlackStatusOverflowValue } from '@agentconnect.md/protocol'
+import { encodeSlackStatusOverflowValue, SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
 import { consolidate, SlackConnection } from '../src/slack/connection.js'
 import type { Agent } from '../src/agents/agent-schema.js'
 
@@ -47,6 +47,7 @@ function fakeAppWith(
     message() {},
     event() {},
     action() {},
+    shortcut() {},
     client: {
       auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
       chat: { postMessage },
@@ -143,6 +144,7 @@ describe('SlackConnection.listBotChannels', () => {
       message() {},
       event() {},
       action() {},
+      shortcut() {},
       client: {
         auth: { test: async () => ({ user_id: 'U1' }) },
         users: {
@@ -197,6 +199,7 @@ describe('SlackConnection.listBotChannels', () => {
           message() {},
           event() {},
           action() {},
+          shortcut() {},
           client: {
             auth: { test: async () => ({ user_id: 'U1' }) },
             users: {
@@ -235,6 +238,7 @@ describe('SlackConnection.getThreadReplies', () => {
           message() {},
           event() {},
           action() {},
+          shortcut() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
           stop: async () => {}
@@ -275,6 +279,7 @@ describe('SlackConnection.getThreadReplies', () => {
           message() {},
           event() {},
           action() {},
+          shortcut() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
           stop: async () => {}
@@ -312,6 +317,7 @@ describe('SlackConnection.getThreadReplies', () => {
           message() {},
           event() {},
           action() {},
+          shortcut() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
           stop: async () => {}
@@ -344,6 +350,7 @@ describe('SlackConnection.getThreadReplies', () => {
           message() {},
           event() {},
           action() {},
+          shortcut() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
           stop: async () => {}
@@ -361,7 +368,8 @@ describe('SlackConnection membership events', () => {
   const fakeAppWithEvents = (
     handlers: Map<string, (a: { event: unknown }) => unknown>,
     actions?: Map<string, (a: any) => unknown>,
-    opened?: any[]
+    opened?: any[],
+    shortcuts?: Map<string, (a: any) => unknown>
   ) => ({
     message() {},
     event(type: string, h: (a: { event: unknown }) => unknown) {
@@ -369,6 +377,9 @@ describe('SlackConnection membership events', () => {
     },
     action(id: string, h: (a: any) => unknown) {
       actions?.set(id, h)
+    },
+    shortcut(id: string, h: (a: any) => unknown) {
+      shortcuts?.set(id, h)
     },
     client: {
       auth: { test: async () => ({ user_id: 'UBOT' }) },
@@ -483,6 +494,62 @@ describe('SlackConnection membership events', () => {
     ])
   })
 
+  it('opens the selected conversation session from the message shortcut', async () => {
+    const KEY = 'slack:C1:T1:bot-a'
+    const shortcuts = new Map<string, (a: any) => unknown>()
+    const opened: any[] = []
+    const resolve = vi.fn().mockReturnValueOnce(KEY).mockReturnValueOnce(undefined)
+    const conn = new SlackConnection(
+      {
+        ...deps(),
+        onMessageShortcut: resolve,
+        onStatusInfo: (key: string) => ({
+          info: { model: 'opus-4.8' },
+          link: `https://app/s/${key}`,
+          cancellable: false
+        })
+      } as any,
+      () => fakeAppWithEvents(new Map(), new Map(), opened, shortcuts) as any
+    )
+    await conn.start()
+    const handler = shortcuts.get(SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID)!
+    const ack = vi.fn(async () => {})
+
+    await handler({
+      ack,
+      shortcut: {
+        trigger_id: 'trig-shortcut',
+        channel: { id: 'C1' },
+        message: { ts: 'T1.2', thread_ts: 'T1' },
+        user: { id: 'U1' }
+      }
+    })
+
+    expect(ack).toHaveBeenCalledOnce()
+    expect(resolve).toHaveBeenCalledWith({ channel: 'C1', thread: 'T1', userId: 'U1' })
+    expect(opened[0]).toMatchObject({
+      trigger_id: 'trig-shortcut',
+      view: { private_metadata: KEY }
+    })
+
+    await handler({
+      ack: async () => {},
+      shortcut: {
+        trigger_id: 'trig-missing',
+        channel: { id: 'C2' },
+        message: { ts: 'T2' },
+        user: { id: 'U1' }
+      }
+    })
+    expect(opened[1]).toMatchObject({
+      trigger_id: 'trig-missing',
+      view: {
+        title: { text: 'Session options' },
+        blocks: [{ text: { text: 'No AgentConnect session was found for this conversation.' } }]
+      }
+    })
+  })
+
   it('openStatusModal lets a forwarded shared click override view.private_metadata', async () => {
     const KEY = 'slack:C1:T1:bot-a'
     const TARGET = JSON.stringify({ v: 1, agentId: 'bot-a', integrationId: 'int-a', sessionKey: KEY })
@@ -528,6 +595,7 @@ describe('SlackConnection assistant DM threads', () => {
             events.set(type, h)
           },
           action() {},
+          shortcut() {},
           client: {
             auth: { test: async () => ({ user_id: 'UBOT' }) },
             views: { open: async () => {}, update: async () => {} }
@@ -583,6 +651,7 @@ describe('SlackConnection assistant DM threads', () => {
           },
           event() {},
           action() {},
+          shortcut() {},
           client: {
             auth: { test: async () => ({ user_id: 'UBOT', bot_id: 'BSELF' }) },
             views: { open: async () => {}, update: async () => {} }
@@ -869,6 +938,7 @@ describe('SlackConnection.updateBlocks', () => {
     message() {},
     event() {},
     action() {},
+    shortcut() {},
     client: { chat: { update } },
     start: async () => {},
     stop: async () => {}
@@ -930,6 +1000,7 @@ describe('SlackConnection custom message username', () => {
     message() {},
     event() {},
     action() {},
+    shortcut() {},
     client: { chat: { postMessage } },
     start: async () => {},
     stop: async () => {}

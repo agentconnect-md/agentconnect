@@ -179,6 +179,12 @@ export type RdMsgIm = z.infer<typeof RdMsgIm>
 // existing receipt, dedup, and relay→daemon delivery path.
 export const RdSlackAction = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('open-config'), triggerId: z.string().min(1) }),
+  z.object({
+    kind: z.literal('open-config-for-thread'),
+    triggerId: z.string().min(1),
+    channelId: z.string().min(1),
+    threadTs: z.string().min(1)
+  }),
   z.object({ kind: z.literal('set-model'), model: z.string().min(1) }),
   z.object({ kind: z.literal('set-effort'), effort: z.string().min(1) }),
   z.object({ kind: z.literal('set-permission-mode'), permissionMode: z.string().min(1) }),
@@ -190,8 +196,10 @@ export const RdSlackAction = z.discriminatedUnion('kind', [
 ])
 export type RdSlackAction = z.infer<typeof RdSlackAction>
 
-/** R→D REQ → rd/ack. The relay has validated the opaque Slack target against its
- *  current shared-bot assignment and names the canonical agent + integration. */
+/** R→D REQ → rd/ack. The relay has validated either an opaque rendered-control
+ *  target or a message shortcut's current conversation owner against its shared-bot
+ *  assignment, and names the canonical agent + integration. Coordinate shortcuts
+ *  are resolved to an exact bot-scoped session again by the daemon. */
 export const RdMsgSlackAction = z.object({
   source: z.literal('slack_action'),
   agentId: z.string().uuid(),

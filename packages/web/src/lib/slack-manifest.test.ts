@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildSlackManifest, slackCreateAppUrl } from './slack-manifest'
+import { buildSlackManifest, slackCreateAppUrl, SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from './slack-manifest'
 
 describe('buildSlackManifest', () => {
   it('brands the app with the given background_color, and omits it otherwise', () => {
@@ -15,5 +15,19 @@ describe('buildSlackManifest', () => {
 
     expect(url.searchParams.get('new_app')).toBe('1')
     expect(JSON.parse(url.searchParams.get('manifest_json')!)).toEqual(buildSlackManifest({ name: 'acme' }))
+  })
+
+  it('declares the message shortcut and its required commands scope', () => {
+    const manifest = buildSlackManifest({ name: 'acme' })
+
+    expect(manifest.oauth_config.scopes.bot).toContain('commands')
+    expect(manifest.features.shortcuts).toEqual([
+      {
+        name: 'Manage AgentConnect session',
+        type: 'message',
+        callback_id: SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+        description: 'View or update the AgentConnect session for this conversation'
+      }
+    ])
   })
 })

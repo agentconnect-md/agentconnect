@@ -563,6 +563,25 @@ function fmtCount(n?: number): string | undefined {
   return String(n)
 }
 
+/** Small terminal modal for a shortcut whose selected conversation has no
+ * addressable AgentConnect session (or is not visible to the clicking user). */
+export function buildStatusUnavailableModal(): Record<string, unknown> {
+  return {
+    type: 'modal',
+    title: { type: 'plain_text', text: 'Session options' },
+    close: { type: 'plain_text', text: 'Close' },
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: 'No AgentConnect session was found for this conversation.'
+        }
+      }
+    ]
+  }
+}
+
 /**
  * Build the controls modal opened from Configure (a snapshot — Slack modals don't
  * stream). `private_metadata` carries either the direct session key or a shared-bot

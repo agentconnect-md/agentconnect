@@ -14,6 +14,7 @@
  * lists below are pinned by a drift-guard test (slack-manifest.test.ts); when you
  * change them here, change them in packages/web/src/lib/slack-manifest.ts too.
  */
+import { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
 
 /** Bot token scopes the daemon's Slack adapter requires. */
 export const SLACK_BOT_SCOPES = [
@@ -21,6 +22,7 @@ export const SLACK_BOT_SCOPES = [
   'app_mentions:read',
   'channels:history',
   'channels:read',
+  'commands',
   'chat:write',
   'chat:write.customize',
   'files:write',
@@ -61,6 +63,15 @@ function unionStrings(current: unknown, required: readonly string[]): string[] {
   return [...new Set([...stringList(current), ...required])]
 }
 
+function mergeManagedShortcuts(current: unknown, managed: unknown): unknown[] {
+  const required = Array.isArray(managed) ? managed : []
+  const callbackIds = new Set(required.map((shortcut) => asRecord(shortcut).callback_id))
+  const existing = Array.isArray(current)
+    ? current.filter((shortcut) => !callbackIds.has(asRecord(shortcut).callback_id))
+    : []
+  return [...required, ...existing]
+}
+
 /** The relay pool's Events API endpoints, derived from its public HTTPS base
  *  (slack-http-mode §6): the manifest's `request_url`s Slack POSTs inbound to. */
 export function slackEventsRequestUrl(relayHttpBase: string): string {
@@ -92,7 +103,15 @@ function buildManagedManifest(name: string, httpRelayBase?: string, backgroundCo
       agent_view: {
         agent_description: `${displayName} is an AgentConnect agent that responds to Slack conversations and works in threads.`,
         suggested_prompts: []
-      }
+      },
+      shortcuts: [
+        {
+          name: 'Manage AgentConnect session',
+          type: 'message',
+          callback_id: SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+          description: 'View or update the AgentConnect session for this conversation'
+        }
+      ]
     },
     oauth_config: {
       scopes: { bot: [...SLACK_BOT_SCOPES] }
@@ -196,7 +215,8 @@ export function mergeManagedSlackManifest(
         messages_tab_enabled: true,
         messages_tab_read_only_enabled: false
       },
-      agent_view: { ...managedAgentView, ...currentAgentView }
+      agent_view: { ...managedAgentView, ...currentAgentView },
+      shortcuts: mergeManagedShortcuts(currentFeatures.shortcuts, managedFeatures.shortcuts)
     },
     oauth_config: {
       ...managedOauth,
