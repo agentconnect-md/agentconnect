@@ -23,7 +23,7 @@ import { registerSlackHttpIngress } from './slack-http-ingress.js'
 import { registerFeishuHttpIngress } from './feishu-http-ingress.js'
 import { CollaborationRouter } from './collaboration-router.js'
 import { createAgentMsgRouter } from './agent-msg-router.js'
-import type { BotAssignment } from './bot-arbitration.js'
+import { mapAgentDirectory, type BotAssignment } from './bot-arbitration.js'
 import { HookTable } from './hooks/hook-table.js'
 import { HookRateLimiter } from './hooks/rate-limit.js'
 import { registerHookIngress } from './hooks/ingress.js'
@@ -53,12 +53,7 @@ function toBotAssignment(a: import('@agentconnect.md/protocol').RcBotAssign): Bo
     ...(a.credentialRevision !== undefined ? { credentialRevision: a.credentialRevision } : {}),
     ...(a.botUserId ? { botUserId: a.botUserId } : {}),
     members: a.members,
-    agents: a.agents.map((x) => ({
-      agentId: x.agentId,
-      name: x.name,
-      daemonId: x.daemonId,
-      ...(x.integrationId ? { integrationId: x.integrationId } : {})
-    })),
+    agents: mapAgentDirectory(a.agents),
     routes: a.routes,
     ...(a.defaultAgentId ? { defaultAgentId: a.defaultAgentId } : {}),
     ...(a.defaultDaemonId ? { defaultDaemonId: a.defaultDaemonId } : {}),
@@ -161,7 +156,7 @@ async function main(): Promise<void> {
     onRoutes: (r) =>
       held.relayIngress?.updateRoutes(r.botId, {
         members: r.members,
-        agents: r.agents.map((x) => ({ agentId: x.agentId, name: x.name })),
+        agents: mapAgentDirectory(r.agents),
         routes: r.routes,
         ...(r.defaultAgentId ? { defaultAgentId: r.defaultAgentId } : {}),
         ...(r.defaultDaemonId ? { defaultDaemonId: r.defaultDaemonId } : {}),

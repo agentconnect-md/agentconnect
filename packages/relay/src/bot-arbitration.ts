@@ -14,7 +14,7 @@
  * Pure data + a pure `arbitrate()` — no I/O, no Slack, no sockets — so it unit
  * tests without a live ingest.
  */
-import type { AttributedRoute, WireNormalizedMessage } from '@agentconnect.md/protocol'
+import type { AttributedRoute, RcAgentDirEntry, WireNormalizedMessage } from '@agentconnect.md/protocol'
 
 /** A bot's full relay-side assignment (from `rc/bot-assign`). Secret material. */
 export interface BotAssignment {
@@ -51,6 +51,16 @@ export interface BotAssignment {
   /** §14.3: DM conversation ids whose notice was ACTUALLY DELIVERED (pool-wide
    *  latch for single-copy DM messages; never mere row discovery). */
   noticedDmConversations?: string[]
+}
+
+/** Keep the directory shape identical on full assignments and `rc/routes` updates. */
+export function mapAgentDirectory(entries: readonly RcAgentDirEntry[]): BotAssignment['agents'] {
+  return entries.map((entry) => ({
+    agentId: entry.agentId,
+    name: entry.name,
+    daemonId: entry.daemonId,
+    ...(entry.integrationId ? { integrationId: entry.integrationId } : {})
+  }))
 }
 
 /** The arbitration verdict — a target the daemon dispatches to. */

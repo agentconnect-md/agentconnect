@@ -147,6 +147,29 @@ describe('Feishu HTTP ingress', () => {
     await vi.waitFor(() => expect(h.messages).toHaveLength(1))
   })
 
+  it('decrypts URL verification without requiring event-signature headers', async () => {
+    const encryptKey = 'encrypt-key'
+    const h = makeApp({ verificationToken: 'verify-token', encryptKey })
+    app = h.app
+    const delivery = encryptedEnvelope(
+      {
+        type: 'url_verification',
+        token: 'verify-token',
+        app_id: 'cli_http_app',
+        challenge: 'challenge-encrypted'
+      },
+      encryptKey
+    )
+    const response = await app.inject({
+      method: 'POST',
+      url: '/feishu/events',
+      headers: { 'content-type': 'application/json' },
+      payload: delivery.raw
+    })
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual({ challenge: 'challenge-encrypted' })
+  })
+
   it('rejects forged tokens and signatures', async () => {
     const plain = makeApp()
     app = plain.app

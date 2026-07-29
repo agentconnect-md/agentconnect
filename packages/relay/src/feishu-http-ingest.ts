@@ -92,9 +92,6 @@ export class FeishuHttpIngest {
   decode(rawBody: Buffer, outerBody: unknown, headers: FeishuCallbackHeaders): VerifiedFeishuCallback | null {
     const outer = asRecord(outerBody)
     if (!outer) return null
-    if (this.secrets.encryptKey && !signatureIsValid(this.secrets.encryptKey, rawBody, headers, this.deps.now())) {
-      return null
-    }
 
     const encrypted = typeof outer.encrypt === 'string' ? outer.encrypt : undefined
     const body = encrypted
@@ -112,6 +109,9 @@ export class FeishuHttpIngest {
 
     if (body.type === 'url_verification') {
       return { kind: 'challenge', challenge: typeof body.challenge === 'string' ? body.challenge : '' }
+    }
+    if (this.secrets.encryptKey && !signatureIsValid(this.secrets.encryptKey, rawBody, headers, this.deps.now())) {
+      return null
     }
     const eventType =
       typeof header?.event_type === 'string'

@@ -15,7 +15,7 @@ import {
   httpSlackActionMsgId,
   httpSlackShortcutMsgId
 } from './relay-ingress-manager.js'
-import { BotArbitrationRouter, type BotAssignment } from './bot-arbitration.js'
+import { BotArbitrationRouter, mapAgentDirectory, type BotAssignment } from './bot-arbitration.js'
 import type { HttpSlackSessionAction, HttpSlackSessionShortcut } from './slack-http-ingest.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { Logger } from './log.js'
@@ -900,7 +900,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
       deps({ getDaemon: () => ({ sendMsg }) as unknown as RelayDaemonConnection })
     )
     const internals = manager as unknown as ManagerInternals
-    internals.router.upsert({
+    const assigned: BotAssignment = {
       botId: BOT_ID,
       platform: 'feishu',
       secrets: { verificationToken: 'verify-token' },
@@ -917,6 +917,25 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
       ],
       routes: [],
       gatedAgentIds: [AGENT_ID]
+    }
+    internals.router.upsert(assigned)
+
+    // A notice-posted or channel update arrives as `rc/routes` and fully replaces
+    // the directory. Keep the daemon/integration coordinates needed by the
+    // receive-only Feishu fallback after that hot update.
+    manager.updateRoutes(BOT_ID, {
+      members: assigned.members,
+      agents: mapAgentDirectory([
+        {
+          agentId: AGENT_ID,
+          name: 'Agent',
+          daemonId: DAEMON_ID,
+          integrationId: INTEGRATION_ID
+        }
+      ]),
+      routes: [],
+      gatedAgentIds: [AGENT_ID],
+      noticedDmConversations: ['oc_previous']
     })
 
     const payload = dm({
