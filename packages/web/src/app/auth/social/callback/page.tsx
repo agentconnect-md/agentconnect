@@ -43,6 +43,8 @@ export default function SocialAccountCallback() {
     }
 
     const connectorData = Object.fromEntries(params.entries())
+    // The provider returns code/state; Logto also needs the exact URI used when
+    // it created the authorization request to exchange that code.
     connectorData.redirectUri = flow.redirectUri
     verifySocialVerification(flow.socialVerificationRecordId, connectorData)
       .then((socialVerificationRecordId) =>
