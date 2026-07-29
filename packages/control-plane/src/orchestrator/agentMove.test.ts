@@ -42,6 +42,7 @@ function agent(daemonId: string | null): AgentRecord {
     orgId: OrgId('55555555-5555-4555-8555-555555555555'),
     name: 'mover',
     displayName: null,
+    builtin: false,
     description: null,
     runtime: 'claude',
     model: null,

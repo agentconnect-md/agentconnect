@@ -35,10 +35,11 @@ export const AGENT_ICON_DARK_PLATE = '#1a212b'
  *  manifest `background_color` so the app's branding matches the agent's avatar
  *  (the closest an app icon gets — Slack has no API to set the app image itself).
  *  A `glyph` icon uses its own plate color (the common case: new agents default to
- *  a random glyph+color); `runtime`/`image`/null fall back to the neutral dark plate
- *  the icon endpoint draws behind runtime marks. Always a valid `#rrggbb`. */
+ *  a random glyph+color); the plateless brand diamond (`agentconnect`, its `color`
+ *  inert) and `runtime`/`image`/null fall back to the neutral dark plate the icon
+ *  endpoint draws behind runtime marks. Always a valid `#rrggbb`. */
 export function agentIconBackgroundColor(icon: AgentIcon | null): string {
-  if (icon?.kind === 'glyph' && HEX_COLOR_RE.test(icon.color)) return icon.color
+  if (icon?.kind === 'glyph' && icon.glyph !== 'agentconnect' && HEX_COLOR_RE.test(icon.color)) return icon.color
   return AGENT_ICON_DARK_PLATE
 }
 

@@ -399,6 +399,102 @@ describe('GET /integrations/slack/platform/callback', () => {
     expect(installs[0]).toMatchObject({ agentId: first, status: 'active' })
     // …and the credential still rotated, so the workspace keeps working.
     expect((await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).credentialRevision).toBe(2)
+
+    // The §5.5 opt-in: once the user flips the workspace bot SHAREABLE
+    // (Settings → Bots), the same re-install ADDS the new agent instead.
+    await prisma.bot.update({ where: { id: bot.id }, data: { shareable: true } })
+    const third = await startInstall(app, other)
+    await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c3&state=${third.id}`
+    })
+    expect((await status(app, third.id)).json()).toMatchObject({ status: 'completed', botId: bot.id })
+    const widened = await prisma.integration.findMany({ where: { botId: bot.id, status: 'active' } })
+    expect(widened.map((i) => i.agentId).sort()).toEqual([first, other].sort())
+  })
+
+  // Blocker regression (review #196): two concurrent callbacks targeting the SAME
+  // new agent must admit exactly one membership. addBotMembership serializes on
+  // the bot row and treats the loser's 'exists' as success, so any interleaving
+  // yields one active row and two completed installs.
+  it('concurrent duplicate callbacks admit exactly one membership (idempotent per bot+agent)', async () => {
+    const { app } = withPlatform()
+    const first = randomUUID()
+    await seedAgent(prisma, first)
+    const started = await startInstall(app, first)
+    await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c1&state=${started.id}`
+    })
+    const bot = await prisma.bot.findFirstOrThrow({ where: { slackAppId: PLATFORM.appId } })
+    await prisma.bot.update({ where: { id: bot.id }, data: { shareable: true } })
+
+    const other = randomUUID()
+    await seedAgent(prisma, other)
+    const [a, b] = await Promise.all([startInstall(app, other), startInstall(app, other)])
+    await Promise.all([
+      app.app.inject({ method: 'GET', url: `/api/v1/integrations/slack/platform/callback?code=ca&state=${a.id}` }),
+      app.app.inject({ method: 'GET', url: `/api/v1/integrations/slack/platform/callback?code=cb&state=${b.id}` })
+    ])
+
+    expect((await status(app, a.id)).json()).toMatchObject({ status: 'completed', botId: bot.id })
+    expect((await status(app, b.id)).json()).toMatchObject({ status: 'completed', botId: bot.id })
+    // Exactly ONE active membership for the new agent — no duplicate rows/specs.
+    expect(await prisma.integration.count({ where: { botId: bot.id, agentId: other, status: 'active' } })).toBe(1)
+  })
+
+  // Blocker regression (review #196): a sharing DISABLE serializes with membership
+  // admission on the bot row. Here the admission holds the lock and commits a 2nd
+  // member; the concurrent disable — whose optimistic pre-check saw only one —
+  // must recount under the lock and refuse, never committing shareable=false
+  // alongside a two-agent membership.
+  it('a sharing disable cannot race a concurrent admission into a non-shareable multi-agent bot', async () => {
+    const { app } = withPlatform()
+    const first = randomUUID()
+    await seedAgent(prisma, first)
+    const started = await startInstall(app, first)
+    await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c1&state=${started.id}`
+    })
+    const bot = await prisma.bot.findFirstOrThrow({ where: { slackAppId: PLATFORM.appId } })
+    await prisma.bot.update({ where: { id: bot.id }, data: { shareable: true } })
+    const other = randomUUID()
+    await seedAgent(prisma, other)
+
+    // The admission side: take the bot-row lock (as addBotMembership does), hold it
+    // while the toggle runs into it, then commit the second membership.
+    let admit!: () => void
+    const gate = new Promise<void>((resolve) => (admit = resolve))
+    const admission = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM bot WHERE id = ${bot.id} FOR UPDATE`
+      await gate
+      await tx.integration.create({
+        data: {
+          id: randomUUID(),
+          orgId: DEFAULT_ORG_ID,
+          agentId: other,
+          botId: bot.id,
+          platform: 'slack',
+          name: bot.name
+        }
+      })
+    })
+    // The toggle: its optimistic pre-check reads ONE member (the review's stale
+    // snapshot), then blocks on the row lock inside setShareable.
+    const toggle = app.app.inject({ method: 'PATCH', url: `${ORG}/bots/${bot.id}`, payload: { shareable: false } })
+    await new Promise((resolve) => setTimeout(resolve, 150)) // let the toggle reach the lock
+    admit()
+    await admission
+    const res = await toggle
+
+    // Whichever side the scheduler ran first, the invariant holds: the disable is
+    // refused and the bot stays shareable with both members intact.
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).toMatch(/shared by multiple agents/)
+    const after = await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })
+    expect(after.shareable).toBe(true)
+    expect(await prisma.integration.count({ where: { botId: bot.id, status: 'active' } })).toBe(2)
   })
 
   it('rejects an exchange for the wrong app or a missing team id', async () => {
@@ -583,6 +679,17 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
     expect((await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).shareable).toBe(false)
     expect(await prisma.integration.count({ where: { botId: bot.id } })).toBe(0)
 
+    // Flipping the bot shareable (the Settings → Bots opt-in) lifts the guard:
+    // the platform bot then reuses like any shared http bot.
+    await prisma.bot.update({ where: { id: bot.id }, data: { shareable: true } })
+    const reuseShared = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'slack', agentId: other, botId: bot.id }
+    })
+    expect(reuseShared.statusCode).toBe(201)
+    expect(await prisma.integration.count({ where: { botId: bot.id, status: 'active', agentId: other } })).toBe(1)
+
     // A revoked NON-platform bot is refused too — its token is dead.
     const plain = await prisma.bot.create({
       data: {
@@ -601,6 +708,126 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
     })
     expect(reuseRevoked.statusCode).toBe(409)
     expect((reuseRevoked.json() as { message: string }).message).toMatch(/uninstalled|revoked/)
+  })
+
+  // Shared fixture for the two generic-route concurrency regressions below: the
+  // workspace's platform bot flipped shareable, bound to agent A, plus a PLACED
+  // reuse target B (the generic route requires placement).
+  async function sharedPlatformBotWithTarget(app: HttpApp): Promise<{ botId: string; target: string }> {
+    const first = randomUUID()
+    await seedAgent(prisma, first)
+    const started = await startInstall(app, first)
+    await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c1&state=${started.id}`
+    })
+    const bot = await prisma.bot.findFirstOrThrow({ where: { slackAppId: PLATFORM.appId } })
+    await prisma.bot.update({ where: { id: bot.id }, data: { shareable: true } })
+    const daemonId = randomUUID()
+    await seedDaemon(prisma, daemonId)
+    const target = randomUUID()
+    await seedAgent(prisma, target, { daemonId })
+    return { botId: bot.id, target }
+  }
+
+  // Blocker regression (review #196, round 2): the GENERIC reuse admission is
+  // atomic with the bot row. Here the disable commits first while the reuse's
+  // optimistic checks already read shareable=true — under the lock the admission
+  // re-reads and refuses instead of inserting into a non-shareable bot.
+  it('generic reuse cannot race a sharing disable into a non-shareable multi-agent bot', async () => {
+    const { app } = withPlatform()
+    const { botId, target } = await sharedPlatformBotWithTarget(app)
+
+    let disable!: () => void
+    const gate = new Promise<void>((resolve) => (disable = resolve))
+    const winner = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM bot WHERE id = ${botId} FOR UPDATE`
+      await gate
+      // The committed effect of PATCH /bots/:id {shareable:false} (1 member ⇒ legal).
+      await tx.bot.update({ where: { id: botId }, data: { shareable: false } })
+    })
+    // Fires while the lock is held: MVCC lets its optimistic reads see the stale
+    // shareable=true, then it queues on the row lock inside addBotMembership.
+    const reuse = app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'slack', agentId: target, botId }
+    })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    disable()
+    await winner
+    const res = await reuse
+
+    expect(res.statusCode).toBe(409)
+    // One member, still non-shareable — the widened state never committed.
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).shareable).toBe(false)
+    expect(await prisma.integration.count({ where: { botId, status: 'active' } })).toBe(1)
+  })
+
+  // Blocker regression (review #196, round 2): duplicate generic reuse for the
+  // same (bot, agent) is idempotent — the loser reports the winner's row as 201.
+  it('duplicate generic reuse admits exactly one membership', async () => {
+    const { app } = withPlatform()
+    const { botId, target } = await sharedPlatformBotWithTarget(app)
+
+    let admitOther!: () => void
+    const gate = new Promise<void>((resolve) => (admitOther = resolve))
+    const winner = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM bot WHERE id = ${botId} FOR UPDATE`
+      await gate
+      // The committed effect of a concurrent identical reuse that won the lock.
+      await tx.integration.create({
+        data: { id: randomUUID(), orgId: DEFAULT_ORG_ID, agentId: target, botId, platform: 'slack', name: 'dup' }
+      })
+    })
+    const reuse = app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'slack', agentId: target, botId }
+    })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    admitOther()
+    await winner
+    const res = await reuse
+
+    expect(res.statusCode).toBe(201)
+    expect((res.json() as { agentId: string }).agentId).toBe(target)
+    expect(await prisma.integration.count({ where: { botId, agentId: target, status: 'active' } })).toBe(1)
+  })
+
+  // Blocker regression (review #196, round 3): a credential revoke that wins the
+  // bot-row lock flips every install AND stamps revokedAt — a queued admission
+  // must re-check that stamp under the lock instead of reading the now-empty
+  // membership set as "free" and minting a live row on the dead credential.
+  it('generic reuse cannot resurrect a bot a concurrent revoke just killed', async () => {
+    const { app } = withPlatform()
+    const { botId, target } = await sharedPlatformBotWithTarget(app)
+
+    let revoke!: () => void
+    const gate = new Promise<void>((resolve) => (revoke = resolve))
+    const winner = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM bot WHERE id = ${botId} FOR UPDATE`
+      await gate
+      // The committed effect of BotCredentialWriter.revoke (bot CAS + install flip).
+      await tx.bot.update({ where: { id: botId }, data: { revokedAt: new Date() } })
+      await tx.integration.updateMany({ where: { botId, status: 'active' }, data: { status: 'revoked' } })
+    })
+    // Fires while the lock is held: its optimistic revokedAt check sees the
+    // pre-revoke snapshot, then it queues on the row lock inside addBotMembership.
+    const reuse = app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'slack', agentId: target, botId }
+    })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    revoke()
+    await winner
+    const res = await reuse
+
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).toMatch(/uninstalled|revoked/)
+    // Nothing came back alive: the bot stays revoked with zero active installs.
+    expect(await prisma.integration.count({ where: { botId, status: 'active' } })).toBe(0)
   })
 
   it('404s for another org’s install id', async () => {

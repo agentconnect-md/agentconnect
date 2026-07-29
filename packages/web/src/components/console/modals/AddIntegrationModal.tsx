@@ -5,7 +5,7 @@ import useSWR from 'swr'
 import { GithubMark, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
-import { agentLabel, type Agent } from '@/lib/data'
+import { agentLabel, MOCK_MODE, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
@@ -1059,6 +1059,10 @@ export default function AddIntegrationModal({
   const [platformErr, setPlatformErr] = useState<string | null>(null)
   // The pending install being polled (its id doubles as the OAuth state).
   const [platformInstallId, setPlatformInstallId] = useState<string | null>(null)
+  // Which Slack Bot-identity pane shows: the one-click BUILT-IN app (the default
+  // whenever the platform app is configured) or the custom bot flow (create your
+  // own app / reuse a freed bot) behind the "Use a custom bot identity" disclosure.
+  const [slackIdentity, setSlackIdentity] = useState<'builtin' | 'custom'>('builtin')
 
   // Webhook path: the form, then the created row. HMAC is an optional second
   // factor; when selected, the row carries the ONE-TIME signing-secret echo.
@@ -1213,6 +1217,7 @@ export default function AddIntegrationModal({
     if (daemonsLoading || createdHook || selectedBotPlatformSupported) return
     setPlatform(firstSupportedBotPlatform ?? 'webhook')
     setModePick(null)
+    setSlackIdentity('builtin')
     setBotPick(null)
     setShared(false)
     setTransport(null)
@@ -1229,11 +1234,23 @@ export default function AddIntegrationModal({
   // look "free" (`inUseByAgentId` clears with the last install) but are not, and the
   // server rejects both — don't offer what cannot be picked:
   //   • revoked — the workspace uninstalled the app, so its token is dead;
-  //   • a platform-app install (`teamId`) — non-shareable by construction, one
-  //     workspace serves one agent (preset-agents.md §5.5); reuse is the dedicated
-  //     "Add to Slack" flow, or a Slack app of this agent's own.
-  const freeBots = bots.filter((b) => b.platform === platform && !b.inUseByAgentId && !b.revokedAt && !b.teamId)
+  //   • a platform-app install (`teamId`) that has NOT been flipped shareable —
+  //     one workspace serves one agent by default (preset-agents.md §5.5). Once
+  //     the user enables sharing on it (Settings → Bots) it reuses like any
+  //     shared bot; before that, reuse is the dedicated "Add to Slack" flow or a
+  //     Slack app of this agent's own.
+  const freeBots = bots.filter(
+    (b) => b.platform === platform && !b.inUseByAgentId && !b.revokedAt && (!b.teamId || b.shareable)
+  )
   const mode = modePick ?? 'create'
+  // Slack Bot-identity panes (design: builtin-first). While the funnel probe is in
+  // flight the create flow's spinner stands in for the section; once loaded with
+  // the platform app configured, the DEFAULT pane is the one-click built-in
+  // install — the whole custom flow (mode cards, token steps, share toggle, the
+  // footer action) hides behind the "Use a custom bot identity" disclosure.
+  const slackChecking = platform === 'slack' && slackFunnel === null
+  const slackBuiltin = platform === 'slack' && slackFunnel !== null && platformAvailable && slackIdentity === 'builtin'
+  const hideIdentitySection = slackChecking || slackBuiltin
   const selectedBotId = freeBots.some((b) => b.id === botPick) ? botPick : (freeBots[0]?.id ?? null)
   const selectedBot = freeBots.find((b) => b.id === selectedBotId) ?? null
   // The effective Slack transport for the CREATE path: an explicit pick, else the
@@ -1807,6 +1824,15 @@ export default function AddIntegrationModal({
   // for Telegram / Discord (and never let its result gate their footer — see `isAuto`).
   useEffect(() => {
     if (mode !== 'create' || platform !== 'slack' || slackFunnel !== null) return
+    if (MOCK_MODE) {
+      // Design/dev with no CP: pretend the funnel AND the platform app are
+      // configured, so both Slack panes (built-in + custom) are reachable.
+      setSlackFunnel(true)
+      setAutoUsable(true)
+      setRelayAvailable(true)
+      setPlatformAvailable(true)
+      return
+    }
     let alive = true
     fetchSlackConfig()
       .then((c) => {
@@ -2568,11 +2594,71 @@ export default function AddIntegrationModal({
             )}
           </>
         )}
-        {platform !== 'webhook' && platform !== 'github' && <div className="fldlbl mb-2">Bot identity</div>}
+        {/* Built-in Slack app pane (design: builtin-first) — one branded button and a
+            caption; it REPLACES the whole Bot-identity section, which returns via the
+            "Use a custom bot identity" disclosure below. */}
+        {slackBuiltin && (
+          <>
+            <div className="mb-3 rounded-[9px] border border-(--border-subtle) bg-(--surface-card) p-4">
+              {platformPhase === 'authorizing' ? (
+                <div className="flex h-[46px] w-full items-center justify-center gap-[10px] rounded-[10px] bg-(--surface-inverse) font-sans text-[14px] font-semibold leading-normal text-white opacity-85">
+                  <Icon name="loader" size={16} className="flex-none animate-spin" />
+                  Waiting for Slack…
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void startPlatformInstall()}
+                  className="flex h-[46px] w-full cursor-pointer items-center justify-center gap-[10px] rounded-[10px] border-0 bg-(--surface-inverse) font-sans text-[14px] font-semibold leading-normal text-white"
+                >
+                  <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
+                    <PlatformMark platform="slack" />
+                  </span>
+                  Add to Slack
+                </button>
+              )}
+              {platformErr && (
+                <div className="mt-2 font-sans text-[11.5px] font-normal leading-[1.4] text-(--danger)">
+                  {platformErr}
+                </div>
+              )}
+              <div className="mt-[10px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
+                {platformPhase === 'authorizing'
+                  ? 'Approve the install in the Slack tab — this closes automatically once it lands.'
+                  : 'Installs the built-in AgentConnect Slack app.'}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSlackIdentity('custom')}
+              className="mb-4 flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[13px] font-semibold leading-normal text-(--text-primary)"
+            >
+              <Icon name="chevron-right" size={14} color="var(--text-tertiary)" />
+              Use a custom bot identity instead
+            </button>
+          </>
+        )}
+        {platform !== 'webhook' && platform !== 'github' && !hideIdentitySection && (
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div className="fldlbl">Bot identity</div>
+            {/* Way back to the simple pane — only meaningful when the platform app exists. */}
+            {platform === 'slack' && platformAvailable && (
+              <button
+                type="button"
+                onClick={() => setSlackIdentity('builtin')}
+                className="flex cursor-pointer items-center gap-[5px] border-0 bg-transparent p-0 font-sans text-[12px] font-semibold leading-normal text-(--brand)"
+              >
+                <Icon name="undo-2" size={13} />
+                Use the built-in Slack app
+              </button>
+            )}
+          </div>
+        )}
         {/* A bot is installed on one agent at a time and OUTLIVES its integration:
             reuse a freed / prebuilt one, or create a new bot for this platform.
             (Webhook and GitHub are bot-less — their bodies render above instead.) */}
-        {platform !== 'webhook' && platform !== 'github' && (
+        {platform !== 'webhook' && platform !== 'github' && !hideIdentitySection && (
           <div className="mb-3 grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
             {(
               [
@@ -2620,7 +2706,7 @@ export default function AddIntegrationModal({
             })}
           </div>
         )}
-        {platform !== 'webhook' && platform !== 'github' && mode === 'existing' && (
+        {platform !== 'webhook' && platform !== 'github' && mode === 'existing' && !hideIdentitySection && (
           <div className="mb-4 overflow-hidden rounded-[9px] border border-(--border-subtle)">
             {freeBots.length === 0 && (
               <div className="px-[14px] py-[18px] text-center font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
@@ -2674,7 +2760,7 @@ export default function AddIntegrationModal({
             </div>
           </div>
         )}
-        {mode === 'create' && platform === 'slack' && (
+        {mode === 'create' && platform === 'slack' && !slackBuiltin && (
           <>
             {slackFunnel === null ? (
               <div className="mb-4 flex items-center gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
@@ -2683,40 +2769,6 @@ export default function AddIntegrationModal({
               </div>
             ) : (
               <>
-                {platformAvailable && (
-                  <div className="mb-3 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <div className="min-w-0 flex-1">
-                        <div className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-                          Add to Slack
-                        </div>
-                        <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                          {platformPhase === 'authorizing'
-                            ? 'Approve the install in the Slack tab — this closes automatically once it lands.'
-                            : 'One click — install the AgentConnect Slack app into your workspace. No app to create, no tokens to paste.'}
-                        </div>
-                      </div>
-                      {platformPhase === 'authorizing' ? (
-                        <span className="inline-flex items-center gap-2 font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
-                          <Icon name="loader" size={14} className="flex-none animate-spin" />
-                          Waiting for Slack…
-                        </span>
-                      ) : (
-                        <Button variant="primary" onClick={() => void startPlatformInstall()} disabled={saving}>
-                          Add to Slack
-                        </Button>
-                      )}
-                    </div>
-                    {platformErr && (
-                      <div className="mt-2 font-sans text-[11.5px] font-normal leading-[1.4] text-(--danger)">
-                        {platformErr}
-                      </div>
-                    )}
-                    <div className="mt-[10px] border-t border-(--border-subtle) pt-[10px] font-sans text-[11px] font-normal leading-[1.4] text-(--text-tertiary)">
-                      Prefer a dedicated Slack identity for this agent? Create its own app below.
-                    </div>
-                  </div>
-                )}
                 {slackFunnel === true && (
                   <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-[6px]">
                     <div className="inline-flex flex-none rounded-lg border border-(--border-default) bg-(--surface-card) p-[3px]">
@@ -3331,7 +3383,7 @@ export default function AddIntegrationModal({
                     : IM_INVITE_HINT[platform]}
           </span>
         </div>
-        {shareToggleAvailable && (
+        {shareToggleAvailable && !hideIdentitySection && (
           <label className="mt-[14px] flex cursor-pointer items-start gap-2.5 rounded-md border border-(--border) px-3 py-[11px]">
             <input
               type="checkbox"
@@ -3358,10 +3410,14 @@ export default function AddIntegrationModal({
         <Button variant="ghost" onClick={onClose}>
           Cancel
         </Button>
-        <Button onClick={footer.act} className={footer.enabled && !saving ? undefined : 'cursor-default opacity-50'}>
-          <Icon name={platform === 'webhook' && createdHook ? 'check' : 'plug'} size={15} />
-          {saving ? (isAuto && autoPhase === 'config' ? 'Creating…' : 'Connecting…') : footer.label}
-        </Button>
+        {/* The built-in pane's action is its own Add-to-Slack button (the modal closes
+            itself when the install lands), so the custom flow's footer action hides. */}
+        {!hideIdentitySection && (
+          <Button onClick={footer.act} className={footer.enabled && !saving ? undefined : 'cursor-default opacity-50'}>
+            <Icon name={platform === 'webhook' && createdHook ? 'check' : 'plug'} size={15} />
+            {saving ? (isAuto && autoPhase === 'config' ? 'Creating…' : 'Connecting…') : footer.label}
+          </Button>
+        )}
       </div>
       {/* Nested authorize-repo dialog (its own fixed overlay): grant the typed
           repo, then continue creating the hook with it pre-picked. */}

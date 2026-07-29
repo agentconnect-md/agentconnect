@@ -30,7 +30,9 @@ export function AgentMark({ model }: { model: string }) {
 /**
  * Agent avatar — renders the stored {@link AgentIcon} descriptor, filling its
  * parent tile (which owns the box size + border-radius):
- *  - `glyph` → a white Lucide glyph on a solid color plate.
+ *  - `glyph` → a white Lucide glyph on a solid color plate. Exception: the
+ *    `agentconnect` brand diamond renders plateless (the native logo; its
+ *    stored `color` is inert).
  *  - `image` → the image, cover-cropped.
  *  - `runtime` / null (legacy default) → the runtime brand mark (<AgentMark>) on
  *    the tile's own background, i.e. today's behavior.
@@ -39,20 +41,23 @@ export function AgentMark({ model }: { model: string }) {
  */
 export function AgentIconView({ icon, runtime, size }: { icon?: AgentIcon | null; runtime: string; size: number }) {
   if (icon?.kind === 'glyph') {
+    if (icon.glyph === 'agentconnect') {
+      // The brand diamond (the built-in preset agents' fixed identity) — the
+      // native logo, plateless: no background, `color` is inert. Mirrors the
+      // CP's PNG renderer special case.
+      return (
+        <span data-agent-icon-glyph="true" className="flex h-full w-full items-center justify-center rounded-[inherit]">
+          <LogoMark size={size} />
+        </span>
+      )
+    }
     return (
       <span
         data-agent-icon-glyph="true"
         className="flex h-full w-full items-center justify-center rounded-[inherit]"
         style={{ background: icon.color }}
       >
-        {icon.glyph === 'agentconnect' ? (
-          // The brand diamond (the built-in preset agents' fixed identity) — a
-          // multi-color mark, not a Lucide stroke glyph. Mirrors the CP's PNG
-          // renderer special case.
-          <LogoMark size={Math.round(size * 0.66)} />
-        ) : (
-          <Icon name={icon.glyph} color="#fff" size={Math.round(size * 0.56)} strokeWidth={2} />
-        )}
+        <Icon name={icon.glyph} color="#fff" size={Math.round(size * 0.56)} strokeWidth={2} />
       </span>
     )
   }

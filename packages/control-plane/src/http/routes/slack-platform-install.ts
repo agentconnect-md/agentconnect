@@ -257,33 +257,50 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
             new Date()
           )
           req.log.info({ botId: existing.id, revision }, 'slack platform re-install: credential generation advanced')
-          const installs = await deps.repos.integration.listForBot(existing.id)
-          const otherAgent = installs.find((i) => i.agentId !== agent.id)
-          if (otherAgent) {
-            // The platform bot is NON-shareable: one workspace install serves
-            // exactly one agent, so a re-install aimed at a DIFFERENT agent
-            // cannot just add a second row (that is the cap the classic reuse
-            // path enforces with a 409). The credential above still rotated —
-            // the workspace's existing binding keeps working, it just did not
-            // move. Moving it is a deliberate console action, not a side effect
-            // of clicking "Add to Slack" with another agent selected.
+          // Membership admission is ATOMIC with the bot row (addBotMembership
+          // locks it): `shareable` and the active membership set are re-read in
+          // the same transaction as the insert, so a concurrent sharing toggle
+          // or a duplicate concurrent callback serializes there instead of
+          // racing this handler's earlier `existing` snapshot. One (bot, agent)
+          // can gain at most one active install ('exists' = idempotent success).
+          const admission = await deps.repos.integration.addBotMembership({
+            id: IntegrationId(randomUUID()),
+            orgId: OrgId(row.orgId),
+            agentId: agent.id,
+            botId: existing.id,
+            platform: 'slack',
+            name: existing.name,
+            ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {})
+          })
+          if (admission.outcome === 'revoked') {
+            // Exotic: the workspace uninstalled again between this callback's
+            // fresh credential install and the admission — the revoke won the
+            // row lock and flipped every install, so admitting now would mint a
+            // live membership on the dead credential. Settle as a plain error;
+            // the next "Add to Slack" round trip re-installs cleanly.
             req.log.warn(
-              { installId: row.id, botId: existing.id, boundAgentId: otherAgent.agentId, targetAgentId: agent.id },
+              { installId: row.id, botId: existing.id, targetAgentId: agent.id },
+              'slack platform re-install: bot revoked mid-callback'
+            )
+            await deps.httpBot.syncBot(existing.id)
+            return fail('error')
+          }
+          if (admission.outcome === 'not_shareable') {
+            // The platform bot installs NON-shareable: one workspace install
+            // serves exactly one agent, so a re-install aimed at a DIFFERENT
+            // agent cannot just add a second row (that is the cap the classic
+            // reuse path enforces with a 409). The credential above still
+            // rotated — the workspace's existing binding keeps working, it just
+            // did not move. Moving it is a deliberate console action, not a
+            // side effect of clicking "Add to Slack" with another agent
+            // selected. If the user flips the bot SHAREABLE (Settings → Bots),
+            // the admission simply adds the agent instead.
+            req.log.warn(
+              { installId: row.id, botId: existing.id, targetAgentId: agent.id },
               'slack platform re-install: workspace already bound to another agent'
             )
             await deps.httpBot.syncBot(existing.id)
             return fail('agent_taken')
-          }
-          if (installs.length === 0) {
-            await deps.repos.integration.create({
-              id: IntegrationId(randomUUID()),
-              orgId: OrgId(row.orgId),
-              agentId: agent.id,
-              botId: existing.id,
-              platform: 'slack',
-              name: existing.name,
-              ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {})
-            })
           }
           await deps.httpBot.syncBot(existing.id)
         } else {

@@ -264,16 +264,18 @@ export function integrationRoutes(deps: HttpDeps) {
                 message: 'this bot’s Slack app was uninstalled or its tokens were revoked; reinstall it instead'
               })
             }
-            // A platform-app install is NON-shareable by construction
-            // (preset-agents.md §5.5) — one workspace ⇒ one agent. Its `teamId` is
-            // the marker: only the distributed app persists one. Without this the
-            // http branch below would silently `setShareable(true)` and widen it.
-            if (bot.teamId) {
+            // A platform-app install starts NON-shareable (preset-agents.md §5.5)
+            // — one workspace ⇒ one agent. Its `teamId` is the marker: only the
+            // distributed app persists one. Widening it must be a deliberate
+            // opt-in (the Settings → Bots sharing toggle), never the silent
+            // `setShareable(true)` promotion the http branch below applies to
+            // classic bots; once shared it reuses like any shared bot.
+            if (bot.teamId && !bot.shareable) {
               return reply.code(409).send({
                 error: 'Conflict',
                 statusCode: 409,
                 message:
-                  'the AgentConnect Slack app serves one agent per workspace; create a dedicated Slack app for this agent'
+                  'the AgentConnect Slack app serves one agent per workspace — enable sharing on its bot (Settings → Bots) or create a dedicated Slack app for this agent'
               })
             }
             // Reuse keeps the bot's existing transport (immutable post-create). An
@@ -283,7 +285,13 @@ export function integrationRoutes(deps: HttpDeps) {
               const shareableErr = await validateShareableInstall(bot, agent.id, req.body.platform)
               if (shareableErr) return reply.code(shareableErr.code).send(shareableErr.body)
               if (!bot.shareable) await deps.repos.bot.setShareable(bot.id, true)
-              const integration = await deps.repos.integration.create({
+              // Membership admission is ATOMIC with the bot row — the same
+              // primitive as the platform callback. The checks above are the
+              // optimistic UX layer; only under the lock are `shareable` and the
+              // membership set authoritative, so a concurrent sharing disable or
+              // a duplicate reuse serializes there instead of racing this
+              // handler's snapshots ('exists' = the winner's row, idempotent 201).
+              const admission = await deps.repos.integration.addBotMembership({
                 id: IntegrationId(randomUUID()),
                 orgId,
                 agentId: agent.id,
@@ -295,10 +303,27 @@ export function integrationRoutes(deps: HttpDeps) {
                 ...(bot.feishuRegion ? { feishuRegion: bot.feishuRegion } : {}),
                 ...(req.principal ? { createdByUserId: req.principal.userId } : {})
               })
+              if (admission.outcome === 'revoked') {
+                // A workspace revoke won the row lock and flipped every install —
+                // zero-active must not read as "free" (the optimistic revokedAt
+                // check above saw the pre-revoke snapshot).
+                return reply.code(409).send({
+                  error: 'Conflict',
+                  statusCode: 409,
+                  message: 'this bot’s Slack app was uninstalled or its tokens were revoked; reinstall it instead'
+                })
+              }
+              if (admission.outcome === 'not_shareable') {
+                return reply.code(409).send({
+                  error: 'Conflict',
+                  statusCode: 409,
+                  message: 'bot sharing was just disabled; refresh and retry the integration change'
+                })
+              }
               // Relay owns the ingest — (re)assign the bot + push send-only specs to
               // every member daemon (including any that were direct before promotion).
               await deps.httpBot.syncBot(bot.id)
-              return reply.code(201).send(toDto(integration))
+              return reply.code(201).send(toDto(admission.integration))
             }
             // Classic reuse: 1 bot : ≤1 install.
             if (bot.inUseByAgentId) {

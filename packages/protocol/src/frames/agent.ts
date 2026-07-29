@@ -62,9 +62,10 @@ export const RESERVED_MCP_SERVER_NAME = 'agentconnect'
  */
 export const AGENT_ICON_GLYPHS = [
   // The AgentConnect brand diamond — the fixed identity of the built-in preset
-  // agents (preset-agents.md §3.1). Renderers special-case it (it is a multi-color
-  // brand mark, not a Lucide stroke glyph); the web picker deliberately does NOT
-  // offer it in its grid, though a stored value renders everywhere.
+  // agents (preset-agents.md §3.1). Renderers special-case it: a multi-color
+  // brand mark (not a Lucide stroke glyph) drawn plateless — the native logo,
+  // its `color` field inert. The web picker deliberately does NOT offer it in
+  // its grid, though a stored value renders everywhere.
   'agentconnect',
   'bot',
   'cpu',

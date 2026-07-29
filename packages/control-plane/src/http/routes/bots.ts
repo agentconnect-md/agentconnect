@@ -13,6 +13,7 @@ import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { type BotRecord, isSyntheticEmail } from '../../persistence/ports.js'
+import { BotStillShared } from '../../persistence/errors.js'
 import { BotId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite } from '../rbac.js'
 import {
@@ -323,7 +324,9 @@ export function botRoutes(deps: HttpDeps) {
             })
           }
           // Disabling multi-agent is refused while >1 agent uses it (the others would
-          // be left without a route).
+          // be left without a route). This read is the fast optimistic check; the
+          // authoritative recount happens INSIDE setShareable under the bot-row lock
+          // (BotStillShared), where a concurrent membership admission cannot race it.
           if (!req.body.shareable && bot.agentIds.length > 1) {
             return reply.code(409).send({
               error: 'Conflict',
@@ -331,7 +334,18 @@ export function botRoutes(deps: HttpDeps) {
               message: 'bot is shared by multiple agents — uninstall the others before disabling sharing'
             })
           }
-          await deps.repos.bot.setShareable(bot.id, req.body.shareable)
+          try {
+            await deps.repos.bot.setShareable(bot.id, req.body.shareable)
+          } catch (err) {
+            if (err instanceof BotStillShared) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: 'bot is shared by multiple agents — uninstall the others before disabling sharing'
+              })
+            }
+            throw err
+          }
           // Multi-agent capacity change only — recompile the relay pool's routes (no
           // ingest re-open; the transport, hence the ingest, is unchanged).
           await deps.httpBot.syncRoutes(bot.id)

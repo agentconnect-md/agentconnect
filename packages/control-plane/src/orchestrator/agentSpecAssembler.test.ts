@@ -13,6 +13,7 @@ const AGENT: AgentRecord = {
   orgId: OrgId('org'),
   name: 'deploy-bot',
   displayName: 'Deploy Bot',
+  builtin: false,
   icon: null,
   description: null,
   runtime: 'claude-acp',

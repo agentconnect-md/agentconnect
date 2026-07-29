@@ -598,6 +598,9 @@ export interface AgentRecord {
   orgId: OrgId
   name: string
   displayName: string | null
+  // True when a preset_agent row references this agent (preset-agents.md §3):
+  // a built-in preset — labeled "builtin" in the console and protected from delete.
+  builtin: boolean
   icon: AgentIcon | null // console avatar descriptor; null ⇒ legacy default (runtime mark)
   description: string | null
   runtime: string | null // null ⇒ deferred exec config (unplaced preset; set at placement)
@@ -1861,7 +1864,10 @@ export interface BotRepo {
   setSlackAppIdIfMissing(id: BotId, slackAppId: string): Promise<boolean>
   /** Stamp the freed-bot display hints when its LAST integration is removed. */
   markFreed(id: BotId, at: Date, lastAgentName: string | null): Promise<void>
-  /** Flip the shared-bot (multi-agent) opt-in (console toggle). */
+  /** Flip the shared-bot (multi-agent) opt-in (console toggle). Serialized on the
+   *  bot row with {@link IntegrationRepo.addBotMembership}; disabling recounts the
+   *  ACTIVE installs under that lock and throws `BotStillShared` when >1 remain,
+   *  so a concurrent admission can never slip past the route's optimistic check. */
   setShareable(id: BotId, shareable: boolean): Promise<void>
   /** Every http-transport bot with ≥1 active integration, across all orgs — the
    *  shared-bot orchestrator's convergence worklist (relay register / failover). */
@@ -2305,6 +2311,27 @@ export interface IntegrationRecord {
 
 export interface IntegrationRepo {
   create(input: CreateIntegrationInput): Promise<IntegrationRecord>
+  /**
+   * Atomic bot-membership admission — EVERY multi-agent bot admission (the
+   * platform "Add to Slack" re-install and the generic `POST /integrations`
+   * reuse, preset-agents.md §5.5) funnels here: locks the bot row, re-reads
+   * `shareable` + `revokedAt` and the ACTIVE membership set inside the SAME
+   * transaction as the insert, and admits at most one active row per
+   * (bot, agent) — `'exists'` returns the winner's row as the idempotent
+   * success for a duplicate concurrent admission, `'not_shareable'` is the
+   * §5.5 refusal (another agent holds a non-shared bot), `'revoked'` refuses
+   * admission onto a dead credential (a revoke that won the lock flipped every
+   * install; zero-active must not read as "free"). Serialized with
+   * {@link BotRepo.setShareable} and {@link BotCredentialWriter.revoke} on the
+   * same bot-row lock.
+   */
+  addBotMembership(
+    input: CreateIntegrationInput
+  ): Promise<
+    | { outcome: 'added' | 'exists'; integration: IntegrationRecord }
+    | { outcome: 'not_shareable' }
+    | { outcome: 'revoked' }
+  >
   get(id: IntegrationId): Promise<IntegrationRecord | null>
   /** Every integration in the org. When a `viewer` is supplied, integrations whose
    *  parent agent is restricted-away from them are filtered out (derived visibility,

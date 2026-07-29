@@ -11,7 +11,8 @@
  */
 import type { Platform, FeishuRegion } from '@agentconnect.md/protocol'
 import type { Bot, Integration, IntegrationChannel, User } from '../../generated/prisma/client.js'
-import type { PrismaLike } from '../prisma.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
+import { BotStillShared } from '../errors.js'
 import type {
   BotRepo,
   BotRecord,
@@ -139,7 +140,19 @@ export class PgBotRepo implements BotRepo {
   }
 
   async setShareable(id: BotId, shareable: boolean): Promise<void> {
-    await this.db.bot.update({ where: { id }, data: { shareable } })
+    // Serialized on the bot row: membership admission (addBotMembership) takes
+    // the same lock, so a disable can never commit alongside a concurrent
+    // second-agent admission — whichever wins, the loser observes the winner's
+    // committed state. The capacity recount lives HERE (not only in the route's
+    // optimistic pre-check) because only under the lock is it authoritative.
+    await withAmbientTx(this.db, async (tx) => {
+      await tx.$queryRaw`SELECT id FROM bot WHERE id = ${id} FOR UPDATE`
+      if (!shareable) {
+        const active = await tx.integration.count({ where: { botId: id, status: 'active' } })
+        if (active > 1) throw new BotStillShared(active)
+      }
+      await tx.bot.update({ where: { id }, data: { shareable } })
+    })
   }
 
   async listHttpActive(): Promise<BotRecord[]> {
@@ -265,6 +278,53 @@ export class PgIntegrationRepo implements IntegrationRepo {
       }
     })
     return toRecord(i)
+  }
+
+  async addBotMembership(
+    input: CreateIntegrationInput
+  ): Promise<
+    | { outcome: 'added' | 'exists'; integration: IntegrationRecord }
+    | { outcome: 'not_shareable' }
+    | { outcome: 'revoked' }
+  > {
+    // Atomic bot-membership admission (the platform "Add to Slack" re-install
+    // AND the generic reuse path): the bot row is LOCKED, so `shareable`,
+    // `revokedAt`, and the active membership set read below are stable through
+    // the insert — a concurrent sharing toggle (setShareable takes the same
+    // lock), a credential revoke (BotCredentialWriter.revoke opens with the
+    // bot-row CAS), or a concurrent duplicate admission serializes here instead
+    // of racing an earlier snapshot of the handler.
+    return await withAmbientTx(this.db, async (tx) => {
+      const locked = await tx.$queryRaw<
+        { shareable: boolean; revokedAt: Date | null }[]
+      >`SELECT shareable, "revokedAt" FROM bot WHERE id = ${input.botId} FOR UPDATE`
+      // Bot vanished mid-flight (delete race) — nothing to admit onto; the
+      // caller's refusal path is close enough for this exotic window.
+      if (!locked[0]) return { outcome: 'not_shareable' as const }
+      // A revoke that won the lock flipped every install AND stamped the bot:
+      // admitting after it would mint a live membership on a dead credential
+      // (the zero-active read below would otherwise wave it through).
+      if (locked[0].revokedAt) return { outcome: 'revoked' as const }
+      const active = await tx.integration.findMany({ where: { botId: input.botId, status: 'active' } })
+      // Idempotent per (bot, agent): the loser of two concurrent same-agent
+      // admissions lands here and reports the winner's row as success.
+      const mine = active.find((i) => i.agentId === input.agentId)
+      if (mine) return { outcome: 'exists' as const, integration: toRecord(mine) }
+      if (active.length > 0 && !locked[0].shareable) return { outcome: 'not_shareable' as const }
+      const created = await tx.integration.create({
+        data: {
+          id: input.id,
+          orgId: input.orgId,
+          agentId: input.agentId,
+          botId: input.botId,
+          platform: toDbPlatform(input.platform),
+          name: input.name,
+          ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {}),
+          ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
+        }
+      })
+      return { outcome: 'added' as const, integration: toRecord(created) }
+    })
   }
 
   async get(id: IntegrationId): Promise<IntegrationRecord | null> {

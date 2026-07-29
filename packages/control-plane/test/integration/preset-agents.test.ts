@@ -3,10 +3,11 @@
  * the one-time backfill, the reserved slugs, and the deferred-runtime tolerance
  * of the existing routes.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
+import type { IconStore } from '../../src/icons/icon-store.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { GENERAL_PRESET, PresetAgentBackfill, provisionPresetAgents } from '../../src/persistence/index.js'
@@ -22,6 +23,7 @@ interface AgentBody {
   id: string
   name: string
   displayName: string | null
+  builtin: boolean
   runtime: string | null
   daemonId: string | null
   icon: { kind: string; glyph?: string; color?: string } | null
@@ -42,6 +44,7 @@ describe('org-creation seam (POST /orgs)', () => {
       const preset = agents[0]!
       expect(preset.name).toBe('agentconnect')
       expect(preset.displayName).toBe('AgentConnect')
+      expect(preset.builtin).toBe(true) // derived from its preset_agent row
       expect(preset.runtime).toBeNull() // deferred exec config
       expect(preset.daemonId).toBeNull() // unplaced
       expect(preset.icon).toEqual(GENERAL_PRESET.icon) // fixed brand glyph, not random
@@ -55,7 +58,7 @@ describe('org-creation seam (POST /orgs)', () => {
     }
   })
 
-  it('deleting the preset settles it — the state row survives with the stamp', async () => {
+  it('DELETE refuses the built-in preset (403) but still deletes ordinary agents', async () => {
     const { app, close } = buildHttpApp(prisma)
     try {
       const created = await app.inject({ method: 'POST', url: '/api/v1/orgs', payload: { slug: 'del-org' } })
@@ -64,14 +67,76 @@ describe('org-creation seam (POST /orgs)', () => {
         id: string
       }[]
 
+      // The preset is a permanent org fixture (preset-agents.md §2, 2026-07-29).
       const del = await app.inject({ method: 'DELETE', url: `/api/v1/orgs/${orgId}/agents/${agents[0]!.id}` })
-      expect(del.statusCode).toBe(204)
+      expect(del.statusCode).toBe(403)
+      expect((del.json() as { message: string }).message).toMatch(/built-in/)
 
+      // Untouched: the agent row and its preset marker both survive, unsettled.
+      expect(await prisma.agent.findUnique({ where: { id: agents[0]!.id } })).not.toBeNull()
       const row = await prisma.presetAgent.findUnique({
         where: { orgId_preset: { orgId, preset: 'general' } }
       })
-      expect(row?.agentId).toBeNull() // FK SetNull
-      expect(row?.placementSettledAt).toBeInstanceOf(Date) // explicit opt-out settles
+      expect(row).toMatchObject({ agentId: agents[0]!.id, placementSettledAt: null })
+
+      // The guard is preset-scoped: an ordinary sibling still deletes cleanly.
+      const sibling = await app.inject({
+        method: 'POST',
+        url: `/api/v1/orgs/${orgId}/agents`,
+        payload: { name: 'ordinary', runtime: 'claude' }
+      })
+      expect(sibling.statusCode).toBe(201)
+      const siblingBody = sibling.json() as AgentBody
+      expect(siblingBody.builtin).toBe(false)
+      const delSibling = await app.inject({
+        method: 'DELETE',
+        url: `/api/v1/orgs/${orgId}/agents/${siblingBody.id}`
+      })
+      expect(delSibling.statusCode).toBe(204)
+    } finally {
+      await close()
+    }
+  })
+
+  it('the built-in identity is immutable — display name, icon, and icon uploads all 403', async () => {
+    const PNG = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
+      0, 0, 0, 0
+    ])
+    const store: IconStore = {
+      put: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+      publicUrl: vi.fn(() => 'https://images.example.test/x')
+    }
+    const { app, close } = buildHttpApp(prisma, {}, undefined, undefined, { iconStore: store })
+    try {
+      const created = await app.inject({ method: 'POST', url: '/api/v1/orgs', payload: { slug: 'identity-org' } })
+      const orgId = (created.json() as { id: string }).id
+      const agents = (await (await app.inject({ method: 'GET', url: `/api/v1/orgs/${orgId}/agents` })).json()) as {
+        id: string
+      }[]
+      const base = `/api/v1/orgs/${orgId}/agents/${agents[0]!.id}`
+
+      for (const payload of [{ displayName: 'Renamed' }, { icon: { kind: 'glyph', glyph: 'bot', color: '#c62a78' } }]) {
+        const res = await app.inject({ method: 'PATCH', url: base, payload })
+        expect(res.statusCode).toBe(403)
+        expect((res.json() as { message: string }).message).toMatch(/identity/)
+      }
+      // Everything else stays an ordinary edit — the preset is a normal agent.
+      expect(
+        (await app.inject({ method: 'PATCH', url: base, payload: { description: 'still mine' } })).statusCode
+      ).toBe(200)
+
+      // The dedicated upload/reset routes refuse the same way.
+      const up = await app.inject({
+        method: 'PUT',
+        url: `${base}/icon`,
+        headers: { 'content-type': 'image/png' },
+        payload: PNG
+      })
+      expect(up.statusCode).toBe(403)
+      expect((await app.inject({ method: 'DELETE', url: `${base}/icon` })).statusCode).toBe(403)
+      expect(store.put).not.toHaveBeenCalled()
     } finally {
       await close()
     }
@@ -79,8 +144,30 @@ describe('org-creation seam (POST /orgs)', () => {
 })
 
 describe('reserved agent slugs (§3.3)', () => {
-  it.each(['agentconnect', 'agentconnect-assistant', 'agent-assistant', 'assistant'])(
-    'POST /agents refuses the reserved slug %s',
+  it('POST /agents refuses the reserved slug agentconnect', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/orgs/${DEFAULT_ORG_ID}/agents`,
+        payload: { name: 'agentconnect', runtime: 'claude' }
+      })
+      // The zod refine surfaces as the validator's generic 400 (same as the
+      // reserved ORG slugs); the sibling below proves the slug is the reason.
+      expect(res.statusCode).toBe(400)
+      const sibling = await app.inject({
+        method: 'POST',
+        url: `/api/v1/orgs/${DEFAULT_ORG_ID}/agents`,
+        payload: { name: 'agentconnect-2', runtime: 'claude' }
+      })
+      expect(sibling.statusCode).toBe(201)
+    } finally {
+      await close()
+    }
+  })
+
+  it.each(['agentconnect-assistant', 'agent-assistant', 'assistant'])(
+    'released assistant slug %s is user-creatable (reservation lifted 2026-07-29)',
     async (name) => {
       const { app, close } = buildHttpApp(prisma)
       try {
@@ -89,15 +176,7 @@ describe('reserved agent slugs (§3.3)', () => {
           url: `/api/v1/orgs/${DEFAULT_ORG_ID}/agents`,
           payload: { name, runtime: 'claude' }
         })
-        // The zod refine surfaces as the validator's generic 400 (same as the
-        // reserved ORG slugs); the sibling below proves the slug is the reason.
-        expect(res.statusCode).toBe(400)
-        const sibling = await app.inject({
-          method: 'POST',
-          url: `/api/v1/orgs/${DEFAULT_ORG_ID}/agents`,
-          payload: { name: `${name}-2`, runtime: 'claude' }
-        })
-        expect(sibling.statusCode).toBe(201)
+        expect(res.statusCode).toBe(201)
       } finally {
         await close()
       }

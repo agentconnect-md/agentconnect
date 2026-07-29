@@ -26,6 +26,21 @@ export class OwnerConflict extends Error {
 /** Postgres unique-violation SQLSTATE. */
 export const PG_UNIQUE_VIOLATION = '23505'
 
+/**
+ * Thrown by `BotRepo.setShareable(false)` when the row-locked recount still sees
+ * more than one ACTIVE install — disabling sharing then would orphan the others'
+ * routes. The recount runs under the same bot-row lock `IntegrationRepo.
+ * addBotMembership` takes, so a concurrent admission and a disable serialize:
+ * whichever commits second observes the first (no stale-snapshot bypass).
+ */
+export class BotStillShared extends Error {
+  readonly code = 'BOT_STILL_SHARED' as const
+  constructor(readonly activeInstalls: number) {
+    super(`bot is shared by ${activeInstalls} agents — uninstall the others before disabling sharing`)
+    this.name = 'BotStillShared'
+  }
+}
+
 /** A GitHub installation is already claimed by another AgentConnect org.
  * Claims are immutable: sync/callback/doorbell updates may refresh facts but
  * can never move the installation across tenants. */

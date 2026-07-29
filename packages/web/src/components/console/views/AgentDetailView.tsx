@@ -56,6 +56,7 @@ import { AgentMark, GithubMark, LoadingState, PlatformMark } from '@/components/
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import { PLATFORMS, type Platform } from '@/components/console/modals/AddIntegrationModal'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
+import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { NotFound } from '@/components/console/NotFound'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -469,6 +470,7 @@ export default function AgentDetailView() {
           runtime={da.runtime}
           onCommit={(icon) => void updateAgent(da.id, { icon }).catch(() => {})}
           onUploadImage={onUploadIcon}
+          disabled={!!da.builtin}
           size={52}
           radiusClass="rounded-[12px]"
         />
@@ -480,6 +482,7 @@ export default function AgentDetailView() {
                 {da.name}
               </span>
             )}
+            <BuiltinBadge show={!!da.builtin} />
             <span className="badge" style={{ background: ds.bg, color: ds.text }}>
               <span className="dot h-[6px] w-[6px]" style={{ background: ds.dot }} />
               {ds.label}
@@ -559,17 +562,22 @@ export default function AgentDetailView() {
                       {actionErr}
                     </div>
                   )}
-                  <div className="dmsep" />
-                  <button
-                    className="dmi danger"
-                    onClick={() => {
-                      setActionsOpen(false)
-                      openModal('deleteAgent', da)
-                    }}
-                  >
-                    <Icon name="trash-2" size={15} />
-                    Delete
-                  </button>
+                  {/* Built-in preset agents are permanent — no Delete (the CP refuses it too). */}
+                  {!da.builtin && (
+                    <>
+                      <div className="dmsep" />
+                      <button
+                        className="dmi danger"
+                        onClick={() => {
+                          setActionsOpen(false)
+                          openModal('deleteAgent', da)
+                        }}
+                      >
+                        <Icon name="trash-2" size={15} />
+                        Delete
+                      </button>
+                    </>
+                  )}
                 </div>
               </>
             )}
@@ -584,6 +592,7 @@ export default function AgentDetailView() {
           runtime={da.runtime}
           onCommit={(icon) => void updateAgent(da.id, { icon }).catch(() => {})}
           onUploadImage={onUploadIcon}
+          disabled={!!da.builtin}
           size={48}
           radiusClass="rounded-[12px]"
         />
@@ -592,6 +601,7 @@ export default function AgentDetailView() {
             <span className="font-sans text-[20px] font-semibold leading-normal tracking-[-.02em]">
               {agentLabel(da)}
             </span>
+            <BuiltinBadge show={!!da.builtin} />
             <span
               className="inline-flex flex-none items-center gap-[5px] rounded-full px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal"
               style={{ background: ds.bg, color: ds.text }}
@@ -1704,16 +1714,19 @@ export default function AgentDetailView() {
                 {actionErr}
               </div>
             )}
-            <button
-              onClick={() => {
-                setActionsOpen(false)
-                openModal('deleteAgent', da)
-              }}
-              className="flex w-full cursor-pointer items-center gap-3 border-0 bg-transparent px-3 py-[13px] text-left font-sans text-[15px] font-medium leading-normal text-(--red-600)"
-            >
-              <Icon name="trash-2" size={18} />
-              Delete
-            </button>
+            {/* Built-in preset agents are permanent — no Delete (the CP refuses it too). */}
+            {!da.builtin && (
+              <button
+                onClick={() => {
+                  setActionsOpen(false)
+                  openModal('deleteAgent', da)
+                }}
+                className="flex w-full cursor-pointer items-center gap-3 border-0 bg-transparent px-3 py-[13px] text-left font-sans text-[15px] font-medium leading-normal text-(--red-600)"
+              >
+                <Icon name="trash-2" size={18} />
+                Delete
+              </button>
+            )}
           </div>
         </div>
       )}

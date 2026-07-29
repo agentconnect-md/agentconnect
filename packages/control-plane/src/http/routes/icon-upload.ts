@@ -96,6 +96,12 @@ export function iconUploadRoutes(deps: HttpDeps) {
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
+        // Built-in preset agents keep the fixed brand icon (preset-agents.md §3.1).
+        if (agent.builtin) {
+          return reply
+            .code(403)
+            .send({ error: 'Forbidden', statusCode: 403, message: 'built-in agent icon cannot be changed' })
+        }
         const bytes = req.body as Buffer
         const v = validateIconUpload(bytes)
         if (!v.ok) return reply.code(v.status).send({ error: 'Unsupported', statusCode: v.status, message: v.message })
@@ -132,6 +138,12 @@ export function iconUploadRoutes(deps: HttpDeps) {
         }
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        }
+        // Built-in preset agents keep the fixed brand icon (preset-agents.md §3.1).
+        if (agent.builtin) {
+          return reply
+            .code(403)
+            .send({ error: 'Forbidden', statusCode: 403, message: 'built-in agent icon cannot be changed' })
         }
         const glyph = randomGlyphIcon()
         await deps.repos.agent.update(AgentId(agent.id), {
