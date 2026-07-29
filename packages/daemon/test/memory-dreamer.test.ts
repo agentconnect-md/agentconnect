@@ -60,6 +60,48 @@ describe('dream proposal parsing', () => {
     }
   })
 
+  // Regression: a real model reply, fenced, whose mined skill body is Markdown
+  // containing its own fenced code blocks. A lazy fence match stopped at the
+  // first inner ``` and truncated the object mid-string, so the dream came back
+  // unparseable — losing the store proposal and every skill with it. Since a
+  // useful procedural skill always shows its commands, this broke mining for
+  // essentially every candidate worth keeping.
+  it('parses a fenced proposal whose skill body contains fenced code blocks', () => {
+    const skill =
+      '# deploy-api-staging\n\n' +
+      'Use when the user asks to ship the api service to staging.\n\n' +
+      '1. Build the workspace package:\n   ```\n   pnpm --filter api build\n   ```\n' +
+      '2. Build the image:\n   ```\n   docker build -t api:staging .\n   ```\n' +
+      '3. Roll it out:\n   ```\n   kubectl -n staging set image deploy/api api=api:staging\n   ```\n'
+    const reply =
+      '```json\n' +
+      JSON.stringify({
+        index: '# Memory\n\n_No persistent memories yet._\n',
+        files: [],
+        skills: [
+          {
+            name: 'deploy-api-staging',
+            description: 'Build and deploy the api service to the staging namespace',
+            skill,
+            scripts: [],
+            sessionIds: ['sess-a', 'sess-b']
+          }
+        ]
+      }) +
+      '\n```\n'
+
+    const proposal = parseDreamProposal(reply, ['sess-a', 'sess-b', 'sess-c'])
+    expect(proposal).not.toBeNull()
+    expect(proposal?.skills?.map((s) => s.name)).toEqual(['deploy-api-staging'])
+    expect(proposal?.skills?.[0]?.skill).toContain('docker build -t api:staging .')
+  })
+
+  it('parses a fenced proposal that trails prose after the JSON', () => {
+    const proposal = parseDreamProposal(`\`\`\`json\n${good}\n\`\`\`\n\nThat covers it — nothing else stood out.`)
+    expect(proposal?.files).toHaveLength(1)
+    expect(proposal?.index.startsWith('# Memory')).toBe(true)
+  })
+
   it('returns null for unparseable or index-less replies', () => {
     expect(parseDreamProposal('no json at all')).toBeNull()
     expect(parseDreamProposal('{"files": []}')).toBeNull()

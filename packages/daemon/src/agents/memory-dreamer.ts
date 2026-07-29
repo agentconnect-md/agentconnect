@@ -199,6 +199,37 @@ ${clamp(sessions.join('\n\n'), MAX_CONTEXT_BYTES - MAX_STORE_CONTEXT_BYTES)}
 }
 
 /**
+ * Recover the JSON object from a model reply.
+ *
+ * A mined skill body is itself Markdown, so it routinely contains fenced code
+ * blocks — the whole point of a procedural skill is to show the commands. Those
+ * inner fences sit inside a JSON string, but a lazy `` ```…``` `` match stops at
+ * the first one and hands back a truncated object, which fails to parse and
+ * loses the entire dream. So try the plausible readings in order and keep the
+ * first that parses: the outermost fence, then a brace slice (correct when the
+ * reply is a bare object, or a fence whose content is exactly the object), then
+ * the innermost fence for a reply that trails prose after the JSON.
+ */
+function parseDreamJson(text: string): unknown | undefined {
+  const candidates = [
+    text.match(/```(?:json)?\s*([\s\S]*)```/i)?.[1],
+    text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1),
+    text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]
+  ]
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    try {
+      const value: unknown = JSON.parse(candidate)
+      // A bare string or number parses but carries no proposal; keep looking.
+      if (value && typeof value === 'object') return value
+    } catch {
+      // Not this reading — fall through to the next.
+    }
+  }
+  return undefined
+}
+
+/**
  * Parse and harden the model's proposal. Returns null when the text carries no
  * usable JSON proposal (the dream then fails; partial staging is never written
  * from an unparseable reply). Individual entries are dropped, not repaired:
@@ -206,15 +237,8 @@ ${clamp(sessions.join('\n\n'), MAX_CONTEXT_BYTES - MAX_STORE_CONTEXT_BYTES)}
  * filtered the same way the distiller filters memories.
  */
 export function parseDreamProposal(text: string, minedSessionIds: readonly string[] = []): DreamProposal | null {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]
-  const candidate = fenced ?? text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)
-  if (!candidate) return null
-  let value: unknown
-  try {
-    value = JSON.parse(candidate)
-  } catch {
-    return null
-  }
+  const value = parseDreamJson(text)
+  if (value === undefined) return null
   const proposal = value as { index?: unknown; files?: unknown; skills?: unknown }
   if (typeof proposal?.index !== 'string' || !Array.isArray(proposal.files)) return null
 
