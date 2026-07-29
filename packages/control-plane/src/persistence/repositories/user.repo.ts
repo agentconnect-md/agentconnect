@@ -24,6 +24,7 @@ import {
   SYNTHETIC_EMAIL_SUFFIX,
   isSyntheticEmail
 } from '../ports.js'
+import { provisionPresetAgents } from '../preset-agents.js'
 
 // app_user row → the caller's own profile. Synthetic placeholder emails read as
 // "no email" (never displayed), same as the member record below.
@@ -105,7 +106,8 @@ export async function ensurePersonalOrg(
   db: PrismaLike,
   userId: string,
   displayName?: string | null,
-  email?: string | null
+  email?: string | null,
+  opts?: { presetAgents?: boolean }
 ): Promise<void> {
   const already = await db.membership.findFirst({ where: { userId, role: 'owner' } })
   if (already) return
@@ -123,6 +125,13 @@ export async function ensurePersonalOrg(
     const org = await db.org.findUniqueOrThrow({ where: { slug }, select: { id: true } })
     try {
       await db.membership.create({ data: { orgId: org.id, userId, role: 'owner' } })
+      // Org-creation seam (preset-agents.md §3.2): a new personal org is born with
+      // the `agentconnect` general preset. A brand-new org cannot collide on the
+      // reserved slug, so no expected-failure statement runs here — safe under the
+      // waitlist redeem's ambient transaction.
+      if (opts?.presetAgents !== false) {
+        await provisionPresetAgents(db, { orgId: org.id, createdByUserId: userId })
+      }
     } catch (err) {
       // Outside a transaction this keeps an empty org from leaking; inside one the
       // rollback does it (and this delete is itself a no-op on the aborted tx).
@@ -143,7 +152,10 @@ export class PgUserRepo implements UserRepo {
    */
   constructor(
     private readonly db: PrismaLike,
-    private readonly provisionPersonalOrgOnSignup = true
+    private readonly provisionPersonalOrgOnSignup = true,
+    /** Provision preset agents with each personal org (preset-agents.md §3.2).
+     *  Deploy-time opt-out rides PRESET_AGENTS_ENABLED. */
+    private readonly presetAgents = true
   ) {}
 
   async provisionOidcUser(input: ProvisionOidcUserInput): Promise<{ userId: string }> {
@@ -256,7 +268,7 @@ export class PgUserRepo implements UserRepo {
    */
   private async ensurePersonalOrg(userId: string, displayName?: string | null, email?: string | null): Promise<void> {
     if (!this.provisionPersonalOrgOnSignup) return
-    await ensurePersonalOrg(this.db, userId, displayName, email)
+    await ensurePersonalOrg(this.db, userId, displayName, email, { presetAgents: this.presetAgents })
   }
 
   async exists(userId: string): Promise<boolean> {
@@ -301,7 +313,7 @@ export class PgUserRepo implements UserRepo {
     if (!this.provisionPersonalOrgOnSignup) return
     const user = await this.db.user.findUnique({ where: { id: userId } })
     if (!user) return
-    await ensurePersonalOrg(this.db, user.id, user.displayName, user.email)
+    await ensurePersonalOrg(this.db, user.id, user.displayName, user.email, { presetAgents: this.presetAgents })
   }
 
   async listMembers(orgId: string): Promise<OrgMemberRecord[]> {

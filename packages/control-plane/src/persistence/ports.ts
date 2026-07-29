@@ -509,7 +509,10 @@ export interface CreateAgentInput {
   name: string // slug (unique per org)
   displayName?: string // human-readable original
   description?: string
-  runtime: string
+  /** Absent ⇒ deferred exec config (preset-agents.md §3.2): the agent is created
+   *  unplaced with no runtime; choosing one happens at placement. The public
+   *  create route still requires a runtime — only preset provisioning defers. */
+  runtime?: string
   model?: string
   reasoningEffort?: string
   outputMode?: string // platform output verbosity: low | medium | high
@@ -597,7 +600,7 @@ export interface AgentRecord {
   displayName: string | null
   icon: AgentIcon | null // console avatar descriptor; null ⇒ legacy default (runtime mark)
   description: string | null
-  runtime: string
+  runtime: string | null // null ⇒ deferred exec config (unplaced preset; set at placement)
   model: string | null // from runtimeOverrides.model
   reasoningEffort: string | null // from runtimeOverrides.reasoningEffort
   outputMode: string | null // from runtimeOverrides.outputMode
@@ -1776,6 +1779,11 @@ export interface CreateBotInput {
   prebuilt?: boolean
   /** Slack app id (A…), parsed from the pasted xapp token. Public metadata, NOT a secret. */
   slackAppId?: string
+  /** Slack workspace id (T…), from the platform app's OAuth exchange. Together with
+   *  `slackAppId` it is the relay demux key for a distributed app. Public metadata. */
+  teamId?: string
+  /** Slack bot user id, from the OAuth exchange (`bot_user_id`). Public metadata. */
+  botUserId?: string
   /** Discord application (client) id, decoded from the bot token. Public metadata, NOT a secret. */
   discordAppId?: string
   /** Feishu/Lark gateway region; only set for platform 'feishu'. Durable home for the
@@ -1797,6 +1805,14 @@ export interface BotRecord {
   prebuilt: boolean
   /** Slack app id (A…) — deep-links the console to the app's Slack settings page. */
   slackAppId: string | null
+  /** Slack workspace id (T…); non-null only for platform-app installs, where
+   *  (slackAppId, teamId) is the relay demux key. */
+  teamId: string | null
+  /** Slack bot user id, persisted from the OAuth exchange; null for legacy bots. */
+  botUserId: string | null
+  /** Stamped when the workspace uninstalled the app / revoked its tokens
+   *  (`rc/bot-revoked`); a platform-app re-install clears it. */
+  revokedAt: Date | null
   /** Discord application (client) id — lets the console offer a ready-made invite URL. */
   discordAppId: string | null
   /** Feishu/Lark gateway region for this bot; null for non-feishu bots (and feishu bots
@@ -1838,6 +1854,12 @@ export interface BotRepo {
   /** Every http-transport bot with ≥1 active integration, across all orgs — the
    *  shared-bot orchestrator's convergence worklist (relay register / failover). */
   listHttpActive(): Promise<BotRecord[]>
+  /** The Bot backing one workspace install of a distributed app — CROSS-ORG lookup
+   *  by the composite demux key (a workspace binds to exactly one org). */
+  getBySlackAppTeam(slackAppId: string, teamId: string): Promise<BotRecord | null>
+  /** Stamp (`app_uninstalled`/`tokens_revoked`) or clear (platform re-install)
+   *  the bot's revocation marker. */
+  setRevoked(id: BotId, at: Date | null): Promise<void>
   /** Callers must refuse while the bot is installed (FK Restrict backstops). */
   delete(id: BotId): Promise<void>
 }
@@ -2078,6 +2100,61 @@ export interface SlackInstallStore {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// SlackPlatformInstallStore — pending installs of the PLATFORM-published
+// (distributed) Slack app (preset-agents.md §5.3). No credentials here — those
+// are deployment env config; the row only binds the OAuth `state` to tenancy.
+// The `id` doubles as the unforgeable OAuth `state`; rows are TTL-reaped
+// alongside slack_install.
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface SlackPlatformInstallRecord {
+  id: string // == OAuth state (random uuid)
+  orgId: OrgId
+  agentId: AgentId // bind target (defaults to the org's `agentconnect` preset)
+  createdByUserId: string | null
+  createdAt: Date
+}
+
+export interface SlackPlatformInstallStore {
+  create(input: {
+    id: string
+    orgId: OrgId
+    agentId: AgentId
+    createdByUserId?: string
+  }): Promise<SlackPlatformInstallRecord>
+  get(id: string): Promise<SlackPlatformInstallRecord | null>
+  delete(id: string): Promise<void>
+  /** TTL sweep: delete pending rows created before `staleBefore`; returns the count. */
+  reapExpired(staleBefore: Date): Promise<number>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// PresetAgentStore — per-org preset provisioning state (preset-agents.md §3.2).
+// Rows are WRITTEN by the org-creation seam / the one-time backfill / the
+// settle-stamp anchors (persistence-internal); this port is the READ surface for
+// routes (the platform Slack install's default bind target) and, later, the
+// onboarding checklist.
+// ───────────────────────────────────────────────────────────────────────────
+
+export type PresetAgentKind = 'general' | 'assistant'
+
+export interface PresetAgentRecord {
+  orgId: OrgId
+  preset: PresetAgentKind
+  /** Null once the preset agent was deleted (SetNull), or for a `skipped` row. */
+  agentId: AgentId | null
+  status: 'created' | 'skipped'
+  /** First placement of any kind — or an explicit opt-out — stamps this; M1
+   *  auto-placement only ever considers an unplaced, UNSTAMPED preset. */
+  placementSettledAt: Date | null
+  createdAt: Date
+}
+
+export interface PresetAgentStore {
+  get(orgId: OrgId, preset: PresetAgentKind): Promise<PresetAgentRecord | null>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // SlackUserConfigStore (C5) — one user's stored App Configuration Token, scoped
 // to an org (docs/designs/slack-install-smoothing.md §Tier B). PER-USER: the app
 // `apps.manifest.create` builds belongs to whoever's token created it, so each
@@ -2171,6 +2248,9 @@ export interface IntegrationRepo {
    *  bot). The shared-bot route compiler's member set. Ordered by createdAt (the
    *  earliest is the group's default agent). */
   listForBot(botId: BotId): Promise<IntegrationRecord[]>
+  /** Flip every ACTIVE integration of `botId` to `revoked` (workspace uninstall /
+   *  token revocation). Returns the affected integration ids. */
+  markRevokedForBot(botId: BotId): Promise<IntegrationId[]>
   delete(id: IntegrationId): Promise<void>
 }
 

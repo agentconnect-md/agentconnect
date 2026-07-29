@@ -54,9 +54,11 @@ export const SLACK_BOT_SCOPES = [
 
 /** Bot events the daemon subscribes to: message.* / app_mention drive inbound
  *  delivery, assistant_thread_started preserves Agent/assistant DM thread roots,
- *  and membership events drive the console's per-channel trigger config. */
+ *  membership events drive the console's per-channel trigger config, and the two
+ *  `app_*`/token lifecycle events feed the uninstall/revocation surfacing. */
 export const SLACK_BOT_EVENTS = [
   'app_mention',
+  'app_uninstalled',
   'assistant_thread_started',
   'message.channels',
   'message.groups',
@@ -64,7 +66,8 @@ export const SLACK_BOT_EVENTS = [
   'message.mpim',
   'member_joined_channel',
   'channel_left',
-  'group_left'
+  'group_left',
+  'tokens_revoked'
 ] as const
 
 /** Fallback name so the manifest / deep link are always valid before the user types one. */

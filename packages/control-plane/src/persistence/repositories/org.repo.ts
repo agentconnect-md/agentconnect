@@ -5,15 +5,26 @@
  * additional ones, and owner-gated rename/re-slug.
  */
 import type { PrismaLike } from '../prisma.js'
-import { Prisma } from '../../generated/prisma/client.js'
+import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
 import type { OrgRepo, OrgRecord, OrgMemberRole } from '../ports.js'
 import type { AgentIcon } from '@agentconnect.md/protocol'
 import { OrgId } from '../../domain/ids.js'
 import { PgHookRepo } from './hook.repo.js'
 import { parseAgentIcon, randomGlyphIcon } from '../../agents/agent-icon.js'
+import { provisionPresetAgents } from '../preset-agents.js'
 
 export class PgOrgRepo implements OrgRepo {
-  constructor(private readonly db: PrismaLike) {}
+  constructor(
+    private readonly db: PrismaLike,
+    /** Provision preset agents with each created org (preset-agents.md §3.2);
+     *  deploy-time opt-out via PRESET_AGENTS_ENABLED. */
+    private readonly presetAgents = true
+  ) {}
+
+  private transaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    if ('$transaction' in this.db) return (this.db as PrismaClient).$transaction(fn)
+    return fn(this.db as Prisma.TransactionClient)
+  }
 
   async listForUser(userId: string): Promise<OrgRecord[]> {
     const rows = await this.db.membership.findMany({
@@ -37,15 +48,19 @@ export class PgOrgRepo implements OrgRepo {
     // New orgs get a random glyph+color by default (mirrors agents), so the console
     // always has a real avatar to show before any upload.
     const icon = randomGlyphIcon()
-    const org = await this.db.org.create({
-      data: { name: input.name, slug: input.slug, icon: icon as Prisma.InputJsonValue }
+    // One transaction: org + owner membership + the preset agent (org-creation
+    // seam, preset-agents.md §3.2) commit or roll back together — an org is never
+    // observable without its preset row.
+    const org = await this.transaction(async (tx) => {
+      const created = await tx.org.create({
+        data: { name: input.name, slug: input.slug, icon: icon as Prisma.InputJsonValue }
+      })
+      await tx.membership.create({ data: { orgId: created.id, userId: input.ownerUserId, role: 'owner' } })
+      if (this.presetAgents) {
+        await provisionPresetAgents(tx, { orgId: created.id, createdByUserId: input.ownerUserId })
+      }
+      return created
     })
-    try {
-      await this.db.membership.create({ data: { orgId: org.id, userId: input.ownerUserId, role: 'owner' } })
-    } catch (err) {
-      await this.db.org.delete({ where: { id: org.id } }).catch(() => {}) // don't leak an empty org
-      throw err
-    }
     return {
       id: org.id,
       name: org.name,

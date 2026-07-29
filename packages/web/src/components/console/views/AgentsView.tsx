@@ -610,13 +610,32 @@ export default function AgentsView() {
                   </span>
                 </div>
                 {/* Daemon and repo are the two cells that routinely truncate, so they keep
-                  a hint — it carries the full value, which the row does not show. */}
-                <div
-                  className="mono min-w-0 truncate pr-3 text-[12px] text-(--text-primary)"
-                  title={daemonName(a.daemon)}
-                >
-                  {daemonName(a.daemon)}
-                </div>
+                  a hint — it carries the full value, which the row does not show. An
+                  UNPLACED agent (the preset before placement) gets an Add CTA instead of
+                  the dash — same affordance as the Integrations cell; the edit modal
+                  carries the daemon picker. */}
+                {daemonName(a.daemon) === '—' ? (
+                  <div className="min-w-0 pr-3">
+                    <span
+                      className="addchip"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        openModal('editAgent', a)
+                      }}
+                    >
+                      <Icon name="plus" size={13} />
+                      Add
+                    </span>
+                  </div>
+                ) : (
+                  <div
+                    className="mono min-w-0 truncate pr-3 text-[12px] text-(--text-primary)"
+                    title={daemonName(a.daemon)}
+                  >
+                    {daemonName(a.daemon)}
+                  </div>
+                )}
                 {a.createdBy ? (
                   <div className="flex items-center pr-3" title={creatorName}>
                     <Avatar

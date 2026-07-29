@@ -1,6 +1,12 @@
 # Design: Preset Agents and Guided Onboarding
 
-**Status:** Proposed (not implemented).
+**Status:** M0 implemented (reserved slugs, nullable `Agent.runtime`, org-creation
+seam + one-time backfill + `preset_agent` state, the `agentconnect` general preset,
+console tolerance for unplaced agents), together with §5.3 Fulfillment B — the
+platform-published "Add to Slack" app (env credentials, state-bound install route,
+`Bot.teamId` + composite relay demux, uninstall/revocation lifecycle) — pulled
+forward from M4 so the preset agent is Slack-connectable from day one. M1–M3 and
+M5 remain proposed.
 
 **Builds on:** [agent-assistant.md](agent-assistant.md) (AgentConnect MCP + OAuth shipped;
 the built-in assistant P3 and delegated credentials P4 are pending — this design changes

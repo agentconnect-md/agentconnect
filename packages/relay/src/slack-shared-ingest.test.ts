@@ -457,6 +457,26 @@ describe('SlackSharedIngest channel membership events', () => {
 
     expect(onChannelsChanged).toHaveBeenCalledWith([{ id: 'C1', name: 'remaining' }])
   })
+
+  // App lifecycle (preset-agents.md §5.3): the workspace pulled the app / revoked
+  // its tokens. Not a chat event — it has no user/bot_id, so without the explicit
+  // branch the routable-event filters would silently drop it.
+  it.each(['app_uninstalled', 'tokens_revoked'] as const)('reports %s upstream as a bot revocation', async (type) => {
+    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
+    const onBotRevoked = vi.fn()
+    const onMessage = vi.fn(async () => {})
+    const ingest = new SlackSharedIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      deps(web, { onBotRevoked, onMessage })
+    )
+    await ingest.start()
+
+    await ingest.handleEvent({ type })
+
+    expect(onBotRevoked).toHaveBeenCalledWith(type)
+    expect(onMessage).not.toHaveBeenCalled()
+  })
 })
 
 // Mirrors the daemon's slack/normalize.ts: a group DM is classified but never

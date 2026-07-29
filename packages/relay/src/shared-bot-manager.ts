@@ -40,6 +40,11 @@ import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 /** Cap on the learned `api_app_id → botId` demux index before it is flushed. */
 const MAX_DEMUX_ENTRIES = 10_000
 
+/** Composite demux key for one workspace install of a distributed app. */
+function appTeamKey(apiAppId: string, teamId: string): string {
+  return `${apiAppId}\u0000${teamId}`
+}
+
 /** Cap on the retry buffer for thread-assign reports dropped while the CP link was
  *  down. Bounded so a long CP outage can't grow it without limit; oldest-cleared. */
 const MAX_PENDING_REPORTS = 10_000
@@ -59,6 +64,10 @@ export interface SharedBotManagerDeps {
    *  re-stamps the pool-wide latch. Best-effort: loss costs at most one duplicate
    *  notice later, never a lost enablement path. */
   reportNoticePosted: (m: { botId: string; channel: string }) => boolean
+  /** Report a workspace uninstall / token revocation (→ `rc/bot-revoked`) so the CP
+   *  marks the Bot + its installs revoked. Best-effort: loss self-heals — outbound
+   *  with the dead token fails and the console converges on the next report. */
+  reportBotRevoked: (m: { botId: string; reason: 'app_uninstalled' | 'tokens_revoked' }) => boolean
   /** Report the thread's now-resolved owner to the CP (→ `rc/thread-assign`). Returns
    *  `false` if the CP link was not READY and the frame was dropped, so the manager can
    *  retry it when the link recovers ({@link SharedBotManager.flushPendingReports}). */
@@ -142,8 +151,15 @@ export class SharedBotManager {
   private readonly router = new SharedBotRouter()
   private readonly ingests = new Map<string, SlackSharedIngest>()
   /** Learned/assigned `api_app_id → botId` index — O(1) HTTP demux (self-populates on
-   *  first verified delivery when the CP didn't stamp `apiAppId`). Bounded flush. */
+   *  first verified delivery when the CP didn't stamp `apiAppId`). Bounded flush.
+   *  Team-scoped bots (a distributed app's installs) NEVER enter this map — they
+   *  demux exclusively on the composite index below. */
   private readonly demuxByApiApp = new Map<string, string>()
+  /** Assigned `(api_app_id, team_id) → botId` composite index — the ONLY demux for
+   *  a distributed app's installs, which all share one app id + signing secret.
+   *  Assign-derived (never learned) and cleaned up on unassign via the reverse map. */
+  private readonly demuxByAppTeam = new Map<string, string>()
+  private readonly appTeamKeyByBot = new Map<string, string>()
   /** Bounded-loss counters (per bot) — messages dropped because no daemon connection. */
   private readonly dropped = new Map<string, number>()
   /** Thread-assign reports dropped because the CP link wasn't READY, keyed
@@ -211,8 +227,19 @@ export class SharedBotManager {
     }
     // Rebuild the ingest (secrets may have rotated). Idempotent: stop any existing.
     await this.stopIngest(a.botId)
-    // Deterministic demux when the CP stamped the app id; else the verify-scan learns it.
-    if (a.apiAppId) this.rememberApiApp(a.apiAppId, a.botId)
+    // Deterministic demux when the CP stamped the app id. A team-scoped bot (a
+    // distributed app's install) goes ONLY into the composite index — an app-only
+    // entry would serve every sibling workspace's events to this one bot.
+    this.forgetAppTeam(a.botId)
+    if (a.apiAppId && a.teamId) {
+      this.demuxByAppTeam.set(appTeamKey(a.apiAppId, a.teamId), a.botId)
+      this.appTeamKeyByBot.set(a.botId, appTeamKey(a.apiAppId, a.teamId))
+      // A re-assign that GAINED a teamId must also evict any stale app-only entry
+      // still pointing at this bot, or the fast path would keep serving cross-team.
+      if (this.demuxByApiApp.get(a.apiAppId) === a.botId) this.demuxByApiApp.delete(a.apiAppId)
+    } else if (a.apiAppId) {
+      this.rememberApiApp(a.apiAppId, a.botId)
+    }
     const ingest = new SlackSharedIngest(
       a.botId,
       { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret },
@@ -227,6 +254,10 @@ export class SharedBotManager {
           this.selectThreadAgent(a.botId, channelId, threadTs, agentId),
         onSessionAction: (action) => this.forwardSessionAction(a.botId, action),
         onSessionShortcut: (shortcut) => this.forwardSessionShortcut(a.botId, shortcut),
+        onBotRevoked: (reason) => {
+          this.deps.log.warn(`shared-bot(${a.botId}): workspace revoked the app (${reason})`)
+          this.deps.reportBotRevoked({ botId: a.botId, reason })
+        },
         log: this.deps.log
       }
     )
@@ -260,8 +291,18 @@ export class SharedBotManager {
   /** `rc/bot-unassign` — drop the routes + close the ingest. */
   async unassign(botId: string): Promise<void> {
     this.clearGatedDmLatches(botId)
+    this.forgetAppTeam(botId)
     this.router.remove(botId)
     await this.stopIngest(botId)
+  }
+
+  /** Drop the bot's composite demux entry (assign-derived, so eagerly cleaned —
+   *  unlike the learned app-only map, whose stale entries lazily miss). */
+  private forgetAppTeam(botId: string): void {
+    const key = this.appTeamKeyByBot.get(botId)
+    if (key === undefined) return
+    this.appTeamKeyByBot.delete(botId)
+    if (this.demuxByAppTeam.get(key) === botId) this.demuxByAppTeam.delete(key)
   }
 
   /** `rc/assign` — durable thread affinity seed. */
@@ -271,11 +312,13 @@ export class SharedBotManager {
 
   /**
    * Demux + authenticate one inbound Slack HTTP POST to its bot's ingest. Slack's
-   * HMAC (over the raw body, keyed by the bot's signing secret) is BOTH the demux
-   * discriminator and the authenticator: a request is only attributed to a bot whose
-   * signing secret verifies it. Fast path via the learned `api_app_id` index; on a
-   * miss (or absent app id / rotated secret) a verify-scan over every assigned bot
-   * finds and caches it. `undefined` ⇒ the route answers 401.
+   * HMAC (over the raw body, keyed by the bot's signing secret) authenticates, but
+   * it can only DISCRIMINATE while signing secrets differ — every install of a
+   * distributed app shares one secret, so those bots resolve exclusively on the
+   * composite `(api_app_id, team_id)` index and are skipped by the verify-scan
+   * (a scan hit against a sibling install would leak one workspace's messages
+   * into another tenant's bot). Legacy bots keep the learned app-only fast path
+   * with the verify-scan fallback. `undefined` ⇒ the route answers 401.
    */
   resolveVerified(args: {
     apiAppId?: string
@@ -285,15 +328,26 @@ export class SharedBotManager {
     signature: string | undefined
   }): SlackSharedIngest | undefined {
     const now = this.deps.clock.now()
-    const { apiAppId, timestamp, rawBody, signature } = args
+    const { apiAppId, teamId, timestamp, rawBody, signature } = args
+    // Composite fast path — assign-derived, so a hit is exact (still HMAC-verified).
+    if (apiAppId && teamId) {
+      const botId = this.demuxByAppTeam.get(appTeamKey(apiAppId, teamId))
+      const ingest = botId ? this.ingests.get(botId) : undefined
+      if (ingest && verifySlackSignature(ingest.signingSecret, timestamp, rawBody, signature, now)) return ingest
+    }
     if (apiAppId) {
       const botId = this.demuxByApiApp.get(apiAppId)
       const ingest = botId ? this.ingests.get(botId) : undefined
       if (ingest && verifySlackSignature(ingest.signingSecret, timestamp, rawBody, signature, now)) return ingest
     }
     for (const [botId, ingest] of this.ingests) {
+      // A team-scoped bot may only serve its own workspace: same-secret siblings
+      // would all verify, so the envelope team id is the ONLY discriminator.
+      const assignedTeam = this.router.get(botId)?.teamId
+      if (assignedTeam !== undefined && assignedTeam !== teamId) continue
       if (verifySlackSignature(ingest.signingSecret, timestamp, rawBody, signature, now)) {
-        if (apiAppId) this.rememberApiApp(apiAppId, botId)
+        // Learn only the app-only mapping; composite entries are assign-derived.
+        if (apiAppId && assignedTeam === undefined) this.rememberApiApp(apiAppId, botId)
         return ingest
       }
     }
@@ -303,6 +357,11 @@ export class SharedBotManager {
   private rememberApiApp(apiAppId: string, botId: string): void {
     if (this.demuxByApiApp.size >= MAX_DEMUX_ENTRIES) this.demuxByApiApp.clear()
     this.demuxByApiApp.set(apiAppId, botId)
+  }
+
+  /** Test/inspection view of the demux indexes (no secret material). */
+  get demuxIndexes(): { byApiApp: ReadonlyMap<string, string>; byAppTeam: ReadonlyMap<string, string> } {
+    return { byApiApp: this.demuxByApiApp, byAppTeam: this.demuxByAppTeam }
   }
 
   /** Make the inline selector effective for the current Slack thread immediately.

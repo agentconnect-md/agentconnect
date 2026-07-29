@@ -104,6 +104,7 @@ function build(
   const onRegistered = vi.fn()
   const onRunReport = vi.fn(async () => {})
   const onBotChannels = vi.fn(async () => {})
+  const onBotRevoked = vi.fn(async () => {})
   const relayReg = new RelayRegistry()
 
   const transport = new FakeServerTransport()
@@ -119,6 +120,7 @@ function build(
     onRunReport,
     onSetChannelAgent: vi.fn(async () => {}),
     onBotChannels,
+    onBotRevoked,
     onThreadAssign: vi.fn(async () => {}),
     threadLookup: vi.fn(async (m) => ({ ...m, target: null })),
     onGithubInstallation: vi.fn(async () => {}),
@@ -136,6 +138,7 @@ function build(
     onRegistered,
     onRunReport,
     onBotChannels,
+    onBotRevoked,
     authorizeGithubComment,
     authorizeGithubRerequest,
     relayReg
@@ -346,6 +349,17 @@ describe('RelayConnection FSM', () => {
     await Promise.resolve()
 
     expect(onBotChannels).toHaveBeenCalledWith(snapshot)
+  })
+
+  it('rc/bot-revoked in READY reaches the revocation handler', async () => {
+    const { transport, onBotRevoked } = build()
+    await toReady(transport)
+    const revoked = { botId: '22222222-2222-4222-8222-222222222222', reason: 'app_uninstalled' as const }
+
+    transport.feed('rc/bot-revoked', revoked)
+    await Promise.resolve()
+
+    expect(onBotRevoked).toHaveBeenCalledWith(revoked)
   })
 
   it('rc/run-report before READY is a PROTOCOL_STATE error', async () => {

@@ -317,6 +317,9 @@ const REGISTRY_RUNTIME_NAME_OVERRIDES: Record<string, string> = {
 // name; the small override list captures intentional product wording. Missing
 // registry metadata and user-defined runtimes retain the established fallbacks.
 export function runtimeLabel(id: string, registryName?: string | null): string {
+  // Deferred exec config (an unplaced preset agent, preset-agents.md §3.2): the
+  // runtime is not chosen yet — every display site renders the placement dash.
+  if (!id) return '—'
   const name = registryName?.trim()
   if (name) return REGISTRY_RUNTIME_NAME_OVERRIDES[name] ?? name
   switch (id.replace(/-acp$/, '')) {

@@ -24,6 +24,7 @@ import type {
   RcRunReport,
   RcBotChannels,
   RcBotConversation,
+  RcBotRevoked,
   RcNoticePosted,
   RcSetChannelAgent,
   RcThreadAssign,
@@ -65,6 +66,9 @@ export interface RelayConnDeps {
   /** Record a DELIVERED §14.3 DM gating notice and re-stamp the pool's latch.
    *  Fire-and-forget. */
   onNoticePosted: (m: RcNoticePosted) => Promise<void>
+  /** Apply a workspace uninstall / token revocation (`rc/bot-revoked`): mark the
+   *  Bot + its installs revoked and release the bot. Fire-and-forget. */
+  onBotRevoked: (m: RcBotRevoked) => Promise<void>
   /** Fired after this relay left the connected registry (socket closed) — the
    *  connected roster changed, so §14.3 notice authorities must re-converge on the
    *  survivors. Best-effort; never throws. */
@@ -162,6 +166,9 @@ export class RelayConnection implements RelayChannel {
         case 'rc/notice-posted':
           await this.deps.onNoticePosted(frame.payload)
           return
+        case 'rc/bot-revoked':
+          await this.deps.onBotRevoked(frame.payload)
+          return
         case 'rc/thread-assign':
           await this.handleThreadAssign(frame.payload)
           return
@@ -195,6 +202,7 @@ export class RelayConnection implements RelayChannel {
           type === 'rc/set-channel-agent' ||
           type === 'rc/bot-channels' ||
           type === 'rc/bot-conversation' ||
+          type === 'rc/bot-revoked' ||
           type === 'rc/notice-posted' ||
           type === 'rc/thread-assign' ||
           type === 'rc/thread-lookup' ||

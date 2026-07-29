@@ -26,6 +26,9 @@ export interface SlackAppCreation {
 export interface SlackOAuthResult {
   botToken: string // xoxb-… — the bot user OAuth token, the thing we persist
   appId: string
+  /** Workspace id ("T…") — the platform-app path persists it as the relay demux
+   *  key (Bot.teamId); the per-app funnel has no use for it. */
+  teamId: string | null
   teamName: string | null
   botUserId: string | null
 }
@@ -164,6 +167,7 @@ export const slackConfigApi: SlackConfigApi = {
       result: {
         botToken: body.access_token,
         appId: body.app_id,
+        teamId: body.team?.id ?? null,
         teamName: body.team?.name ?? null,
         botUserId: body.bot_user_id ?? null
       }

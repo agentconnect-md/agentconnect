@@ -537,6 +537,12 @@ export const RcBotAssign = z.object({
   // manual paste (xoxb + signing secret, no xapp to parse) may lack it, in which
   // case the relay falls back to a signing-secret verify-scan and learns it.
   apiAppId: z.string().optional(),
+  // Slack workspace id ("T…", == the Events API envelope `team_id`). REQUIRED for a
+  // distributed (platform-published) app: every workspace install shares one
+  // `api_app_id` AND one signing secret, so only the composite `(api_app_id,
+  // team_id)` key can demux — a signature scan would verify against every sibling
+  // install. When set, the relay demuxes this bot ONLY on the composite key.
+  teamId: z.string().optional(),
   secrets: RcBotSecrets,
   members: z.array(z.object({ daemonId: z.string().uuid(), agentIds: z.array(z.string().uuid()) })),
   agents: z.array(RcAgentDirEntry).default([]), // member directory (id→name) for the config modal
@@ -635,6 +641,18 @@ export const RcNoticePosted = z.object({
   channel: z.string().min(1)
 })
 export type RcNoticePosted = z.infer<typeof RcNoticePosted>
+
+// R→C EVT (fire-and-forget) — the workspace uninstalled the Slack app
+// (`app_uninstalled`) or revoked its tokens (`tokens_revoked`). The relay cannot
+// serve the bot any longer (its token is dead); the CP marks the Bot revoked,
+// flips its integrations to `revoked`, and unassigns the bot from the pool.
+// Loss is tolerable: the next inbound POST for the bot fails verification /
+// outbound fails auth, and the periodic reconcile converges the console state.
+export const RcBotRevoked = z.object({
+  botId: z.string().uuid(),
+  reason: z.enum(['app_uninstalled', 'tokens_revoked'])
+})
+export type RcBotRevoked = z.infer<typeof RcBotRevoked>
 
 // R→C EVT (fire-and-forget) — INCREMENTAL conversation report (resource-visibility
 // §14.3): the relay saw an inbound DM to a shared bot that backs ≥1 gated
@@ -773,6 +791,7 @@ export const RELAY_CP_SCHEMAS = {
   'rc/set-channel-agent': RcSetChannelAgent,
   'rc/bot-channels': RcBotChannels,
   'rc/bot-conversation': RcBotConversation,
+  'rc/bot-revoked': RcBotRevoked,
   'rc/notice-posted': RcNoticePosted,
   'rc/thread-assign': RcThreadAssign,
   'rc/thread-lookup': RcThreadLookup,
@@ -816,6 +835,7 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/set-channel-agent', RELAY_CP_SCHEMAS['rc/set-channel-agent']),
   frameSchema('rc/bot-channels', RELAY_CP_SCHEMAS['rc/bot-channels']),
   frameSchema('rc/bot-conversation', RELAY_CP_SCHEMAS['rc/bot-conversation']),
+  frameSchema('rc/bot-revoked', RELAY_CP_SCHEMAS['rc/bot-revoked']),
   frameSchema('rc/notice-posted', RELAY_CP_SCHEMAS['rc/notice-posted']),
   frameSchema('rc/thread-assign', RELAY_CP_SCHEMAS['rc/thread-assign']),
   frameSchema('rc/thread-lookup', RELAY_CP_SCHEMAS['rc/thread-lookup']),

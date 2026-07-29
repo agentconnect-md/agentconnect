@@ -140,7 +140,7 @@ describe('slackConfigApi.exchangeOAuth (oauth.v2.access)', () => {
     })
     expect(res).toEqual({
       ok: true,
-      result: { botToken: 'xoxb-123', appId: 'A123456789', teamName: 'Acme', botUserId: 'U123456789' }
+      result: { botToken: 'xoxb-123', appId: 'A123456789', teamId: 'T1', teamName: 'Acme', botUserId: 'U123456789' }
     })
   })
 

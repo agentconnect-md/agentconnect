@@ -46,8 +46,10 @@ import {
   PgExternalMemoryConnectionSecretStore,
   PgExternalMemoryGrantRepo,
   PgSlackInstallStore,
+  PgSlackPlatformInstallStore,
   PgThreadAffinityStore,
   PgSlackUserConfigStore,
+  PgPresetAgentStore,
   PgIntegrationChannelRepo
 } from '../../src/persistence/index.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
@@ -181,7 +183,9 @@ export function buildHttpApp(
       externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, cipher),
       externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, cipher),
       slackInstall: new PgSlackInstallStore(prisma, cipher),
+      slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
       slackUserConfig: new PgSlackUserConfigStore(prisma, cipher),
+      presetAgent: new PgPresetAgentStore(prisma),
       integrationChannel: integrationChannelRepo,
       audit: auditRepo,
       oauth: oauthRepo

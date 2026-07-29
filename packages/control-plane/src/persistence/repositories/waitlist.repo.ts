@@ -21,7 +21,12 @@ import { ensurePersonalOrg } from './user.repo.js'
 const isP2002 = (err: unknown): boolean => (err as { code?: string }).code === 'P2002'
 
 export class PgWaitlistRepo implements WaitlistRepo {
-  constructor(private readonly db: PrismaLike) {}
+  constructor(
+    private readonly db: PrismaLike,
+    /** Provision preset agents with the activation-time personal org
+     *  (preset-agents.md §3.2); deploy-time opt-out via PRESET_AGENTS_ENABLED. */
+    private readonly presetAgents = true
+  ) {}
 
   private inTransaction<T>(run: (tx: PrismaLike) => Promise<T>): Promise<T> {
     return '$transaction' in this.db ? (this.db as PrismaClient).$transaction((tx) => run(tx)) : run(this.db)
@@ -115,7 +120,7 @@ export class PgWaitlistRepo implements WaitlistRepo {
       // someone who still needs it. A BOUND link is minted for this exact person, so
       // it still records its redemption below (audit).
       if (entry.email === null && user.activatedAt) {
-        await ensurePersonalOrg(tx, userId, user.displayName, realEmail) // idempotent
+        await ensurePersonalOrg(tx, userId, user.displayName, realEmail, { presetAgents: this.presetAgents }) // idempotent
         return { status: 'activated' }
       }
 
@@ -123,7 +128,7 @@ export class PgWaitlistRepo implements WaitlistRepo {
       // redemption. All within this locked transaction. `redeemedByUserId` is null
       // here (the same-user short-circuit and different-user reject are both above).
       if (!user.activatedAt) await tx.user.update({ where: { id: userId }, data: { activatedAt: now } })
-      await ensurePersonalOrg(tx, userId, user.displayName, realEmail)
+      await ensurePersonalOrg(tx, userId, user.displayName, realEmail, { presetAgents: this.presetAgents })
       await tx.waitlistEntry.update({
         where: { tokenHash },
         data: { redeemedByUserId: userId, redeemedAt: now, redeemedEmail: normalizedEmail }

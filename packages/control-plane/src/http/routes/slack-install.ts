@@ -451,16 +451,20 @@ export function slackConfigRoutes(deps: HttpDeps) {
       // Durable = a refresh token is stored (the pair auto-rotates). Usable now = durable
       // or the access-only token is still fresh; a lapsed access-only token forces re-entry.
       const durable = !!row?.refreshToken
+      // HTTP mode is offerable here: a public relay origin is configured AND ≥1 relay
+      // is connected to receive the Events API POSTs.
+      const relayAvailable = !!relayPublicUrl && deps.sharedBot.hasConnectedRelay()
       return {
         configured: !!row,
         durable,
         funnelEnabled,
         autoAvailable: funnelEnabled && configUsable(row, now),
         accessExpiresAt: row ? row.accessExpiresAt.toISOString() : null,
-        // HTTP mode is offerable here: a public relay origin is configured AND ≥1 relay
-        // is connected to receive the Events API POSTs.
-        relayAvailable: !!relayPublicUrl && deps.sharedBot.hasConnectedRelay(),
+        relayAvailable,
         relayPublicUrl,
+        // The platform-published "Add to Slack" app (preset-agents.md §5.3): env
+        // credentials + public callback + the relay pool, all present.
+        platformInstallAvailable: !!deps.slackPlatformApp && funnelEnabled && relayAvailable,
         updatedAt: row ? row.updatedAt.toISOString() : null
       }
     }
@@ -561,7 +565,7 @@ export function slackConfigRoutes(deps: HttpDeps) {
   }
 }
 
-type SlackCallbackNote = 'connected' | 'denied' | 'expired' | 'error'
+export type SlackCallbackNote = 'connected' | 'denied' | 'expired' | 'error' | 'workspace_taken'
 
 /**
  * The callback tab is a THROWAWAY — the real flow continues in the ORIGINAL
@@ -570,8 +574,11 @@ type SlackCallbackNote = 'connected' | 'denied' | 'expired' | 'error'
  * serve a tiny self-contained page that says the tab is done and auto-closes on
  * success. No request data is reflected (the note is server-chosen; the optional
  * link origin comes from config), so there's nothing to escape.
+ *
+ * Exported for the platform-app callback (slack-platform-install.ts), which
+ * shares the throwaway-tab UX (and adds the `workspace_taken` outcome).
  */
-function closePageHtml(note: SlackCallbackNote, consoleUrl?: string): string {
+export function closePageHtml(note: SlackCallbackNote, consoleUrl?: string): string {
   const ok = note === 'connected'
   const heading = ok ? 'Connected to Slack' : 'Slack sign-in didn’t finish'
   const body =
@@ -581,7 +588,9 @@ function closePageHtml(note: SlackCallbackNote, consoleUrl?: string): string {
         ? 'This install link expired. Close this tab and start again in AgentConnect.'
         : note === 'denied'
           ? 'The install was cancelled. Close this tab and try again in AgentConnect.'
-          : 'Something went wrong finishing the install. Close this tab and try again in AgentConnect.'
+          : note === 'workspace_taken'
+            ? 'This Slack workspace is already connected to a different AgentConnect organization. Remove that connection first, then try again.'
+            : 'Something went wrong finishing the install. Close this tab and try again in AgentConnect.'
   // Auto-close only on success (a failure needs reading). window.close() is allowed
   // for script-opened tabs (this one was window.open'd); the text is the fallback.
   const autoClose = ok ? '<script>setTimeout(function(){try{window.close()}catch(e){}},1500)</script>' : ''

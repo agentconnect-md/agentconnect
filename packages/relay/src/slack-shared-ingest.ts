@@ -399,6 +399,9 @@ export interface SlackSharedIngestDeps {
   /** Resolve and forward the app-level message shortcut. False opens a local
    *  unavailable modal while the one-shot trigger id is still valid. */
   onSessionShortcut: (shortcut: SharedSlackSessionShortcut) => boolean
+  /** The workspace uninstalled the app / revoked its tokens — the bot's credential
+   *  is dead; report upstream so the CP marks it revoked. */
+  onBotRevoked?: (reason: 'app_uninstalled' | 'tokens_revoked') => void
   /** Test seam for the bot-token Web API client. */
   webClientFactory?: (botToken: string, options?: WebClientOptions) => WebClient
   log: Logger
@@ -481,6 +484,14 @@ export class SlackSharedIngest {
    *  already sent; a forward miss is bounded loss at the forwarder. */
   async handleEvent(event: SlackMessageEvent | undefined): Promise<void> {
     try {
+      // App lifecycle: the workspace pulled the app / revoked its tokens. Not a
+      // chat event (no user/bot_id — isRoutableEvent would drop it), so branch
+      // before the chat filters. `tokens_revoked` is treated as a full revoke —
+      // the app has exactly one bot token, and Slack sends it when that dies.
+      if (event?.type === 'app_uninstalled' || event?.type === 'tokens_revoked') {
+        this.deps.onBotRevoked?.(event.type)
+        return
+      }
       if (event && this.isOwnMembershipChange(event)) {
         await this.refreshChannels()
         return

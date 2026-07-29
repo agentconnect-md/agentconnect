@@ -384,8 +384,15 @@ export default function AgentDetailView() {
   // clickable (the modal applies this identical gate), so a tile can never open a
   // pane other than the one it names. webhook/github are relay/CP-backed
   // triggers: always available.
+  // An UNPLACED agent keeps bot platforms selectable — the platform "Add to
+  // Slack" card / the funnel mint CP-side rows whose delivery converges at
+  // placement; the modal + server gate what genuinely needs a daemon.
   const integrationPlatformAvailable = (key: Platform) =>
-    key === 'webhook' || key === 'github' || daemonsLoading || !!owningDaemon?.caps.platforms.includes(key)
+    key === 'webhook' ||
+    key === 'github' ||
+    daemonsLoading ||
+    !owningDaemon ||
+    owningDaemon.caps.platforms.includes(key)
   // Effective (intersection) peer sets for the read-only Access summary.
   const inboundEffectiveIds = agentReach.incomingByAgentId.get(da.id) ?? []
   const outboundEffectiveIds = agentReach.outgoingByAgentId.get(da.id) ?? []
@@ -488,6 +495,18 @@ export default function AgentDetailView() {
                 <Icon name="server" size={14} color="var(--text-tertiary)" />
                 {daemonLine}
               </Link>
+            ) : da.daemon === '—' ? (
+              // Unplaced (the preset before placement): an Add CTA instead of the
+              // dash — same affordance as the Integrations cell; the edit modal
+              // carries the daemon picker + the deferred runtime choice.
+              <button
+                type="button"
+                className="addchip border-0"
+                onClick={() => openModal('editAgent', da, { focusSection: 'runtime' })}
+              >
+                <Icon name="plus" size={13} />
+                Add daemon
+              </button>
             ) : (
               <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
                 <Icon name="server" size={14} color="var(--text-tertiary)" />
@@ -723,6 +742,15 @@ export default function AgentDetailView() {
                     <Link className="lnk font-mono text-[12.5px] font-medium leading-normal" href={daemonHref}>
                       {daemonLine}
                     </Link>
+                  ) : da.daemon === '—' ? (
+                    <button
+                      type="button"
+                      className="addchip border-0"
+                      onClick={() => openModal('editAgent', da, { focusSection: 'runtime' })}
+                    >
+                      <Icon name="plus" size={13} />
+                      Add
+                    </button>
                   ) : (
                     <span className="mono text-[12.5px]">{daemonLine}</span>
                   )}

@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type {
   RdAck,
@@ -38,6 +39,7 @@ const deps = (over: Partial<SharedBotManagerDeps> = {}): SharedBotManagerDeps =>
   reportBotChannels: vi.fn(() => true),
   reportBotConversation: vi.fn(() => true),
   reportNoticePosted: vi.fn(() => true),
+  reportBotRevoked: vi.fn(() => true),
   selfRelayId: () => SELF_RELAY,
   reportThreadAssign: vi.fn(() => true),
   lookupThread: vi.fn(async () => ({ botId: BOT_ID, sessionKey: '', target: null }) as RcThreadLookupOk),
@@ -804,5 +806,123 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
     await internals.forward(BOT_ID, dm())
     expect(reportBotConversation).not.toHaveBeenCalled()
     expect(ingest.postText).not.toHaveBeenCalled()
+  })
+})
+
+// ── resolveVerified — the (api_app_id, team_id) composite demux ─────────────
+//
+// Every install of a DISTRIBUTED (platform-published) app shares one app id AND
+// one signing secret, so the HMAC can authenticate but cannot discriminate —
+// only the composite key may route, and the verify-scan must never hand one
+// workspace's events to a sibling install (a cross-tenant leak, not a miss).
+describe('SharedBotManager.resolveVerified composite demux', () => {
+  const BOT_T1 = 'aaaaaaaa-1111-4111-8111-111111111111'
+  const BOT_T2 = 'aaaaaaaa-2222-4222-8222-222222222222'
+  const BOT_LEGACY = 'aaaaaaaa-3333-4333-8333-333333333333'
+  const PLATFORM_APP = 'APLATFORM'
+  const SHARED_SECRET = 'shared-platform-signing-secret'
+  const NOW = 1_720_000_000_000
+  const ts = String(Math.floor(NOW / 1000))
+  const body = Buffer.from(JSON.stringify({ type: 'event_callback', event_id: 'Ev1' }))
+  const sig = (secret: string) => `v0=${createHmac('sha256', secret).update(`v0:${ts}:${body}`).digest('hex')}`
+
+  interface DemuxInternals {
+    router: SharedBotRouter
+    ingests: Map<string, { signingSecret: string; stop(): Promise<void> }>
+    demuxByApiApp: Map<string, string>
+    demuxByAppTeam: Map<string, string>
+    appTeamKeyByBot: Map<string, string>
+  }
+
+  /** Register a bot the way `assign()` would, minus the network-touching ingest
+   *  start: router assignment + a secret-bearing ingest stand-in + (for a
+   *  team-scoped bot) the assign-derived composite index entries. */
+  const addBot = (
+    manager: SharedBotManager,
+    botId: string,
+    signingSecret: string,
+    opts: { apiAppId?: string; teamId?: string; indexed?: boolean } = {}
+  ) => {
+    const internals = manager as unknown as DemuxInternals
+    internals.ingests.set(botId, { signingSecret, stop: async () => {} })
+    internals.router.upsert({
+      ...assignment(),
+      botId,
+      secrets: { botToken: 'xoxb', signingSecret },
+      ...(opts.apiAppId ? { apiAppId: opts.apiAppId } : {}),
+      ...(opts.teamId ? { teamId: opts.teamId } : {})
+    })
+    if (opts.apiAppId && opts.teamId && opts.indexed !== false) {
+      internals.demuxByAppTeam.set(`${opts.apiAppId}\u0000${opts.teamId}`, botId)
+      internals.appTeamKeyByBot.set(botId, `${opts.apiAppId}\u0000${opts.teamId}`)
+    }
+    if (opts.apiAppId && !opts.teamId) internals.demuxByApiApp.set(opts.apiAppId, botId)
+  }
+
+  const resolve = (manager: SharedBotManager, over: { apiAppId?: string; teamId?: string; secret?: string }) =>
+    manager.resolveVerified({
+      ...(over.apiAppId ? { apiAppId: over.apiAppId } : {}),
+      ...(over.teamId ? { teamId: over.teamId } : {}),
+      timestamp: ts,
+      rawBody: body,
+      signature: sig(over.secret ?? SHARED_SECRET)
+    })
+
+  it('demuxes sibling installs of one distributed app by (api_app_id, team_id)', () => {
+    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1' })
+    addBot(manager, BOT_T2, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T2' })
+
+    const internals = manager as unknown as DemuxInternals
+    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T1' })).toBe(internals.ingests.get(BOT_T1))
+    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T2' })).toBe(internals.ingests.get(BOT_T2))
+  })
+
+  it('never serves a team-scoped bot to another workspace via the signature scan', () => {
+    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    // Composite index deliberately EMPTY (indexed:false) — only the router knows
+    // the team ids, so resolution falls through to the verify-scan, where the
+    // same-secret sibling MUST be skipped on the team-id guard.
+    addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1', indexed: false })
+    addBot(manager, BOT_T2, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T2', indexed: false })
+
+    const internals = manager as unknown as DemuxInternals
+    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T2' })).toBe(internals.ingests.get(BOT_T2))
+    // The scan hit must not poison the app-only learned map for a team-scoped bot.
+    expect(internals.demuxByApiApp.has(PLATFORM_APP)).toBe(false)
+  })
+
+  it('fails closed when a distributed-app envelope carries no team id', () => {
+    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1' })
+    addBot(manager, BOT_T2, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T2' })
+
+    // Both siblings verify the HMAC; without a team id there is no safe pick.
+    expect(resolve(manager, { apiAppId: PLATFORM_APP })).toBeUndefined()
+  })
+
+  it('keeps the legacy app-only fast path and scan learning for team-less bots', () => {
+    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    addBot(manager, BOT_LEGACY, 'legacy-secret', {}) // no app id stamped — scan learns it
+
+    const internals = manager as unknown as DemuxInternals
+    expect(resolve(manager, { apiAppId: 'ALEGACY', secret: 'legacy-secret' })).toBe(internals.ingests.get(BOT_LEGACY))
+    expect(internals.demuxByApiApp.get('ALEGACY')).toBe(BOT_LEGACY)
+    // A team-scoped envelope still resolves the legacy bot (guard only skips
+    // bots whose ASSIGNMENT carries a different team id).
+    expect(resolve(manager, { apiAppId: 'ALEGACY', teamId: 'T9', secret: 'legacy-secret' })).toBe(
+      internals.ingests.get(BOT_LEGACY)
+    )
+  })
+
+  it('unassign drops the composite index entries', async () => {
+    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1' })
+
+    await manager.unassign(BOT_T1)
+    const internals = manager as unknown as DemuxInternals
+    expect(internals.demuxByAppTeam.size).toBe(0)
+    expect(internals.appTeamKeyByBot.size).toBe(0)
+    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T1' })).toBeUndefined()
   })
 })

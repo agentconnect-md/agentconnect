@@ -57,6 +57,9 @@ function toBotRecord(b: BotJoined): BotRecord {
     name: b.name,
     prebuilt: b.prebuilt,
     slackAppId: b.slackAppId,
+    teamId: b.teamId,
+    botUserId: b.botUserId,
+    revokedAt: b.revokedAt,
     discordAppId: b.discordAppId,
     feishuRegion: (b.feishuRegion as FeishuRegion | null) ?? null,
     shareable: b.shareable,
@@ -86,6 +89,8 @@ export class PgBotRepo implements BotRepo {
         name: input.name,
         ...(input.prebuilt !== undefined ? { prebuilt: input.prebuilt } : {}),
         ...(input.slackAppId ? { slackAppId: input.slackAppId } : {}),
+        ...(input.teamId ? { teamId: input.teamId } : {}),
+        ...(input.botUserId ? { botUserId: input.botUserId } : {}),
         ...(input.discordAppId ? { discordAppId: input.discordAppId } : {}),
         ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {}),
         ...(input.shareable !== undefined ? { shareable: input.shareable } : {}),
@@ -137,6 +142,21 @@ export class PgBotRepo implements BotRepo {
       orderBy: { createdAt: 'asc' }
     })
     return rows.map(toBotRecord)
+  }
+
+  async getBySlackAppTeam(slackAppId: string, teamId: string): Promise<BotRecord | null> {
+    // Cross-org on purpose: (slackAppId, teamId) is globally unique — a workspace
+    // install of a distributed app binds to exactly one org, and the platform
+    // callback must find it wherever it lives to refuse a second org's claim.
+    const b = await this.db.bot.findUnique({
+      where: { slackAppId_teamId: { slackAppId, teamId } },
+      include: botInclude
+    })
+    return b ? toBotRecord(b) : null
+  }
+
+  async setRevoked(id: BotId, at: Date | null): Promise<void> {
+    await this.db.bot.update({ where: { id }, data: { revokedAt: at } })
   }
 
   async delete(id: BotId): Promise<void> {
@@ -354,6 +374,21 @@ export class PgIntegrationRepo implements IntegrationRepo {
       orderBy: { createdAt: 'asc' }
     })
     return rows.map(toRecord)
+  }
+
+  async markRevokedForBot(botId: BotId): Promise<IntegrationId[]> {
+    // Read-then-flip inside one statement pair: the ids are needed by the caller
+    // (spec removal per daemon), and updateMany returns only a count.
+    const rows = await this.db.integration.findMany({
+      where: { botId, status: 'active' },
+      select: { id: true }
+    })
+    if (rows.length === 0) return []
+    await this.db.integration.updateMany({
+      where: { id: { in: rows.map((r) => r.id) } },
+      data: { status: 'revoked' }
+    })
+    return rows.map((r) => IntegrationId(r.id))
   }
 
   async delete(id: IntegrationId): Promise<void> {

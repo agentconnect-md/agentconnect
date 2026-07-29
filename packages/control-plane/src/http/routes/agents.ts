@@ -1641,6 +1641,12 @@ export function agentRoutes(deps: HttpDeps) {
         }
 
         const conflict = (message: string) => reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
+        // Deferred exec config (preset-agents.md §3.2): placement is where a
+        // runtime becomes mandatory — an unplaced preset carries none until the
+        // user (or M1 auto-placement) chooses one.
+        if (!existing.runtime) {
+          return conflict('agent has no runtime yet — set a runtime before placing it on a daemon')
+        }
         const moveReady = (daemonId: string) => {
           const live = deps.liveness.get(daemonId)
           return live?.reachable === true && live.state === 'READY'

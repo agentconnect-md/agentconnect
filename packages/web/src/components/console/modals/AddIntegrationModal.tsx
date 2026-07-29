@@ -14,7 +14,9 @@ import { consoleKeys } from '@/lib/swr-keys'
 import {
   creatorLabel,
   startSlackInstall,
+  startSlackPlatformInstall,
   getSlackInstall,
+  fetchIntegrations,
   fetchSlackConfig,
   saveSlackConfig,
   fetchAgentHooks,
@@ -1039,6 +1041,14 @@ export default function AddIntegrationModal({
     installUrl: string
     transport: 'socket' | 'http'
   } | null>(null)
+  // Platform-published "Add to Slack" app (preset-agents.md §5.3): one click, no app
+  // to create and no tokens — the CP finishes the install in the OAuth callback, so
+  // the modal just polls the integrations list until the new install appears.
+  const [platformAvailable, setPlatformAvailable] = useState(false)
+  const [platformPhase, setPlatformPhase] = useState<'idle' | 'authorizing'>('idle')
+  const [platformErr, setPlatformErr] = useState<string | null>(null)
+  // Integration ids that existed when the popup opened — completion = a NEW slack one.
+  const platformBaseline = useRef<Set<string>>(new Set())
 
   // Webhook path: the form, then the created row. HMAC is an optional second
   // factor; when selected, the row carries the ONE-TIME signing-secret echo.
@@ -1149,10 +1159,14 @@ export default function AddIntegrationModal({
   // A bot integration is runnable only when the owning daemon has reported its
   // adapter on register. Do not substitute `maxAgents`: it is a concurrency
   // ceiling, while `caps.platforms` is the adapter-capability declaration.
+  // An UNPLACED agent (no daemon yet — the preset before placement) keeps the
+  // bot platforms selectable: the platform "Add to Slack" card and the funnel
+  // both create CP-side rows whose delivery converges at placement, and the
+  // server backstops the paths that genuinely require a daemon.
   const daemon = daemons.find((d) => d.daemonId === agent.daemon)
-  const supportedBotPlatforms = daemonsLoading
-    ? BOT_PLATFORMS
-    : BOT_PLATFORMS.filter((p) => daemon?.caps.platforms.includes(p.key))
+  const unplaced = !daemon
+  const supportedBotPlatforms =
+    daemonsLoading || unplaced ? BOT_PLATFORMS : BOT_PLATFORMS.filter((p) => daemon.caps.platforms.includes(p.key))
   const firstSupportedBotPlatform = supportedBotPlatforms[0]?.key
   // webhook + github are relay/CP-backed triggers — always available, never
   // gated by the daemon's adapter capabilities.
@@ -1785,12 +1799,54 @@ export default function AddIntegrationModal({
         setAutoUsable(c.autoAvailable)
         setRelayAvailable(c.relayAvailable)
         setRelayPublicUrl(c.relayPublicUrl)
+        setPlatformAvailable(c.platformInstallAvailable === true)
       })
       .catch(() => alive && setSlackFunnel(false)) // any error ⇒ fall back to manual
     return () => {
       alive = false
     }
   }, [mode, platform, slackFunnel])
+
+  // Kick off the platform-app install: mint the state-bound authorize URL, open it
+  // in a popup, and snapshot the current integration ids — the poll below watches
+  // for a NEW slack integration on this agent (the callback creates it server-side).
+  const startPlatformInstall = async () => {
+    if (busyRef.current) return
+    setPlatformErr(null)
+    try {
+      const baseline = await fetchIntegrations()
+      platformBaseline.current = new Set(baseline.filter((i) => i.agentId === agent.id).map((i) => i.id))
+      const r = await startSlackPlatformInstall(agent.id)
+      window.open(r.installUrl, '_blank', 'noopener,width=680,height=760')
+      setPlatformPhase('authorizing')
+    } catch (e) {
+      setPlatformErr(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  // While the user approves in the Slack tab, poll until the callback has minted
+  // the integration, then close (the console lists refetch on modal close).
+  useEffect(() => {
+    if (mode !== 'create' || platformPhase !== 'authorizing') return
+    let alive = true
+    const tick = async () => {
+      try {
+        const list = await fetchIntegrations()
+        const landed = list.some(
+          (i) => i.agentId === agent.id && i.platform === 'slack' && !platformBaseline.current.has(i.id)
+        )
+        if (alive && landed) onClose()
+      } catch {
+        /* transient — keep polling */
+      }
+    }
+    const h = setInterval(() => void tick(), 2500)
+    void tick()
+    return () => {
+      alive = false
+      clearInterval(h)
+    }
+  }, [mode, platformPhase, agent.id, onClose])
 
   // While the user approves the install in the other tab, poll until the CP has the
   // bot token, then reveal the app-level-token step. Cleared on close / phase change.
@@ -2608,6 +2664,40 @@ export default function AddIntegrationModal({
               </div>
             ) : (
               <>
+                {platformAvailable && (
+                  <div className="mb-3 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+                          Add to Slack
+                        </div>
+                        <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                          {platformPhase === 'authorizing'
+                            ? 'Approve the install in the Slack tab — this closes automatically once it lands.'
+                            : 'One click — install the AgentConnect Slack app into your workspace. No app to create, no tokens to paste.'}
+                        </div>
+                      </div>
+                      {platformPhase === 'authorizing' ? (
+                        <span className="inline-flex items-center gap-2 font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
+                          <Icon name="loader" size={14} className="flex-none animate-spin" />
+                          Waiting for Slack…
+                        </span>
+                      ) : (
+                        <Button variant="primary" onClick={() => void startPlatformInstall()} disabled={saving}>
+                          Add to Slack
+                        </Button>
+                      )}
+                    </div>
+                    {platformErr && (
+                      <div className="mt-2 font-sans text-[11.5px] font-normal leading-[1.4] text-(--danger)">
+                        {platformErr}
+                      </div>
+                    )}
+                    <div className="mt-[10px] border-t border-(--border-subtle) pt-[10px] font-sans text-[11px] font-normal leading-[1.4] text-(--text-tertiary)">
+                      Prefer a dedicated Slack identity for this agent? Create its own app below.
+                    </div>
+                  </div>
+                )}
                 {slackFunnel === true && (
                   <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-[6px]">
                     <div className="inline-flex flex-none rounded-lg border border-(--border-default) bg-(--surface-card) p-[3px]">

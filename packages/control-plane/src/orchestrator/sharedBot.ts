@@ -177,6 +177,34 @@ export class SharedBotOrchestrator {
     this.broadcast((ch) => ch.send('rc/bot-unassign', { botId: bot.id }))
   }
 
+  /**
+   * `rc/bot-revoked` — the workspace uninstalled the app / revoked its tokens
+   * (preset-agents.md §5.3 lifecycle). The bot's credential is dead: mark the Bot
+   * + its installs revoked, release the relay ingest, and pull the send-only
+   * specs from member daemons (mirrors the integration DELETE route's push).
+   * Idempotent — a duplicate report finds no active installs and only re-stamps.
+   */
+  async revokeBot(botId: string, reason: 'app_uninstalled' | 'tokens_revoked'): Promise<void> {
+    const bot = await this.bots.get(BotId(botId))
+    if (!bot) return
+    // Snapshot members BEFORE the flip — listForBot is active-only.
+    const installs = await this.integrations.listForBot(bot.id)
+    await this.bots.setRevoked(bot.id, new Date())
+    await this.integrations.markRevokedForBot(bot.id)
+    await this.unassign(bot)
+    for (const integration of installs) {
+      const agent = await this.agents.get(integration.agentId)
+      if (!agent?.daemonId) continue
+      try {
+        await this.control.integrationRemove(agent.daemonId, { integrationId: integration.id })
+      } catch (err) {
+        if (!(err instanceof NoConnection)) throw err
+        this.log.debug?.({ integrationId: integration.id }, 'shared-bot: revoke spec removal skipped — daemon offline')
+      }
+    }
+    this.log.info({ botId: bot.id, reason, installs: installs.length }, 'shared-bot: bot revoked by workspace')
+  }
+
   /** Converge EVERY http+active bot — the failover / broad-change worklist. */
   async reconcileAll(): Promise<void> {
     const http = await this.bots.listHttpActive()
@@ -729,6 +757,12 @@ export class SharedBotOrchestrator {
       // Slack app id ("A…", == Events API api_app_id) — O(1) inbound demux. Absent on
       // a manual-paste http bot (no xapp to parse); the relay verify-scans instead.
       ...(bot.slackAppId ? { apiAppId: bot.slackAppId } : {}),
+      // Workspace id ("T…") — present only for a distributed (platform) app's
+      // install, where the composite (api_app_id, team_id) is the ONLY safe demux
+      // (all sibling installs share the app id AND the signing secret).
+      ...(bot.teamId ? { teamId: bot.teamId } : {}),
+      // Persisted at OAuth exchange; spares the relay an auth.test round-trip.
+      ...(bot.botUserId ? { botUserId: bot.botUserId } : {}),
       secrets: { botToken: secret.botToken, signingSecret: secret.signingSecret ?? '' },
       members: compiled.members,
       agents: compiled.agents,

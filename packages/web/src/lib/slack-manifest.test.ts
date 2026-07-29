@@ -38,6 +38,7 @@ describe('manifest parity with the Control Plane', () => {
   it('pins the exact bot events (drift guard)', () => {
     expect([...SLACK_BOT_EVENTS]).toEqual([
       'app_mention',
+      'app_uninstalled',
       'assistant_thread_started',
       'message.channels',
       'message.groups',
@@ -45,7 +46,8 @@ describe('manifest parity with the Control Plane', () => {
       'message.mpim',
       'member_joined_channel',
       'channel_left',
-      'group_left'
+      'group_left',
+      'tokens_revoked'
     ])
   })
 })

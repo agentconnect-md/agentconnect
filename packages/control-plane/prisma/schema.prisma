@@ -59,6 +59,7 @@ model Org {
   memoryPluginInstallations MemoryPluginInstallation[]
   externalMemoryConnections ExternalMemoryConnection[]
   webchatConversations      WebchatConversation[]
+  presetAgents              PresetAgent[]
 
   @@map("org")
 }
@@ -568,7 +569,10 @@ model Agent {
   // random glyph+color. Rendered by GET /v1/agents/:id/icon and used as the Slack per-message icon_url.
   icon                  Json?              @db.JsonB
   description           String? // system prompt seed → AgentLaunch.spec.description; daemon appends to standing prompt
-  runtime               String // must be in Daemon.capabilities.runtimes
+  // Nullable = "deferred exec config" (preset-agents.md §3.2): an agent may exist
+  // UNPLACED with no runtime chosen yet; the invariant moves to placement, which
+  // requires one. When set it must be in Daemon.capabilities.runtimes.
+  runtime               String?
   status                AgentStatus        @default(inactive)
   daemonId              String?            @db.Uuid // 1 agent : 1 machine (null until placed)
   // ── workspace (inline; §3.5) — daemon-generated path ──
@@ -624,11 +628,48 @@ model Agent {
   repoAuths            AgentRepoAuthorization[]
   secrets              AgentSecret[]
   webchatConversations WebchatConversation[]
+  presetRecords        PresetAgent[]
 
   @@unique([orgId, name]) // slug is unique within an org
   @@index([orgId])
   @@index([daemonId])
   @@map("agent")
+}
+
+// Which preset an org-level preset_agent row describes (preset-agents.md §3).
+// `general` (the `agentconnect` dev agent) ships in M0; `assistant` is reserved
+// for the M3 built-in (`agentconnect-assistant`).
+enum PresetAgentKind {
+  general
+  assistant
+}
+
+enum PresetAgentState {
+  created // the agent row exists — written in the same transaction
+  skipped // permanently not created (backfill slug collision, or org opt-out)
+}
+
+// Per-preset provisioning state (preset-agents.md §3.2). The row IS the
+// idempotency marker: creation (org-creation seam or one-time backfill) writes it
+// transactionally with the agent row, and a deleted preset is never recreated
+// because creation has no later trigger — the row remains as the record the
+// onboarding checklist derives from. `placementSettledAt` is stamped by the FIRST
+// placement of any kind (or an explicit opt-out) so auto-placement (M1) never
+// fights a user who unplaced or moved the agent.
+model PresetAgent {
+  orgId              String
+  preset             PresetAgentKind
+  agentId            String?          @db.Uuid // null once the agent is deleted (SetNull) or when skipped
+  status             PresetAgentState
+  placementSettledAt DateTime?        @db.Timestamptz(6)
+  createdAt          DateTime         @default(now()) @db.Timestamptz(6)
+
+  org   Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@id([orgId, preset])
+  @@index([agentId])
+  @@map("preset_agent")
 }
 
 // One write-only secret env var of an agent, row-per-key. BotSecret discipline:
@@ -1331,6 +1372,19 @@ model Bot {
   name            String // Slack app / display name
   prebuilt        Boolean        @default(false) // provisioned by AgentConnect, not a console user
   slackAppId      String? // Slack app id (A…), parsed from the pasted xapp token — deep-links the console to api.slack.com/apps/{id}. Public metadata, NOT secret material.
+  // Slack workspace id ("T…", == Events API `team_id`), persisted by the platform
+  // (distributed) app's OAuth callback. Load-bearing for relay demux: every install
+  // of a distributed app shares one app id + signing secret, so only the composite
+  // (slackAppId, teamId) identifies a workspace's Bot. NULL for legacy /
+  // single-workspace bots. Public metadata, NOT secret material.
+  teamId          String?
+  // Slack bot user id ("U…"/"B…"), from the OAuth exchange (`bot_user_id`). Saves
+  // the relay an auth.test round-trip and backs echo suppression. Public metadata.
+  botUserId       String?
+  // Stamped when the workspace uninstalled the app or revoked its tokens
+  // (`app_uninstalled` / `tokens_revoked` via rc/bot-revoked). A revoked bot is
+  // dead credential-wise; a platform-app re-install clears it (fresh token).
+  revokedAt       DateTime?      @db.Timestamptz(6)
   discordAppId    String? // Discord application (client) id, decoded from the bot token's first segment — lets the console offer a ready-made "Add to Discord" invite URL. Public metadata (it IS the bot's user id), NOT secret material.
   feishuRegion    String? // Feishu/Lark open-platform gateway for this app: 'feishu' (open.feishu.cn) | 'lark' (open.larksuite.com). NULL ⇒ 'feishu'. DURABLE home (survives uninstall) so a freed Lark bot reinstalls against the right gateway. Public config, NOT secret.
   // Shared-bot opt-in (shared-bot-relay.md §4.1). false ⇒ classic 1-bot:1-agent
@@ -1359,6 +1413,10 @@ model Bot {
   // unique FK (dropped so shared bots can fan out).
   integrations Integration[]
 
+  // One Bot per workspace install of a distributed app — the relay demux key.
+  // NULL teamIds (legacy bots) are distinct under Postgres semantics, so existing
+  // rows are unaffected. Cross-org global: a workspace binds to exactly one org.
+  @@unique([slackAppId, teamId])
   @@index([orgId])
   @@map("bot")
 }
@@ -1526,6 +1584,23 @@ model SlackInstall {
   createdAt       DateTime       @default(now()) @db.Timestamptz(6)
 
   @@map("slack_install")
+}
+
+// Pending install of the PLATFORM-published (distributed) Slack app
+// (preset-agents.md §5.3). Unlike SlackInstall, no per-app credentials live here —
+// the app id / client secret / signing secret are deployment env config
+// (SLACK_PLATFORM_*). The row only binds the OAuth `state` to tenancy:
+// {org, target agent, initiating user}. The `id` doubles as the unforgeable
+// OAuth `state`; rows are TTL-reaped alongside slack_install. No FKs (mirrors
+// slack_install): a dangling row after an org/agent delete is harmless.
+model SlackPlatformInstall {
+  id              String   @id @db.Uuid // == OAuth state
+  orgId           String
+  agentId         String   @db.Uuid // bind target (defaults to the org's `agentconnect` preset)
+  createdByUserId String?
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("slack_platform_install")
 }
 
 // One user's stored Slack App Configuration Token, scoped to an org (composite key

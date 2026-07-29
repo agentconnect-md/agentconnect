@@ -23,6 +23,11 @@ export interface BotAssignment {
   secrets: { botToken: string; signingSecret: string }
   /** Slack app id (== Events API `api_app_id`) — the O(1) HTTP demux key when present. */
   apiAppId?: string
+  /** Slack workspace id (== Events API `team_id`). Present ⇒ this bot is one
+   *  workspace install of a DISTRIBUTED app: every sibling install shares the app
+   *  id AND the signing secret, so this bot may only be demuxed on the composite
+   *  `(api_app_id, team_id)` key — never by app id or signature scan alone. */
+  teamId?: string
   /** Resolved lazily by the ingest (auth.test) — used for mention + echo suppression. */
   botUserId?: string
   members: { daemonId: string; agentIds: string[] }[]

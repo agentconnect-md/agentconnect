@@ -46,6 +46,9 @@ function bot(over: Partial<BotRecord> = {}): BotRecord {
     name: 'support-bot',
     prebuilt: false,
     slackAppId: null,
+    teamId: null,
+    botUserId: null,
+    revokedAt: null,
     discordAppId: null,
     shareable: true,
     transport: 'http',
@@ -104,6 +107,9 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
   let gatedAgents: Set<string>
   // Drives ThreadAffinityStore.get (null = affinity miss → SessionMeta fallback).
   let threadBinding: { agentId: AgentId; daemonId: string } | null
+  // revokeBot recordings: the Bot revocation stamp + integration/remove pushes.
+  let botRevokedAt: Date | null
+  let removals: { daemonId: string; integrationId: string }[]
   // One-shot barrier for deterministic channel-mutation concurrency tests.
   let blockNextChannelList: (() => Promise<void>) | null
 
@@ -112,9 +118,12 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       [ALICE]: agent(ALICE, 'alice', D1),
       [BOB]: agent(BOB, 'bob', D2)
     }
-    const bots: Pick<BotRepo, 'get' | 'listHttpActive'> = {
+    const bots: Pick<BotRepo, 'get' | 'listHttpActive' | 'setRevoked'> = {
       get: async () => botRow,
-      listHttpActive: async () => [botRow]
+      listHttpActive: async () => [botRow],
+      setRevoked: async (_id, at) => {
+        botRevokedAt = at
+      }
     }
     const botSecret: Pick<BotSecretStore, 'get'> = {
       get: async () => ({ botToken: 'xoxb-x', appToken: 'xapp-x', signingSecret: 'shh-x' })
@@ -127,7 +136,14 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
           : null,
       listForBot: async () => []
     }
-    const intRepo: Pick<IntegrationRepo, 'listForBot'> = { listForBot: async () => integrations }
+    const intRepo: Pick<IntegrationRepo, 'listForBot' | 'markRevokedForBot'> = {
+      listForBot: async () => integrations.filter((i) => i.status === 'active'),
+      markRevokedForBot: async () => {
+        const flipped = integrations.filter((i) => i.status === 'active')
+        for (const i of flipped) i.status = 'revoked'
+        return flipped.map((i) => i.id)
+      }
+    }
     const chRepo: Pick<
       IntegrationChannelRepo,
       'listForBot' | 'replaceSnapshot' | 'setAgent' | 'setTrigger' | 'upsertAgent' | 'upsertConversation'
@@ -196,7 +212,10 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       }
     }
     const control = {
-      integrationUpsert: async (daemonId: string, spec: unknown) => void upserts.push({ daemonId, spec: spec as never })
+      integrationUpsert: async (daemonId: string, spec: unknown) =>
+        void upserts.push({ daemonId, spec: spec as never }),
+      integrationRemove: async (daemonId: string, r: { integrationId: string }) =>
+        void removals.push({ daemonId, integrationId: r.integrationId })
     }
     const sessions: Pick<SessionRepo, 'findThreadOwner'> = {
       findThreadOwner: async (botId, channel, thread) => {
@@ -231,6 +250,8 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     gatedAgents = new Set()
     threadBinding = null
     blockNextChannelList = null
+    botRevokedAt = null
+    removals = []
   })
 
   describe('lookupThread — SessionMeta fallback on affinity miss (§7.2 case 2a)', () => {
@@ -701,5 +722,43 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     await orch.syncBot(BOT)
     expect(orch.hasConnectedRelay()).toBe(false)
     expect(ch.sends).toEqual([]) // nothing broadcast
+  })
+
+  it('stamps teamId + botUserId into rc/bot-assign for a platform-app install', async () => {
+    // A distributed app's install: every workspace shares the app id + signing
+    // secret, so the relay may only demux this bot on (api_app_id, team_id).
+    botRow = bot({ slackAppId: 'APLATFORM', teamId: 'T1WORKSPACE', botUserId: 'U0BOT' })
+
+    await makeOrch().syncBot(BOT)
+
+    const assign = ch.sends.find((send) => send.type === 'rc/bot-assign')?.payload as RcBotAssign
+    expect(assign.apiAppId).toBe('APLATFORM')
+    expect(assign.teamId).toBe('T1WORKSPACE')
+    expect(assign.botUserId).toBe('U0BOT')
+  })
+
+  it('revokeBot marks the bot + installs revoked, unassigns, and pulls the daemon specs', async () => {
+    await makeOrch().revokeBot(BOT, 'app_uninstalled')
+
+    expect(botRevokedAt).toBeInstanceOf(Date)
+    expect(integrations.map((i) => i.status)).toEqual(['revoked', 'revoked'])
+    expect(ch.sends).toEqual([{ type: 'rc/bot-unassign', payload: { botId: BOT } }])
+    // Both member agents are placed (ALICE→D1, BOB→D2): each daemon loses its spec.
+    expect(removals).toEqual([
+      { daemonId: D1, integrationId: INT_A },
+      { daemonId: D2, integrationId: INT_B }
+    ])
+  })
+
+  it('revokeBot is idempotent — a duplicate report finds no active installs', async () => {
+    const orch = makeOrch()
+    await orch.revokeBot(BOT, 'tokens_revoked')
+    removals = []
+    ch.sends.length = 0
+
+    await orch.revokeBot(BOT, 'tokens_revoked')
+
+    expect(removals).toEqual([]) // nothing left to pull
+    expect(ch.sends).toEqual([{ type: 'rc/bot-unassign', payload: { botId: BOT } }]) // re-stamp only
   })
 })

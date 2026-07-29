@@ -35,6 +35,7 @@ import {
   type RcSetChannelAgent,
   type RcBotChannels,
   type RcBotConversation,
+  type RcBotRevoked,
   type RcNoticePosted,
   type RcThreadAssign,
   type RcThreadLookup,
@@ -275,6 +276,18 @@ export class RelayCpClient {
       return false
     }
     this.transport.send(JSON.stringify(buildRelayCpFrame('rc/bot-conversation', m)))
+    return true
+  }
+
+  /** Emit one workspace uninstall / token-revocation report (`rc/bot-revoked`).
+   *  Best-effort: a drop self-heals — outbound with the dead token keeps failing
+   *  and the next lifecycle event (or operator action) re-converges the CP. */
+  emitBotRevoked(m: RcBotRevoked): boolean {
+    if (this.state !== 'READY' || !this.transport) {
+      this.deps.log.warn(`relay: dropping rc/bot-revoked for ${m.botId} (link ${this.state})`)
+      return false
+    }
+    this.transport.send(JSON.stringify(buildRelayCpFrame('rc/bot-revoked', m)))
     return true
   }
 
