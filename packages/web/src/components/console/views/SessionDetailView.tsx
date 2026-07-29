@@ -57,6 +57,7 @@ import { mergeSessionMessages } from '@/lib/session-transcript'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
+import { WORK_LANES, workSummary } from '@/components/console/session-work'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import {
   sessionEffortAfterModelChange,
@@ -130,17 +131,6 @@ interface FmtStep {
   time?: string
   // Present only on real-transcript tool rows that carry a captured body.
   msg?: SessionMessageDto
-}
-
-// 2b chat style: an agent turn shows its spoken answer (MSG/DONE lanes) as plain
-// text and collapses its "work" (reasoning / plan / tool / edit lanes) behind a
-// per-turn "Thought through…" toggle.
-const WORK_LANES = new Set(['THINK', 'PLAN', 'TOOL', 'EDIT'])
-function workSummary(thinkCount: number, toolCount: number): string {
-  const parts: string[] = []
-  if (thinkCount > 0) parts.push(`Thought through ${thinkCount} step${thinkCount > 1 ? 's' : ''}`)
-  if (toolCount > 0) parts.push(`${parts.length ? 'ran' : 'Ran'} ${toolCount} command${toolCount > 1 ? 's' : ''}`)
-  return parts.join(', ')
 }
 
 // A step's non-text extras (code block, file chips, captured tool body) — rendered
@@ -1527,7 +1517,9 @@ export default function SessionDetailView() {
                   const textSteps = turn.steps.filter((s) => !WORK_LANES.has(s.lane))
                   const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
                   const toolCount = workSteps.filter((s) => s.lane === 'TOOL').length
-                  const summary = workSummary(workSteps.length - toolCount, toolCount)
+                  const editCount = workSteps.filter((s) => s.lane === 'EDIT').length
+                  // Reasoning = everything that isn't a tool call or a file edit (THINK/PLAN).
+                  const summary = workSummary(workSteps.length - toolCount - editCount, toolCount, editCount)
                   // Auto-open while a turn has produced only work (mid-stream), so the
                   // live agent isn't hidden; collapse once its answer text lands.
                   const openWork = expandedWork.has(ti) || textSteps.length === 0
