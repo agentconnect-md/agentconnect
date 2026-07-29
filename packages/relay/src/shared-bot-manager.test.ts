@@ -434,31 +434,70 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
   // token gives the CP nothing to probe, and assignment reconciliation would just
   // republish the stale active state — the console would show an uninstalled app
   // as live forever.
-  it('retries a revocation report until the CP acknowledges the commit', async () => {
-    let committed = false
-    const reportBotRevoked = vi.fn(async () => committed)
-    const manager = new SharedBotManager(deps({ reportBotRevoked }))
-    const internals = manager as unknown as ManagerInternals
-    const report = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 3 }
+  it('retries an unacknowledged revocation on a READY link — no reconnect needed', async () => {
+    vi.useFakeTimers()
+    try {
+      let committed = false
+      const reportBotRevoked = vi.fn(async () => committed)
+      const manager = new SharedBotManager(deps({ reportBotRevoked }))
+      const internals = manager as unknown as ManagerInternals
+      const report = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 3 }
 
-    // Attempted, but the CP did not commit (link down, or its handler failed) —
-    // a send the socket accepted is NOT evidence of a commit, so it stays queued.
-    internals.reportRevoked(report)
-    await vi.waitFor(() => expect(reportBotRevoked).toHaveBeenCalledTimes(1))
+      // The CP answers a retryable error (transient DB failure) but the socket
+      // stays READY — onReady never fires, so the manager's own timer must drive it.
+      internals.reportRevoked(report)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(1)
 
-    manager.flushPendingReports()
-    await vi.waitFor(() => expect(reportBotRevoked).toHaveBeenCalledTimes(2))
+      await vi.advanceTimersByTimeAsync(5_000) // first backoff step
+      expect(reportBotRevoked).toHaveBeenCalledTimes(2)
 
-    // Now the CP acks: replayed verbatim (the revision still names the generation
-    // that observed the event) and the queue drains.
-    committed = true
-    manager.flushPendingReports()
-    await vi.waitFor(() => expect(reportBotRevoked).toHaveBeenCalledTimes(3))
-    expect(reportBotRevoked).toHaveBeenLastCalledWith(report)
+      committed = true
+      await vi.advanceTimersByTimeAsync(10_000) // second step — acked now
+      expect(reportBotRevoked).toHaveBeenCalledTimes(3)
+      expect(reportBotRevoked).toHaveBeenLastCalledWith(report)
 
-    manager.flushPendingReports()
-    await new Promise((r) => setTimeout(r, 0))
-    expect(reportBotRevoked).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(120_000) // queue drained ⇒ timer disarmed
+      expect(reportBotRevoked).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('an old in-flight ack cannot erase the NEWER queued report for the same bot', async () => {
+    vi.useFakeTimers()
+    try {
+      const resolvers: Array<(v: boolean) => void> = []
+      const reportBotRevoked = vi.fn(() => new Promise<boolean>((resolve) => resolvers.push(resolve)))
+      const manager = new SharedBotManager(deps({ reportBotRevoked }))
+      const internals = manager as unknown as ManagerInternals
+      const first = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 1 }
+      // A reinstall bumped the generation and a SECOND revoke observed it — this
+      // replaces the queue entry while the first report is still in flight.
+      const second = { botId: BOT_ID, reason: 'tokens_revoked' as const, credentialRevision: 2 }
+
+      internals.reportRevoked(first)
+      internals.reportRevoked(second)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(2)
+
+      // The FIRST report's terminal ack lands late. Deleting by botId alone here
+      // would erase `second` — the only signal its dead credential ever produced.
+      resolvers[0]!(true)
+      await vi.advanceTimersByTimeAsync(0)
+
+      // Still queued, and the retry timer re-drives it.
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(3)
+      expect(reportBotRevoked).toHaveBeenLastCalledWith(second)
+
+      // Its own ack (any of the in-flight copies) clears it for good.
+      resolvers[1]!(true)
+      resolvers[2]!(true)
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('pulls the persisted owner from the CP on an un-mentioned thread follow-up and forwards it', async () => {

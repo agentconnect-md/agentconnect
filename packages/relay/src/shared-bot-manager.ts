@@ -50,6 +50,13 @@ function appTeamKey(apiAppId: string, teamId: string): string {
  *  down. Bounded so a long CP outage can't grow it without limit; oldest-cleared. */
 const MAX_PENDING_REPORTS = 10_000
 
+/** Backoff for re-reporting an unacknowledged revocation while the CP link stays
+ *  READY. The CP answers a transient persistence failure with a retryable error
+ *  WITHOUT dropping the socket, so `onReady` (reconnect-only) can never be the
+ *  sole retry trigger. Bounded: 5s → 10s → … → 60s. */
+const REVOKE_RETRY_INITIAL_MS = 5_000
+const REVOKE_RETRY_MAX_MS = 60_000
+
 export interface SharedBotManagerDeps {
   /** A live `rd/*` connection to a daemon on THIS relay, or undefined if none. */
   getDaemon: (daemonId: string) => RelayDaemonConnection | undefined
@@ -212,6 +219,11 @@ export class SharedBotManager {
     else this.pendingChannelReports.set(m.botId, m)
   }
 
+  /** Backoff timer re-driving unacknowledged revocation reports on a READY link
+   *  (see REVOKE_RETRY_INITIAL_MS); armed whenever the queue is non-empty. */
+  private revokeRetryTimer: ReturnType<typeof setTimeout> | undefined
+  private revokeRetryDelayMs = REVOKE_RETRY_INITIAL_MS
+
   /** Report a revocation and keep it queued until the CP ACKNOWLEDGES the commit.
    *  Queued FIRST, cleared only on the ack: a send the socket accepted is not
    *  evidence the CP persisted anything, and this report has no other source. */
@@ -220,11 +232,34 @@ export class SharedBotManager {
     void this.deps
       .reportBotRevoked(m)
       .then((committed) => {
-        if (committed) this.pendingRevokedReports.delete(m.botId)
+        // Clear ONLY when the queued entry is still exactly the report this ack
+        // answers. A reinstall + second revoke can replace the entry while this
+        // one is in flight — deleting by botId alone would erase that NEWER
+        // report, and with it the only signal its dead credential ever produces.
+        if (committed && this.pendingRevokedReports.get(m.botId) === m) {
+          this.pendingRevokedReports.delete(m.botId)
+          if (this.pendingRevokedReports.size === 0) this.revokeRetryDelayMs = REVOKE_RETRY_INITIAL_MS
+        }
       })
       .catch(() => {
-        /* stays queued for the next flush */
+        /* stays queued — the finally below arms the retry */
       })
+      .finally(() => this.armRevokeRetry())
+  }
+
+  /** Arm the READY-link retry for whatever is still queued. Single timer, bounded
+   *  exponential backoff, disarmed by a drained queue; `onReady`'s flush resets
+   *  the delay (a fresh link deserves a fast first attempt). */
+  private armRevokeRetry(): void {
+    if (this.revokeRetryTimer || this.pendingRevokedReports.size === 0) return
+    const delay = this.revokeRetryDelayMs
+    this.revokeRetryDelayMs = Math.min(this.revokeRetryDelayMs * 2, REVOKE_RETRY_MAX_MS)
+    this.revokeRetryTimer = setTimeout(() => {
+      this.revokeRetryTimer = undefined
+      for (const [, m] of [...this.pendingRevokedReports]) this.reportRevoked(m)
+    }, delay)
+    // Never hold the process open for a retry timer.
+    this.revokeRetryTimer.unref?.()
   }
 
   /** Re-emit reports, channel snapshots, and revocations dropped while the CP link
@@ -242,7 +277,9 @@ export class SharedBotManager {
     // Replayed AS OBSERVED — `credentialRevision`/`eventAtMs` still describe the
     // generation that was live when Slack sent the event, which is exactly what
     // the CP's fence needs after an outage that spanned a re-install. Async: each
-    // entry clears only when the CP acknowledges the commit.
+    // entry clears only when the CP acknowledges the commit, and a fresh link
+    // resets the READY-retry backoff.
+    this.revokeRetryDelayMs = REVOKE_RETRY_INITIAL_MS
     for (const [, m] of [...this.pendingRevokedReports]) this.reportRevoked(m)
   }
 
@@ -433,6 +470,10 @@ export class SharedBotManager {
 
   /** Close every ingest (relay shutdown). */
   async stopAll(): Promise<void> {
+    if (this.revokeRetryTimer) {
+      clearTimeout(this.revokeRetryTimer)
+      this.revokeRetryTimer = undefined
+    }
     await Promise.all([...this.ingests.keys()].map((id) => this.stopIngest(id)))
   }
 

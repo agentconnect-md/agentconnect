@@ -6,8 +6,10 @@ remains planned. **The DEDICATED built-in assistant agent (P3) is CANCELLED**
 capabilities are planned to fold into the `agentconnect` general preset instead —
 first step: its webapp (Playground/webchat) sessions get this MCP's admin toolset,
 with the per-session delegated key (P4's webchat half) still the security
-prerequisite. P3's restricted-profile / fixed-property machinery stays documented
-here as the reference for that successor shape. · **Version**: v2
+prerequisite. The dedicated agent's own design (identity machinery, restricted
+profile, built-in prompt) is deleted from this document — git history holds it;
+what transfers is specified live in §4 (the session credential, incl. §4.3
+injection) and §6 (the tool surface). · **Version**: v2
 **Scope**: protocol + daemon + control-plane + web
 
 > **Orientation.** Shipped: the MCP server and its tools (§6), the embedded OAuth

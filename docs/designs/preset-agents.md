@@ -388,4 +388,5 @@ because neither owns the state.
   default).
 - How far the successor shape (§4) scopes the admin toolset inside a general-purpose
   agent's webapp sessions — the general preset is an ordinary, shell-capable agent,
-  so the restricted-profile reasoning of §4.2 does not transfer unchanged.
+  so the cancelled design's restricted-profile reasoning does not transfer
+  unchanged (agent-assistant.md §8 states what was dropped and why).
