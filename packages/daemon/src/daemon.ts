@@ -84,7 +84,7 @@ import {
 } from './telegram/connection.js'
 import { consolidateDiscord, DiscordConnection } from './discord/connection.js'
 import { collapseDiscordChannels, collapseNameLookupIds } from './discord/channels.js'
-import { consolidateFeishu, FeishuConnection } from './feishu/connection.js'
+import { consolidateFeishu, FeishuConnection, type FeishuStreamingCard } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
 import { splitIntoSections } from './slack/formatter.js'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
@@ -537,6 +537,9 @@ function chunkText(text: string): string[] {
 
 // §9.1 text-buffer: flush buffered agent body after this much streaming idle.
 const IDLE_FLUSH_MS = 2000
+/** CardKit updates are cumulative and rate-limited. Sampling the converger at this
+ * cadence streams visibly without queuing one HTTP request per model token. */
+const FEISHU_STREAM_FLUSH_MS = 350
 
 /** Local Web App console origin used for session deep links when neither a local
  *  `webAppUrl` config nor a CP-provided one is set. */
@@ -941,6 +944,10 @@ interface Pending {
    *  persisted once from the collector so transport flushes cannot split one answer. */
   github?: { poster: GithubFinalPoster; collector: GithubReplyCollector; deferredFinalTranscript: boolean }
   conn?: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
+  /** Feishu/Lark's one CardKit reply entity for this turn. Undefined until
+   * `card-start` succeeds; `feishuCardAttempted` prevents duplicate initial cards. */
+  feishuCard?: FeishuStreamingCard
+  feishuCardAttempted?: boolean
   /** True when `none` output mode removed this turn's interactive permission surface — see
    *  {@link noneSuppressedApprovalSurface}. Snapshotted at dispatch ALONGSIDE `conn`; the
    *  permission policy still queues the request for an Agent editor, but never exposes a
@@ -1006,6 +1013,8 @@ interface Pending {
   evaluationTurnId: string
   /** Pending idle-flush timer (§9.1). */
   idleTimer?: NodeJS.Timeout
+  /** Periodic cumulative CardKit element flush (separate from transcript idle flush). */
+  feishuStreamTimer?: NodeJS.Timeout
   /** Serializes applyAction so in-place edits don't race on progressTs/planTs/reasoningTs. */
   applyChain: Promise<void>
   /** Resolves when this turn leaves `pending` (success or failure) — drain awaits it. */
@@ -8854,6 +8863,12 @@ export class Daemon {
         const attribution = buildAttributionBlocks(currentSlackAttributionInfo())
         p.attribution = { blocks: attribution.blocks, key: JSON.stringify(attribution.blocks) }
       }
+      // Feishu's answer surface exists before the first ACP token: one CardKit entity
+      // starts in a generic Thinking state, then all body updates and the final footer
+      // replace that same card. `none` mode returns no start action.
+      if (conv instanceof FeishuConverger) {
+        for (const action of conv.onStart()) this.enqueueApply(p, action)
+      }
       if (!wasRunning) this.showActivity(replyConn, msg.channel, statusThread, 'is thinking…', slackStatusOptions)
       // Post/refresh the session status bar up front — with the model now known (session
       // created) plus any usage carried over from prior turns — so it sits at the top of
@@ -8937,6 +8952,7 @@ export class Daemon {
       // turn skips the Slack renderer entirely — its reply already streamed through
       // the relay reply sink — and closes that `rd/chat` stream with a done event.
       this.clearIdle(p)
+      this.clearFeishuStream(p)
       if (p.webchat) {
         // Record the agent's reply as a transcript text row (sender = agentId), so a
         // webchat session reads back with its reply like any Slack session does — the
@@ -9022,6 +9038,7 @@ export class Daemon {
       // rethrow below propagates to runLoop, which rejects THIS entry's promise and
       // applies fail-stop (§6.9 #378): buffered messages don't chain onto a failure.
       this.clearIdle(p)
+      this.clearFeishuStream(p)
       // A live turn can reveal a login problem the probe sweep can't see
       // (claude-agent-acp initializes and opens sessions fine while logged out):
       // ACP -32000 = fresh logged-out credential; a provider_auth_required
@@ -9076,17 +9093,22 @@ export class Daemon {
         // notice rides the apply chain as a `post` so it lands after the flushed
         // body and is recorded into the transcript either way.
         const reason = turnFailureReason(err)
-        let covered = false
-        for (const action of p.conv.flushBuffered()) {
-          covered ||= action.kind === 'post' && action.text.includes(reason)
-          this.enqueueApply(p, action)
+        if (p.conv instanceof FeishuConverger) {
+          const link = showFooter ? this.sessionLink(sessionId) : undefined
+          for (const action of p.conv.onFailure(reason, link)) this.enqueueApply(p, action)
+        } else {
+          let covered = false
+          for (const action of p.conv.flushBuffered()) {
+            covered ||= action.kind === 'post' && action.text.includes(reason)
+            this.enqueueApply(p, action)
+          }
+          if (!covered)
+            this.enqueueApply(p, {
+              kind: 'post',
+              text: `⚠️ Agent failed to respond: ${reason}`,
+              attributed: false
+            })
         }
-        if (!covered)
-          this.enqueueApply(p, {
-            kind: 'post',
-            text: `⚠️ Agent failed to respond: ${reason}`,
-            attributed: false
-          })
         this.showActivity(replyConn, msg.channel, statusThread, '') // clear "is thinking…"
         await p.applyChain
       }
@@ -9114,6 +9136,7 @@ export class Daemon {
       // cannot strand the connection lease forever.
       releaseReplyConn()
       this.clearIdle(p)
+      this.clearFeishuStream(p)
       // Backstop: settle any permission / elicitation card still awaiting a tap.
       this.releaseElicits(agentId, sessionId)
       this.releaseChatPermissions(agentId, sessionId)
@@ -9247,6 +9270,10 @@ export class Daemon {
       this.settleStatusBar(live)
       live.outputSuppressed ??= reason
       this.clearIdle(live)
+      this.clearFeishuStream(live)
+      if (live.platform === 'feishu') {
+        this.enqueueApply(live, { kind: 'card-cancel' }, { allowWhenSuppressed: true })
+      }
       this.showActivity(live.conn, live.channel, live.statusThread, '')
       if (live.webchat && !live.webchat.doneSent) {
         live.webchat.doneSent = true
@@ -9473,11 +9500,10 @@ export class Daemon {
     if (failed.length > 0) p.staleReplyFooters = failed
   }
 
-  /** minimal mode: append a reply segment to the transcript WITHOUT sending it to the
-   *  channel — the channel shows only the single collapsed `live-reply`, but the web session
-   *  keeps the full message for auditing. A distinct monotonic ts per call: text rows dedup on
-   *  (channel, thread, ts), so the live message's shared ts can't be reused. Platform-agnostic;
-   *  runs even headless (no conn). */
+  /** Append a reply segment to the transcript WITHOUT sending it. Minimal mode keeps
+   * earlier narration behind one collapsed live reply; Feishu uses this for every
+   * CardKit-delivered body segment. A distinct monotonic ts per call avoids text-row
+   * dedup collisions. Platform-agnostic; runs even headless (no conn). */
   private recordReplySegment(p: Pending, text: string): void {
     this.store.appendTranscript({
       channel: p.transcriptChannel,
@@ -9971,20 +9997,11 @@ export class Daemon {
     }
   }
 
-  /**
-   * Apply one converger action against the session's Feishu connection — the Feishu
-   * analog of applyDiscordAction. v1 is text-only (no interactive cards), so there is
-   * NO parse_mode and NO status-bar case; control state is queried via /commands.
-   * Reuses the Pending's `*Ts` fields as Feishu message ids for the in-place messages.
-   *  - post        → a new message; ALSO recorded to the transcript (recordOnly ⇒ record only).
-   *  - live-reply  → minimal mode's single in-place agent reply (display only, not recorded).
-   *  - notice / tool-output → posted but NOT recorded (chrome).
-   *  - typing      → no-op (Feishu has no typing API), kept for dispatch parity.
-   *  - progress / plan / reasoning → the single in-place message of that kind (patch-edited).
-   */
+  /** Apply one Feishu action. Agent body delivery is one CardKit entity for the whole
+   * turn; `post(recordOnly)` retains transcript boundaries without duplicate chat
+   * messages. Progress/plan/reasoning remain short text chrome edited in place. */
   private async applyFeishuAction(p: Pending, action: FeishuAction): Promise<void> {
-    // minimal mode's `recordOnly` posts write the full reply to the transcript without
-    // sending — the chat shows only the single `live-reply` (mirrors applyDiscordAction).
+    // CardKit owns visible body delivery, so these actions are persistence-only.
     if (action.kind === 'post' && action.recordOnly) {
       this.recordReplySegment(p, action.text)
       return
@@ -9994,21 +10011,31 @@ export class Daemon {
     const conn = p.conn as FeishuConnection | undefined
     if (!conn) return
     switch (action.kind) {
+      case 'card-start':
+        if (p.feishuCardAttempted) return
+        p.feishuCardAttempted = true
+        p.feishuCard = await conn.startStreamingCard(p.channel, p.thread)
+        return
+      case 'card-stream':
+        if (p.feishuCard) await conn.updateStreamingCard(p.channel, p.feishuCard, action.text)
+        return
+      case 'card-final': {
+        if (p.feishuCard) {
+          const delivered = await conn.finishStreamingCard(p.channel, p.feishuCard, action.text, action.link)
+          if (delivered) return
+          // A final CardKit update failure must not lose the answer. Remove the stale
+          // partial card where possible, then fall back to ordinary text.
+          await conn.cancelStreamingCard(p.channel, p.feishuCard)
+        }
+        await conn.postMessage(p.channel, action.text, p.thread)
+        return
+      }
+      case 'card-cancel':
+        if (p.feishuCard) await conn.cancelStreamingCard(p.channel, p.feishuCard)
+        return
       case 'typing':
         await conn.sendChatAction(p.channel)
         return
-      case 'live-reply': {
-        // minimal mode's single agent reply: send once (plain text) then edit in place as the
-        // turn streams. Skip an update when unchanged; not recorded (the `recordOnly` posts do).
-        if (p.liveReplyText === action.text) return
-        p.liveReplyText = action.text
-        if (p.liveReplyTs) await conn.updateMessage(p.channel, p.liveReplyTs, action.text)
-        else if (!p.liveReplyAttempted) {
-          p.liveReplyAttempted = true
-          p.liveReplyTs = await conn.postMessage(p.channel, action.text, p.thread)
-        }
-        return
-      }
       case 'post': {
         const id = await conn.postMessage(p.channel, action.text, p.thread)
         this.store.appendTranscript({
@@ -10431,6 +10458,28 @@ export class Daemon {
       p.idleTimer = undefined
       for (const action of p.conv.flushBuffered()) this.enqueueApply(p, action)
     }, IDLE_FLUSH_MS)
+  }
+
+  /** Sample the cumulative Feishu answer independently of transcript flushes.
+   * A single timer survives token bursts, so at most one CardKit write is queued per
+   * interval while still flushing the newest full snapshot when it fires. */
+  private armFeishuStream(p: Pending): void {
+    if (
+      p.platform !== 'feishu' ||
+      p.feishuStreamTimer ||
+      !(p.conv instanceof FeishuConverger) ||
+      !p.conv.hasStreamingUpdate()
+    )
+      return
+    p.feishuStreamTimer = setTimeout(() => {
+      p.feishuStreamTimer = undefined
+      for (const action of (p.conv as FeishuConverger).streamUpdate()) this.enqueueApply(p, action)
+    }, FEISHU_STREAM_FLUSH_MS)
+  }
+
+  private clearFeishuStream(p: Pending): void {
+    if (p.feishuStreamTimer) clearTimeout(p.feishuStreamTimer)
+    p.feishuStreamTimer = undefined
   }
 
   private clearIdle(p: Pending): void {
@@ -11503,6 +11552,7 @@ export class Daemon {
     else if (!isHeadlessGithubFinal) {
       for (const action of p.conv.onUpdate(update)) this.enqueueApply(p, action)
       this.armIdle(p)
+      this.armFeishuStream(p)
     }
     // Full activity log (tool/reasoning), recorded regardless of output mode.
     for (const ev of p.rec.onUpdate(update)) this.recordEvent(p.agentId, p.transcriptChannel, p.statusThread, ev)
@@ -12823,6 +12873,11 @@ export class Daemon {
         }
         for (const p of this.pending.values()) {
           p.outputSuppressed ??= 'shutdown'
+          this.clearIdle(p)
+          this.clearFeishuStream(p)
+          if (p.platform === 'feishu') {
+            this.enqueueApply(p, { kind: 'card-cancel' }, { allowWhenSuppressed: true })
+          }
           this.releaseElicits(p.agentId, p.acpSessionId)
           this.releaseChatPermissions(p.agentId, p.acpSessionId)
           this.releaseEditorPermissions(p.agentId, p.acpSessionId)

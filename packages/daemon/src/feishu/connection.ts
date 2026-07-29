@@ -9,7 +9,13 @@ import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
 import { SlackSendQueue } from '../slack/send-queue.js'
 import { normalizeFeishuMessage, type FeishuAttachmentLike, type FeishuMessageLike } from './normalize.js'
-import { buildPermissionUpdateCard, chunkForFeishu } from './render.js'
+import {
+  buildCompletedReplyCard,
+  buildPermissionUpdateCard,
+  buildStreamingReplyCard,
+  chunkForFeishu,
+  FEISHU_STREAMING_ELEMENT_ID
+} from './render.js'
 
 /**
  * §Feishu / Lark edge unit. Mirrors discord/connection.ts but over the official
@@ -17,12 +23,10 @@ import { buildPermissionUpdateCard, chunkForFeishu } from './render.js'
  * NAT like Slack Socket Mode / Telegram long-polling / Discord Gateway). One WSClient
  * per unique appId (one self-built app = one bot).
  *
- * Ordinary v1 output is TEXT-ONLY: `postMessage`/`postChrome` send `msg_type:'text'`
- * (content is the Feishu JSON wrapper `{"text":…}`) chunked to a safe cap,
- * `sendChatAction` is a no-op (Feishu has no typing API), and control actions
- * (`/status`, `/models`, …) are TYPED TEXT COMMANDS routed through the normal
- * onMessage path. The one static interactive surface is a platform-permission notice
- * with an open-URL button; it needs no callback endpoint.
+ * Agent replies use one CardKit entity per turn: create + send-by-card-id, cumulative
+ * element updates, then a final full-card replacement. Short chrome/control messages
+ * remain `msg_type:'text'`; `sendChatAction` is a no-op (Feishu has no typing API).
+ * The static platform-permission notice remains an inline open-URL card.
  *
  * Attachments need AUTH to download (like Slack, unlike Discord): the inbound event
  * carries an opaque `image_key`/`file_key`, fetched via `im.messageResource.get` with a
@@ -114,8 +118,20 @@ export interface FeishuApi {
   replyText(messageId: string, text: string): Promise<{ messageId?: string }>
   /** im.message.reply (msg_type 'interactive', reply_in_thread). */
   replyCard(messageId: string, card: Record<string, unknown>): Promise<{ messageId?: string }>
-  /** im.message.patch (in-place text edit). */
-  patchText(messageId: string, text: string): Promise<void>
+  /** cardkit.card.create. */
+  createCardEntity(card: Record<string, unknown>): Promise<{ cardId?: string }>
+  /** im.message.create/reply with an interactive CardKit `card_id` reference. */
+  createCardEntityMessage(chatId: string, cardId: string): Promise<{ messageId?: string }>
+  replyCardEntityMessage(messageId: string, cardId: string): Promise<{ messageId?: string }>
+  /** cardkit.cardElement.content (native typewriter update). */
+  updateCardEntityElement(cardId: string, elementId: string, text: string, sequence: number): Promise<void>
+  /** cardkit.card.settings + card.update terminal lifecycle. */
+  setCardEntityStreaming(cardId: string, streaming: boolean, sequence: number): Promise<void>
+  updateCardEntity(cardId: string, card: Record<string, unknown>, sequence: number): Promise<void>
+  /** im.message.delete (retract an unfinished/no-response card). */
+  deleteMessage(messageId: string): Promise<void>
+  /** im.message.update (in-place text edit). */
+  updateText(messageId: string, text: string): Promise<void>
   /** im.messageResource.get(...).writeFile(destPath) — auth'd resource download. */
   downloadResource(messageId: string, fileKey: string, type: 'image' | 'file', destPath: string): Promise<void>
   /** im.chat.get. */
@@ -128,6 +144,12 @@ export interface FeishuApi {
   getUser(userId: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }>
   /** GET /open-apis/bot/v3/info — the bot's own open_id + display name. */
   getBotInfo(): Promise<{ openId?: string; name?: string }>
+}
+
+/** Opaque turn-local reference returned after the CardKit entity is visible in chat. */
+export interface FeishuStreamingCard {
+  cardId: string
+  messageId?: string
 }
 
 /** The handle the connection holds: outbound {@link FeishuApi} + the WSClient lifecycle. */
@@ -152,6 +174,13 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
   const domain = regionDomain(region)
   const client = new Lark.Client({ appId, appSecret, domain, loggerLevel: Lark.LoggerLevel.error })
   let ws: Lark.WSClient | undefined
+
+  const assertApiSuccess = <T extends { code?: number; msg?: string }>(result: T, api: string): T => {
+    if (result.code === undefined || result.code === 0) return result
+    throw Object.assign(new Error(`${api} failed (${result.code}): ${result.msg ?? 'unknown error'}`), {
+      response: { data: result }
+    })
+  }
 
   const createMessage = async (
     chatId: string,
@@ -182,10 +211,65 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
     createCard: (chatId, card) => createMessage(chatId, 'interactive', card),
     replyText: (messageId, text) => replyMessage(messageId, 'text', { text }),
     replyCard: (messageId, card) => replyMessage(messageId, 'interactive', card),
-    async patchText(messageId, text) {
-      await client.im.message.patch({
+    async createCardEntity(card) {
+      const res = assertApiSuccess(
+        await client.cardkit.v1.card.create({
+          data: { type: 'card_json', data: JSON.stringify(card) }
+        }),
+        'cardkit.card.create'
+      )
+      return { cardId: res.data?.card_id }
+    },
+    createCardEntityMessage: (chatId, cardId) =>
+      createMessage(chatId, 'interactive', { type: 'card', data: { card_id: cardId } }),
+    replyCardEntityMessage: (messageId, cardId) =>
+      replyMessage(messageId, 'interactive', { type: 'card', data: { card_id: cardId } }),
+    async updateCardEntityElement(cardId, elementId, text, sequence) {
+      assertApiSuccess(
+        await client.cardkit.v1.cardElement.content({
+          path: { card_id: cardId, element_id: elementId },
+          data: {
+            content: text,
+            sequence,
+            uuid: `c_${cardId}_${sequence}`
+          }
+        }),
+        'cardkit.cardElement.content'
+      )
+    },
+    async setCardEntityStreaming(cardId, streaming, sequence) {
+      assertApiSuccess(
+        await client.cardkit.v1.card.settings({
+          path: { card_id: cardId },
+          data: {
+            settings: JSON.stringify({ config: { streaming_mode: streaming } }),
+            sequence,
+            uuid: `s_${cardId}_${sequence}`
+          }
+        }),
+        'cardkit.card.settings'
+      )
+    },
+    async updateCardEntity(cardId, card, sequence) {
+      assertApiSuccess(
+        await client.cardkit.v1.card.update({
+          path: { card_id: cardId },
+          data: {
+            card: { type: 'card_json', data: JSON.stringify(card) },
+            sequence,
+            uuid: `u_${cardId}_${sequence}`
+          }
+        }),
+        'cardkit.card.update'
+      )
+    },
+    async deleteMessage(messageId) {
+      await client.im.message.delete({ path: { message_id: messageId } })
+    },
+    async updateText(messageId, text) {
+      await client.im.message.update({
         path: { message_id: messageId },
-        data: { content: JSON.stringify({ text }) }
+        data: { msg_type: 'text', content: JSON.stringify({ text }) }
       })
     },
     async downloadResource(messageId, fileKey, type, destPath) {
@@ -392,6 +476,9 @@ export class FeishuConnection {
   // All outbound writes funnel through one queue so streamed edits are FIFO-ordered
   // per connection (keeps a post-then-edit pair from racing on the same progress msg).
   private queue: SlackSendQueue
+  /** CardKit sequence numbers are scoped to a card entity and must increase across
+   * element, settings, and full-card updates. */
+  private streamingCards = new Map<string, { sequence: number; lastText: string }>()
   /** App-level permission failures repeat across streamed writes. Announce once per
    * connection, with a bounded retry when the bot currently cannot send the card. */
   private globalPermissionIssues = new Set<Exclude<FeishuPermissionIssue, 'chat-access'>>()
@@ -538,6 +625,12 @@ export class FeishuConnection {
       : this.handle.api.createCard(channel, card)
   }
 
+  private sendCardEntity(channel: string, anchor: string | undefined, cardId: string): Promise<{ messageId?: string }> {
+    return anchor && anchor.startsWith('om_')
+      ? this.handle.api.replyCardEntityMessage(anchor, cardId)
+      : this.handle.api.createCardEntityMessage(channel, cardId)
+  }
+
   private rememberPermissionIssue(err: unknown, channel?: string): boolean {
     const issue = feishuPermissionIssueFrom(err)
     if (!issue) return false
@@ -640,6 +733,94 @@ export class FeishuConnection {
     }
   }
 
+  /** Create a CardKit entity and publish one IM message that references it. The initial
+   * card is visible immediately as `Thinking…`; later updates address the entity id. */
+  async startStreamingCard(channel: string, threadAnchor?: string): Promise<FeishuStreamingCard | undefined> {
+    return this.queue.enqueue(async () => {
+      try {
+        const created = await this.handle.api.createCardEntity(buildStreamingReplyCard())
+        if (!created.cardId) throw new Error('cardkit.card.create returned no card_id')
+        const sent = await this.sendCardEntity(channel, threadAnchor, created.cardId)
+        if (!sent.messageId) throw new Error('CardKit IM send returned no message_id')
+        this.streamingCards.set(created.cardId, { sequence: 0, lastText: '' })
+        await this.postPermissionUpdateCard(channel, threadAnchor)
+        return { cardId: created.cardId, messageId: sent.messageId }
+      } catch (err) {
+        this.rememberPermissionIssue(err, channel)
+        await this.postPermissionUpdateCard(channel, threadAnchor)
+        this.deps.log?.debug(`feishu: streaming card start failed (ch=${channel}): ${(err as Error).message}`)
+        return undefined
+      }
+    })
+  }
+
+  /** Replace the streaming markdown element with the full cumulative answer. CardKit
+   * computes the incremental diff and renders it with the native typewriter effect. */
+  async updateStreamingCard(channel: string, card: FeishuStreamingCard, text: string): Promise<boolean> {
+    return this.queue.enqueue(async () => {
+      const state = this.streamingCards.get(card.cardId)
+      if (!state) return false
+      if (state.lastText === text) return true
+      state.sequence += 1
+      try {
+        await this.handle.api.updateCardEntityElement(card.cardId, FEISHU_STREAMING_ELEMENT_ID, text, state.sequence)
+        state.lastText = text
+        return true
+      } catch (err) {
+        this.rememberPermissionIssue(err, channel)
+        await this.postPermissionUpdateCard(channel)
+        this.deps.log?.debug(`feishu: streaming card update failed (${card.cardId}): ${(err as Error).message}`)
+        return false
+      }
+    })
+  }
+
+  /** Close streaming mode and replace the entity with the final answer/footer card.
+   * Returns false only when the final full-card update failed, allowing the daemon to
+   * fall back to a normal text message instead of losing the reply. */
+  async finishStreamingCard(channel: string, card: FeishuStreamingCard, text: string, link?: string): Promise<boolean> {
+    return this.queue.enqueue(async () => {
+      const state = this.streamingCards.get(card.cardId)
+      if (!state) return false
+      state.sequence += 1
+      try {
+        await this.handle.api.setCardEntityStreaming(card.cardId, false, state.sequence)
+      } catch (err) {
+        this.rememberPermissionIssue(err, channel)
+        this.deps.log?.debug(`feishu: streaming card close failed (${card.cardId}): ${(err as Error).message}`)
+      }
+
+      state.sequence += 1
+      let updated = false
+      try {
+        await this.handle.api.updateCardEntity(card.cardId, buildCompletedReplyCard(text, link), state.sequence)
+        updated = true
+      } catch (err) {
+        this.rememberPermissionIssue(err, channel)
+        this.deps.log?.debug(`feishu: streaming card final update failed (${card.cardId}): ${(err as Error).message}`)
+      } finally {
+        this.streamingCards.delete(card.cardId)
+      }
+      await this.postPermissionUpdateCard(channel)
+      return updated
+    })
+  }
+
+  /** Retract an unfinished Thinking card (silent/no-response or a cancelled turn). */
+  async cancelStreamingCard(channel: string, card: FeishuStreamingCard): Promise<void> {
+    this.streamingCards.delete(card.cardId)
+    const messageId = card.messageId
+    if (!messageId) return
+    await this.queue.enqueue(async () => {
+      try {
+        await this.handle.api.deleteMessage(messageId)
+      } catch (err) {
+        this.rememberPermissionIssue(err, channel)
+        this.deps.log?.debug(`feishu: streaming card retract failed (${messageId}): ${(err as Error).message}`)
+      }
+    })
+  }
+
   /**
    * Post a message. `channel` is the chat_id; `threadAnchor` is the session thread root —
    * a message id (`om_…`) for a group turn, so the reply lands in the topic thread rooted
@@ -683,20 +864,16 @@ export class FeishuConnection {
     })
   }
 
-  /**
-   * Edit a previously-posted message in place (im.message.patch, text). `channel` is
-   * used only as the fallback target for a permission notice (Feishu edits by
-   * message_id). Best-effort: a patch failure degrades harmlessly (the streamed
-   * progress just doesn't refresh). Only the first chunk is shown (progress messages
-   * are short).
-   */
+  /** Edit a previously-posted text message in place with im.message.update. `patch`
+   * is card-only in Feishu; using the text edit API keeps progress/reasoning chrome
+   * refreshes valid alongside the CardKit reply. */
   async updateMessage(channel: string, messageId: string, text: string, _opts: object = {}): Promise<void> {
     await this.queue.enqueue(async () => {
       try {
-        await this.handle.api.patchText(messageId, chunkForFeishu(text)[0] ?? '')
+        await this.handle.api.updateText(messageId, chunkForFeishu(text)[0] ?? '')
       } catch (err) {
         this.rememberPermissionIssue(err, channel)
-        this.deps.log?.debug(`feishu: patch failed (id=${messageId}): ${(err as Error).message}`)
+        this.deps.log?.debug(`feishu: text update failed (id=${messageId}): ${(err as Error).message}`)
       }
       await this.postPermissionUpdateCard(channel)
     })
