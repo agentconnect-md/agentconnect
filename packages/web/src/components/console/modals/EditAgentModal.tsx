@@ -263,6 +263,14 @@ export default function EditAgentModal({
   const daemonChanged = daemonId !== initialDaemonId.current
   const initialPlacement = daemonChanged && !initialDaemonId.current
   const placementRequested = daemonChanged || repairPlacement
+  // A cold move or a repair rewrites daemon-local state, so it stays a solo
+  // action — configuration edits must be saved separately. An INITIAL placement
+  // has no source daemon and nothing to drain, and the CP refuses to place an
+  // agent whose runtime is still unset (preset-agents.md §3.2) — the general
+  // preset ships exactly that way — so the exec config rides along with it here,
+  // committed just before the placement (§3.4's "the picker bundles the runtime
+  // choice", on this surface).
+  const soloPlacement = placementRequested && !initialPlacement
   const selectedSandboxRequired = daemonChanged
     ? (daemon?.caps.features.includes('sandbox-required') ?? false)
     : sandboxRequired
@@ -434,10 +442,16 @@ export default function EditAgentModal({
       setErr('The current daemon must be online and upgraded before this agent can be repaired.')
       return
     }
-    if (placementRequested && (hasSpecChanges || hasSharingChanges || hasCallPolicyChanges)) {
+    if (soloPlacement && (hasSpecChanges || hasSharingChanges || hasCallPolicyChanges)) {
       setErr(
         'Move or repair the agent separately from configuration changes. Save those changes first, then reopen it.'
       )
+      return
+    }
+    // Placement is where a deferred runtime becomes mandatory. Say so here rather
+    // than surfacing the CP's 409 after the round trip.
+    if (initialPlacement && !runtime.trim()) {
+      setErr('Choose a runtime before placing this agent on a daemon.')
       return
     }
     setSaving(true)
@@ -447,12 +461,15 @@ export default function EditAgentModal({
       // (workspace dir, launch key) and is immutable in the console — only the
       // display name is renameable.
       // Description is edited on its own card (EditDescriptionModal) — never sent here.
+      // Spec first: an initial placement needs the runtime committed before the
+      // CP will accept the daemon (a solo move/repair carries no spec diff at all
+      // — the guard above rejected one).
+      if (hasSpecChanges && !soloPlacement) await updateAgent(agent.id, patch)
       if (placementRequested) await moveAgent(agent.id, daemonId)
-      else if (hasSpecChanges) await updateAgent(agent.id, patch)
       // Sharing + agent-call visibility ride their own endpoints (canManageSharing
       // gate) — only write when they actually changed, and never during a move.
-      if (!placementRequested && hasSharingChanges) await saveSharing('agents', agent.id, sharing)
-      if (!placementRequested && hasCallPolicyChanges) {
+      if (!soloPlacement && hasSharingChanges) await saveSharing('agents', agent.id, sharing)
+      if (!soloPlacement && hasCallPolicyChanges) {
         const body: AgentCallPolicyInput = {
           callPolicy: inboundMode,
           allowedCallerAgentIds: inboundMode === 'selected' ? normalizeSelected(agent.id, inboundSelected) : [],
@@ -561,11 +578,11 @@ export default function EditAgentModal({
                       className="absolute inset-0 cursor-pointer opacity-0"
                       aria-label="Daemon"
                     >
-                      {!daemonId && (
-                        <option value="" disabled>
-                          No daemon
-                        </option>
-                      )}
+                      {/* An agent that opened unplaced keeps "No daemon" selectable
+                          so a chosen target can be taken back — picking one is what
+                          turns the dialog into a placement. Never offered to a placed
+                          agent: unplacing is not a move. */}
+                      {!initialDaemonId.current && <option value="">No daemon</option>}
                       {daemonId && !daemon && <option value={daemonId}>Current daemon ({daemonId.slice(0, 8)})</option>}
                       {sortedDaemons.map((d) => {
                         const current = d.daemonId === initialDaemonId.current

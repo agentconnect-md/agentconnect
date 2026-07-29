@@ -303,6 +303,40 @@ describe('PUT /agents/:id/daemon', () => {
     expect(control.calls).toEqual([])
   })
 
+  it('places an unplaced runtime-less preset only after its runtime is set', async () => {
+    await seedMoveDaemons()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    // The general preset ships unplaced with deferred exec config
+    // (preset-agents.md §3.2) — no daemon, no runtime.
+    await prisma.agent.update({ where: { id: agentId }, data: { daemonId: null, runtime: null } })
+    const control = new MoveControlSpy()
+    running = buildHttpApp(prisma, undefined, live, control as unknown as ControlSender)
+    const place = () =>
+      running!.app.inject({ method: 'PUT', url: `${ORG}/agents/${agentId}/daemon`, payload: { daemonId: TARGET } })
+
+    // (The 409's wording is pinned by preset-agents.test.ts.)
+    expect((await place()).statusCode).toBe(409)
+    expect(control.calls).toEqual([])
+
+    // The console places by committing the chosen runtime first (the spec PATCH
+    // needs no daemon) and then the placement — the pairing the edit dialog sends
+    // for an initial placement.
+    const patched = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { runtime: 'claude' }
+    })
+    expect(patched.statusCode, patched.body).toBe(200)
+
+    const placed = await place()
+    expect(placed.statusCode, placed.body).toBe(200)
+    expect((await prisma.agent.findUnique({ where: { id: agentId } }))?.daemonId).toBe(TARGET)
+    // No source daemon to drain: the target is staged and activated, nothing detaches
+    // from a machine this agent never ran on.
+    expect(control.calls).toEqual([`detach:${TARGET}`, `activate:${TARGET}`])
+  })
+
   it('treats a cached (hydrated) model list as permissive for the move model gate', async () => {
     await seedMoveDaemons()
     const agentId = randomUUID()
