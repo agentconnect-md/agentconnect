@@ -12,6 +12,10 @@ const mocks = vi.hoisted(() => ({
   daemons: [] as Array<Record<string, unknown>>,
   menus: [] as Array<{ title: string; value: string; options: string[] }>,
   openPlayground: vi.fn(() => 'pg_1'),
+  pgSend: vi.fn(),
+  pgSetModel: vi.fn(),
+  pgSetEffort: vi.fn(),
+  pgSetPermissionMode: vi.fn(),
   push: vi.fn()
 }))
 
@@ -34,10 +38,10 @@ vi.mock('@/lib/data-context', () => ({
 vi.mock('@/components/console/PlaygroundProvider', () => ({
   usePlayground: () => ({
     openPlayground: mocks.openPlayground,
-    pgSend: vi.fn(),
-    pgSetModel: vi.fn(),
-    pgSetEffort: vi.fn(),
-    pgSetPermissionMode: vi.fn()
+    pgSend: mocks.pgSend,
+    pgSetModel: mocks.pgSetModel,
+    pgSetEffort: mocks.pgSetEffort,
+    pgSetPermissionMode: mocks.pgSetPermissionMode
   })
 }))
 vi.mock('@/components/console/ComposerMenu', () => ({
@@ -111,6 +115,10 @@ const render = async () => {
 beforeEach(() => {
   mocks.menus = []
   mocks.openPlayground.mockClear()
+  mocks.pgSend.mockClear()
+  mocks.pgSetModel.mockClear()
+  mocks.pgSetEffort.mockClear()
+  mocks.pgSetPermissionMode.mockClear()
   mocks.push.mockClear()
 })
 afterEach(() => {
@@ -128,6 +136,48 @@ describe('HomeView run-selectors (catalog-aware)', () => {
     expect(menu('Model')?.value).toBe('claude-sonnet-4-5')
     expect(menu('Effort')?.value).toBe('high') // catalog defaultEffort
     expect(menu('Permission')?.value).toBe('default')
+  })
+
+  it('resolves a stored effort the selected model does not offer, and STAGES the resolved value on send', async () => {
+    const lowMed = {
+      models: [
+        {
+          id: 'm-lowmed',
+          efforts: [
+            { value: 'low', label: 'Low' },
+            { value: 'medium', label: 'Medium' }
+          ],
+          defaultEffort: 'medium'
+        }
+      ],
+      permissionModes: [{ value: 'default', name: 'Default' }],
+      defaultModel: 'm-lowmed',
+      source: 'acp',
+      observedAt: ''
+    }
+    mocks.agents = [agent({ model: 'm-lowmed', reasoning: 'xhigh' })] // stored xhigh not offered by m-lowmed
+    mocks.daemons = [
+      daemon({
+        runtimeModels: [{ runtime: 'claude', models: ['m-lowmed'], modelCatalog: lowMed, authRequired: false }]
+      })
+    ]
+    await render()
+    // Displayed effort is resolved to an offered level, not the phantom `xhigh`.
+    expect(menu('Effort')?.value).toBe('medium')
+    // …and send stages exactly that (never `xhigh`).
+    const ta = host.querySelector('textarea')!
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+    await act(async () => {
+      setValue.call(ta, 'hi')
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('button.sendbtn')!.click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(mocks.pgSetModel).toHaveBeenCalledWith('pg_1', 'a1', 'm-lowmed')
+    expect(mocks.pgSetEffort).toHaveBeenCalledWith('pg_1', 'a1', 'medium')
+    expect(mocks.pgSend).toHaveBeenCalled()
   })
 
   it('hides Effort/Permission for a runtime with no such vocabulary (opencode)', async () => {

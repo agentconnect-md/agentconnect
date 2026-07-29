@@ -25,6 +25,7 @@ import {
   modelCapability,
   effortChoicesFor,
   displayedEffort,
+  resolveEffortForModel,
   permissionModeChoicesFor,
   resolvedPermissionMode,
   supportsModes,
@@ -142,9 +143,17 @@ export default function HomeView() {
   const capability = agent ? modelCapability(owningDaemon, agent.runtime, model) : undefined
   const effortList = agent ? effortChoicesFor(agent.runtime, capability) : []
   const showEffort = capability?.efforts ? effortList.length > 0 : agent ? supportsModes(agent.runtime) : false
-  const effort = showEffort
-    ? displayedEffort(runtime.effort ?? agent?.reasoning ?? '', effortList, capability?.defaultEffort)
-    : ''
+  // Resolve the raw effort (override → agent default) against the SELECTED model's
+  // offered levels, so the shown value is always one send can stage — never a phantom
+  // the new model doesn't offer (e.g. keeping `xhigh` after switching to a low/medium
+  // model). Blank resolves to the model's own default level. This also makes a model
+  // change auto-correct effort without a special reset.
+  const rawEffort = runtime.effort ?? agent?.reasoning ?? ''
+  const effort =
+    agent && showEffort
+      ? resolveEffortForModel(agent.runtime, capability, rawEffort) ||
+        displayedEffort('', effortList, capability?.defaultEffort)
+      : ''
   const effortChoices = effortList.map((o) => ({ value: o.value, label: o.label, description: o.description }))
 
   const permissionList = agent ? permissionModeChoicesFor(agent.runtime, modelCatalog) : []
@@ -294,7 +303,7 @@ export default function HomeView() {
                       </span>
                     }
                     onOpenChange={(o) => setMenu(o ? 'model' : null)}
-                    onChange={(m) => setRuntime((r) => ({ ...r, model: m, effort: undefined }))}
+                    onChange={(m) => setRuntime((r) => ({ ...r, model: m }))}
                   />
                 )}
                 {showEffort && effortChoices.length > 0 && (
