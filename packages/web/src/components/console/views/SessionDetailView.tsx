@@ -57,7 +57,7 @@ import { mergeSessionMessages } from '@/lib/session-transcript'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
-import { WORK_LANES, workSummary } from '@/components/console/session-work'
+import { WORK_LANES, workCounts, workSummary } from '@/components/console/session-work'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import {
   sessionEffortAfterModelChange,
@@ -1516,10 +1516,10 @@ export default function SessionDetailView() {
                   // (reasoning / plan / tool / edit) collapses behind a per-turn toggle.
                   const textSteps = turn.steps.filter((s) => !WORK_LANES.has(s.lane))
                   const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
-                  const toolCount = workSteps.filter((s) => s.lane === 'TOOL').length
-                  const editCount = workSteps.filter((s) => s.lane === 'EDIT').length
-                  // Reasoning = everything that isn't a tool call or a file edit (THINK/PLAN).
-                  const summary = workSummary(workSteps.length - toolCount - editCount, toolCount, editCount)
+                  // Reasoning steps / tool commands / edited FILES (distinct paths across
+                  // EDIT rows, since one EDIT row can touch several files).
+                  const { thinkCount, toolCount, editCount } = workCounts(workSteps)
+                  const summary = workSummary(thinkCount, toolCount, editCount)
                   // Auto-open while a turn has produced only work (mid-stream), so the
                   // live agent isn't hidden; collapse once its answer text lands.
                   const openWork = expandedWork.has(ti) || textSteps.length === 0

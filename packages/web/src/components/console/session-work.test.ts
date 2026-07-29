@@ -1,5 +1,38 @@
 import { describe, expect, it } from 'vitest'
-import { workSummary } from './session-work'
+import { workCounts, workSummary } from './session-work'
+
+const step = (lane: string, files: string[] = []) => ({ lane, files: files.map((path) => ({ path })) })
+
+describe('workCounts', () => {
+  it('counts edited FILES by path, not EDIT-step count (one EDIT row, two files → 2)', () => {
+    expect(workCounts([step('THINK'), step('EDIT', ['a.ts', 'b.ts'])])).toEqual({
+      thinkCount: 1,
+      toolCount: 0,
+      editCount: 2
+    })
+  })
+
+  it('dedupes repeated paths and counts a metadata-less EDIT row as one file', () => {
+    expect(workCounts([step('EDIT', ['a.ts']), step('EDIT', ['a.ts']), step('EDIT', [])])).toEqual({
+      thinkCount: 0,
+      toolCount: 0,
+      editCount: 2 // {a.ts} + one bare edit
+    })
+  })
+
+  it('counts TOOL as command steps and treats the remainder (THINK/PLAN) as reasoning', () => {
+    expect(workCounts([step('THINK'), step('PLAN'), step('TOOL'), step('TOOL')])).toEqual({
+      thinkCount: 2,
+      toolCount: 2,
+      editCount: 0
+    })
+  })
+
+  it('feeds the summary so one EDIT row with two files reads "edited 2 files"', () => {
+    const { thinkCount, toolCount, editCount } = workCounts([step('THINK'), step('EDIT', ['a.ts', 'b.ts'])])
+    expect(workSummary(thinkCount, toolCount, editCount)).toBe('Thought through 1 step, edited 2 files')
+  })
+})
 
 describe('workSummary', () => {
   it('counts reasoning, tool commands, and file edits separately', () => {
