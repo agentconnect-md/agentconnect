@@ -1,7 +1,13 @@
 # AgentConnect MCP + Agent Assistant — System-Operations MCP and Built-in Assistant Design
 
-**Status**: MCP and OAuth are available; the built-in assistant and delegated
-credential path remain planned · **Version**: v2
+**Status**: MCP and OAuth are available; the delegated credential path (P4)
+remains planned. **The DEDICATED built-in assistant agent (P3) is CANCELLED**
+(2026-07-29, see preset-agents.md): assistant/admin capabilities are planned to
+fold into the `agentconnect` general preset instead — first step: its webapp
+(Playground/webchat) sessions get this MCP's admin toolset, with the per-session
+delegated key (P4's webchat half) still the security prerequisite. P3's
+restricted-profile / fixed-property machinery stays documented here as the
+reference for that successor shape. · **Version**: v2
 **Scope**: protocol + daemon + control-plane + web
 
 > **v2 architecture**: expose "operate the AgentConnect system" as **one CP-hosted MCP server (AgentConnect MCP)**. Users connect it from **their own AI tools** (claude.ai, Claude Code, Cursor, and others) and operate the system through it. It supports **automatic OAuth browser sign-in** (paste URL → browser opens → sign in and consent → complete, like Linear/Sentry). **agent-assistant is a built-in agent that comes pre-authenticated to this MCP.** One tool set, authorization model (identity = user behind the credential), and audit system serves three kinds of consumers:

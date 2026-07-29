@@ -2136,7 +2136,9 @@ export interface SlackPlatformInstallStore {
 // onboarding checklist.
 // ───────────────────────────────────────────────────────────────────────────
 
-export type PresetAgentKind = 'general' | 'assistant'
+// The ONLY preset: the dedicated assistant preset was cancelled — assistant/admin
+// capabilities are planned to fold into the general agent's webapp sessions instead.
+export type PresetAgentKind = 'general'
 
 export interface PresetAgentRecord {
   orgId: OrgId

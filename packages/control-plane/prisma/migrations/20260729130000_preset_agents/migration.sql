@@ -12,7 +12,7 @@
 ALTER TABLE "agent" ALTER COLUMN "runtime" DROP NOT NULL;
 
 -- CreateEnum
-CREATE TYPE "PresetAgentKind" AS ENUM ('general', 'assistant');
+CREATE TYPE "PresetAgentKind" AS ENUM ('general');
 
 -- CreateEnum
 CREATE TYPE "PresetAgentState" AS ENUM ('created', 'skipped');

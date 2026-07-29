@@ -5,8 +5,20 @@ seam + one-time backfill + `preset_agent` state, the `agentconnect` general pres
 console tolerance for unplaced agents), together with §5.3 Fulfillment B — the
 platform-published "Add to Slack" app (env credentials, state-bound install route,
 `Bot.teamId` + composite relay demux, uninstall/revocation lifecycle) — pulled
-forward from M4 so the preset agent is Slack-connectable from day one. M1–M3 and
-M5 remain proposed.
+forward from M4 so the preset agent is Slack-connectable from day one. M1–M2
+remain proposed.
+
+**Direction change (2026-07-29): the dedicated assistant preset is CANCELLED.**
+There will be no second built-in `agentconnect-assistant` agent. Instead,
+assistant/admin capabilities are planned to fold into the `agentconnect` general
+preset itself: a first step would give its **webapp (Playground/webchat) sessions**
+the AgentConnect MCP admin toolset — the tools already exist platform-side
+(agent-assistant.md P0 read tools, P1 write tools with confirm gates, P2 OAuth AS)
+— with the per-session delegated credential (P4's webchat half) still the security
+prerequisite before any admin tool reaches a session. §4, the assistant rows of
+§2/§3.1, and the M3/M5 phases below are retained as historical context only; the
+reserved assistant slugs stay reserved (impersonation guard + naming option).
+`PresetAgentKind` carries only `general`.
 
 **Builds on:** [agent-assistant.md](agent-assistant.md) (AgentConnect MCP + OAuth shipped;
 the built-in assistant P3 and delegated credentials P4 are pending — this design changes
@@ -362,14 +374,14 @@ through MCP tools with their existing confirm-gates.
 
 ## 8. Phasing
 
-| Phase       | Contents                                                                                                                                                                                                                                                                                                                                   | Depends on                    |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------- |
-| M0          | Auto-creation, **no new UI**: `RESERVED_AGENT_SLUGS`; nullable `Agent.runtime`; org-creation seam + one-time backfill + `preset_agent` state; the **general** preset created for new orgs and backfilled orgs. The console only needs to tolerate an unplaced, runtime-less agent (render "—"; existing edit/placement paths keep working) | Nothing new                   |
-| M1          | Auto-placement at first daemon online + the probe-status facts field — still CP-side only                                                                                                                                                                                                                                                  | M0                            |
-| M2          | Console UX: Choose/Add-daemon CTA (§3.4); checklist + `/onboarding` endpoint + `needsOnboarding` rework; Fulfillment A auto-bind                                                                                                                                                                                                           | M0 (M1 for placement states)  |
-| M3          | agent-assistant P3 + minimal P4 (webchat delegated key); the **assistant** preset (creation + backfill + auto-placement); `getOnboardingStatus` tool + prompt hook                                                                                                                                                                         | M0–M2                         |
-| M4 (hosted) | Distributed Slack app: platform env creds, install route + state, `teamId` schema + composite relay demux, uninstall/revoke lifecycle                                                                                                                                                                                                      | Independent of M3; relay pool |
-| M5          | IM identity binding → assistant Slack DMs; guided per-agent app upgrades                                                                                                                                                                                                                                                                   | M3, M4                        |
+| Phase       | Contents                                                                                                                                                                                                                                                                                                                                                                                                                         | Depends on                    |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| M0          | Auto-creation, **no new UI**: `RESERVED_AGENT_SLUGS`; nullable `Agent.runtime`; org-creation seam + one-time backfill + `preset_agent` state; the **general** preset created for new orgs and backfilled orgs. The console only needs to tolerate an unplaced, runtime-less agent (render "—"; existing edit/placement paths keep working)                                                                                       | Nothing new                   |
+| M1          | Auto-placement at first daemon online + the probe-status facts field — still CP-side only                                                                                                                                                                                                                                                                                                                                        | M0                            |
+| M2          | Console UX: Choose/Add-daemon CTA (§3.4); checklist + `/onboarding` endpoint + `needsOnboarding` rework; Fulfillment A auto-bind                                                                                                                                                                                                                                                                                                 | M0 (M1 for placement states)  |
+| M3          | ~~agent-assistant P3 + minimal P4 (webchat delegated key); the **assistant** preset (creation + backfill + auto-placement); `getOnboardingStatus` tool + prompt hook~~ **CANCELLED as a dedicated preset** (see the direction-change note): the successor shape is the AgentConnect MCP admin toolset injected into the **general** preset's webapp sessions, with minimal P4 (per-session delegated key) still the prerequisite | M0–M2                         |
+| M4 (hosted) | Distributed Slack app: platform env creds, install route + state, `teamId` schema + composite relay demux, uninstall/revoke lifecycle                                                                                                                                                                                                                                                                                            | Independent of M3; relay pool |
+| M5          | IM identity binding → ~~assistant Slack DMs~~ admin tools beyond webapp sessions; guided per-agent app upgrades                                                                                                                                                                                                                                                                                                                  | M3, M4                        |
 
 ## 9. Open questions
 

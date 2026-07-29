@@ -637,11 +637,12 @@ model Agent {
 }
 
 // Which preset an org-level preset_agent row describes (preset-agents.md §3).
-// `general` (the `agentconnect` dev agent) ships in M0; `assistant` is reserved
-// for the M3 built-in (`agentconnect-assistant`).
+// `general` (the `agentconnect` dev agent) is the ONLY preset: the dedicated
+// assistant preset was cancelled — assistant/admin capabilities are planned to
+// fold into the general agent's webapp sessions instead. Additive enum if a
+// new preset ever ships.
 enum PresetAgentKind {
   general
-  assistant
 }
 
 enum PresetAgentState {

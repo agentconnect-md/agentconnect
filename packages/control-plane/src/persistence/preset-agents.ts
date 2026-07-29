@@ -35,8 +35,9 @@ export { RESERVED_AGENT_SLUGS }
 
 /** The `agentconnect` general preset (§3.1) — fixed identity, not user-editable
  *  at provisioning time (the agent itself stays an ordinary, editable agent).
- *  Its M3 sibling is pinned to `agentconnect-assistant` → "AgentConnect
- *  Assistant" (RESERVED_AGENT_SLUGS already holds the slug). */
+ *  This is the ONLY preset: the dedicated assistant was cancelled, and
+ *  assistant/admin capabilities are planned to fold into THIS agent's webapp
+ *  sessions instead (RESERVED_AGENT_SLUGS keeps the assistant names parked). */
 export const GENERAL_PRESET = {
   name: 'agentconnect',
   displayName: 'AgentConnect',
