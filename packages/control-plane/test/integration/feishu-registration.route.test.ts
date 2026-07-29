@@ -8,6 +8,7 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import { AGENTCONNECT_FEISHU_EVENTS, AGENTCONNECT_FEISHU_SCOPES } from '../../src/http/feishu-app-template.js'
 import {
+  LARK_REGISTRATION_DOMAIN,
   OfficialFeishuRegistrationProvider,
   type PollFeishuRegistration,
   type FeishuRegistrationProvider
@@ -72,6 +73,24 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
 }
 
 describe('Feishu/Lark one-click app registration', () => {
+  it('starts Lark registration on the Lark accounts domain', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => {
+      return new Response(
+        JSON.stringify({
+          verification_uri_complete: 'https://accounts.larksuite.com/device?user_code=LARK',
+          device_code: 'lark-device-code',
+          expires_in: 600,
+          interval: 1
+        })
+      )
+    })
+    const begun = await new OfficialFeishuRegistrationProvider(fetcher).begin('AgentConnect Lark', 'lark')
+
+    expect(new URL(String(fetcher.mock.calls[0]![0])).hostname).toBe(LARK_REGISTRATION_DOMAIN)
+    expect(new URL(begun.authorizationUrl).hostname).toBe(LARK_REGISTRATION_DOMAIN)
+    expect(begun.providerDomain).toBe(LARK_REGISTRATION_DOMAIN)
+  })
+
   it('survives a CP restart, installs the full template, and never returns credentials', async () => {
     const agentId = await placedAgent()
     const requests: URLSearchParams[] = []
@@ -229,7 +248,7 @@ describe('Feishu/Lark one-click app registration', () => {
     await expect(coordinator.start({ ...common, createdByUserId: 'user-b' })).rejects.toBeInstanceOf(
       FeishuRegistrationConflictError
     )
-    expect(begin).toHaveBeenCalledOnce()
+    expect(begin).toHaveBeenCalledWith('AgentConnect', 'lark')
   })
 
   it('does not expire an authorization while its claimed provider poll is completing', async () => {

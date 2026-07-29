@@ -107,7 +107,7 @@ export class FeishuAppRegistrationService {
     const existing = await this.store.getActiveTarget(key)
     if (existing) return this.reuseOrConflict(existing, input.createdByUserId)
 
-    const begun = await this.provider.begin(input.appName)
+    const begun = await this.provider.begin(input.appName, input.fallbackRegion)
     try {
       const row = await this.store.create({
         id: randomUUID(),
