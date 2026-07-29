@@ -90,7 +90,12 @@ export class PgFeishuAppRegistrationStore implements FeishuAppRegistrationStore 
 
   async expire(id: string, now: Date): Promise<void> {
     await this.prisma.feishuAppRegistration.updateMany({
-      where: { id, status: 'pending', expiresAt: { lte: now } },
+      where: {
+        id,
+        status: 'pending',
+        expiresAt: { lte: now },
+        OR: [{ claimedUntil: null }, { claimedUntil: { lte: now } }]
+      },
       data: {
         status: 'failed',
         failureReason: 'expired',
@@ -106,7 +111,12 @@ export class PgFeishuAppRegistrationStore implements FeishuAppRegistrationStore 
 
   async expireTarget(targetKey: string, now: Date): Promise<void> {
     await this.prisma.feishuAppRegistration.updateMany({
-      where: { targetKey, status: 'pending', expiresAt: { lte: now } },
+      where: {
+        targetKey,
+        status: 'pending',
+        expiresAt: { lte: now },
+        OR: [{ claimedUntil: null }, { claimedUntil: { lte: now } }]
+      },
       data: {
         status: 'failed',
         failureReason: 'expired',
@@ -174,6 +184,13 @@ export class PgFeishuAppRegistrationStore implements FeishuAppRegistrationStore 
       }
     })
     return updated.count === 1 ? this.get(id) : null
+  }
+
+  async releaseAuthorized(id: string, claimToken: string): Promise<void> {
+    await this.prisma.feishuAppRegistration.updateMany({
+      where: { id, status: 'authorized', claimToken },
+      data: { claimToken: null, claimedUntil: null }
+    })
   }
 
   async settle(

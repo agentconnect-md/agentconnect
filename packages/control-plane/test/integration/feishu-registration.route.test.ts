@@ -9,6 +9,7 @@ import { ControlSender } from '../../src/orchestrator/outbound.js'
 import { AGENTCONNECT_FEISHU_EVENTS, AGENTCONNECT_FEISHU_SCOPES } from '../../src/http/feishu-app-template.js'
 import {
   OfficialFeishuRegistrationProvider,
+  type PollFeishuRegistration,
   type FeishuRegistrationProvider
 } from '../../src/http/feishu-registration-provider.js'
 import { FeishuAppRegistrationService, FeishuRegistrationConflictError } from '../../src/http/feishu-registration.js'
@@ -19,6 +20,7 @@ import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
+const UNSUPPORTED_DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
 
 let running: HttpApp | undefined
 
@@ -52,6 +54,14 @@ function service(fetcher: typeof fetch): FeishuAppRegistrationService {
 
 function decodeAddons(encoded: string): unknown {
   return JSON.parse(gunzipSync(Buffer.from(encoded, 'base64url')).toString('utf8'))
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
 }
 
 describe('Feishu/Lark one-click app registration', () => {
@@ -213,5 +223,99 @@ describe('Feishu/Lark one-click app registration', () => {
       FeishuRegistrationConflictError
     )
     expect(begin).toHaveBeenCalledOnce()
+  })
+
+  it('does not expire an authorization while its claimed provider poll is completing', async () => {
+    let now = 0
+    const providerResult = deferred<PollFeishuRegistration>()
+    const poll = vi.fn(() => providerResult.promise)
+    const coordinator = new FeishuAppRegistrationService(
+      new PgFeishuAppRegistrationStore(prisma, new PlaintextSecretCipher()),
+      {
+        begin: async () => ({
+          authorizationUrl: 'https://accounts.feishu.cn/device?user_code=LEASED',
+          deviceCode: 'leased-device-code',
+          providerDomain: 'accounts.feishu.cn',
+          intervalMs: 1000,
+          expiresInMs: 1000
+        }),
+        poll
+      },
+      () => now
+    )
+    const started = await coordinator.start({
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId: AgentId(randomUUID()),
+      fallbackRegion: 'feishu',
+      appName: 'AgentConnect',
+      createdByUserId: 'user-a'
+    })
+    const finalize = vi.fn(async () => {})
+    const completing = coordinator.get(started.id, OrgId(DEFAULT_ORG_ID), finalize)
+    await vi.waitFor(() => expect(poll).toHaveBeenCalledOnce())
+
+    now = 2000
+    await expect(coordinator.get(started.id, OrgId(DEFAULT_ORG_ID), finalize)).resolves.toMatchObject({
+      status: 'pending'
+    })
+    providerResult.resolve({
+      outcome: 'authorized',
+      appId: 'cli_lease',
+      appSecret: 'lease-secret',
+      region: 'feishu'
+    })
+    await expect(completing).resolves.toMatchObject({ status: 'completed' })
+    expect(finalize).toHaveBeenCalledOnce()
+  })
+
+  it('retries across an active move, then rejects a destination without Feishu capability', async () => {
+    const agentId = await placedAgent()
+    await seedDaemon(prisma, UNSUPPORTED_DAEMON, {
+      capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true, features: [] }
+    })
+    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+      const form = new URLSearchParams(String(init?.body))
+      if (form.get('action') === 'begin') {
+        return new Response(
+          JSON.stringify({
+            verification_uri_complete: 'https://accounts.feishu.cn/device?user_code=MOVING',
+            device_code: 'moving-device-code',
+            expires_in: 600,
+            interval: 1
+          })
+        )
+      }
+      return new Response(
+        JSON.stringify({
+          client_id: 'cli_moving',
+          client_secret: 'moving-secret',
+          user_info: { tenant_brand: 'feishu' }
+        })
+      )
+    })
+    const app = buildHttpApp(prisma, undefined, undefined, undefined, {
+      feishuAppRegistration: service(fetcher)
+    })
+    running = app
+
+    const started = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/feishu/app`,
+      payload: { agentId }
+    })
+    const { id } = started.json() as { id: string }
+    const releaseMove = app.deps.agentMutations.tryBeginMove(agentId)
+    expect(releaseMove).not.toBeNull()
+
+    const moving = await app.app.inject({ method: 'GET', url: `${ORG}/integrations/feishu/app/${id}` })
+    expect(moving.json()).toMatchObject({ status: 'pending' })
+    expect(await prisma.integration.count()).toBe(0)
+
+    await prisma.agent.update({ where: { id: agentId }, data: { daemonId: UNSUPPORTED_DAEMON } })
+    releaseMove!()
+    const unsupported = await app.app.inject({ method: 'GET', url: `${ORG}/integrations/feishu/app/${id}` })
+    expect(unsupported.json()).toMatchObject({ status: 'failed', failureReason: 'agent_unavailable' })
+    expect(await prisma.bot.count()).toBe(0)
+    expect(await prisma.integration.count()).toBe(0)
   })
 })

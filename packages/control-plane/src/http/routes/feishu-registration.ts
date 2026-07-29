@@ -13,7 +13,11 @@ import { AgentId, OrgId } from '../../domain/ids.js'
 import { denyViewerWrite, ctxOf } from '../rbac.js'
 import { canEdit, canView } from '../visibility.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
-import { FeishuRegistrationConflictError, FeishuRegistrationSetupError } from '../feishu-registration.js'
+import {
+  FeishuRegistrationConflictError,
+  FeishuRegistrationRetryError,
+  FeishuRegistrationSetupError
+} from '../feishu-registration.js'
 import { installNewFeishuBot } from '../install-feishu.js'
 import {
   ErrorDto,
@@ -135,30 +139,53 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const orgId = orgIdOf(req)
         const session = await deps.feishuAppRegistration.get(req.params.id, orgId, async (registration) => {
-          // Authorization may take minutes or cross a CP restart. Re-read the
-          // target before the idempotent write so deletion/unplacement fails closed.
-          const current = await deps.repos.agent.get(registration.agentId)
-          if (!current || current.orgId !== registration.orgId || !current.daemonId) {
-            throw new FeishuRegistrationSetupError('agent_unavailable')
-          }
           const check = deps.verifyFeishuBot
             ? await deps.verifyFeishuBot(registration.appId, registration.appSecret, registration.region)
             : null
           if (check?.status === 'invalid') {
             throw new FeishuRegistrationSetupError('invalid_credentials')
           }
-          const name = registration.requestedName || (check?.status === 'ok' ? check.name : null) || current.name
-          await installNewFeishuBot(deps, app.log, {
-            orgId: registration.orgId,
-            agent: current,
-            botId: registration.botId,
-            integrationId: registration.integrationId,
-            name,
-            appId: registration.appId,
-            appSecret: registration.appSecret,
-            region: registration.region,
-            createdByUserId: registration.createdByUserId
-          })
+
+          // Authorization can outlive the original placement. Take the mutation
+          // side of the move fence, then resolve both placement and capability
+          // under it so a concurrent move cannot omit this new integration.
+          const release = deps.agentMutations.tryBeginMutation(registration.agentId)
+          if (!release) throw new FeishuRegistrationRetryError()
+          try {
+            const current = await deps.repos.agent.get(registration.agentId)
+            if (
+              !current ||
+              current.orgId !== registration.orgId ||
+              !current.daemonId ||
+              !canView(current, ctxOf(req)) ||
+              !canEdit(current, ctxOf(req))
+            ) {
+              throw new FeishuRegistrationSetupError('agent_unavailable')
+            }
+            const availability = await integrationPlatformAvailability(deps, {
+              daemonId: current.daemonId,
+              orgId: registration.orgId,
+              viewer: ctxOf(req),
+              platform: 'feishu'
+            })
+            if (availability !== 'available') {
+              throw new FeishuRegistrationSetupError('agent_unavailable')
+            }
+            const name = registration.requestedName || (check?.status === 'ok' ? check.name : null) || current.name
+            await installNewFeishuBot(deps, app.log, {
+              orgId: registration.orgId,
+              agent: current,
+              botId: registration.botId,
+              integrationId: registration.integrationId,
+              name,
+              appId: registration.appId,
+              appSecret: registration.appSecret,
+              region: registration.region,
+              createdByUserId: registration.createdByUserId
+            })
+          } finally {
+            release()
+          }
         })
         if (!session) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'registration not found' })

@@ -28,6 +28,14 @@ export class FeishuRegistrationConflictError extends Error {
   }
 }
 
+/** Placement is moving; keep the authorized credentials and retry finalization. */
+export class FeishuRegistrationRetryError extends Error {
+  constructor() {
+    super('agent placement is changing')
+    this.name = 'FeishuRegistrationRetryError'
+  }
+}
+
 export interface StartFeishuRegistration {
   orgId: OrgId
   agentId: AgentId
@@ -171,13 +179,21 @@ export class FeishuAppRegistrationService {
           appSecret: current.appSecret,
           region: current.resolvedRegion
         })
-        await this.store.settle(id, claimToken, { status: 'completed' })
       } catch (error) {
-        await this.store.settle(id, claimToken, {
-          status: 'failed',
-          failureReason: failureReason(error)
-        })
+        if (error instanceof FeishuRegistrationRetryError) {
+          await this.store.releaseAuthorized(id, claimToken)
+        } else {
+          await this.store.settle(id, claimToken, {
+            status: 'failed',
+            failureReason: failureReason(error)
+          })
+        }
+        return publicSnapshot((await this.store.get(id)) ?? current)
       }
+      // Keep settlement outside the finalize catch. If this DB write itself is
+      // transient, the authorized row and reserved IDs remain retryable instead
+      // of reporting failure after the integration was already installed.
+      await this.store.settle(id, claimToken, { status: 'completed' })
     }
     return publicSnapshot((await this.store.get(id)) ?? current)
   }

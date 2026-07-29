@@ -2295,6 +2295,8 @@ export interface FeishuAppRegistrationStore {
     claimToken: string,
     input: { appId: string; appSecret: string; region: FeishuRegion }
   ): Promise<FeishuAppRegistrationRecord | null>
+  /** Release a finalized-credential claim for a short-lived placement retry. */
+  releaseAuthorized(id: string, claimToken: string): Promise<void>
   settle(
     id: string,
     claimToken: string,
