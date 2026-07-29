@@ -14,7 +14,7 @@ export {
   decodePermValue,
   encodePermValue
 } from '@agentconnect.md/protocol'
-import { renderAttributionMessage } from '../messages/attribution.js'
+import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
 import { permissionModeDisplayLabel } from '../acp/permission-modes.js'
 import { splitIntoSections } from './formatter.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
@@ -82,13 +82,7 @@ export type SlackAction =
 /** Dynamic identity shown under the last reply section. All Slack integration modes use
  *  the same compact `context` footer so shared-bot attribution never looks like body text
  *  or causes its console links to sprout rich previews. */
-export interface SlackAttributionInfo {
-  botName: string
-  botUrl: string
-  runtime: string
-  model: string
-  sessionUrl: string
-}
+export type SlackAttributionInfo = ReplyAttributionInfo
 
 const THINKING = 'is thinking…'
 const WORKING = 'is working…'

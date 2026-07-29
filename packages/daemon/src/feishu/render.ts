@@ -1,4 +1,5 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 
 /**
@@ -33,7 +34,7 @@ import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 export type FeishuAction =
   | { kind: 'card-start' }
   | { kind: 'card-stream'; text: string }
-  | { kind: 'card-final'; text: string; link?: string }
+  | { kind: 'card-final'; text: string; attribution?: ReplyAttributionInfo }
   | { kind: 'card-cancel' }
   // CardKit owns visible answer delivery. These rows retain the existing transcript
   // segmentation without also posting duplicate text messages into the chat.
@@ -90,23 +91,50 @@ function cardSummary(text: string): string {
   return plain.slice(0, 120) || 'Completed'
 }
 
-function footerLink(link: string): string {
-  return link.replace(/\(/g, '%28').replace(/\)/g, '%29')
+function escapeFooterText(value: string): string {
+  return value
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 200)
+    .replace(/([\\`*_[\]~<>])/g, '\\$1')
+}
+
+function footerLink(value: string): string | undefined {
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined
+    const normalized = url.toString()
+    if (normalized.length > 2_048) return undefined
+    return normalized.replace(/\(/g, '%28').replace(/\)/g, '%29')
+  } catch {
+    return undefined
+  }
+}
+
+/** Reuse the canonical Slack/GitHub attribution sentence while applying CardKit
+ * markdown links and escaping at this platform boundary. */
+function attributionFooter(info: ReplyAttributionInfo): string {
+  const botName = escapeFooterText(info.botName) || 'unknown agent'
+  const botUrl = footerLink(info.botUrl)
+  const sessionUrl = footerLink(info.sessionUrl)
+  return renderAttributionMessage({
+    agent: botUrl ? `[${botName}](${botUrl})` : botName,
+    runtime: escapeFooterText(info.runtime),
+    model: escapeFooterText(info.model),
+    renderSession: sessionUrl ? (label) => `[${escapeFooterText(label)}](${sessionUrl})` : undefined
+  })
 }
 
 /** Completed CardKit 2.0 reply. The footer is intentionally part of the card rather
  * than a second message, so the answer has one stable visual surface. */
-export function buildCompletedReplyCard(text: string, link?: string): Record<string, unknown> {
+export function buildCompletedReplyCard(text: string, attribution?: ReplyAttributionInfo): Record<string, unknown> {
   const elements: Record<string, unknown>[] = [{ tag: 'markdown', content: text }]
-  if (link) {
-    elements.push(
-      { tag: 'hr' },
-      {
-        tag: 'markdown',
-        text_size: 'notation',
-        content: `AI-generated content is for reference only. [View session](${footerLink(link)})`
-      }
-    )
+  if (attribution) {
+    elements.push({
+      tag: 'markdown',
+      text_size: 'notation',
+      content: attributionFooter(attribution)
+    })
   }
   return {
     schema: '2.0',
@@ -489,8 +517,8 @@ export class FeishuConverger {
   }
 
   /** Turn end: persist the last body window and replace the streaming entity with the
-   * completed answer. The optional footer link is embedded into that same final card. */
-  onFinal(link?: string): FeishuAction[] {
+   * completed answer. Optional shared attribution stays inside that same final card. */
+  onFinal(attribution?: ReplyAttributionInfo): FeishuAction[] {
     const display = this.cardText.trim()
     if (isNoResponseBody(display)) {
       this.buf = ''
@@ -504,12 +532,12 @@ export class FeishuConverger {
     if (!display) return [...actions, { kind: 'card-cancel' }]
     this.cardText = display
     this.lastStreamText = display
-    return [...actions, { kind: 'card-final', text: display, ...(link ? { link } : {}) }]
+    return [...actions, { kind: 'card-final', text: display, ...(attribution ? { attribution } : {}) }]
   }
 
   /** Prompt failure after the card has started: preserve any useful runtime-authored
    * error text, otherwise append one concise failure line, then close the card. */
-  onFailure(reason: string, link?: string): FeishuAction[] {
+  onFailure(reason: string, attribution?: ReplyAttributionInfo): FeishuAction[] {
     const display = this.cardText.trim()
     if (isNoResponseBody(display)) {
       this.buf = ''
@@ -526,7 +554,7 @@ export class FeishuConverger {
     if (this.mode === 'none') return actions
     this.cardText = finalText
     this.lastStreamText = finalText
-    actions.push({ kind: 'card-final', text: finalText, ...(link ? { link } : {}) })
+    actions.push({ kind: 'card-final', text: finalText, ...(attribution ? { attribution } : {}) })
     return actions
   }
 }

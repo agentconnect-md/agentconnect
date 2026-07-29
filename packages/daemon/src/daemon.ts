@@ -8766,6 +8766,14 @@ export class Daemon {
     })
     if (activeGithub) this.activeGithubTurnMeta.set(key, activeGithub)
     let finalPhase: EventSession['phase'] = 'end'
+    let turnModel: string | undefined
+    const currentAttributionInfo = (): SlackAttributionInfo => ({
+      botName: agent.name,
+      botUrl: this.agentLink(agentId),
+      runtime: this.runtimeNames[agent.runtime] ?? agent.runtime,
+      model: this.buildStatusInfo(p).model ?? turnModel ?? 'default',
+      sessionUrl: this.sessionLink(sessionId)
+    })
     try {
       const host = await this.ensureHostAsync(agentId)
       const runtimeAgent = this.agents.get(agentId)
@@ -8842,25 +8850,18 @@ export class Daemon {
       // A runtime-owned "default" is not a public billable model id. Only fall
       // back to config when no selector exists at all; otherwise a failed override
       // could make us price a model that did not actually run.
-      const turnModel =
+      turnModel =
         modelOptions === null
           ? (override ?? agent.runtimeOverrides?.model)
           : advertisedModel === 'default'
             ? undefined
             : advertisedModel
-      const currentSlackAttributionInfo = (): SlackAttributionInfo => ({
-        botName: agent.name,
-        botUrl: this.agentLink(agentId),
-        runtime: this.runtimeNames[agent.runtime] ?? agent.runtime,
-        model: this.buildStatusInfo(p).model ?? turnModel ?? 'default',
-        sessionUrl: this.sessionLink(sessionId)
-      })
       // Prepare the linked footer before host.prompt can emit its first chunk. Reply
       // sections then include it in their initial chat.postMessage, where Slack's
       // unfurl controls are supported; onFinal normally observes the same footer and
       // becomes a no-op instead of introducing URLs later through chat.update.
       if (showFooter && p.platform === 'slack') {
-        const attribution = buildAttributionBlocks(currentSlackAttributionInfo())
+        const attribution = buildAttributionBlocks(currentAttributionInfo())
         p.attribution = { blocks: attribution.blocks, key: JSON.stringify(attribution.blocks) }
       }
       // Feishu's answer surface exists before the first ACP token: one CardKit entity
@@ -8979,21 +8980,23 @@ export class Daemon {
         }
       } else {
         const link = showFooter ? this.sessionLink(sessionId) : undefined
-        const finalSlackAttributionInfo = showFooter ? currentSlackAttributionInfo() : undefined
+        const finalAttributionInfo = showFooter ? currentAttributionInfo() : undefined
         // A runtime may only publish its final session-scoped model during prompt.
         // Refresh before enqueueing the final body so any not-yet-sent section is born
         // with the final metadata; an already-sent section is updated in place below.
-        if (showFooter && p.platform === 'slack' && finalSlackAttributionInfo) {
-          const attribution = buildAttributionBlocks(finalSlackAttributionInfo)
+        if (showFooter && p.platform === 'slack' && finalAttributionInfo) {
+          const attribution = buildAttributionBlocks(finalAttributionInfo)
           p.attribution = { blocks: attribution.blocks, key: JSON.stringify(attribution.blocks) }
         }
         // Telegram/Discord keep their existing session-link footer. Slack closes the
         // lifecycle for the compact context already included in the latest reply's
         // initial post and retries any stale-section cleanup.
         const finals =
-          conv instanceof TelegramConverger || conv instanceof DiscordConverger || conv instanceof FeishuConverger
-            ? conv.onFinal(link)
-            : conv.onFinal(finalSlackAttributionInfo)
+          conv instanceof FeishuConverger
+            ? conv.onFinal(finalAttributionInfo)
+            : conv instanceof TelegramConverger || conv instanceof DiscordConverger
+              ? conv.onFinal(link)
+              : conv.onFinal(finalAttributionInfo)
         for (const action of finals) this.enqueueApply(p, action)
       }
       // …and any trailing reasoning the agent emitted after its last reply.
@@ -9094,8 +9097,8 @@ export class Daemon {
         // body and is recorded into the transcript either way.
         const reason = turnFailureReason(err)
         if (p.conv instanceof FeishuConverger) {
-          const link = showFooter ? this.sessionLink(sessionId) : undefined
-          for (const action of p.conv.onFailure(reason, link)) this.enqueueApply(p, action)
+          const attribution = showFooter ? currentAttributionInfo() : undefined
+          for (const action of p.conv.onFailure(reason, attribution)) this.enqueueApply(p, action)
         } else {
           let covered = false
           for (const action of p.conv.flushBuffered()) {
@@ -10021,7 +10024,7 @@ export class Daemon {
         return
       case 'card-final': {
         if (p.feishuCard) {
-          const delivered = await conn.finishStreamingCard(p.channel, p.feishuCard, action.text, action.link)
+          const delivered = await conn.finishStreamingCard(p.channel, p.feishuCard, action.text, action.attribution)
           if (delivered) return
           // A final CardKit update failure must not lose the answer. Remove the stale
           // partial card where possible, then fall back to ordinary text.

@@ -5,6 +5,7 @@ import * as path from 'node:path'
 import * as Lark from '@larksuiteoapi/node-sdk'
 import type { FeishuRegion } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
+import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
 import { SlackSendQueue } from '../slack/send-queue.js'
@@ -778,7 +779,12 @@ export class FeishuConnection {
   /** Close streaming mode and replace the entity with the final answer/footer card.
    * Returns false only when the final full-card update failed, allowing the daemon to
    * fall back to a normal text message instead of losing the reply. */
-  async finishStreamingCard(channel: string, card: FeishuStreamingCard, text: string, link?: string): Promise<boolean> {
+  async finishStreamingCard(
+    channel: string,
+    card: FeishuStreamingCard,
+    text: string,
+    attribution?: ReplyAttributionInfo
+  ): Promise<boolean> {
     return this.queue.enqueue(async () => {
       const state = this.streamingCards.get(card.cardId)
       if (!state) return false
@@ -793,7 +799,7 @@ export class FeishuConnection {
       state.sequence += 1
       let updated = false
       try {
-        await this.handle.api.updateCardEntity(card.cardId, buildCompletedReplyCard(text, link), state.sequence)
+        await this.handle.api.updateCardEntity(card.cardId, buildCompletedReplyCard(text, attribution), state.sequence)
         updated = true
       } catch (err) {
         this.rememberPermissionIssue(err, channel)

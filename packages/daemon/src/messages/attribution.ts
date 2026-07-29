@@ -10,6 +10,16 @@ export interface AttributionMessageParts {
   renderSession?: (label: string) => string | undefined
 }
 
+/** Raw reply identity shared by platform renderers before each platform applies
+ * its own escaping and link syntax. */
+export interface ReplyAttributionInfo {
+  botName: string
+  botUrl: string
+  runtime: string
+  model: string
+  sessionUrl: string
+}
+
 const OPEN_IN_SESSION_LABEL = 'open in session'
 
 function present(value: string | undefined): value is string {
