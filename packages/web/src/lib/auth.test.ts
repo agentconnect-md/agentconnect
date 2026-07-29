@@ -4,14 +4,23 @@ const logto = vi.hoisted(() => ({
   isAuthenticated: vi.fn(),
   getAccessToken: vi.fn(),
   clearAllTokens: vi.fn(),
-  replace: vi.fn()
+  replace: vi.fn(),
+  clientConfig: undefined as unknown
 }))
 
 vi.mock('@logto/browser', () => ({
   default: class MockLogtoClient {
+    constructor(config: unknown) {
+      logto.clientConfig = config
+    }
     isAuthenticated = logto.isAuthenticated
     getAccessToken = logto.getAccessToken
     clearAllTokens = logto.clearAllTokens
+  },
+  UserScope: {
+    Email: 'email',
+    Profile: 'profile',
+    Identities: 'identities'
   },
   isLogtoRequestError: (error: unknown) => error instanceof Error && error.name === 'LogtoRequestError'
 }))
@@ -27,6 +36,7 @@ describe('getToken', () => {
     logto.getAccessToken.mockReset()
     logto.clearAllTokens.mockReset().mockResolvedValue(undefined)
     logto.replace.mockReset()
+    logto.clientConfig = undefined
     vi.stubGlobal('window', {
       __AC_ENV: {
         LOGTO_ENDPOINT: 'https://login.example.test',
@@ -81,28 +91,14 @@ describe('getToken', () => {
     expect(logto.clearAllTokens).toHaveBeenCalledOnce()
     expect(logto.replace).toHaveBeenCalledOnce()
   })
-})
 
-describe('accountSecurityUrl', () => {
-  beforeEach(() => {
-    vi.resetModules()
-    vi.stubGlobal('window', {
-      __AC_ENV: {
-        LOGTO_ENDPOINT: 'https://login.example.test/',
-        LOGTO_APP_ID: 'web-app'
-      }
-    })
-  })
+  it('mints a resource-less token with the identities scope for the Account API', async () => {
+    logto.getAccessToken.mockResolvedValue('opaque-account-token')
+    const { getAccountToken } = await import('./auth')
 
-  afterEach(() => {
-    vi.unstubAllGlobals()
-  })
+    await expect(getAccountToken()).resolves.toBe('opaque-account-token')
 
-  it('returns to the current AgentConnect profile after account management', async () => {
-    const { accountSecurityUrl } = await import('./auth')
-
-    expect(accountSecurityUrl('https://console.example.test/acme/profile')).toBe(
-      'https://login.example.test/account/security?redirect=https%3A%2F%2Fconsole.example.test%2Facme%2Fprofile'
-    )
+    expect(logto.getAccessToken).toHaveBeenCalledWith()
+    expect(logto.clientConfig).toMatchObject({ scopes: ['email', 'profile', 'identities'] })
   })
 })

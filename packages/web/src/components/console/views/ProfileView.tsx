@@ -13,8 +13,9 @@ import { useRouter } from 'next/navigation'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useModal } from '@/components/console/ModalProvider'
 import ApiKeysCard from '@/components/console/ApiKeysCard'
+import SocialSignInCard from '@/components/console/SocialSignInCard'
 import SlackConfigCard from '@/components/console/SlackConfigCard'
-import { accountSecurityUrl, isAuthConfigured, logout } from '@/lib/auth'
+import { isAuthConfigured, logout } from '@/lib/auth'
 import { useProfile } from '@/lib/profile'
 import { MOCK_MODE } from '@/lib/data'
 import { useIsMobile } from '@/lib/use-is-mobile'
@@ -64,11 +65,6 @@ export default function ProfileView() {
     else router.push('/login')
   }
 
-  const manageSignIns = () => {
-    const url = accountSecurityUrl(`${window.location.origin}${window.location.pathname}`)
-    if (url) window.location.assign(url)
-  }
-
   if (isMobile) {
     const cardShell =
       'overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)'
@@ -115,17 +111,6 @@ export default function ProfileView() {
               <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">Email</span>
               <span className="font-mono text-[12px] font-medium leading-normal">{user.email}</span>
             </div>
-            {authOn && (
-              <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
-                <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
-                  Sign-in methods
-                </span>
-                <Button variant="secondary" size="xs" onClick={manageSignIns}>
-                  <Icon name="link-2" size={13} />
-                  Link social account
-                </Button>
-              </div>
-            )}
             <div className="flex items-center justify-between gap-4 px-4 py-3">
               <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
                 Member since
@@ -133,6 +118,8 @@ export default function ProfileView() {
               <span className="font-mono text-[12px] font-medium leading-normal">{memberSince}</span>
             </div>
           </div>
+
+          {authOn ? <SocialSignInCard mobile /> : null}
 
           {/* Personal API keys — the caller's own REST credentials */}
           <ApiKeysCard orgs={orgs} defaultOrgId={activeOrg?.id} mobile />
@@ -184,14 +171,6 @@ export default function ProfileView() {
           <KvRow label="Email">
             <span className="mono text-[12.5px]">{user.email}</span>
           </KvRow>
-          {authOn && (
-            <KvRow label="Sign-in methods">
-              <Button variant="secondary" size="xs" onClick={manageSignIns}>
-                <Icon name="link-2" size={13} />
-                Link social account
-              </Button>
-            </KvRow>
-          )}
           <KvRow label="Role">
             <span className={`badge ${roleBadge}`}>{roleLabel}</span>
           </KvRow>
@@ -200,6 +179,8 @@ export default function ProfileView() {
           </KvRow>
         </div>
       </div>
+
+      {authOn ? <SocialSignInCard /> : null}
 
       <ApiKeysCard orgs={orgs} defaultOrgId={activeOrg?.id} />
 

@@ -18,7 +18,7 @@
 // resource Logto returns an opaque token the CP can't verify, so we fall back to
 // the id token (whose `aud` is the app id — set the CP's OIDC_AUDIENCE to the app
 // id in that case).
-import LogtoClient, { isLogtoRequestError } from '@logto/browser'
+import LogtoClient, { isLogtoRequestError, UserScope } from '@logto/browser'
 import { MOCK_MODE } from '@/lib/data'
 import { identifyUser, resetAnalytics } from '@/lib/analytics'
 
@@ -54,17 +54,11 @@ export function isAuthConfigured(): boolean {
   return Boolean(endpoint && appId)
 }
 
-/**
- * Logto-hosted account security page. It owns the sensitive verification flow
- * for linking and unlinking social sign-in identities, then returns to the
- * caller's Profile page.
- */
-export function accountSecurityUrl(redirectUri: string): string | undefined {
+/** Public tenant values used by the browser-side Logto Account API client. */
+export function getLogtoPublicConfig(): { endpoint: string; appId: string } | undefined {
   const { endpoint, appId } = readConfig()
   if (!endpoint || !appId) return undefined
-  const url = new URL('/account/security', endpoint)
-  url.searchParams.set('redirect', redirectUri)
-  return url.toString()
+  return { endpoint, appId }
 }
 
 let client: LogtoClient | undefined
@@ -79,8 +73,8 @@ function getClient(): LogtoClient | undefined {
       endpoint,
       appId,
       // Request the profile claims so the CP can read email/name (from the token or
-      // its /userinfo endpoint) and show a real creator instead of a placeholder.
-      scopes: ['email', 'profile'],
+      // its /userinfo endpoint), plus identities for the user-facing Account API.
+      scopes: [UserScope.Email, UserScope.Profile, UserScope.Identities],
       ...(apiResource ? { resources: [apiResource] } : {})
     })
   }
@@ -271,17 +265,32 @@ export async function getToken(): Promise<string | undefined> {
   if (!c || !(await c.isAuthenticated())) return undefined
   const { apiResource } = readConfig()
   if (apiResource) {
-    try {
-      return await c.getAccessToken(apiResource)
-    } catch (error) {
-      // A rejected refresh grant cannot recover through retries. Expire only
-      // the local app session and let Logto's SSO session make re-entry cheap.
-      if (!isLogtoRequestError(error) || error.code !== 'oidc.invalid_grant') throw error
-      await clearInvalidGrantSession(c)
-      throw error
-    }
+    return accessToken(c, apiResource)
   }
   return (await c.getIdToken()) ?? undefined
+}
+
+/**
+ * Opaque OP token for Logto's browser-facing Account API. This is deliberately
+ * different from `getToken()`: the Control Plane receives a resource JWT, while
+ * `/api/my-account` requires an access token minted without a resource.
+ */
+export async function getAccountToken(): Promise<string | undefined> {
+  const c = getClient()
+  if (!c || !(await c.isAuthenticated())) return undefined
+  return accessToken(c)
+}
+
+async function accessToken(c: LogtoClient, resource?: string): Promise<string> {
+  try {
+    return resource ? await c.getAccessToken(resource) : await c.getAccessToken()
+  } catch (error) {
+    // A rejected refresh grant cannot recover through retries. Expire only
+    // the local app session and let Logto's SSO session make re-entry cheap.
+    if (!isLogtoRequestError(error) || error.code !== 'oidc.invalid_grant') throw error
+    await clearInvalidGrantSession(c)
+    throw error
+  }
 }
 
 /**
