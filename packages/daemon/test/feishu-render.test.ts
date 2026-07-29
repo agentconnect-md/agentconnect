@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import type { ReplyAttributionInfo } from '../src/messages/attribution.js'
 import {
   buildCompletedReplyCard,
   buildStreamingReplyCard,
@@ -9,6 +10,14 @@ import {
 
 const chunk = (text: string): SessionUpdate =>
   ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }) as unknown as SessionUpdate
+
+const attribution: ReplyAttributionInfo = {
+  botName: 'Review Bot',
+  botUrl: 'https://agentconnect.example/agents/review-bot',
+  runtime: 'Codex',
+  model: 'gpt-5.6',
+  sessionUrl: 'https://agentconnect.example/sessions/123'
+}
 
 describe('FeishuConverger AC_NO_RESPONSE suppression', () => {
   it('retracts the initial card for a bare response-control marker', () => {
@@ -40,25 +49,25 @@ describe('FeishuConverger AC_NO_RESPONSE suppression', () => {
   })
 })
 
-describe('Feishu CardKit reply lifecycle', () => {
-  it('streams cumulative text and finalizes the same reply with a session link', () => {
+describe('Lark CardKit reply lifecycle', () => {
+  it('streams cumulative text and finalizes the same reply with shared attribution', () => {
     const c = new FeishuConverger('low')
     expect(c.onStart()).toEqual([{ kind: 'card-start' }])
 
     c.onUpdate(chunk('Hello'))
     expect(c.streamUpdate()).toEqual([{ kind: 'card-stream', text: 'Hello' }])
     c.onUpdate(chunk(' world'))
-    expect(c.onFinal('https://agentconnect.example/sessions/123')).toEqual([
+    expect(c.onFinal(attribution)).toEqual([
       { kind: 'post', text: 'Hello world', recordOnly: true },
       {
         kind: 'card-final',
         text: 'Hello world',
-        link: 'https://agentconnect.example/sessions/123'
+        attribution
       }
     ])
   })
 
-  it('builds a streaming element and a linked notation footer', () => {
+  it('builds a streaming element and the canonical attribution footer', () => {
     const initial = buildStreamingReplyCard() as {
       config: { streaming_mode: boolean }
       body: { elements: { element_id?: string; content?: string }[] }
@@ -69,16 +78,16 @@ describe('Feishu CardKit reply lifecycle', () => {
       content: 'Thinking…'
     })
 
-    const completed = buildCompletedReplyCard('Done', 'https://agentconnect.example/sessions/123') as {
+    const completed = buildCompletedReplyCard('Done', attribution) as {
       body: { elements: { tag: string; content?: string; text_size?: string }[] }
     }
     expect(completed.body.elements).toEqual([
       { tag: 'markdown', content: 'Done' },
-      { tag: 'hr' },
       {
         tag: 'markdown',
         text_size: 'notation',
-        content: 'AI-generated content is for reference only. [View session](https://agentconnect.example/sessions/123)'
+        content:
+          'sent by [Review Bot](https://agentconnect.example/agents/review-bot) (Codex · gpt-5.6) · [open in session](https://agentconnect.example/sessions/123)'
       }
     ])
   })

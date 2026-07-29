@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import { FeishuConnection, type ConsolidatedFeishuGroup, type FeishuClientHandle } from '../src/feishu/connection.js'
 import { FEISHU_STREAMING_ELEMENT_ID } from '../src/feishu/render.js'
+import type { ReplyAttributionInfo } from '../src/messages/attribution.js'
+
+const attribution: ReplyAttributionInfo = {
+  botName: 'Review Bot',
+  botUrl: 'https://agentconnect.example/agents/review-bot',
+  runtime: 'Codex',
+  model: 'gpt-5.6',
+  sessionUrl: 'https://agentconnect.example/sessions/123'
+}
 
 function connection() {
   const createCardEntity = vi.fn(async () => ({ cardId: 'card-1' }))
@@ -53,7 +62,7 @@ function connection() {
   }
 }
 
-describe('Feishu CardKit transport', () => {
+describe('Lark CardKit transport', () => {
   it('creates, streams, and finalizes one threaded card with monotonic sequences', async () => {
     const {
       conn,
@@ -73,7 +82,7 @@ describe('Feishu CardKit transport', () => {
     expect(replyCardEntityMessage).toHaveBeenCalledWith('om_root', 'card-1')
 
     await conn.updateStreamingCard('oc_chat', card!, 'Hello')
-    await conn.finishStreamingCard('oc_chat', card!, 'Hello world', 'https://agentconnect.example/sessions/123')
+    await conn.finishStreamingCard('oc_chat', card!, 'Hello world', attribution)
 
     expect(updateCardEntityElement).toHaveBeenCalledWith('card-1', FEISHU_STREAMING_ELEMENT_ID, 'Hello', 1)
     expect(setCardEntityStreaming).toHaveBeenCalledWith('card-1', false, 2)
@@ -83,11 +92,10 @@ describe('Feishu CardKit transport', () => {
       body: {
         elements: [
           { tag: 'markdown', content: 'Hello world' },
-          { tag: 'hr' },
           {
             tag: 'markdown',
             content:
-              'AI-generated content is for reference only. [View session](https://agentconnect.example/sessions/123)'
+              'sent by [Review Bot](https://agentconnect.example/agents/review-bot) (Codex · gpt-5.6) · [open in session](https://agentconnect.example/sessions/123)'
           }
         ]
       }
