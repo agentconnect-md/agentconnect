@@ -69,10 +69,16 @@ function isOlderRevokeReport(incoming: RcBotRevoked, queued: RcBotRevoked): bool
   ) {
     return incoming.credentialRevision < queued.credentialRevision
   }
-  if (incoming.eventAtMs !== undefined && queued.eventAtMs !== undefined) {
-    return incoming.eventAtMs < queued.eventAtMs
-  }
-  return false
+  // Same generation (or none to compare). A report WITHOUT an occurrence time is
+  // the STRONGER claim, not a degenerate one: the auth.test dead-credential
+  // backstop deliberately reports the exact current revision with no eventAtMs —
+  // "this credential is dead NOW" — which passes the CP's time arm
+  // unconditionally, while a timestamped lifecycle event of the same generation
+  // may still be refused as predating the credential. Never let the weaker,
+  // refusable report displace it; equal strength keeps arrival order.
+  if (queued.eventAtMs === undefined) return incoming.eventAtMs !== undefined
+  if (incoming.eventAtMs === undefined) return false
+  return incoming.eventAtMs < queued.eventAtMs
 }
 
 export interface SharedBotManagerDeps {

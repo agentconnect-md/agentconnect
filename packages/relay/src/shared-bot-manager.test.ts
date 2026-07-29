@@ -503,6 +503,46 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
     }
   })
 
+  it('a queued no-timestamp probe report outranks a same-generation timestamped event', async () => {
+    vi.useFakeTimers()
+    try {
+      let commitNext = false
+      const reportBotRevoked = vi.fn(async () => commitNext)
+      const manager = new SharedBotManager(deps({ reportBotRevoked }))
+      const internals = manager as unknown as ManagerInternals
+      // The auth.test dead-credential backstop: exact current revision, NO
+      // eventAtMs — "dead NOW", unconditional on the CP's time arm.
+      const probe = { botId: BOT_ID, reason: 'tokens_revoked' as const, credentialRevision: 2 }
+      // A delayed lifecycle event of the SAME generation whose timestamp may
+      // predate the credential — the CP's time arm can refuse it terminally.
+      const delayed = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 2, eventAtMs: 1_000 }
+
+      internals.reportRevoked(probe) // transient failure ⇒ stays queued
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(1)
+
+      // The weaker, refusable report must not displace the probe.
+      internals.reportRevoked(delayed)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(1)
+
+      // The retry re-drives the PROBE report, which commits.
+      commitNext = true
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(2)
+      expect(reportBotRevoked).toHaveBeenLastCalledWith(probe)
+
+      // …while an incoming NO-timestamp report may replace a queued timestamped
+      // one (it is at least as strong).
+      internals.reportRevoked(delayed)
+      internals.reportRevoked(probe)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotRevoked).toHaveBeenLastCalledWith(probe)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('same-generation ordering falls back to the event timestamp', async () => {
     vi.useFakeTimers()
     try {
