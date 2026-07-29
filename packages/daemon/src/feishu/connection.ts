@@ -741,9 +741,10 @@ export class FeishuConnection {
         const created = await this.handle.api.createCardEntity(buildStreamingReplyCard())
         if (!created.cardId) throw new Error('cardkit.card.create returned no card_id')
         const sent = await this.sendCardEntity(channel, threadAnchor, created.cardId)
+        if (!sent.messageId) throw new Error('CardKit IM send returned no message_id')
         this.streamingCards.set(created.cardId, { sequence: 0, lastText: '' })
         await this.postPermissionUpdateCard(channel, threadAnchor)
-        return { cardId: created.cardId, ...(sent.messageId ? { messageId: sent.messageId } : {}) }
+        return { cardId: created.cardId, messageId: sent.messageId }
       } catch (err) {
         this.rememberPermissionIssue(err, channel)
         await this.postPermissionUpdateCard(channel, threadAnchor)

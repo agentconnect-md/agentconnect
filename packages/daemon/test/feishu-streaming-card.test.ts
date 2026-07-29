@@ -4,7 +4,7 @@ import { FEISHU_STREAMING_ELEMENT_ID } from '../src/feishu/render.js'
 
 function connection() {
   const createCardEntity = vi.fn(async () => ({ cardId: 'card-1' }))
-  const replyCardEntityMessage = vi.fn(async () => ({ messageId: 'message-1' }))
+  const replyCardEntityMessage = vi.fn(async (): Promise<{ messageId?: string }> => ({ messageId: 'message-1' }))
   const updateCardEntityElement = vi.fn(async () => {})
   const setCardEntityStreaming = vi.fn(async () => {})
   const updateCardEntity = vi.fn(async () => {})
@@ -99,5 +99,15 @@ describe('Feishu CardKit transport', () => {
     const card = await conn.startStreamingCard('oc_chat')
     await conn.cancelStreamingCard('oc_chat', card!)
     expect(deleteMessage).toHaveBeenCalledWith('message-flat')
+  })
+
+  it('falls back when the IM send response has no message id', async () => {
+    const { conn, replyCardEntityMessage, updateCardEntity } = connection()
+    replyCardEntityMessage.mockResolvedValueOnce({})
+
+    const card = await conn.startStreamingCard('oc_chat', 'om_root')
+
+    expect(card).toBeUndefined()
+    expect(updateCardEntity).not.toHaveBeenCalled()
   })
 })
