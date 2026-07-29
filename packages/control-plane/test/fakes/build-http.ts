@@ -35,6 +35,7 @@ import {
   PgIntegrationRepo,
   PgBotRepo,
   PgBotSecretStore,
+  PgBotCredentialWriter,
   PgAgentSecretStore,
   PgAgentConfigWriter,
   PgMcpProviderRepo,
@@ -46,8 +47,10 @@ import {
   PgExternalMemoryConnectionSecretStore,
   PgExternalMemoryGrantRepo,
   PgSlackInstallStore,
+  PgSlackPlatformInstallStore,
   PgThreadAffinityStore,
   PgSlackUserConfigStore,
+  PgPresetAgentStore,
   PgIntegrationChannelRepo
 } from '../../src/persistence/index.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
@@ -140,6 +143,7 @@ export function buildHttpApp(
   const integrationRepo = new PgIntegrationRepo(prisma)
   const botRepo = new PgBotRepo(prisma)
   const botSecretStore = new PgBotSecretStore(prisma, cipher)
+  const botCredentialWriter = new PgBotCredentialWriter(prisma, cipher)
   const integrationChannelRepo = new PgIntegrationChannelRepo(prisma)
   const agentRepo = new PgAgentRepo(prisma)
   const hookRepo = new PgHookRepo(prisma)
@@ -170,6 +174,7 @@ export function buildHttpApp(
       integration: integrationRepo,
       bot: botRepo,
       botSecret: botSecretStore,
+      botCredential: botCredentialWriter,
       agentSecret: agentSecretStore,
       agentConfig: new PgAgentConfigWriter(prisma, cipher),
       mcpProvider: new PgMcpProviderRepo(prisma),
@@ -181,7 +186,9 @@ export function buildHttpApp(
       externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, cipher),
       externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, cipher),
       slackInstall: new PgSlackInstallStore(prisma, cipher),
+      slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
       slackUserConfig: new PgSlackUserConfigStore(prisma, cipher),
+      presetAgent: new PgPresetAgentStore(prisma),
       integrationChannel: integrationChannelRepo,
       audit: auditRepo,
       oauth: oauthRepo
@@ -194,6 +201,7 @@ export function buildHttpApp(
     sharedBot: new SharedBotOrchestrator(
       botRepo,
       botSecretStore,
+      botCredentialWriter,
       integrationRepo,
       integrationChannelRepo,
       agentRepo,

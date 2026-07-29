@@ -68,7 +68,7 @@ class StubConfigApi implements SlackConfigApi {
   }
   exchangeResult: SlackOAuthExchangeResult = {
     ok: true,
-    result: { botToken: 'xoxb-from-oauth', appId: 'A1TEST', teamName: 'Acme', botUserId: 'U1' }
+    result: { botToken: 'xoxb-from-oauth', appId: 'A1TEST', teamId: 'T1TEST', teamName: 'Acme', botUserId: 'U1' }
   }
   rotateResult: SlackRotateResult = {
     ok: true,

@@ -45,7 +45,14 @@ export function AgentIconView({ icon, runtime, size }: { icon?: AgentIcon | null
         className="flex h-full w-full items-center justify-center rounded-[inherit]"
         style={{ background: icon.color }}
       >
-        <Icon name={icon.glyph} color="#fff" size={Math.round(size * 0.56)} strokeWidth={2} />
+        {icon.glyph === 'agentconnect' ? (
+          // The brand diamond (the built-in preset agents' fixed identity) — a
+          // multi-color mark, not a Lucide stroke glyph. Mirrors the CP's PNG
+          // renderer special case.
+          <LogoMark size={Math.round(size * 0.66)} />
+        ) : (
+          <Icon name={icon.glyph} color="#fff" size={Math.round(size * 0.56)} strokeWidth={2} />
+        )}
       </span>
     )
   }

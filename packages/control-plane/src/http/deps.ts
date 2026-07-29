@@ -22,6 +22,7 @@ import type {
   IntegrationChannelRepo,
   BotRepo,
   BotSecretStore,
+  BotCredentialWriter,
   AgentSecretStore,
   AgentConfigWriter,
   McpProviderRepo,
@@ -33,7 +34,9 @@ import type {
   ExternalMemoryConnectionSecretStore,
   ExternalMemoryGrantRepo,
   SlackInstallStore,
+  SlackPlatformInstallStore,
   SlackUserConfigStore,
+  PresetAgentStore,
   GithubInstallationRepo,
   AgentRepoAuthorizationRepo,
   DaemonLifecycleOpRepo,
@@ -58,6 +61,7 @@ import type { ExclusiveMutationGate } from '../orchestrator/exclusiveMutationGat
 import type { SessionEventSink } from '../events/sink.js'
 import type { HumanAuthConfig } from './plugins/auth.js'
 import type { SlackBotVerifier, SlackAppTokenVerifier } from './slack-identity.js'
+import type { SlackPlatformAppConfig } from '../config/slack-platform.js'
 import type { SlackConfigApi } from './slack-config-api.js'
 import type { TelegramBotNameResolver } from './telegram-identity.js'
 import type { DiscordBotVerifier } from './discord-identity.js'
@@ -141,6 +145,7 @@ export interface HttpDeps {
     bot: BotRepo
     /** The ONLY token read/write path (values pass the SecretCipher seam). */
     botSecret: BotSecretStore
+    botCredential: BotCredentialWriter
     /** The ONLY read/write path for agent write-only secret env vars — key names
      *  via `keys` for DTOs, values via `get` for wire projection only. */
     agentSecret: AgentSecretStore
@@ -165,8 +170,13 @@ export interface HttpDeps {
     externalMemoryGrant: ExternalMemoryGrantRepo
     /** Pending config-token auto-install sessions (§Tier B); holds secret material, never DTO'd. */
     slackInstall: SlackInstallStore
+    /** Pending platform-app installs (preset-agents.md §5.3): OAuth state → tenancy, no secrets. */
+    slackPlatformInstall: SlackPlatformInstallStore
     /** One org's stored Slack App Configuration token (§Tier B); holds secret material, never DTO'd. */
     slackUserConfig: SlackUserConfigStore
+    /** Per-org preset provisioning state (preset-agents.md §3.2) — read surface
+     *  (the platform Slack install's default bind target; later, the checklist). */
+    presetAgent: PresetAgentStore
     /** Deployment GitHub App installations (github-app workspaces); org-level infrastructure. */
     githubInstallation: GithubInstallationRepo
     /** Explicit non-workspace repo grants per agent (issue #457) — the agent
@@ -262,5 +272,9 @@ export interface HttpDeps {
   /** open-connector integration client (docs: connectors); absent ⇒ OPEN_CONNECTOR_URL
    *  unset, the connectors routes 404 and the console hides "Add connectors". */
   connectors?: ConnectorsClient
+  /** Platform-published (distributed) Slack app credentials (preset-agents.md §5.3);
+   *  absent ⇒ SLACK_PLATFORM_* unset, the install routes 404 and the console hides
+   *  "Add to Slack". Secret material — NEVER log or DTO. */
+  slackPlatformApp?: SlackPlatformAppConfig
   config: HttpServerConfig
 }

@@ -94,6 +94,27 @@ export const AppConfigSchema = z.object({
   // Externally-reachable CP origin used to render the daemon start command on
   // onboarding (C2). Unset ⇒ the command URL falls back to HOST:PORT.
   PUBLIC_CP_URL: z.string().url().optional(),
+  // ── Preset agents (docs/designs/preset-agents.md §3) — default ON ──
+  // Every org is born with the `agentconnect` general preset (org-creation seam)
+  // and existing orgs are backfilled once at boot. 'false' turns BOTH off for
+  // self-hosted fleets that don't want provisioned agents (the §9 deploy-time
+  // default; a per-org setting may refine this later). Explicit enum, not
+  // z.coerce.boolean() — same footgun as WAITLIST_MODE below.
+  PRESET_AGENTS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  // ── Platform-published (distributed) Slack app (preset-agents.md §5.3) — opt-in ──
+  // The deployment-level Slack app users "Add to Slack" via standard OAuth v2.
+  // ALL FOUR must be set to enable the feature; any unset ⇒ absent (the
+  // self-hosted default: the console offers only the quick-install funnel).
+  // MUST stay .optional() so an image bump never fail-fasts an existing deploy.
+  // The install path additionally hard-depends on PUBLIC_CP_URL (the OAuth
+  // callback origin) + PUBLIC_RELAY_URL + a connected relay (Events-API-only).
+  SLACK_PLATFORM_APP_ID: z.string().optional(), // A… — the distributed app's id
+  SLACK_PLATFORM_CLIENT_ID: z.string().optional(),
+  SLACK_PLATFORM_CLIENT_SECRET: z.string().optional(),
+  SLACK_PLATFORM_SIGNING_SECRET: z.string().optional(),
   // The MCP endpoint's dedicated public origin (agent-assistant.md §6.1), e.g.
   // https://mcp.example.test. Set ⇒ the canonical MCP resource URL IS this origin (root resource;
   // the URL users paste is just the host) and auth discovery uses the origin-root

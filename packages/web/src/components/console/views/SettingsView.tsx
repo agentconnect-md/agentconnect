@@ -741,6 +741,16 @@ function BotsCard({
                 </span>
                 <span className="mono truncate text-[12.5px]">{b.name}</span>
                 {b.prebuilt && <span className="badge bg-(--surface-active) text-(--text-tertiary)">prebuilt</span>}
+                {/* Workspace uninstalled the app / revoked its tokens (rc/bot-revoked):
+                    the credential is dead until a re-install refreshes it. */}
+                {b.revokedAt && (
+                  <span
+                    className="badge bg-(--status-error-soft) text-(--danger)"
+                    title="The Slack workspace uninstalled this app or revoked its tokens — re-install to reconnect"
+                  >
+                    revoked
+                  </span>
+                )}
                 {/* Transport tag (Slack) — makes the Sharable column's disabled state
                     self-explanatory: only an http bot may be shared. */}
                 {platform === 'slack' && (

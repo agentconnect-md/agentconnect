@@ -50,7 +50,7 @@ async function main(): Promise<void> {
   // 2. The single Prisma touch in the process; the only seam the bootstrap owns.
   const prisma = createPrisma(config.DATABASE_URL)
   if (!config.OIDC_ISSUER) {
-    await ensureDefaultTenant(prisma)
+    await ensureDefaultTenant(prisma, { presetAgents: config.PRESET_AGENTS_ENABLED })
   }
 
   // 3. Assemble the identical graph prod and tests share.

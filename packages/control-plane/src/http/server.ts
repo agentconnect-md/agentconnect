@@ -24,6 +24,7 @@ import { agentRepoRoutes } from './routes/agent-repos.js'
 import { webchatTokenRoutes } from './routes/webchat-token.js'
 import { integrationRoutes } from './routes/integrations.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './routes/slack-install.js'
+import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './routes/slack-platform-install.js'
 import { botRoutes } from './routes/bots.js'
 import { mcpProviderRoutes } from './routes/mcp-providers.js'
 import { skillSourceRoutes } from './routes/skill-sources.js'
@@ -177,6 +178,8 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       // Unauthenticated Slack OAuth callback (browser redirect; the pending row
       // rides the OAuth state) — same version-root placement as the GitHub one.
       await api.register(slackOauthCallbackRoutes(deps))
+      // Its platform-app sibling (preset-agents.md §5.3) — same placement.
+      await api.register(slackPlatformCallbackRoutes(deps))
       // Unauthenticated agent avatar PNG (Slack fetches it as the per-message
       // icon_url; no bearer, no org — only the agent UUID). Handed-out URL uses
       // the public `/v1` form, aliased below.
@@ -204,6 +207,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(webchatTokenRoutes(deps))
           await scope.register(integrationRoutes(deps))
           await scope.register(slackInstallRoutes(deps))
+          await scope.register(slackPlatformInstallRoutes(deps))
           await scope.register(slackConfigRoutes(deps))
           await scope.register(botRoutes(deps))
           await scope.register(mcpProviderRoutes(deps))
@@ -241,6 +245,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
     async (pub) => {
       await pub.register(githubCallbackRoutes(deps))
       await pub.register(slackOauthCallbackRoutes(deps))
+      await pub.register(slackPlatformCallbackRoutes(deps))
       await pub.register(agentIconRoutes(deps))
       await pub.register(orgIconRoutes(deps))
       await pub.register(mcpRoutes(deps))

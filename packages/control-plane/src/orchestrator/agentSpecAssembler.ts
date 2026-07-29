@@ -140,7 +140,9 @@ export function agentRecordToSpec(
     // deploy with no PUBLIC_CP_URL) replicates as a cleared override. Cache-busted
     // by lastModified so a re-picked glyph/color refetches on Slack's side.
     iconUrl: resolveAgentIconUrl(a.id, a.icon, iconBases ?? {}, a.lastModifiedAt.getTime()),
-    runtime: a.runtime,
+    // Specs are only assembled for PLACED agents, and placement requires a runtime
+    // (preset-agents.md §3.2) — the null→undefined map is a type-level formality.
+    runtime: a.runtime ?? undefined,
     // Always ship a string: a cleared description (null in the DB) replicates as ""
     // so the daemon overwrites a stale value rather than seeing an absent key ("leave
     // unchanged"). Uses "" not null as the empty sentinel because older daemons parse

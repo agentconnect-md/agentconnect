@@ -44,10 +44,13 @@ export function agentIconBackgroundColor(icon: AgentIcon | null): string {
 
 /**
  * The create-time default: a random glyph+color combo. `rand` is injectable so
- * tests are deterministic; production uses `Math.random`.
+ * tests are deterministic; production uses `Math.random`. The brand diamond is
+ * excluded — it is the built-in presets' fixed identity, never a random draw.
  */
+const RANDOM_GLYPHS = AGENT_ICON_GLYPHS.filter((g) => g !== 'agentconnect')
+
 export function randomGlyphIcon(rand: () => number = Math.random): AgentIcon {
-  const glyph = AGENT_ICON_GLYPHS[Math.floor(rand() * AGENT_ICON_GLYPHS.length)] ?? 'bot'
+  const glyph = RANDOM_GLYPHS[Math.floor(rand() * RANDOM_GLYPHS.length)] ?? 'bot'
   const color = AGENT_ICON_COLORS[Math.floor(rand() * AGENT_ICON_COLORS.length)] ?? AGENT_ICON_COLORS[0]
   return { kind: 'glyph', glyph, color }
 }

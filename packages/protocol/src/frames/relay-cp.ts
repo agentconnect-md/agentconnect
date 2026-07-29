@@ -537,6 +537,18 @@ export const RcBotAssign = z.object({
   // manual paste (xoxb + signing secret, no xapp to parse) may lack it, in which
   // case the relay falls back to a signing-secret verify-scan and learns it.
   apiAppId: z.string().optional(),
+  // Slack workspace id ("T…", == the Events API envelope `team_id`). REQUIRED for a
+  // distributed (platform-published) app: every workspace install shares one
+  // `api_app_id` AND one signing secret, so only the composite `(api_app_id,
+  // team_id)` key can demux — a signature scan would verify against every sibling
+  // install. When set, the relay demuxes this bot ONLY on the composite key.
+  teamId: z.string().optional(),
+  // Install GENERATION of the credentials below — advanced by the CP every time a
+  // fresh credential lands on this bot. The relay echoes it back in
+  // `rc/bot-revoked` so the CP can refuse a revocation observed under a credential
+  // that has since been replaced (Slack does not order lifecycle events). Absent
+  // ⇒ the CP applies revocations without the revision arm of the fence.
+  credentialRevision: z.number().int().nonnegative().optional(),
   secrets: RcBotSecrets,
   members: z.array(z.object({ daemonId: z.string().uuid(), agentIds: z.array(z.string().uuid()) })),
   agents: z.array(RcAgentDirEntry).default([]), // member directory (id→name) for the config modal
@@ -569,7 +581,16 @@ export type RcBotAssign = z.infer<typeof RcBotAssign>
 // C→R EVT — release a shared bot from this relay (bot un-shared, uninstalled, or
 // re-placed onto another relay): close the ingest, drop the routing table.
 export const RcBotUnassign = z.object({
-  botId: z.string().uuid()
+  botId: z.string().uuid(),
+  // The install GENERATION this release describes. A revocation decides and
+  // commits, then broadcasts — and a re-install can land in that gap, commit
+  // N+1, and broadcast its own assign FIRST. An unfenced unassign arriving after
+  // it would tear down the live ingest of a credential it never described. The
+  // relay therefore ignores an unassign whose revision is older than the
+  // assignment it currently holds. Absent ⇒ unconditional release (a transport
+  // flip, an un-share, the last install removed — none of which race a
+  // credential).
+  credentialRevision: z.number().int().nonnegative().optional()
 })
 export type RcBotUnassign = z.infer<typeof RcBotUnassign>
 
@@ -635,6 +656,49 @@ export const RcNoticePosted = z.object({
   channel: z.string().min(1)
 })
 export type RcNoticePosted = z.infer<typeof RcNoticePosted>
+
+// R→C REQ → rc/bot-revoked/ok — the workspace uninstalled the Slack app
+// (`app_uninstalled`) or revoked its tokens (`tokens_revoked`). The relay cannot serve the bot any longer (its
+// token is dead); the CP marks the Bot revoked, flips its integrations to
+// `revoked`, and unassigns the bot from the pool.
+//
+// NOT droppable, and the ONLY rc/* report that is acknowledged: Slack acks the
+// HTTP event before the relay's async handler runs, so it is never redelivered,
+// and a dead token gives the CP nothing to observe — assignment reconciliation
+// would just republish the stale active state forever. A send that the socket
+// accepted is not evidence the CP COMMITTED (its handler can fail on the DB), so
+// the relay keeps the report queued until `rc/bot-revoked/ok` comes back, and
+// replays it across reconnects. Applying the same report twice is a no-op.
+//
+// The two fence fields answer Slack's unordered lifecycle delivery: a delayed
+// event from a PRIOR install must not revoke the credential that replaced it.
+// The CP applies the revocation only if BOTH still hold (each arm is skipped when
+// its field is absent — fail-open, an uninstall must eventually take effect).
+export const RcBotRevoked = z.object({
+  botId: z.string().uuid(),
+  reason: z.enum(['app_uninstalled', 'tokens_revoked']),
+  // The `credentialRevision` this relay held for the bot when it observed the
+  // event (from `rc/bot-assign`). Catches a relay that had not yet received the
+  // re-install's assignment.
+  credentialRevision: z.number().int().nonnegative().optional(),
+  // Slack's envelope `event_time` in MILLISECONDS — when the uninstall actually
+  // HAPPENED. The load-bearing arm: a relay that already applied the newer
+  // assignment would echo the NEW revision, so only the event's own timestamp can
+  // reveal that it predates the current credential.
+  eventAtMs: z.number().int().nonnegative().optional()
+})
+export type RcBotRevoked = z.infer<typeof RcBotRevoked>
+
+// C→R REP (corr = rc/bot-revoked id) — the CP COMMITTED its decision for this
+// report: `applied: true` ⇒ the bot + its installs are now revoked; `false` ⇒ the
+// generation fence refused it (a re-install replaced that credential). Both are
+// terminal — the relay stops retrying either way. A missing reply means the CP
+// never committed, so the relay retries.
+export const RcBotRevokedOk = z.object({
+  botId: z.string().uuid(),
+  applied: z.boolean()
+})
+export type RcBotRevokedOk = z.infer<typeof RcBotRevokedOk>
 
 // R→C EVT (fire-and-forget) — INCREMENTAL conversation report (resource-visibility
 // §14.3): the relay saw an inbound DM to a shared bot that backs ≥1 gated
@@ -773,6 +837,8 @@ export const RELAY_CP_SCHEMAS = {
   'rc/set-channel-agent': RcSetChannelAgent,
   'rc/bot-channels': RcBotChannels,
   'rc/bot-conversation': RcBotConversation,
+  'rc/bot-revoked': RcBotRevoked,
+  'rc/bot-revoked/ok': RcBotRevokedOk,
   'rc/notice-posted': RcNoticePosted,
   'rc/thread-assign': RcThreadAssign,
   'rc/thread-lookup': RcThreadLookup,
@@ -816,6 +882,8 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/set-channel-agent', RELAY_CP_SCHEMAS['rc/set-channel-agent']),
   frameSchema('rc/bot-channels', RELAY_CP_SCHEMAS['rc/bot-channels']),
   frameSchema('rc/bot-conversation', RELAY_CP_SCHEMAS['rc/bot-conversation']),
+  frameSchema('rc/bot-revoked', RELAY_CP_SCHEMAS['rc/bot-revoked']),
+  frameSchema('rc/bot-revoked/ok', RELAY_CP_SCHEMAS['rc/bot-revoked/ok']),
   frameSchema('rc/notice-posted', RELAY_CP_SCHEMAS['rc/notice-posted']),
   frameSchema('rc/thread-assign', RELAY_CP_SCHEMAS['rc/thread-assign']),
   frameSchema('rc/thread-lookup', RELAY_CP_SCHEMAS['rc/thread-lookup']),

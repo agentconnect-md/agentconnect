@@ -57,6 +57,11 @@ function toBotRecord(b: BotJoined): BotRecord {
     name: b.name,
     prebuilt: b.prebuilt,
     slackAppId: b.slackAppId,
+    teamId: b.teamId,
+    botUserId: b.botUserId,
+    revokedAt: b.revokedAt,
+    credentialRevision: b.credentialRevision,
+    credentialInstalledAt: b.credentialInstalledAt,
     discordAppId: b.discordAppId,
     feishuRegion: (b.feishuRegion as FeishuRegion | null) ?? null,
     shareable: b.shareable,
@@ -86,10 +91,16 @@ export class PgBotRepo implements BotRepo {
         name: input.name,
         ...(input.prebuilt !== undefined ? { prebuilt: input.prebuilt } : {}),
         ...(input.slackAppId ? { slackAppId: input.slackAppId } : {}),
+        ...(input.teamId ? { teamId: input.teamId } : {}),
+        ...(input.botUserId ? { botUserId: input.botUserId } : {}),
         ...(input.discordAppId ? { discordAppId: input.discordAppId } : {}),
         ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {}),
         ...(input.shareable !== undefined ? { shareable: input.shareable } : {}),
         ...(input.transport !== undefined ? { transport: input.transport } : {}),
+        // Generation 1 (the column default) lands NOW — so a lifecycle event that
+        // predates this credential is fenced out even on a bot's first install.
+        // Legacy rows keep a null stamp and fall back to the revision arm alone.
+        credentialInstalledAt: new Date(),
         ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
       },
       include: botInclude
@@ -137,6 +148,48 @@ export class PgBotRepo implements BotRepo {
       orderBy: { createdAt: 'asc' }
     })
     return rows.map(toBotRecord)
+  }
+
+  async getBySlackAppTeam(slackAppId: string, teamId: string): Promise<BotRecord | null> {
+    // Cross-org on purpose: (slackAppId, teamId) is globally unique — a workspace
+    // install of a distributed app binds to exactly one org, and the platform
+    // callback must find it wherever it lives to refuse a second org's claim.
+    const b = await this.db.bot.findUnique({
+      where: { slackAppId_teamId: { slackAppId, teamId } },
+      include: botInclude
+    })
+    return b ? toBotRecord(b) : null
+  }
+
+  async bumpCredential(id: BotId, at: Date): Promise<number> {
+    // One statement: the generation advance, its timestamp, and clearing the
+    // revocation marker are the SAME event ("a fresh credential landed"). A
+    // reader can never observe a live bot whose generation still matches a
+    // report that was already in flight for the dead credential.
+    const row = await this.db.bot.update({
+      where: { id },
+      data: { credentialRevision: { increment: 1 }, credentialInstalledAt: at, revokedAt: null },
+      select: { credentialRevision: true }
+    })
+    return row.credentialRevision
+  }
+
+  async revokeIfCurrent(id: BotId, at: Date, fence: { revision?: number; eventAt?: Date }): Promise<boolean> {
+    // CAS in the WHERE clause — no read-then-write window. Both predicates are
+    // conjunctive and each is skipped when the report didn't carry it (fail-open:
+    // an uninstall must eventually take effect). `credentialInstalledAt: null`
+    // (a bot predating the fence) also passes the timestamp arm via the OR.
+    const { count } = await this.db.bot.updateMany({
+      where: {
+        id,
+        ...(fence.revision !== undefined ? { credentialRevision: fence.revision } : {}),
+        ...(fence.eventAt
+          ? { OR: [{ credentialInstalledAt: null }, { credentialInstalledAt: { lt: fence.eventAt } }] }
+          : {})
+      },
+      data: { revokedAt: at }
+    })
+    return count > 0
   }
 
   async delete(id: BotId): Promise<void> {
@@ -354,6 +407,21 @@ export class PgIntegrationRepo implements IntegrationRepo {
       orderBy: { createdAt: 'asc' }
     })
     return rows.map(toRecord)
+  }
+
+  async markRevokedForBot(botId: BotId): Promise<IntegrationId[]> {
+    // Read-then-flip inside one statement pair: the ids are needed by the caller
+    // (spec removal per daemon), and updateMany returns only a count.
+    const rows = await this.db.integration.findMany({
+      where: { botId, status: 'active' },
+      select: { id: true }
+    })
+    if (rows.length === 0) return []
+    await this.db.integration.updateMany({
+      where: { id: { in: rows.map((r) => r.id) } },
+      data: { status: 'revoked' }
+    })
+    return rows.map((r) => IntegrationId(r.id))
   }
 
   async delete(id: IntegrationId): Promise<void> {

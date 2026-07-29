@@ -89,6 +89,17 @@ function overridesOf(a: Agent): RuntimeOverrides {
   return (a.runtimeOverrides as RuntimeOverrides | null) ?? {}
 }
 
+// Preset one-shot settle (preset-agents.md §3.2): the FIRST placement of any
+// kind — and an explicit delete — permanently stamps `placementSettledAt`, so
+// M1 auto-placement never fights a user who placed, moved, or removed the
+// preset. No-op for ordinary agents (no preset_agent row references them).
+async function settlePresetPlacement(tx: Prisma.TransactionClient, agentId: string): Promise<void> {
+  await tx.presetAgent.updateMany({
+    where: { agentId, placementSettledAt: null },
+    data: { placementSettledAt: new Date() }
+  })
+}
+
 function workspaceOf(a: Agent): AgentWorkspace {
   if (a.workspaceMode === 'github') {
     return {
@@ -549,6 +560,7 @@ export class PgAgentRepo implements AgentRepo {
         where: { id: agentId },
         data: { daemonId, status: daemonId ? 'active' : 'inactive' }
       })
+      if (daemonId) await settlePresetPlacement(tx, agentId)
       if (current.daemonId !== daemonId) {
         await tx.hookDef.updateMany({
           where: { agentId },
@@ -579,6 +591,7 @@ export class PgAgentRepo implements AgentRepo {
           },
           include: withUsers
         })
+        if (daemonId) await settlePresetPlacement(tx, agentId)
         if (expectedDaemonId !== daemonId) {
           await tx.hookDef.updateMany({
             where: { agentId },
@@ -608,6 +621,9 @@ export class PgAgentRepo implements AgentRepo {
         new Date(),
         'failure'
       )
+      // Deleting a preset is the explicit opt-out — settle BEFORE the delete
+      // (the FK SetNull would orphan the row from this agentId lookup).
+      await settlePresetPlacement(tx, agentId)
       await tx.agent.delete({ where: { id: agentId } })
       return removedHooks
     })

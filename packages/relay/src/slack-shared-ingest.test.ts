@@ -457,6 +457,89 @@ describe('SlackSharedIngest channel membership events', () => {
 
     expect(onChannelsChanged).toHaveBeenCalledWith([{ id: 'C1', name: 'remaining' }])
   })
+
+  // App lifecycle (preset-agents.md §5.3): the workspace pulled the app / revoked
+  // its tokens. Not a chat event — it has no user/bot_id, so without the explicit
+  // branch the routable-event filters would silently drop it.
+  it.each(['app_uninstalled', 'tokens_revoked'] as const)('reports %s upstream as a bot revocation', async (type) => {
+    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
+    const onBotRevoked = vi.fn()
+    const onMessage = vi.fn(async () => {})
+    const ingest = new SlackSharedIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      deps(web, { onBotRevoked, onMessage })
+    )
+    await ingest.start()
+
+    // The envelope's `event_time` rides along (already ms here): the CP fences a
+    // revocation that predates the credential it would kill.
+    await ingest.handleEvent({ type }, 1_700_000_000_000)
+
+    expect(onBotRevoked).toHaveBeenCalledWith(type, 1_700_000_000_000)
+    expect(onMessage).not.toHaveBeenCalled()
+  })
+
+  // The backstop the in-memory retry queue cannot be: if the `app_uninstalled`
+  // event itself was lost (Slack acked it before the handler ran and never
+  // redelivers), the next assign / pod restart still probes auth.test and finds
+  // the credential dead.
+  it.each(['account_inactive', 'token_revoked', 'invalid_auth'])(
+    'reports a revocation when auth.test says the credential is dead (%s)',
+    async (code) => {
+      const web = {
+        auth: { test: vi.fn(async () => Promise.reject(Object.assign(new Error(code), { data: { error: code } }))) }
+      }
+      const onBotRevoked = vi.fn()
+      const ingest = new SlackSharedIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
+
+      await ingest.start()
+
+      // No occurrence time: we don't know WHEN the workspace pulled the app. The
+      // revision arm is the right fence anyway — it names the credential just
+      // probed.
+      expect(onBotRevoked).toHaveBeenCalledWith('tokens_revoked')
+    }
+  )
+
+  // A false positive here would revoke a LIVE bot, so the match must stay narrow.
+  it.each(['ratelimited', 'missing_scope', 'internal_error'])(
+    'does NOT report a revocation for the transient auth.test failure %s',
+    async (code) => {
+      const web = {
+        auth: { test: vi.fn(async () => Promise.reject(Object.assign(new Error(code), { data: { error: code } }))) }
+      }
+      const onBotRevoked = vi.fn()
+      const ingest = new SlackSharedIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
+
+      await ingest.start()
+
+      expect(onBotRevoked).not.toHaveBeenCalled()
+    }
+  )
+
+  it('does NOT report a revocation for a network error with no Slack error code', async () => {
+    const web = { auth: { test: vi.fn(async () => Promise.reject(new Error('ECONNRESET'))) } }
+    const onBotRevoked = vi.fn()
+    const ingest = new SlackSharedIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
+
+    await ingest.start()
+
+    expect(onBotRevoked).not.toHaveBeenCalled()
+  })
+
+  it('reports a revocation with no occurrence time when the envelope omitted event_time', async () => {
+    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
+    const onBotRevoked = vi.fn()
+    const ingest = new SlackSharedIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
+    await ingest.start()
+
+    await ingest.handleEvent({ type: 'app_uninstalled' })
+
+    // Fail-open at the CP (an uninstall must eventually take effect), so the
+    // relay reports it rather than withholding an unfenced revocation.
+    expect(onBotRevoked).toHaveBeenCalledWith('app_uninstalled', undefined)
+  })
 })
 
 // Mirrors the daemon's slack/normalize.ts: a group DM is classified but never

@@ -11,9 +11,10 @@ import {
 import { buildAgentIconSvg, GLYPH_SVG_INNER } from './agent-icon-render.js'
 
 describe('randomGlyphIcon', () => {
-  it('returns a glyph icon drawn from the curated vocabularies', () => {
+  it('returns a glyph icon drawn from the curated vocabularies — never the brand mark', () => {
     const icon = randomGlyphIcon(() => 0)
-    expect(icon).toEqual({ kind: 'glyph', glyph: AGENT_ICON_GLYPHS[0], color: AGENT_ICON_COLORS[0] })
+    // AGENT_ICON_GLYPHS[0] is the reserved brand diamond; the random pool starts after it.
+    expect(icon).toEqual({ kind: 'glyph', glyph: 'bot', color: AGENT_ICON_COLORS[0] })
   })
 
   it('maps rand near 1 to the last entries without overflowing', () => {
@@ -21,6 +22,7 @@ describe('randomGlyphIcon', () => {
     expect(icon.kind).toBe('glyph')
     if (icon.kind === 'glyph') {
       expect(AGENT_ICON_GLYPHS).toContain(icon.glyph)
+      expect(icon.glyph).not.toBe('agentconnect')
       expect(AGENT_ICON_COLORS).toContain(icon.color)
     }
   })
@@ -63,6 +65,13 @@ describe('parseAgentIcon', () => {
 describe('glyph vocabulary', () => {
   it('the PNG renderer covers every curated glyph (enum ↔ renderer aligned)', () => {
     for (const g of AGENT_ICON_GLYPHS) expect(GLYPH_SVG_INNER[g], `missing SVG for "${g}"`).toBeTruthy()
+  })
+
+  it('renders the brand diamond with its own facet fills, not the white-stroke treatment', () => {
+    const svg = buildAgentIconSvg({ kind: 'glyph', glyph: 'agentconnect', color: '#1a212b' }, null)
+    expect(svg).toContain('#f2c64a') // a facet fill survives
+    expect(svg).toContain('fill="#1a212b"') // the plate keeps the chosen color
+    expect(svg).not.toContain('stroke="#fff"')
   })
 })
 

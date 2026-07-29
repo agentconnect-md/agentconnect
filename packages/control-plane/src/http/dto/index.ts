@@ -6,6 +6,7 @@
  */
 import { z } from 'zod'
 import { Cron } from 'croner'
+import { RESERVED_AGENT_SLUGS } from '../../domain/reserved-agent-slugs.js'
 import {
   AgentMemoryBinding,
   AgentPermissionRequestRecord,
@@ -333,6 +334,10 @@ const AgentSlug = z
   .min(1)
   .max(63)
   .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'name must be a slug: lowercase letters, digits, and single hyphens')
+  // Preset-agent slugs are not impersonable (preset-agents.md §3.3): provisioning
+  // writes them through its own seam, never this DTO, and existing rows are
+  // grandfathered (this validation is create-time only; the slug is immutable).
+  .refine((s) => !RESERVED_AGENT_SLUGS.has(s), 'this name is reserved for AgentConnect built-in agents')
 
 /** A legal environment-variable name — the daemon passes these to the spawned ACP child. */
 const ENV_VAR_NAME = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'invalid env var name')
@@ -540,7 +545,9 @@ export const AgentDto = z.object({
   // when no object store is configured. Distinct from the daemon-facing AgentSpec.iconUrl.
   iconUrl: z.string().nullable(),
   description: z.string().nullable(),
-  runtime: z.string(),
+  /** Null ⇒ deferred exec config (an unplaced preset, preset-agents.md §3.2):
+   *  the console renders "—" and choosing a runtime happens at placement. */
+  runtime: z.string().nullable(),
   model: z.string().nullable(),
   reasoningEffort: z.string().nullable(),
   outputMode: z.string().nullable(),
@@ -1132,6 +1139,10 @@ export const SlackConfigDto = z.object({
    *  the console shows the Events API request_url to paste into Slack. Null when
    *  PUBLIC_RELAY_URL is unset. */
   relayPublicUrl: z.string().nullable(),
+  /** The platform-published "Add to Slack" app is installable here: SLACK_PLATFORM_*
+   *  + PUBLIC_CP_URL are configured AND the relay precondition above holds
+   *  (preset-agents.md §5.3). Drives the console's one-click Slack entry. */
+  platformInstallAvailable: z.boolean(),
   updatedAt: z.string().nullable() // ISO-8601 of the caller's last save/rotate; null when unconfigured
 })
 
@@ -1143,6 +1154,37 @@ export const SlackAppStartDto = z.object({
   // The transport the app was CREATED as — the console pins its later steps to this
   // (not to a still-editable selector), so a post-start switch can't drive the wrong path.
   transport: z.enum(['socket', 'http'])
+})
+
+/** `POST /integrations/slack/platform-install` (preset-agents.md §5.3) — mint a
+ *  pending install of the PLATFORM-published Slack app. The target defaults to
+ *  the org's `agentconnect` preset agent; an unplaced target is fine (http
+ *  delivery converges at placement). */
+export const SlackPlatformInstallStartBody = z.object({
+  agentId: z.string().uuid().optional()
+})
+
+/** The pending platform install: its state id + the slack.com authorize URL. */
+export const SlackPlatformInstallStartDto = z.object({
+  id: z.string(), // opaque pending-install id (doubles as the OAuth state)
+  installUrl: z.string() // https://slack.com/oauth/v2/authorize?… the console opens
+})
+
+/**
+ * `GET /integrations/slack/platform-install/:id` — the console's completion
+ * poll while the Slack authorize tab is open. The row's own terminal state is
+ * the signal: a successful RE-authorization of a workspace the agent already
+ * has rotates the token WITHOUT creating an integration, so watching the
+ * integration list for growth would hang forever on that (common) path.
+ */
+export const SlackPlatformInstallStatusDto = z.object({
+  id: z.string(),
+  status: z.enum(['pending', 'completed', 'failed']),
+  /** Short code identifying the failure ('denied' | 'expired' | 'workspace_taken' |
+   *  'error') — the console renders a message from it. Null unless `failed`. */
+  failureReason: z.string().nullable(),
+  /** The workspace's bot once completed (console deep-link); null otherwise. */
+  botId: z.string().nullable()
 })
 
 /** `GET /integrations/slack/app/:installId` — funnel progress poll. NEVER tokens. */
@@ -1207,6 +1249,11 @@ export const BotDto = z.object({
   lastUsedAt: z.string().nullable(), // ISO-8601
   /** Agent the bot was last freed from ("freed from support-bot"). */
   freedFromAgent: z.string().nullable(),
+  /** Slack workspace id (T…) — set for platform-app installs (preset-agents.md §5.3). */
+  teamId: z.string().nullable(),
+  /** The workspace uninstalled the app / revoked its tokens (`rc/bot-revoked`);
+   *  a platform-app re-install clears it. ISO-8601, null ⇒ live. */
+  revokedAt: z.string().nullable(),
   createdAt: z.string() // ISO-8601
 })
 export const BotListDto = z.array(BotDto)

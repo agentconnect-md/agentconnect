@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type {
   RdAck,
@@ -38,6 +39,7 @@ const deps = (over: Partial<SharedBotManagerDeps> = {}): SharedBotManagerDeps =>
   reportBotChannels: vi.fn(() => true),
   reportBotConversation: vi.fn(() => true),
   reportNoticePosted: vi.fn(() => true),
+  reportBotRevoked: vi.fn(() => true),
   selfRelayId: () => SELF_RELAY,
   reportThreadAssign: vi.fn(() => true),
   lookupThread: vi.fn(async () => ({ botId: BOT_ID, sessionKey: '', target: null }) as RcThreadLookupOk),
@@ -82,6 +84,7 @@ interface ManagerInternals {
     }
   >
   reportChannels(snapshot: RcBotChannels): void
+  reportRevoked(m: { botId: string; reason: 'app_uninstalled' | 'tokens_revoked'; credentialRevision?: number }): void
   selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
   forwardSessionAction(botId: string, action: SharedSlackSessionAction): void
   forwardSessionShortcut(botId: string, shortcut: SharedSlackSessionShortcut): boolean
@@ -424,6 +427,179 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
     expect(reportBotChannels).toHaveBeenLastCalledWith(latest)
     manager.flushPendingReports()
     expect(reportBotChannels).toHaveBeenCalledTimes(3)
+  })
+
+  // A revocation is NOT droppable like the other best-effort reports: Slack acked
+  // the HTTP event before the relay's handler ran and never redelivers it, a dead
+  // token gives the CP nothing to probe, and assignment reconciliation would just
+  // republish the stale active state — the console would show an uninstalled app
+  // as live forever.
+  it('retries an unacknowledged revocation on a READY link — no reconnect needed', async () => {
+    vi.useFakeTimers()
+    try {
+      let committed = false
+      const reportBotRevoked = vi.fn(async () => committed)
+      const manager = new SharedBotManager(deps({ reportBotRevoked }))
+      const internals = manager as unknown as ManagerInternals
+      const report = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 3 }
+
+      // The CP answers a retryable error (transient DB failure) but the socket
+      // stays READY — onReady never fires, so the manager's own timer must drive it.
+      internals.reportRevoked(report)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(5_000) // first backoff step
+      expect(reportBotRevoked).toHaveBeenCalledTimes(2)
+
+      committed = true
+      await vi.advanceTimersByTimeAsync(10_000) // second step — acked now
+      expect(reportBotRevoked).toHaveBeenCalledTimes(3)
+      expect(reportBotRevoked).toHaveBeenLastCalledWith(report)
+
+      await vi.advanceTimersByTimeAsync(120_000) // queue drained ⇒ timer disarmed
+      expect(reportBotRevoked).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a delayed OLDER revoke cannot supersede the newer queued report', async () => {
+    vi.useFakeTimers()
+    try {
+      const calls: Array<{ credentialRevision?: number }> = []
+      let commitNext = false
+      const reportBotRevoked = vi.fn(async (m: { credentialRevision?: number }) => {
+        calls.push(m)
+        return commitNext
+      })
+      const manager = new SharedBotManager(deps({ reportBotRevoked }))
+      const internals = manager as unknown as ManagerInternals
+      const current = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 2 }
+      const delayed = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 1 }
+
+      // The CURRENT generation's report fails transiently — it stays queued.
+      internals.reportRevoked(current)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(1)
+
+      // Slack delivers the PRE-reinstall event late. It must neither replace the
+      // queued report (its terminal applied:false ack would clear the queue and
+      // lose the live revocation) nor be sent on its own (the newer subsumes it).
+      internals.reportRevoked(delayed)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(1)
+
+      // The retry timer re-drives the CURRENT report, which now commits.
+      commitNext = true
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(2)
+      expect(calls[1]).toEqual(current)
+
+      await vi.advanceTimersByTimeAsync(120_000) // drained — nothing left to retry
+      expect(reportBotRevoked).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a queued no-timestamp probe report outranks a same-generation timestamped event', async () => {
+    vi.useFakeTimers()
+    try {
+      let commitNext = false
+      const reportBotRevoked = vi.fn(async () => commitNext)
+      const manager = new SharedBotManager(deps({ reportBotRevoked }))
+      const internals = manager as unknown as ManagerInternals
+      // The auth.test dead-credential backstop: exact current revision, NO
+      // eventAtMs — "dead NOW", unconditional on the CP's time arm.
+      const probe = { botId: BOT_ID, reason: 'tokens_revoked' as const, credentialRevision: 2 }
+      // A delayed lifecycle event of the SAME generation whose timestamp may
+      // predate the credential — the CP's time arm can refuse it terminally.
+      const delayed = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 2, eventAtMs: 1_000 }
+
+      internals.reportRevoked(probe) // transient failure ⇒ stays queued
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(1)
+
+      // The weaker, refusable report must not displace the probe.
+      internals.reportRevoked(delayed)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(1)
+
+      // The retry re-drives the PROBE report, which commits.
+      commitNext = true
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(2)
+      expect(reportBotRevoked).toHaveBeenLastCalledWith(probe)
+
+      // …while an incoming NO-timestamp report may replace a queued timestamped
+      // one (it is at least as strong).
+      internals.reportRevoked(delayed)
+      internals.reportRevoked(probe)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotRevoked).toHaveBeenLastCalledWith(probe)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('same-generation ordering falls back to the event timestamp', async () => {
+    vi.useFakeTimers()
+    try {
+      const reportBotRevoked = vi.fn(async () => false) // keep everything queued
+      const manager = new SharedBotManager(deps({ reportBotRevoked }))
+      const internals = manager as unknown as ManagerInternals
+      const newer = { botId: BOT_ID, reason: 'tokens_revoked' as const, credentialRevision: 2, eventAtMs: 2_000 }
+      const older = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 2, eventAtMs: 1_000 }
+
+      internals.reportRevoked(newer)
+      internals.reportRevoked(older) // same generation, earlier occurrence — dropped
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(1)
+
+      // The retry still drives the newer one.
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(2)
+      expect(reportBotRevoked).toHaveBeenLastCalledWith(newer)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('an old in-flight ack cannot erase the NEWER queued report for the same bot', async () => {
+    vi.useFakeTimers()
+    try {
+      const resolvers: Array<(v: boolean) => void> = []
+      const reportBotRevoked = vi.fn(() => new Promise<boolean>((resolve) => resolvers.push(resolve)))
+      const manager = new SharedBotManager(deps({ reportBotRevoked }))
+      const internals = manager as unknown as ManagerInternals
+      const first = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 1 }
+      // A reinstall bumped the generation and a SECOND revoke observed it — this
+      // replaces the queue entry while the first report is still in flight.
+      const second = { botId: BOT_ID, reason: 'tokens_revoked' as const, credentialRevision: 2 }
+
+      internals.reportRevoked(first)
+      internals.reportRevoked(second)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(2)
+
+      // The FIRST report's terminal ack lands late. Deleting by botId alone here
+      // would erase `second` — the only signal its dead credential ever produced.
+      resolvers[0]!(true)
+      await vi.advanceTimersByTimeAsync(0)
+
+      // Still queued, and the retry timer re-drives it.
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(3)
+      expect(reportBotRevoked).toHaveBeenLastCalledWith(second)
+
+      // Its own ack (any of the in-flight copies) clears it for good.
+      resolvers[1]!(true)
+      resolvers[2]!(true)
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('pulls the persisted owner from the CP on an un-mentioned thread follow-up and forwards it', async () => {
@@ -804,5 +980,153 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
     await internals.forward(BOT_ID, dm())
     expect(reportBotConversation).not.toHaveBeenCalled()
     expect(ingest.postText).not.toHaveBeenCalled()
+  })
+})
+
+// ── resolveVerified — the (api_app_id, team_id) composite demux ─────────────
+//
+// Every install of a DISTRIBUTED (platform-published) app shares one app id AND
+// one signing secret, so the HMAC can authenticate but cannot discriminate —
+// only the composite key may route, and the verify-scan must never hand one
+// workspace's events to a sibling install (a cross-tenant leak, not a miss).
+describe('SharedBotManager.resolveVerified composite demux', () => {
+  const BOT_T1 = 'aaaaaaaa-1111-4111-8111-111111111111'
+  const BOT_T2 = 'aaaaaaaa-2222-4222-8222-222222222222'
+  const BOT_LEGACY = 'aaaaaaaa-3333-4333-8333-333333333333'
+  const PLATFORM_APP = 'APLATFORM'
+  const SHARED_SECRET = 'shared-platform-signing-secret'
+  const NOW = 1_720_000_000_000
+  const ts = String(Math.floor(NOW / 1000))
+  const body = Buffer.from(JSON.stringify({ type: 'event_callback', event_id: 'Ev1' }))
+  const sig = (secret: string) => `v0=${createHmac('sha256', secret).update(`v0:${ts}:${body}`).digest('hex')}`
+
+  interface DemuxInternals {
+    router: SharedBotRouter
+    ingests: Map<string, { signingSecret: string; stop(): Promise<void> }>
+    demuxByApiApp: Map<string, string>
+    demuxByAppTeam: Map<string, string>
+    appTeamKeyByBot: Map<string, string>
+  }
+
+  /** Register a bot the way `assign()` would, minus the network-touching ingest
+   *  start: router assignment + a secret-bearing ingest stand-in + (for a
+   *  team-scoped bot) the assign-derived composite index entries. */
+  const addBot = (
+    manager: SharedBotManager,
+    botId: string,
+    signingSecret: string,
+    opts: { apiAppId?: string; teamId?: string; indexed?: boolean } = {}
+  ) => {
+    const internals = manager as unknown as DemuxInternals
+    internals.ingests.set(botId, { signingSecret, stop: async () => {} })
+    internals.router.upsert({
+      ...assignment(),
+      botId,
+      secrets: { botToken: 'xoxb', signingSecret },
+      ...(opts.apiAppId ? { apiAppId: opts.apiAppId } : {}),
+      ...(opts.teamId ? { teamId: opts.teamId } : {})
+    })
+    if (opts.apiAppId && opts.teamId && opts.indexed !== false) {
+      internals.demuxByAppTeam.set(`${opts.apiAppId}\u0000${opts.teamId}`, botId)
+      internals.appTeamKeyByBot.set(botId, `${opts.apiAppId}\u0000${opts.teamId}`)
+    }
+    if (opts.apiAppId && !opts.teamId) internals.demuxByApiApp.set(opts.apiAppId, botId)
+  }
+
+  const resolve = (manager: SharedBotManager, over: { apiAppId?: string; teamId?: string; secret?: string }) =>
+    manager.resolveVerified({
+      ...(over.apiAppId ? { apiAppId: over.apiAppId } : {}),
+      ...(over.teamId ? { teamId: over.teamId } : {}),
+      timestamp: ts,
+      rawBody: body,
+      signature: sig(over.secret ?? SHARED_SECRET)
+    })
+
+  it('demuxes sibling installs of one distributed app by (api_app_id, team_id)', () => {
+    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1' })
+    addBot(manager, BOT_T2, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T2' })
+
+    const internals = manager as unknown as DemuxInternals
+    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T1' })).toBe(internals.ingests.get(BOT_T1))
+    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T2' })).toBe(internals.ingests.get(BOT_T2))
+  })
+
+  it('never serves a team-scoped bot to another workspace via the signature scan', () => {
+    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    // Composite index deliberately EMPTY (indexed:false) — only the router knows
+    // the team ids, so resolution falls through to the verify-scan, where the
+    // same-secret sibling MUST be skipped on the team-id guard.
+    addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1', indexed: false })
+    addBot(manager, BOT_T2, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T2', indexed: false })
+
+    const internals = manager as unknown as DemuxInternals
+    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T2' })).toBe(internals.ingests.get(BOT_T2))
+    // The scan hit must not poison the app-only learned map for a team-scoped bot.
+    expect(internals.demuxByApiApp.has(PLATFORM_APP)).toBe(false)
+  })
+
+  it('fails closed when a distributed-app envelope carries no team id', () => {
+    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1' })
+    addBot(manager, BOT_T2, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T2' })
+
+    // Both siblings verify the HMAC; without a team id there is no safe pick.
+    expect(resolve(manager, { apiAppId: PLATFORM_APP })).toBeUndefined()
+  })
+
+  it('keeps the legacy app-only fast path and scan learning for team-less bots', () => {
+    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    addBot(manager, BOT_LEGACY, 'legacy-secret', {}) // no app id stamped — scan learns it
+
+    const internals = manager as unknown as DemuxInternals
+    expect(resolve(manager, { apiAppId: 'ALEGACY', secret: 'legacy-secret' })).toBe(internals.ingests.get(BOT_LEGACY))
+    expect(internals.demuxByApiApp.get('ALEGACY')).toBe(BOT_LEGACY)
+    // A team-scoped envelope still resolves the legacy bot (guard only skips
+    // bots whose ASSIGNMENT carries a different team id).
+    expect(resolve(manager, { apiAppId: 'ALEGACY', teamId: 'T9', secret: 'legacy-secret' })).toBe(
+      internals.ingests.get(BOT_LEGACY)
+    )
+  })
+
+  // A revocation decides, commits, then broadcasts — and a re-install can land in
+  // that gap, commit N+1, and broadcast its assign FIRST. Applying the stale
+  // release would tear down the ingest of a credential it never described.
+  it('unassign carrying an OLDER generation than the held assignment is ignored', async () => {
+    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    const internals = manager as unknown as DemuxInternals
+    internals.ingests.set(BOT_T1, { signingSecret: SHARED_SECRET, stop: async () => {} })
+    internals.router.upsert({
+      ...assignment(),
+      botId: BOT_T1,
+      secrets: { botToken: 'xoxb', signingSecret: SHARED_SECRET },
+      apiAppId: PLATFORM_APP,
+      teamId: 'T1',
+      credentialRevision: 2 // the re-install's assign already landed here
+    })
+    internals.demuxByAppTeam.set(`${PLATFORM_APP}\u0000T1`, BOT_T1)
+
+    await manager.unassign(BOT_T1, 1) // the revoke of the REPLACED credential
+
+    // Still serving: routing table, ingest, and demux index all intact.
+    expect(internals.router.get(BOT_T1)).toBeDefined()
+    expect(internals.ingests.has(BOT_T1)).toBe(true)
+    expect(internals.demuxByAppTeam.size).toBe(1)
+
+    // The matching generation still releases it.
+    await manager.unassign(BOT_T1, 2)
+    expect(internals.router.get(BOT_T1)).toBeUndefined()
+    expect(internals.ingests.has(BOT_T1)).toBe(false)
+  })
+
+  it('unassign drops the composite index entries', async () => {
+    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1' })
+
+    await manager.unassign(BOT_T1)
+    const internals = manager as unknown as DemuxInternals
+    expect(internals.demuxByAppTeam.size).toBe(0)
+    expect(internals.appTeamKeyByBot.size).toBe(0)
+    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T1' })).toBeUndefined()
   })
 })

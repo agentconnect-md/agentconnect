@@ -29,7 +29,10 @@ export function slackAppIdFromAppToken(appToken: string): string | undefined {
 
 export interface InstallSlackBotArgs {
   orgId: OrgId
-  /** The owning agent — MUST already be placed (`daemonId` non-null); caller checks. */
+  /** The owning agent. For SOCKET transport it MUST already be placed (`daemonId`
+   *  non-null; the daemon owns the socket) — caller checks. An http-transport
+   *  install tolerates an unplaced agent: the relay assignment simply defers until
+   *  placement re-converges the shared bot (preset-agents.md §5.3). */
   agent: AgentRecord
   name: string
   botToken: string // xoxb-…
@@ -38,6 +41,13 @@ export interface InstallSlackBotArgs {
   transport?: SlackTransport
   /** Public Slack app id learned from OAuth/config-token setup or bot-token verification. */
   slackAppId?: string
+  /** Slack workspace id ("T…") — platform-app installs persist it as the composite
+   *  relay demux key (Bot.teamId). Public metadata. */
+  teamId?: string
+  /** Slack bot user id from the OAuth exchange. Public metadata. */
+  botUserId?: string
+  /** Provisioned by AgentConnect (the platform app), not a console user. */
+  prebuilt?: boolean
   /** xapp-… — required for socket transport (Socket Mode); absent for http. */
   appToken?: string
   /** Slack signing secret — required for http transport (Events API verification). */
@@ -65,7 +75,6 @@ export async function installNewSlackBot(
   // on one appToken). The console already hides the toggle for socket; this is the
   // load-bearing guarantee behind it (no 400 needed at the call sites).
   const shareable = transport === 'http' && args.shareable === true
-  const daemonId = agent.daemonId! // caller guarantees placement
 
   // Socket mode can derive the id from xapp; HTTP mode receives it from the
   // config-token funnel or bot-token verification. Keep the derivation as the
@@ -79,6 +88,9 @@ export async function installNewSlackBot(
     name,
     transport,
     ...(slackAppId ? { slackAppId } : {}),
+    ...(args.teamId ? { teamId: args.teamId } : {}),
+    ...(args.botUserId ? { botUserId: args.botUserId } : {}),
+    ...(args.prebuilt ? { prebuilt: true } : {}),
     ...(shareable ? { shareable: true } : {}),
     ...(createdByUserId ? { createdByUserId } : {})
   })
@@ -113,6 +125,7 @@ export async function installNewSlackBot(
   // Classic: push the full spec (metadata + tokens) to the owning daemon so it opens
   // the Socket Mode socket. Best-effort: an offline daemon picks it up from the
   // register/ok reconcile roster on reconnect. Never log the token-bearing spec.
+  const daemonId = agent.daemonId! // caller guarantees placement for socket transport
   const [secret, channels] = await Promise.all([
     deps.repos.botSecret.get(botId),
     deps.repos.integrationChannel.listForIntegration(id)

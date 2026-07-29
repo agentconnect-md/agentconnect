@@ -158,8 +158,8 @@ export default function EditAgentModal({
         setName(dto.name)
         setDisplayName(dto.displayName ?? '')
         initialDisplayName.current = dto.displayName ?? ''
-        setRuntime(dto.runtime)
-        initialRuntime.current = dto.runtime
+        setRuntime(dto.runtime ?? '')
+        initialRuntime.current = dto.runtime ?? ''
         setDaemonId(dto.daemonId ?? '')
         initialDaemonId.current = dto.daemonId ?? ''
         setModel(dto.model ?? '')
@@ -173,8 +173,8 @@ export default function EditAgentModal({
         initialShowFooter.current = dto.showFooter ?? true
         setFastMode(dto.fastMode ?? false)
         initialFastMode.current = dto.fastMode ?? false
-        setPermissionMode(dto.permissionMode ?? permissionModeDefault(dto.runtime))
-        initialPermissionMode.current = dto.permissionMode ?? permissionModeDefault(dto.runtime)
+        setPermissionMode(dto.permissionMode ?? permissionModeDefault(dto.runtime ?? ''))
+        initialPermissionMode.current = dto.permissionMode ?? permissionModeDefault(dto.runtime ?? '')
         setAllowRuntimeChangesInChat(dto.allowRuntimeChangesInChat ?? false)
         initialAllowRuntimeChangesInChat.current = dto.allowRuntimeChangesInChat ?? false
         setIntroduceOnJoin(dto.introduceOnJoin ?? false)

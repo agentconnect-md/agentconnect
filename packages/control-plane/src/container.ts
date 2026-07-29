@@ -18,6 +18,7 @@ import { HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED } from '@agentconnect.md/p
 
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
 import { resolveGithubAppConfig } from './github/config.js'
+import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
 import type { FetchLike } from './github/api.js'
 import { ConnectorsClient, parseBlocklist, parseWhitelist } from './connectors/index.js'
 import { GithubService } from './github/service.js'
@@ -51,6 +52,7 @@ import {
   PgIntegrationChannelRepo,
   PgBotRepo,
   PgBotSecretStore,
+  PgBotCredentialWriter,
   PgMcpProviderRepo,
   PgMcpProviderSecretStore,
   PgMcpGrantRepo,
@@ -61,7 +63,10 @@ import {
   PgExternalMemoryGrantRepo,
   PgThreadAffinityStore,
   PgSlackInstallStore,
+  PgSlackPlatformInstallStore,
   PgSlackUserConfigStore,
+  PgPresetAgentStore,
+  PresetAgentBackfill,
   PgGithubInstallationRepo,
   PgGithubInstallStateStore,
   PgAgentRepoAuthorizationRepo,
@@ -208,6 +213,9 @@ export function buildContainer(
     integrationChannel: new PgIntegrationChannelRepo(prisma),
     bot: new PgBotRepo(prisma),
     botSecret: new PgBotSecretStore(prisma, secretCipher),
+    // Owns its transaction: install/revoke each write two tables behind the
+    // credential-generation fence, and serialize on the bot row (§5.3).
+    botCredential: new PgBotCredentialWriter(prisma, secretCipher),
     agentSecret: new PgAgentSecretStore(prisma, secretCipher),
     agentConfig: new PgAgentConfigWriter(prisma, secretCipher),
     mcpProvider: new PgMcpProviderRepo(prisma),
@@ -220,7 +228,9 @@ export function buildContainer(
     externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, secretCipher),
     threadAffinity: new PgThreadAffinityStore(prisma),
     slackInstall: new PgSlackInstallStore(prisma, secretCipher),
+    slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
     slackUserConfig: new PgSlackUserConfigStore(prisma, secretCipher),
+    presetAgent: new PgPresetAgentStore(prisma),
     cron: new PgCronRepo(prisma),
     hook: new PgHookRepo(prisma),
     hookSecret: new PgHookSecretStore(prisma, secretCipher),
@@ -228,11 +238,12 @@ export function buildContainer(
     audit: new PgAuditRepo(prisma),
     // Under WAITLIST_MODE, JIT signup does NOT mint a personal org — that happens
     // only on join-link redemption (waitlist-and-login.md §6/§8), so "login ⇒ has
-    // an org" can't bypass the admission gate.
-    user: new PgUserRepo(prisma, !config.WAITLIST_MODE),
-    org: new PgOrgRepo(prisma),
+    // an org" can't bypass the admission gate. Every org-creating repo carries the
+    // preset-agent seam flag (preset-agents.md §3.2).
+    user: new PgUserRepo(prisma, !config.WAITLIST_MODE, config.PRESET_AGENTS_ENABLED),
+    org: new PgOrgRepo(prisma, config.PRESET_AGENTS_ENABLED),
     orgInviteLink: new PgOrgInviteLinkRepo(prisma),
-    waitlist: new PgWaitlistRepo(prisma),
+    waitlist: new PgWaitlistRepo(prisma, config.PRESET_AGENTS_ENABLED),
     githubInstallation: new PgGithubInstallationRepo(prisma),
     githubInstallState: new PgGithubInstallStateStore(prisma),
     agentRepoAuth: new PgAgentRepoAuthorizationRepo(prisma)
@@ -360,6 +371,10 @@ export function buildContainer(
   // slug beside each agent's targeted slug, the GithubService comes later.
   const githubAppCfg = resolveGithubAppConfig(config)
 
+  // Platform-published Slack app (preset-agents.md §5.3) — undefined ⇒ feature
+  // absent (routes 404, console hides "Add to Slack"); partial set ⇒ fail-fast.
+  const slackPlatformApp = resolveSlackPlatformAppConfig(config)
+
   // Hook compiler/converger (webhook-triggers-and-github-events.md): CRUD routes
   // broadcast through it, and a (re)registering relay gets the full-set replay.
   // The installation repo feeds the github-kind compile (installationIds gate).
@@ -392,6 +407,7 @@ export function buildContainer(
   const sharedBot = new SharedBotOrchestrator(
     repos.bot,
     repos.botSecret,
+    repos.botCredential,
     repos.integration,
     repos.integrationChannel,
     repos.agent,
@@ -589,6 +605,7 @@ export function buildContainer(
       integrationChannel: repos.integrationChannel,
       bot: repos.bot,
       botSecret: repos.botSecret,
+      botCredential: repos.botCredential,
       agentSecret: repos.agentSecret,
       agentConfig: repos.agentConfig,
       mcpProvider: repos.mcpProvider,
@@ -600,7 +617,9 @@ export function buildContainer(
       externalMemoryConnectionSecret: repos.externalMemoryConnectionSecret,
       externalMemoryGrant: repos.externalMemoryGrant,
       slackInstall: repos.slackInstall,
+      slackPlatformInstall: repos.slackPlatformInstall,
       slackUserConfig: repos.slackUserConfig,
+      presetAgent: repos.presetAgent,
       githubInstallation: repos.githubInstallation,
       agentRepoAuth: repos.agentRepoAuth,
       audit: repos.audit,
@@ -640,6 +659,7 @@ export function buildContainer(
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
     ...(iconStore ? { iconStore } : {}),
     ...(connectors ? { connectors } : {}),
+    ...(slackPlatformApp ? { slackPlatformApp } : {}),
     config: {
       DEFAULT_OWNER_ID,
       NODE_ENV: config.NODE_ENV,
@@ -718,6 +738,20 @@ export function buildContainer(
     { ttlMs: config.SLACK_INSTALL_TTL_SEC * 1000, intervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000 },
     http.log
   )
+
+  // The platform-app install rows (state → tenancy, no secrets) age out on the
+  // same TTL — an abandoned "Add to Slack" tab must not leave a live state nonce.
+  const slackPlatformInstallReaper = new SlackInstallReaper(
+    repos.slackPlatformInstall,
+    clock,
+    { ttlMs: config.SLACK_INSTALL_TTL_SEC * 1000, intervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000 },
+    http.log
+  )
+
+  // One-time preset backfill (preset-agents.md §3.2): existing orgs receive the
+  // `agentconnect` general preset; the preset_agent row is the per-org marker, so
+  // the sweep converges to a no-op after its first complete run.
+  const presetBackfill = config.PRESET_AGENTS_ENABLED ? new PresetAgentBackfill(prisma, http.log) : undefined
 
   // Relay failover sweep (shared-bot-relay.md §5): deletes `relay` rows whose
   // heartbeat lapsed and re-fans the shrunk roster to daemons. Same lifecycle as
@@ -1022,6 +1056,18 @@ export function buildContainer(
         .reconcileAll()
         .catch((err) => http.log.error({ err }, 'relay: shared-bot reconcile on disconnect failed'))
     },
+    // A workspace uninstalled the app / revoked its tokens — mark the Bot + its
+    // installs revoked and release the bot from the pool, unless the report is
+    // stale (the fence fields; Slack does not order lifecycle events). Swallow+log.
+    // ACKNOWLEDGED: the relay keeps retrying until this resolves, so a failure
+    // must PROPAGATE (the connection answers a retryable error) rather than be
+    // swallowed — swallowing would look like success and lose the only signal a
+    // dead credential ever produces.
+    onBotRevoked: async (m) =>
+      sharedBot.revokeBot(m.botId, m.reason, {
+        ...(m.credentialRevision !== undefined ? { revision: m.credentialRevision } : {}),
+        ...(m.eventAtMs !== undefined ? { eventAtMs: m.eventAtMs } : {})
+      }),
     // A relay delivered a §14.3 DM gating notice — record + re-stamp the pool's
     // latch. Swallow+log.
     onNoticePosted: async (m) => {
@@ -1078,8 +1124,12 @@ export function buildContainer(
       githubRunReporter?.start()
       hookRedeliveryReconciler?.start()
       slackInstallReaper.start()
+      slackPlatformInstallReaper.start()
       relaySweeper.start()
       slackBotIdentityReconciler.start()
+      // One-shot (not a re-arming loop): the worklist empties itself; a partially
+      // failed boot resumes on the next one. Never blocks listen.
+      void presetBackfill?.run().catch((err) => http.log.error({ err }, 'preset-backfill: sweep failed'))
     },
     async shutdown() {
       cronRunReaper.stop()
@@ -1088,6 +1138,7 @@ export function buildContainer(
       hookRedeliveryReconciler?.stop()
       installationDoorbell?.stop()
       slackInstallReaper.stop()
+      slackPlatformInstallReaper.stop()
       relaySweeper.stop()
       slackBotIdentityReconciler.stop()
       await Promise.allSettled([...relayRegistrationTasks])

@@ -278,6 +278,22 @@ function fetchWithDispatcher(dispatcher: Dispatcher): FetchFunction {
   return (url, init) => undiciFetch(url, { ...(init as Parameters<typeof undiciFetch>[1]), dispatcher })
 }
 
+/**
+ * Slack error codes that mean THIS TOKEN IS DEAD, as opposed to a transient
+ * failure. Deliberately narrow: a false positive would revoke a live bot, so
+ * network errors, rate limits, and `missing_scope` must NOT match.
+ *
+ * `account_inactive` is what a workspace uninstall leaves behind;
+ * `token_revoked` / `invalid_auth` cover an explicitly killed token.
+ */
+const DEAD_CREDENTIAL_ERRORS = new Set(['account_inactive', 'token_revoked', 'invalid_auth'])
+
+function isDeadCredentialError(err: unknown): boolean {
+  // @slack/web-api puts the API's `error` string on `err.data.error`.
+  const code = (err as { data?: { error?: unknown } })?.data?.error
+  return typeof code === 'string' && DEAD_CREDENTIAL_ERRORS.has(code)
+}
+
 /** The subset of a Slack file element carried through as attachment metadata. */
 interface SlackFile {
   id?: string
@@ -399,6 +415,12 @@ export interface SlackSharedIngestDeps {
   /** Resolve and forward the app-level message shortcut. False opens a local
    *  unavailable modal while the one-shot trigger id is still valid. */
   onSessionShortcut: (shortcut: SharedSlackSessionShortcut) => boolean
+  /** The workspace uninstalled the app / revoked its tokens — the bot's credential
+   *  is dead; report upstream so the CP marks it revoked. */
+  /** `eventAtMs` = Slack's envelope `event_time` (when the uninstall HAPPENED),
+   *  forwarded so the CP can reject an event that predates the credential it
+   *  would revoke. Undefined when the envelope carried no `event_time`. */
+  onBotRevoked?: (reason: 'app_uninstalled' | 'tokens_revoked', eventAtMs?: number) => void
   /** Test seam for the bot-token Web API client. */
   webClientFactory?: (botToken: string, options?: WebClientOptions) => WebClient
   log: Logger
@@ -473,14 +495,38 @@ export class SlackSharedIngest {
       }
     } catch (err) {
       this.deps.log.warn(`shared-ingest(${this.botId}): auth.test failed: ${(err as Error).message}`)
+      // A DEAD-credential answer is positive evidence, not a transient miss: it
+      // says the token this very assignment carries no longer works. Report it as
+      // a revocation so the CP converges even when the `app_uninstalled` event
+      // itself was lost — Slack acks that event before the handler runs and never
+      // redelivers it, and a relay that crashed holding a queued report would
+      // otherwise leave an uninstalled app shown as active forever. Every
+      // (re)assign and every pod restart re-probes here, so this is the backstop
+      // the in-memory retry queue cannot be.
+      //
+      // No `eventAtMs`: we don't know WHEN the workspace pulled the app. The
+      // revision arm alone is the correct fence here anyway — it identifies the
+      // exact credential this probe just found dead.
+      if (isDeadCredentialError(err)) {
+        this.deps.log.warn(`shared-ingest(${this.botId}): credential is dead — reporting revocation`)
+        this.deps.onBotRevoked?.('tokens_revoked')
+      }
     }
   }
 
   /** Handle one verified `/slack/events` envelope after demux + HMAC. Forwards
    *  top-level chat after removing this app's own echo. Never throws — HTTP 200 was
    *  already sent; a forward miss is bounded loss at the forwarder. */
-  async handleEvent(event: SlackMessageEvent | undefined): Promise<void> {
+  async handleEvent(event: SlackMessageEvent | undefined, eventAtMs?: number): Promise<void> {
     try {
+      // App lifecycle: the workspace pulled the app / revoked its tokens. Not a
+      // chat event (no user/bot_id — isRoutableEvent would drop it), so branch
+      // before the chat filters. `tokens_revoked` is treated as a full revoke —
+      // the app has exactly one bot token, and Slack sends it when that dies.
+      if (event?.type === 'app_uninstalled' || event?.type === 'tokens_revoked') {
+        this.deps.onBotRevoked?.(event.type, eventAtMs)
+        return
+      }
       if (event && this.isOwnMembershipChange(event)) {
         await this.refreshChannels()
         return

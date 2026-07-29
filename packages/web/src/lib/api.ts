@@ -162,7 +162,7 @@ export interface AgentDto {
   icon: AgentIcon | null // console avatar; null ⇒ legacy default (runtime mark)
   iconUrl: string | null // resolved URL for an uploaded `image` icon; null otherwise
   description: string | null
-  runtime: string
+  runtime: string | null // null ⇒ deferred exec config (an unplaced preset; set at placement)
   model: string | null
   reasoningEffort: string | null
   outputMode: string | null // platform output verbosity: low | medium | high; null when unset
@@ -519,7 +519,25 @@ export interface SlackConfigDto {
   // The sole signal the console has for the "http default vs socket-only" rule:
   relayAvailable: boolean // PUBLIC_RELAY_URL set AND ≥1 relay connected
   relayPublicUrl: string | null // https(s) LB URL for the http manifest request_url; null when unavailable
+  // The platform-published "Add to Slack" app is installable on this deployment
+  // (SLACK_PLATFORM_* + public callback + relay). Missing (older CP) ⇒ false.
+  platformInstallAvailable?: boolean
   updatedAt: string | null
+}
+
+/** `POST /integrations/slack/platform-install` — a pending platform-app install:
+ *  the state id + the slack.com authorize URL the console opens in a popup. */
+export interface SlackPlatformInstallDto {
+  id: string
+  installUrl: string
+}
+/** `GET /integrations/slack/platform-install/:id` — the completion signal the modal
+ *  polls while the authorize tab is open. */
+export interface SlackPlatformInstallStatusDto {
+  id: string
+  status: 'pending' | 'completed' | 'failed'
+  failureReason: string | null
+  botId: string | null
 }
 /** `PUT /slack/config` body — the caller's own Slack App Configuration token. The
  *  access (config) token is required; the refresh token is optional (adds durability). */
@@ -579,6 +597,8 @@ export interface BotDto {
   agentIds: string[] // every agent currently installed on the bot (a shared bot may have many)
   lastUsedAt: string | null // ISO-8601; stamped when last freed; null ⇒ never used
   freedFromAgent: string | null // agent it was last freed from ("freed from support-bot")
+  teamId?: string | null // Slack workspace id (T…) — platform-app installs only
+  revokedAt?: string | null // workspace uninstalled the app / revoked tokens; null ⇒ live
   createdAt: string // ISO-8601
 }
 
@@ -1337,7 +1357,9 @@ export function agentFromDto(d: AgentDto): Agent {
     // Blank when the agent has no explicit model — the UI shows "Default" (runtime
     // default). Never fall back to the runtime id: that would fabricate a model.
     model: d.model ?? '',
-    runtime: d.runtime,
+    // Blank when the runtime is deferred (an unplaced preset) — mirrors the
+    // daemon '—' coalesce below; display sites render '—' for an empty runtime.
+    runtime: d.runtime ?? '',
     desc: d.description ?? PLACEHOLDER,
     // '—' when the CP has no explicit value: the daemon then falls back to the
     // local agent.json (default 'low'). Session count is derived in the view from
@@ -2508,6 +2530,25 @@ export async function finalizeSlackInstall(
     ...(opts?.appToken ? { appToken: opts.appToken } : {}),
     ...(opts?.shareable ? { shareable: true } : {})
   })
+}
+
+// ── Platform-published "Add to Slack" app (preset-agents.md §5.3) ──
+// Mint a pending install of the deployment's distributed Slack app and get the
+// slack.com authorize URL to open. `agentId` optional — the CP defaults to the
+// org's `agentconnect` preset agent. The callback finishes the install
+// server-side; the console polls the row below to learn when it landed.
+export async function startSlackPlatformInstall(agentId?: string): Promise<SlackPlatformInstallDto> {
+  return apiPost<SlackPlatformInstallDto>(`${orgBase()}/integrations/slack/platform-install`, {
+    ...(agentId ? { agentId } : {})
+  })
+}
+
+// Poll one platform-app install to completion. The ROW's terminal state is the
+// signal, deliberately not "did a new integration appear": re-authorizing a
+// workspace the agent already has only rotates the token, creating no
+// integration, so list growth would never fire on that path.
+export async function getSlackPlatformInstall(id: string): Promise<SlackPlatformInstallStatusDto> {
+  return apiGet<SlackPlatformInstallStatusDto>(`${orgBase()}/integrations/slack/platform-install/${id}`)
 }
 
 // ── Slack org config token (Settings) ──

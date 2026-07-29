@@ -19,7 +19,19 @@ import { ensureDefaultTenant } from '../src/persistence/ensure-default-tenant.js
 // and tests import these constants from here.
 export { DEFAULT_ORG_ID, DEFAULT_OWNER_ID, DEFAULT_ORG_SLUG, DEFAULT_OWNER_EMAIL }
 
-export const seed = ensureDefaultTenant
+/**
+ * Seed the default tenancy WITHOUT the `agentconnect` preset agent.
+ *
+ * Production's no-auth boot (`src/index.ts`) calls `ensureDefaultTenant` with
+ * presets ON — that is the org-creation seam. This entry point is the test/
+ * maintenance fixture, and every suite that lists the default org's agents
+ * asserts against a known-empty baseline; provisioning here would silently add
+ * an agent to all of them. Suites that WANT the preset provision it explicitly
+ * (`provisionPresetAgents`, the backfill, or `ensureDefaultTenant` itself — see
+ * `test/integration/preset-agents.test.ts`). A no-auth deployment seeded from
+ * this CLI still converges on its next boot, which runs the real seam.
+ */
+export const seed = (prisma: PrismaClient): Promise<void> => ensureDefaultTenant(prisma, { presetAgents: false })
 
 // Allow `tsx prisma/seed.ts` to run the seed against DATABASE_URL directly.
 // Guarded so importing the constants/`seed` from tests does not open a client.

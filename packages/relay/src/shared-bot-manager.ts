@@ -22,6 +22,7 @@ import type {
   RdMsgSlackAction,
   RcBotChannels,
   RcBotConversation,
+  RcBotRevoked,
   WireNormalizedMessage,
   RcThreadAssign,
   RcThreadLookup
@@ -40,9 +41,45 @@ import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 /** Cap on the learned `api_app_id → botId` demux index before it is flushed. */
 const MAX_DEMUX_ENTRIES = 10_000
 
+/** Composite demux key for one workspace install of a distributed app. */
+function appTeamKey(apiAppId: string, teamId: string): string {
+  return `${apiAppId}\u0000${teamId}`
+}
+
 /** Cap on the retry buffer for thread-assign reports dropped while the CP link was
  *  down. Bounded so a long CP outage can't grow it without limit; oldest-cleared. */
 const MAX_PENDING_REPORTS = 10_000
+
+/** Backoff for re-reporting an unacknowledged revocation while the CP link stays
+ *  READY. The CP answers a transient persistence failure with a retryable error
+ *  WITHOUT dropping the socket, so `onReady` (reconnect-only) can never be the
+ *  sole retry trigger. Bounded: 5s → 10s → … → 60s. */
+const REVOKE_RETRY_INITIAL_MS = 5_000
+const REVOKE_RETRY_MAX_MS = 60_000
+
+/** Provably-older ordering between two revoke reports for one bot: by credential
+ *  generation first, then by Slack's occurrence time when the generations agree
+ *  (or are absent — a legacy bot carries neither). "Not provably older" preserves
+ *  arrival order, which is all an unfenced report has. */
+function isOlderRevokeReport(incoming: RcBotRevoked, queued: RcBotRevoked): boolean {
+  if (
+    incoming.credentialRevision !== undefined &&
+    queued.credentialRevision !== undefined &&
+    incoming.credentialRevision !== queued.credentialRevision
+  ) {
+    return incoming.credentialRevision < queued.credentialRevision
+  }
+  // Same generation (or none to compare). A report WITHOUT an occurrence time is
+  // the STRONGER claim, not a degenerate one: the auth.test dead-credential
+  // backstop deliberately reports the exact current revision with no eventAtMs —
+  // "this credential is dead NOW" — which passes the CP's time arm
+  // unconditionally, while a timestamped lifecycle event of the same generation
+  // may still be refused as predating the credential. Never let the weaker,
+  // refusable report displace it; equal strength keeps arrival order.
+  if (queued.eventAtMs === undefined) return incoming.eventAtMs !== undefined
+  if (incoming.eventAtMs === undefined) return false
+  return incoming.eventAtMs < queued.eventAtMs
+}
 
 export interface SharedBotManagerDeps {
   /** A live `rd/*` connection to a daemon on THIS relay, or undefined if none. */
@@ -59,6 +96,13 @@ export interface SharedBotManagerDeps {
    *  re-stamps the pool-wide latch. Best-effort: loss costs at most one duplicate
    *  notice later, never a lost enablement path. */
   reportNoticePosted: (m: { botId: string; channel: string }) => boolean
+  /** Report a workspace uninstall / token revocation (→ `rc/bot-revoked`) so the CP
+   *  marks the Bot + its installs revoked. Returns `false` when the CP link wasn't
+   *  READY, so the manager can retry on reconnect ({@link
+   *  SharedBotManager.flushPendingReports}) — this report is NOT droppable: Slack
+   *  acked the HTTP event before this ran and never redelivers it, and a dead token
+   *  gives the CP nothing to observe. */
+  reportBotRevoked: (m: RcBotRevoked) => Promise<boolean>
   /** Report the thread's now-resolved owner to the CP (→ `rc/thread-assign`). Returns
    *  `false` if the CP link was not READY and the frame was dropped, so the manager can
    *  retry it when the link recovers ({@link SharedBotManager.flushPendingReports}). */
@@ -142,8 +186,15 @@ export class SharedBotManager {
   private readonly router = new SharedBotRouter()
   private readonly ingests = new Map<string, SlackSharedIngest>()
   /** Learned/assigned `api_app_id → botId` index — O(1) HTTP demux (self-populates on
-   *  first verified delivery when the CP didn't stamp `apiAppId`). Bounded flush. */
+   *  first verified delivery when the CP didn't stamp `apiAppId`). Bounded flush.
+   *  Team-scoped bots (a distributed app's installs) NEVER enter this map — they
+   *  demux exclusively on the composite index below. */
   private readonly demuxByApiApp = new Map<string, string>()
+  /** Assigned `(api_app_id, team_id) → botId` composite index — the ONLY demux for
+   *  a distributed app's installs, which all share one app id + signing secret.
+   *  Assign-derived (never learned) and cleaned up on unassign via the reverse map. */
+  private readonly demuxByAppTeam = new Map<string, string>()
+  private readonly appTeamKeyByBot = new Map<string, string>()
   /** Bounded-loss counters (per bot) — messages dropped because no daemon connection. */
   private readonly dropped = new Map<string, number>()
   /** Thread-assign reports dropped because the CP link wasn't READY, keyed
@@ -154,6 +205,13 @@ export class SharedBotManager {
   /** Latest bot-level channel snapshot dropped while the CP link was down. A full
    *  snapshot supersedes any older one for the same bot. */
   private readonly pendingChannelReports = new Map<string, RcBotChannels>()
+  /** Revocation reports the CP link wasn't up for, keyed by botId (one bot revokes
+   *  once; a later report for the same bot supersedes). Unlike the other queues
+   *  this one is not merely an optimization: Slack already acked the HTTP event
+   *  and will never redeliver it, and no CP-side probe can discover a dead token,
+   *  so a dropped report leaves the console showing an uninstalled app as active
+   *  forever. Flushed on READY by {@link flushPendingReports}. */
+  private readonly pendingRevokedReports = new Map<string, RcBotRevoked>()
   /** §14 one-time gating-notice latch (`botId:channel`) on the AUTHORITY pod —
    *  correct because only one pod ever posts (deterministic per-bot authority). */
   private readonly gatedNoticesSent = new Set<string>()
@@ -185,9 +243,66 @@ export class SharedBotManager {
     else this.pendingChannelReports.set(m.botId, m)
   }
 
-  /** Re-emit reports and channel snapshots dropped while the CP link was down
-   *  (wired to the client's onReady). Each queue stops at the first frame that still
-   *  can't be sent, keeping the rest. */
+  /** Backoff timer re-driving unacknowledged revocation reports on a READY link
+   *  (see REVOKE_RETRY_INITIAL_MS); armed whenever the queue is non-empty. */
+  private revokeRetryTimer: ReturnType<typeof setTimeout> | undefined
+  private revokeRetryDelayMs = REVOKE_RETRY_INITIAL_MS
+
+  /** Report a revocation and keep it queued until the CP ACKNOWLEDGES the commit.
+   *  Queued FIRST, cleared only on the ack: a send the socket accepted is not
+   *  evidence the CP persisted anything, and this report has no other source. */
+  private reportRevoked(m: RcBotRevoked): void {
+    // Arrival order must not choose the sole durable report: Slack lifecycle
+    // events are unordered, so a DELAYED pre-reinstall event can land while the
+    // current generation's report sits queued on a transient failure. Letting it
+    // replace the entry would hand the queue to a report whose terminal
+    // `applied:false` then clears it — losing the live revocation entirely. An
+    // older report is also worthless on its own: the newer queued one subsumes
+    // it, and the CP's fence would refuse it anyway.
+    const queued = this.pendingRevokedReports.get(m.botId)
+    if (queued && isOlderRevokeReport(m, queued)) {
+      this.deps.log.warn(
+        `shared-bot(${m.botId}): dropping out-of-order revoke report (an at-least-as-new one is queued)`
+      )
+      return
+    }
+    this.pendingRevokedReports.set(m.botId, m)
+    void this.deps
+      .reportBotRevoked(m)
+      .then((committed) => {
+        // Clear ONLY when the queued entry is still exactly the report this ack
+        // answers. A reinstall + second revoke can replace the entry while this
+        // one is in flight — deleting by botId alone would erase that NEWER
+        // report, and with it the only signal its dead credential ever produces.
+        if (committed && this.pendingRevokedReports.get(m.botId) === m) {
+          this.pendingRevokedReports.delete(m.botId)
+          if (this.pendingRevokedReports.size === 0) this.revokeRetryDelayMs = REVOKE_RETRY_INITIAL_MS
+        }
+      })
+      .catch(() => {
+        /* stays queued — the finally below arms the retry */
+      })
+      .finally(() => this.armRevokeRetry())
+  }
+
+  /** Arm the READY-link retry for whatever is still queued. Single timer, bounded
+   *  exponential backoff, disarmed by a drained queue; `onReady`'s flush resets
+   *  the delay (a fresh link deserves a fast first attempt). */
+  private armRevokeRetry(): void {
+    if (this.revokeRetryTimer || this.pendingRevokedReports.size === 0) return
+    const delay = this.revokeRetryDelayMs
+    this.revokeRetryDelayMs = Math.min(this.revokeRetryDelayMs * 2, REVOKE_RETRY_MAX_MS)
+    this.revokeRetryTimer = setTimeout(() => {
+      this.revokeRetryTimer = undefined
+      for (const [, m] of [...this.pendingRevokedReports]) this.reportRevoked(m)
+    }, delay)
+    // Never hold the process open for a retry timer.
+    this.revokeRetryTimer.unref?.()
+  }
+
+  /** Re-emit reports, channel snapshots, and revocations dropped while the CP link
+   *  was down (wired to the client's onReady). Each queue stops at the first frame
+   *  that still can't be sent, keeping the rest. */
   flushPendingReports(): void {
     for (const [key, m] of [...this.pendingReports]) {
       if (!this.deps.reportThreadAssign(m)) break
@@ -197,6 +312,13 @@ export class SharedBotManager {
       if (!this.deps.reportBotChannels(snapshot)) break
       this.pendingChannelReports.delete(botId)
     }
+    // Replayed AS OBSERVED — `credentialRevision`/`eventAtMs` still describe the
+    // generation that was live when Slack sent the event, which is exactly what
+    // the CP's fence needs after an outage that spanned a re-install. Async: each
+    // entry clears only when the CP acknowledges the commit, and a fresh link
+    // resets the READY-retry backoff.
+    this.revokeRetryDelayMs = REVOKE_RETRY_INITIAL_MS
+    for (const [, m] of [...this.pendingRevokedReports]) this.reportRevoked(m)
   }
 
   /** `rc/bot-assign` — (re)load the routing table + (re)build the bot's HTTP ingest. */
@@ -211,8 +333,19 @@ export class SharedBotManager {
     }
     // Rebuild the ingest (secrets may have rotated). Idempotent: stop any existing.
     await this.stopIngest(a.botId)
-    // Deterministic demux when the CP stamped the app id; else the verify-scan learns it.
-    if (a.apiAppId) this.rememberApiApp(a.apiAppId, a.botId)
+    // Deterministic demux when the CP stamped the app id. A team-scoped bot (a
+    // distributed app's install) goes ONLY into the composite index — an app-only
+    // entry would serve every sibling workspace's events to this one bot.
+    this.forgetAppTeam(a.botId)
+    if (a.apiAppId && a.teamId) {
+      this.demuxByAppTeam.set(appTeamKey(a.apiAppId, a.teamId), a.botId)
+      this.appTeamKeyByBot.set(a.botId, appTeamKey(a.apiAppId, a.teamId))
+      // A re-assign that GAINED a teamId must also evict any stale app-only entry
+      // still pointing at this bot, or the fast path would keep serving cross-team.
+      if (this.demuxByApiApp.get(a.apiAppId) === a.botId) this.demuxByApiApp.delete(a.apiAppId)
+    } else if (a.apiAppId) {
+      this.rememberApiApp(a.apiAppId, a.botId)
+    }
     const ingest = new SlackSharedIngest(
       a.botId,
       { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret },
@@ -227,6 +360,18 @@ export class SharedBotManager {
           this.selectThreadAgent(a.botId, channelId, threadTs, agentId),
         onSessionAction: (action) => this.forwardSessionAction(a.botId, action),
         onSessionShortcut: (shortcut) => this.forwardSessionShortcut(a.botId, shortcut),
+        onBotRevoked: (reason, eventAtMs) => {
+          this.deps.log.warn(`shared-bot(${a.botId}): workspace revoked the app (${reason})`)
+          // Echo the generation this assignment carries + when Slack says the
+          // event happened: the CP refuses the report if a re-install has since
+          // replaced the credential (lifecycle events are not ordered).
+          this.reportRevoked({
+            botId: a.botId,
+            reason,
+            ...(a.credentialRevision !== undefined ? { credentialRevision: a.credentialRevision } : {}),
+            ...(eventAtMs !== undefined ? { eventAtMs } : {})
+          })
+        },
         log: this.deps.log
       }
     )
@@ -258,10 +403,31 @@ export class SharedBotManager {
   }
 
   /** `rc/bot-unassign` — drop the routes + close the ingest. */
-  async unassign(botId: string): Promise<void> {
+  async unassign(botId: string, credentialRevision?: number): Promise<void> {
+    // A revocation stamps the generation it revoked. If this pod already holds a
+    // NEWER assignment, the release describes a credential that has since been
+    // replaced — the CP decided and broadcast in that order, and a re-install's
+    // assign can overtake it. Dropping the stale release here is what keeps a
+    // live ingest alive; an unstamped release (transport flip, un-share, last
+    // install removed) is unconditional as before.
+    const held = this.router.get(botId)?.credentialRevision
+    if (credentialRevision !== undefined && held !== undefined && held > credentialRevision) {
+      this.deps.log.warn(`shared-bot(${botId}): ignoring stale unassign (rev ${credentialRevision} < held ${held})`)
+      return
+    }
     this.clearGatedDmLatches(botId)
+    this.forgetAppTeam(botId)
     this.router.remove(botId)
     await this.stopIngest(botId)
+  }
+
+  /** Drop the bot's composite demux entry (assign-derived, so eagerly cleaned —
+   *  unlike the learned app-only map, whose stale entries lazily miss). */
+  private forgetAppTeam(botId: string): void {
+    const key = this.appTeamKeyByBot.get(botId)
+    if (key === undefined) return
+    this.appTeamKeyByBot.delete(botId)
+    if (this.demuxByAppTeam.get(key) === botId) this.demuxByAppTeam.delete(key)
   }
 
   /** `rc/assign` — durable thread affinity seed. */
@@ -271,11 +437,13 @@ export class SharedBotManager {
 
   /**
    * Demux + authenticate one inbound Slack HTTP POST to its bot's ingest. Slack's
-   * HMAC (over the raw body, keyed by the bot's signing secret) is BOTH the demux
-   * discriminator and the authenticator: a request is only attributed to a bot whose
-   * signing secret verifies it. Fast path via the learned `api_app_id` index; on a
-   * miss (or absent app id / rotated secret) a verify-scan over every assigned bot
-   * finds and caches it. `undefined` ⇒ the route answers 401.
+   * HMAC (over the raw body, keyed by the bot's signing secret) authenticates, but
+   * it can only DISCRIMINATE while signing secrets differ — every install of a
+   * distributed app shares one secret, so those bots resolve exclusively on the
+   * composite `(api_app_id, team_id)` index and are skipped by the verify-scan
+   * (a scan hit against a sibling install would leak one workspace's messages
+   * into another tenant's bot). Legacy bots keep the learned app-only fast path
+   * with the verify-scan fallback. `undefined` ⇒ the route answers 401.
    */
   resolveVerified(args: {
     apiAppId?: string
@@ -285,15 +453,26 @@ export class SharedBotManager {
     signature: string | undefined
   }): SlackSharedIngest | undefined {
     const now = this.deps.clock.now()
-    const { apiAppId, timestamp, rawBody, signature } = args
+    const { apiAppId, teamId, timestamp, rawBody, signature } = args
+    // Composite fast path — assign-derived, so a hit is exact (still HMAC-verified).
+    if (apiAppId && teamId) {
+      const botId = this.demuxByAppTeam.get(appTeamKey(apiAppId, teamId))
+      const ingest = botId ? this.ingests.get(botId) : undefined
+      if (ingest && verifySlackSignature(ingest.signingSecret, timestamp, rawBody, signature, now)) return ingest
+    }
     if (apiAppId) {
       const botId = this.demuxByApiApp.get(apiAppId)
       const ingest = botId ? this.ingests.get(botId) : undefined
       if (ingest && verifySlackSignature(ingest.signingSecret, timestamp, rawBody, signature, now)) return ingest
     }
     for (const [botId, ingest] of this.ingests) {
+      // A team-scoped bot may only serve its own workspace: same-secret siblings
+      // would all verify, so the envelope team id is the ONLY discriminator.
+      const assignedTeam = this.router.get(botId)?.teamId
+      if (assignedTeam !== undefined && assignedTeam !== teamId) continue
       if (verifySlackSignature(ingest.signingSecret, timestamp, rawBody, signature, now)) {
-        if (apiAppId) this.rememberApiApp(apiAppId, botId)
+        // Learn only the app-only mapping; composite entries are assign-derived.
+        if (apiAppId && assignedTeam === undefined) this.rememberApiApp(apiAppId, botId)
         return ingest
       }
     }
@@ -303,6 +482,11 @@ export class SharedBotManager {
   private rememberApiApp(apiAppId: string, botId: string): void {
     if (this.demuxByApiApp.size >= MAX_DEMUX_ENTRIES) this.demuxByApiApp.clear()
     this.demuxByApiApp.set(apiAppId, botId)
+  }
+
+  /** Test/inspection view of the demux indexes (no secret material). */
+  get demuxIndexes(): { byApiApp: ReadonlyMap<string, string>; byAppTeam: ReadonlyMap<string, string> } {
+    return { byApiApp: this.demuxByApiApp, byAppTeam: this.demuxByAppTeam }
   }
 
   /** Make the inline selector effective for the current Slack thread immediately.
@@ -324,6 +508,10 @@ export class SharedBotManager {
 
   /** Close every ingest (relay shutdown). */
   async stopAll(): Promise<void> {
+    if (this.revokeRetryTimer) {
+      clearTimeout(this.revokeRetryTimer)
+      this.revokeRetryTimer = undefined
+    }
     await Promise.all([...this.ingests.keys()].map((id) => this.stopIngest(id)))
   }
 

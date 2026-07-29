@@ -253,6 +253,29 @@ export function integrationRoutes(deps: HttpDeps) {
                 message: 'bot integrations changed; refresh and retry the integration change'
               })
             }
+            // A dead credential is not reusable. `inUseByAgentId` goes null when the
+            // last install is removed, so a REVOKED bot (workspace uninstalled the
+            // app / killed its tokens) looks "free" to the picker — reusing it would
+            // mint an integration on a token Slack already rejects.
+            if (bot.revokedAt) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: 'this bot’s Slack app was uninstalled or its tokens were revoked; reinstall it instead'
+              })
+            }
+            // A platform-app install is NON-shareable by construction
+            // (preset-agents.md §5.5) — one workspace ⇒ one agent. Its `teamId` is
+            // the marker: only the distributed app persists one. Without this the
+            // http branch below would silently `setShareable(true)` and widen it.
+            if (bot.teamId) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message:
+                  'the AgentConnect Slack app serves one agent per workspace; create a dedicated Slack app for this agent'
+              })
+            }
             // Reuse keeps the bot's existing transport (immutable post-create). An
             // http bot routes via the relay pool; adding a 2nd agent makes it shared.
             const wantHttp = bot.transport === 'http'

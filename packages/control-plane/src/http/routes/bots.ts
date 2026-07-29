@@ -47,6 +47,8 @@ function toDto(b: BotRecord): BotDtoT {
     agentIds: b.agentIds,
     lastUsedAt: b.lastUsedAt?.toISOString() ?? null,
     freedFromAgent: b.lastAgentName,
+    teamId: b.teamId,
+    revokedAt: b.revokedAt?.toISOString() ?? null,
     createdAt: b.createdAt.toISOString()
   }
 }

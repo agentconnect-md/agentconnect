@@ -106,10 +106,18 @@ export function RuntimeSelect({
         onKeyDown={openFromKeyboard}
       >
         <span className="inline-flex min-w-0 items-center gap-2">
-          <span className="imark h-5 w-5 flex-none rounded-[5px]">
-            <AgentMark model={selected?.id ?? value} />
-          </span>
-          <span className="truncate">{selected?.label ?? value}</span>
+          {value ? (
+            <>
+              <span className="imark h-5 w-5 flex-none rounded-[5px]">
+                <AgentMark model={selected?.id ?? value} />
+              </span>
+              <span className="truncate">{selected?.label ?? value}</span>
+            </>
+          ) : (
+            // Deferred exec config (an unplaced preset agent): nothing chosen yet —
+            // never show the first option as if it were selected.
+            <span className="truncate text-(--text-tertiary)">Select runtime</span>
+          )}
         </span>
         <Icon
           name="chevron-down"

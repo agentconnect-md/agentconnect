@@ -42,9 +42,13 @@ export const SLACK_BOT_SCOPES = [
   'users:read'
 ] as const
 
-/** Bot events the daemon subscribes to. */
+/** Bot events the daemon subscribes to. The two `app_*` lifecycle events carry no
+ *  OAuth grant (event additions never force a workspace re-auth); the relay-pool
+ *  ingest turns them into `rc/bot-revoked` (preset-agents.md §5.3), while a
+ *  socket-mode daemon has no handler and Bolt drops them silently. */
 export const SLACK_BOT_EVENTS = [
   'app_mention',
+  'app_uninstalled',
   'assistant_thread_started',
   'message.channels',
   'message.groups',
@@ -52,7 +56,8 @@ export const SLACK_BOT_EVENTS = [
   'message.mpim',
   'member_joined_channel',
   'channel_left',
-  'group_left'
+  'group_left',
+  'tokens_revoked'
 ] as const
 
 /** Fallback app name so the manifest is always valid before the user types one. */
@@ -275,4 +280,14 @@ export const SLACK_OAUTH_CALLBACK_PATH = '/v1/integrations/slack/oauth/callback'
 /** `<publicCpUrl>/v1/integrations/slack/oauth/callback`, trimming a trailing slash. */
 export function slackOAuthRedirectUri(publicCpUrl: string): string {
   return `${publicCpUrl.replace(/\/$/, '')}${SLACK_OAUTH_CALLBACK_PATH}`
+}
+
+/** The PLATFORM (distributed) app's OAuth callback path (preset-agents.md §5.3),
+ *  public `/v1` form for the same rewrite/alias reasons as the sibling above. It
+ *  must be registered as a redirect URL on the platform Slack app. */
+export const SLACK_PLATFORM_OAUTH_CALLBACK_PATH = '/v1/integrations/slack/platform/callback'
+
+/** `<publicCpUrl>/v1/integrations/slack/platform/callback`, trimming a trailing slash. */
+export function slackPlatformOAuthRedirectUri(publicCpUrl: string): string {
+  return `${publicCpUrl.replace(/\/$/, '')}${SLACK_PLATFORM_OAUTH_CALLBACK_PATH}`
 }

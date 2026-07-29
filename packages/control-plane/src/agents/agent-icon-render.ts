@@ -42,11 +42,23 @@ function serializeIconNode(node: IconNode): string {
     .join('')
 }
 
+/** The AgentConnect brand diamond (24×24 fills) — the built-in preset agents'
+ *  fixed identity. NOT a Lucide stroke glyph: it carries its own facet fills, so
+ *  the composer renders it without the white-stroke group treatment. Mirrors web
+ *  `LogoMark` (marks.tsx) at half scale (48-box → 24-box). */
+export const BRAND_GLYPH_INNER =
+  '<polygon points="12,2.5 21.5,12 12,12" fill="#f2c64a"/>' +
+  '<polygon points="21.5,12 12,21.5 12,12" fill="#f4793a"/>' +
+  '<polygon points="12,21.5 2.5,12 12,12" fill="#7c3ca2"/>' +
+  '<polygon points="2.5,12 12,2.5 12,12" fill="#d83f96"/>'
+
 /** Inner Lucide markup for each curated glyph, derived from `lucide` core keyed by
- *  {@link AGENT_ICON_GLYPHS}. A name lucide doesn't ship is skipped here and degrades
- *  to the `bot` fallback at render (a test asserts every enum glyph is present). */
+ *  {@link AGENT_ICON_GLYPHS}. The brand diamond is hand-carried (lucide has no such
+ *  icon). Any other name lucide doesn't ship is skipped here and degrades to the
+ *  `bot` fallback at render (a test asserts every enum glyph is present). */
 export const GLYPH_SVG_INNER: Record<string, string> = Object.fromEntries(
-  AGENT_ICON_GLYPHS.flatMap((g) => {
+  AGENT_ICON_GLYPHS.flatMap((g): [string, string][] => {
+    if (g === 'agentconnect') return [[g, BRAND_GLYPH_INNER]]
     const node = LUCIDE_ICONS[toPascalCase(g)]
     return node ? [[g, serializeIconNode(node)]] : []
   })
@@ -74,15 +86,21 @@ function centered(inner24: string, fraction: number, extraGroupAttrs = ''): stri
 /**
  * Compose the square SVG for an agent icon. `runtime`/`glyph` render to a plate;
  * `image`/null map elsewhere (image → redirect at the route; null → runtime mark).
+ * `runtime` may be null (an unplaced deferred-config agent): the mark falls back
+ * to the default starburst — presets carry a glyph icon and never reach it.
  */
-export function buildAgentIconSvg(icon: AgentIcon | null, runtime: string): string {
+export function buildAgentIconSvg(icon: AgentIcon | null, runtime: string | null): string {
   const open = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">'
   if (icon?.kind === 'glyph') {
     const color = HEX_COLOR_RE.test(icon.color) ? icon.color : DARK_PLATE
+    if (icon.glyph === 'agentconnect') {
+      // Brand diamond: multi-color fills of its own — no white-stroke treatment.
+      return `${open}<rect width="64" height="64" fill="${color}"/>${centered(BRAND_GLYPH_INNER, 0.66)}</svg>`
+    }
     const glyph = GLYPH_SVG_INNER[icon.glyph] ?? GLYPH_SVG_INNER.bot ?? ''
     const stroke = ' fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
     return `${open}<rect width="64" height="64" fill="${color}"/>${centered(glyph, 0.56, stroke)}</svg>`
   }
   // runtime kind (and null/legacy default): the brand mark on a dark plate.
-  return `${open}<rect width="64" height="64" fill="${DARK_PLATE}"/>${centered(runtimeMarkInner(runtime), 0.62)}</svg>`
+  return `${open}<rect width="64" height="64" fill="${DARK_PLATE}"/>${centered(runtimeMarkInner(runtime ?? ''), 0.62)}</svg>`
 }

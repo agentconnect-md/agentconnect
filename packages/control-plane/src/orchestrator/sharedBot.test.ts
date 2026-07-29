@@ -7,6 +7,7 @@ import type {
   BotRepo,
   BotRecord,
   BotSecretStore,
+  BotCredentialWriter,
   IntegrationRepo,
   IntegrationRecord,
   IntegrationChannelRepo,
@@ -46,6 +47,11 @@ function bot(over: Partial<BotRecord> = {}): BotRecord {
     name: 'support-bot',
     prebuilt: false,
     slackAppId: null,
+    teamId: null,
+    botUserId: null,
+    revokedAt: null,
+    credentialRevision: 1,
+    credentialInstalledAt: null,
     discordAppId: null,
     shareable: true,
     transport: 'http',
@@ -104,17 +110,38 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
   let gatedAgents: Set<string>
   // Drives ThreadAffinityStore.get (null = affinity miss → SessionMeta fallback).
   let threadBinding: { agentId: AgentId; daemonId: string } | null
+  // revokeBot recordings: the Bot revocation stamp + integration/remove pushes.
+  let botRevokedAt: Date | null
+  let removals: { daemonId: string; integrationId: string }[]
   // One-shot barrier for deterministic channel-mutation concurrency tests.
   let blockNextChannelList: (() => Promise<void>) | null
+  // When set, `bots.get` reports a BUMPED generation from its second call on —
+  // a re-install landing between revokeBot's commit and its external effects.
+  let bumpRevisionAfterFirstGet: boolean
 
   function makeOrch(): SharedBotOrchestrator {
     const agents: Record<string, AgentRecord> = {
       [ALICE]: agent(ALICE, 'alice', D1),
       [BOB]: agent(BOB, 'bob', D2)
     }
-    const bots: Pick<BotRepo, 'get' | 'listHttpActive'> = {
-      get: async () => botRow,
-      listHttpActive: async () => [botRow]
+    let getCalls = 0
+    const bots: Pick<BotRepo, 'get' | 'listHttpActive' | 'revokeIfCurrent'> = {
+      get: async () => {
+        getCalls += 1
+        if (bumpRevisionAfterFirstGet && getCalls > 1) {
+          return { ...botRow, credentialRevision: botRow.credentialRevision + 1 }
+        }
+        return botRow
+      },
+      listHttpActive: async () => [botRow],
+      // Mirrors the SQL CAS: both arms conjunctive, each skipped when the report
+      // didn't carry it, and `credentialInstalledAt: null` passes the time arm.
+      revokeIfCurrent: async (_id, at, fence) => {
+        if (fence.revision !== undefined && fence.revision !== botRow.credentialRevision) return false
+        if (fence.eventAt && botRow.credentialInstalledAt && botRow.credentialInstalledAt >= fence.eventAt) return false
+        botRevokedAt = at
+        return true
+      }
     }
     const botSecret: Pick<BotSecretStore, 'get'> = {
       get: async () => ({ botToken: 'xoxb-x', appToken: 'xapp-x', signingSecret: 'shh-x' })
@@ -127,7 +154,14 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
           : null,
       listForBot: async () => []
     }
-    const intRepo: Pick<IntegrationRepo, 'listForBot'> = { listForBot: async () => integrations }
+    const intRepo: Pick<IntegrationRepo, 'listForBot' | 'markRevokedForBot'> = {
+      listForBot: async () => integrations.filter((i) => i.status === 'active'),
+      markRevokedForBot: async () => {
+        const flipped = integrations.filter((i) => i.status === 'active')
+        for (const i of flipped) i.status = 'revoked'
+        return flipped.map((i) => i.id)
+      }
+    }
     const chRepo: Pick<
       IntegrationChannelRepo,
       'listForBot' | 'replaceSnapshot' | 'setAgent' | 'setTrigger' | 'upsertAgent' | 'upsertConversation'
@@ -196,7 +230,10 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       }
     }
     const control = {
-      integrationUpsert: async (daemonId: string, spec: unknown) => void upserts.push({ daemonId, spec: spec as never })
+      integrationUpsert: async (daemonId: string, spec: unknown) =>
+        void upserts.push({ daemonId, spec: spec as never }),
+      integrationRemove: async (daemonId: string, r: { integrationId: string }) =>
+        void removals.push({ daemonId, integrationId: r.integrationId })
     }
     const sessions: Pick<SessionRepo, 'findThreadOwner'> = {
       findThreadOwner: async (botId, channel, thread) => {
@@ -204,9 +241,24 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
         return threadOwner
       }
     }
+    // The credential writer is the transaction owner in prod; here it stands in
+    // for that one atomic step — CAS, then (only if it applied) the integration
+    // flip, which is exactly what the real transaction commits together.
+    const botCredential: BotCredentialWriter = {
+      install: async () => {
+        botRow = { ...botRow, credentialRevision: botRow.credentialRevision + 1 }
+        return botRow.credentialRevision
+      },
+      revoke: async (id, at, fence) => {
+        const applied = await bots.revokeIfCurrent!(id, at, fence)
+        if (!applied) return { applied: false, integrationIds: [] }
+        return { applied: true, integrationIds: await intRepo.markRevokedForBot!(id) }
+      }
+    }
     return new SharedBotOrchestrator(
       bots as BotRepo,
       botSecret as BotSecretStore,
+      botCredential,
       intRepo as IntegrationRepo,
       chRepo as IntegrationChannelRepo,
       agentRepo as AgentRepo,
@@ -231,6 +283,9 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     gatedAgents = new Set()
     threadBinding = null
     blockNextChannelList = null
+    bumpRevisionAfterFirstGet = false
+    botRevokedAt = null
+    removals = []
   })
 
   describe('lookupThread — SessionMeta fallback on affinity miss (§7.2 case 2a)', () => {
@@ -701,5 +756,104 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     await orch.syncBot(BOT)
     expect(orch.hasConnectedRelay()).toBe(false)
     expect(ch.sends).toEqual([]) // nothing broadcast
+  })
+
+  it('stamps teamId + botUserId into rc/bot-assign for a platform-app install', async () => {
+    // A distributed app's install: every workspace shares the app id + signing
+    // secret, so the relay may only demux this bot on (api_app_id, team_id).
+    botRow = bot({ slackAppId: 'APLATFORM', teamId: 'T1WORKSPACE', botUserId: 'U0BOT' })
+
+    await makeOrch().syncBot(BOT)
+
+    const assign = ch.sends.find((send) => send.type === 'rc/bot-assign')?.payload as RcBotAssign
+    expect(assign.apiAppId).toBe('APLATFORM')
+    expect(assign.teamId).toBe('T1WORKSPACE')
+    expect(assign.botUserId).toBe('U0BOT')
+  })
+
+  it('revokeBot marks the bot + installs revoked, unassigns, and pulls the daemon specs', async () => {
+    await makeOrch().revokeBot(BOT, 'app_uninstalled')
+
+    expect(botRevokedAt).toBeInstanceOf(Date)
+    expect(integrations.map((i) => i.status)).toEqual(['revoked', 'revoked'])
+    // The release carries the generation it revoked, so a relay that already holds
+    // a newer assignment (a re-install that overtook this broadcast) drops it.
+    expect(ch.sends).toEqual([{ type: 'rc/bot-unassign', payload: { botId: BOT, credentialRevision: 1 } }])
+    // Both member agents are placed (ALICE→D1, BOB→D2): each daemon loses its spec.
+    expect(removals).toEqual([
+      { daemonId: D1, integrationId: INT_A },
+      { daemonId: D2, integrationId: INT_B }
+    ])
+  })
+
+  // Slack does not guarantee lifecycle-event ordering: an `app_uninstalled` from a
+  // PRIOR install can be delivered after the workspace re-installed. Applying it
+  // would revoke a live, freshly-authorized bot and kill its integrations.
+  it('revokeBot ignores a report whose credential generation was superseded', async () => {
+    botRow = bot({ credentialRevision: 2 }) // re-install bumped it since the event
+
+    await makeOrch().revokeBot(BOT, 'app_uninstalled', { revision: 1 })
+
+    expect(botRevokedAt).toBeNull() // fresh install untouched…
+    expect(integrations.map((i) => i.status)).toEqual(['active', 'active'])
+    expect(ch.sends).toEqual([]) // …not unassigned from the pool…
+    expect(removals).toEqual([]) // …and its daemon specs stay
+  })
+
+  // The load-bearing arm: a relay that already received the re-install's assignment
+  // echoes the NEW revision, so only the event's own occurrence time reveals that it
+  // predates the credential it would kill.
+  it('revokeBot ignores a report that predates the current credential', async () => {
+    const installedAt = new Date('2026-07-29T12:00:00Z')
+    botRow = bot({ credentialRevision: 2, credentialInstalledAt: installedAt })
+
+    await makeOrch().revokeBot(BOT, 'app_uninstalled', {
+      revision: 2, // current — only the timestamp can catch this one
+      eventAtMs: installedAt.getTime() - 60_000
+    })
+
+    expect(botRevokedAt).toBeNull()
+    expect(integrations.map((i) => i.status)).toEqual(['active', 'active'])
+    expect(removals).toEqual([])
+  })
+
+  it('revokeBot applies a report from the CURRENT generation', async () => {
+    const installedAt = new Date('2026-07-29T12:00:00Z')
+    botRow = bot({ credentialRevision: 2, credentialInstalledAt: installedAt })
+
+    await makeOrch().revokeBot(BOT, 'app_uninstalled', {
+      revision: 2,
+      eventAtMs: installedAt.getTime() + 60_000 // uninstalled AFTER this credential
+    })
+
+    expect(botRevokedAt).toBeInstanceOf(Date)
+    expect(integrations.map((i) => i.status)).toEqual(['revoked', 'revoked'])
+    expect(removals).toHaveLength(2)
+  })
+
+  // The revoke commits, but a re-install wins the bot row the instant it is
+  // released and broadcasts its own assign. Emitting the teardown then would tear
+  // down a credential this report no longer describes.
+  it('revokeBot skips its teardown effects when the credential moved after the commit', async () => {
+    // `bumpRevisionAfterFirstGet` makes the post-commit re-read observe a newer
+    // generation — exactly what a re-install that won the row lock leaves behind.
+    bumpRevisionAfterFirstGet = true
+
+    await makeOrch().revokeBot(BOT, 'app_uninstalled')
+
+    expect(ch.sends).toEqual([]) // no bot-unassign racing the fresh assign
+    expect(removals).toEqual([]) // no spec pulled off the re-installed bot
+  })
+
+  it('revokeBot is idempotent — a duplicate report finds no active installs', async () => {
+    const orch = makeOrch()
+    await orch.revokeBot(BOT, 'tokens_revoked')
+    removals = []
+    ch.sends.length = 0
+
+    await orch.revokeBot(BOT, 'tokens_revoked')
+
+    expect(removals).toEqual([]) // nothing left to pull
+    expect(ch.sends).toEqual([{ type: 'rc/bot-unassign', payload: { botId: BOT, credentialRevision: 1 } }]) // re-stamp only
   })
 })

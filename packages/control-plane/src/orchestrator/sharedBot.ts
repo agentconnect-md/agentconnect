@@ -27,6 +27,7 @@ import type {
   BotRepo,
   BotRecord,
   BotSecretStore,
+  BotCredentialWriter,
   BotSecretMaterial,
   IntegrationRepo,
   IntegrationRecord,
@@ -86,6 +87,7 @@ export class SharedBotOrchestrator {
   constructor(
     private readonly bots: BotRepo,
     private readonly botSecret: BotSecretStore,
+    private readonly botCredential: BotCredentialWriter,
     private readonly integrations: IntegrationRepo,
     private readonly channels: IntegrationChannelRepo,
     private readonly agents: AgentRepo,
@@ -173,8 +175,94 @@ export class SharedBotOrchestrator {
 
   /** Release a bot from the relay pool (transport flipped / uninstalled / last
    *  install removed): broadcast `rc/bot-unassign` to every connected relay. */
-  async unassign(bot: BotRecord): Promise<void> {
-    this.broadcast((ch) => ch.send('rc/bot-unassign', { botId: bot.id }))
+  async unassign(bot: BotRecord, opts?: { credentialRevision?: number }): Promise<void> {
+    this.broadcast((ch) =>
+      ch.send('rc/bot-unassign', {
+        botId: bot.id,
+        // Only a REVOCATION stamps this: it is the one release that races a
+        // re-install, and the relay drops it if it already holds a newer
+        // assignment. Transport flips / un-shares / last-install-removed are
+        // unconditional (they do not describe a credential generation).
+        ...(opts?.credentialRevision !== undefined ? { credentialRevision: opts.credentialRevision } : {})
+      })
+    )
+  }
+
+  /**
+   * `rc/bot-revoked` — the workspace uninstalled the app / revoked its tokens
+   * (preset-agents.md §5.3 lifecycle). The bot's credential is dead: mark the Bot
+   * + its installs revoked, release the relay ingest, and pull the send-only
+   * specs from member daemons (mirrors the integration DELETE route's push).
+   * Idempotent — a duplicate report finds no active installs and only re-stamps.
+   *
+   * GENERATION-FENCED. Slack does not order `app_uninstalled`/`tokens_revoked`,
+   * so a delayed event from a prior install can arrive after the workspace has
+   * re-installed; applying it would revoke a live, freshly-authorized bot and
+   * silently kill its integrations. The compare-and-set refuses that report, and
+   * the rest of this method — which is what actually tears the bot down — is
+   * skipped with it.
+   *
+   * The decision and the integration flip are ONE transaction serialized on the
+   * bot row (`BotCredentialWriter.revoke`). Committing them separately let a
+   * re-install slip in between: it would bump to N+1 and re-activate an install,
+   * and the flip would then revoke that FRESH install, leaving a live bot with
+   * nothing installed. The external effects below run only after that commit,
+   * and re-check the generation first — a re-install that won the row lock
+   * broadcasts its own assign, which our `bot-unassign` must not race past.
+   */
+  async revokeBot(
+    botId: string,
+    reason: 'app_uninstalled' | 'tokens_revoked',
+    fence: { revision?: number; eventAtMs?: number } = {}
+  ): Promise<{ applied: boolean }> {
+    const bot = await this.bots.get(BotId(botId))
+    // Unknown bot: nothing to apply and nothing that will ever change that, so
+    // this is terminal for the reporting relay — not a reason to keep retrying.
+    if (!bot) return { applied: false }
+    // Snapshot members BEFORE the flip — listForBot is active-only.
+    const installs = await this.integrations.listForBot(bot.id)
+    const { applied } = await this.botCredential.revoke(bot.id, new Date(), {
+      ...(fence.revision !== undefined ? { revision: fence.revision } : {}),
+      ...(fence.eventAtMs !== undefined ? { eventAt: new Date(fence.eventAtMs) } : {})
+    })
+    if (!applied) {
+      this.log.info(
+        { botId: bot.id, reason, reportedRevision: fence.revision, currentRevision: bot.credentialRevision },
+        'shared-bot: stale revoke ignored — credential was replaced since the event'
+      )
+      return { applied: false }
+    }
+    // Re-check after the commit: a re-install may have taken the row lock the
+    // moment we released it, in which case IT owns the live state and has
+    // already broadcast a fresh assign. Emitting the teardown now would tear
+    // down a credential we no longer describe.
+    const after = await this.bots.get(bot.id)
+    if (after && after.credentialRevision !== bot.credentialRevision) {
+      this.log.info(
+        { botId: bot.id, reason, from: bot.credentialRevision, to: after.credentialRevision },
+        'shared-bot: revoke committed but the credential was replaced — skipping teardown effects'
+      )
+      // The revocation itself DID commit, so the report is settled.
+      return { applied: true }
+    }
+    // The re-read above narrows the race but cannot close it: a re-install can
+    // still commit N+1 and broadcast its assign between that read and this send.
+    // Stamping the revoked generation moves the decision to the point of
+    // APPLICATION — the relay drops this release if it already holds a newer
+    // assignment, so a stale teardown can never kill a live ingest.
+    await this.unassign(bot, { credentialRevision: bot.credentialRevision })
+    for (const integration of installs) {
+      const agent = await this.agents.get(integration.agentId)
+      if (!agent?.daemonId) continue
+      try {
+        await this.control.integrationRemove(agent.daemonId, { integrationId: integration.id })
+      } catch (err) {
+        if (!(err instanceof NoConnection)) throw err
+        this.log.debug?.({ integrationId: integration.id }, 'shared-bot: revoke spec removal skipped — daemon offline')
+      }
+    }
+    this.log.info({ botId: bot.id, reason, installs: installs.length }, 'shared-bot: bot revoked by workspace')
+    return { applied: true }
   }
 
   /** Converge EVERY http+active bot — the failover / broad-change worklist. */
@@ -729,6 +817,15 @@ export class SharedBotOrchestrator {
       // Slack app id ("A…", == Events API api_app_id) — O(1) inbound demux. Absent on
       // a manual-paste http bot (no xapp to parse); the relay verify-scans instead.
       ...(bot.slackAppId ? { apiAppId: bot.slackAppId } : {}),
+      // Workspace id ("T…") — present only for a distributed (platform) app's
+      // install, where the composite (api_app_id, team_id) is the ONLY safe demux
+      // (all sibling installs share the app id AND the signing secret).
+      ...(bot.teamId ? { teamId: bot.teamId } : {}),
+      // Persisted at OAuth exchange; spares the relay an auth.test round-trip.
+      ...(bot.botUserId ? { botUserId: bot.botUserId } : {}),
+      // Generation of the credentials below — echoed back on `rc/bot-revoked` so a
+      // revocation observed under a REPLACED credential cannot kill this one.
+      credentialRevision: bot.credentialRevision,
       secrets: { botToken: secret.botToken, signingSecret: secret.signingSecret ?? '' },
       members: compiled.members,
       agents: compiled.agents,

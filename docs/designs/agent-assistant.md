@@ -1,13 +1,27 @@
-# AgentConnect MCP + Agent Assistant — System-Operations MCP and Built-in Assistant Design
+# AgentConnect MCP — System-Operations MCP for AI Tools
 
-**Status**: MCP and OAuth are available; the built-in assistant and delegated
-credential path remain planned · **Version**: v2
+**Status**: MCP and OAuth are available; the delegated credential path (P4)
+remains planned. **The DEDICATED built-in assistant agent (P3) is CANCELLED**
+(2026-07-29, see [preset-agents.md](preset-agents.md)): assistant/admin
+capabilities are planned to fold into the `agentconnect` general preset instead —
+first step: its webapp (Playground/webchat) sessions get this MCP's admin toolset,
+with the per-session delegated key (P4's webchat half) still the security
+prerequisite. The dedicated agent's own design (identity machinery, restricted
+profile, built-in prompt) is deleted from this document — git history holds it;
+what transfers is specified live in §4 (the session credential, incl. §4.3
+injection) and §6 (the tool surface). · **Version**: v2
 **Scope**: protocol + daemon + control-plane + web
 
-> **v2 architecture**: expose "operate the AgentConnect system" as **one CP-hosted MCP server (AgentConnect MCP)**. Users connect it from **their own AI tools** (claude.ai, Claude Code, Cursor, and others) and operate the system through it. It supports **automatic OAuth browser sign-in** (paste URL → browser opens → sign in and consent → complete, like Linear/Sentry). **agent-assistant is a built-in agent that comes pre-authenticated to this MCP.** One tool set, authorization model (identity = user behind the credential), and audit system serves three kinds of consumers:
+> **Orientation.** Shipped: the MCP server and its tools (§6), the embedded OAuth
+> AS (§7). Planned: the per-session delegated credential (§4, "P4") — the
+> prerequisite for reaching this toolset from inside an AgentConnect conversation.
+> Cancelled: the dedicated built-in assistant agent that was this document's
+> original vehicle for that conversation (§3, §8).
+
+> **v2 architecture**: expose "operate the AgentConnect system" as **one CP-hosted MCP server (AgentConnect MCP)**. Users connect it from **their own AI tools** (claude.ai, Claude Code, Cursor, and others) and operate the system through it. It supports **automatic OAuth browser sign-in** (paste URL → browser opens → sign in and consent → complete, like Linear/Sentry). One tool set, authorization model (identity = user behind the credential), and audit system serves three kinds of consumers:
 >
-> 1. **External AI tools**—OAuth browser sign-in (§7) or manually supplied personal API key (existing `/me/keys`);
-> 2. **agent-assistant**—a short-lived delegated key injected automatically by the platform ("pre-authenticated," §4/§5);
+> 1. **External AI tools**—OAuth browser sign-in (§7) or manually supplied personal API key (existing `/me/keys`). **This is the shipped consumer.**
+> 2. **A platform-injected session credential**—a short-lived delegated key the platform mints for a trusted webchat session and injects without the user pasting anything ("pre-authenticated," §4/§5). Planned, not built. This consumer originally motivated a dedicated built-in `agent-assistant` agent (§3/§8); that agent is cancelled, and the successor is the `agentconnect` general preset's own webapp sessions (preset-agents.md §4).
 > 3. **Future IM-bound identities**—after identity binding, mint a delegated key for the bound user (§12).
 >
 > The authorization kernel is invariant: **what a caller can see and do is exactly what the user behind its credential can see and do**, enforced through existing RBAC + resource visibility.
@@ -16,31 +30,31 @@ credential path remain planned · **Version**: v2
 
 ## 1. Background and Goals
 
-Users currently operate AgentConnect through the Web console or REST API. This design adds two paths:
+Users currently operate AgentConnect through the Web console or REST API. This design adds:
 
-- **AgentConnect MCP**: a CP-hosted MCP endpoint. Users add it to their own AI tools and manage agents, crons, and integrations or inspect sessions/usage through natural language ("stop alerts-bot" or "whose agent used the most tokens this week?"). This turns the CP management plane into a product surface **for AI to use**, without locking it to one harness.
-- **agent-assistant**: one built-in agent per organization, available to every member and connected to AgentConnect MCP out of the box. It gives users who do not want to configure MCP a Web-based conversational entry point (webchat/Playground).
+- **AgentConnect MCP** (shipped): a CP-hosted MCP endpoint. Users add it to their own AI tools and manage agents, crons, and integrations or inspect sessions/usage through natural language ("stop alerts-bot" or "whose agent used the most tokens this week?"). This turns the CP management plane into a product surface **for AI to use**, without locking it to one harness.
+- **A conversational entry inside AgentConnect itself** (planned): a webchat/Playground session that reaches the same toolset through a platform-injected per-session credential (§4), for users who do not want to configure MCP in an external tool. The vehicle is the `agentconnect` general preset's webapp sessions (preset-agents.md §4); the dedicated built-in agent this document originally proposed is cancelled (§3).
 
 Design requirements:
 
-1. **Authorization = user behind the credential**. The assistant/MCP has no authority of its own. Resources hidden from that user remain hidden from tools; resources that user cannot delete remain undeletable.
+1. **Authorization = user behind the credential**. The MCP has no authority of its own, and neither does any agent that reaches it. Resources hidden from that user remain hidden from tools; resources that user cannot delete remain undeletable.
 2. **External connection must support zero-configuration browser sign-in** through the MCP Authorization OAuth flow (§7), without forcing users to copy API keys.
-3. **agent-assistant is a built-in resource**: platform-provided, one per organization, undeletable, reserved slug, visible to everyone.
-4. **Assistant v1 is Web-only**: only webchat has a trusted console principal. IM ingress waits for cross-system identity binding (§12). External AI tools are unaffected because their OAuth/personal key already establishes a trusted identity.
+3. **No built-in agent ships.** The assistant slugs stay reserved as an impersonation guard only (preset-agents.md §3.3).
+4. **The in-product conversational entry is Web-only**: only webchat has a trusted console principal. IM ingress waits for cross-system identity binding (§12). External AI tools are unaffected because their OAuth/personal key already establishes a trusted identity.
 
 ### Architecture in One Diagram
 
 ```
-External AI tool (claude.ai / Claude Code / Cursor…)
-        │  OAuth browser sign-in (§7) or Bearer personal key
-        ▼
-User ─ webchat ─▶ assistant (daemon ACP) ─(delegated key auto-injected = "pre-authenticated")─▶ AgentConnect MCP (CP-hosted, §6)
-                                                                                              │ calls service layer in process
-                                                                                              ▼
+External AI tool (claude.ai / Claude Code / Cursor…)          ── SHIPPED ──┐
+        │  OAuth browser sign-in (§7) or Bearer personal key               │
+        ▼                                                                  ▼
+User ─ webchat ─▶ agent session on a daemon (ACP) ─(delegated key auto-injected ──▶ AgentConnect MCP (CP-hosted, §6)
+                 [planned, §4; target = the `agentconnect`  = "pre-authenticated", §4)   │ calls service layer in process
+                  general preset's webapp sessions —                                     ▼
                                                                      existing RBAC + visibility unchanged + per-operation audit
 ```
 
-The CP remains outside the message hot path—the assistant conversation stays local to the daemon. MCP tool calls are **control-plane operations**, which properly belong on the CP.
+The CP remains outside the message hot path—the agent conversation stays local to the daemon. MCP tool calls are **control-plane operations**, which properly belong on the CP.
 
 ---
 
@@ -52,76 +66,41 @@ The CP remains outside the message hot path—the assistant conversation stays l
 | Authorization model      | **Credential is identity: all three credential types (§5) resolve to a user, and tools execute as that user**                                                     | Assistant/MCP holds organization-level admin credentials (prompt injection compromises the whole organization; viewer can escalate)                                                                                                 |
 | External authentication  | **Thin OAuth AS embedded in CP (automatic browser sign-in, §7) + Bearer personal-key fallback**                                                                   | Keys only (claude.ai connectors have no formal manual-header UI and UX is poor); OAuth only (dead end for headless/CI—Sentry and Atlassian both had to add key paths)                                                               |
 | OAuth AS host            | **Thin AS embedded in CP, issuing opaque tokens; `/authorize` reuses console login** (mainstream pattern from Sentry/Notion/Linear/Atlassian/Cloudflare guidance) | Use Logto directly as AS—**Logto still has no DCR** (roadmap Backlog, CIMD Paused, absent in v1.41.0); wildcard redirect URIs exclude ports (breaks random localhost ports from Claude Code); token model couples to Logto JWT/JWKS |
-| Built-in discriminator   | **`AgentKind { standard, assistant }`: `Agent.kind` column + `AgentSpec.kind`**                                                                                   | Reuse `createdByUserId=null` (CLI-created agents also use null); magic slug (spoofable)                                                                                                                                             |
-| Assistant visibility     | **Fixed `visibility='org'`; reject writes to `/sharing` and `/call-policy` for assistant**                                                                        | Restricted (contradicts "available to everyone"); owner-only (obsolete v0 requirement)                                                                                                                                              |
-| Assistant ingress        | **Webchat only in v1**; cannot bind integrations, run from cron, or receive peer `messageAgent`                                                                   | Direct IM ingress (platform cannot map IM identity to console user, breaking the authorization model)                                                                                                                               |
-| Enablement               | **Owner explicitly enables and selects placement daemon** (disabled by default; MCP remains available to external tools by default)                               | Auto-enable at organization creation (assistant consumes a selected daemon's machine/model budget and requires an explicit decision)                                                                                                |
-| Session visibility       | **Assistant sessions visible only to initiator + organization owner** (§9.4)                                                                                      | Derive from agent = visible to whole organization (conversation includes data from an individual user's perspective and leaks laterally)                                                                                            |
-| Memory tools             | **Remove memory tools from assistant** (agent memory is shared across users)                                                                                      | Retain them (A's information becomes readable by B); per-user namespace (too large for v1, future work)                                                                                                                             |
 | High-risk operations     | **Credential/member/organization/access-control operations excluded from tool catalog; delegated keys hard-denied for those route families in the CP** (§6.3)     | Expose everything and rely on RBAC (injection-triggered key minting/member changes have excessive blast radius)                                                                                                                     |
 | Destructive confirmation | **Tool schema requires exact `confirm: '<resource-name>'` echo** (§6.4)                                                                                           | Prompt-only convention (fails when model behavior drifts)                                                                                                                                                                           |
-| Assistant runtime        | **Locked scratch workspace + restricted profile (no shell/file tools), runtime allowlist** (§8.2)                                                                 | Same profile as ordinary agents (a viewer uses assistant to execute shell on daemon host, a vertical escalation)                                                                                                                    |
 
 ---
 
-## 3. Data Model (Control Plane)
+## 3. The built-in assistant agent — cancelled
 
-`packages/control-plane/prisma/schema.prisma`:
+The original design gave each organization one built-in agent (`AgentKind`
+discriminator + partial unique index, fixed properties locked at creation, a
+dedicated `/orgs/:orgId/assistant` provisioning surface, roster/wire plumbing).
+**That agent is cancelled** (2026-07-29, preset-agents.md §4): no such kind
+ships, and the assistant slugs stay reserved only as an impersonation guard.
 
-```prisma
-enum AgentKind {
-  standard
-  assistant
-}
+None of that identity machinery transfers. It existed to make a second built-in
+agent behave _unlike_ an ordinary one, whereas the successor — the AgentConnect
+MCP admin toolset reached from the `agentconnect` general preset's webapp
+sessions — runs inside an ordinary, user-editable agent. The boundary that DOES
+carry forward is the credential (§4) and the closed, confirm-gated, auditable
+tool surface (§6), both specified there. Git history holds the full cancelled
+model if its rationale is ever needed.
 
-model Agent {
-  // ... existing fields (:291-345)
-  kind AgentKind @default(standard)   // beside status (:298)
-}
-```
+Still live from this area, and unaffected by the cancellation: the reserved
+agent slugs (authoritative set in preset-agents.md §3.3) and the OAuth tables
+of §7.
 
-- The additive `kind` column defaults existing and new ordinary agents to
-  `standard`; assistant rows use `assistant`. Rollout sequencing is outside
-  this data-model contract.
-- **Reserved slug**: add `RESERVED_AGENT_SLUGS = {'agent-assistant', 'assistant'}` in `http/dto/index.ts`. Existing `RESERVED_SLUGS` at `:590-606` reserves only **organization** slugs; agent names have no protection. Validate `CreateAgentBody`/`UpdateAgentBody` to prevent impersonation.
-- At most one row per organization: partial unique index `CREATE UNIQUE INDEX ... ON "agent"("orgId") WHERE "kind"='assistant'`.
-- Add `kind` to `AgentRecord`/`CreateAgentInput` in `ports.ts`; map it in `agent.repo.ts` `toRecord` at `:59-97`; add it to `AgentDto` in `dto/index.ts:239-273`. It **must appear in the zod DTO or serialization strips it** (house rule from resource-visibility §5.8).
-- OAuth tables are in §7.4 (`oauth_client`, `oauth_grant`).
+## 4. Session Ingress and Identity Binding (P4, planned — Webchat Only)
 
-### 3.1 Fixed Assistant Properties (Locked at Creation; Reject Changes Through PATCH and Dedicated Endpoints)
-
-| Field                                  | Fixed value                   | Enforcement point                                                                                                      |
-| -------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `name`                                 | `agent-assistant`             | Reserved slug + kind discriminator                                                                                     |
-| `visibility` / `sharedWith`            | `org` / `[]`                  | `PUT /agents/:id/sharing` (near `agents.ts:485-520`) returns 400 for `kind='assistant'`                                |
-| `callPolicy` / `allowedCallerAgentIds` | `selected` / `[]`             | `PUT /agents/:id/call-policy` returns 400; existing daemon check at `daemon.ts:2070` naturally rejects every peer call |
-| `workspaceMode`                        | `scratch`                     | PATCH validation                                                                                                       |
-| Integrations                           | Always empty                  | Add kind check to agent validation in `POST /integrations` (`integrations.ts:116-118`) → 400                           |
-| Cron target                            | Cannot target assistant in v1 | Add kind check to `body.agentId` validation in `PUT /crons/:id` (`crons.ts:96-99`) → 400                               |
-| Deletion                               | `DELETE /agents/:id` → 400    | Owner disables by setting `status='inactive'`                                                                          |
-
-Owner-only editable fields (decision §15.4): `runtime`, `runtimeOverrides` (model/effort/fastMode), `status`, and placement (`daemonId`).
-
-### 3.2 Enablement / Provisioning (Dedicated Endpoint, Not Generic POST `/agents`)
-
-```
-GET    /orgs/:orgId/assistant   → { enabled, agentId?, daemonId?, status? }
-PUT    /orgs/:orgId/assistant   → enable/move placement: { daemonId, runtime? } (idempotent upsert)
-DELETE /orgs/:orgId/assistant   → disable (status='inactive'; retain row)
-```
-
-Guard with `denyNonOwner`. `PUT`: validate that daemon belongs to the organization and is online and that runtime is in the lockable allowlist (§8.2) → upsert the `kind='assistant'` row (`createdByUserId` = enabling user for audit) → send to daemon through `replicateUpsert` (`agents.ts:241-250`). OpenAPI uses `tags: [Tag.Agents]`, `operationId: getAssistant/enableAssistant/disableAssistant`, and complete summary/description (house rule).
-
-### 3.3 Roster / Wire
-
-Add `kind: z.enum(['standard','assistant']).default('standard')` to `AgentSpec` (`packages/protocol/src/frames/agent.ts:51-95`):
-
-- Daemon needs kind to (1) inject AgentConnect MCP (§8.1), (2) apply the restricted runtime profile (§8.2), and (3) reject locally configured integrations. It is a **behavior field, not a visibility field**, so it does not violate "visibility never goes on wire" (resource-visibility §9). Copy it in `orchestrator/agentSpecAssembler.ts` when `agentRecordToSpec` builds the wire spec.
-- Add `kind` to daemon `AgentSchema` (`packages/daemon/src/agents/agent-schema.ts:94-158`) and classify it as CP-owned in `write-agent.ts`.
-
----
-
-## 4. Assistant Ingress and Identity Binding (v1 = Webchat Only)
+> **Still planned, and still the prerequisite.** The per-session delegated
+> credential below is what makes any admin tool safe to reach from inside an
+> AgentConnect conversation, and it is unbuilt. **One correction:** step 1 originally
+> minted "only when the target agent has `kind='assistant'`". No such kind ships, so
+> the gate is **session-shaped** instead — a webapp session on the agent entitled to
+> the toolset (preset-agents.md §4). The rest of this section — the verification leg,
+> the ownership-bound `conversationId`, session-scoped binding, and fail-closed
+> injection — is unaffected.
 
 Current chain: browser obtains a short-lived token from
 `POST /agents/:agentId/webchat/token` → connects to the **relay pool**
@@ -140,8 +119,10 @@ explicit delegation extension rather than treating the existing verification
 response as a complete mint point:
 
 1. After token verification, ask CP to resolve the user's current membership
-   role and mint `apiKeyService.mintDelegated(...)` only when the target agent
-   has `kind='assistant'` (§5).
+   role and mint `apiKeyService.mintDelegated(...)` only for a session that is
+   entitled to the admin toolset (§5) — originally "only when the
+   target agent has `kind='assistant'`"; the successor condition is the
+   `agentconnect` general preset's webapp sessions (preset-agents.md §4).
 2. Include the token-bound `conversationId` in that request, then carry
    `{ delegationId, secret, userId, displayName, expiresAt }` through a dedicated
    session-establishment frame or the first `rd/*` message. **The daemon holds
@@ -150,10 +131,39 @@ response as a complete mint point:
    `sessionKey` (local-store session row, restart recoverable). Reconnecting as
    the same user mints and **replaces** it, immediately revoking the old key.
 4. MCP injection carries only the credential bound to that authenticated
-   session (§8.1), preventing a caller-supplied conversation ID from crossing
+   session (§4.3), preventing a caller-supplied conversation ID from crossing
    user boundaries.
 
-No non-webchat path reaches assistant: §3.1 closes integration, cron, and peer-call paths; routeRules cannot match an agent with no integration.
+The original design could argue that no non-webchat path even reached the
+assistant: that agent had no integrations, so cron, peer-call, and routeRules
+could never match it. **The successor cannot borrow that argument** — the general
+preset is a fully integrated agent that Slack, GitHub, and crons all reach. So
+the boundary must hold at the **credential**: a session with no minted delegation
+gets no admin toolset at all (§4.3, fail-closed). That is why P4 is a hard
+prerequisite rather than an accompaniment.
+
+### 4.3 Injecting the toolset without exposing the credential
+
+Moved here from the cancelled §8 — these mechanics are agent-shape-independent;
+only the branch changes, from "this agent has `kind='assistant'`" to "this
+session holds a delegation".
+
+- Inject **exactly one** MCP server for a delegated session: the CP's
+  AgentConnect MCP endpoint, with the key bound to that session. The admin
+  surface stays closed and auditable — do not widen it with memory,
+  collaboration, or platform tools, and do not resolve external `mcpServers`
+  into it.
+- Transport: where the runtime supports HTTP MCP (`runtime-prober.ts`
+  `mcpCapabilities`), pass URL + header directly; otherwise reuse the existing
+  stdio bridge (`mcp/bridge.ts`), where the daemon spawns the bridge with
+  `AC_MCP_URL` / `AC_MCP_KEY` in the child's environment. **The credential lives
+  only in an environment the daemon created for that child and never becomes
+  visible to the model** — the same discipline as the existing `AC_MCP_TOKEN`.
+- Derive the CP endpoint from `controlPlane.url` by ws(s)→http(s): the CP serves
+  one port, so reachability matches the live WebSocket.
+- A missing or expired delegation **fails closed**: `tools/call` returns an
+  explicit "session credential expired; reconnect" error rather than degrading to
+  an unauthenticated call. Reconnecting remints and restores operation.
 
 ---
 
@@ -161,7 +171,7 @@ No non-webchat path reaches assistant: §3.1 closes integration, cron, and peer-
 
 All use the `ApiKey` table and the same verification pipeline from daemon-api-key-auth.md (hash-only, pepper, revocable; dot-free Bearer branch in `http/plugins/auth.ts`):
 
-| Dimension              | Personal key (manual)                                                                                                                                                                                            | **OAuth token (§7, new)**                                | **Delegated key (assistant, new)**                                                       |
+| Dimension              | Personal key (manual)                                                                                                                                                                                            | **OAuth token (§7, new)**                                | **Delegated key (webchat session, planned)**                                             |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | principalType          | `user` (existing)                                                                                                                                                                                                | `oauth`                                                  | `delegated` (`relay` is an existing non-human principal precedent, `ports.ts:94`)        |
 | Minted by              | User self-service `POST /me/keys` (`me-keys.ts`)                                                                                                                                                                 | **Only `/oauth/token`** (code/refresh exchange)          | **Only webchat-token verification** (§4; delivery follows the relay→daemon session path) |
@@ -217,22 +227,22 @@ Write tools require `mcp:write` for OAuth tokens or an unrestricted personal key
 ### 6.3 Credential-Specific Boundaries and Deny-List
 
 - **Personal key / OAuth token (external tools)**: the user explicitly authorized the credential, so the tool catalog is **curation, not a security boundary**. Credential/member/organization/access-control operations are intentionally absent so the user's AI lacks convenient high-risk buttons, but hard boundaries are user RBAC + OAuth scopes. Existing guards block the worst cases (a key cannot mint another key, `me-keys.ts:84`; OAuth follows the same rule).
-- **Delegated key (assistant)**: add a **server-side hard denial beyond the catalog**. New guard `denyDelegated` returns 403 whenever `req.delegation` exists for these route families, preventing direct handcrafted requests that bypass tools:
-  - all credential routes: `/me/keys`, `/daemons/token`, `/daemons/:id/keys`, `/agents/:id/webchat/token` (prevents assistant recursively opening another agent);
+- **Delegated key (a platform-injected session credential, §4)**: add a **server-side hard denial beyond the catalog**. New guard `denyDelegated` returns 403 whenever `req.delegation` exists for these route families, preventing direct handcrafted requests that bypass tools:
+  - all credential routes: `/me/keys`, `/daemons/token`, `/daemons/:id/keys`, `/agents/:id/webchat/token` (prevents a delegated session recursively opening another agent);
   - members and organization: writes under `/members`, `PATCH|DELETE /orgs/:orgId`;
   - access control: writes to all three `/sharing` families and `/agents/:id/call-policy`;
   - credential-bearing integrations: writes to `/bots`, Slack install / GitHub installation funnels, and `/slack/config`;
   - hook writes (persistent entry points; read-only in v1);
-  - **assistant itself**: every write targeting `kind='assistant'` plus `PUT|DELETE /orgs/:orgId/assistant` (cannot modify/delete/move or unlock itself).
+  - **its own host agent** — the "cannot unlock itself" property. The cancelled design got this from guards on `kind='assistant'`; with the toolset inside an ordinary agent, the successor must re-establish it against whatever configures that agent's admin sessions.
 
 ### 6.4 Destructive Operations Require Schema-Level Confirmation
 
-Schemas for 🔥 tools `deleteAgent`, `deleteCron`, and `removeIntegration` require `confirm: string` that must **exactly equal the target resource name**. The CP compares it in the tool execution layer. This is a mechanism, not a prompt convention, and also applies to external AI tools. The built-in assistant prompt (§8.3) additionally requires restating the operation to the user and receiving verbal confirmation.
+Schemas for 🔥 tools `deleteAgent`, `deleteCron`, and `removeIntegration` require `confirm: string` that must **exactly equal the target resource name**. The CP compares it in the tool execution layer. This is a mechanism, not a prompt convention, and applies to every caller. A prompt may additionally ask for verbal confirmation, but that is a habit, never the boundary.
 
 ### 6.5 Rate Limits and Audit
 
 - Per-key limits: 30 write operations/min and 120 total operations/min using an in-memory CP sliding window. 429 returns "Too many operations."
-- Every tool invocation writes `assistant_op_log` (§9.3), with `principalType` distinguishing external/OAuth/delegated.
+- Every tool invocation writes an `audit_event` of kind `mcp_tool_call` (§9.3), with `principalType` distinguishing external/OAuth/delegated.
 
 ---
 
@@ -339,56 +349,44 @@ The AS is entirely Fastify-native routes (`http/oauth/routes.ts` + `metadata.ts`
 
 ---
 
-## 8. Daemon-Side Implementation (the Other Half of "Pre-Authenticated")
+## 8. Daemon-side injection — cancelled as written, mechanics moved
 
-Tools live in the CP. The daemon only **connects MCP to assistant and supplies the credential**.
+Every rule here branched on `kind='assistant'`, and no such kind ships. The
+transferable part — how the MCP server and its credential reach a session
+without the credential ever becoming visible to the model — now lives in §4.3,
+where the branch is session-shaped rather than agent-kind-shaped.
 
-### 8.1 MCP Injection
+Two rules do **not** transfer and are deliberately not carried forward:
 
-Branch `mcpServersFor` (`daemon.ts:725`) by kind:
-
-- `kind='assistant'` → inject **one** MCP server: AgentConnect MCP (CP endpoint) with delegated key bound to this session (§4). Do **not** inject memory/collaboration/platform tools (`toolsForIntegrations`, `tools.ts:344`) and do **not** resolve external `mcpServers` (early kind check in `resolve-servers.ts`). The assistant capability surface must be closed and auditable.
-- Transport: if runtime probing (`runtime-prober.ts` `mcpCapabilities`) supports HTTP MCP, provide URL + header directly. Otherwise reuse existing stdio bridge (`mcp/bridge.ts` / `index.ts:110` precedent): daemon spawns an `mcp-remote-bridge` subcommand with `AC_MCP_URL`/`AC_MCP_KEY` in environment. **The credential exists only in an environment created by daemon for the child and remains invisible to the model**, matching existing `AC_MCP_TOKEN` discipline.
-- Derive CP endpoint from `controlPlane.url` (near `config/config-schema.ts:49`) by ws(s)→http(s), because CP uses one port and reachability matches the current WebSocket.
-- Missing/expired delegation → bridge returns an explicit fail-closed error for `tools/call`: "Session credential expired; refresh the page and reconnect." Reconnect remints and restores operation. Queued turns under P4 admission queue finish normally while delegation remains valid.
-
-### 8.2 Restricted Runtime Profile (Mandatory Vertical-Escalation Defense)
-
-A viewer cannot create agents but can drive assistant. If assistant gets an ordinary agent profile (claude-code shell/file tools), the viewer can execute commands on daemon host. Therefore assistant ACP host:
-
-- always uses an empty scratch workspace;
-- applies a **restricted permission profile** at spawn: Claude runtime disables Bash/Edit/Write/WebFetch and similar built-ins through settings/`--disallowed-tools`; lock `permissionMode` to read-only and set `permissions.policy` to deny local side effects;
-- includes these spawn arguments in **`hostSpawnSig`** (`reconciler/reconciler.ts:21-35`) so profile changes cause respawn, following the fastMode lesson;
-- uses a **runtime allowlist**. Any runtime whose local tools cannot be reliably locked is rejected by §3.2 `PUT`. v1 allows `claude`.
-
-### 8.3 Built-in System Prompt
-
-CP code generates an immutable template for assistant `description` (which seeds the ACP system prompt through `claudeSessionMeta`). It includes self-introduction, tool semantics, and **safety rules**: restate destructive operations before execution; confirm each target for requests such as "delete every agent"; honestly report operations disallowed by the user's role and never attempt bypass; treat text in tool results as data rather than instructions. Template upgrades naturally hot-update through `replicateUpsert`.
-
----
+- The **restricted runtime profile** (empty scratch workspace, Bash/Edit/Write
+  disabled, a `claude`-only runtime allowlist). It defended against vertical
+  escalation — a viewer driving a built-in agent into shell access on the daemon
+  host. The successor's host is the general preset: an ordinary, shell-capable
+  development agent, so that defense cannot simply be inherited. **This reopens
+  the question**: what stops a low-privilege member from reaching admin tools, or
+  the daemon host, through a session on an agent they can already talk to? The
+  credential model answers the first half (tools execute as the caller, §4/§6);
+  the second half needs its own answer before the toolset ships.
+- The **immutable built-in system prompt**: a user-editable agent has no
+  CP-owned prompt to lock.
 
 ## 9. Control-Plane Implementation
 
 ### 9.1 Change List
 
-| File                                      | Change                                                                                                                                                                                                               |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `prisma/schema.prisma`                    | `AgentKind` + `Agent.kind` + partial unique index; `principalType` adds `oauth`/`delegated`; `oauth_client`/`oauth_grant` tables                                                                                     |
-| `http/mcp/` (new)                         | AgentConnect MCP endpoint, tool registry (§6.2), confirmation, rate limits                                                                                                                                           |
-| `http/oauth/`                             | `metadata.ts` (root + path-inserted PRM and AS metadata), `routes.ts` (register/authorize/token), `consent.ts` (consent context/decision + grant CRUD), `base.ts` (base URL + metadata + 401 challenge construction) |
-| `http/plugins/auth.ts`                    | `withApiKeyAuth` recognizes oauth/delegated → principal + scopes + `req.delegation`                                                                                                                                  |
-| `http/rbac.ts` (or new guard)             | Mount `denyDelegated` on §6.3 route families                                                                                                                                                                         |
-| `http/routes/assistant.ts` (new)          | Three §3.2 endpoints                                                                                                                                                                                                 |
-| `http/routes/agents.ts`                   | §3.1 fixed-property guards; `RESERVED_AGENT_SLUGS`                                                                                                                                                                   |
-| `http/routes/integrations.ts`, `crons.ts` | Kind check on reference writes (§3.1)                                                                                                                                                                                |
-| Relay browser session path                | Add an explicit CP mint request carrying the authenticated relay `chatId`, then deliver the delegation through the relay→daemon session path (§4)                                                                    |
-| `registry/apiKeyService.ts`               | `mintDelegated`/`mintOauth` + verification branches + expiry cleanup                                                                                                                                                 |
-| `orchestrator/agentSpecAssembler.ts`      | `agentRecordToSpec` copies `kind` (function moved from `placement.ts`)                                                                                                                                               |
-| Audit                                     | Tool execution writes `audit_event` kind `mcp_tool_call` (§9.3)                                                                                                                                                      |
+| File                          | Change                                                                                                                                                                                                               |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `http/mcp/` (new)             | AgentConnect MCP endpoint, tool registry (§6.2), confirmation, rate limits                                                                                                                                           |
+| `http/oauth/`                 | `metadata.ts` (root + path-inserted PRM and AS metadata), `routes.ts` (register/authorize/token), `consent.ts` (consent context/decision + grant CRUD), `base.ts` (base URL + metadata + 401 challenge construction) |
+| `http/plugins/auth.ts`        | `withApiKeyAuth` recognizes oauth/delegated → principal + scopes + `req.delegation`                                                                                                                                  |
+| `http/rbac.ts` (or new guard) | Mount `denyDelegated` on §6.3 route families                                                                                                                                                                         |
+| Relay browser session path    | Add an explicit CP mint request carrying the authenticated relay `chatId`, then deliver the delegation through the relay→daemon session path (§4)                                                                    |
+| `registry/apiKeyService.ts`   | `mintDelegated`/`mintOauth` + verification branches + expiry cleanup                                                                                                                                                 |
+| Audit                         | Tool execution writes `audit_event` kind `mcp_tool_call` (§9.3)                                                                                                                                                      |
 
 ### 9.2 Visibility Interaction
 
-Assistant row has `visibility='org'`, so existing `canView` (`http/visibility.ts:26-33`) permits all members without predicate changes. When tools operate on **other resources**, service-layer `visibilityWhere`/`canView` filters as the credential user. Restricted resources remain invisible to unauthorized tool callers with 404 semantics, adding no existence oracle.
+When tools operate on resources, service-layer `visibilityWhere`/`canView` filters as the credential user. Restricted resources remain invisible to unauthorized tool callers with 404 semantics, adding no existence oracle. The host agent's own visibility is simply whatever the org set for it.
 
 ### 9.3 Audit
 
@@ -398,11 +396,15 @@ Use the existing append-only `audit_event` stream with kind `mcp_tool_call`
 columns. MCP tool calls are management-plane operations like `cron_change` and
 `hook_change`, so no separate operation-log table is required.
 
-Resource `lastModifiedByUserId` naturally records the **actual user** because they are the principal. An edit through MCP/assistant is equivalent to a console click in resource audit; the operation event supplies the "through which interface" dimension.
+Resource `lastModifiedByUserId` naturally records the **actual user** because they are the principal. An edit through an MCP tool is equivalent to a console click in resource audit; the operation event supplies the "through which interface" dimension.
 
-### 9.4 Session Privacy (Assistant Exception)
+### 9.4 [Superseded] Session Privacy (Assistant Exception)
 
-Session list/detail reads the **CP database** (`SessionMeta`, synchronized from daemon `event/session` snapshots in `sessions.ts:116-183`; transcript body remains daemon-fetched). Visibility normally derives from agent. Assistant is organization-visible, but **its sessions are private per-user operational conversations**:
+> **Superseded** with the assistant agent (§3). Retained because the successor
+> shape inherits the underlying question: an admin-tool conversation is a per-user
+> operational conversation, whoever hosts it.
+
+Session list/detail reads the **CP database** (`SessionMeta`, synchronized from daemon `event/session` snapshots in `sessions.ts:116-183`; transcript body remains daemon-fetched). Visibility normally derives from agent. Assistant would be organization-visible, but **its sessions are private per-user operational conversations**:
 
 - Add optional `initiatorUserId` to `event/session` snapshot (`protocol/frames/telemetry.ts`) and `SessionMeta` (assistant session = delegated userId; ordinary agent omits it, unchanged behavior).
 - CP routes filter `kind='assistant'` rows to `initiatorUserId === viewer.userId` or owner (governance exemption). Apply the same gate to `/sessions/:id/messages` and `tool-body`.
@@ -412,15 +414,14 @@ Session list/detail reads the **CP database** (`SessionMeta`, synchronized from 
 
 ## 10. Security Analysis
 
-1. **Confused deputy (eliminated)**: tool authority always equals credential user. CP service layer enforces RBAC/visibility from `req.principal`; role is resolved live, so demotion applies immediately. MCP/assistant has no independent authority to borrow.
+1. **Confused deputy (eliminated)**: tool authority always equals credential user. CP service layer enforces RBAC/visibility from `req.principal`; role is resolved live, so demotion applies immediately. The MCP — and any agent session reaching it — has no independent authority to borrow.
 2. **Prompt injection**:
-   - _Assistant_: data such as agent descriptions, session titles, and cron names may contain instructions planted by another member. Defenses: human-only trigger (no automated ingress), delegated deny-list (§6.3), schema-level confirmation (§6.4), rate limits (§6.5), complete audit (§9.3), and prompt declaration separating data from instructions (§8.3).
+   - Tool RESULTS are data, not instructions: agent descriptions, session titles, and cron names may carry text planted by another member. The defenses are CP tool-layer properties and apply to every caller — delegated deny-list (§6.3), schema-level confirmation (§6.4), rate limits (§6.5), complete audit (§9.3).
    - _External AI tool_: same risk exists, but the user **authorized their own tool**. Consent can grant only `mcp:read`; curation, confirmation, and audit still apply. Hard boundary is user RBAC ∩ scopes.
-3. **Vertical escalation (viewer → daemon host shell)**: restricted runtime profile (§8.2) is a hard prerequisite, backed by runtime allowlist. This risk applies only to built-in assistant; external tools do not run on our hosts.
-4. **Credential surface**: delegated key minted only by gateway, 12h, replaced on reconnect; OAuth access token 1h with rotating refresh and Profile revocation; personal key retains existing lifecycle. All store hash-only and every call is audited. **Open DCR grants no authority**: client registration gives no access; every access requires human browser consent.
-5. **Lateral isolation**: no memory tools, sessions isolated by initiator, independent per-user delegation bound to independent sessionKey.
-6. **Who can modify assistant**: owner only for enable/disable/move/model; every self-targeted write through delegation is denied (§6.3), preventing "unlock yourself."
-7. **MCP/OAuth exposure**: same TLS origin as REST. Unauthenticated callers see only 401 + public metadata, intentionally public. Pending authorize requests have short TTL; codes are one-time + PKCE.
+3. **Vertical escalation (member → daemon host shell) — OPEN.** External tools never run on our hosts, so this only bites the in-product path. The cancelled design answered it with a mandatory restricted runtime profile; the successor's host is an ordinary shell-capable agent, so it needs a new answer before the toolset ships (§8, preset-agents.md §9).
+4. **Credential surface**: the delegated key would be minted only by the gateway, 12h, replaced on reconnect (planned, §4); OAuth access token 1h with rotating refresh and Profile revocation; personal key retains existing lifecycle. All store hash-only and every call is audited. **Open DCR grants no authority**: client registration gives no access; every access requires human browser consent.
+5. **Lateral isolation**: independent per-user delegation bound to an independent `sessionKey` (§4). The cancelled design added memory-tool removal and a per-initiator session filter, which were properties of that agent, not of the tool layer.
+6. **MCP/OAuth exposure**: same TLS origin as REST. Unauthenticated callers see only 401 + public metadata, intentionally public. Pending authorize requests have short TTL; codes are one-time + PKCE.
 
 ---
 
@@ -428,39 +429,40 @@ Session list/detail reads the **CP database** (`SessionMeta`, synchronized from 
 
 - **"Connect your AI" page/card** in Settings or Profile: show MCP URL and connection guides for claude.ai connectors, `claude mcp add`, and Cursor. Before OAuth ships, provide manual personal-key path by reusing ApiKeysCard.
 - **OAuth consent page** (§7.3, new route `/oauth/consent`): reuse login + organization/scope selection. Add Profile **"Connected AI tools"** card listing oauth_grant client name, organization, scopes, recent use, and one-click revoke.
-- **Playground/webchat**: pin "Agent Assistant" with a `kind` badge to top of agent list. When disabled, owner sees enable CTA (choose daemon + runtime → `PUT /assistant`); non-owner sees "Ask an owner to enable it."
-- **AgentsView / AgentDetailView**: Built-in badge; hide VisibilityField, AgentVisibilityCard (call-policy), integrations, and workspace cards. Retain model/effort/status with owner gate, reading `dto.kind` and treating server 403 as authoritative. Apply to both desktop and mobile JSX branches per mobile-console house rule.
-- **SessionsView**: no new controls; filtering is server-side (§9.4).
 
 ---
 
 ## 12. Future: IM Ingress Requires Cross-System Identity Binding
 
-Not in v1; reserve the design:
+Not in v1; reserve the design. The mechanism below is agent-shape-independent — it
+is a mint point, and the cancellation of the assistant agent does not touch it:
 
 - New table `platform_identity { orgId, platform, platformUserId, userId, verifiedAt }`; binding flow = start in console → return verification code from IM (or Slack OpenID).
-- After binding, assistant IM admission looks up `platformUserId` → asks CP to mint delegation for userId through a new WebSocket REQ → then uses the same path as webchat. Unbound users receive "Bind your identity first."
-- Cron-driven assistant similarly binds delegation to cron creator; CP verifies the current role at fire time and delivers it with `cron/run`.
+- After binding, IM admission to an admin-tool session looks up `platformUserId` → asks CP to mint delegation for userId through a new WebSocket REQ → then uses the same path as webchat. Unbound users receive "Bind your identity first."
+- A cron-driven session similarly binds delegation to the cron creator; CP verifies the current role at fire time and delivers it with `cron/run`.
 - Both change **only the mint point**. §5/§6 credential/tool/audit are reused unchanged—the long-term benefit of tools in CP and credential-as-identity.
 
 ---
 
 ## 13. Phases
 
-MCP first: **P0–P2 do not touch daemon/protocol/agent model**; assistant layers on top:
+MCP first: **P0–P2 do not touch daemon/protocol/agent model** — they are shipped. P3
+is cancelled; P4 remains the prerequisite for any in-product conversational entry:
 
 | Phase   | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **P0**  | **Available:** `POST /api/v1/mcp` (stateless Streamable HTTP, JSON mode) + personal-key Bearer auth + **15 read-only tools** (reuse REST RBAC/visibility through `app.inject`) + per-call `audit_event`. It is usable from Claude Code with a manually supplied key via `--header`. Code: `src/http/mcp/{tools,routes}.ts` + unit/integration tests                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | **P1**  | **Available:** **9 write tools** (§6.2 ✎: createAgent/updateAgent/deleteAgent, renameDaemon, upsertCron/runCron/deleteCron, setChannelTrigger/removeIntegration; §6.3 curation excludes credential/member/organization/access-control/bot/hook writes) + **§6.4 confirmation gate** (🔥 deletions require exact `confirm` matching resource name; execution comparison returns 412 without echoing expected value) + **§6.5 rate limit** (`McpRateLimiter` in-memory window, 120 total/30 writes per credential per minute, one shared instance across both mounts; rejected calls consume no budget and create no audit) + **per-tool scope gate** (tools/list hides writes from `mcp:read`; tools/call returns 403; org-scope REST guard remains fallback) + MCP ToolAnnotations (readOnlyHint/destructiveHint) + Web **"Connect your AI" modal** (rail-footer Help entry, MCP endpoint URL + claude.ai/Claude Code instructions + "More" external connector docs, runtime-injected `MCP_URL`). Code: `src/http/mcp/{tools,routes,rate-limit}.ts`, `packages/web/…/ConnectAiModal.tsx` + unit/integration tests |
 | **P2**  | **Available:** thin OAuth AS (§7)—well-known PRM (root + path-inserted) + AS metadata, `/oauth/register` (DCR public client), `/oauth/authorize` (validate then 302 to console consent), `/oauth/token` (code + refresh, PKCE S256, form-urlencoded), consent backend (`/api/v1/oauth/consent{,/context}` + `/oauth/grants` CRUD), and Web consent page. `GET/DELETE /oauth/grants` supports revocation through the API; a Profile "Connected AI tools" card is not present. Access token = `oauth` ApiKey (1h) + rotating refresh (two-generation window). Code: `src/http/oauth/*`, `src/registry/oauthService.ts`, `oauth.repo.ts` + unit/integration tests                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| **P3**  | Assistant foundation: `AgentKind` + reserved slug + fixed-property guards + `/assistant` endpoints + `AgentSpec.kind` + restricted runtime profile + Web enablement/badge (conversational, no MCP yet)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| **P4**  | "Pre-authenticated": delegated key (mint/verify/TTL) + webchat-frame delivery + daemon binding and MCP injection + complete `denyDelegated` family + session privacy (§9.4)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **P3**  | **CANCELLED (2026-07-29).** Was: assistant foundation — `AgentKind` + reserved slug + fixed-property guards + `/assistant` endpoints + `AgentSpec.kind` + restricted runtime profile + Web enablement/badge. Only the **reserved slugs** were kept, and they shipped with preset-agents.md M0 instead. Successor: the AgentConnect MCP admin toolset inside the `agentconnect` general preset's webapp sessions (preset-agents.md §4, M3)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | **P5+** | IM identity binding, cron delegation, per-user memory namespace, CIMD, enterprise SSO direct connection (§12 / §7)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ## 14. Test Plan
 
-**Unit (CP)**: MCP registry schema (confirmation required families); credential verification matrix for all three key types (expired/revoked/wrong principalType/cross-org/scopes → reject); `denyDelegated` route-family matrix; assistant fixed-property guard matrix (sharing/call-policy/integration/cron/delete all reject); reserved slug; partial unique index. **Pure OAuth logic**: PKCE S256, redirect URI match (exact hosted / loopback ignore port), one-time code, refresh rotation accepting newest two and rejecting third, `invalid_grant`, exact PRM `resource`, AS metadata includes `code_challenge_methods_supported`.
+Scope: the MCP, OAuth, credential-matrix, `denyDelegated`, and reserved-slug cases
+below are requirements. Cases for the cancelled built-in agent (§3) are gone with it.
+
+**Unit (CP)**: MCP registry schema (confirmation required families); credential verification matrix for all three key types (expired/revoked/wrong principalType/cross-org/scopes → reject); `denyDelegated` route-family matrix; reserved slug. **Pure OAuth logic**: PKCE S256, redirect URI match (exact hosted / loopback ignore port), one-time code, refresh rotation accepting newest two and rejecting third, `invalid_grant`, exact PRM `resource`, AS metadata includes `code_challenge_methods_supported`.
 
 **Integration (CP, real Postgres)**:
 
@@ -471,34 +473,33 @@ MCP first: **P0–P2 do not touch daemon/protocol/agent model**; assistant layer
 - rate limit returns 429;
 - every tool call writes operation audit;
 - delegated key calling `/me/keys`, `/daemons/token`, or sharing write returns 403;
-- `PUT /assistant` idempotent; non-owner 403;
-- cron/integration reference to assistant returns 400;
-- assistant cannot modify/delete itself through delegation;
 - after user removal from organization, credential request returns 404;
-- session list filters by initiator while owner sees all;
 - **OAuth end to end** under devAuth: register → authorize → consent → code → token → MCP call → refresh rotation → grant revoke immediately invalidates token;
 - 401 contains correct `WWW-Authenticate`; PRM available at root + path-inserted locations.
 
-**Daemon**: only `kind='assistant'` gets AgentConnect MCP and receives no memory/collaboration/external MCP; concurrent sessions for two users carry their own keys without mixup; expired delegation fails closed with explicit error; restricted-profile arguments are part of `hostSpawnSig` and profile changes respawn; restart restores delegation with session; bridge child environment carries credential while transcript does not leak it.
+**Daemon** (P4): concurrent sessions for two users carry their own keys without mixup; expired delegation fails closed with explicit error; restart restores delegation with session; bridge child environment carries credential while transcript does not leak it.
 
 ---
 
 ## 15. Decision Record
 
-1. Tool surface = CP-hosted AgentConnect MCP; agent-assistant = built-in agent
-   with that MCP auto-injected ("pre-authenticated").
+1. Tool surface = CP-hosted AgentConnect MCP, reached by external AI tools through
+   OAuth or a personal key. Its second consumer was to be `agent-assistant`, a
+   built-in agent with that MCP auto-injected; ❌ cancelled 2026-07-29 — the
+   successor is the `agentconnect` general preset's webapp sessions
+   (preset-agents.md §4), reaching the same MCP through the same §4 credential.
 2. ✅ **External sign-in = thin OAuth AS embedded in CP** (automatic browser login; open DCR + 90d TTL; token = `oauth` ApiKey row, 1h + rotating refresh). Rejected Logto-as-AS because it lacks DCR (roadmap Backlog) and wildcard redirects exclude ports. Logto remains console human login. Personal keys remain for headless/CI, as all compared products except Notion do.
-3. ✅ Name `agent-assistant`, kind enum `assistant`, replacing v0 owner-only "system agent."
-4. ✅ Credential is identity: personal / OAuth / delegated share one table and pipeline; tools execute as credential user. Assistant is owner-enabled and owner-editable only; undeletable, unshareable, cannot be peer-called or integration/cron-triggered; v1 only webchat.
+3. ❌ Name `agent-assistant`, kind enum `assistant`, replacing v0 owner-only "system agent." Cancelled with P3; the names stay reserved and unprovisioned (preset-agents.md §3.3).
+4. ✅ Credential is identity: personal / OAuth / delegated share one table and pipeline; tools execute as credential user. The cancelled agent added owner-only editability and closed ingress; what survives is the ingress rule itself — a platform-injected credential is minted only for a **webchat** session (§4).
 5. ✅ High-risk credential/member/organization/access-control/bot/hook writes excluded from catalog; delegated credential hard-denied server-side.
-6. ✅ Restricted runtime profile is mandatory; v1 runtime allowlist = claude.
-7. ✅ Assistant receives no memory tools; sessions isolated by initiator.
+6. ❌ Restricted runtime profile is mandatory; v1 runtime allowlist = claude. Reopened for the successor, whose host is an ordinary shell-capable agent (preset-agents.md §9).
+7. ❌ Assistant receives no memory tools; sessions isolated by initiator — properties of the cancelled agent, not of the tool layer.
 8. ✅ **OAuth scopes are security boundaries, not decoration**: `authenticateUser` carries `row.scopes` into `req.apiKeyScopes`; **org-scope guard returns 403 for write methods other than GET/HEAD when a scoped token lacks `mcp:write`**. Otherwise `mcp:read` browser consent silently authorizes writes to all REST endpoints. Personal keys have `scopes=[]` and remain unrestricted. MCP endpoint is outside the org subtree, so its read tools use POST without being blocked. P1 adds a mirrored per-tool gate: without `mcp:write`, tools/list hides write tools and tools/call returns 403. Org-scope remains fallback because injected REST requests from write tools pass through it.
 9. ✅ **Disconnect↔refresh race fixed**: refresh rereads grant after minting. If revoked, reclaim the freshly minted token and return `invalid_grant`, preventing disconnect from releasing one extra 1h token tied to a revoked grant.
 
 ### Open Questions
 
-1. Should read tools include session **body** (`getSessionMessages`)? `canView` permits it semantically, but body entering model context expands prompt-injection surface. Preferred v1: metadata + console deep link only. External tools and assistant could differ (external = user accepts risk; assistant = restricted).
+1. Should read tools include session **body** (`getSessionMessages`)? `canView` permits it semantically, but body entering model context expands prompt-injection surface. Preferred v1: metadata + console deep link only. External tools and in-product sessions could differ (external = user accepts risk).
 2. Rate-limit thresholds and whether to add an organization-wide ceiling.
 3. Delegation delivery-frame path. Relay migration is complete, so P4 must
    extend the current CP verification/relay session flow with an authenticated
