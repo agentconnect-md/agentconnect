@@ -57,6 +57,24 @@ const MAX_PENDING_REPORTS = 10_000
 const REVOKE_RETRY_INITIAL_MS = 5_000
 const REVOKE_RETRY_MAX_MS = 60_000
 
+/** Provably-older ordering between two revoke reports for one bot: by credential
+ *  generation first, then by Slack's occurrence time when the generations agree
+ *  (or are absent — a legacy bot carries neither). "Not provably older" preserves
+ *  arrival order, which is all an unfenced report has. */
+function isOlderRevokeReport(incoming: RcBotRevoked, queued: RcBotRevoked): boolean {
+  if (
+    incoming.credentialRevision !== undefined &&
+    queued.credentialRevision !== undefined &&
+    incoming.credentialRevision !== queued.credentialRevision
+  ) {
+    return incoming.credentialRevision < queued.credentialRevision
+  }
+  if (incoming.eventAtMs !== undefined && queued.eventAtMs !== undefined) {
+    return incoming.eventAtMs < queued.eventAtMs
+  }
+  return false
+}
+
 export interface SharedBotManagerDeps {
   /** A live `rd/*` connection to a daemon on THIS relay, or undefined if none. */
   getDaemon: (daemonId: string) => RelayDaemonConnection | undefined
@@ -228,6 +246,20 @@ export class SharedBotManager {
    *  Queued FIRST, cleared only on the ack: a send the socket accepted is not
    *  evidence the CP persisted anything, and this report has no other source. */
   private reportRevoked(m: RcBotRevoked): void {
+    // Arrival order must not choose the sole durable report: Slack lifecycle
+    // events are unordered, so a DELAYED pre-reinstall event can land while the
+    // current generation's report sits queued on a transient failure. Letting it
+    // replace the entry would hand the queue to a report whose terminal
+    // `applied:false` then clears it — losing the live revocation entirely. An
+    // older report is also worthless on its own: the newer queued one subsumes
+    // it, and the CP's fence would refuse it anyway.
+    const queued = this.pendingRevokedReports.get(m.botId)
+    if (queued && isOlderRevokeReport(m, queued)) {
+      this.deps.log.warn(
+        `shared-bot(${m.botId}): dropping out-of-order revoke report (an at-least-as-new one is queued)`
+      )
+      return
+    }
     this.pendingRevokedReports.set(m.botId, m)
     void this.deps
       .reportBotRevoked(m)

@@ -464,6 +464,68 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
     }
   })
 
+  it('a delayed OLDER revoke cannot supersede the newer queued report', async () => {
+    vi.useFakeTimers()
+    try {
+      const calls: Array<{ credentialRevision?: number }> = []
+      let commitNext = false
+      const reportBotRevoked = vi.fn(async (m: { credentialRevision?: number }) => {
+        calls.push(m)
+        return commitNext
+      })
+      const manager = new SharedBotManager(deps({ reportBotRevoked }))
+      const internals = manager as unknown as ManagerInternals
+      const current = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 2 }
+      const delayed = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 1 }
+
+      // The CURRENT generation's report fails transiently — it stays queued.
+      internals.reportRevoked(current)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(1)
+
+      // Slack delivers the PRE-reinstall event late. It must neither replace the
+      // queued report (its terminal applied:false ack would clear the queue and
+      // lose the live revocation) nor be sent on its own (the newer subsumes it).
+      internals.reportRevoked(delayed)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(1)
+
+      // The retry timer re-drives the CURRENT report, which now commits.
+      commitNext = true
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(2)
+      expect(calls[1]).toEqual(current)
+
+      await vi.advanceTimersByTimeAsync(120_000) // drained — nothing left to retry
+      expect(reportBotRevoked).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('same-generation ordering falls back to the event timestamp', async () => {
+    vi.useFakeTimers()
+    try {
+      const reportBotRevoked = vi.fn(async () => false) // keep everything queued
+      const manager = new SharedBotManager(deps({ reportBotRevoked }))
+      const internals = manager as unknown as ManagerInternals
+      const newer = { botId: BOT_ID, reason: 'tokens_revoked' as const, credentialRevision: 2, eventAtMs: 2_000 }
+      const older = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 2, eventAtMs: 1_000 }
+
+      internals.reportRevoked(newer)
+      internals.reportRevoked(older) // same generation, earlier occurrence — dropped
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(1)
+
+      // The retry still drives the newer one.
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(reportBotRevoked).toHaveBeenCalledTimes(2)
+      expect(reportBotRevoked).toHaveBeenLastCalledWith(newer)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('an old in-flight ack cannot erase the NEWER queued report for the same bot', async () => {
     vi.useFakeTimers()
     try {
