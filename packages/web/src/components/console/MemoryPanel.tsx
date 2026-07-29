@@ -311,6 +311,7 @@ export function MemoryPanel({
           'Managed directory',
           `Auto-distill ${persistedSettings.autoDistill ? 'on' : 'off'}`,
           dreaming.enabled ? `Dreaming ${cadence}` : 'Dreaming off',
+          ...(dreaming.enabled && dreaming.mineSkills === true ? ['Skill mining on'] : []),
           `Auto-accept ${dreaming.autoAdopt ? 'on' : 'off'}`,
           'Agent scope'
         ].join(' · ')
@@ -734,6 +735,29 @@ export function MemoryPanel({
                         <div className="ml-6 font-sans text-[11px] font-normal leading-[1.5] text-(--amber-500)">
                           Warning: Dream memory results can be inaccurate. Conflicting changes to live memory while a
                           dream runs still pause the result for review.
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="flex items-start gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+                        <input
+                          type="checkbox"
+                          checked={settings.dreaming.mineSkills === true}
+                          disabled={!canEdit || savingProvider}
+                          onChange={() => {
+                            setSettings((current) => ({
+                              ...current,
+                              dreaming: { ...current.dreaming, mineSkills: current.dreaming.mineSkills !== true }
+                            }))
+                            setProviderError(null)
+                          }}
+                        />
+                        Also mine reusable skills from repeated procedures.
+                      </label>
+                      {settings.dreaming.mineSkills === true ? (
+                        <div className="ml-6 font-sans text-[11px] font-normal leading-[1.5] text-(--text-tertiary)">
+                          Dreams read which commands ran, not just what was said, and recommend a procedure seen in at
+                          least two sessions. Skills are never installed automatically — you review each one.
                         </div>
                       ) : null}
                     </div>

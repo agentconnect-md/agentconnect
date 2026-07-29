@@ -7,11 +7,11 @@ import {
 
 /**
  * Managed-only dreaming policy as a form draft. It carries the COMPLETE policy —
- * including fields the console doesn't yet edit (`sessionWindow`, `timezone`, and
- * the later-phase `mineSkills`) — because a managed-memory save PATCHes the
- * `memory` binding wholesale, so anything the draft drops is lost. The UI edits
- * `enabled`, `schedule`, `autoAdopt`, and `instructions`; the rest is preserved
- * verbatim from whatever the API (or a later phase) set.
+ * including fields the console doesn't yet edit (`sessionWindow`) — because a
+ * managed-memory save PATCHes the `memory` binding wholesale, so anything the
+ * draft drops is lost. The UI edits `enabled`, `schedule`, `timezone`,
+ * `mineSkills`, `autoAdopt`, and `instructions`; the rest is preserved verbatim
+ * from whatever the API (or a later phase) set.
  */
 export interface DreamingDraft {
   enabled: boolean
