@@ -74,6 +74,8 @@ describe('Logto Account API', () => {
     ])
     const accountCall = fetchMock.mock.calls.find(([input]) => String(input).includes('/api/my-account'))
     expect(new Headers(accountCall?.[1]?.headers).get('authorization')).toBe('Bearer opaque-account-token')
+    const connectorsCall = fetchMock.mock.calls.find(([input]) => String(input).includes('social-connectors'))
+    expect(String(connectorsCall?.[0])).toBe('/api/logto/social-connectors')
   })
 
   it('creates and verifies a current-user email verification record', async () => {

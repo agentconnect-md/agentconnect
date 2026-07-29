@@ -107,13 +107,9 @@ function connectorName(target: string, value: unknown): string {
   )
 }
 
-/** Enabled social connectors are public sign-in-experience metadata. */
+/** Enabled social connectors, relayed same-origin because Logto's experience endpoint has no CORS headers. */
 export async function fetchSocialConnectors(): Promise<SocialConnector[]> {
-  const config = getLogtoPublicConfig()
-  if (!config) return []
-  const url = new URL('/api/.well-known/experience', config.endpoint)
-  url.searchParams.set('appId', config.appId)
-  const response = await fetch(url)
+  const response = await fetch('/api/logto/social-connectors')
   if (!response.ok) throw await responseError(response)
 
   const body = asRecord(await response.json())
