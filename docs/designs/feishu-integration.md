@@ -161,9 +161,12 @@ IntegrationFeishuConfig }`.
 - Keep the reviewable template in `src/http/feishu-app-template.ts`: use
   `createOnly: true`, the platform `PersonalAgent` preset, AgentConnect's
   tenant scopes, and `im.message.receive_v1`.
-- Start the device flow on the selected region's accounts domain:
-  `accounts.feishu.cn` for Feishu and `accounts.larksuite.com` for Lark. The
-  returned authorization deeplink must stay on that matching domain.
+- Start every device flow on the canonical `accounts.feishu.cn` issuer. For
+  Lark, preserve the returned `user_code` while changing the user-facing
+  launcher to `open.larksuite.com`; direct issuance from
+  `accounts.larksuite.com` produces launcher codes that are rejected as
+  expired. Keep polling the issuer until the provider reports a Lark tenant,
+  then switch polling to `accounts.larksuite.com`.
 - Persist the provider device cursor and provisional App Secret through
   `SecretCipher` in `feishu_app_registration`. A short database claim lets any
   Control Plane replica resume polling/finalization without duplicate installs;

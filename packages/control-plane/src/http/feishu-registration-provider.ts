@@ -11,6 +11,7 @@ import { AGENTCONNECT_FEISHU_APP_TEMPLATE, buildFeishuAuthorizationUrl } from '.
 
 export const FEISHU_REGISTRATION_DOMAIN = 'accounts.feishu.cn'
 export const LARK_REGISTRATION_DOMAIN = 'accounts.larksuite.com'
+export const LARK_LAUNCHER_DOMAIN = 'open.larksuite.com'
 
 const REGISTRATION_PATH = '/oauth/v1/app/registration'
 
@@ -54,8 +55,7 @@ export class OfficialFeishuRegistrationProvider implements FeishuRegistrationPro
   constructor(private readonly fetcher: RegistrationFetch = fetch) {}
 
   async begin(appName: string, region: FeishuRegion): Promise<BeginFeishuRegistration> {
-    const providerDomain = region === 'lark' ? LARK_REGISTRATION_DOMAIN : FEISHU_REGISTRATION_DOMAIN
-    const response = await this.request(providerDomain, {
+    const response = await this.request(FEISHU_REGISTRATION_DOMAIN, {
       action: 'begin',
       archetype: AGENTCONNECT_FEISHU_APP_TEMPLATE.archetype,
       auth_method: 'client_secret',
@@ -64,10 +64,12 @@ export class OfficialFeishuRegistrationProvider implements FeishuRegistrationPro
     if (!response.verification_uri_complete || !response.device_code) {
       throw new Error('Feishu app registration did not return a device session')
     }
+    const verificationUri = new URL(response.verification_uri_complete)
+    if (region === 'lark') verificationUri.hostname = LARK_LAUNCHER_DOMAIN
     return {
-      authorizationUrl: buildFeishuAuthorizationUrl(response.verification_uri_complete, appName),
+      authorizationUrl: buildFeishuAuthorizationUrl(verificationUri.toString(), appName),
       deviceCode: response.device_code,
-      providerDomain,
+      providerDomain: FEISHU_REGISTRATION_DOMAIN,
       intervalMs: Math.max(1, response.interval ?? 5) * 1000,
       expiresInMs: Math.max(1, response.expires_in ?? 600) * 1000
     }
