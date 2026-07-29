@@ -64,6 +64,7 @@ import {
   PgThreadAffinityStore,
   PgSlackInstallStore,
   PgSlackPlatformInstallStore,
+  PgFeishuAppRegistrationStore,
   PgSlackUserConfigStore,
   PgPresetAgentStore,
   PresetAgentBackfill,
@@ -141,6 +142,7 @@ import { verifySlackBot, verifySlackAppToken } from './http/slack-identity.js'
 import { resolveTelegramBotName } from './http/telegram-identity.js'
 import { verifyDiscordBot } from './http/discord-identity.js'
 import { verifyFeishuBot } from './http/feishu-identity.js'
+import { FeishuAppRegistrationService } from './http/feishu-registration.js'
 
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from './config/defaults.js'
 
@@ -229,6 +231,7 @@ export function buildContainer(
     threadAffinity: new PgThreadAffinityStore(prisma),
     slackInstall: new PgSlackInstallStore(prisma, secretCipher),
     slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
+    feishuAppRegistration: new PgFeishuAppRegistrationStore(prisma, secretCipher),
     slackUserConfig: new PgSlackUserConfigStore(prisma, secretCipher),
     presetAgent: new PgPresetAgentStore(prisma),
     cron: new PgCronRepo(prisma),
@@ -618,6 +621,7 @@ export function buildContainer(
       externalMemoryGrant: repos.externalMemoryGrant,
       slackInstall: repos.slackInstall,
       slackPlatformInstall: repos.slackPlatformInstall,
+      feishuAppRegistration: repos.feishuAppRegistration,
       slackUserConfig: repos.slackUserConfig,
       presetAgent: repos.presetAgent,
       githubInstallation: repos.githubInstallation,
@@ -655,6 +659,7 @@ export function buildContainer(
     resolveTelegramBotName,
     verifyDiscordBot,
     verifyFeishuBot,
+    feishuAppRegistration: new FeishuAppRegistrationService(repos.feishuAppRegistration),
     ...(github ? { github } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
     ...(iconStore ? { iconStore } : {}),
@@ -745,7 +750,18 @@ export function buildContainer(
     repos.slackPlatformInstall,
     clock,
     { ttlMs: config.SLACK_INSTALL_TTL_SEC * 1000, intervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000 },
-    http.log
+    http.log,
+    'slack-platform-install'
+  )
+
+  // Device code/App Secret are encrypted but deliberately short-lived. Retain
+  // a terminal status briefly for the browser, then clear the durable row.
+  const feishuRegistrationReaper = new SlackInstallReaper(
+    repos.feishuAppRegistration,
+    clock,
+    { ttlMs: 10 * 60 * 1000, intervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000 },
+    http.log,
+    'feishu-registration'
   )
 
   // One-time preset backfill (preset-agents.md §3.2): existing orgs receive the
@@ -1123,6 +1139,7 @@ export function buildContainer(
       hookRedeliveryReconciler?.start()
       slackInstallReaper.start()
       slackPlatformInstallReaper.start()
+      feishuRegistrationReaper.start()
       relaySweeper.start()
       slackBotIdentityReconciler.start()
       // One-shot (not a re-arming loop): the worklist empties itself; a partially
@@ -1137,6 +1154,7 @@ export function buildContainer(
       installationDoorbell?.stop()
       slackInstallReaper.stop()
       slackPlatformInstallReaper.stop()
+      feishuRegistrationReaper.stop()
       relaySweeper.stop()
       slackBotIdentityReconciler.stop()
       await Promise.allSettled([...relayRegistrationTasks])

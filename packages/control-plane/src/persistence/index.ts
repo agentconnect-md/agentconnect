@@ -43,6 +43,7 @@ export {
 export { PgThreadAffinityStore } from './repositories/thread-affinity.repo.js'
 export { PgSlackInstallStore } from './repositories/slack-install.repo.js'
 export { PgSlackPlatformInstallStore } from './repositories/slack-platform-install.repo.js'
+export { PgFeishuAppRegistrationStore } from './repositories/feishu-app-registration.repo.js'
 export { PgSlackUserConfigStore } from './repositories/slack-user-config.repo.js'
 export { GENERAL_PRESET, RESERVED_AGENT_SLUGS, PgPresetAgentStore, provisionPresetAgents } from './preset-agents.js'
 export { PresetAgentBackfill } from './preset-agent-backfill.js'

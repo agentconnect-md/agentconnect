@@ -48,6 +48,7 @@ import {
   PgExternalMemoryGrantRepo,
   PgSlackInstallStore,
   PgSlackPlatformInstallStore,
+  PgFeishuAppRegistrationStore,
   PgThreadAffinityStore,
   PgSlackUserConfigStore,
   PgPresetAgentStore,
@@ -83,6 +84,7 @@ import { pingDb } from '../../src/persistence/prisma.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { DEFAULT_OWNER_ID } from '../../prisma/seed.js'
+import { FeishuAppRegistrationService } from '../../src/http/feishu-registration.js'
 
 export const TEST_API_KEY_PEPPER = 'test-api-key-pepper-0123456789abcdef'
 
@@ -144,6 +146,7 @@ export function buildHttpApp(
   const botRepo = new PgBotRepo(prisma)
   const botSecretStore = new PgBotSecretStore(prisma, cipher)
   const botCredentialWriter = new PgBotCredentialWriter(prisma, cipher)
+  const feishuAppRegistrationStore = new PgFeishuAppRegistrationStore(prisma, cipher)
   const integrationChannelRepo = new PgIntegrationChannelRepo(prisma)
   const agentRepo = new PgAgentRepo(prisma)
   const hookRepo = new PgHookRepo(prisma)
@@ -187,6 +190,7 @@ export function buildHttpApp(
       externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, cipher),
       slackInstall: new PgSlackInstallStore(prisma, cipher),
       slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
+      feishuAppRegistration: feishuAppRegistrationStore,
       slackUserConfig: new PgSlackUserConfigStore(prisma, cipher),
       presetAgent: new PgPresetAgentStore(prisma),
       integrationChannel: integrationChannelRepo,
@@ -233,6 +237,7 @@ export function buildHttpApp(
     events,
     mcpRateLimit: new McpRateLimiter(clock),
     readiness: createReadiness(() => pingDb(prisma)),
+    feishuAppRegistration: new FeishuAppRegistrationService(feishuAppRegistrationStore),
     config: { DEFAULT_OWNER_ID, ...configOverrides },
     ...depsOverrides
   }

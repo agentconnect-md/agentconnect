@@ -2222,6 +2222,91 @@ export interface SlackPlatformInstallStore {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// FeishuAppRegistrationStore — resumable one-click app registration. Device
+// cursor and provisional App Secret are encrypted behind the implementation;
+// terminal settlement clears both. A short claim leases provider/finalize work
+// to one CP replica at a time.
+// ───────────────────────────────────────────────────────────────────────────
+
+export type FeishuAppRegistrationStatus = 'pending' | 'authorized' | 'completed' | 'failed'
+
+export interface FeishuAppRegistrationRecord {
+  id: string
+  targetKey: string | null
+  orgId: OrgId
+  agentId: AgentId
+  requestedName: string | null
+  fallbackRegion: FeishuRegion
+  authorizationUrl: string
+  providerDomain: string
+  deviceCode: string | null
+  intervalMs: number
+  nextPollAt: Date
+  expiresAt: Date
+  status: FeishuAppRegistrationStatus
+  failureReason: string | null
+  appId: string | null
+  appSecret: string | null
+  resolvedRegion: FeishuRegion | null
+  botId: BotId
+  integrationId: IntegrationId
+  createdByUserId: string | null
+  claimToken: string | null
+  claimedUntil: Date | null
+  createdAt: Date
+  settledAt: Date | null
+}
+
+export interface CreateFeishuAppRegistrationInput {
+  id: string
+  targetKey: string
+  orgId: OrgId
+  agentId: AgentId
+  requestedName?: string
+  fallbackRegion: FeishuRegion
+  authorizationUrl: string
+  providerDomain: string
+  deviceCode: string
+  intervalMs: number
+  nextPollAt: Date
+  expiresAt: Date
+  botId: BotId
+  integrationId: IntegrationId
+  createdByUserId: string
+}
+
+export interface FeishuAppRegistrationStore {
+  create(input: CreateFeishuAppRegistrationInput): Promise<FeishuAppRegistrationRecord>
+  get(id: string): Promise<FeishuAppRegistrationRecord | null>
+  getActiveTarget(targetKey: string): Promise<FeishuAppRegistrationRecord | null>
+  /** Atomically fail an expired open row and release its target reservation. */
+  expire(id: string, now: Date): Promise<void>
+  /** Clear an expired target reservation before a new begin call. */
+  expireTarget(targetKey: string, now: Date): Promise<void>
+  /** Lease due provider/finalization work to one replica. */
+  claim(id: string, claimToken: string, now: Date, claimedUntil: Date): Promise<FeishuAppRegistrationRecord | null>
+  release(
+    id: string,
+    claimToken: string,
+    update: { providerDomain?: string; intervalMs: number; nextPollAt: Date }
+  ): Promise<void>
+  authorize(
+    id: string,
+    claimToken: string,
+    input: { appId: string; appSecret: string; region: FeishuRegion }
+  ): Promise<FeishuAppRegistrationRecord | null>
+  /** Release a finalized-credential claim for a short-lived placement retry. */
+  releaseAuthorized(id: string, claimToken: string): Promise<void>
+  settle(
+    id: string,
+    claimToken: string,
+    outcome: { status: 'completed' } | { status: 'failed'; failureReason: string }
+  ): Promise<void>
+  /** Delete terminal/expired rows whose secret-bearing window is over. */
+  reapExpired(staleBefore: Date): Promise<number>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // PresetAgentStore — per-org preset provisioning state (preset-agents.md §3.2).
 // Rows are WRITTEN by the org-creation seam / the one-time backfill / the
 // settle-stamp anchors (persistence-internal); this port is the READ surface for

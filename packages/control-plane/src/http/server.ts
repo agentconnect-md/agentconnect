@@ -23,6 +23,7 @@ import { agentRoutes } from './routes/agents.js'
 import { agentRepoRoutes } from './routes/agent-repos.js'
 import { webchatTokenRoutes } from './routes/webchat-token.js'
 import { integrationRoutes } from './routes/integrations.js'
+import { feishuRegistrationRoutes } from './routes/feishu-registration.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './routes/slack-platform-install.js'
 import { botRoutes } from './routes/bots.js'
@@ -206,6 +207,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(agentRepoRoutes(deps))
           await scope.register(webchatTokenRoutes(deps))
           await scope.register(integrationRoutes(deps))
+          await scope.register(feishuRegistrationRoutes(deps))
           await scope.register(slackInstallRoutes(deps))
           await scope.register(slackPlatformInstallRoutes(deps))
           await scope.register(slackConfigRoutes(deps))

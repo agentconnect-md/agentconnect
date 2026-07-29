@@ -41,7 +41,8 @@ export class SlackInstallReaper {
     private readonly repo: SlackInstallReaperRepo,
     private readonly clock: Clock,
     private readonly cfg: SlackInstallReaperConfig,
-    private readonly log?: ReaperLog
+    private readonly log?: ReaperLog,
+    private readonly label = 'slack-install'
   ) {}
 
   /** Arm the periodic sweep. Idempotent — a second call re-arms from now. */
@@ -78,10 +79,10 @@ export class SlackInstallReaper {
       if (reaped > 0)
         this.log?.info(
           { reaped, staleBefore: staleBefore.toISOString() },
-          'slack-install-reaper: deleted abandoned pending installs'
+          `${this.label}-reaper: deleted abandoned pending installs`
         )
     } catch (err) {
-      this.log?.error({ err }, 'slack-install-reaper: sweep failed')
+      this.log?.error({ err }, `${this.label}-reaper: sweep failed`)
     } finally {
       this.arm()
     }

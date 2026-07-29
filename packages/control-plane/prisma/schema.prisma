@@ -1634,6 +1634,52 @@ enum SlackPlatformInstallStatus {
   failed
 }
 
+// Durable Feishu/Lark one-click app registration. The browser polls this row,
+// so any Control Plane replica can continue the provider device flow after a
+// request is load-balanced or a process restarts. `deviceCode` and `appSecret`
+// pass through SecretCipher in PgFeishuAppRegistrationStore and are cleared on
+// every terminal outcome. No FKs: the route re-validates the agent immediately
+// before installation, and abandoned rows are TTL-reaped.
+model FeishuAppRegistration {
+  id               String                      @id @db.Uuid
+  // Non-null only while open. The unique slot prevents two users from creating
+  // two apps for the same target; terminal settlement clears it.
+  targetKey        String?                     @unique
+  orgId            String
+  agentId          String                      @db.Uuid
+  requestedName    String?
+  fallbackRegion   String
+  authorizationUrl String
+  providerDomain   String
+  deviceCode       String? // sensitive — sealed by SecretCipher
+  intervalMs       Int
+  nextPollAt       DateTime                    @db.Timestamptz(6)
+  expiresAt        DateTime                    @db.Timestamptz(6)
+  status           FeishuAppRegistrationStatus @default(pending)
+  failureReason    String?
+  appId            String?
+  appSecret        String? // sensitive — sealed by SecretCipher
+  resolvedRegion   String?
+  // Pre-reserved IDs make finalization restart-idempotent.
+  botId            String                      @db.Uuid
+  integrationId    String                      @db.Uuid
+  createdByUserId  String?
+  claimToken       String?                     @db.Uuid
+  claimedUntil     DateTime?                   @db.Timestamptz(6)
+  createdAt        DateTime                    @default(now()) @db.Timestamptz(6)
+  settledAt        DateTime?                   @db.Timestamptz(6)
+
+  @@index([status, nextPollAt])
+  @@map("feishu_app_registration")
+}
+
+enum FeishuAppRegistrationStatus {
+  pending
+  authorized
+  completed
+  failed
+}
+
 // One user's stored Slack App Configuration Token, scoped to an org (composite key
 // orgId+userId) — docs/designs/slack-install-smoothing.md §Tier B. PER-USER on purpose:
 // the app that `apps.manifest.create` builds is owned by whoever's config token
