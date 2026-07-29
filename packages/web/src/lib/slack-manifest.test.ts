@@ -70,9 +70,10 @@ describe('buildSlackManifest', () => {
     const manifest = buildSlackManifest({ name: 'acme' })
 
     expect(manifest.oauth_config.scopes.bot).toContain('commands')
+    expect(manifest.features.shortcuts[0]!.name.length).toBeLessThanOrEqual(24)
     expect(manifest.features.shortcuts).toEqual([
       {
-        name: 'Manage AgentConnect session',
+        name: 'Manage session',
         type: 'message',
         callback_id: SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
         description: 'View or update the AgentConnect session for this conversation'
