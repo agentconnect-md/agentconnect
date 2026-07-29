@@ -6,10 +6,10 @@
  * `$update-model-pricing` skill and keep the focused tests in sync.
  *
  * Source: https://developers.openai.com/api/docs/pricing
- * Verified: 2026-07-11
+ * Verified: 2026-07-29
  */
 
-export const OPENAI_PUBLIC_PRICING_AS_OF = '2026-07-11'
+export const OPENAI_PUBLIC_PRICING_AS_OF = '2026-07-29'
 export const OPENAI_PUBLIC_PRICING_SOURCE = 'https://developers.openai.com/api/docs/pricing'
 
 const TOKENS_PER_MILLION = 1_000_000
