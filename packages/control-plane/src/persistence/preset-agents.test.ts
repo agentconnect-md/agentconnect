@@ -33,12 +33,7 @@ describe('GENERAL_PRESET validation parity', () => {
 })
 
 describe('RESERVED_AGENT_SLUGS', () => {
-  it('reserves the design §3.3 set — including the M3 assistant names', () => {
-    expect([...RESERVED_AGENT_SLUGS].sort()).toEqual([
-      'agent-assistant',
-      'agentconnect',
-      'agentconnect-assistant',
-      'assistant'
-    ])
+  it('reserves exactly the shipped preset slug (assistant names released, 2026-07-29)', () => {
+    expect([...RESERVED_AGENT_SLUGS]).toEqual(['agentconnect'])
   })
 })

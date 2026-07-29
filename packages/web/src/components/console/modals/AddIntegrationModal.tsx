@@ -1229,10 +1229,14 @@ export default function AddIntegrationModal({
   // look "free" (`inUseByAgentId` clears with the last install) but are not, and the
   // server rejects both — don't offer what cannot be picked:
   //   • revoked — the workspace uninstalled the app, so its token is dead;
-  //   • a platform-app install (`teamId`) — non-shareable by construction, one
-  //     workspace serves one agent (preset-agents.md §5.5); reuse is the dedicated
-  //     "Add to Slack" flow, or a Slack app of this agent's own.
-  const freeBots = bots.filter((b) => b.platform === platform && !b.inUseByAgentId && !b.revokedAt && !b.teamId)
+  //   • a platform-app install (`teamId`) that has NOT been flipped shareable —
+  //     one workspace serves one agent by default (preset-agents.md §5.5). Once
+  //     the user enables sharing on it (Settings → Bots) it reuses like any
+  //     shared bot; before that, reuse is the dedicated "Add to Slack" flow or a
+  //     Slack app of this agent's own.
+  const freeBots = bots.filter(
+    (b) => b.platform === platform && !b.inUseByAgentId && !b.revokedAt && (!b.teamId || b.shareable)
+  )
   const mode = modePick ?? 'create'
   const selectedBotId = freeBots.some((b) => b.id === botPick) ? botPick : (freeBots[0]?.id ?? null)
   const selectedBot = freeBots.find((b) => b.id === selectedBotId) ?? null

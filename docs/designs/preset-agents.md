@@ -19,8 +19,8 @@ themselves already exist platform-side (agent-assistant.md P0 read tools, P1 wri
 tools with confirm gates, P2 OAuth AS); the per-session delegated credential
 (agent-assistant.md P4's webchat half) remains the security prerequisite before any
 admin tool reaches a session, and is not built. §4 records the cancelled
-dedicated-assistant shape and is kept as the reference for that fold-in; the reserved
-assistant slugs stay reserved (impersonation guard + naming option, §3.3).
+dedicated-assistant shape and is kept as the reference for that fold-in; the
+assistant slugs are no longer reserved — only `agentconnect` is (§3.3).
 
 **Builds on:** [agent-assistant.md](agent-assistant.md) (its AgentConnect MCP and
 embedded OAuth AS are available — external AI tools connect today; its built-in
@@ -68,7 +68,7 @@ a dedicated assistant agent — and where its successor lives instead.
 | Preset deletion            | **Not deletable** (2026-07-29, reversing the earlier freely-deletable call): the preset is a permanent org fixture — the console hides Delete and labels it `builtin`, and the CP refuses `DELETE /agents/:id` (403) on every surface (REST/MCP/console), because platform defaults (the predefined Slack app §5, the GitHub flow) bind to it deterministically. Never auto-recreated either way | Freely deletable (the launch decision) — leaves the platform's default bind target removable, forcing every default-binding flow to grow a missing-preset repair path; existence-check provisioning — it resurrects what the user deleted                                                                                                                 |
 | Idempotency                | **Per-preset `preset_agent` row** (`status ∈ {created, skipped}`, `placementSettledAt`), written with the agent row. Creation is transactional with the org (or the one-time backfill) and never retries; auto-placement retries on register events only while the preset is unplaced and unsettled. A deleted preset is never recreated — creation has no later trigger                         | A single org-level stamp (cannot express per-preset placement); existence-check provisioning (resurrection); creating at daemon time (see the Creation & placement row)                                                                                                                                                                                   |
 | Non-empty orgs             | **The preset for every org** — new orgs at creation, existing orgs via a one-time backfill — whatever agents they already have: the general agent must exist deterministically because both Slack fulfillments and the GitHub flow bind to it by default                                                                                                                                         | Creating it only for empty orgs — leaves the predefined Slack app without a deterministic bind target, and an org that pre-created agents still benefits from the branded default; creating none at all                                                                                                                                                   |
-| Predefined Slack app count | **One** app backing the general agent, installed per workspace as an **http + non-shareable** bot (one workspace ⇒ one agent, §5.5); dedicated per-agent apps remain the guided upgrade via quick-install                                                                                                                                                                                        | One app per preset agent; a second app for a separate built-in assistant (§4)                                                                                                                                                                                                                                                                             |
+| Predefined Slack app count | **One** app backing the general agent, installed per workspace as an **http + non-shareable-by-default** bot (one workspace ⇒ one agent until the user enables sharing on it, §5.5); dedicated per-agent apps remain the guided upgrade via quick-install                                                                                                                                        | One app per preset agent; a second app for a separate built-in assistant (§4)                                                                                                                                                                                                                                                                             |
 
 ## 3. Preset agents
 
@@ -176,16 +176,16 @@ deploy time.
 
 ### 3.3 Reserved slugs and collisions
 
-Add `RESERVED_AGENT_SLUGS = {'agentconnect', 'agentconnect-assistant', 'agent-assistant',
-'assistant'}` validated on `CreateAgentBody`/`UpdateAgentBody`. The existing
-`RESERVED_SLUGS` (`http/dto/index.ts`) covers **org** slugs only; agent names have no
-protection today, and presets must not be impersonable. This lands **before** any
-preset ships.
+Add `RESERVED_AGENT_SLUGS = {'agentconnect'}` validated on
+`CreateAgentBody`/`UpdateAgentBody`. The existing `RESERVED_SLUGS`
+(`http/dto/index.ts`) covers **org** slugs only; agent names have no protection
+today, and presets must not be impersonable. This lands **before** any preset ships.
 
-The assistant-family slugs stay reserved even though no built-in assistant agent
-ships (§4): a user-created agent must never be able to wear a platform-sounding
-name, and reserving them keeps the naming option open should admin capabilities ever
-want an identity of their own. Only `agentconnect` is actually provisioned.
+Only the shipped preset's own slug is reserved (2026-07-29; the launch set also
+parked `agentconnect-assistant`/`agent-assistant`/`assistant`). The assistant names
+were released once the dedicated assistant was cancelled (§4): its capabilities fold
+into the `agentconnect` agent itself, so no future built-in will claim them and
+users may take them freely.
 
 Collisions can only arise in the backfill — a new org has no agents. The org keeps
 its agent: the backfill writes a `skipped` state row for that preset and never
@@ -214,8 +214,9 @@ A previous revision of this design re-triggered agent-assistant.md's built-in
 assistant agent (P3, `kind='assistant'`, slug `agentconnect-assistant`) as a
 SECOND preset. **That is cancelled** (2026-07-29): it is never provisioned, has
 no preset row, no auto-placement, and no `AgentKind` discriminator ships.
-`PresetAgentKind` carries only `general`; the assistant slugs stay reserved
-(§3.3) purely as an impersonation guard.
+`PresetAgentKind` carries only `general`; the assistant slugs were released from
+the reserved set (§3.3) once the cancellation settled — nothing built-in will
+ever claim them.
 
 Assistant/admin capabilities fold into the one `agentconnect` general preset
 instead (§3.1). The planned first step: the AgentConnect MCP admin toolset
@@ -292,26 +293,32 @@ workspace to re-authorize. The pinned lists (currently 17 bot scopes including
 are the launch contract, enforced by the cross-package drift guards. Any future
 widening is a product event — a coordinated re-auth — not a routine PR.
 
-### 5.5 One app, http + non-shareable
+### 5.5 One app, http + non-shareable by default
 
 Every workspace install of the platform app produces a Bot that is **always
-`transport: 'http'` and always `shareable: false`** — neither is a per-install
-choice:
+`transport: 'http'` and installs with `shareable: false`** — the transport is
+never a choice; sharing is a later, deliberate opt-in:
 
 - **http** is forced by the platform: a distributed app has no per-workspace
   app-level (xapp) token, so Socket Mode is impossible and inbound must arrive
   over the relay pool's shared Events API endpoint.
-- **non-shareable** is the product decision: one workspace install backs exactly
-  **one agent**, keeping the classic 1-install cap. The bot is a fixed part of the
-  platform's onboarding surface, not a multi-agent hub — widening one Slack
-  identity across several agents stays the quick-install upgrade (a dedicated app
-  per agent), where the operator owns the app and its scopes.
+- **non-shareable by default** is the product decision: one workspace install
+  backs exactly **one agent**, keeping the classic 1-install cap, and no reuse or
+  re-install may **silently** widen it (2026-07-29 update; originally the bot was
+  non-shareable outright). The user may flip the bot's sharing toggle
+  (Settings → Bots — the ordinary `PATCH /bots/:id` surface, no `teamId`
+  special-case), after which the workspace app behaves like any shared http bot:
+  the Add-integration reuse path offers it and adds agents, and an "Add to Slack"
+  re-install aimed at another agent adds that agent instead of failing. Dedicated
+  per-agent apps remain the quick-install upgrade where the operator owns the app
+  and its scopes.
 
-Consequence for re-authorization: a re-install aimed at a **different** agent than
-the workspace's current binding does not silently add a second install. The
-credential still rotates (the workspace keeps working), and the callback answers
-`agent_taken` — moving the binding is a deliberate console action, not a side
-effect of clicking "Add to Slack" with another agent selected.
+Consequence for re-authorization while NOT shared: a re-install aimed at a
+**different** agent than the workspace's current binding does not silently add a
+second install. The credential still rotates (the workspace keeps working), and
+the callback answers `agent_taken` — moving the binding is a deliberate console
+action, not a side effect of clicking "Add to Slack" with another agent selected.
+Once the bot is shared, the same re-install simply adds the new agent's install.
 
 ## 6. Onboarding checklist
 
@@ -361,8 +368,8 @@ because neither owns the state.
   audit as its key user rather than the actual actor.
 - **Provisioning parity**: the preset is created through the same validation core as
   `POST /agents` (§3.2), never a raw repo write.
-- **Reserved slugs** prevent impersonating built-ins (§3.3), including the
-  assistant-family names that are reserved but never provisioned.
+- **Reserved slugs** prevent impersonating built-ins (§3.3) — exactly the
+  shipped preset's own slug.
 - **Auditability**, per path: org-creation provisioning records the creating user
   as actor; the backfill records a system actor (no user performed it);
   auto-placement records a system actor with the daemon and affected agent

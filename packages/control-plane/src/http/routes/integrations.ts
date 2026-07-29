@@ -264,16 +264,18 @@ export function integrationRoutes(deps: HttpDeps) {
                 message: 'this bot’s Slack app was uninstalled or its tokens were revoked; reinstall it instead'
               })
             }
-            // A platform-app install is NON-shareable by construction
-            // (preset-agents.md §5.5) — one workspace ⇒ one agent. Its `teamId` is
-            // the marker: only the distributed app persists one. Without this the
-            // http branch below would silently `setShareable(true)` and widen it.
-            if (bot.teamId) {
+            // A platform-app install starts NON-shareable (preset-agents.md §5.5)
+            // — one workspace ⇒ one agent. Its `teamId` is the marker: only the
+            // distributed app persists one. Widening it must be a deliberate
+            // opt-in (the Settings → Bots sharing toggle), never the silent
+            // `setShareable(true)` promotion the http branch below applies to
+            // classic bots; once shared it reuses like any shared bot.
+            if (bot.teamId && !bot.shareable) {
               return reply.code(409).send({
                 error: 'Conflict',
                 statusCode: 409,
                 message:
-                  'the AgentConnect Slack app serves one agent per workspace; create a dedicated Slack app for this agent'
+                  'the AgentConnect Slack app serves one agent per workspace — enable sharing on its bot (Settings → Bots) or create a dedicated Slack app for this agent'
               })
             }
             // Reuse keeps the bot's existing transport (immutable post-create). An

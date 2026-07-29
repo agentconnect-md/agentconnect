@@ -37,7 +37,7 @@ export { RESERVED_AGENT_SLUGS }
  *  at provisioning time (the agent itself stays an ordinary, editable agent).
  *  This is the ONLY preset: the dedicated assistant was cancelled, and
  *  assistant/admin capabilities are planned to fold into THIS agent's webapp
- *  sessions instead (RESERVED_AGENT_SLUGS keeps the assistant names parked). */
+ *  sessions instead (RESERVED_AGENT_SLUGS reserves exactly this slug). */
 export const GENERAL_PRESET = {
   name: 'agentconnect',
   displayName: 'AgentConnect',

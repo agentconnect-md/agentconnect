@@ -99,8 +99,30 @@ describe('org-creation seam (POST /orgs)', () => {
 })
 
 describe('reserved agent slugs (§3.3)', () => {
-  it.each(['agentconnect', 'agentconnect-assistant', 'agent-assistant', 'assistant'])(
-    'POST /agents refuses the reserved slug %s',
+  it('POST /agents refuses the reserved slug agentconnect', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/orgs/${DEFAULT_ORG_ID}/agents`,
+        payload: { name: 'agentconnect', runtime: 'claude' }
+      })
+      // The zod refine surfaces as the validator's generic 400 (same as the
+      // reserved ORG slugs); the sibling below proves the slug is the reason.
+      expect(res.statusCode).toBe(400)
+      const sibling = await app.inject({
+        method: 'POST',
+        url: `/api/v1/orgs/${DEFAULT_ORG_ID}/agents`,
+        payload: { name: 'agentconnect-2', runtime: 'claude' }
+      })
+      expect(sibling.statusCode).toBe(201)
+    } finally {
+      await close()
+    }
+  })
+
+  it.each(['agentconnect-assistant', 'agent-assistant', 'assistant'])(
+    'released assistant slug %s is user-creatable (reservation lifted 2026-07-29)',
     async (name) => {
       const { app, close } = buildHttpApp(prisma)
       try {
@@ -109,15 +131,7 @@ describe('reserved agent slugs (§3.3)', () => {
           url: `/api/v1/orgs/${DEFAULT_ORG_ID}/agents`,
           payload: { name, runtime: 'claude' }
         })
-        // The zod refine surfaces as the validator's generic 400 (same as the
-        // reserved ORG slugs); the sibling below proves the slug is the reason.
-        expect(res.statusCode).toBe(400)
-        const sibling = await app.inject({
-          method: 'POST',
-          url: `/api/v1/orgs/${DEFAULT_ORG_ID}/agents`,
-          payload: { name: `${name}-2`, runtime: 'claude' }
-        })
-        expect(sibling.statusCode).toBe(201)
+        expect(res.statusCode).toBe(201)
       } finally {
         await close()
       }

@@ -259,14 +259,17 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
           req.log.info({ botId: existing.id, revision }, 'slack platform re-install: credential generation advanced')
           const installs = await deps.repos.integration.listForBot(existing.id)
           const otherAgent = installs.find((i) => i.agentId !== agent.id)
-          if (otherAgent) {
-            // The platform bot is NON-shareable: one workspace install serves
-            // exactly one agent, so a re-install aimed at a DIFFERENT agent
-            // cannot just add a second row (that is the cap the classic reuse
-            // path enforces with a 409). The credential above still rotated —
-            // the workspace's existing binding keeps working, it just did not
-            // move. Moving it is a deliberate console action, not a side effect
-            // of clicking "Add to Slack" with another agent selected.
+          if (otherAgent && !existing.shareable) {
+            // The platform bot installs NON-shareable: one workspace install
+            // serves exactly one agent, so a re-install aimed at a DIFFERENT
+            // agent cannot just add a second row (that is the cap the classic
+            // reuse path enforces with a 409). The credential above still
+            // rotated — the workspace's existing binding keeps working, it just
+            // did not move. Moving it is a deliberate console action, not a
+            // side effect of clicking "Add to Slack" with another agent
+            // selected. If the user has since flipped the bot SHAREABLE
+            // (Settings → Bots), the workspace app serves several agents and
+            // this install simply adds one below.
             req.log.warn(
               { installId: row.id, botId: existing.id, boundAgentId: otherAgent.agentId, targetAgentId: agent.id },
               'slack platform re-install: workspace already bound to another agent'
@@ -274,7 +277,7 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
             await deps.httpBot.syncBot(existing.id)
             return fail('agent_taken')
           }
-          if (installs.length === 0) {
+          if (!installs.some((i) => i.agentId === agent.id)) {
             await deps.repos.integration.create({
               id: IntegrationId(randomUUID()),
               orgId: OrgId(row.orgId),

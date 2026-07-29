@@ -399,6 +399,18 @@ describe('GET /integrations/slack/platform/callback', () => {
     expect(installs[0]).toMatchObject({ agentId: first, status: 'active' })
     // …and the credential still rotated, so the workspace keeps working.
     expect((await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).credentialRevision).toBe(2)
+
+    // The §5.5 opt-in: once the user flips the workspace bot SHAREABLE
+    // (Settings → Bots), the same re-install ADDS the new agent instead.
+    await prisma.bot.update({ where: { id: bot.id }, data: { shareable: true } })
+    const third = await startInstall(app, other)
+    await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c3&state=${third.id}`
+    })
+    expect((await status(app, third.id)).json()).toMatchObject({ status: 'completed', botId: bot.id })
+    const widened = await prisma.integration.findMany({ where: { botId: bot.id, status: 'active' } })
+    expect(widened.map((i) => i.agentId).sort()).toEqual([first, other].sort())
   })
 
   it('rejects an exchange for the wrong app or a missing team id', async () => {
@@ -582,6 +594,17 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
     // Not widened behind our back.
     expect((await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).shareable).toBe(false)
     expect(await prisma.integration.count({ where: { botId: bot.id } })).toBe(0)
+
+    // Flipping the bot shareable (the Settings → Bots opt-in) lifts the guard:
+    // the platform bot then reuses like any shared http bot.
+    await prisma.bot.update({ where: { id: bot.id }, data: { shareable: true } })
+    const reuseShared = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'slack', agentId: other, botId: bot.id }
+    })
+    expect(reuseShared.statusCode).toBe(201)
+    expect(await prisma.integration.count({ where: { botId: bot.id, status: 'active', agentId: other } })).toBe(1)
 
     // A revoked NON-platform bot is refused too — its token is dead.
     const plain = await prisma.bot.create({
