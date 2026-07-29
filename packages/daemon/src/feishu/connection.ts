@@ -3,7 +3,12 @@ import { promises as fs } from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as Lark from '@larksuiteoapi/node-sdk'
-import type { FeishuRegion } from '@agentconnect.md/protocol'
+import type {
+  FeishuRegion,
+  WireFeishuCardActionEvent,
+  WireFeishuCardActionResponse,
+  WireFeishuCardActionTarget
+} from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
@@ -90,33 +95,8 @@ export interface FeishuDeps {
 
 /** The raw `card.action.trigger` body delivered by the Lark WSClient. CardKit v2
  * nests message/chat ids under `context`; root-level fallbacks cover older payloads. */
-export interface FeishuRawCardActionEvent {
-  context?: {
-    open_message_id?: string
-    open_chat_id?: string
-  }
-  open_message_id?: string
-  open_chat_id?: string
-  operator?: {
-    open_id?: string
-    user_id?: string
-    union_id?: string
-    name?: string
-  }
-  action?: {
-    value?: unknown
-    tag?: string
-    name?: string
-    option?: string
-  }
-}
-
-export interface FeishuCardActionResponse {
-  toast?: {
-    type: 'info' | 'success' | 'warning' | 'error'
-    content: string
-  }
-}
+export type FeishuRawCardActionEvent = WireFeishuCardActionEvent
+export type FeishuCardActionResponse = WireFeishuCardActionResponse
 /**
  * The slice of the Lark SDK the connection drives — hand-declared (like Telegram's
  * `TelegramApi` / Slack's `AppLike`) so the connection is testable with a fake and
@@ -170,6 +150,7 @@ export interface FeishuStreamingCard {
 export interface FeishuStreamingCardControls {
   sessionKey: string
   sessionUrl: string
+  target?: WireFeishuCardActionTarget
 }
 
 /** The handle the connection holds: outbound {@link FeishuApi} + the WSClient lifecycle. */
@@ -598,7 +579,7 @@ export class FeishuConnection {
   /** Resolve an active reply's overflow selection and acknowledge it within Lark's
    * callback deadline. The daemon owns the actual cancellation and resulting card
    * lifecycle; removing the mapping first makes redelivered clicks idempotent. */
-  private handleCardAction(event: FeishuRawCardActionEvent): FeishuCardActionResponse | undefined {
+  handleCardAction(event: FeishuRawCardActionEvent): FeishuCardActionResponse | undefined {
     const messageId = event.context?.open_message_id ?? event.open_message_id
     const channel = event.context?.open_chat_id ?? event.open_chat_id
     const actorId = event.operator?.open_id ?? event.operator?.user_id
@@ -762,7 +743,9 @@ export class FeishuConnection {
   ): Promise<FeishuStreamingCard | undefined> {
     return this.queue.enqueue(async () => {
       try {
-        const created = await this.handle.api.createCardEntity(buildStreamingReplyCard(controls?.sessionUrl))
+        const created = await this.handle.api.createCardEntity(
+          buildStreamingReplyCard(controls?.sessionUrl, controls?.target)
+        )
         if (!created.cardId) throw new Error('cardkit.card.create returned no card_id')
         const sent = await this.sendCardEntity(channel, threadAnchor, created.cardId)
         if (!sent.messageId) throw new Error('CardKit IM send returned no message_id')

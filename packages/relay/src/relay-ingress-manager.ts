@@ -16,12 +16,16 @@
  * owner from the CP (`rc/thread-lookup`) rather than dropping the message.
  */
 import { createHash } from 'node:crypto'
+import { WireFeishuCardActionValue } from '@agentconnect.md/protocol'
 import type {
   RdMsgIm,
   RdMsgSlackAction,
+  RdMsgFeishuAction,
   RcBotChannels,
   RcBotConversation,
   RcBotRevoked,
+  WireFeishuCardActionEvent,
+  WireFeishuCardActionResponse,
   WireNormalizedMessage,
   RcThreadAssign,
   RcThreadLookup
@@ -177,6 +181,17 @@ export function httpSlackShortcutMsgId(botId: string, shortcut: HttpSlackSession
     )
     .digest('hex')
   return `slack-action:${digest}`
+}
+
+export function httpFeishuActionMsgId(
+  botId: string,
+  eventId: string | undefined,
+  action: WireFeishuCardActionEvent
+): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify({ v: 1, botId, eventId, action }))
+    .digest('hex')
+  return `feishu-action:${digest}`
 }
 
 export class RelayIngressManager {
@@ -339,6 +354,7 @@ export class RelayIngressManager {
       }
       const ingest = new FeishuHttpIngest(a.botId, a.apiAppId, a.secrets, {
         onMessage: (message) => this.forward(a.botId, message),
+        onCardAction: (action, eventId) => this.forwardFeishuAction(a.botId, action, eventId),
         now: () => this.deps.clock.now()
       })
       this.feishuIngests.set(a.botId, ingest)
@@ -793,6 +809,52 @@ export class RelayIngressManager {
       .catch((err) =>
         this.deps.log.warn(`relay-ingress(${botId}): session action forward failed: ${(err as Error).message}`)
       )
+  }
+
+  /** Forward one verified Lark / Feishu card callback to the sole integration that
+   * rendered it. The daemon resolves the provider message id against its local
+   * active-card map and returns the callback response for the HTTP edge. */
+  private async forwardFeishuAction(
+    botId: string,
+    action: WireFeishuCardActionEvent,
+    eventId: string | undefined
+  ): Promise<WireFeishuCardActionResponse | undefined> {
+    const value = WireFeishuCardActionValue.safeParse(action.action?.value)
+    const route =
+      value.success && value.data.target
+        ? this.router.integrationTarget(botId, value.data.target.agentId, value.data.target.integrationId)
+        : this.router.soleTarget(botId)
+    if (!route) {
+      this.deps.log.warn(`relay-ingress(${botId}): Feishu card action has no current integration target`)
+      return undefined
+    }
+    const daemon = this.deps.getDaemon(route.daemonId)
+    if (!daemon) {
+      this.deps.log.warn(`relay-ingress(${botId}): daemon ${route.daemonId} offline — Feishu action dropped`)
+      return undefined
+    }
+    const messageId = action.context?.open_message_id ?? action.open_message_id
+    if (!messageId) return undefined
+    const msgId = httpFeishuActionMsgId(botId, eventId, action)
+    const rd: RdMsgFeishuAction = {
+      source: 'feishu_action',
+      agentId: route.agentId,
+      integrationId: route.integrationId,
+      sessionKey: `feishu-action:${messageId}`,
+      msgId,
+      botId,
+      payload: action
+    }
+    try {
+      const ack = await daemon.sendMsg(rd)
+      if (!ack.accepted) {
+        this.deps.log.warn(`relay-ingress(${botId}): daemon rejected Feishu card action (${ack.reason ?? 'unknown'})`)
+      }
+      return ack.feishuCardAction
+    } catch (err) {
+      this.deps.log.warn(`relay-ingress(${botId}): Feishu card action forward failed: ${(err as Error).message}`)
+      return undefined
+    }
   }
 
   /** Resolve a message shortcut from live conversation ownership, then let the

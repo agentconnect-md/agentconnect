@@ -23,6 +23,7 @@ import { PgFeishuAppRegistrationStore } from '../../src/persistence/index.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { AgentId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import type { RelayChannel } from '../../src/ws/relay-registry.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
@@ -177,7 +178,7 @@ describe('Feishu/Lark one-click app registration', () => {
     const spy = new SpyControl()
     const second = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender, {
       feishuAppRegistration: service(fetcher),
-      verifyFeishuBot: async () => ({ status: 'ok', name: 'One-click Bot' })
+      verifyFeishuBot: async () => ({ status: 'ok', name: 'One-click Bot', openId: 'ou_oneclick_bot' })
     })
     running = second
 
@@ -273,6 +274,7 @@ describe('Feishu/Lark one-click app registration', () => {
       orgId: OrgId(DEFAULT_ORG_ID),
       agentId: AgentId(randomUUID()),
       fallbackRegion: 'lark' as const,
+      transport: 'socket' as const,
       appName: 'AgentConnect'
     }
 
@@ -305,6 +307,7 @@ describe('Feishu/Lark one-click app registration', () => {
       orgId: OrgId(DEFAULT_ORG_ID),
       agentId: AgentId(randomUUID()),
       fallbackRegion: 'feishu',
+      transport: 'socket',
       appName: 'AgentConnect',
       createdByUserId: 'user-a'
     })
@@ -430,5 +433,125 @@ describe('Feishu/Lark one-click app registration', () => {
       appSecret: null,
       targetKey: null
     })
+  })
+
+  it('one-click HTTP configures the relay callback before completing', async () => {
+    const agentId = await placedAgent()
+    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+      const form = new URLSearchParams(String(init?.body))
+      if (form.get('action') === 'begin') {
+        return new Response(
+          JSON.stringify({
+            verification_uri_complete: 'https://accounts.larksuite.com/device?user_code=HTTP',
+            device_code: 'http-device-code',
+            expires_in: 600,
+            interval: 1
+          })
+        )
+      }
+      return new Response(
+        JSON.stringify({
+          client_id: 'cli_http_oneclick',
+          client_secret: 'http-one-click-secret',
+          user_info: { tenant_brand: 'lark' }
+        })
+      )
+    })
+    const order: string[] = []
+    const relayFrames: Array<{ type: string; payload: unknown }> = []
+    const configureFeishuHttpApp = vi.fn(async () => {
+      order.push('configure')
+    })
+    const control = new SpyControl()
+    const app = buildHttpApp(
+      prisma,
+      { PUBLIC_RELAY_URL: 'wss://relay.example' },
+      undefined,
+      control as unknown as ControlSender,
+      {
+        feishuAppRegistration: service(fetcher),
+        verifyFeishuBot: async () => ({ status: 'ok', name: 'HTTP Bot', openId: 'ou_http_bot' }),
+        configureFeishuHttpApp
+      }
+    )
+    running = app
+    app.relayReg.add({
+      relayId: 'r1',
+      send(type, payload) {
+        relayFrames.push({ type, payload })
+        if (type === 'rc/bot-assign') order.push('assign')
+      },
+      close() {}
+    } as RelayChannel)
+
+    const started = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/feishu/app`,
+      payload: { agentId, region: 'lark', transport: 'http' }
+    })
+    expect(started.statusCode).toBe(201)
+    const startDto = started.json() as { id: string; transport: string }
+    expect(startDto.transport).toBe('http')
+
+    await vi.waitFor(async () => {
+      const polled = await app.app.inject({
+        method: 'GET',
+        url: `${ORG}/integrations/feishu/app/${startDto.id}`
+      })
+      expect(polled.json()).toMatchObject({ status: 'completed' })
+    })
+
+    const bot = await prisma.bot.findFirstOrThrow({ where: { feishuAppId: 'cli_http_oneclick' } })
+    const secret = await prisma.botSecret.findUniqueOrThrow({ where: { botId: bot.id } })
+    expect(bot).toMatchObject({ transport: 'http', botUserId: 'ou_http_bot' })
+    expect(secret.verificationToken).toHaveLength(48)
+    expect(secret.encryptKey).toHaveLength(32)
+    expect(configureFeishuHttpApp).toHaveBeenCalledWith({
+      appId: 'cli_http_oneclick',
+      appSecret: 'http-one-click-secret',
+      region: 'lark',
+      requestUrl: 'https://relay.example/feishu/events',
+      verificationToken: secret.verificationToken,
+      encryptKey: secret.encryptKey
+    })
+    expect(order.slice(0, 2)).toEqual(['assign', 'configure'])
+    expect(relayFrames).toContainEqual({
+      type: 'rc/bot-assign',
+      payload: expect.objectContaining({
+        platform: 'feishu',
+        apiAppId: 'cli_http_oneclick',
+        secrets: { verificationToken: secret.verificationToken, encryptKey: secret.encryptKey }
+      })
+    })
+    expect(control.upserts[0]?.spec).toMatchObject({
+      platform: 'feishu',
+      feishu: { mode: 'shared', botOpenId: 'ou_http_bot' }
+    })
+  })
+
+  it('rejects one-click HTTP before creating a provider session when relay delivery is unavailable', async () => {
+    const agentId = await placedAgent()
+    const begin = vi.fn(async () => ({
+      authorizationUrl: 'https://accounts.larksuite.com/device?user_code=NEVER',
+      deviceCode: 'never',
+      providerDomain: 'accounts.larksuite.com',
+      intervalMs: 1000,
+      expiresInMs: 600_000
+    }))
+    const app = buildHttpApp(prisma, { PUBLIC_RELAY_URL: 'wss://relay.example' }, undefined, undefined, {
+      feishuAppRegistration: new FeishuAppRegistrationService(
+        new PgFeishuAppRegistrationStore(prisma, new PlaintextSecretCipher()),
+        { begin, poll: async () => ({ outcome: 'pending' }) }
+      )
+    })
+    running = app
+
+    const response = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/feishu/app`,
+      payload: { agentId, transport: 'http' }
+    })
+    expect(response.statusCode).toBe(409)
+    expect(begin).not.toHaveBeenCalled()
   })
 })

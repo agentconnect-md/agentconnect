@@ -7,6 +7,7 @@ import {
   SLACK_STATUS_ACTION,
   decodeSharedSlackStatusTarget,
   decodeSlackStatusOverflowValue,
+  type RdMsgFeishuAction,
   type RdMsgIm,
   type RdMsgSlackAction
 } from '@agentconnect.md/protocol'
@@ -1465,6 +1466,55 @@ describe('Slack interactive status bar', () => {
       })
     }
     expect(openStatusModal).toHaveBeenCalledTimes(2)
+
+    await daemon.stop()
+  })
+
+  it('handles shared Feishu card actions only through the exact local integration', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blockingHost().host as any })
+    await daemon.start()
+    const agent = (daemon as any).agents.get('bot-a')
+    agent.integrations = [
+      {
+        id: 'int-a',
+        platform: 'feishu',
+        feishu: {
+          mode: 'shared',
+          appId: 'cli_http_app',
+          appSecret: 'secret',
+          region: 'lark',
+          allowedUserIds: [],
+          bindRules: []
+        }
+      }
+    ]
+    const response = { toast: { type: 'info' as const, content: 'Cancellation requested.' } }
+    const handleCardAction = vi.fn(() => response)
+    ;(daemon as any).fsConnByIntegration.set('int-a', { handleCardAction })
+
+    const action: RdMsgFeishuAction = {
+      source: 'feishu_action',
+      agentId: 'bot-a',
+      sessionKey: 'feishu-action:om_card',
+      msgId: 'feishu-action:one',
+      botId: 'shared-bot',
+      integrationId: 'int-a',
+      payload: {
+        context: { open_message_id: 'om_card', open_chat_id: 'oc_chat' },
+        operator: { open_id: 'ou_human' },
+        action: { tag: 'overflow', option: 'cancel', value: { action: 'agentconnect_reply' } }
+      }
+    }
+
+    expect((daemon as any).handleRelayMsg(action, () => {})).toEqual({
+      msgId: action.msgId,
+      accepted: true,
+      feishuCardAction: response
+    })
+    expect(handleCardAction).toHaveBeenCalledWith(action.payload)
+    expect(
+      (daemon as any).handleRelayMsg({ ...action, msgId: 'feishu-action:wrong', integrationId: 'int-other' }, () => {})
+    ).toMatchObject({ accepted: false, reason: 'not_found' })
 
     await daemon.stop()
   })

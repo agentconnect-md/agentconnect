@@ -252,6 +252,7 @@ import type {
   WebchatImageAttachment,
   RdMsgIm,
   RdMsgSlackAction,
+  RdMsgFeishuAction,
   RdMsgHook,
   RdAck,
   RdAgentMsgFwd,
@@ -4741,7 +4742,9 @@ export class Daemon {
         ? this.dispatchRelayOp(msg, chat)
         : msg.source === 'slack_action'
           ? this.handleRelaySlackAction(msg)
-          : this.handleRelayIm(msg)
+          : msg.source === 'feishu_action'
+            ? this.handleRelayFeishuAction(msg)
+            : this.handleRelayIm(msg)
     if (this.relayMsgAcks.size >= 2000) this.relayMsgAcks.clear() // bound the window
     this.relayMsgAcks.set(dedupKey, ack)
     return ack
@@ -4934,6 +4937,39 @@ export class Daemon {
       this.handleStatusAction({ kind: 'cancel', sessionKey: msg.sessionKey, actor })
     }
     return { msgId: msg.msgId, accepted: true }
+  }
+
+  /** Apply a provider-authenticated HTTP Lark / Feishu card action to the same
+   * send-only connection that rendered the card. The connection resolves the
+   * message id against daemon-local active-card state, so a stale or forged action
+   * cannot name an arbitrary session. */
+  private handleRelayFeishuAction(msg: RdMsgFeishuAction): RdAck {
+    const agent = this.agents.get(msg.agentId)
+    if (!agent) {
+      this.log.warn(`relay: Feishu action for unknown agent ${msg.agentId} — dropping`)
+      return { msgId: msg.msgId, accepted: false, reason: 'no_agent' }
+    }
+    const integration = agent.integrations.find(
+      (candidate) =>
+        candidate.id === msg.integrationId && candidate.platform === 'feishu' && candidate.feishu.mode === 'shared'
+    )
+    if (!integration) {
+      this.log.warn(
+        `relay: Feishu action for non-shared integration ${msg.integrationId} on agent ${msg.agentId} — dropping`
+      )
+      return { msgId: msg.msgId, accepted: false, reason: 'not_found' }
+    }
+    const conn = this.fsConnByIntegration.get(msg.integrationId)
+    if (!conn) {
+      this.log.warn(`relay: Feishu action for unavailable integration ${msg.integrationId} — dropping`)
+      return { msgId: msg.msgId, accepted: false, reason: 'unavailable' }
+    }
+    const response = conn.handleCardAction(msg.payload)
+    return {
+      msgId: msg.msgId,
+      accepted: true,
+      ...(response ? { feishuCardAction: response } : {})
+    }
   }
 
   // Per-hop dedup (§6.4) for FORWARDED cross-daemon agent-calls, keyed by the stable
@@ -10083,7 +10119,8 @@ export class Daemon {
         p.feishuCardAttempted = true
         p.feishuCard = await conn.startStreamingCard(p.channel, p.thread, {
           sessionKey: p.sessionKey,
-          sessionUrl: this.sessionLink(p.acpSessionId)
+          sessionUrl: this.sessionLink(p.acpSessionId),
+          ...(p.integrationId ? { target: { v: 1, agentId: p.agentId, integrationId: p.integrationId } as const } : {})
         })
         return
       case 'card-stream':

@@ -238,6 +238,7 @@ export function buildHttpApp(
     mcpRateLimit: new McpRateLimiter(clock),
     readiness: createReadiness(() => pingDb(prisma)),
     ensureDiscordMessageContentIntent: async () => 'ready',
+    configureFeishuHttpApp: async () => {},
     feishuAppRegistration: new FeishuAppRegistrationService(feishuAppRegistrationStore),
     config: { DEFAULT_OWNER_ID, ...configOverrides },
     ...depsOverrides

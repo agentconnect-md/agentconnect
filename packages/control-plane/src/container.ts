@@ -146,6 +146,7 @@ import { ensureDiscordMessageContentIntent, verifyDiscordBot } from './http/disc
 import { createDiscordBotIconSyncer } from './http/discord-bot-profile.js'
 import { verifyFeishuBot } from './http/feishu-identity.js'
 import { FeishuAppRegistrationService } from './http/feishu-registration.js'
+import { configureFeishuHttpApp } from './http/feishu-app-config.js'
 
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from './config/defaults.js'
 
@@ -684,6 +685,7 @@ export function buildContainer(
     ensureDiscordMessageContentIntent,
     syncDiscordBotIcon: createDiscordBotIconSyncer(iconStore),
     verifyFeishuBot,
+    configureFeishuHttpApp,
     feishuAppRegistration: new FeishuAppRegistrationService(repos.feishuAppRegistration),
     ...(github ? { github } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),

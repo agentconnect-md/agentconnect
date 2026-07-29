@@ -240,6 +240,23 @@ export class BotArbitrationRouter {
     return target(route)
   }
 
+  /** Resolve one explicitly rendered integration through the current member
+   * directory. Unlike message routing, a card action does not require a still-live
+   * conversation rule: the daemon's active-card map is its terminal fence. */
+  integrationTarget(botId: string, agentId: string, integrationId: string): RouteTarget | undefined {
+    const a = this.bots.get(botId)
+    if (!a) return undefined
+    const candidates = a.agents.filter(
+      (entry) => entry.agentId === agentId && entry.integrationId === integrationId && entry.daemonId !== undefined
+    )
+    if (candidates.length !== 1) return undefined
+    const candidate = candidates[0]!
+    if (!a.members.some((m) => m.daemonId === candidate.daemonId && m.agentIds.includes(candidate.agentId))) {
+      return undefined
+    }
+    return { agentId: candidate.agentId, daemonId: candidate.daemonId!, integrationId }
+  }
+
   /** Resolve an agent picker value to one canonical route for this HTTP bot.
    *  Repeated scoped/keyword rules are fine when they point at the same integration;
    *  conflicting placements fail closed instead of choosing by array order. */
@@ -258,6 +275,25 @@ export class BotArbitrationRouter {
    *  the config modal's initial selection. */
   channelOwner(botId: string, channelId: string): string | undefined {
     return this.bots.get(botId)?.routes.find((r) => r.scope?.channel === channelId)?.agentId
+  }
+
+  /** Resolve a bot that has exactly one fully-attributed integration. This is the
+   * rolling-compatibility fallback for Lark / Feishu cards rendered before their
+   * action value carried an explicit agent + integration target. */
+  soleTarget(botId: string): RouteTarget | undefined {
+    const a = this.bots.get(botId)
+    if (!a) return undefined
+    const candidates = a.agents.flatMap((entry) =>
+      entry.daemonId && entry.integrationId
+        ? [{ agentId: entry.agentId, daemonId: entry.daemonId, integrationId: entry.integrationId }]
+        : []
+    )
+    if (candidates.length !== 1) return undefined
+    const candidate = candidates[0]!
+    if (!a.members.some((m) => m.daemonId === candidate.daemonId && m.agentIds.includes(candidate.agentId))) {
+      return undefined
+    }
+    return candidate
   }
 
   /**

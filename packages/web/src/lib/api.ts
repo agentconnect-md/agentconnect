@@ -522,11 +522,13 @@ export interface StartFeishuRegistrationInput {
   agentId: string
   name?: string
   region?: 'feishu' | 'lark'
+  transport?: 'socket' | 'http'
 }
 export interface FeishuRegistrationStartDto {
   id: string
   authorizationUrl: string
   expiresAt: string
+  transport: 'socket' | 'http'
 }
 export interface FeishuRegistrationStatusDto {
   id: string

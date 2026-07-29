@@ -88,7 +88,8 @@ section 7:
    `tenant_access_token`, making it more like Slack than Discord's public CDN.
 3. Rich text and buttons use an **interactive message card** whose callbacks
    arrive as `card.action.trigger`. This is more involved than Discord message
-   components. The current integration uses plain text and text commands.
+   components. The current integration streams agent replies through CardKit and
+   exposes Cancel run in the reply card; other session controls remain text commands.
 
 ## 3. Reuse the per-platform silo pattern
 
@@ -291,10 +292,8 @@ IntegrationFeishuConfig }`.
     directly in the group; see section 7.3.
 - `render.ts` defines `FeishuConverger`, constructed with output `mode` and
   providing `hasBuffered` and `flushBuffered`, producing `FeishuAction[]`; a
-  `chunkForFeishu()` helper; `buildFeishuCard()` for status and selection cards;
-  and `parseFeishuCardAction()` for `card.action.trigger` callback values.
-  **If v1 uses plain text, card buttons may be deferred** and all actions can
-  use text commands.
+  `chunkForFeishu()` helper; CardKit reply builders; and the stable Cancel action
+  value handled from `card.action.trigger` in either delivery mode.
 - An optional `app-commands.ts` is unnecessary because Lark / Feishu has no native
   Discord-style slash-command registration. Existing `parseCommand` can handle
   `/status`, `/models`, `/effort`, `/permission`, `/fast`, `/stop`, `/cancel`,
@@ -346,6 +345,10 @@ IntegrationFeishuConfig }`.
     a new tab, poll the opaque registration ID, and refresh the integration
     list when setup completes. This is a direct deeplink; the user does not
     need to scan a QR code.
+  - Keep Long Connection as the default delivery mode. When public callback
+    delivery is available, One-click may switch to HTTP; after authorization
+    the Control Plane configures the relay Request URL and callback
+    verification keys through the application-config OpenAPI.
   - Keep **Manual** as the advanced fallback. It renders App ID and App Secret
     inputs and defaults to Long Connection.
   - When public callback delivery is available, Manual may switch to HTTP and
@@ -440,18 +443,16 @@ Images and files arrive as `image_key` and `file_key`. Fetch them through
 `DEFAULT_MAX_ATTACHMENT_BYTES`. Failure degrades to a resource link and never
 breaks the turn.
 
-### 7.3 v1 uses plain text and text commands; card buttons are deferred
+### 7.3 Reply streaming uses CardKit; other controls stay text-first
 
-- **Sending:** use `msg_type: 'text'` in v1 because native Lark / Feishu Markdown
-  support is limited, and chunk at the platform's text limit. Rich `post` messages
-  and cards belong to v2.
-- **Status, cancellation, and model selection:** Lark / Feishu's equivalent to
-  Discord components and Telegram inline keyboards is an **interactive card
-  with buttons**, whose callback is `card.action.trigger`. It is more involved
-  than Discord components and resembles Slack block actions. v1 should use text
-  commands such as `/stop` and `/models opus`, already supported by
-  `parseCommand`. If v1 requires buttons, have `render.ts` emit `FeishuCard` and
-  register `card.action.trigger -> handleFeishuSelect` in `EventDispatcher`.
+- **Sending:** agent turns use one CardKit entity that streams cumulative text
+  updates and is finalized in place. Short control messages remain
+  `msg_type: 'text'` and respect the platform text limit.
+- **Status, cancellation, and model selection:** the active reply card exposes
+  Cancel run through an overflow item. Its `card.action.trigger` callback resolves
+  the rendered message ID against daemon-local session state in both Long
+  Connection and HTTP/Relay modes. Other controls continue to use text commands
+  such as `/status`, `/models opus`, and `/permission`.
 - **Typing indicator:** Lark / Feishu has no Discord-style typing API, so
   `sendChatAction` may be a no-op.
 
@@ -479,7 +480,10 @@ pre-fills AgentConnect's event and permission additions. They include
 `contact:contact.base:readonly`, and `contact:user.base:readonly`. The last
 scope is required for participant names instead of raw `ou_...` IDs. The user
 still reviews and confirms the app, and tenant policy may require administrator
-approval.
+approval. For HTTP delivery, sensitive settings cannot travel in the deeplink:
+after approval the Control Plane uses the returned credentials to set the
+stable `/feishu/events` Request URL, Verification Token, and Encrypt Key through
+the application-config OpenAPI, after assigning those same values to the relay.
 
 The same creation deeplink pre-fills the bot avatar from the Agent's current
 public icon URL. Uploaded icons use their public object-store URL; glyph and
@@ -505,22 +509,25 @@ and links to the selected Lark or Feishu Open Platform console.
   share normalization, CardKit rendering, outbound messages, and reconciliation.
 - **Web:** `AddIntegrationModal` defaults to the official one-click
   authorization deeplink and keeps App ID/App Secret entry as an advanced
-  fallback with a Long Connection / HTTP selector. It also includes Lark /
+  fallback. Both flows default to Long Connection and expose HTTP when relay
+  delivery is available. It also includes Lark /
   Feishu marks, a manual setup checklist, Settings card, and API types.
 - **Control Plane:** a durable registration coordinator resumes the official
   device flow across replicas, leases each poll/finalize step, and installs
   credentials server-side through the same secret-store helper as the manual
-  route. App Secret never enters a browser response and is cleared from the
-  pending row after settlement.
+  route. HTTP registrations additionally configure the app's callback delivery
+  after the relay assignment exists. App Secret never enters a browser response
+  and is cleared from the pending row after settlement.
 - **HTTP ingress:** the relay endpoint `/feishu/events` verifies/decrypts and
-  deduplicates callbacks before forwarding normalized messages directly to the
-  owning daemon.
+  deduplicates callbacks before forwarding normalized messages and CardKit
+  actions directly to the owning daemon. Card actions return the daemon's
+  callback response through the same request.
 - **Attachments and topics:** `downloadFile` uses authenticated
   `im.messageResource.get`; topic replies use
   `im.message.reply(reply_in_thread)` and group sessions keyed by topic root.
-- **Remaining optional work:** interactive-card status and callbacks, an
-  add-to-group link, a prebuilt app with one-click installation, and multi-agent
-  Lark / Feishu bots.
+- **Remaining optional work:** additional in-card session controls beyond Cancel,
+  an add-to-group link, a prebuilt app with one-click installation, and
+  multi-agent Lark / Feishu bots.
 
 ## 9. Tests
 

@@ -2,16 +2,20 @@ import { createHmac } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type {
   RdAck,
+  RdMsgFeishuAction,
   RdMsgSlackAction,
   RcBotChannels,
   RcThreadAssign,
   RcThreadLookupOk,
+  WireFeishuCardActionEvent,
+  WireFeishuCardActionResponse,
   WireNormalizedMessage
 } from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
 import {
   RelayIngressManager,
   type RelayIngressManagerDeps,
+  httpFeishuActionMsgId,
   httpSlackActionMsgId,
   httpSlackShortcutMsgId
 } from './relay-ingress-manager.js'
@@ -88,6 +92,11 @@ interface ManagerInternals {
   selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
   forwardSessionAction(botId: string, action: HttpSlackSessionAction): void
   forwardSessionShortcut(botId: string, shortcut: HttpSlackSessionShortcut): boolean
+  forwardFeishuAction(
+    botId: string,
+    action: WireFeishuCardActionEvent,
+    eventId: string | undefined
+  ): Promise<WireFeishuCardActionResponse | undefined>
   forward(botId: string, msg: WireNormalizedMessage): Promise<void>
 }
 
@@ -271,6 +280,70 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
 
     expect(sendMsg).not.toHaveBeenCalled()
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('ignored stale session action'))
+  })
+})
+
+describe('RelayIngressManager HTTP Lark / Feishu card actions', () => {
+  it('forwards to the rendered integration and returns the daemon callback response', async () => {
+    const response = { toast: { type: 'info' as const, content: 'Cancellation requested.' } }
+    const sendMsg = vi.fn(async (msg: RdMsgFeishuAction): Promise<RdAck> => ({
+      msgId: msg.msgId,
+      accepted: true,
+      feishuCardAction: response
+    }))
+    const daemon = { sendMsg } as unknown as RelayDaemonConnection
+    const manager = new RelayIngressManager(
+      deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
+    )
+    const internals = manager as unknown as ManagerInternals
+    internals.router.upsert({
+      botId: BOT_ID,
+      platform: 'feishu',
+      secrets: { verificationToken: 'verify-token' },
+      apiAppId: 'cli_http_app',
+      members: [
+        { daemonId: DAEMON_ID, agentIds: [AGENT_ID] },
+        { daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] }
+      ],
+      agents: [
+        {
+          agentId: AGENT_ID,
+          name: 'Agent',
+          daemonId: DAEMON_ID,
+          integrationId: INTEGRATION_ID
+        },
+        {
+          agentId: OTHER_AGENT_ID,
+          name: 'Review Agent',
+          daemonId: OTHER_DAEMON_ID,
+          integrationId: OTHER_INTEGRATION_ID
+        }
+      ],
+      routes: []
+    })
+    const action: WireFeishuCardActionEvent = {
+      context: { open_message_id: 'om_card', open_chat_id: 'oc_chat' },
+      operator: { open_id: 'ou_human' },
+      action: {
+        tag: 'overflow',
+        option: 'cancel',
+        value: {
+          action: 'agentconnect_reply',
+          target: { v: 1, agentId: AGENT_ID, integrationId: INTEGRATION_ID }
+        }
+      }
+    }
+
+    await expect(internals.forwardFeishuAction(BOT_ID, action, 'evt-action')).resolves.toEqual(response)
+    expect(sendMsg).toHaveBeenCalledWith({
+      source: 'feishu_action',
+      agentId: AGENT_ID,
+      integrationId: INTEGRATION_ID,
+      sessionKey: 'feishu-action:om_card',
+      msgId: httpFeishuActionMsgId(BOT_ID, 'evt-action', action),
+      botId: BOT_ID,
+      payload: action
+    })
   })
 })
 

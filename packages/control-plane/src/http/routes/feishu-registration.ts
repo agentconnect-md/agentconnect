@@ -1,11 +1,12 @@
 /**
- * One-click Feishu/Lark self-built app registration.
+ * One-click Lark/Feishu self-built app registration.
  *
  * The provider gives the Console a deeplink. Its device cursor and provisional
  * credentials are encrypted in Postgres so any Control Plane replica can
  * continue the poll and install; neither endpoint returns App Secret.
  */
 import type { FastifyInstance } from 'fastify'
+import { randomBytes } from 'node:crypto'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
@@ -20,6 +21,8 @@ import {
   FeishuRegistrationSetupError
 } from '../feishu-registration.js'
 import { installNewFeishuBot } from '../install-feishu.js'
+import { feishuEventsRequestUrl, type ConfigureFeishuHttpAppInput } from '../feishu-app-config.js'
+import { relayHttpBase } from './slack-install.js'
 import {
   ErrorDto,
   FeishuAppRegistrationStartBody,
@@ -38,9 +41,9 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Integrations],
-          summary: 'Start Feishu app registration',
+          summary: 'Start Lark / Feishu app registration',
           description:
-            'Create an AgentConnect-ready Feishu/Lark self-built app through the official device authorization flow. Returns only the authorization deeplink; credentials are installed server-side after approval.',
+            'Create an AgentConnect-ready Lark/Feishu self-built app through the official device authorization flow. Returns only the authorization deeplink; credentials are installed server-side after approval.',
           operationId: 'startFeishuAppRegistration',
           body: FeishuAppRegistrationStartBody,
           response: {
@@ -102,11 +105,21 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
         )
         const createdByUserId = req.principal.userId
         const targetAgentId = agent.id
+        const transport = req.body.transport
+        const relayBase = transport === 'http' ? relayHttpBase(deps.config.PUBLIC_RELAY_URL) : null
+        if (transport === 'http' && (!relayBase || !deps.httpBot.hasConnectedRelay())) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'HTTP callback delivery is unavailable on this deployment'
+          })
+        }
         try {
           const started = await deps.feishuAppRegistration.start({
             orgId,
             agentId: targetAgentId,
             fallbackRegion: req.body.region,
+            transport,
             appName,
             ...(avatarUrl ? { avatarUrl } : {}),
             description: agent.description,
@@ -116,7 +129,8 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
           return reply.code(201).send({
             id: started.id,
             authorizationUrl: started.authorizationUrl,
-            expiresAt: started.expiresAt.toISOString()
+            expiresAt: started.expiresAt.toISOString(),
+            transport: started.transport
           })
         } catch (error) {
           if (error instanceof FeishuRegistrationConflictError) {
@@ -140,9 +154,9 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Integrations],
-          summary: 'Poll Feishu app registration',
+          summary: 'Poll Lark / Feishu app registration',
           description:
-            'Read one Feishu/Lark device-registration session until it completes or fails. Credentials are never returned.',
+            'Read one Lark/Feishu device-registration session until it completes or fails. Credentials are never returned.',
           operationId: 'getFeishuAppRegistration',
           params: IdParam,
           response: { 200: FeishuAppRegistrationStatusDto, 404: ErrorDto }
@@ -157,12 +171,19 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
           if (check?.status === 'invalid') {
             throw new FeishuRegistrationSetupError('invalid_credentials')
           }
+          if (registration.transport === 'http') {
+            if (check?.status !== 'ok') {
+              throw new Error('Lark/Feishu bot identity is temporarily unavailable')
+            }
+            if (!check.openId) throw new FeishuRegistrationSetupError('setup_failed')
+          }
 
           // Authorization can outlive the original placement. Take the mutation
           // side of the move fence, then resolve both placement and capability
           // under it so a concurrent move cannot omit this new integration.
           const release = deps.agentMutations.tryBeginMutation(registration.agentId)
           if (!release) throw new FeishuRegistrationRetryError()
+          let httpAppConfig: ConfigureFeishuHttpAppInput | undefined
           try {
             const current = await deps.repos.agent.get(registration.agentId)
             if (
@@ -184,6 +205,14 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
               throw new FeishuRegistrationSetupError('agent_unavailable')
             }
             const name = registration.requestedName || (check?.status === 'ok' ? check.name : null) || current.name
+            const relayBase = registration.transport === 'http' ? relayHttpBase(deps.config.PUBLIC_RELAY_URL) : null
+            if (registration.transport === 'http' && (!relayBase || !deps.httpBot.hasConnectedRelay())) {
+              throw new FeishuRegistrationRetryError()
+            }
+            const existingSecret =
+              registration.transport === 'http' ? await deps.repos.botSecret.get(registration.botId) : null
+            const verificationToken = existingSecret?.verificationToken || randomBytes(24).toString('hex')
+            const encryptKey = existingSecret?.encryptKey || randomBytes(16).toString('hex')
             await installNewFeishuBot(deps, app.log, {
               orgId: registration.orgId,
               agent: current,
@@ -193,11 +222,28 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
               appId: registration.appId,
               appSecret: registration.appSecret,
               region: registration.region,
+              transport: registration.transport,
+              ...(check?.status === 'ok' && check.openId ? { botUserId: check.openId } : {}),
+              ...(registration.transport === 'http' ? { verificationToken, encryptKey } : {}),
               createdByUserId: registration.createdByUserId
             })
+            if (registration.transport === 'http') {
+              httpAppConfig = {
+                appId: registration.appId,
+                appSecret: registration.appSecret,
+                region: registration.region,
+                requestUrl: feishuEventsRequestUrl(relayBase!),
+                verificationToken,
+                encryptKey
+              }
+            }
           } finally {
             release()
           }
+          // Provider configuration is independent of placement. Keep this network
+          // round-trip outside the agent move fence; a failure leaves the durable
+          // authorized registration retryable with the same callback credentials.
+          if (httpAppConfig) await deps.configureFeishuHttpApp(httpAppConfig)
         })
         if (!session) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'registration not found' })

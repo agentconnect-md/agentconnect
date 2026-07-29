@@ -1,7 +1,7 @@
 import { createCipheriv, createHash } from 'node:crypto'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { WireNormalizedMessage } from '@agentconnect.md/protocol'
+import type { WireFeishuCardActionEvent, WireNormalizedMessage } from '@agentconnect.md/protocol'
 import { FeishuHttpIngest, type FeishuCallbackHeaders } from './feishu-http-ingest.js'
 import {
   registerFeishuHttpIngress,
@@ -55,9 +55,14 @@ function encryptedEnvelope(
 
 function makeApp(secrets: { verificationToken: string; encryptKey?: string } = { verificationToken: 'verify-token' }) {
   const messages: WireNormalizedMessage[] = []
+  const actions: WireFeishuCardActionEvent[] = []
   const ingest = new FeishuHttpIngest('bot-1', 'cli_http_app', secrets, {
     onMessage: async (message) => {
       messages.push(message)
+    },
+    onCardAction: async (action) => {
+      actions.push(action)
+      return { toast: { type: 'info', content: 'Cancellation requested.' } }
     },
     now: () => NOW
   })
@@ -69,7 +74,7 @@ function makeApp(secrets: { verificationToken: string; encryptKey?: string } = {
   }
   const app = Fastify()
   registerFeishuHttpIngress(app, { manager: () => resolver, log })
-  return { app, messages }
+  return { app, messages, actions }
 }
 
 describe('Feishu HTTP ingress', () => {
@@ -145,6 +150,55 @@ describe('Feishu HTTP ingress', () => {
     })
     expect(response.statusCode).toBe(200)
     await vi.waitFor(() => expect(h.messages).toHaveLength(1))
+  })
+
+  it('forwards card actions and returns the daemon callback response', async () => {
+    const h = makeApp()
+    app = h.app
+    const action = {
+      context: { open_message_id: 'om_card', open_chat_id: 'oc_1' },
+      operator: { open_id: 'ou_human' },
+      action: {
+        tag: 'overflow',
+        option: 'cancel',
+        value: {
+          action: 'agentconnect_reply',
+          target: {
+            v: 1,
+            agentId: '33333333-3333-4333-8333-333333333333',
+            integrationId: '44444444-4444-4444-8444-444444444444'
+          }
+        }
+      }
+    }
+    const body = {
+      schema: '2.0',
+      header: {
+        event_id: 'evt-action',
+        event_type: 'card.action.trigger',
+        token: 'verify-token',
+        app_id: 'cli_http_app'
+      },
+      event: action
+    }
+    const response = await app.inject({
+      method: 'POST',
+      url: '/feishu/events',
+      headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify(body)
+    })
+    const retry = await app.inject({
+      method: 'POST',
+      url: '/feishu/events',
+      headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify(body)
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual({ toast: { type: 'info', content: 'Cancellation requested.' } })
+    expect(retry.statusCode).toBe(200)
+    expect(retry.json()).toEqual({})
+    expect(h.actions).toEqual([action])
   })
 
   it('decrypts URL verification without requiring event-signature headers', async () => {

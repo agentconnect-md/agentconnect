@@ -2,7 +2,9 @@ import { createDecipheriv, createHash, timingSafeEqual } from 'node:crypto'
 import {
   feishuEventToMessageLike,
   normalizeFeishuMessage,
+  WireFeishuCardActionEvent,
   type FeishuRawEvent,
+  type WireFeishuCardActionResponse,
   type WireNormalizedMessage
 } from '@agentconnect.md/protocol'
 
@@ -23,11 +25,15 @@ export type VerifiedFeishuCallback =
       kind: 'event'
       eventId?: string
       eventType?: string
-      event?: FeishuRawEvent
+      event?: UnknownRecord
     }
 
 export interface FeishuHttpIngestDeps {
   onMessage: (message: WireNormalizedMessage) => Promise<void>
+  onCardAction: (
+    action: WireFeishuCardActionEvent,
+    eventId: string | undefined
+  ) => Promise<WireFeishuCardActionResponse | undefined>
   now: () => number
 }
 
@@ -125,7 +131,7 @@ export class FeishuHttpIngest {
       kind: 'event',
       ...(eventId ? { eventId } : {}),
       ...(eventType ? { eventType } : {}),
-      ...(asRecord(body.event) ? { event: body.event as FeishuRawEvent } : {})
+      ...(asRecord(body.event) ? { event: body.event as UnknownRecord } : {})
     }
   }
 
@@ -138,14 +144,22 @@ export class FeishuHttpIngest {
     return false
   }
 
-  async handle(callback: Extract<VerifiedFeishuCallback, { kind: 'event' }>): Promise<void> {
-    if (callback.eventType !== 'im.message.receive_v1' || !callback.event) return
-    const like = feishuEventToMessageLike(callback.event)
+  async handle(
+    callback: Extract<VerifiedFeishuCallback, { kind: 'event' }>
+  ): Promise<WireFeishuCardActionResponse | undefined> {
+    if (!callback.event) return undefined
+    if (callback.eventType === 'card.action.trigger') {
+      const parsed = WireFeishuCardActionEvent.safeParse(callback.event)
+      return parsed.success ? this.deps.onCardAction(parsed.data, callback.eventId) : undefined
+    }
+    if (callback.eventType !== 'im.message.receive_v1') return undefined
+    const like = feishuEventToMessageLike(callback.event as FeishuRawEvent)
     if (!like.messageId || !like.chatId || !like.senderOpenId) return
     await this.deps.onMessage(
       normalizeFeishuMessage(like, {
         traceId: callback.eventId ? `feishu:${callback.eventId}` : `feishu:${like.chatId}:${like.messageId}`
       })
     )
+    return undefined
   }
 }

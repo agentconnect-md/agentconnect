@@ -1,4 +1,5 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import type { WireFeishuCardActionTarget } from '@agentconnect.md/protocol'
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 
@@ -98,8 +99,11 @@ function cardInlineRow(
 
 /** Initial CardKit 2.0 reply card. `streaming_mode` makes element updates render
  * incrementally in clients that support CardKit streaming. */
-export function buildStreamingReplyCard(sessionUrl?: string): Record<string, unknown> {
-  const menu = cardSessionMenu(sessionUrl, true)
+export function buildStreamingReplyCard(
+  sessionUrl?: string,
+  target?: WireFeishuCardActionTarget
+): Record<string, unknown> {
+  const menu = cardSessionMenu(sessionUrl, true, target)
   const content = {
     tag: 'markdown',
     element_id: FEISHU_STREAMING_ELEMENT_ID,
@@ -154,7 +158,11 @@ function cardLink(value: string): string | undefined {
   }
 }
 
-function cardSessionMenu(sessionUrl: string | undefined, cancellable: boolean): Record<string, unknown> | undefined {
+function cardSessionMenu(
+  sessionUrl: string | undefined,
+  cancellable: boolean,
+  target?: WireFeishuCardActionTarget
+): Record<string, unknown> | undefined {
   const url = sessionUrl ? cardLink(sessionUrl) : undefined
   const options = [
     ...(cancellable
@@ -181,7 +189,7 @@ function cardSessionMenu(sessionUrl: string | undefined, cancellable: boolean): 
     element_id: FEISHU_REPLY_ACTIONS_ELEMENT_ID,
     width: 'default',
     options,
-    value: { action: FEISHU_REPLY_ACTION_VALUE }
+    value: { action: FEISHU_REPLY_ACTION_VALUE, ...(target ? { target } : {}) }
   }
 }
 

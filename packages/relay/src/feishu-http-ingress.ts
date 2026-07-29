@@ -8,6 +8,7 @@ import {
 } from './feishu-http-ingest.js'
 
 export const FEISHU_BODY_LIMIT = 1024 * 1024
+const FEISHU_CARD_ACTION_RESPONSE_TIMEOUT_MS = 2_500
 
 export interface FeishuVerifiedDelivery {
   ingest: FeishuHttpIngest
@@ -67,6 +68,20 @@ export function registerFeishuHttpIngress(app: FastifyInstance, deps: FeishuHttp
         return reply.code(200).send({ challenge: resolved.callback.challenge })
       }
       if (resolved.ingest.seen(resolved.callback.eventId)) return reply.code(200).send({})
+      if (resolved.callback.eventType === 'card.action.trigger') {
+        let timeout: ReturnType<typeof setTimeout> | undefined
+        const response = await Promise.race([
+          resolved.ingest.handle(resolved.callback).catch((error) => {
+            deps.log.warn(`feishu ingress: card action handler error: ${(error as Error).message}`)
+            return undefined
+          }),
+          new Promise<undefined>((resolve) => {
+            timeout = setTimeout(() => resolve(undefined), FEISHU_CARD_ACTION_RESPONSE_TIMEOUT_MS)
+          })
+        ])
+        if (timeout) clearTimeout(timeout)
+        return reply.code(200).send(response ?? {})
+      }
       void resolved.ingest.handle(resolved.callback).catch((error) => {
         deps.log.warn(`feishu ingress: event handler error: ${(error as Error).message}`)
       })

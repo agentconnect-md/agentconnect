@@ -113,11 +113,11 @@ const PLATFORM_INSTALL_FAILURES: Record<string, string> = {
 }
 
 const FEISHU_REGISTRATION_FAILURES: Record<string, string> = {
-  denied: 'The Feishu/Lark app setup was cancelled.',
+  denied: 'The Lark/Feishu app setup was cancelled.',
   expired: 'This setup link expired — start again.',
   agent_unavailable: 'This agent moved or was removed during setup. Check its daemon, then try again.',
   invalid_credentials: 'The app was created, but its credentials could not be verified.',
-  setup_failed: 'Feishu/Lark could not complete the app setup. Please try again.'
+  setup_failed: 'Lark/Feishu could not complete the app setup. Please try again.'
 }
 
 const GH_TRIGGER_TILES: { mode: GhTriggerMode; label: string; desc: string }[] = [
@@ -957,7 +957,7 @@ export default function AddIntegrationModal({
   const [appName, setAppName] = useState(agent.name)
   const [botToken, setBotToken] = useState('')
   const [appToken, setAppToken] = useState('')
-  // Feishu/Lark gateway: new installs default to international Lark.
+  // Lark/Feishu gateway: new installs default to international Lark.
   const [feishuRegion, setFeishuRegion] = useState<'feishu' | 'lark'>('lark')
   const [feishuVerificationToken, setFeishuVerificationToken] = useState('')
   const [feishuEncryptKey, setFeishuEncryptKey] = useState('')
@@ -968,6 +968,7 @@ export default function AddIntegrationModal({
     id: string
     authorizationUrl: string
     expiresAt: string
+    transport: 'socket' | 'http'
   } | null>(null)
   const botIdentityCopy: Record<BotPlatform, { create: string; existing: string }> = {
     slack: { create: 'Create with a Slack manifest', existing: 'An unused Slack app' },
@@ -1802,7 +1803,7 @@ export default function AddIntegrationModal({
     setErr(null)
   }
 
-  // Feishu/Lark's official device flow returns a normal authorization deeplink.
+  // Lark/Feishu's official device flow returns a normal authorization deeplink.
   // Open a blank tab synchronously so popup blockers preserve the user's click
   // while the CP asks the provider for that URL.
   const startFeishuAuto = async () => {
@@ -1816,6 +1817,7 @@ export default function AddIntegrationModal({
       const started = await startFeishuRegistration({
         agentId: agent.id,
         region: feishuRegion,
+        transport: effTransport,
         ...(appName.trim() ? { name: appName.trim() } : {})
       })
       setFeishuRegistration(started)
@@ -1859,7 +1861,7 @@ export default function AddIntegrationModal({
         }
         stop(
           FEISHU_REGISTRATION_FAILURES[status.failureReason ?? ''] ??
-            'Feishu/Lark could not complete the app setup. Please try again.'
+            'Lark/Feishu could not complete the app setup. Please try again.'
         )
       } catch (e) {
         // A missing short-lived session is terminal; ordinary network failures
@@ -3337,7 +3339,7 @@ export default function AddIntegrationModal({
               </div>
             </div>
           )}
-        {/* Feishu/Lark defaults to the official device-registration deeplink. The
+        {/* Lark/Feishu defaults to the official device-registration deeplink. The
             manual credential pair remains available as an advanced fallback. */}
         {mode === 'create' && platform === 'feishu' && (
           <>
@@ -3371,17 +3373,15 @@ export default function AddIntegrationModal({
                   : 'Advanced — configure a self-built app yourself and paste its credentials.'}
               </span>
             </div>
-            {feishuMethod === 'manual' && (
-              <div className="mb-3 flex justify-end">
+            <div className="mb-3 flex justify-end">
               <DeliveryLine
                 platform="feishu"
-                transport={effTransport}
+                transport={feishuRegistration?.transport ?? effTransport}
                 relayAvailable={relayAvailable}
-                locked={false}
+                locked={feishuPhase === 'authorizing'}
                 onSwitch={switchTransport}
               />
-              </div>
-            )}
+            </div>
             <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
               {/* Region selects the user-facing launcher; the one-click result normally
                   reports the authorized tenant brand and the CP stores that exact gateway. */}
@@ -3558,9 +3558,7 @@ export default function AddIntegrationModal({
                         <div className="fld">
                           <span className="fldlbl">Verification Token</span>
                           <input
-                            className={`inp mn ${
-                              showErrors && !feishuVerificationOk ? 'border-(--status-error)' : ''
-                            }`}
+                            className={`inp mn ${showErrors && !feishuVerificationOk ? 'border-(--status-error)' : ''}`}
                             placeholder="From Event Subscriptions"
                             value={feishuVerificationToken}
                             onChange={(e) => setFeishuVerificationToken(e.target.value)}

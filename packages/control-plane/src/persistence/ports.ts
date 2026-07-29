@@ -2265,6 +2265,7 @@ export interface FeishuAppRegistrationRecord {
   agentId: AgentId
   requestedName: string | null
   fallbackRegion: FeishuRegion
+  transport: SlackTransport
   authorizationUrl: string
   providerDomain: string
   deviceCode: string | null
@@ -2292,6 +2293,7 @@ export interface CreateFeishuAppRegistrationInput {
   agentId: AgentId
   requestedName?: string
   fallbackRegion: FeishuRegion
+  transport: SlackTransport
   authorizationUrl: string
   providerDomain: string
   deviceCode: string

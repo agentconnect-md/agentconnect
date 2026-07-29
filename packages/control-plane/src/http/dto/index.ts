@@ -1172,13 +1172,15 @@ export const SlackAppStartDto = z.object({
 export const FeishuAppRegistrationStartBody = z.object({
   agentId: z.string().uuid(),
   name: z.string().min(1).optional(),
-  region: FeishuRegion.default('lark')
+  region: FeishuRegion.default('lark'),
+  transport: z.enum(['socket', 'http']).default('socket')
 })
 
 export const FeishuAppRegistrationStartDto = z.object({
   id: z.string().uuid(),
   authorizationUrl: z.string().url(),
-  expiresAt: z.string().datetime()
+  expiresAt: z.string().datetime(),
+  transport: z.enum(['socket', 'http'])
 })
 
 export const FeishuAppRegistrationStatusDto = z.object({

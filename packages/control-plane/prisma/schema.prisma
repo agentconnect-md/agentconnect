@@ -1668,6 +1668,7 @@ model FeishuAppRegistration {
   agentId          String                      @db.Uuid
   requestedName    String?
   fallbackRegion   String
+  transport        SlackTransport               @default(socket)
   authorizationUrl String
   providerDomain   String
   deviceCode       String? // sensitive — sealed by SecretCipher
