@@ -17,9 +17,9 @@ export default function NotFoundView() {
         kind="PAGE"
         title="Page not found"
         chip={pathname}
-        post=" doesn’t exist. Check the address, or head back to your agents."
-        actionLabel="Go to agents"
-        actionHref={orgPath('/agents')}
+        post=" doesn’t exist. Check the address, or head back home."
+        actionLabel="Go to home"
+        actionHref={orgPath('/home')}
         searchLabel="Search"
       />
     </div>

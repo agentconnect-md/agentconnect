@@ -141,7 +141,7 @@ export default function OnboardingView() {
   const goConsole = () => {
     void cleanupPending()
     skipOnboarding(orgKey)
-    router.push(orgPath('/agents'))
+    router.push(orgPath('/home'))
   }
 
   if (loading) return <LoadingState fill />

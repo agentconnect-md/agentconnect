@@ -3,6 +3,7 @@
 // Agent-type + IM-platform brand marks.
 // Sized to 60% of their container to match the .av / .imark CSS.
 
+import { useState } from 'react'
 import { Icon } from './ui'
 import { withIconUrl, type AgentIcon } from '@/lib/agent-icon'
 import newLarkIcon from '@iconify-icons/icon-park/new-lark'
@@ -23,6 +24,73 @@ export function AgentMark({ model }: { model: string }) {
       src={registryIcon}
       alt=""
       className="block h-[60%] w-[60%] object-contain [html[data-theme='dark']_&]:invert"
+    />
+  )
+}
+
+// Map a model id to an AI-provider brand slug in the lobehub icon set. Handles the
+// `provider/model` form (opencode / openrouter, e.g. `deepseek/deepseek-v4-flash`)
+// first, then falls back to inferring the family from a bare model id. Returns null
+// when it can't tell (⇒ caller shows the runtime mark instead).
+// ponytail: substring/prefix heuristic; a wrong guess degrades gracefully because
+// <ModelMark> falls back on the icon's onError. Add a mapping when a provider recurs.
+const MODEL_PROVIDER_PREFIX: Record<string, string> = {
+  deepseek: 'deepseek',
+  openai: 'openai',
+  anthropic: 'claude',
+  google: 'gemini',
+  'google-vertex': 'gemini',
+  meta: 'meta',
+  'meta-llama': 'meta',
+  mistral: 'mistral',
+  mistralai: 'mistral',
+  qwen: 'qwen',
+  alibaba: 'qwen',
+  moonshot: 'moonshot',
+  moonshotai: 'moonshot',
+  xai: 'grok',
+  'x-ai': 'grok',
+  cohere: 'cohere',
+  groq: 'groq',
+  perplexity: 'perplexity',
+  ollama: 'ollama',
+  openrouter: 'openrouter'
+}
+export function modelProviderSlug(model: string): string | null {
+  const m = model.toLowerCase().trim()
+  if (!m) return null
+  const prefix = m.includes('/') ? m.slice(0, m.indexOf('/')) : ''
+  if (prefix && MODEL_PROVIDER_PREFIX[prefix]) return MODEL_PROVIDER_PREFIX[prefix]
+  if (/deepseek/.test(m)) return 'deepseek'
+  if (/claude|sonnet|opus|haiku/.test(m)) return 'claude'
+  if (/gpt|codex|(?:^|[^a-z])o[134]\b/.test(m)) return 'openai'
+  if (/gemini/.test(m)) return 'gemini'
+  if (/mistral|mixtral|codestral/.test(m)) return 'mistral'
+  if (/qwen/.test(m)) return 'qwen'
+  if (/llama/.test(m)) return 'meta'
+  if (/grok/.test(m)) return 'grok'
+  if (/kimi|moonshot/.test(m)) return 'moonshot'
+  // Unknown `provider/model`: try the raw prefix as a lobehub slug; onError falls back.
+  return prefix || null
+}
+
+// A model's provider brand mark (lobehub icon set — same CDN the ACP registry's
+// curated runtimes use). Distinct from <AgentMark>, which is the runtime brand:
+// an `opencode` agent running `deepseek/…` shows the deepseek mark here, opencode there.
+export function ModelMark({ model, fallbackRuntime }: { model: string; fallbackRuntime: string }) {
+  const slug = modelProviderSlug(model)
+  // Latch the slug whose icon 404s so we fall back to the runtime mark. Keyed by
+  // slug (not a boolean) so switching model re-attempts the new provider's icon —
+  // no reset effect needed; `key` gives the img a fresh load per slug.
+  const [failedSlug, setFailedSlug] = useState<string | null>(null)
+  if (!slug || failedSlug === slug) return <AgentMark model={fallbackRuntime} />
+  return (
+    <img
+      key={slug}
+      src={`https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/${slug}.svg`}
+      alt=""
+      onError={() => setFailedSlug(slug)}
+      className="block h-[80%] w-[80%] object-contain [html[data-theme='dark']_&]:invert"
     />
   )
 }

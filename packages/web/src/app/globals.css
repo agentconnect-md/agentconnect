@@ -441,7 +441,7 @@
     border-left-color: var(--brand);
   }
   .navitem.on i {
-    color: var(--brand);
+    color: #fff;
   }
   .navitem i {
     width: 18px;

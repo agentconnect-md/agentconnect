@@ -1,9 +1,22 @@
 'use client'
 
-import { useId, useRef, type KeyboardEvent } from 'react'
+import { useId, useRef, type KeyboardEvent, type ReactNode } from 'react'
 import { Icon } from '@/components/ui'
 
-type ComposerMenuChoice = { value: string; label: string; description?: string }
+// Default trigger look — the minimal inline chip used by the session composer.
+// Callers (e.g. the Home composer's design-pill selectors) can replace it via
+// `triggerClassName` and prepend an icon via `leading`.
+const DEFAULT_TRIGGER =
+  'inline-flex h-6 items-center gap-1 rounded-sm px-1 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover)'
+
+type ComposerMenuChoice = {
+  value: string
+  label: string
+  description?: string
+  leading?: ReactNode
+  /** Render the option dimmed (still selectable) — e.g. an offline agent. */
+  dimmed?: boolean
+}
 
 export function ComposerMenu({
   title,
@@ -11,6 +24,10 @@ export function ComposerMenu({
   options,
   open,
   align = 'right',
+  placement = 'up',
+  leading,
+  triggerClassName,
+  tooltips = true,
   onOpenChange,
   onChange
 }: {
@@ -19,6 +36,16 @@ export function ComposerMenu({
   options: ComposerMenuChoice[]
   open: boolean
   align?: 'left' | 'right'
+  /** Which way the menu opens. Default 'up' suits a bottom-docked composer; use
+   *  'down' when the trigger sits near the top of its scroll container (Home). */
+  placement?: 'up' | 'down'
+  /** Optional node rendered before the label (e.g. an agent avatar / model mark). */
+  leading?: ReactNode
+  /** Overrides the default trigger look (e.g. the Home composer's design pills). */
+  triggerClassName?: string
+  /** Hover-tooltip the trigger + options (via the console Tooltip layer). Turn off
+   *  for self-explanatory menus (model / effort / permission) where the popover is noise. */
+  tooltips?: boolean
   onOpenChange: (open: boolean) => void
   onChange: (value: string) => void
 }) {
@@ -27,7 +54,7 @@ export function ComposerMenu({
   const headingId = useId()
   const selected = options.find((choice) => choice.value === value) ?? options[0]
   const tooltipFor = (choice: ComposerMenuChoice | undefined) =>
-    choice?.description ?? (choice ? `${title}: ${choice.label}` : title)
+    tooltips ? (choice?.description ?? (choice ? `${title}: ${choice.label}` : title)) : undefined
 
   const closeAndFocus = () => {
     onOpenChange(false)
@@ -65,7 +92,7 @@ export function ComposerMenu({
       <button
         ref={triggerRef}
         type="button"
-        className="inline-flex h-6 items-center gap-1 rounded-sm px-1 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover)"
+        className={triggerClassName ?? DEFAULT_TRIGGER}
         aria-label={`${title}: ${selected?.label ?? value}`}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -78,6 +105,7 @@ export function ComposerMenu({
           onOpenChange(true)
         }}
       >
+        {leading}
         <span>{selected?.label ?? value}</span>
         <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
       </button>
@@ -88,9 +116,9 @@ export function ComposerMenu({
             id={menuId}
             role="menu"
             aria-labelledby={headingId}
-            className={`absolute bottom-[calc(100%+8px)] z-50 min-w-[148px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg) ${
-              align === 'left' ? 'left-0' : 'right-0'
-            }`}
+            className={`absolute z-50 min-w-[148px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg) ${
+              placement === 'down' ? 'top-[calc(100%+8px)]' : 'bottom-[calc(100%+8px)]'
+            } ${align === 'left' ? 'left-0' : 'right-0'}`}
             onKeyDown={moveFocus}
           >
             <div
@@ -99,26 +127,31 @@ export function ComposerMenu({
             >
               {title}
             </div>
-            {options.map((choice) => {
-              const selectedChoice = choice.value === selected?.value
-              return (
-                <button
-                  key={choice.value}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={selectedChoice}
-                  autoFocus={selectedChoice}
-                  title={tooltipFor(choice)}
-                  className={`fopt min-h-8 gap-2 rounded-md px-2 py-[5px] text-[12px] ${
-                    selectedChoice ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)' : ''
-                  }`}
-                  onClick={() => pick(choice.value)}
-                >
-                  <span className="min-w-0 flex-1 truncate text-left">{choice.label}</span>
-                  {selectedChoice && <Icon name="check" size={14} color="var(--brand)" className="flex-none" />}
-                </button>
-              )
-            })}
+            {/* Options scroll within a capped height so a long list (e.g. dozens of
+                models) never runs off-screen; the heading above stays put. */}
+            <div className="max-h-[300px] overflow-y-auto overflow-x-hidden">
+              {options.map((choice) => {
+                const selectedChoice = choice.value === selected?.value
+                return (
+                  <button
+                    key={choice.value}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={selectedChoice}
+                    autoFocus={selectedChoice}
+                    title={tooltipFor(choice)}
+                    className={`fopt min-h-8 gap-2 rounded-md px-2 py-[5px] text-[12px] ${
+                      selectedChoice ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)' : ''
+                    } ${choice.dimmed ? 'opacity-55' : ''}`}
+                    onClick={() => pick(choice.value)}
+                  >
+                    {choice.leading}
+                    <span className="min-w-0 flex-1 truncate text-left">{choice.label}</span>
+                    {selectedChoice && <Icon name="check" size={14} color="var(--brand)" className="flex-none" />}
+                  </button>
+                )
+              })}
+            </div>
           </div>
         </>
       )}

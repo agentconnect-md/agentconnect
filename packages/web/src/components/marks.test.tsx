@@ -1,6 +1,24 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { AgentIconView, OrgIconView, PlatformMark } from './marks'
+import { AgentIconView, OrgIconView, PlatformMark, modelProviderSlug } from './marks'
+
+describe('modelProviderSlug', () => {
+  it('reads the provider prefix from provider/model ids', () => {
+    expect(modelProviderSlug('deepseek/deepseek-v4-flash')).toBe('deepseek')
+    expect(modelProviderSlug('anthropic/claude-sonnet-4-5')).toBe('claude')
+    expect(modelProviderSlug('x-ai/grok-4')).toBe('grok')
+  })
+  it('infers the family from a bare model id', () => {
+    expect(modelProviderSlug('claude-sonnet-4-5')).toBe('claude')
+    expect(modelProviderSlug('gpt-5-mini')).toBe('openai')
+    expect(modelProviderSlug('deepseek-v4-flash')).toBe('deepseek')
+  })
+  it('falls back to the raw prefix for an unknown provider/model, else null', () => {
+    expect(modelProviderSlug('acme/whatever-1')).toBe('acme')
+    expect(modelProviderSlug('mystery-model')).toBeNull()
+    expect(modelProviderSlug('')).toBeNull()
+  })
+})
 
 describe('icon views', () => {
   it('identifies glyph icons so their parent does not show a dark edge', () => {
