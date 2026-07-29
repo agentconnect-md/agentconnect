@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { SharedBotRouter, arbitrate, type BotAssignment, type RouteTarget } from './shared-bot-router.js'
+import { BotArbitrationRouter, arbitrate, type BotAssignment, type RouteTarget } from './bot-arbitration.js'
 import type { WireNormalizedMessage } from '@agentconnect.md/protocol'
 
 const D1 = 'd1'
@@ -47,7 +47,7 @@ const msg = (over: Partial<WireNormalizedMessage>): WireNormalizedMessage => ({
   ...over
 })
 
-describe('shared-bot arbitration (§10)', () => {
+describe('HTTP-bot arbitration (§10)', () => {
   const empty = () => new Map<string, RouteTarget>()
 
   it('channel ownership with a mention trigger routes a mentioned message to the owner', () => {
@@ -170,9 +170,9 @@ describe('shared-bot arbitration (§10)', () => {
   })
 })
 
-describe('SharedBotRouter — table + live affinity', () => {
+describe('BotArbitrationRouter — table + live affinity', () => {
   it('records live affinity so a follow-up continues to the same agent', () => {
-    const r = new SharedBotRouter()
+    const r = new BotArbitrationRouter()
     r.upsert(assignment())
     // First turn: "@bot bob" → bob, recorded.
     const first = r.route(
@@ -186,7 +186,7 @@ describe('SharedBotRouter — table + live affinity', () => {
   })
 
   it('updateRoutes swaps the table but keeps the resolved botUserId', () => {
-    const r = new SharedBotRouter()
+    const r = new BotArbitrationRouter()
     r.upsert(assignment())
     r.setBotUserId('bot-1', BOTUSER)
     r.updateRoutes('bot-1', {
@@ -201,7 +201,7 @@ describe('SharedBotRouter — table + live affinity', () => {
   })
 
   it('remove drops the assignment', () => {
-    const r = new SharedBotRouter()
+    const r = new BotArbitrationRouter()
     r.upsert(assignment())
     r.remove('bot-1')
     expect(r.get('bot-1')).toBeUndefined()
@@ -209,7 +209,7 @@ describe('SharedBotRouter — table + live affinity', () => {
   })
 
   it('resolves status actions only for the exact current agent + integration', () => {
-    const r = new SharedBotRouter()
+    const r = new BotArbitrationRouter()
     r.upsert(assignment())
     expect(r.targetForAgent('bot-1', ALICE, 'iA')).toEqual({
       agentId: ALICE,
@@ -230,7 +230,7 @@ describe('SharedBotRouter — table + live affinity', () => {
       integrationId: 'iA',
       match: { kind: 'keyword', value: 'alice-elsewhere' }
     })
-    const r = new SharedBotRouter()
+    const r = new BotArbitrationRouter()
     r.upsert(ambiguous)
     expect(r.targetForAgent('bot-1', ALICE, 'iA')).toBeUndefined()
 

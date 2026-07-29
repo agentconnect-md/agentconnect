@@ -33,11 +33,11 @@ import type {
 } from '../persistence/ports.js'
 import { AgentWorkspaceIntegrationConflict } from '../persistence/errors.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
-import { cronToUpsert, integrationToSpec, isGatedAgent, sharedIntegrationToSpec } from './placement.js'
+import { cronToUpsert, integrationToSpec, isGatedAgent, httpIntegrationToSpec } from './placement.js'
 import type { AgentSpecAssembler } from './agentSpecAssembler.js'
 import type { ControlSender } from './outbound.js'
 import type { HookService } from '../hooks/hook.service.js'
-import type { SharedBotOrchestrator } from './sharedBot.js'
+import type { HttpBotOrchestrator } from './httpBot.js'
 import type { CollabRoutesService } from './collabRoutes.service.js'
 import type { AgentMutationGate } from './agentMutationGate.js'
 import type { SessionKey } from '../domain/sessionKey.js'
@@ -78,7 +78,7 @@ export interface AgentMoveDeps {
   crons: CronRepo
   control: ControlSender
   hooks: HookService
-  sharedBot: SharedBotOrchestrator
+  httpBot: HttpBotOrchestrator
   collabRoutes: CollabRoutesService
   mutations: AgentMutationGate
   sessionOwners: { releaseSession(key: SessionKey): void }
@@ -86,9 +86,9 @@ export interface AgentMoveDeps {
 }
 
 interface MoveBundle {
-  integrations: Array<{ spec: IntegrationSpec; botId: string; shared: boolean }>
+  integrations: Array<{ spec: IntegrationSpec; botId: string; http: boolean }>
   crons: CronUpsert[]
-  sharedBotIds: string[]
+  httpBotIds: string[]
   /** The agent's write-only secret env vars (AgentSecretStore) — part of the wire
    *  definition, so a mid-move secret edit trips the fingerprint stability check. */
   secrets: Record<string, string>
@@ -231,7 +231,7 @@ export class AgentMoveService {
           reconcileWorkspace: true
         })
       }
-      await this.convergeDerived(stable.agent, stable.bundle.sharedBotIds)
+      await this.convergeDerived(stable.agent, stable.bundle.httpBotIds)
     } finally {
       release()
     }
@@ -248,7 +248,7 @@ export class AgentMoveService {
       if (err instanceof AgentMoveFailed) throw err
       throw new AgentMoveFailed('target daemon repair failed', err)
     }
-    await this.convergeDerived(stable.agent, stable.bundle.sharedBotIds)
+    await this.convergeDerived(stable.agent, stable.bundle.httpBotIds)
     return stable.agent
   }
 
@@ -271,7 +271,7 @@ export class AgentMoveService {
       const stable = await this.activateUntilStable(agent.id, agent.daemonId, 'workspace edit repair', {
         reconcileWorkspace: true
       })
-      await this.finalizeWorkspaceChange(stable.agent, workspaceRepoId, stable.bundle.sharedBotIds)
+      await this.finalizeWorkspaceChange(stable.agent, workspaceRepoId, stable.bundle.httpBotIds)
       return stable.agent
     }
 
@@ -387,7 +387,7 @@ export class AgentMoveService {
       await this.rollbackWorkspaceChange(agent, converted, bundle, moveId, activated.reason)
     }
 
-    await this.finalizeWorkspaceChange(converted, workspaceRepoId, bundle.sharedBotIds)
+    await this.finalizeWorkspaceChange(converted, workspaceRepoId, bundle.httpBotIds)
     return converted
   }
 
@@ -450,7 +450,7 @@ export class AgentMoveService {
       throw new AgentMoveFailed('target daemon bootstrap failed', err)
     }
 
-    await this.convergeDerived(stable.agent, stable.bundle.sharedBotIds)
+    await this.convergeDerived(stable.agent, stable.bundle.httpBotIds)
     return stable.agent
   }
 
@@ -501,17 +501,17 @@ export class AgentMoveService {
       )
     }
     await this.restoreDetachedWorkspace(converted.daemonId!, original, bundle, moveId, 'workspace activation rejection')
-    await this.convergeDerived(restored, bundle.sharedBotIds)
+    await this.convergeDerived(restored, bundle.httpBotIds)
     throw new AgentMoveFailed(`workspace edit rejected${reason ? `: ${reason}` : ''}`)
   }
 
   private async finalizeWorkspaceChange(
     agent: AgentRecord,
     workspaceRepoId: bigint | undefined,
-    sharedBotIds: string[]
+    httpBotIds: string[]
   ): Promise<void> {
     if (agent.workspace.mode !== 'github' || workspaceRepoId === undefined) {
-      await this.convergeDerived(agent, sharedBotIds)
+      await this.convergeDerived(agent, httpBotIds)
       return
     }
     try {
@@ -528,7 +528,7 @@ export class AgentMoveService {
       // lazy workspace-id repair and must not turn a committed edit into 5xx.
       this.deps.log?.warn({ err, agentId: agent.id }, 'workspace edit: repository grant cleanup deferred')
     }
-    await this.convergeDerived(agent, sharedBotIds)
+    await this.convergeDerived(agent, httpBotIds)
   }
 
   /** Read every placement-dependent wire definition. */
@@ -552,9 +552,9 @@ export class AgentMoveService {
         const gated = isGatedAgent(agent)
         return {
           botId: String(bot.id),
-          shared: isHttp,
+          http: isHttp,
           spec: isHttp
-            ? sharedIntegrationToSpec(integration, secret, bot.shareable, channels, gated, bot.slackAppId ?? undefined)
+            ? httpIntegrationToSpec(integration, secret, bot.shareable, channels, gated, bot.slackAppId ?? undefined)
             : integrationToSpec(integration, secret, channels, gated)
         }
       })
@@ -567,7 +567,7 @@ export class AgentMoveService {
     return {
       integrations: specs,
       crons,
-      sharedBotIds: [...new Set(specs.filter((s) => s.shared).map((s) => s.botId))].sort(),
+      httpBotIds: [...new Set(specs.filter((s) => s.http).map((s) => s.botId))].sort(),
       secrets,
       skills
     }
@@ -727,11 +727,11 @@ export class AgentMoveService {
     }
   }
 
-  private async convergeDerived(agent: AgentRecord, sharedBotIds: string[]): Promise<void> {
+  private async convergeDerived(agent: AgentRecord, httpBotIds: string[]): Promise<void> {
     const jobs: Array<{ label: string; run: () => Promise<void> }> = [
       { label: 'hook routes', run: () => this.deps.hooks.rebroadcastForAgent(agent.id) },
       { label: 'collaboration routes', run: () => this.deps.collabRoutes.broadcast(agent.orgId) },
-      ...sharedBotIds.map((botId) => ({ label: `shared bot ${botId}`, run: () => this.deps.sharedBot.syncBot(botId) }))
+      ...httpBotIds.map((botId) => ({ label: `HTTP bot ${botId}`, run: () => this.deps.httpBot.syncBot(botId) }))
     ]
     for (const job of jobs) {
       try {

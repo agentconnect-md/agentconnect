@@ -262,19 +262,16 @@ export function botRoutes(deps: HttpDeps) {
       }
     )
 
-    // Flip the shared-bot opt-in (shared-bot-relay.md §4.1). Enabling migrates the
-    // bot's inbound onto a relay (needs a connected relay — 409 otherwise) and
-    // re-specs its daemons send-only. Disabling is refused while >1 agent shares it
-    // (that would orphan the others); with ≤1 it reverts the bot to a classic
-    // daemon-owned socket.
+    // Flip the HTTP bot's multi-agent capacity (`Bot.shareable`,
+    // shared-bot-relay.md §4.1). Transport is immutable: relay ingress remains in
+    // place either way. Disabling is refused while >1 agent uses the bot.
     r.patch(
       '/bots/:id',
       {
         schema: {
           tags: [Tag.Bots],
           summary: 'Update a bot',
-          description:
-            "Toggle the bot's shared-bot opt-in. Enabling moves its inbound onto a relay (many agents may then share it); disabling reverts it to a classic single-agent socket.",
+          description: 'Allow or disallow this HTTP bot from serving multiple agents. Relay ingress is unchanged.',
           operationId: 'updateBot',
           params: IdParam,
           body: UpdateBotBody,
@@ -335,7 +332,7 @@ export function botRoutes(deps: HttpDeps) {
           await deps.repos.bot.setShareable(bot.id, req.body.shareable)
           // Multi-agent capacity change only — recompile the relay pool's routes (no
           // ingest re-open; the transport, hence the ingest, is unchanged).
-          await deps.sharedBot.syncRoutes(bot.id)
+          await deps.httpBot.syncRoutes(bot.id)
           const updated = await deps.repos.bot.get(bot.id)
           return toDto(updated!)
         } finally {

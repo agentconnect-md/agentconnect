@@ -13,14 +13,14 @@ import {
 } from '@agentconnect.md/protocol'
 import {
   normalizeSlackMessage,
-  parseSharedSlackAgentSelection,
-  parseSharedSlackAgentSwitch,
-  parseSharedSlackSessionAction,
-  sharedSlackAgentOptions,
-  SlackSharedIngest,
-  type SlackSharedIngestDeps,
+  parseHttpSlackAgentSelection,
+  parseHttpSlackAgentSwitch,
+  parseHttpSlackSessionAction,
+  httpSlackAgentOptions,
+  SlackHttpIngest,
+  type SlackHttpIngestDeps,
   type SlackInteractiveBody
-} from './slack-shared-ingest.js'
+} from './slack-http-ingest.js'
 import { verifySlackSignature } from './hooks/signature.js'
 
 const AGENT_ID = '11111111-1111-4111-8111-111111111111'
@@ -39,9 +39,9 @@ function body(actionId: string, over: Partial<SlackInteractiveBody> = {}): Slack
   }
 }
 
-describe('parseSharedSlackSessionAction', () => {
+describe('parseHttpSlackSessionAction', () => {
   it('parses the status gear from action.value and keeps a stable interaction receipt', () => {
-    const parsed = parseSharedSlackSessionAction(
+    const parsed = parseHttpSlackSessionAction(
       body(SLACK_STATUS_ACTION.manage, {
         actions: [
           {
@@ -61,7 +61,7 @@ describe('parseSharedSlackSessionAction', () => {
   })
 
   it('carries the tapping user through, and leaves it absent when the payload has none', () => {
-    const withUser = parseSharedSlackSessionAction(
+    const withUser = parseHttpSlackSessionAction(
       body(SLACK_STATUS_ACTION.setModel, {
         user: { id: 'U-ALICE' },
         actions: [
@@ -76,7 +76,7 @@ describe('parseSharedSlackSessionAction', () => {
     expect(withUser).toMatchObject({ kind: 'set-model', model: 'opus', userId: 'U-ALICE' })
 
     // A payload without `user` yields no key at all — never an empty or invented id.
-    const withoutUser = parseSharedSlackSessionAction(
+    const withoutUser = parseHttpSlackSessionAction(
       body(SLACK_STATUS_ACTION.setModel, {
         actions: [
           {
@@ -92,7 +92,7 @@ describe('parseSharedSlackSessionAction', () => {
   })
 
   it('parses Session options and Cancel from the compact overflow', () => {
-    const manage = parseSharedSlackSessionAction(
+    const manage = parseHttpSlackSessionAction(
       body(SLACK_STATUS_ACTION.more, {
         actions: [
           {
@@ -106,7 +106,7 @@ describe('parseSharedSlackSessionAction', () => {
     )
     expect(manage).toMatchObject({ target: TARGET, kind: 'open-config', triggerId: 'trigger-1' })
 
-    const cancel = parseSharedSlackSessionAction(
+    const cancel = parseHttpSlackSessionAction(
       body(SLACK_STATUS_ACTION.more, {
         actions: [
           {
@@ -120,7 +120,7 @@ describe('parseSharedSlackSessionAction', () => {
     )
     expect(cancel).toMatchObject({ target: TARGET, kind: 'cancel' })
 
-    const legacyCancel = parseSharedSlackSessionAction(
+    const legacyCancel = parseHttpSlackSessionAction(
       body(SLACK_STATUS_ACTION.more, {
         actions: [
           {
@@ -143,7 +143,7 @@ describe('parseSharedSlackSessionAction', () => {
     [SLACK_STATUS_ACTION.setFast, 'on', { kind: 'set-fast', fastMode: true }],
     [SLACK_STATUS_ACTION.setOutput, 'medium', { kind: 'set-output', outputMode: 'medium' }]
   ])('parses modal action %s from private_metadata', (actionId, selected, expected) => {
-    const parsed = parseSharedSlackSessionAction(
+    const parsed = parseHttpSlackSessionAction(
       body(actionId, {
         actions: [{ action_id: actionId, action_ts: '1720000000.000300', selected_option: { value: selected } }]
       })
@@ -157,7 +157,7 @@ describe('parseSharedSlackSessionAction', () => {
 
   it('parses cancel and falls back to trigger_id when action_ts is absent', () => {
     expect(
-      parseSharedSlackSessionAction(
+      parseHttpSlackSessionAction(
         body(SLACK_STATUS_ACTION.cancel, { actions: [{ action_id: SLACK_STATUS_ACTION.cancel }] })
       )
     ).toEqual({
@@ -167,9 +167,9 @@ describe('parseSharedSlackSessionAction', () => {
     })
   })
 
-  it('routes permission and elicitation message buttons from their shared block target', () => {
+  it('routes permission and elicitation message buttons from their relay block target', () => {
     const parseCard = (action_id: string, value: string) =>
-      parseSharedSlackSessionAction(
+      parseHttpSlackSessionAction(
         body(action_id, {
           actions: [{ action_id, action_ts: '1720000000.000500', block_id: ENCODED_TARGET, value }],
           view: undefined
@@ -195,7 +195,7 @@ describe('parseSharedSlackSessionAction', () => {
       value: null
     })
     expect(
-      parseSharedSlackSessionAction(
+      parseHttpSlackSessionAction(
         body(`${PERMISSION_ACTION_PREFIX}:0`, {
           actions: [{ action_id: `${PERMISSION_ACTION_PREFIX}:0`, action_ts: '1', value: 'perm-1|allow_once' }]
         })
@@ -205,7 +205,7 @@ describe('parseSharedSlackSessionAction', () => {
 
   it('parses an inline Cancel target from action.value', () => {
     expect(
-      parseSharedSlackSessionAction({
+      parseHttpSlackSessionAction({
         type: 'block_actions',
         actions: [{ action_id: SLACK_STATUS_ACTION.cancel, action_ts: '1', value: ENCODED_TARGET }]
       })
@@ -214,7 +214,7 @@ describe('parseSharedSlackSessionAction', () => {
 
   it('never turns the relay-local person/default-agent control into a daemon action', () => {
     expect(
-      parseSharedSlackSessionAction(
+      parseHttpSlackSessionAction(
         body(SHARED_CONFIG_ACTION_ID, {
           actions: [{ action_id: SHARED_CONFIG_ACTION_ID, action_ts: '1720000000.000400', value: ENCODED_TARGET }]
         })
@@ -224,7 +224,7 @@ describe('parseSharedSlackSessionAction', () => {
 
   it('rejects malformed/tampered targets, unknown values, and receipts with no stable id', () => {
     expect(
-      parseSharedSlackSessionAction(
+      parseHttpSlackSessionAction(
         body(SLACK_STATUS_ACTION.manage, {
           actions: [{ action_id: SLACK_STATUS_ACTION.manage, action_ts: '1', value: '{bad-json' }]
         })
@@ -232,21 +232,21 @@ describe('parseSharedSlackSessionAction', () => {
     ).toBeNull()
     const extraField = JSON.stringify({ ...TARGET, daemonId: 'attacker-chosen-daemon' })
     expect(
-      parseSharedSlackSessionAction(
+      parseHttpSlackSessionAction(
         body(SLACK_STATUS_ACTION.manage, {
           actions: [{ action_id: SLACK_STATUS_ACTION.manage, action_ts: '1', value: extraField }]
         })
       )
     ).toBeNull()
     expect(
-      parseSharedSlackSessionAction(
+      parseHttpSlackSessionAction(
         body(SLACK_STATUS_ACTION.setFast, {
           actions: [{ action_id: SLACK_STATUS_ACTION.setFast, action_ts: '1', selected_option: { value: 'maybe' } }]
         })
       )
     ).toBeNull()
     expect(
-      parseSharedSlackSessionAction({
+      parseHttpSlackSessionAction({
         type: 'block_actions',
         actions: [{ action_id: SLACK_STATUS_ACTION.cancel }],
         view: { private_metadata: ENCODED_TARGET }
@@ -255,18 +255,18 @@ describe('parseSharedSlackSessionAction', () => {
   })
 })
 
-describe('shared Slack agent selector', () => {
+describe('HTTP Slack agent selector', () => {
   const agents = [
     { agentId: AGENT_ID, name: 'Deploy Agent' },
     { agentId: '33333333-3333-4333-8333-333333333333', name: 'Review Agent' }
   ]
 
-  it('serves matching options and accepts only a current shared-bot member', () => {
-    expect(sharedSlackAgentOptions(agents, 'deploy')).toEqual([
+  it('serves matching options and accepts only a current HTTP-bot member', () => {
+    expect(httpSlackAgentOptions(agents, 'deploy')).toEqual([
       { text: { type: 'plain_text', text: 'Deploy Agent' }, value: AGENT_ID }
     ])
     expect(
-      parseSharedSlackAgentSelection(
+      parseHttpSlackAgentSelection(
         {
           type: 'block_actions',
           channel: { id: 'C123' },
@@ -291,12 +291,12 @@ describe('shared Slack agent selector', () => {
         }
       ]
     })
-    expect(parseSharedSlackAgentSwitch(interaction)).toEqual({
+    expect(parseHttpSlackAgentSwitch(interaction)).toEqual({
       channelId: 'C123',
       threadTs: '1720000000.000100',
       currentAgentId: AGENT_ID
     })
-    expect(parseSharedSlackSessionAction(interaction)).toBeNull()
+    expect(parseHttpSlackSessionAction(interaction)).toBeNull()
 
     const legacyInteraction = {
       ...interaction,
@@ -310,7 +310,7 @@ describe('shared Slack agent selector', () => {
         }
       ]
     }
-    expect(parseSharedSlackAgentSwitch(legacyInteraction)).toEqual({
+    expect(parseHttpSlackAgentSwitch(legacyInteraction)).toEqual({
       channelId: 'C123',
       threadTs: '1720000000.000100',
       currentAgentId: AGENT_ID
@@ -318,9 +318,9 @@ describe('shared Slack agent selector', () => {
   })
 })
 
-describe('SlackSharedIngest.handleInteraction', () => {
+describe('SlackHttpIngest.handleInteraction', () => {
   const silentLog = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
-  const ingestDeps = (over: Partial<SlackSharedIngestDeps> = {}): SlackSharedIngestDeps => ({
+  const ingestDeps = (over: Partial<SlackHttpIngestDeps> = {}): SlackHttpIngestDeps => ({
     onMessage: vi.fn(async () => {}),
     onBotUserId: vi.fn(),
     onChannelsChanged: vi.fn(),
@@ -338,7 +338,7 @@ describe('SlackSharedIngest.handleInteraction', () => {
   })
 
   it('returns the external-select options on the 200 body for a block_suggestion', async () => {
-    const ingest = new SlackSharedIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, ingestDeps())
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, ingestDeps())
     const result = await ingest.handleInteraction({
       type: 'block_suggestion',
       action_id: SHARED_AGENT_SELECT_ACTION_ID,
@@ -349,7 +349,7 @@ describe('SlackSharedIngest.handleInteraction', () => {
 
   it('fires the thread-agent selection and returns an empty 200 body', async () => {
     const onSelectThreadAgent = vi.fn()
-    const ingest = new SlackSharedIngest(
+    const ingest = new SlackHttpIngest(
       'bot',
       { botToken: 'xoxb', signingSecret: 's' },
       ingestDeps({ onSelectThreadAgent })
@@ -366,7 +366,7 @@ describe('SlackSharedIngest.handleInteraction', () => {
 
   it('forwards a message shortcut with the selected conversation coordinates', async () => {
     const onSessionShortcut = vi.fn(() => true)
-    const ingest = new SlackSharedIngest(
+    const ingest = new SlackHttpIngest(
       'bot',
       { botToken: 'xoxb', signingSecret: 's' },
       ingestDeps({ onSessionShortcut })
@@ -391,9 +391,9 @@ describe('SlackSharedIngest.handleInteraction', () => {
   })
 })
 
-describe('SlackSharedIngest channel membership events', () => {
+describe('SlackHttpIngest channel membership events', () => {
   const silentLog = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
-  const deps = (web: object, over: Partial<SlackSharedIngestDeps> = {}): SlackSharedIngestDeps => ({
+  const deps = (web: object, over: Partial<SlackHttpIngestDeps> = {}): SlackHttpIngestDeps => ({
     onMessage: vi.fn(async () => {}),
     onBotUserId: vi.fn(),
     onChannelsChanged: vi.fn(),
@@ -423,7 +423,7 @@ describe('SlackSharedIngest channel membership events', () => {
     )
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) }, users: { conversations } }
     const onChannelsChanged = vi.fn()
-    const ingest = new SlackSharedIngest(
+    const ingest = new SlackHttpIngest(
       'bot',
       { botToken: 'xoxb', signingSecret: 's' },
       deps(web, { onChannelsChanged })
@@ -446,7 +446,7 @@ describe('SlackSharedIngest channel membership events', () => {
     const conversations = vi.fn(async () => ({ channels: [{ id: 'C1', name: 'remaining' }] }))
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) }, users: { conversations } }
     const onChannelsChanged = vi.fn()
-    const ingest = new SlackSharedIngest(
+    const ingest = new SlackHttpIngest(
       'bot',
       { botToken: 'xoxb', signingSecret: 's' },
       deps(web, { onChannelsChanged })
@@ -465,7 +465,7 @@ describe('SlackSharedIngest channel membership events', () => {
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
     const onBotRevoked = vi.fn()
     const onMessage = vi.fn(async () => {})
-    const ingest = new SlackSharedIngest(
+    const ingest = new SlackHttpIngest(
       'bot',
       { botToken: 'xoxb', signingSecret: 's' },
       deps(web, { onBotRevoked, onMessage })
@@ -491,7 +491,7 @@ describe('SlackSharedIngest channel membership events', () => {
         auth: { test: vi.fn(async () => Promise.reject(Object.assign(new Error(code), { data: { error: code } }))) }
       }
       const onBotRevoked = vi.fn()
-      const ingest = new SlackSharedIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
+      const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
 
       await ingest.start()
 
@@ -510,7 +510,7 @@ describe('SlackSharedIngest channel membership events', () => {
         auth: { test: vi.fn(async () => Promise.reject(Object.assign(new Error(code), { data: { error: code } }))) }
       }
       const onBotRevoked = vi.fn()
-      const ingest = new SlackSharedIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
+      const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
 
       await ingest.start()
 
@@ -521,7 +521,7 @@ describe('SlackSharedIngest channel membership events', () => {
   it('does NOT report a revocation for a network error with no Slack error code', async () => {
     const web = { auth: { test: vi.fn(async () => Promise.reject(new Error('ECONNRESET'))) } }
     const onBotRevoked = vi.fn()
-    const ingest = new SlackSharedIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
 
     await ingest.start()
 
@@ -531,7 +531,7 @@ describe('SlackSharedIngest channel membership events', () => {
   it('reports a revocation with no occurrence time when the envelope omitted event_time', async () => {
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
     const onBotRevoked = vi.fn()
-    const ingest = new SlackSharedIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
     await ingest.start()
 
     await ingest.handleEvent({ type: 'app_uninstalled' })
@@ -571,12 +571,12 @@ describe('normalizeSlackMessage conversation kinds', () => {
   })
 })
 
-describe('SlackSharedIngest message events', () => {
+describe('SlackHttpIngest message events', () => {
   it('drops self and Slack system messages while forwarding peer app text', async () => {
     const onMessage = vi.fn(async () => {})
     const botIds = [undefined, 'BSELF']
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT', bot_id: botIds.shift() })) } }
-    const ingest = new SlackSharedIngest(
+    const ingest = new SlackHttpIngest(
       'bot',
       { botToken: 'xoxb', signingSecret: 's' },
       {

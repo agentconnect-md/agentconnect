@@ -54,7 +54,7 @@ import type { WaitlistService } from '../registry/waitlistService.js'
 import type { ControlSender } from '../orchestrator/outbound.js'
 import type { AgentSpecAssembler } from '../orchestrator/agentSpecAssembler.js'
 import type { RelayControlSender } from '../orchestrator/relayControl.js'
-import type { SharedBotOrchestrator } from '../orchestrator/sharedBot.js'
+import type { HttpBotOrchestrator } from '../orchestrator/httpBot.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
 import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
 import type { ExclusiveMutationGate } from '../orchestrator/exclusiveMutationGate.js'
@@ -202,10 +202,10 @@ export interface HttpDeps {
   /** CP→relay control fan-out — pushes `rc/daemon-revoke` to connected relays when a
    *  daemon key is revoked / a daemon is removed (shared-bot-relay.md §9). */
   relayControl: RelayControlSender
-  /** Shared-bot placement + attributed-route compilation (shared-bot-relay.md §4.2/§10).
+  /** HTTP-bot assignment + attributed-route compilation (shared-bot-relay.md §4.2/§10).
    *  Install / uninstall / toggle / channel-owner changes call it to (re)assign a
-   *  shared bot's ingest to a relay and push its routes + send-only daemon specs. */
-  sharedBot: SharedBotOrchestrator
+   *  HTTP bot's ingest to the relay pool and push its routes + send-only daemon specs. */
+  httpBot: HttpBotOrchestrator
   /** Rebuilds placement-dependent collaboration routes after an agent cold move. */
   collabRoutes: CollabRoutesService
   /** Process-local exclusive move vs shared CRUD gate; valid with one active CP writer. */

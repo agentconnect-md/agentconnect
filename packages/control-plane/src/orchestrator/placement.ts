@@ -264,8 +264,8 @@ export function integrationToSpec(
     agentId: i.agentId,
     platform: 'slack',
     // 'direct' (transport==='socket') — this daemon owns the Socket Mode connection.
-    // The 'shared' variant (transport==='http', xoxb-only, no appToken/bindRules) is
-    // assembled by the shared-bot path, which reads the bot's `transport`; this mapper
+    // The 'shared' wire variant (transport==='http', xoxb-only, no appToken/bindRules)
+    // is assembled by the HTTP-bot path, which reads the bot's `transport`; this mapper
     // is always direct. A socket bot is single-agent, so it is never shareable. Slack
     // always stores an app-level token (Socket Mode).
     slack: {
@@ -281,19 +281,20 @@ export function integrationToSpec(
 }
 
 /**
- * Assemble the SHARED-mode {@link IntegrationSpec} for a member agent of a shared
- * bot (shared-bot-relay.md §7.3). The daemon gets xoxb ONLY (send path) — no
+ * Assemble the send-only {@link IntegrationSpec} for a member agent of an HTTP bot
+ * (shared-bot-relay.md §7.3). The wire keeps `mode: 'shared'` for compatibility.
+ * The daemon gets xoxb ONLY (send path) — no
  * appToken (the relay owns the event stream) and no bindRules (the relay
  * arbitrates inbound and delivers it pre-addressed). Slack-only for now; a
  * shareable Telegram/Discord bot lands in milestone C. Token-bearing — NEVER log.
  *
  * GATED exception (resource-visibility.md §14.3): a restricted agent's install
- * ships its conversation-scoped rules + `gated: true` even in shared mode — the
+ * ships its conversation-scoped rules + `gated: true` even in relay-managed mode — the
  * relay is still the arbiter, but the daemon uses these for its last-hop
  * admission backstop in `handleRelayIm` (it must not trust a stale relay route
  * snapshot to keep a private agent fail-closed).
  */
-export function sharedIntegrationToSpec(
+export function httpIntegrationToSpec(
   i: IntegrationRecord,
   secret: BotSecretMaterial,
   shareable: boolean,
@@ -305,7 +306,7 @@ export function sharedIntegrationToSpec(
     integrationId: i.id,
     agentId: i.agentId,
     platform: 'slack',
-    // `shareable` gates the daemon's in-thread "Switch agent" control: a shared bot
+    // `shareable` gates the daemon's in-thread "Switch agent" control: an HTTP bot
     // routes through the relay either way, but only a multi-agent (shareable) bot has
     // something to switch to.
     slack: {
@@ -390,7 +391,7 @@ export class Placement implements ReconcileService {
           // reconciles it send-only (no Socket Mode). Socket bots reconcile as direct.
           const gated = gatedAgentIds.has(i.agentId)
           return bot?.transport === 'http'
-            ? sharedIntegrationToSpec(i, secret, bot.shareable, channels, gated, bot.slackAppId ?? undefined)
+            ? httpIntegrationToSpec(i, secret, bot.shareable, channels, gated, bot.slackAppId ?? undefined)
             : integrationToSpec(i, secret, channels, gated)
         })
       )

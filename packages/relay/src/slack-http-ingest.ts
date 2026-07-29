@@ -1,10 +1,10 @@
 /**
- * `SlackSharedIngest` (shared-bot-relay.md §12) — per-shared-bot inbound handler,
+ * `SlackHttpIngest` (shared-bot-relay.md §12) — per-HTTP-bot inbound handler,
  * held by the relay. Inbound no longer rides a Socket Mode websocket: the relay
  * exposes ONE shared HTTP Events API surface (`/slack/events` + `/slack/interactions`,
  * see `slack-http-ingress.ts`) behind the pool's stable public URL, and after the
  * POST is demuxed to a bot + its signing secret verified, the route calls
- * {@link SlackSharedIngest.handleEvent} / {@link SlackSharedIngest.handleInteraction}.
+ * {@link SlackHttpIngest.handleEvent} / {@link SlackHttpIngest.handleInteraction}.
  * There is no MANUAL-ack seam anymore: Slack's HTTP 200 IS the ack. We answer 200
  * immediately (Slack's 3s window) and forward asynchronously — a forward miss is
  * still counted as bounded loss by the forwarder, honestly declared.
@@ -69,30 +69,30 @@ export interface SlackInteractiveBody {
   }
 }
 
-interface SharedSlackInteractionReceipt {
+interface HttpSlackInteractionReceipt {
   /** Stable across Slack redelivery of the same interaction. The manager hashes this
    *  with the target + operation before placing it on rd/msg, so trigger ids never
    *  appear in logs while daemon-side (sessionKey,msgId) dedup remains effective. */
   interactionId: string
 }
 
-export type SharedSlackSessionAction = SharedSlackInteractionReceipt & {
+export type HttpSlackSessionAction = HttpSlackInteractionReceipt & {
   target: SharedSlackStatusTarget
   /** Who tapped it (Slack `body.user`), forwarded so the daemon can attribute the
    *  session change. Absent when the payload names no user. */
   userId?: string
 } & Exclude<RdSlackAction, { kind: 'open-config-for-thread' }>
 
-export interface SharedSlackSessionShortcut extends SharedSlackInteractionReceipt {
+export interface HttpSlackSessionShortcut extends HttpSlackInteractionReceipt {
   channelId: string
   threadTs: string
   triggerId: string
   userId?: string
 }
 
-type SharedSlackAgent = { agentId: string; name: string }
+type HttpSlackAgent = { agentId: string; name: string }
 
-function sharedSlackAgentOption(agent: SharedSlackAgent) {
+function httpSlackAgentOption(agent: HttpSlackAgent) {
   const label = agent.name.trim() || agent.agentId
   return {
     text: { type: 'plain_text' as const, text: label.length > 75 ? `${label.slice(0, 74)}…` : label },
@@ -100,23 +100,23 @@ function sharedSlackAgentOption(agent: SharedSlackAgent) {
   }
 }
 
-/** Build one external-select response from the relay's current shared-bot member
+/** Build one external-select response from the relay's current HTTP-bot member
  *  directory. Slack caps a suggestion response at 100 options. Matching both name
  *  and id keeps a pasted agent id useful without changing the visible label. */
-export function sharedSlackAgentOptions(agents: SharedSlackAgent[], query = '') {
+export function httpSlackAgentOptions(agents: HttpSlackAgent[], query = '') {
   const needle = query.trim().toLocaleLowerCase()
   return agents
     .filter((agent) => !needle || agent.name.toLocaleLowerCase().includes(needle) || agent.agentId.includes(needle))
     .slice(0, 100)
-    .map(sharedSlackAgentOption)
+    .map(httpSlackAgentOption)
 }
 
-/** Decode and locally validate the shared status bar's agent selection. The CP
+/** Decode and locally validate the relay-managed status bar's agent selection. The CP
  *  validates membership again when it persists the channel owner; this edge check
  *  avoids forwarding stale/tampered option values in the common case. */
-export function parseSharedSlackAgentSelection(
+export function parseHttpSlackAgentSelection(
   body: SlackInteractiveBody,
-  agents: SharedSlackAgent[]
+  agents: HttpSlackAgent[]
 ): { channelId: string; threadTs?: string; agentId: string } | null {
   if (body.type !== 'block_actions') return null
   const action = body.actions?.find((candidate) => candidate.action_id === SHARED_AGENT_SELECT_ACTION_ID)
@@ -127,9 +127,9 @@ export function parseSharedSlackAgentSelection(
   return { channelId, ...(threadTs ? { threadTs } : {}), agentId }
 }
 
-/** Decode the shared status overflow's Switch agent choice. Slack has no nested
+/** Decode the relay-managed status overflow's Switch agent choice. Slack has no nested
  *  overflow menus, so this choice opens the relay-owned picker modal instead. */
-export function parseSharedSlackAgentSwitch(
+export function parseHttpSlackAgentSwitch(
   body: SlackInteractiveBody
 ): { channelId: string; threadTs?: string; currentAgentId: string } | null {
   if (body.type !== 'block_actions') return null
@@ -144,13 +144,13 @@ export function parseSharedSlackAgentSwitch(
   return { channelId, ...(threadTs ? { threadTs } : {}), currentAgentId: target.agentId }
 }
 
-type SharedSlackAgentModalContext = { channelId: string; threadTs?: string }
+type HttpSlackAgentModalContext = { channelId: string; threadTs?: string }
 
-function encodeAgentModalContext(context: SharedSlackAgentModalContext): string {
+function encodeAgentModalContext(context: HttpSlackAgentModalContext): string {
   return context.threadTs ? JSON.stringify({ v: 1, ...context }) : context.channelId
 }
 
-function decodeAgentModalContext(value: string): SharedSlackAgentModalContext | null {
+function decodeAgentModalContext(value: string): HttpSlackAgentModalContext | null {
   if (!value) return null
   try {
     const parsed = JSON.parse(value) as { v?: unknown; channelId?: unknown; threadTs?: unknown }
@@ -163,17 +163,17 @@ function decodeAgentModalContext(value: string): SharedSlackAgentModalContext | 
   }
 }
 
-/** Decode one daemon-owned session control from the shared app's Slack interaction.
- *  The target is opaque user-interface state at this edge; SharedBotManager validates
+/** Decode one daemon-owned session control from an HTTP app's Slack interaction.
+ *  The target is opaque user-interface state at this edge; RelayIngressManager validates
  *  its agent against the current bot assignment before choosing a daemon/integration. */
-export function parseSharedSlackSessionAction(body: SlackInteractiveBody): SharedSlackSessionAction | null {
-  const parsed = decodeSharedSlackSessionAction(body)
+export function parseHttpSlackSessionAction(body: SlackInteractiveBody): HttpSlackSessionAction | null {
+  const parsed = decodeHttpSlackSessionAction(body)
   if (!parsed) return null
   // Attach the actor at the single exit so every decoded verb carries it.
   return body.user?.id ? { ...parsed, userId: body.user.id } : parsed
 }
 
-function decodeSharedSlackSessionAction(body: SlackInteractiveBody): SharedSlackSessionAction | null {
+function decodeHttpSlackSessionAction(body: SlackInteractiveBody): HttpSlackSessionAction | null {
   if (body.type !== 'block_actions') return null
   const action = body.actions?.[0]
   if (!action?.action_id) return null
@@ -305,7 +305,7 @@ interface SlackFile {
   url_private_download?: string
 }
 
-/** The Slack Events API fields used by shared HTTP ingest. Message events use the
+/** The Slack Events API fields used by relay-managed HTTP ingest. Message events use the
  *  chat fields; membership events use type/user/channel to trigger a full refresh. */
 export interface SlackMessageEvent {
   type: string
@@ -392,7 +392,7 @@ function isRoutableEvent(event: SlackMessageEvent): boolean {
   )
 }
 
-export interface SlackSharedIngestDeps {
+export interface SlackHttpIngestDeps {
   /** Hand a normalized message to the router/forwarder; resolves once the delivery
    *  outcome is known (delivered or dropped). NEVER throws — runs after the HTTP 200. */
   onMessage: (msg: WireNormalizedMessage) => Promise<void>
@@ -411,10 +411,10 @@ export interface SlackSharedIngestDeps {
    *  channel default. The thread timestamp comes from the source status message. */
   onSelectThreadAgent: (channelId: string, threadTs: string, agentId: string) => void
   /** Forward the current agent/session controls to its owning daemon. */
-  onSessionAction: (action: SharedSlackSessionAction) => void
+  onSessionAction: (action: HttpSlackSessionAction) => void
   /** Resolve and forward the app-level message shortcut. False opens a local
    *  unavailable modal while the one-shot trigger id is still valid. */
-  onSessionShortcut: (shortcut: SharedSlackSessionShortcut) => boolean
+  onSessionShortcut: (shortcut: HttpSlackSessionShortcut) => boolean
   /** The workspace uninstalled the app / revoked its tokens — the bot's credential
    *  is dead; report upstream so the CP marks it revoked. */
   /** `eventAtMs` = Slack's envelope `event_time` (when the uninstall HAPPENED),
@@ -426,7 +426,7 @@ export interface SlackSharedIngestDeps {
   log: Logger
 }
 
-export class SlackSharedIngest {
+export class SlackHttpIngest {
   private web?: WebClient // bot-token Web API client (auth.test + views.open for the modal)
   private botUserId = ''
   private slackBotId = ''
@@ -438,7 +438,7 @@ export class SlackSharedIngest {
   constructor(
     readonly botId: string,
     private readonly secrets: { botToken: string; signingSecret: string },
-    private readonly deps: SlackSharedIngestDeps
+    private readonly deps: SlackHttpIngestDeps
   ) {}
 
   /** The Slack signing secret — the HTTP ingress HMACs inbound POSTs with it to
@@ -477,7 +477,7 @@ export class SlackSharedIngest {
   }
 
   /** Best-effort setup: resolve the bot user id for arbitration. No socket to open —
-   *  inbound arrives on the shared HTTP routes and is dispatched via `handle*`. */
+   *  inbound arrives on the pool-wide HTTP routes and is dispatched via `handle*`. */
   async start(): Promise<void> {
     const dispatcher = proxyDispatcher()
     const options: WebClientOptions = dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}
@@ -494,7 +494,7 @@ export class SlackSharedIngest {
         this.deps.onBotUserId(auth.user_id)
       }
     } catch (err) {
-      this.deps.log.warn(`shared-ingest(${this.botId}): auth.test failed: ${(err as Error).message}`)
+      this.deps.log.warn(`slack-http-ingest(${this.botId}): auth.test failed: ${(err as Error).message}`)
       // A DEAD-credential answer is positive evidence, not a transient miss: it
       // says the token this very assignment carries no longer works. Report it as
       // a revocation so the CP converges even when the `app_uninstalled` event
@@ -508,7 +508,7 @@ export class SlackSharedIngest {
       // revision arm alone is the correct fence here anyway — it identifies the
       // exact credential this probe just found dead.
       if (isDeadCredentialError(err)) {
-        this.deps.log.warn(`shared-ingest(${this.botId}): credential is dead — reporting revocation`)
+        this.deps.log.warn(`slack-http-ingest(${this.botId}): credential is dead — reporting revocation`)
         this.deps.onBotRevoked?.('tokens_revoked')
       }
     }
@@ -538,7 +538,7 @@ export class SlackSharedIngest {
       const msg = normalizeSlackMessage(event)
       if (msg) await this.deps.onMessage(msg)
     } catch (err) {
-      this.deps.log.warn(`shared-ingest(${this.botId}): event handler error: ${(err as Error).message}`)
+      this.deps.log.warn(`slack-http-ingest(${this.botId}): event handler error: ${(err as Error).message}`)
     }
   }
 
@@ -608,7 +608,7 @@ export class SlackSharedIngest {
     try {
       if (body.type === 'block_suggestion' && body.action_id === SHARED_AGENT_SELECT_ACTION_ID) {
         // The one branch whose result rides the 200 body (replaces `ack({ options })`).
-        return { options: sharedSlackAgentOptions(this.deps.agents(), body.value) }
+        return { options: httpSlackAgentOptions(this.deps.agents(), body.value) }
       }
       if (body.type === 'message_action' && body.callback_id === SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID) {
         const triggerId = body.trigger_id
@@ -632,12 +632,12 @@ export class SlackSharedIngest {
         body.type === 'block_actions' &&
         body.actions?.some((action) => action.action_id === SHARED_AGENT_SELECT_ACTION_ID)
       ) {
-        const selected = parseSharedSlackAgentSelection(body, this.deps.agents())
+        const selected = parseHttpSlackAgentSelection(body, this.deps.agents())
         if (selected?.threadTs) this.deps.onSelectThreadAgent(selected.channelId, selected.threadTs, selected.agentId)
         else if (selected) this.deps.onSetChannelAgent(selected.channelId, selected.agentId)
         return ''
       }
-      const agentSwitch = parseSharedSlackAgentSwitch(body)
+      const agentSwitch = parseHttpSlackAgentSwitch(body)
       if (agentSwitch && body.trigger_id) {
         // trigger_id is valid ~3s — fire promptly, don't block the 200.
         void this.openConfigModal(
@@ -665,14 +665,14 @@ export class SlackSharedIngest {
         else if (context && picked) this.deps.onSetChannelAgent(context.channelId, picked)
         return '' // empty 200 closes the modal (same as the old empty ack)
       }
-      const sessionAction = parseSharedSlackSessionAction(body)
+      const sessionAction = parseHttpSlackSessionAction(body)
       if (sessionAction) {
         this.deps.onSessionAction(sessionAction)
         return ''
       }
       return ''
     } catch (err) {
-      this.deps.log.warn(`shared-ingest(${this.botId}): interactive error: ${(err as Error).message}`)
+      this.deps.log.warn(`slack-http-ingest(${this.botId}): interactive error: ${(err as Error).message}`)
       return ''
     }
   }
@@ -697,7 +697,7 @@ export class SlackSharedIngest {
         }
       } as never)
     } catch (err) {
-      this.deps.log.warn(`shared-ingest(${this.botId}): views.open failed: ${(err as Error).message}`)
+      this.deps.log.warn(`slack-http-ingest(${this.botId}): views.open failed: ${(err as Error).message}`)
     }
   }
 
@@ -746,7 +746,7 @@ export class SlackSharedIngest {
   }
 
   async stop(): Promise<void> {
-    // No socket to close — inbound is the shared HTTP surface. Drop the WebClient so a
+    // No socket to close — inbound is the pool-wide HTTP surface. Drop the WebClient so a
     // re-assign rebuilds it with (possibly rotated) credentials.
     this.web = undefined
   }

@@ -26,7 +26,7 @@ import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView, canEdit } from '../visibility.js'
 import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
-import { pickChannelOwner } from '../../orchestrator/sharedBot.js'
+import { pickChannelOwner } from '../../orchestrator/httpBot.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewSlackBot, slackAppIdFromAppToken } from '../install-slack.js'
 import { discordAppIdFromBotToken } from '../discord-identity.js'
@@ -108,10 +108,10 @@ export function integrationRoutes(deps: HttpDeps) {
       }
     }
 
-    // Shared-install preconditions (shared-bot-relay.md §6): Slack-only for now, a
+    // Shareable-install preconditions (shared-bot-relay.md §6): Slack-only for now, a
     // relay must be connected to host the ingest, and one agent installs a bot once.
     // Returns an error envelope to send, or null when the install may proceed.
-    const validateSharedInstall = async (
+    const validateShareableInstall = async (
       bot: { agentIds: string[] },
       agentId: string,
       platform: 'slack' | 'telegram' | 'discord' | 'feishu'
@@ -119,16 +119,16 @@ export function integrationRoutes(deps: HttpDeps) {
       if (platform !== 'slack') {
         return {
           code: 400,
-          body: { error: 'Bad Request', statusCode: 400, message: 'shared bots currently support Slack only' }
+          body: { error: 'Bad Request', statusCode: 400, message: 'multi-agent bots currently support Slack only' }
         }
       }
-      if (!deps.sharedBot.hasConnectedRelay()) {
+      if (!deps.httpBot.hasConnectedRelay()) {
         return {
           code: 409,
           body: {
             error: 'Conflict',
             statusCode: 409,
-            message: 'no relay is connected — shared bots need a relay to receive messages'
+            message: 'no relay is connected — HTTP bots need a relay to receive messages'
           }
         }
       }
@@ -277,11 +277,11 @@ export function integrationRoutes(deps: HttpDeps) {
               })
             }
             // Reuse keeps the bot's existing transport (immutable post-create). An
-            // http bot routes via the relay pool; adding a 2nd agent makes it shared.
+            // An HTTP bot routes via the relay pool; adding a second agent makes it shareable.
             const wantHttp = bot.transport === 'http'
             if (wantHttp) {
-              const sharedErr = await validateSharedInstall(bot, agent.id, req.body.platform)
-              if (sharedErr) return reply.code(sharedErr.code).send(sharedErr.body)
+              const shareableErr = await validateShareableInstall(bot, agent.id, req.body.platform)
+              if (shareableErr) return reply.code(shareableErr.code).send(shareableErr.body)
               if (!bot.shareable) await deps.repos.bot.setShareable(bot.id, true)
               const integration = await deps.repos.integration.create({
                 id: IntegrationId(randomUUID()),
@@ -297,7 +297,7 @@ export function integrationRoutes(deps: HttpDeps) {
               })
               // Relay owns the ingest — (re)assign the bot + push send-only specs to
               // every member daemon (including any that were direct before promotion).
-              await deps.sharedBot.syncBot(bot.id)
+              await deps.httpBot.syncBot(bot.id)
               return reply.code(201).send(toDto(integration))
             }
             // Classic reuse: 1 bot : ≤1 install.
@@ -507,7 +507,7 @@ export function integrationRoutes(deps: HttpDeps) {
             }
           } else {
             // HTTP mode: inbound arrives at the relay pool — a relay must be connected.
-            if (!deps.sharedBot.hasConnectedRelay()) {
+            if (!deps.httpBot.hasConnectedRelay()) {
               return reply.code(409).send({
                 error: 'Conflict',
                 statusCode: 409,
@@ -559,7 +559,7 @@ export function integrationRoutes(deps: HttpDeps) {
             channels: await deps.repos.integrationChannel.listForIntegration(integration.id)
           }))
         )
-        // Membership is repeated per shared-bot integration, while only the
+        // Membership is repeated per shareable-bot integration, while only the
         // canonical owner row persists agentId. Read effective state from every
         // active install of each visible bot — not only viewer-visible integrations
         // — so a sibling never disagrees with the relay's route table.
@@ -730,7 +730,7 @@ export function integrationRoutes(deps: HttpDeps) {
           let updated: IntegrationChannelRecord | null = null
           let routesSynced = false
           if (botScopedChannel) {
-            updated = await deps.sharedBot.updateChannel(
+            updated = await deps.httpBot.updateChannel(
               bot.id,
               req.params.channelId,
               {
@@ -766,10 +766,10 @@ export function integrationRoutes(deps: HttpDeps) {
           }
           if (!updated)
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'channel not found' })
-          // Push the change: a shared bot's routes hot-update on the relay; a classic
+          // Push the change: an HTTP bot's routes hot-update on the relay; a classic
           // bot re-pushes its recomputed bindRules to the owning daemon.
           if (bot.transport === 'http') {
-            if (!routesSynced) await deps.sharedBot.syncRoutes(bot.id)
+            if (!routesSynced) await deps.httpBot.syncRoutes(bot.id)
           } else if (agent.daemonId) {
             await replicateUpsert(integration, agent.daemonId)
           }
@@ -831,10 +831,10 @@ export function integrationRoutes(deps: HttpDeps) {
           agent = current
           const botBefore = await deps.repos.bot.get(existing.botId)
           if (botBefore?.transport === 'http') {
-            await deps.sharedBot.prepareIntegrationRemoval(existing.botId)
+            await deps.httpBot.prepareIntegrationRemoval(existing.botId)
           }
           await deps.repos.integration.delete(existing.id)
-          // "Freed" now means NO active integration remains (a shared bot may still
+          // "Freed" now means NO active integration remains (a shareable bot may still
           // serve other agents — don't stamp it freed while it does, §6).
           const remaining = await deps.repos.integration.listForBot(existing.botId)
           if (remaining.length === 0) {
@@ -842,9 +842,9 @@ export function integrationRoutes(deps: HttpDeps) {
           }
           // Tell the removed agent's daemon to drop the spec either way.
           await replicateRemove(existing.id, agent.daemonId ?? null)
-          // Shared bot: recompute the relay's routes + members (or release it if this
+          // HTTP bot: recompute the relay's routes + members (or release it if this
           // was the last install).
-          if (botBefore?.transport === 'http') await deps.sharedBot.syncBot(existing.botId)
+          if (botBefore?.transport === 'http') await deps.httpBot.syncBot(existing.botId)
           return reply.code(204).send(null)
         } finally {
           release()

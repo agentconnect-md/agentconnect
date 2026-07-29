@@ -1,6 +1,6 @@
 /**
- * Shared Slack HTTP ingress — `POST /slack/events` + `POST /slack/interactions`,
- * the relay pool's ONE inbound Events API surface for every shared Slack bot (the
+ * Slack HTTP ingress — `POST /slack/events` + `POST /slack/interactions`,
+ * the relay pool's ONE inbound Events API surface for every HTTP Slack bot (the
  * successor to the per-bot Socket Mode consumer). One stable public URL behind the
  * LB; any pod may receive any bot's delivery, so this endpoint is stateless demux:
  *
@@ -24,18 +24,18 @@
 import type { FastifyInstance } from 'fastify'
 import type { Logger } from './log.js'
 import type { SlackEventDedup } from './slack-event-dedup.js'
-import type { SlackInteractiveBody, SlackMessageEvent } from './slack-shared-ingest.js'
+import type { SlackInteractiveBody, SlackMessageEvent } from './slack-http-ingest.js'
 
 /** Raw-body cap for the Slack endpoints (Slack payloads are well under 1 MiB). */
 export const SLACK_BODY_LIMIT = 1024 * 1024
 
-/** The minimum an ingest must expose to the route (satisfied by `SlackSharedIngest`). */
+/** The minimum an ingest must expose to the route (satisfied by `SlackHttpIngest`). */
 export interface SlackIngestHandlers {
   handleEvent(event: SlackMessageEvent | undefined, eventAtMs?: number): Promise<void>
   handleInteraction(body: SlackInteractiveBody): Promise<unknown>
 }
 
-/** Demux + authenticate an inbound POST to a bot's ingest (satisfied by `SharedBotManager`). */
+/** Demux + authenticate an inbound POST to a bot's ingest (satisfied by `RelayIngressManager`). */
 export interface SlackIngestResolver {
   resolveVerified(args: {
     apiAppId?: string

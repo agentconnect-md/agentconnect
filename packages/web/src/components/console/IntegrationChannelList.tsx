@@ -227,7 +227,7 @@ export function placePopover(
  * names the owner. The CP already resolves this bot-wide (GET /integrations
  * stamps the effective owner onto every install, from ALL installs including
  * ones the viewer can't see, and PATCH …/channels/:id routes ownership through
- * `sharedBot.updateChannel`), so this is the client-side safety net for a row
+ * `httpBot.updateChannel`), so this is the client-side safety net for a row
  * whose owner the CP couldn't resolve — never the only thing keeping the two
  * pages agreeing. Mirrors `botChannels` in SettingsView.
  */
@@ -409,7 +409,7 @@ export function IntegrationChannelList({
   // The agents that share this bot. A channel's default is its explicit owner —
   // this row's when the CP stamped it, else whichever sibling install of the bot
   // persists it — falling back to the earliest install, the same ordering
-  // sharedBot.ts's compiler uses for a channel nobody has ever claimed.
+  // httpBot.ts's compiler uses for a channel nobody has ever claimed.
   const members = memberIds.map(member)
   const owners = shareable && botId ? channelOwners(botId, integrations) : undefined
   const viewer = agentId && memberIds.includes(agentId) ? member(agentId) : undefined
@@ -448,7 +448,7 @@ export function IntegrationChannelList({
                   ownership of a shared (http) channel is bot-scoped server-side —
                   the route resolves the effective owner across every install,
                   fences on it (`expectedOwnerAgentId`) and hands the write to
-                  `sharedBot.updateChannel`, so exactly one row stays canonical no
+                  `httpBot.updateChannel`, so exactly one row stays canonical no
                   matter which install the console patched. */}
               <DefaultAgentPicker
                 current={def}

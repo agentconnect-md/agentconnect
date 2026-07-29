@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { SharedBotOrchestrator } from './sharedBot.js'
+import { HttpBotOrchestrator } from './httpBot.js'
 import { RelayRegistry, type RelayChannel } from '../ws/relay-registry.js'
 import type { RcBotAssign, RelayCpFrameType } from '@agentconnect.md/protocol'
 import { AgentId, BotId, IntegrationId, OrgId } from '../domain/ids.js'
@@ -96,7 +96,7 @@ function channel(over: Partial<IntegrationChannelRecord>): IntegrationChannelRec
   }
 }
 
-describe('SharedBotOrchestrator — attributed route compilation (§10)', () => {
+describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   let relayReg: RelayRegistry
   let ch: FakeChannel
   let botRow: BotRecord
@@ -119,7 +119,7 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
   // a re-install landing between revokeBot's commit and its external effects.
   let bumpRevisionAfterFirstGet: boolean
 
-  function makeOrch(): SharedBotOrchestrator {
+  function makeOrch(): HttpBotOrchestrator {
     const agents: Record<string, AgentRecord> = {
       [ALICE]: agent(ALICE, 'alice', D1),
       [BOB]: agent(BOB, 'bob', D2)
@@ -255,7 +255,7 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
         return { applied: true, integrationIds: await intRepo.markRevokedForBot!(id) }
       }
     }
-    return new SharedBotOrchestrator(
+    return new HttpBotOrchestrator(
       bots as BotRepo,
       botSecret as BotSecretStore,
       botCredential,
@@ -404,7 +404,7 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       expect(assign.gatedAgentIds).toEqual([ALICE, BOB])
     })
 
-    it("a gated install's shared spec carries its scoped bindRules + gated for the daemon backstop", async () => {
+    it("a gated install's send-only spec carries its scoped bindRules + gated for the daemon backstop", async () => {
       gatedAgents = new Set([ALICE])
       channels = [
         channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'mention' }),
@@ -474,7 +474,7 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
     })
 
     // One Slack identity cannot say WHICH agent a group-DM mention meant, and the slug
-    // that disambiguates a shared DM does not apply (the mention rung outranks keyword).
+    // that disambiguates a multi-agent DM does not apply (the mention rung outranks keyword).
     // Two identical scoped mention routes would let relay order decide silently, so the
     // conversation converges on the earliest install instead.
     it('converges a group DM enabled by TWO gated agents onto the earliest install', async () => {

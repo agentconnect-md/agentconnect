@@ -2,6 +2,11 @@
 
 > **Status:** Implemented for Slack HTTP ingress, webchat, and webhook ingress.
 > Shared Telegram and Discord ingress are not implemented.
+>
+> **Naming note:** This is a historical filename. “Shared” here describes the
+> relay pool's shared ingress plane, not `Bot.shareable`. `Bot.transport = 'http'`
+> selects relay ingress; `Bot.shareable` separately controls whether one bot may
+> serve multiple agents.
 
 The relay pool is AgentConnect's public content-ingress plane. It accepts
 platform callbacks and browser sessions that cannot terminate at a daemon,

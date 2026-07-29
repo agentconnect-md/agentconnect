@@ -151,7 +151,7 @@ This repository is a pnpm workspace with eight packages:
 | `@agentconnect.md/daemon`             | [`packages/daemon`](packages/daemon)                         | Edge message processing and agent execution unit                  |
 | `@agentconnect.md/memory-plugin-mem0` | [`packages/memory-plugin-mem0`](packages/memory-plugin-mem0) | Mem0 Cloud and OSS memory-plugin profiles                         |
 | `@agentconnect.md/protocol`           | [`packages/protocol`](packages/protocol)                     | Shared daemon, relay, and Control Plane wire contracts            |
-| `@agentconnect.md/relay`              | [`packages/relay`](packages/relay)                           | Shared bot, webhook, GitHub, and webchat ingress                  |
+| `@agentconnect.md/relay`              | [`packages/relay`](packages/relay)                           | HTTP bot, webhook, GitHub, and webchat ingress                    |
 | `@agentconnect.md/web`                | [`packages/web`](packages/web)                               | Next.js configuration and monitoring console                      |
 
 ## Evaluate AgentConnect add-ons

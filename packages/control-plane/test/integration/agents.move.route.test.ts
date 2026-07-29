@@ -7,7 +7,7 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { HookService } from '../../src/hooks/hook.service.js'
-import type { SharedBotOrchestrator } from '../../src/orchestrator/sharedBot.js'
+import type { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
 import type { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { OrgId } from '../../src/domain/ids.js'
@@ -68,20 +68,20 @@ describe('PUT /agents/:id/daemon', () => {
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, { daemonId: SOURCE })
     const classicBot = randomUUID()
-    const sharedBot = randomUUID()
+    const httpBot = randomUUID()
     const classicIntegration = randomUUID()
     const sharedIntegration = randomUUID()
     const cronId = randomUUID()
     await prisma.bot.createMany({
       data: [
         { id: classicBot, orgId: DEFAULT_ORG_ID, platform: 'slack', name: 'classic' },
-        { id: sharedBot, orgId: DEFAULT_ORG_ID, platform: 'slack', name: 'shared', shareable: true, transport: 'http' }
+        { id: httpBot, orgId: DEFAULT_ORG_ID, platform: 'slack', name: 'shared', shareable: true, transport: 'http' }
       ]
     })
     await prisma.botSecret.createMany({
       data: [
         { botId: classicBot, botToken: 'xoxb-classic', appToken: 'xapp-classic' },
-        { botId: sharedBot, botToken: 'xoxb-shared', appToken: 'xapp-shared' }
+        { botId: httpBot, botToken: 'xoxb-shared', appToken: 'xapp-shared' }
       ]
     })
     await prisma.integration.createMany({
@@ -98,7 +98,7 @@ describe('PUT /agents/:id/daemon', () => {
           id: sharedIntegration,
           orgId: DEFAULT_ORG_ID,
           agentId,
-          botId: sharedBot,
+          botId: httpBot,
           platform: 'slack',
           name: 'shared'
         }
@@ -123,9 +123,9 @@ describe('PUT /agents/:id/daemon', () => {
     const derived: string[] = []
     running = buildHttpApp(prisma, undefined, live, control as unknown as ControlSender, {
       hooks: { rebroadcastForAgent: async () => void derived.push('hooks') } as unknown as HookService,
-      sharedBot: {
-        syncBot: async (id: string) => void derived.push(`shared:${id}`)
-      } as unknown as SharedBotOrchestrator,
+      httpBot: {
+        syncBot: async (id: string) => void derived.push(`http:${id}`)
+      } as unknown as HttpBotOrchestrator,
       collabRoutes: { broadcast: async () => void derived.push('collab') } as unknown as CollabRoutesService
     })
 
@@ -146,7 +146,7 @@ describe('PUT /agents/:id/daemon', () => {
         .sort()
     ).toEqual(['direct', 'shared'])
     expect(control.activations[0]?.crons.map((cron) => cron.cronId)).toEqual([cronId])
-    expect(derived).toEqual(['hooks', 'collab', `shared:${sharedBot}`])
+    expect(derived).toEqual(['hooks', 'collab', `http:${httpBot}`])
 
     // A lost-response retry repairs the full target bundle and activates again,
     // and first arms the idempotent target staging gate.

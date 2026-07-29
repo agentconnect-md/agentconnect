@@ -180,8 +180,8 @@ Implementation entry points:
   durable counter and latch.
 - [`packages/daemon/src/slack/connection.ts`](../../packages/daemon/src/slack/connection.ts):
   direct Slack ingress.
-- [`packages/relay/src/slack-shared-ingest.ts`](../../packages/relay/src/slack-shared-ingest.ts):
-  shared Slack ingress.
+- [`packages/relay/src/slack-http-ingest.ts`](../../packages/relay/src/slack-http-ingest.ts):
+  HTTP Slack ingress.
 
 ### 4.1 Messages Counted
 
@@ -364,7 +364,7 @@ latch is already OPEN, select a target from current agents' Slack integrations
 that actually permits the user, preferring an explicit mention and then stable
 ordering. The same concrete-integration authorization check still runs.
 
-Shared-bot `rd/msg(im)` likewise parses commands before dispatch and uses the
+Relay-managed `rd/msg(im)` likewise parses commands before dispatch and uses the
 target resolved by the relay for the final `allowedUserIds` check. A bot or
 unknown sender cannot resume the scope.
 

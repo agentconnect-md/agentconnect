@@ -32,7 +32,7 @@ export interface InstallSlackBotArgs {
   /** The owning agent. For SOCKET transport it MUST already be placed (`daemonId`
    *  non-null; the daemon owns the socket) — caller checks. An http-transport
    *  install tolerates an unplaced agent: the relay assignment simply defers until
-   *  placement re-converges the shared bot (preset-agents.md §5.3). */
+   *  placement re-converges the HTTP bot (preset-agents.md §5.3). */
   agent: AgentRecord
   name: string
   botToken: string // xoxb-…
@@ -52,7 +52,7 @@ export interface InstallSlackBotArgs {
   appToken?: string
   /** Slack signing secret — required for http transport (Events API verification). */
   signingSecret?: string
-  /** Multi-agent shared mode (http transport only). Caller has checked a relay is connected. */
+  /** Multi-agent sharing (http transport only). Caller has checked a relay is connected. */
   shareable?: boolean
   createdByUserId?: string
 }
@@ -115,10 +115,10 @@ export async function installNewSlackBot(
   })
 
   // HTTP transport: the relay pool owns the ingest — broadcast the bot assign and push
-  // the send-only spec to the daemon (SharedBotOrchestrator does both). No Socket Mode
+  // the send-only spec to the daemon (HttpBotOrchestrator does both). No Socket Mode
   // socket opens on the daemon.
   if (transport === 'http') {
-    await deps.sharedBot.syncBot(botId)
+    await deps.httpBot.syncBot(botId)
     return integration
   }
 

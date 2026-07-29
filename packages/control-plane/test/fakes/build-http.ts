@@ -67,7 +67,7 @@ import { WaitlistService } from '../../src/registry/waitlistService.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import { RelayControlSender } from '../../src/orchestrator/relayControl.js'
-import { SharedBotOrchestrator } from '../../src/orchestrator/sharedBot.js'
+import { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { ExclusiveMutationGate } from '../../src/orchestrator/exclusiveMutationGate.js'
@@ -149,7 +149,7 @@ export function buildHttpApp(
   const hookRepo = new PgHookRepo(prisma)
   const hookSecretStore = new PgHookSecretStore(prisma, cipher)
   const githubInstallationRepo = new PgGithubInstallationRepo(prisma)
-  // An empty relay registry ⇒ shared installs 409 (no relay) and hook broadcasts are
+  // An empty relay registry ⇒ multi-agent installs 409 (no relay) and hook broadcasts are
   // no-ops — exactly the prod graph with no relay dialed in, unless a test wires one up.
   const relayReg = new RelayRegistry()
   const relayControl = new RelayControlSender(relayReg)
@@ -198,7 +198,7 @@ export function buildHttpApp(
     liveness,
     control: sender,
     relayControl,
-    sharedBot: new SharedBotOrchestrator(
+    httpBot: new HttpBotOrchestrator(
       botRepo,
       botSecretStore,
       botCredentialWriter,
