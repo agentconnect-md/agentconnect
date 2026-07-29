@@ -298,7 +298,20 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     const secret = await prisma.botSecret.findUnique({ where: { botId: dto.botId as string } })
     expect(secret).toMatchObject({ botToken: FEISHU.appSecret, appToken: FEISHU.appId })
     const bot = await prisma.bot.findUnique({ where: { id: dto.botId as string } })
-    expect(bot).toMatchObject({ platform: 'feishu', feishuRegion: 'lark' })
+    expect(bot).toMatchObject({ platform: 'feishu', feishuAppId: FEISHU.appId, feishuRegion: 'lark' })
+
+    // The bot roster exposes only the public app id + region needed for the
+    // developer-console link; the secret never leaves bot_secret.
+    const botsRes = await app.app.inject({ method: 'GET', url: `${ORG}/bots` })
+    expect(botsRes.statusCode).toBe(200)
+    expect(botsRes.json()).toEqual([
+      expect.objectContaining({
+        id: dto.botId,
+        feishuAppId: FEISHU.appId,
+        feishuRegion: 'lark'
+      })
+    ])
+    expect(botsRes.body).not.toContain(FEISHU.appSecret)
 
     // The daemon got a feishu-shaped spec: appId + appSecret, no slack/discord block.
     expect(spy.upserts).toHaveLength(1)

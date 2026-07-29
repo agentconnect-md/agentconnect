@@ -61,6 +61,11 @@ function botSubline(b: BotDto): string {
   return b.freedFromAgent ? `freed from ${b.freedFromAgent}` : b.prebuilt ? 'prebuilt' : ''
 }
 
+function feishuAppSettingsUrl(appId: string | null | undefined, region: 'feishu' | 'lark'): string {
+  const host = region === 'lark' ? 'https://open.larksuite.com' : 'https://open.feishu.cn'
+  return appId ? `${host}/app/${encodeURIComponent(appId)}` : `${host}/page/launcher`
+}
+
 // One rendered member row, precomputed from the wire DTO.
 interface MemberRowView {
   userId: string
@@ -710,6 +715,8 @@ function BotsCard({
           : false
         const showDefaultDispatch = b.shareable && hasChannelRows
         const chanGrid = showDefaultDispatch ? 'grid-cols-[1fr_auto]' : 'grid-cols-[1fr]'
+        const feishuRegion = b.feishuRegion ?? 'feishu'
+        const feishuBrand = feishuRegion === 'lark' ? 'Lark' : 'Feishu'
         // The picker's choices: every agent installed on the bot.
         const agentOptions = b.agentIds.map((id) => {
           const ag = getAgent(id)
@@ -835,6 +842,19 @@ function BotsCard({
                     rel="noopener noreferrer"
                     title="Invite this bot to a Discord server — preset scopes &amp; permissions"
                     aria-label="Add this bot to a Discord server"
+                    className="iconbtn h-7 w-7 flex-none"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Icon name="external-link" size={12} />
+                  </a>
+                )}
+                {platform === 'feishu' && (
+                  <a
+                    href={feishuAppSettingsUrl(b.feishuAppId, feishuRegion)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={`Configure on ${feishuBrand}`}
+                    aria-label={`Configure on ${feishuBrand}`}
                     className="iconbtn h-7 w-7 flex-none"
                     onClick={(e) => e.stopPropagation()}
                   >

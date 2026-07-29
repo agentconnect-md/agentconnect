@@ -1397,6 +1397,7 @@ model Bot {
   credentialRevision    Int            @default(1)
   credentialInstalledAt DateTime?      @db.Timestamptz(6)
   discordAppId          String? // Discord application (client) id, decoded from the bot token's first segment — lets the console offer a ready-made "Add to Discord" invite URL. Public metadata (it IS the bot's user id), NOT secret material.
+  feishuAppId           String? // Feishu/Lark app id (cli_…), copied from the create request so Settings can deep-link to this app without reading bot_secret. Public metadata, NOT secret material.
   feishuRegion          String? // Feishu/Lark open-platform gateway for this app: 'feishu' (open.feishu.cn) | 'lark' (open.larksuite.com). NULL ⇒ 'feishu'. DURABLE home (survives uninstall) so a freed Lark bot reinstalls against the right gateway. Public config, NOT secret.
   // Shared-bot opt-in (shared-bot-relay.md §4.1). false ⇒ classic 1-bot:1-agent
   // (daemon owns the whole socket, zero behaviour change). true ⇒ the bot's
@@ -1443,7 +1444,7 @@ enum SlackTransport {
 model BotSecret {
   botId         String  @id @db.Uuid
   botToken      String // xoxb-… / Telegram token in stored SecretCipher form; read ONLY via BotSecretStore
-  appToken      String? // xapp-… — Slack Socket Mode only; NULL for Telegram (single bot token)
+  appToken      String? // xapp-… for Slack Socket Mode; Feishu/Lark reuses this slot for its app id; NULL for single-token platforms
   // Slack signing secret — verifies inbound Events API POSTs (HMAC). Lives ONLY here
   // + is shipped to the relay in rc/bot-assign (http transport); daemons never get it.
   signingSecret String? // Slack signing secret (http transport); NULL for socket/Telegram

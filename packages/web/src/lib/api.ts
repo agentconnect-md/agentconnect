@@ -587,6 +587,8 @@ export interface BotDto {
   prebuilt: boolean
   slackAppId: string | null // Slack app id (A…) — deep-links to api.slack.com/apps/{id}
   discordAppId: string | null // Discord application (client) id — builds the "Add to Discord" invite URL
+  feishuAppId?: string | null // Lark/Feishu app id (cli_…) — optional while older control planes roll out
+  feishuRegion?: 'feishu' | 'lark' | null // matching developer-console region; legacy null ⇒ Feishu
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for prebuilt/CLI
   // Inbound transport (Slack): 'socket' = Socket Mode (this agent only), 'http' =
   // Events API via the relay. Only an http bot may be shared. Missing (older CP)

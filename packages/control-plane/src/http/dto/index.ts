@@ -1233,6 +1233,10 @@ export const BotDto = z.object({
   slackAppId: z.string().nullable(),
   /** Discord application (client) id — lets the console build a ready-made "Add to Discord" invite URL. */
   discordAppId: z.string().nullable(),
+  /** Feishu/Lark app id (cli_…) — deep-links to this app in the matching developer console. */
+  feishuAppId: z.string().nullable(),
+  /** Feishu/Lark developer-console region; null for other platforms. */
+  feishuRegion: FeishuRegion.nullable(),
   createdBy: z.string().nullable(), // creator's userId (web resolves to a name / "You"); null for prebuilt/CLI
   /** Shared-bot (multi-agent) opt-in (§4.1): when true the bot may serve many agents
    *  at once. Only meaningful for `transport: 'http'`. */
