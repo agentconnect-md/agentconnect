@@ -1,0 +1,175 @@
+'use client'
+
+// Getting-started placement 1a + 1b (design: "Getting Started Placement.dc.html").
+// 1a is the floating pill in the console's bottom-right corner; 1b is the 400px
+// slide-over drawer it opens. Both sit OUT of the content flow (the Agents view keeps
+// its stats-then-table) — a persistent, non-blocking checklist derived from live state
+// (lib/getting-started.ts). The pill vanishes for good once every item is complete.
+//
+// Not built yet (no shipped backing — added when their signals land, preset-agents.md
+// §3/§6): the "runtime signed in" needs-attention item (probe status, §6.2) and the
+// per-item "Ask Assistant" automation (the assistant preset + delegated MCP writes,
+// §6.3/§6.4). The footer's "Ask an agent" instead opens the Playground on a real agent,
+// the one conversational entry that works today.
+
+import { useMemo, useState } from 'react'
+import { usePathname } from 'next/navigation'
+import { useConsoleData } from '@/lib/data-context'
+import { usePlayground } from './PlaygroundProvider'
+import { isAuthConfigured } from '@/lib/auth'
+import { computeGettingStarted } from '@/lib/getting-started'
+import { GsRows, MeetYourAgents, useGsActions } from './GettingStartedChecklist'
+import { Button, Icon } from '@/components/ui'
+
+// A r=10.5 progress ring (viewBox 0 0 26 26), rotated so it fills clockwise from 12
+// o'clock — the exact svg the design uses in the pill, drawer header and rail.
+function Ring({ ring, size, track }: { ring: string; size: number; track: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 26 26" className="flex-none -rotate-90">
+      <circle cx="13" cy="13" r="10.5" fill="none" stroke="var(--gray-150)" strokeWidth={track} />
+      <circle
+        cx="13"
+        cy="13"
+        r="10.5"
+        fill="none"
+        stroke="var(--brand)"
+        strokeWidth={track}
+        strokeLinecap="round"
+        strokeDasharray={ring}
+      />
+    </svg>
+  )
+}
+
+export default function GettingStarted() {
+  const { agents, daemons, integrations, allSessions, members, agentsLoading, daemonsLoading } = useConsoleData()
+  const { openPlayground } = usePlayground()
+  const { runAction, firstAgent } = useGsActions()
+  const pathname = usePathname()
+  const authOn = isAuthConfigured()
+
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [expanded, setExpanded] = useState<string | null>(null)
+
+  const gs = useMemo(
+    () => computeGettingStarted({ agents, daemons, integrations, sessions: allSessions, members, authOn }),
+    [agents, daemons, integrations, allSessions, members, authOn]
+  )
+
+  // Show on every console page while the checklist is incomplete — including a
+  // brand-new org, where "Connect a daemon" is the first open step. The full-screen
+  // /onboarding wizard is a separate route (AgentsView redirects an empty org there);
+  // the pill only steps aside for that route, not for the empty-org state itself.
+  const onOnboardingRoute = pathname?.includes('/onboarding')
+  const loading = agentsLoading || daemonsLoading
+  if (loading || gs.allDone || onOnboardingRoute) return null
+
+  const shortLabel = `${gs.done}/${gs.total}`
+
+  return (
+    <>
+      {/* 1a — floating pill (desktop only; mobile has the bottom-tab chrome) */}
+      {!drawerOpen && (
+        <button
+          type="button"
+          onClick={() => setDrawerOpen(true)}
+          title="Getting started — open checklist"
+          className="fixed right-[26px] bottom-[22px] z-[60] hidden h-10 cursor-pointer items-center gap-[9px] rounded-full border border-(--border-default) bg-(--surface-card) pr-[15px] pl-[9px] shadow-(--shadow-lg) hover:border-(--border-strong) hover:shadow-(--shadow-xl) max-desktop:hidden desktop:inline-flex"
+        >
+          <Ring ring={gs.ring} size={22} track={3.4} />
+          <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+            Getting started
+          </span>
+          <span className="font-mono text-[12px] leading-normal text-(--text-tertiary)">{shortLabel}</span>
+        </button>
+      )}
+
+      {/* 1b — slide-over drawer */}
+      {drawerOpen && (
+        <>
+          <div
+            onClick={() => setDrawerOpen(false)}
+            className="fixed inset-0 z-[70] bg-[rgba(17,22,29,.26)] backdrop-blur-[2px]"
+          />
+          <aside className="fixed top-0 right-0 bottom-0 z-[80] flex w-full max-w-[400px] flex-col border-l border-(--border-default) bg-(--surface-card) shadow-(--shadow-xl)">
+            <div className="flex-none border-b border-(--border-subtle) py-[15px] pr-3 pl-[18px]">
+              <div className="flex items-center gap-[10px]">
+                <Ring ring={gs.ring} size={26} track={3} />
+                <span className="min-w-0 flex-1 font-sans text-[15px] font-semibold leading-normal text-(--text-primary)">
+                  Getting started
+                </span>
+                <span className="font-mono text-[12px] leading-normal text-(--text-tertiary)">
+                  {gs.done} of {gs.total}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setDrawerOpen(false)}
+                  title="Close — the checklist stays in the corner"
+                  className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover)"
+                >
+                  <Icon name="x" size={16} />
+                </button>
+              </div>
+              <div className="mt-3 h-[5px] overflow-hidden rounded-[3px] bg-(--gray-150)">
+                <div
+                  className="h-full rounded-[3px] bg-(--brand)"
+                  style={{ width: `${Math.round(gs.fraction * 100)}%` }}
+                />
+              </div>
+              <div className="mt-[10px] flex items-center gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                <Icon name="info" size={12} className="flex-none" />
+                Close it anytime — the checklist stays in the corner until it&rsquo;s done.
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-auto">
+              <GsRows
+                items={gs.items}
+                expanded={expanded}
+                onToggle={(key) => setExpanded((cur) => (cur === key ? null : key))}
+                runAction={(action) => {
+                  setDrawerOpen(false)
+                  runAction(action)
+                }}
+                renderItem={(it, ctx) =>
+                  it.key === 'agent' ? (
+                    <MeetYourAgents
+                      done={it.done}
+                      open={ctx.open}
+                      toggle={ctx.toggle}
+                      onConnect={() => {
+                        setDrawerOpen(false)
+                        runAction(it.action)
+                      }}
+                    />
+                  ) : null
+                }
+              />
+            </div>
+
+            {firstAgent && (
+              <div className="flex flex-none items-center gap-[10px] border-t border-(--border-subtle) bg-(--surface-app) py-[11px] pr-[14px] pl-4">
+                <span className="flex-1 font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
+                  Stuck on a step? Ask an agent to walk you through it.
+                </span>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setDrawerOpen(false)
+                    void openPlayground(firstAgent)
+                  }}
+                >
+                  <span className="inline-flex items-center gap-[6px]">
+                    <Icon name="sparkles" size={14} />
+                    Ask an agent
+                  </span>
+                </Button>
+              </div>
+            )}
+          </aside>
+        </>
+      )}
+    </>
+  )
+}
