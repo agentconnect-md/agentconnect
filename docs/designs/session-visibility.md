@@ -41,7 +41,7 @@ sender id: `SessionMeta.triggeredBy` is an opaque, platform-namespaced string
 (a Slack/Discord/Telegram/Feishu user id, an agent UUID, `cron:<id>`,
 `hook:<id>`, or — for webchat — the console user's email). There is no
 platform-identity → `app_user` mapping today
-([resource-visibility.md §14.3](resource-visibility.md) lists it as future
+([resource-visibility.md §14.6](resource-visibility.md) lists it as future
 work).
 
 **Decision: the owner is a namespaced identity string, not a `User` FK.**
