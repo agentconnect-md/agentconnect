@@ -1242,13 +1242,13 @@ export default function AddIntegrationModal({
   const selectedBotId = freeBots.some((b) => b.id === botPick) ? botPick : (freeBots[0]?.id ?? null)
   const selectedBot = freeBots.find((b) => b.id === selectedBotId) ?? null
   // The effective callback-capable transport for the CREATE path: an explicit pick,
-  // else the locked default (http when public callback delivery is available).
+  // else the platform default. Slack prefers HTTP when relay delivery is available;
+  // Feishu starts on Long Connection and offers HTTP as an explicit relay-backed choice.
   // Once an auto-install is pending, PIN the transport to what the app was actually
   // created as (the server row) — not the still-editable selector — so a post-start
   // switch can't drive the wrong finalize path. Before that, it's the user's choice.
-  const effTransport: 'socket' | 'http' = install
-    ? install.transport
-    : (transport ?? (relayAvailable ? 'http' : 'socket'))
+  const defaultTransport: 'socket' | 'http' = platform === 'slack' && relayAvailable ? 'http' : 'socket'
+  const effTransport: 'socket' | 'http' = install ? install.transport : (transport ?? defaultTransport)
   // The inline delivery toggle's switch action: pick the transport, and drop the
   // Slack shared opt-in when moving to socket (shared bots are http-only).
   const switchTransport = (next: 'socket' | 'http') => {
@@ -1933,8 +1933,8 @@ export default function AddIntegrationModal({
   }, [mode, platform, slackFunnel])
 
   // Feishu uses the same deployment capability probe, but has no Slack-specific
-  // auto-install funnel. A public callback address makes HTTP the effective default;
-  // otherwise the form stays on Long Connection.
+  // auto-install funnel. Long Connection remains the default; a public callback
+  // address makes HTTP available as an explicit choice.
   useEffect(() => {
     if (mode !== 'create' || platform !== 'feishu') return
     let alive = true

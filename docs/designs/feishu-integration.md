@@ -5,9 +5,9 @@
 > Feishu region (`open.feishu.cn`) and the international Lark region
 > (`open.larksuite.com`), selected per integration by a `region` field (see
 > section 10). Inbound delivery supports daemon-owned Long Connection and
-> relay-assisted HTTP callbacks. The Console prefers HTTP when public callback
-> delivery is available; outbound messages and attachment downloads remain on
-> the daemon in both modes.
+> relay-assisted HTTP callbacks. The Console defaults to Long Connection and
+> offers HTTP when public callback delivery is available; outbound messages and
+> attachment downloads remain on the daemon in both modes.
 >
 > Related documents:
 > [daemon-centric-architecture.md](daemon-centric-architecture.md),
@@ -69,10 +69,9 @@ See Feishu's "Receive events through WebSocket" documentation and the
 `WSClient` plus `EventDispatcher` implementation in
 [larksuite/node-sdk](https://github.com/larksuite/node-sdk).
 
-HTTP is the Console default when callback delivery is available. Long
-Connection remains the fallback and an explicit operator choice. HTTP transport
-does not imply a multi-agent bot: Feishu remains one bot to one agent in this
-phase.
+Long Connection is the Console default. HTTP becomes an explicit operator
+choice when callback delivery is available. HTTP transport does not imply a
+multi-agent bot: Feishu remains one bot to one agent in this phase.
 
 Feishu v1 differs from Discord v1 in only three important ways, expanded in
 section 7:
