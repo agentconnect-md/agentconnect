@@ -167,7 +167,7 @@ function CronRow({ c }: { c: CronDto }) {
   }
 
   return (
-    <div className={`row cursor-pointer ${GRID}`} onClick={() => router.push(orgPath(`/crons/${c.id}`))}>
+    <div className={`row click ${GRID}`} onClick={() => router.push(orgPath(`/crons/${c.id}`))}>
       <div className="min-w-0">
         <div
           className={`font-sans text-[13px] font-semibold leading-normal ${

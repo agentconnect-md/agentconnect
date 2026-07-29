@@ -191,7 +191,7 @@ export default function SessionsView() {
     [params, router, orgPath]
   )
 
-  const cols = 'grid-cols-[2.3fr_1.1fr_1.4fr_.9fr_.8fr_28px]'
+  const cols = 'grid-cols-[2.3fr_1.1fr_1.4fr_.9fr_.8fr_28px] gap-3'
 
   // ── Filter options — each carries a `face` (the design puts a per-option visual
   //    in both the dropdown button and its menu rows): agent marks, platform marks,
