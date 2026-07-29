@@ -54,6 +54,19 @@ export function isAuthConfigured(): boolean {
   return Boolean(endpoint && appId)
 }
 
+/**
+ * Logto-hosted account security page. It owns the sensitive verification flow
+ * for linking and unlinking social sign-in identities, then returns to the
+ * caller's Profile page.
+ */
+export function accountSecurityUrl(redirectUri: string): string | undefined {
+  const { endpoint, appId } = readConfig()
+  if (!endpoint || !appId) return undefined
+  const url = new URL('/account/security', endpoint)
+  url.searchParams.set('redirect', redirectUri)
+  return url.toString()
+}
+
 let client: LogtoClient | undefined
 
 /** Lazily build the LogtoClient (browser-only — touches window/localStorage). */
