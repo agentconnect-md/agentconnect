@@ -1,10 +1,12 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { KeyboardEvent, ReactNode } from 'react'
 import { GithubMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 
 export type WorkspaceMode = 'scratch' | 'github'
 export type WorkspaceRepoAccess = 'read' | 'write'
+type RepositoryMenuStyle = { left: number; top: number; width: number; maxHeight: number }
 
 export function WorkspaceModeField({
   value,
@@ -180,27 +182,36 @@ export function GithubRepositoryField({
   children: ReactNode
   note?: ReactNode
 }) {
-  const fieldRef = useRef<HTMLDivElement>(null)
-  const [menuLayout, setMenuLayout] = useState({ above: false, maxHeight: 340 })
+  const triggerRef = useRef<HTMLDivElement>(null)
+  const [menuStyle, setMenuStyle] = useState<RepositoryMenuStyle | null>(null)
 
   useLayoutEffect(() => {
     if (!open) return
-    const field = fieldRef.current
-    const clipRoot = field?.closest('.modalbody, .overflow-y-auto')
-    if (!field || !clipRoot) return
-
-    const fieldRect = field.getBoundingClientRect()
-    const clipRect = clipRoot.getBoundingClientRect()
-    const above = Math.max(0, fieldRect.top - clipRect.top - 5)
-    const below = Math.max(0, clipRect.bottom - fieldRect.bottom - 5)
-    const openAbove = above > below
-    setMenuLayout({ above: openAbove, maxHeight: Math.min(340, openAbove ? above : below) })
+    const rect = triggerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    setMenuStyle({
+      left: rect.left,
+      top: rect.bottom + 5,
+      width: rect.width,
+      maxHeight: Math.min(340, Math.max(0, window.innerHeight - rect.bottom - 13))
+    })
   }, [open])
 
+  useEffect(() => {
+    if (!open) return
+    const scrollRoot = triggerRef.current?.closest<HTMLElement>('.modalbody, .overflow-y-auto')
+    scrollRoot?.addEventListener('scroll', onClose)
+    window.addEventListener('resize', onClose)
+    return () => {
+      scrollRoot?.removeEventListener('scroll', onClose)
+      window.removeEventListener('resize', onClose)
+    }
+  }, [open, onClose])
+
   return (
-    <div ref={fieldRef} className="fld relative min-w-0">
+    <div className="fld relative min-w-0">
       <span className="fldlbl">GitHub repository</span>
-      <div className="inp min-w-0 cursor-pointer gap-2" title={value || undefined} onClick={onToggle}>
+      <div ref={triggerRef} className="inp min-w-0 cursor-pointer gap-2" title={value || undefined} onClick={onToggle}>
         <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
           {value ? (
             <>
@@ -230,39 +241,35 @@ export function GithubRepositoryField({
         </span>
         <Icon name="chevron-down" size={15} color="var(--text-tertiary)" />
       </div>
-      {open && (
-        <>
-          <div className="fscrim" onClick={onClose} />
-          <div
-            className={
-              menuLayout.above
-                ? 'fmenu bottom-[calc(100%+5px)] left-0 right-0 top-auto z-40 min-w-0 rounded-lg p-2 shadow-(--shadow-xl)'
-                : 'fmenu left-0 right-0 z-40 min-w-0 rounded-lg p-2 shadow-(--shadow-xl)'
-            }
-            style={{ maxHeight: menuLayout.maxHeight }}
-          >
-            <input
-              className="fsearch h-10 rounded-md px-3 font-sans text-[13px] font-medium leading-normal"
-              value={query}
-              onChange={(event) => onQueryChange(event.target.value)}
-              onKeyDown={onSearchKeyDown}
-              placeholder="Search or type owner/repo…"
-              autoFocus
-            />
-            {error && (
-              <div className="flex items-center gap-2 px-2 py-[7px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
-                <span className="min-w-0 flex-1">{error}</span>
-                {onRetry && (
-                  <button type="button" className="lnk flex-none text-[12px]" onClick={onRetry}>
-                    Retry
-                  </button>
-                )}
-              </div>
-            )}
-            {children}
-          </div>
-        </>
-      )}
+      {open &&
+        menuStyle &&
+        createPortal(
+          <>
+            <div className="fixed inset-0 z-[1090]" onClick={onClose} />
+            <div className="fmenu fixed z-[1100] min-w-0 rounded-lg p-2 shadow-(--shadow-xl)" style={menuStyle}>
+              <input
+                className="fsearch h-10 rounded-md px-3 font-sans text-[13px] font-medium leading-normal"
+                value={query}
+                onChange={(event) => onQueryChange(event.target.value)}
+                onKeyDown={onSearchKeyDown}
+                placeholder="Search or type owner/repo…"
+                autoFocus
+              />
+              {error && (
+                <div className="flex items-center gap-2 px-2 py-[7px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
+                  <span className="min-w-0 flex-1">{error}</span>
+                  {onRetry && (
+                    <button type="button" className="lnk flex-none text-[12px]" onClick={onRetry}>
+                      Retry
+                    </button>
+                  )}
+                </div>
+              )}
+              {children}
+            </div>
+          </>,
+          document.body
+        )}
       {note}
     </div>
   )
