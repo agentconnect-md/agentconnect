@@ -1789,15 +1789,21 @@ export class LocalStore {
    *  discard until it is reviewed, so it must not age out behind newer runs. */
   pendingSkillDreams(agentId: string, limit: number): DreamInfo[] {
     return (
-      this.db
-        .prepare(
-          'SELECT * FROM dreams WHERE agentId = ? AND skills IS NOT NULL ORDER BY createdAt DESC, dreamId DESC LIMIT 500'
-        )
-        .all(agentId) as Record<string, unknown>[]
+      (
+        this.db
+          .prepare(
+            `SELECT * FROM dreams WHERE agentId = ? AND skills LIKE '%"state":"proposed"%'
+             ORDER BY createdAt DESC, dreamId DESC LIMIT ?`
+          )
+          .all(agentId, limit) as Record<string, unknown>[]
+      )
+        // The LIKE is a cheap SUPERSET pre-filter pushed into the query so rows
+        // with no pending candidate (empty, or only accepted/dismissed) never
+        // consume the window — a bounded pre-scan filtered afterwards just moves
+        // the age-out boundary. The decode below is what actually decides.
+        .map((row) => this.dreamFromRow(row))
+        .filter((dream) => (dream.skills ?? []).some((skill) => skill.state === 'proposed'))
     )
-      .map((row) => this.dreamFromRow(row))
-      .filter((dream) => (dream.skills ?? []).some((skill) => skill.state === 'proposed'))
-      .slice(0, limit)
   }
 
   /** Non-terminal dreams — the boot-time crash-recovery sweep. */

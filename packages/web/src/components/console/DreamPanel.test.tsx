@@ -405,6 +405,45 @@ describe('DreamPanel', () => {
     expect(host.textContent).toContain('deploy-staging')
   })
 
+  it('never lets a delayed older refresh re-offer an already-reviewed candidate', async () => {
+    // The pending query resolves separately from the history page, so a slow
+    // request N can land after a newer N+1. If its result is written before the
+    // staleness fence, a candidate the user just reviewed comes back.
+    const stale = dream({
+      dreamId: 'drm-old',
+      status: 'adopted',
+      skills: [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
+    })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let releaseFirst!: (rows: unknown[]) => void
+    let pendingCall = 0
+    api.listDreams.mockImplementation(async (_a: string, _l: number, opts?: { pendingSkills?: boolean }) => {
+      if (!opts?.pendingSkills) return []
+      pendingCall += 1
+      // First pending request hangs; later ones report nothing pending.
+      if (pendingCall === 1) return new Promise((resolve) => (releaseFirst = resolve as typeof releaseFirst))
+      return []
+    })
+
+    const host = await render()
+    // A newer refresh completes first and publishes "nothing pending".
+    await act(async () => {
+      vi.advanceTimersByTime(30_000)
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    // Now the ORIGINAL request finally resolves with the stale candidate.
+    await act(async () => {
+      releaseFirst([stale])
+      await Promise.resolve()
+    })
+
+    expect(host.textContent).not.toContain('Suggested skills')
+    expect(host.textContent).not.toContain('deploy-staging')
+    vi.useRealTimers()
+  })
+
   it('keeps Accept disabled while the body is loading, and on error or missing staging', async () => {
     const skills = [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
     api.listDreams.mockResolvedValue([dream({ skills })])

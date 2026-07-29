@@ -138,8 +138,10 @@ export function DreamPanel({
         listDreams(agentId, DREAM_PAGE),
         listDreams(agentId, DREAM_PAGE, { pendingSkills: true }).catch(() => [] as DreamDto[])
       ])
-      setPendingSkillDreams(pending)
+      // EVERY state write goes behind the fence: a delayed older request must not
+      // publish after a newer one and re-offer an already-reviewed candidate.
       if (request !== listRequest.current) return
+      setPendingSkillDreams(pending)
       setDreams(rows)
       setListError(null)
       setUnsupported(false)

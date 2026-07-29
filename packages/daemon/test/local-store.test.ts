@@ -1009,4 +1009,38 @@ describe('LocalStore runtime model-catalog cache (runtime-model-catalog.md §4)'
     expect(s.listRuntimeModelCaps().map((c) => c.runtimeId)).toEqual(['fresh-rt'])
     s.close()
   })
+
+  it('finds a pending skill proposal behind many skill-bearing dreams', () => {
+    // The proposed filter must be IN the query: rows whose candidates are all
+    // accepted/dismissed (or empty) must not consume the scan window, or one
+    // genuinely pending older proposal ages out permanently.
+    const s = store()
+    const base = {
+      agentId: 'a1',
+      status: 'adopted' as const,
+      trigger: 'manual' as const,
+      sessionIds: [],
+      snapshotDigest: 'sha256:x'
+    }
+    // The pending one is the OLDEST.
+    s.insertDream({
+      ...base,
+      dreamId: 'drm-pending',
+      createdAt: '2020-01-01T00:00:00.000Z',
+      skills: [{ name: 'deploy-staging', description: 'd', state: 'proposed' }]
+    })
+    // …buried behind 600 newer dreams that all carry skills, none pending.
+    for (let i = 0; i < 600; i++) {
+      s.insertDream({
+        ...base,
+        dreamId: `drm-${i}`,
+        createdAt: `2026-01-01T00:00:${String(i % 60).padStart(2, '0')}.000Z`,
+        skills: [{ name: `done-${i}`, description: 'd', state: i % 2 ? 'accepted' : 'dismissed' }]
+      })
+    }
+
+    const pending = s.pendingSkillDreams('a1', 50)
+    expect(pending.map((d) => d.dreamId)).toEqual(['drm-pending'])
+    s.close()
+  })
 })
