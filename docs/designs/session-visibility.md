@@ -2,10 +2,12 @@
 
 > **Status:** Proposed. Nothing in this document is implemented yet.
 >
-> **Scope:** protocol + control-plane + web. The daemon changes are limited to
-> reporting one extra field on the existing `event/session` telemetry frame;
-> the execution data plane is otherwise unaffected. Sharing is enforced only on
-> Console/BFF read paths — it never crosses the daemon wire, consistent with
+> **Scope:** protocol + control-plane + daemon + web. Daemon changes: three
+> optional fields on the existing `event/session` telemetry frame (§4.1), a
+> memory-capture gate driven by local origin plus a CP-pushed per-session
+> privacy bit (§5.1), and a privacy flag on A2A delegation commands. Console
+> authorization itself is enforced only on CP/BFF read paths; live platform
+> messages and ACP update streams never carry visibility, consistent with
 > [resource-visibility.md](resource-visibility.md).
 
 ## 1. Background and goals
@@ -56,10 +58,16 @@ The IM form carries a **workspace/tenant segment** from day one: platform uids
 are only unique per tenant (Slack team, Feishu tenant, Telegram bot scope), and
 one org can connect multiple workspaces of the same platform, so a two-segment
 `slack:<uid>` form would allow same-org identity collisions. The workspace
-value is the tenant identifier the integration already stores (Slack team id,
-Feishu tenant key); for a platform surface with no tenant concept in DMs
-(e.g. Discord DMs have no guild), use the integration id. Identity linking
-(§7) stores and matches the same three-part tuple.
+value is **carried on the wire by the daemon** — the daemon already maintains
+a physical transport scope per platform connection, and `EventSession` gains a
+`transportScope` field (§4.1) that the CP persists verbatim into
+`ownerIdentity`. The CP never reconstructs the scope from `platform` +
+`channel` (ambiguous when an org connects multiple bots/workspaces), and the
+design does not assume every adapter's integration record stores a usable
+tenant key (Feishu's, for example, is not exposed the same way). A milestone
+arriving **without** `transportScope` records no IM owner (`null`, fail
+closed per §4.2) rather than a guessed one. Identity linking (§7) stores and
+matches the same three-part tuple.
 
 Matching is set membership: at request time the BFF computes the viewer's
 **identity set** — today just `{ user:<userId> }`, later expanded with the
@@ -89,12 +97,22 @@ enum SessionVisibility {
 }
 ```
 
-Three new columns on `SessionMeta`:
+New columns on `SessionMeta`:
 
 ```prisma
-orgId         String            // denormalized from agent.orgId at ingest
-visibility    SessionVisibility @default(org)
-ownerIdentity String?           // §2 format; null for automation/legacy rows
+orgId            String            // denormalized from agent.orgId at ingest
+visibility       SessionVisibility @default(org)
+ownerIdentity    String?           // §2 format; null for automation/legacy rows
+visibilitySource VisibilitySource  @default(default)
+```
+
+```prisma
+enum VisibilitySource {
+  default           // classified by the §4.2 rules
+  inherited_pending // A2A child awaiting parent resolution (§4.5)
+  inherited         // settled from (or cascaded by) its parent
+  explicit          // set by a human via §4.3 — never auto-overwritten
+}
 ```
 
 - `orgId` is denormalized so the list predicate and its index do not join
@@ -113,12 +131,14 @@ Visibility tightening applies to **new sessions only**.
 
 ## 4. Classifying sessions at ingest
 
-### 4.1 Protocol: one new field
+### 4.1 Protocol: new telemetry fields
 
-`EventSession` (`packages/protocol/src/frames/telemetry.ts`) gains:
+`EventSession` (`packages/protocol/src/frames/telemetry.ts`) gains three
+optional fields:
 
 ```ts
 conversationKind?: 'dm' | 'group_dm' | 'channel'
+transportScope?: string // trusted workspace/tenant scope for ownerIdentity, §2
 launchCorrelationId?: string // Web API launch provenance, §4.4
 ```
 
@@ -127,8 +147,10 @@ The daemon already knows this (`NormalizedMessage.isDm` / `isGroupDm`,
 never reaches the CP. The `thread === 'dm'` heuristic and an
 `IntegrationChannel.kind` join were both considered and rejected: the former is
 platform-inconsistent, the latter does not cover webhook/generic ingress and
-moves a write-time fact to read time. Optional field ⇒ old daemons remain
-compatible (absent = `channel` behavior, i.e. `org`).
+moves a write-time fact to read time. All three fields are optional ⇒ old
+daemons remain compatible (absent `conversationKind` = `channel` behavior,
+i.e. `org`; absent `transportScope`/`launchCorrelationId` = no owner, fail
+closed).
 
 ### 4.2 Default rules
 
@@ -169,10 +191,8 @@ Notes:
   Playground session copies the delegated prompt into the child transcript;
   classifying children `org` would expose that to every viewer of the target
   agent. The child takes the parent's `visibility` + `ownerIdentity` at
-  ingest. `parentSessionId` has no FK and cross-daemon ordering means the
-  parent row may not exist yet — in that case the child is classified
-  `private`/`null` (fail closed) and re-reconciled when the parent's milestone
-  lands.
+  ingest; §4.5 defines the durable reconciliation semantics for out-of-order
+  arrival and later parent changes.
 
 ### 4.3 Changing visibility after the fact
 
@@ -183,6 +203,38 @@ sessions. This is the escape hatch for both directions: publishing a useful DM
 transcript to the org, or pulling a channel/group-DM session private (its
 recorded initiator — once identity linking makes them matchable — or an org
 owner).
+
+An explicit change sets `visibilitySource = 'explicit'`, which pins the row
+against any later automatic reclassification (§4.5). **Tightening cascades to
+descendants** (§4.5); the CP also notifies the owning daemon of the new
+effective state (§5.1). The response/UI must surface the memory caveat from
+§5.1: tightening stops future capture but does not scrub what agent memory
+already distilled while the session was org-visible.
+
+### 4.5 A2A inheritance: durable reconciliation semantics
+
+Inheritance must survive out-of-order arrival and later human changes without
+ever silently overwriting one with the other. `visibilitySource` (§3) is the
+state marker:
+
+- **Out-of-order child.** A child milestone whose parent row does not exist
+  yet is classified `private` + `ownerIdentity = null` with
+  `visibilitySource = 'inherited_pending'`. When the parent's milestone lands,
+  the CP performs a **conditional one-time settlement**: copy the parent's
+  `visibility` + `ownerIdentity` onto the child **iff** the child is still
+  `inherited_pending` (compare-and-set on the source column), then mark it
+  `inherited`. A child that an org owner has meanwhile re-classified is
+  `explicit` and the settlement is a no-op — reconciliation never overwrites
+  a human decision.
+- **Parent tightened later (`org` → `private`).** The child contains content
+  copied from the parent, so leaving it org-visible would defeat the change.
+  Tightening a session **cascades to all its descendants** (transitively,
+  via `parentSessionId`), including `explicit` ones — privacy tightening wins
+  over an earlier widening decision, matching the fail-closed rule of §4.2.
+  Cascaded rows get the parent's owner and `visibilitySource = 'inherited'`.
+- **Parent widened later (`private` → `org`).** Never cascades. Each
+  descendant stays as classified; widening a child remains a per-session §4.3
+  decision by its owner or an org owner.
 
 ### 4.4 Web API launch provenance
 
@@ -227,9 +279,11 @@ session predicate:
 
 Invariants preserved:
 
-- The daemon wire is unaffected: internal reads keep the deliberate
-  fail-open (`visibilityWhere(undefined)` semantics) — visibility is a Console
-  concern, never an execution-plane concern.
+- Console **authorization** stays a CP concern: internal/daemon read paths
+  keep the deliberate fail-open (`visibilityWhere(undefined)` semantics), and
+  no message content ever flows because of visibility. The one daemon-facing
+  addition is the §5.1 privacy bit pushed over the WS control channel — a
+  capture gate, not an authorization check the daemon performs for readers.
 - 404, never 403, for invisible sessions (no existence oracle).
 - A `?triggeredBy=` / `?channel=` query filter remains a filter, not an
   authorization boundary; the predicate is applied regardless.
@@ -242,15 +296,38 @@ distilled into agent memory (including by dream sessions) and later surface —
 via memory reads or recall in someone else's session — to any user who can
 view the agent, bypassing every gate in the table above.
 
-Mitigation is **daemon-local**, preserving the invariant that CP visibility
-never crosses the wire: the daemon already knows a turn's origin without any
-CP round-trip (`isDm`, `platform === 'webchat'`, the §4.4 launch correlation).
-By default it must **exclude private-origin turns from agent-scoped memory
-capture** (dream distillation included). Per-owner memory namespaces are a
-possible future relaxation, but exclusion is the shipping requirement — the
-`private` tier's guarantee is dishonest without it. If exclusion is deferred,
-the product docs must explicitly narrow the guarantee ("private hides the
-transcript, not what the agent learned from it"); silence is not an option.
+Origin inference alone cannot carry this: once §4.3 exists, **origin is not
+effective visibility** — a channel session pulled `private` still looks like a
+channel to the daemon, and a cross-daemon A2A child cannot infer its inherited
+privacy from `isDm`/webchat/launch-correlation at all. The gate therefore has
+two layers:
+
+1. **Daemon-local initial state.** For turns the daemon can classify itself
+   (`isDm`, `platform === 'webchat'`, §4.4 launch correlation) memory capture
+   is excluded from the first turn, with no CP round-trip. For an A2A child,
+   the delegation command carries the parent session's current privacy flag,
+   so a private parent's children start excluded even across daemons; a
+   delegation whose parent flag is unavailable starts excluded (fail closed).
+2. **CP-pushed effective state.** The CP is the authority on effective
+   visibility (§4.3 changes, §4.5 settlements and cascades). On every change
+   it sends a `session/visibility` control frame over the existing daemon WS
+   to the owning daemon (and to daemons running affected descendants), and
+   the daemon updates its local capture gate. This is control signaling — the
+   channel's stated purpose — and carries a single privacy bit per session,
+   not message content.
+
+**Already-captured memory is not scrubbed.** Distilled memory cannot be
+reliably attributed back to source turns, so tightening a session stops
+_future_ capture but does not retract what was distilled while it was
+org-visible. This is a stated product caveat, surfaced in the §4.3 flow —
+the guarantee is "private stops the transcript and stops feeding shared
+memory from the moment of tightening", not retroactive amnesia.
+
+Per-owner memory namespaces are a possible future relaxation, but the
+exclusion gate is the shipping requirement — the `private` tier's guarantee
+is dishonest without it. If it is deferred, the product docs must explicitly
+narrow the guarantee ("private hides the transcript, not what the agent
+learned from it"); silence is not an option.
 
 ## 6. Web console
 
@@ -287,8 +364,10 @@ link ends public access without touching the session row.
 - **Unit (`test:unit`):** `canViewSession` truth table (role × visibility ×
   identity match × orphan owner); ingest classification table from §4.2,
   including every fail-closed path (webchat lookup miss, unresolved launch
-  correlation, unresolved parent) and absent `conversationKind`; child
-  inheritance + reconciliation when the parent milestone arrives late.
+  correlation, unresolved parent, missing `transportScope`) and absent
+  `conversationKind`; the §4.5 state machine — pending settlement is
+  one-time and conditional (never overwrites `explicit`), tightening
+  cascades transitively, widening never cascades.
 - **Integration (`test:int`):** list/detail/SSE visibility for a two-member
   org (owner sees all; collaborator sees own private + org sessions only);
   SSE assertion that **neither** `event/session` nor `event/session-activity`
