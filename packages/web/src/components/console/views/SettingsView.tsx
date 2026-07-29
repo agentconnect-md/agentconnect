@@ -770,8 +770,8 @@ function BotsCard({
                       <span
                         key={id}
                         title={ag ? agentLabel(ag) : id}
-                        className={`av h-[22px] w-[22px] rounded-[6px] border-2 border-(--surface-card) ${
-                          idx > 0 ? '-ml-[6px]' : ''
+                        className={`av h-[22px] w-[22px] rounded-[6px] ${
+                          idx > 0 ? '-ml-[6px] shadow-[-1px_0_0_0_var(--surface-card)]' : ''
                         }`}
                       >
                         <AgentIconView icon={ag?.icon} runtime={ag?.runtime || ag?.model || ''} size={22} />

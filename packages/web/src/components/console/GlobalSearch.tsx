@@ -64,6 +64,12 @@ export function GlobalSearch({
   const [sel, setSel] = useState(0)
   const [activeType, setActiveType] = useState<TypeFilter>('all')
   const inputRef = useRef<HTMLInputElement>(null)
+  // Shortcut hint: ⌘K on macOS, Ctrl K elsewhere. Detected post-mount so SSR
+  // (which has no `navigator`) hydrates cleanly, then flips if on Windows/Linux.
+  const [isMac, setIsMac] = useState(true)
+  useEffect(() => {
+    setIsMac(/Mac|iP(hone|ad|od)/.test(navigator.platform || navigator.userAgent))
+  }, [])
 
   const query = q.trim().toLowerCase()
 
@@ -438,7 +444,11 @@ export function GlobalSearch({
           onKeyDown={onKeyDown}
           onFocus={() => setOpen(true)}
         />
-        {!open && <span className="kbd">⌘K</span>}
+        {!open && (
+          <span className="kbd inline-flex items-center gap-[2px]">
+            {isMac ? <Icon name="command" size={11} strokeWidth={1.5} /> : 'Ctrl'}K
+          </span>
+        )}
         {open && q !== '' && (
           <button
             onClick={() => {
