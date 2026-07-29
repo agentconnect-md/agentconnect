@@ -1860,7 +1860,10 @@ export interface BotRepo {
   setSlackAppIdIfMissing(id: BotId, slackAppId: string): Promise<boolean>
   /** Stamp the freed-bot display hints when its LAST integration is removed. */
   markFreed(id: BotId, at: Date, lastAgentName: string | null): Promise<void>
-  /** Flip the shared-bot (multi-agent) opt-in (console toggle). */
+  /** Flip the shared-bot (multi-agent) opt-in (console toggle). Serialized on the
+   *  bot row with {@link IntegrationRepo.addBotMembership}; disabling recounts the
+   *  ACTIVE installs under that lock and throws `BotStillShared` when >1 remain,
+   *  so a concurrent admission can never slip past the route's optimistic check. */
   setShareable(id: BotId, shareable: boolean): Promise<void>
   /** Every http-transport bot with ≥1 active integration, across all orgs — the
    *  shared-bot orchestrator's convergence worklist (relay register / failover). */
@@ -2304,6 +2307,16 @@ export interface IntegrationRecord {
 
 export interface IntegrationRepo {
   create(input: CreateIntegrationInput): Promise<IntegrationRecord>
+  /**
+   * Atomic bot-membership admission (the platform "Add to Slack" re-install,
+   * preset-agents.md §5.5): locks the bot row, re-reads `shareable` and the
+   * ACTIVE membership set inside the SAME transaction as the insert, and admits
+   * at most one active row per (bot, agent) — `'exists'` is the idempotent
+   * success for a duplicate concurrent callback, `'not_shareable'` the §5.5
+   * refusal (another agent holds a non-shared bot). Serialized with
+   * {@link BotRepo.setShareable} on the same lock.
+   */
+  addBotMembership(input: CreateIntegrationInput): Promise<'added' | 'exists' | 'not_shareable'>
   get(id: IntegrationId): Promise<IntegrationRecord | null>
   /** Every integration in the org. When a `viewer` is supplied, integrations whose
    *  parent agent is restricted-away from them are filtered out (derived visibility,

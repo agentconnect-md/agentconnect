@@ -413,6 +413,90 @@ describe('GET /integrations/slack/platform/callback', () => {
     expect(widened.map((i) => i.agentId).sort()).toEqual([first, other].sort())
   })
 
+  // Blocker regression (review #196): two concurrent callbacks targeting the SAME
+  // new agent must admit exactly one membership. addBotMembership serializes on
+  // the bot row and treats the loser's 'exists' as success, so any interleaving
+  // yields one active row and two completed installs.
+  it('concurrent duplicate callbacks admit exactly one membership (idempotent per bot+agent)', async () => {
+    const { app } = withPlatform()
+    const first = randomUUID()
+    await seedAgent(prisma, first)
+    const started = await startInstall(app, first)
+    await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c1&state=${started.id}`
+    })
+    const bot = await prisma.bot.findFirstOrThrow({ where: { slackAppId: PLATFORM.appId } })
+    await prisma.bot.update({ where: { id: bot.id }, data: { shareable: true } })
+
+    const other = randomUUID()
+    await seedAgent(prisma, other)
+    const [a, b] = await Promise.all([startInstall(app, other), startInstall(app, other)])
+    await Promise.all([
+      app.app.inject({ method: 'GET', url: `/api/v1/integrations/slack/platform/callback?code=ca&state=${a.id}` }),
+      app.app.inject({ method: 'GET', url: `/api/v1/integrations/slack/platform/callback?code=cb&state=${b.id}` })
+    ])
+
+    expect((await status(app, a.id)).json()).toMatchObject({ status: 'completed', botId: bot.id })
+    expect((await status(app, b.id)).json()).toMatchObject({ status: 'completed', botId: bot.id })
+    // Exactly ONE active membership for the new agent — no duplicate rows/specs.
+    expect(await prisma.integration.count({ where: { botId: bot.id, agentId: other, status: 'active' } })).toBe(1)
+  })
+
+  // Blocker regression (review #196): a sharing DISABLE serializes with membership
+  // admission on the bot row. Here the admission holds the lock and commits a 2nd
+  // member; the concurrent disable — whose optimistic pre-check saw only one —
+  // must recount under the lock and refuse, never committing shareable=false
+  // alongside a two-agent membership.
+  it('a sharing disable cannot race a concurrent admission into a non-shareable multi-agent bot', async () => {
+    const { app } = withPlatform()
+    const first = randomUUID()
+    await seedAgent(prisma, first)
+    const started = await startInstall(app, first)
+    await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c1&state=${started.id}`
+    })
+    const bot = await prisma.bot.findFirstOrThrow({ where: { slackAppId: PLATFORM.appId } })
+    await prisma.bot.update({ where: { id: bot.id }, data: { shareable: true } })
+    const other = randomUUID()
+    await seedAgent(prisma, other)
+
+    // The admission side: take the bot-row lock (as addBotMembership does), hold it
+    // while the toggle runs into it, then commit the second membership.
+    let admit!: () => void
+    const gate = new Promise<void>((resolve) => (admit = resolve))
+    const admission = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM bot WHERE id = ${bot.id} FOR UPDATE`
+      await gate
+      await tx.integration.create({
+        data: {
+          id: randomUUID(),
+          orgId: DEFAULT_ORG_ID,
+          agentId: other,
+          botId: bot.id,
+          platform: 'slack',
+          name: bot.name
+        }
+      })
+    })
+    // The toggle: its optimistic pre-check reads ONE member (the review's stale
+    // snapshot), then blocks on the row lock inside setShareable.
+    const toggle = app.app.inject({ method: 'PATCH', url: `${ORG}/bots/${bot.id}`, payload: { shareable: false } })
+    await new Promise((resolve) => setTimeout(resolve, 150)) // let the toggle reach the lock
+    admit()
+    await admission
+    const res = await toggle
+
+    // Whichever side the scheduler ran first, the invariant holds: the disable is
+    // refused and the bot stays shareable with both members intact.
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).toMatch(/shared by multiple agents/)
+    const after = await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })
+    expect(after.shareable).toBe(true)
+    expect(await prisma.integration.count({ where: { botId: bot.id, status: 'active' } })).toBe(2)
+  })
+
   it('rejects an exchange for the wrong app or a missing team id', async () => {
     const { app, stub } = withPlatform()
     const agentId = randomUUID()

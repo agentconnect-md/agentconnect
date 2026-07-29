@@ -11,7 +11,8 @@
  */
 import type { Platform, FeishuRegion } from '@agentconnect.md/protocol'
 import type { Bot, Integration, IntegrationChannel, User } from '../../generated/prisma/client.js'
-import type { PrismaLike } from '../prisma.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
+import { BotStillShared } from '../errors.js'
 import type {
   BotRepo,
   BotRecord,
@@ -137,7 +138,19 @@ export class PgBotRepo implements BotRepo {
   }
 
   async setShareable(id: BotId, shareable: boolean): Promise<void> {
-    await this.db.bot.update({ where: { id }, data: { shareable } })
+    // Serialized on the bot row: membership admission (addBotMembership) takes
+    // the same lock, so a disable can never commit alongside a concurrent
+    // second-agent admission — whichever wins, the loser observes the winner's
+    // committed state. The capacity recount lives HERE (not only in the route's
+    // optimistic pre-check) because only under the lock is it authoritative.
+    await withAmbientTx(this.db, async (tx) => {
+      await tx.$queryRaw`SELECT id FROM bot WHERE id = ${id} FOR UPDATE`
+      if (!shareable) {
+        const active = await tx.integration.count({ where: { botId: id, status: 'active' } })
+        if (active > 1) throw new BotStillShared(active)
+      }
+      await tx.bot.update({ where: { id }, data: { shareable } })
+    })
   }
 
   async listHttpActive(): Promise<BotRecord[]> {
@@ -263,6 +276,43 @@ export class PgIntegrationRepo implements IntegrationRepo {
       }
     })
     return toRecord(i)
+  }
+
+  async addBotMembership(input: CreateIntegrationInput): Promise<'added' | 'exists' | 'not_shareable'> {
+    // Atomic bot-membership admission (the platform "Add to Slack" re-install):
+    // the bot row is LOCKED, so `shareable` and the active membership set read
+    // below are stable through the insert — a concurrent sharing toggle
+    // (setShareable takes the same lock) or a concurrent duplicate callback
+    // serializes here instead of racing an earlier snapshot of the handler.
+    return await withAmbientTx(this.db, async (tx) => {
+      const locked = await tx.$queryRaw<
+        { shareable: boolean }[]
+      >`SELECT shareable FROM bot WHERE id = ${input.botId} FOR UPDATE`
+      // Bot vanished mid-flight (uninstall race) — nothing to admit onto; the
+      // caller's failure page is close enough for this exotic window.
+      if (!locked[0]) return 'not_shareable'
+      const active = await tx.integration.findMany({
+        where: { botId: input.botId, status: 'active' },
+        select: { agentId: true }
+      })
+      // Idempotent per (bot, agent): the loser of two concurrent same-agent
+      // callbacks lands here and reports success without a second row.
+      if (active.some((i) => i.agentId === input.agentId)) return 'exists'
+      if (active.length > 0 && !locked[0].shareable) return 'not_shareable'
+      await tx.integration.create({
+        data: {
+          id: input.id,
+          orgId: input.orgId,
+          agentId: input.agentId,
+          botId: input.botId,
+          platform: toDbPlatform(input.platform),
+          name: input.name,
+          ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {}),
+          ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
+        }
+      })
+      return 'added'
+    })
   }
 
   async get(id: IntegrationId): Promise<IntegrationRecord | null> {
