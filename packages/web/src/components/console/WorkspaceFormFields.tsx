@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef, useState } from 'react'
 import type { KeyboardEvent, ReactNode } from 'react'
 import { GithubMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -179,8 +180,25 @@ export function GithubRepositoryField({
   children: ReactNode
   note?: ReactNode
 }) {
+  const fieldRef = useRef<HTMLDivElement>(null)
+  const [menuLayout, setMenuLayout] = useState({ above: false, maxHeight: 340 })
+
+  useLayoutEffect(() => {
+    if (!open) return
+    const field = fieldRef.current
+    const clipRoot = field?.closest('.modalbody, .overflow-y-auto')
+    if (!field || !clipRoot) return
+
+    const fieldRect = field.getBoundingClientRect()
+    const clipRect = clipRoot.getBoundingClientRect()
+    const above = Math.max(0, fieldRect.top - clipRect.top - 5)
+    const below = Math.max(0, clipRect.bottom - fieldRect.bottom - 5)
+    const openAbove = above > below
+    setMenuLayout({ above: openAbove, maxHeight: Math.min(340, openAbove ? above : below) })
+  }, [open])
+
   return (
-    <div className="fld relative min-w-0">
+    <div ref={fieldRef} className="fld relative min-w-0">
       <span className="fldlbl">GitHub repository</span>
       <div className="inp min-w-0 cursor-pointer gap-2" title={value || undefined} onClick={onToggle}>
         <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
@@ -215,7 +233,14 @@ export function GithubRepositoryField({
       {open && (
         <>
           <div className="fscrim" onClick={onClose} />
-          <div className="fmenu left-0 right-0 z-40 min-w-0 rounded-lg p-2 shadow-(--shadow-xl)">
+          <div
+            className={
+              menuLayout.above
+                ? 'fmenu bottom-[calc(100%+5px)] left-0 right-0 top-auto z-40 min-w-0 rounded-lg p-2 shadow-(--shadow-xl)'
+                : 'fmenu left-0 right-0 z-40 min-w-0 rounded-lg p-2 shadow-(--shadow-xl)'
+            }
+            style={{ maxHeight: menuLayout.maxHeight }}
+          >
             <input
               className="fsearch h-10 rounded-md px-3 font-sans text-[13px] font-medium leading-normal"
               value={query}
