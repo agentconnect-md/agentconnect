@@ -320,7 +320,7 @@ proposes the actual next step. Each todo item carries two CTAs: a console deep l
 and "Ask Assistant" (Playground with a prefilled intent). The two surfaces can never
 disagree because neither owns the state.
 
-### 6.4 Admin agent prompt hook
+### 6.4 Assistant prompt hook
 
 The assistant's immutable prompt instructs: fetch `getOnboardingStatus` at session
 start, lead with the single most valuable incomplete step, and perform setup only
@@ -348,9 +348,11 @@ through MCP tools with their existing confirm-gates.
   `POST /agents` (§3.2), never a raw repo write.
 - **Reserved slugs** prevent impersonating built-ins (§3.3).
 - **No IM surface** for the assistant until identity binding exists (§4).
-- **Auditability**: provisioning emits an audit row carrying the triggering user;
-  every assistant write logs through the MCP operation log with the acting user's
-  identity.
+- **Auditability**, per path: org-creation provisioning records the creating user
+  as actor; the backfill records a system actor (no user performed it);
+  auto-placement records a system actor with the daemon and affected agents
+  (§3.2); manual placement records the placing user. Every assistant write logs
+  through the MCP operation log with the acting user's identity.
 
 ## 8. Phasing
 
