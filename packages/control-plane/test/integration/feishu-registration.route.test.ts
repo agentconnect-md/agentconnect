@@ -504,7 +504,7 @@ describe('Feishu/Lark one-click app registration', () => {
     const bot = await prisma.bot.findFirstOrThrow({ where: { feishuAppId: 'cli_http_oneclick' } })
     const secret = await prisma.botSecret.findUniqueOrThrow({ where: { botId: bot.id } })
     expect(bot).toMatchObject({ transport: 'http', botUserId: 'ou_http_bot' })
-    expect(secret.verificationToken).toHaveLength(48)
+    expect(secret.verificationToken).toHaveLength(32)
     expect(secret.encryptKey).toHaveLength(32)
     expect(configureFeishuHttpApp).toHaveBeenCalledWith({
       appId: 'cli_http_oneclick',

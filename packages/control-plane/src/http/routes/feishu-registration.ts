@@ -211,7 +211,10 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
             }
             const existingSecret =
               registration.transport === 'http' ? await deps.repos.botSecret.get(registration.botId) : null
-            const verificationToken = existingSecret?.verificationToken || randomBytes(24).toString('hex')
+            const verificationToken =
+              existingSecret?.verificationToken && existingSecret.verificationToken.length <= 32
+                ? existingSecret.verificationToken
+                : randomBytes(16).toString('hex')
             const encryptKey = existingSecret?.encryptKey || randomBytes(16).toString('hex')
             await installNewFeishuBot(deps, app.log, {
               orgId: registration.orgId,
