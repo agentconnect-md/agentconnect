@@ -278,28 +278,29 @@ export class PgIntegrationRepo implements IntegrationRepo {
     return toRecord(i)
   }
 
-  async addBotMembership(input: CreateIntegrationInput): Promise<'added' | 'exists' | 'not_shareable'> {
-    // Atomic bot-membership admission (the platform "Add to Slack" re-install):
-    // the bot row is LOCKED, so `shareable` and the active membership set read
-    // below are stable through the insert — a concurrent sharing toggle
-    // (setShareable takes the same lock) or a concurrent duplicate callback
-    // serializes here instead of racing an earlier snapshot of the handler.
+  async addBotMembership(
+    input: CreateIntegrationInput
+  ): Promise<{ outcome: 'added' | 'exists'; integration: IntegrationRecord } | { outcome: 'not_shareable' }> {
+    // Atomic bot-membership admission (the platform "Add to Slack" re-install
+    // AND the generic reuse path): the bot row is LOCKED, so `shareable` and the
+    // active membership set read below are stable through the insert — a
+    // concurrent sharing toggle (setShareable takes the same lock) or a
+    // concurrent duplicate admission serializes here instead of racing an
+    // earlier snapshot of the handler.
     return await withAmbientTx(this.db, async (tx) => {
       const locked = await tx.$queryRaw<
         { shareable: boolean }[]
       >`SELECT shareable FROM bot WHERE id = ${input.botId} FOR UPDATE`
       // Bot vanished mid-flight (uninstall race) — nothing to admit onto; the
-      // caller's failure page is close enough for this exotic window.
-      if (!locked[0]) return 'not_shareable'
-      const active = await tx.integration.findMany({
-        where: { botId: input.botId, status: 'active' },
-        select: { agentId: true }
-      })
+      // caller's refusal path is close enough for this exotic window.
+      if (!locked[0]) return { outcome: 'not_shareable' as const }
+      const active = await tx.integration.findMany({ where: { botId: input.botId, status: 'active' } })
       // Idempotent per (bot, agent): the loser of two concurrent same-agent
-      // callbacks lands here and reports success without a second row.
-      if (active.some((i) => i.agentId === input.agentId)) return 'exists'
-      if (active.length > 0 && !locked[0].shareable) return 'not_shareable'
-      await tx.integration.create({
+      // admissions lands here and reports the winner's row as success.
+      const mine = active.find((i) => i.agentId === input.agentId)
+      if (mine) return { outcome: 'exists' as const, integration: toRecord(mine) }
+      if (active.length > 0 && !locked[0].shareable) return { outcome: 'not_shareable' as const }
+      const created = await tx.integration.create({
         data: {
           id: input.id,
           orgId: input.orgId,
@@ -311,7 +312,7 @@ export class PgIntegrationRepo implements IntegrationRepo {
           ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
         }
       })
-      return 'added'
+      return { outcome: 'added' as const, integration: toRecord(created) }
     })
   }
 

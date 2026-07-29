@@ -285,7 +285,13 @@ export function integrationRoutes(deps: HttpDeps) {
               const shareableErr = await validateShareableInstall(bot, agent.id, req.body.platform)
               if (shareableErr) return reply.code(shareableErr.code).send(shareableErr.body)
               if (!bot.shareable) await deps.repos.bot.setShareable(bot.id, true)
-              const integration = await deps.repos.integration.create({
+              // Membership admission is ATOMIC with the bot row — the same
+              // primitive as the platform callback. The checks above are the
+              // optimistic UX layer; only under the lock are `shareable` and the
+              // membership set authoritative, so a concurrent sharing disable or
+              // a duplicate reuse serializes there instead of racing this
+              // handler's snapshots ('exists' = the winner's row, idempotent 201).
+              const admission = await deps.repos.integration.addBotMembership({
                 id: IntegrationId(randomUUID()),
                 orgId,
                 agentId: agent.id,
@@ -297,10 +303,17 @@ export function integrationRoutes(deps: HttpDeps) {
                 ...(bot.feishuRegion ? { feishuRegion: bot.feishuRegion } : {}),
                 ...(req.principal ? { createdByUserId: req.principal.userId } : {})
               })
+              if (admission.outcome === 'not_shareable') {
+                return reply.code(409).send({
+                  error: 'Conflict',
+                  statusCode: 409,
+                  message: 'bot sharing was just disabled; refresh and retry the integration change'
+                })
+              }
               // Relay owns the ingest — (re)assign the bot + push send-only specs to
               // every member daemon (including any that were direct before promotion).
               await deps.httpBot.syncBot(bot.id)
-              return reply.code(201).send(toDto(integration))
+              return reply.code(201).send(toDto(admission.integration))
             }
             // Classic reuse: 1 bot : ≤1 install.
             if (bot.inUseByAgentId) {

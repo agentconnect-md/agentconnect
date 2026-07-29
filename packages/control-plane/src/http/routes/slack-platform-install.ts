@@ -272,7 +272,7 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
             name: existing.name,
             ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {})
           })
-          if (admission === 'not_shareable') {
+          if (admission.outcome === 'not_shareable') {
             // The platform bot installs NON-shareable: one workspace install
             // serves exactly one agent, so a re-install aimed at a DIFFERENT
             // agent cannot just add a second row (that is the cap the classic
