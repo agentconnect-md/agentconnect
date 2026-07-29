@@ -151,7 +151,7 @@ export function slackInstallRoutes(deps: HttpDeps) {
         // manual paste. http requires a connected relay to receive the POSTs.
         const transport = req.body.transport ?? 'socket'
         const httpBase = transport === 'http' ? (relayHttpBase(deps.config.PUBLIC_RELAY_URL) ?? undefined) : undefined
-        if (transport === 'http' && (!httpBase || !deps.sharedBot.hasConnectedRelay())) {
+        if (transport === 'http' && (!httpBase || !deps.httpBot.hasConnectedRelay())) {
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,
@@ -453,7 +453,7 @@ export function slackConfigRoutes(deps: HttpDeps) {
       const durable = !!row?.refreshToken
       // HTTP mode is offerable here: a public relay origin is configured AND ≥1 relay
       // is connected to receive the Events API POSTs.
-      const relayAvailable = !!relayPublicUrl && deps.sharedBot.hasConnectedRelay()
+      const relayAvailable = !!relayPublicUrl && deps.httpBot.hasConnectedRelay()
       return {
         configured: !!row,
         durable,

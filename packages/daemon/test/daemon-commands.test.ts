@@ -277,7 +277,7 @@ describe('Daemon in-conversation commands', () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
     await daemon.start()
     makeRoutable(daemon)
-    // The session the shared bot's inbound keys to (sessionKey(platform, channel, thread, agent)).
+    // The session the HTTP bot's inbound keys to (sessionKey(platform, channel, thread, agent)).
     const muteKey = SESSION_KEY
     ;(daemon as any).store.setSessionMuted(muteKey, true)
 
@@ -957,7 +957,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     await daemon.stop()
   }, 15_000)
 
-  it('backfill preserves a remote agent author carried by a shared Slack bot', async () => {
+  it('backfill preserves a remote agent author carried by an HTTP Slack bot', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
     await daemon.start()
     const conn = makeRoutable(daemon) as any
@@ -1218,7 +1218,7 @@ describe('Slack interactive status bar', () => {
     await daemon.stop()
   }, 15_000)
 
-  it('drops Switch agent for a non-shareable shared bot while keeping agent identity + relay routing', async () => {
+  it('drops Switch agent for a non-shareable HTTP bot while keeping agent identity + relay routing', async () => {
     const { host, release } = modelHost()
     const daemon = new Daemon({ root: scaffold(AGENT_IDENTITY), hostFactory: () => host as any })
     await daemon.start()
@@ -1252,7 +1252,7 @@ describe('Slack interactive status bar', () => {
       integrationId: 'int-a',
       sessionKey: SESSION_KEY
     })
-    // Agent identity is preserved in shared mode, and the message remains marked as chrome.
+    // Agent identity is preserved in HTTP mode, and the message remains marked as chrome.
     expect(call[4]).toEqual(STATUS_BAR_POST_OPTIONS)
 
     release()

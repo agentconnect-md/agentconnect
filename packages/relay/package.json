@@ -1,7 +1,7 @@
 {
   "name": "@agentconnect.md/relay",
   "version": "1.0.0-dev",
-  "description": "AgentConnect relay — the unified ingress plane (shared bot / webhook / webchat) that dials the control-plane and forwards to daemons",
+  "description": "AgentConnect relay — the unified ingress plane (HTTP bot / webhook / webchat) that dials the control-plane and forwards to daemons",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {

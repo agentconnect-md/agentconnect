@@ -1,6 +1,6 @@
 /**
  * `CollaborationRouter` — the relay's bot-AGNOSTIC agent-collaboration routing table
- * (agent-collaboration §2.3 / §6.2). Unlike {@link SharedBotRouter} (keyed by botId,
+ * (agent-collaboration §2.3 / §6.2). Unlike {@link BotArbitrationRouter} (keyed by botId,
  * so two agents in the same channel on DIFFERENT bots aren't co-resolvable), this is
  * keyed by `(orgId, platform, channelId)` and holds every agent's placement + call
  * directional policy in that channel — which is what a cross-daemon `rd/agentmsg` needs to

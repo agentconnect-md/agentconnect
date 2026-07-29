@@ -269,7 +269,7 @@ installed via standard OAuth v2. Verified gaps against current code:
 - **Schema.** `Bot.teamId` (nullable for legacy rows) + unique `(slackAppId, teamId)`;
   multiple `Bot` rows may now share one `slackAppId` across orgs.
 - **Relay demux.** Today demux is a learned `api_app_id → botId` map with a
-  signing-secret brute scan as fallback (`relay/src/shared-bot-manager.ts`). Every
+  signing-secret brute scan as fallback (`relay/src/relay-ingress-manager.ts`). Every
   install of a distributed app shares both the app id **and** the signing secret, so a
   composite `(api_app_id, team_id)` key is a correctness requirement, not an
   optimization. `teamId` is already plumbed into `resolveVerified` and currently

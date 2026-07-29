@@ -5,7 +5,7 @@
  * mutation time — so a relay that connects or reconnects later holds nothing, yet the
  * daemon's relay roster can still pick it (`desiredMcpServers`), and requests through it
  * would 401. On every relay (re)register we replay the full persisted set to just that
- * relay — the exact analog of `HookService.replayTo` / `SharedBotManager.replayTo`.
+ * relay — the exact analog of `HookService.replayTo` / `RelayIngressManager.replayTo`.
  *
  * The frame carries the upstream credential (headers) — NEVER logged. Per-provider
  * failures are swallowed + logged so one bad row can't starve the rest of the pool.

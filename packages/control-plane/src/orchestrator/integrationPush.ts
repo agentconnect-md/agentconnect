@@ -1,8 +1,8 @@
 /**
  * Integration-gating convergence (resource-visibility.md §14.4): when an agent's
  * visibility flips, its derived conversation-gating flag changes, so every
- * integration of the agent must be re-converged — a shared (http) bot recompiles
- * its relay routes + re-pushes shared specs (`syncBot` covers both), a direct
+ * integration of the agent must be re-converged — an HTTP bot recompiles
+ * its relay routes + re-pushes send-only specs (`syncBot` covers both), a direct
  * install gets a fresh token-bearing spec push. Best-effort per integration: a
  * missed push self-heals from the reconcile roster on the daemon's next connect.
  */
@@ -25,7 +25,7 @@ export interface GatingPushDeps {
     integrationChannel: IntegrationChannelRepo
   }
   control: ControlSender
-  sharedBot: { syncBot(botId: string): Promise<void> }
+  httpBot: { syncBot(botId: string): Promise<void> }
 }
 
 export async function convergeIntegrationGating(
@@ -41,7 +41,7 @@ export async function convergeIntegrationGating(
       if (bot?.transport === 'http') {
         if (!syncedBots.has(String(bot.id))) {
           syncedBots.add(String(bot.id))
-          await deps.sharedBot.syncBot(String(bot.id))
+          await deps.httpBot.syncBot(String(bot.id))
         }
         continue
       }

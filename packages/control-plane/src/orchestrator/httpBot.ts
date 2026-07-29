@@ -1,12 +1,12 @@
 /**
- * `SharedBotOrchestrator` (shared-bot-relay.md §4.2 / §5 / §10) — the CP side of
- * shared bots: it places each shareable bot's INBOUND onto exactly one relay,
- * compiles the ATTRIBUTED routing table (channel ownership → keyword → default
- * agent), pushes it via `rc/bot-assign` / `rc/routes`, and delivers the SHARED
- * (send-only) integration spec to each member agent's daemon.
+ * `HttpBotOrchestrator` (shared-bot-relay.md §4.2 / §5 / §10) — the CP convergence
+ * seam for HTTP-transport bots. It broadcasts each bot's ingress assignment to the
+ * relay pool, compiles the ATTRIBUTED routing table (channel ownership → keyword →
+ * default agent), and delivers the send-only integration spec (wire mode `shared`)
+ * to each member agent's daemon.
  *
- * It is the convergence seam invoked on every event that can change a shared
- * bot's placement or routes: an install / uninstall, the shareable toggle, a
+ * It is invoked on every event that can change an HTTP bot's assignment or routes:
+ * an install / uninstall, a transport or shareable toggle, a
  * per-channel default-agent change, and — for failover — a relay (re)register or
  * sweep. Every method is idempotent: it recomputes from the DB and pushes the
  * result, so a missed push self-heals on the next call.
@@ -43,16 +43,16 @@ import type {
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
 import { isDirectConversationKind } from '../persistence/ports.js'
-import { isGatedAgent, sharedIntegrationToSpec } from './placement.js'
+import { isGatedAgent, httpIntegrationToSpec } from './placement.js'
 import { AgentId, BotId, DaemonId } from '../domain/ids.js'
 
-export interface SharedBotLog {
+export interface HttpBotLog {
   info(obj: unknown, msg?: string): void
   warn(obj: unknown, msg?: string): void
   debug?(obj: unknown, msg?: string): void
 }
 
-/** The compiled routing table for one shared bot (relay-agnostic). */
+/** The compiled routing table for one HTTP bot (relay-agnostic). */
 interface Compiled {
   platform: 'slack' | 'telegram' | 'discord'
   members: { daemonId: string; agentIds: string[] }[]
@@ -81,7 +81,7 @@ export function pickChannelOwner(
   return installs.find((integration) => assigned.has(integration.agentId)) ?? installs[0]
 }
 
-export class SharedBotOrchestrator {
+export class HttpBotOrchestrator {
   private readonly channelMutationChains = new Map<string, Promise<unknown>>()
 
   constructor(
@@ -95,13 +95,13 @@ export class SharedBotOrchestrator {
     private readonly control: ControlSender,
     private readonly threads: ThreadAffinityStore,
     private readonly sessions: SessionRepo,
-    private readonly log: SharedBotLog
+    private readonly log: HttpBotLog
   ) {}
 
   /**
    * Converge one bot: BROADCAST `rc/bot-assign` to every connected relay (whole-pool
    * ingress — any pod may receive an inbound Events API POST via the stable
-   * PUBLIC_RELAY_URL LB) + deliver the shared spec to each member daemon. A
+   * PUBLIC_RELAY_URL LB) + deliver the send-only spec to each member daemon. A
    * non-http / empty bot is released. Safe to call for a socket bot (no-op after
    * the release check).
    */
@@ -119,19 +119,19 @@ export class SharedBotOrchestrator {
     }
     const secret = await this.botSecret.get(bot.id)
     if (!secret) {
-      this.log.warn({ botId }, 'shared-bot: no secret for http bot — cannot assign')
+      this.log.warn({ botId }, 'http-bot: no secret for http bot — cannot assign')
       return
     }
     if (bot.platform === 'slack' && !secret.signingSecret) {
       // An http-mode Slack bot with no signing secret can't be verified by the relay.
-      this.log.warn({ botId }, 'shared-bot: no signing secret for http Slack bot — cannot assign')
+      this.log.warn({ botId }, 'http-bot: no signing secret for http Slack bot — cannot assign')
       return
     }
 
     if (this.relayReg.all().length === 0) {
       // No connected relay to host the ingest — the register replay re-fans when one
       // (re)connects (reconcileAll / replayTo).
-      this.log.warn({ botId }, 'shared-bot: no connected relay available — deferring placement')
+      this.log.warn({ botId }, 'http-bot: no connected relay available — deferring placement')
       return
     }
 
@@ -139,7 +139,7 @@ export class SharedBotOrchestrator {
     this.broadcast((ch) => ch.send('rc/bot-assign', assign))
     this.log.info(
       { botId: bot.id, members: compiled.members.length, routes: compiled.routes.length },
-      'shared-bot: broadcast assign to relay pool'
+      'http-bot: broadcast assign to relay pool'
     )
     await this.pushSpecs(compiled, secret, bot)
   }
@@ -228,7 +228,7 @@ export class SharedBotOrchestrator {
     if (!applied) {
       this.log.info(
         { botId: bot.id, reason, reportedRevision: fence.revision, currentRevision: bot.credentialRevision },
-        'shared-bot: stale revoke ignored — credential was replaced since the event'
+        'http-bot: stale revoke ignored — credential was replaced since the event'
       )
       return { applied: false }
     }
@@ -240,7 +240,7 @@ export class SharedBotOrchestrator {
     if (after && after.credentialRevision !== bot.credentialRevision) {
       this.log.info(
         { botId: bot.id, reason, from: bot.credentialRevision, to: after.credentialRevision },
-        'shared-bot: revoke committed but the credential was replaced — skipping teardown effects'
+        'http-bot: revoke committed but the credential was replaced — skipping teardown effects'
       )
       // The revocation itself DID commit, so the report is settled.
       return { applied: true }
@@ -258,10 +258,10 @@ export class SharedBotOrchestrator {
         await this.control.integrationRemove(agent.daemonId, { integrationId: integration.id })
       } catch (err) {
         if (!(err instanceof NoConnection)) throw err
-        this.log.debug?.({ integrationId: integration.id }, 'shared-bot: revoke spec removal skipped — daemon offline')
+        this.log.debug?.({ integrationId: integration.id }, 'http-bot: revoke spec removal skipped — daemon offline')
       }
     }
-    this.log.info({ botId: bot.id, reason, installs: installs.length }, 'shared-bot: bot revoked by workspace')
+    this.log.info({ botId: bot.id, reason, installs: installs.length }, 'http-bot: bot revoked by workspace')
     return { applied: true }
   }
 
@@ -362,7 +362,7 @@ export class SharedBotOrchestrator {
     return !!row && row.trigger !== 'off'
   }
 
-  /** Is at least one relay connected right now? The install-time gate: a shared
+  /** Is at least one relay connected right now? The install-time gate: an HTTP
    *  install with no relay to host the ingest is a deployment misconfig (§6 409). */
   hasConnectedRelay(): boolean {
     return this.relayReg.all().length > 0
@@ -373,14 +373,14 @@ export class SharedBotOrchestrator {
    *  app membership, so fan the snapshot across them, preserving per-install
    *  trigger/owner fields in the repository, then hot-refresh relay routes.
    *
-   *  For a shared bot, route compilation converges every reported channel to
+   *  For an HTTP bot, route compilation converges every reported channel to
    *  exactly one owner. A new or ownerless channel is assigned to the bot's
    *  creating (earliest active) agent, while an existing owner is preserved.
    */
   async replaceChannels(botId: string, channels: ReportedChannel[]): Promise<void> {
     const bot = await this.bots.get(BotId(botId))
     if (!bot || bot.platform !== 'slack' || bot.transport !== 'http') {
-      this.log.warn({ botId }, 'shared-bot: channel snapshot for a non-http/unknown Slack bot — ignored')
+      this.log.warn({ botId }, 'http-bot: channel snapshot for a non-http/unknown Slack bot — ignored')
       return
     }
     const installs = await this.integrations.listForBot(bot.id)
@@ -438,7 +438,7 @@ export class SharedBotOrchestrator {
   async reportConversation(botId: string, conversation: ReportedChannel): Promise<void> {
     const bot = await this.bots.get(BotId(botId))
     if (!bot || bot.platform !== 'slack' || bot.transport !== 'http') {
-      this.log.warn({ botId }, 'shared-bot: conversation report for a non-http/unknown Slack bot — ignored')
+      this.log.warn({ botId }, 'http-bot: conversation report for a non-http/unknown Slack bot — ignored')
       return
     }
     const installs = await this.integrations.listForBot(bot.id)
@@ -458,7 +458,7 @@ export class SharedBotOrchestrator {
   }
 
   /**
-   * Update a shared channel through its bot-level ownership boundary. The selected
+   * Update a multi-agent channel through its bot-level ownership boundary. The selected
    * agent becomes the sole owner, and the channel trigger follows the channel when
    * ownership changes instead of reverting to a stale per-install value.
    */
@@ -471,7 +471,7 @@ export class SharedBotOrchestrator {
     return this.serializeChannelMutation(botId, channelId, async () => {
       const bot = await this.bots.get(BotId(botId))
       if (bot?.transport !== 'http') {
-        this.log.warn({ botId }, 'shared-bot: update-channel for a non-http/unknown bot — ignored')
+        this.log.warn({ botId }, 'http-bot: update-channel for a non-http/unknown bot — ignored')
         return null
       }
       const installs = await this.integrations.listForBot(bot.id)
@@ -483,13 +483,13 @@ export class SharedBotOrchestrator {
       if (options.expectedOwnerAgentId && currentOwner?.agentId !== options.expectedOwnerAgentId) {
         this.log.warn(
           { botId, channelId, expectedOwnerAgentId: options.expectedOwnerAgentId },
-          'shared-bot: channel owner changed before update — ignored'
+          'http-bot: channel owner changed before update — ignored'
         )
         return null
       }
       const owner = patch.agentId ? installs.find((i) => i.agentId === patch.agentId) : currentOwner
       if (!owner) {
-        this.log.warn({ botId, agentId: patch.agentId }, 'shared-bot: update-channel for a non-member agent — ignored')
+        this.log.warn({ botId, agentId: patch.agentId }, 'http-bot: update-channel for a non-member agent — ignored')
         return null
       }
 
@@ -716,7 +716,7 @@ export class SharedBotOrchestrator {
         match
       })
       if (c.kind === 'im' && p.gated) {
-        // Slug disambiguation inside a shared DM enabled for SEVERAL gated agents
+        // Slug disambiguation inside a multi-agent DM enabled for SEVERAL gated agents
         // (§14.3): a conversation-scoped keyword outranks the scoped auto in the
         // relay's arbitration, so "<slug> …" names this agent while an unslugged
         // DM falls to the first enabled auto route. (Unscoped keyword stays
@@ -755,7 +755,7 @@ export class SharedBotOrchestrator {
     //    a bare @bot + DMs. Delivered as `defaultAgentId` (the relay's fallback
     //    rung), not a route, so it never pre-empts keyword/channel arbitration. A
     //    gated agent must never be the fallback (§14: the bare-@bot/DM rungs are
-    //    what make a shared bot fail-open); a group of only gated agents has none.
+    //    what make an HTTP bot fail-open); a group of only gated agents has none.
     const first = placed.find((p) => !p.gated)
     const agents = placed.map((p) => {
       const a = agentById.get(p.integration.agentId)
@@ -781,7 +781,7 @@ export class SharedBotOrchestrator {
     }
   }
 
-  /** Deliver the shared (send-only) spec to each member agent's daemon (best-effort).
+  /** Deliver the HTTP-transport send-only spec to each member agent's daemon (best-effort).
    *  `shareable` rides each spec so the daemon knows whether to expose "Switch agent". */
   private async pushSpecs(
     compiled: Compiled,
@@ -799,11 +799,11 @@ export class SharedBotOrchestrator {
         const channels = gated ? botChannels.filter((c) => c.integrationId === integration.id) : []
         await this.control.integrationUpsert(
           daemonId,
-          sharedIntegrationToSpec(integration, secret, bot.shareable, channels, gated, bot.slackAppId ?? undefined)
+          httpIntegrationToSpec(integration, secret, bot.shareable, channels, gated, bot.slackAppId ?? undefined)
         )
       } catch (err) {
         if (!(err instanceof NoConnection)) throw err
-        this.log.debug?.({ integrationId: integration.id, daemonId }, 'shared-bot: spec push skipped — daemon offline')
+        this.log.debug?.({ integrationId: integration.id, daemonId }, 'http-bot: spec push skipped — daemon offline')
       }
     }
   }

@@ -90,7 +90,7 @@ import { CronRunReaper } from './orchestrator/cronRunReaper.js'
 import { SlackInstallReaper } from './orchestrator/slackInstallReaper.js'
 import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
-import { SharedBotOrchestrator } from './orchestrator/sharedBot.js'
+import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
 import { SlackBotIdentityReconciler } from './orchestrator/slackBotIdentityReconciler.js'
 import { slackConfigApi } from './http/slack-config-api.js'
 
@@ -401,10 +401,10 @@ export function buildContainer(
   // daemons on register/sweep via the `relay/roster` EVT (sender is the broadcaster).
   const relayRoster = new RelayRoster(repos.relay, sender, clock, relayStaleMs)
 
-  // Shared-bot placement + attributed-route compilation (shared-bot-relay.md §4.2/§10).
+  // HTTP-bot assignment + attributed-route compilation (shared-bot-relay.md §4.2/§10).
   // Its logger is lazy (a wrapper over `http.log`, which is created below) — only ever
   // invoked at request/sweep time, well after `http` is assigned, so no TDZ hazard.
-  const sharedBot = new SharedBotOrchestrator(
+  const httpBot = new HttpBotOrchestrator(
     repos.bot,
     repos.botSecret,
     repos.botCredential,
@@ -432,7 +432,7 @@ export function buildContainer(
     crons: repos.cron,
     control: sender,
     hooks: hookService,
-    sharedBot,
+    httpBot,
     collabRoutes,
     mutations: agentMutations,
     sessionOwners: connReg,
@@ -552,7 +552,7 @@ export function buildContainer(
   // org-level model (installation coverage) as before.
   // Installation doorbell (webhook-triggers decision 11): the relay's verified
   // `installation*` pokes trigger an App-JWT re-pull + github-hook recompile.
-  // Logger is lazy over `http.log` (SharedBotOrchestrator precedent — pokes only
+  // Logger is lazy over `http.log` (HttpBotOrchestrator precedent — pokes only
   // arrive over the relay WS, long after `http` exists).
   const installationDoorbell = github
     ? new GithubInstallationDoorbell({
@@ -633,7 +633,7 @@ export function buildContainer(
     liveness: connReg,
     control: sender,
     relayControl,
-    sharedBot,
+    httpBot,
     collabRoutes,
     agentMutations,
     memoryConnectionMutations,
@@ -762,11 +762,11 @@ export function buildContainer(
     { staleMs: relayStaleMs, intervalMs: config.RELAY_REAP_INTERVAL_SEC * 1000 },
     // On a reap: re-fan the shrunk roster to daemons. Whole-pool ingress means a dead
     // relay strands no bot (the manifest request_url is a stable LB; the CP broadcasts
-    // to whoever is connected), so no shared-bot re-placement is needed here.
+    // to whoever is connected), so no per-bot re-placement is needed here.
     async () => {
       await relayRoster.broadcast()
       // §14.3: a reaped relay may have held notice authorities — re-stamp survivors.
-      await sharedBot.reconcileAll().catch((err) => http.log.error({ err }, 'relay sweep: shared-bot reconcile failed'))
+      await httpBot.reconcileAll().catch((err) => http.log.error({ err }, 'relay sweep: HTTP-bot reconcile failed'))
       const selected = (await relayRoster.entries())[0]
       if (selected) {
         await syncMemoryConnectionsToDaemons(relayHttpOrigin(selected.url), {
@@ -874,7 +874,7 @@ export function buildContainer(
     authorizeGithubComment: async (req) => (githubCommentAuthz ? githubCommentAuthz.allowed(req) : false),
     authorizeGithubRerequest: async (req) => (githubRerequest ? githubRerequest.resolve(req) : { allowed: false }),
     // A relay just (re)registered — refresh every daemon's roster, (re)assign every
-    // shared bot's ingest + routes (§5, idempotent), AND replay the compiled hook
+    // HTTP bots' ingress + routes (§5, idempotent), AND replay the compiled hook
     // rules to the fresh connection (its table is a memory copy). All fire-and-forget,
     // so the DB reads MUST NOT reject unhandled (that would crash the CP under Node's
     // throw-on-unhandled-rejection): swallow + log, mirroring the sweeper's guarded
@@ -886,15 +886,13 @@ export function buildContainer(
       // Seed ONLY the fresh relay with every http bot's assign + persisted thread
       // affinity (per-relay replay — no re-broadcast to the whole pool)…
       trackRelayRegistrationTask(
-        sharedBot.replayTo(ch).catch((err) => http.log.error({ err }, 'relay: shared-bot replay on register failed'))
+        httpBot.replayTo(ch).catch((err) => http.log.error({ err }, 'relay: HTTP-bot replay on register failed'))
       )
       // …then converge the WHOLE pool: a joined relay changes the connected roster,
       // which moves §14.3 notice authorities — existing relays must learn the new
       // assignment or two pods could both (or neither) believe they hold it.
       trackRelayRegistrationTask(
-        sharedBot
-          .reconcileAll()
-          .catch((err) => http.log.error({ err }, 'relay: shared-bot reconcile on register failed'))
+        httpBot.reconcileAll().catch((err) => http.log.error({ err }, 'relay: HTTP-bot reconcile on register failed'))
       )
       trackRelayRegistrationTask(
         hookService.replayTo(ch).catch((err) => http.log.error({ err }, 'relay: hook-rule replay on register failed'))
@@ -1035,7 +1033,7 @@ export function buildContainer(
     // the bot's routes. Swallow+log: a store error must not close the shared relay link.
     onSetChannelAgent: async (m) => {
       try {
-        await sharedBot.setChannelAgent(m.botId, m.channelId, m.agentId)
+        await httpBot.setChannelAgent(m.botId, m.channelId, m.agentId)
       } catch (err) {
         http.log.error({ err, botId: m.botId }, 'relay: set-channel-agent failed')
       }
@@ -1044,7 +1042,7 @@ export function buildContainer(
     // its complete membership. Persist across every install and refresh relay routes.
     onBotChannels: async (m) => {
       try {
-        await sharedBot.replaceChannels(m.botId, m.channels)
+        await httpBot.replaceChannels(m.botId, m.channels)
       } catch (err) {
         http.log.error({ err, botId: m.botId }, 'relay: bot-channels snapshot failed')
       }
@@ -1052,9 +1050,9 @@ export function buildContainer(
     // A closed relay socket shrinks the connected roster — re-stamp §14.3 notice
     // authorities on the survivors (fire-and-forget; errors logged).
     onRelayGone: () => {
-      void sharedBot
+      void httpBot
         .reconcileAll()
-        .catch((err) => http.log.error({ err }, 'relay: shared-bot reconcile on disconnect failed'))
+        .catch((err) => http.log.error({ err }, 'relay: HTTP-bot reconcile on disconnect failed'))
     },
     // A workspace uninstalled the app / revoked its tokens — mark the Bot + its
     // installs revoked and release the bot from the pool, unless the report is
@@ -1064,7 +1062,7 @@ export function buildContainer(
     // swallowed — swallowing would look like success and lose the only signal a
     // dead credential ever produces.
     onBotRevoked: async (m) =>
-      sharedBot.revokeBot(m.botId, m.reason, {
+      httpBot.revokeBot(m.botId, m.reason, {
         ...(m.credentialRevision !== undefined ? { revision: m.credentialRevision } : {}),
         ...(m.eventAtMs !== undefined ? { eventAtMs: m.eventAtMs } : {})
       }),
@@ -1072,7 +1070,7 @@ export function buildContainer(
     // latch. Swallow+log.
     onNoticePosted: async (m) => {
       try {
-        await sharedBot.recordNoticePosted(m)
+        await httpBot.recordNoticePosted(m)
       } catch (err) {
         http.log.error({ err, botId: m.botId }, 'relay: notice-posted record failed')
       }
@@ -1081,7 +1079,7 @@ export function buildContainer(
     // the bot's gated installs so console editors can enable the DM. Swallow+log.
     onBotConversation: async (m) => {
       try {
-        await sharedBot.reportConversation(m.botId, m.conversation)
+        await httpBot.reportConversation(m.botId, m.conversation)
       } catch (err) {
         http.log.error({ err, botId: m.botId }, 'relay: bot-conversation report failed')
       }
@@ -1090,13 +1088,13 @@ export function buildContainer(
     // a store error must not close the shared relay link.
     onThreadAssign: async (m) => {
       try {
-        await sharedBot.recordThreadAssign(m)
+        await httpBot.recordThreadAssign(m)
       } catch (err) {
         http.log.error({ err, botId: m.botId }, 'relay: thread-assign failed')
       }
     },
     // Pull-on-miss BACKSTOP leg — may throw → the handler answers a retryable error.
-    threadLookup: (m) => sharedBot.lookupThread(m),
+    threadLookup: (m) => httpBot.lookupThread(m),
     // Installation doorbell poke — fire-and-forget into the throttled re-pull
     // (the doorbell owns single-flight/cooldown and swallows its own errors).
     onGithubInstallation: async (m) => {

@@ -10,13 +10,13 @@ import type {
 } from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
 import {
-  SharedBotManager,
-  type SharedBotManagerDeps,
-  sharedSlackActionMsgId,
-  sharedSlackShortcutMsgId
-} from './shared-bot-manager.js'
-import { SharedBotRouter, type BotAssignment } from './shared-bot-router.js'
-import type { SharedSlackSessionAction, SharedSlackSessionShortcut } from './slack-shared-ingest.js'
+  RelayIngressManager,
+  type RelayIngressManagerDeps,
+  httpSlackActionMsgId,
+  httpSlackShortcutMsgId
+} from './relay-ingress-manager.js'
+import { BotArbitrationRouter, type BotAssignment } from './bot-arbitration.js'
+import type { HttpSlackSessionAction, HttpSlackSessionShortcut } from './slack-http-ingest.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { Logger } from './log.js'
 
@@ -33,7 +33,7 @@ const PEER_RELAY = '88888888-8888-4888-8888-888888888882'
 const silentLog: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 
 /** Manager deps with the required affinity + clock stubs, overridable per test. */
-const deps = (over: Partial<SharedBotManagerDeps> = {}): SharedBotManagerDeps => ({
+const deps = (over: Partial<RelayIngressManagerDeps> = {}): RelayIngressManagerDeps => ({
   getDaemon: () => undefined,
   setChannelAgent: vi.fn(),
   reportBotChannels: vi.fn(() => true),
@@ -65,17 +65,17 @@ const assignment = (): BotAssignment => ({
   ]
 })
 
-const action = (over: Partial<SharedSlackSessionAction> = {}): SharedSlackSessionAction =>
+const action = (over: Partial<HttpSlackSessionAction> = {}): HttpSlackSessionAction =>
   ({
     target: { v: 1, agentId: AGENT_ID, integrationId: INTEGRATION_ID, sessionKey: SESSION_KEY },
     interactionId: JSON.stringify(['ac_set_model', '1720000000.000200']),
     kind: 'set-model',
     model: 'opus-4.8',
     ...over
-  }) as SharedSlackSessionAction
+  }) as HttpSlackSessionAction
 
 interface ManagerInternals {
-  router: SharedBotRouter
+  router: BotArbitrationRouter
   ingests: Map<
     string,
     {
@@ -86,16 +86,16 @@ interface ManagerInternals {
   reportChannels(snapshot: RcBotChannels): void
   reportRevoked(m: { botId: string; reason: 'app_uninstalled' | 'tokens_revoked'; credentialRevision?: number }): void
   selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
-  forwardSessionAction(botId: string, action: SharedSlackSessionAction): void
-  forwardSessionShortcut(botId: string, shortcut: SharedSlackSessionShortcut): boolean
+  forwardSessionAction(botId: string, action: HttpSlackSessionAction): void
+  forwardSessionShortcut(botId: string, shortcut: HttpSlackSessionShortcut): boolean
   forward(botId: string, msg: WireNormalizedMessage): Promise<void>
 }
 
-describe('SharedBotManager shared Slack session actions', () => {
+describe('RelayIngressManager HTTP Slack session actions', () => {
   it('rebinds the current thread immediately when the inline selector changes agent', () => {
     const setChannelAgent = vi.fn()
     const reportThreadAssign = vi.fn(() => true)
-    const manager = new SharedBotManager(deps({ setChannelAgent, reportThreadAssign }))
+    const manager = new RelayIngressManager(deps({ setChannelAgent, reportThreadAssign }))
     const internals = manager as unknown as ManagerInternals
     const assigned = assignment()
     assigned.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
@@ -146,7 +146,7 @@ describe('SharedBotManager shared Slack session actions', () => {
   it('forwards to the exact current agent+integration with a stable redelivery msgId', () => {
     const sendMsg = vi.fn(async (msg: RdMsgSlackAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
     const daemon = { sendMsg } as unknown as RelayDaemonConnection
-    const manager = new SharedBotManager(
+    const manager = new RelayIngressManager(
       deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
     )
     const internals = manager as unknown as ManagerInternals
@@ -164,7 +164,7 @@ describe('SharedBotManager shared Slack session actions', () => {
       agentId: AGENT_ID,
       integrationId: INTEGRATION_ID,
       sessionKey: SESSION_KEY,
-      msgId: sharedSlackActionMsgId(BOT_ID, delivered),
+      msgId: httpSlackActionMsgId(BOT_ID, delivered),
       botId: BOT_ID,
       payload: { kind: 'set-model', model: 'opus-4.8' }
     })
@@ -175,7 +175,7 @@ describe('SharedBotManager shared Slack session actions', () => {
   it('forwards a message shortcut through the current thread affinity', () => {
     const sendMsg = vi.fn(async (msg: RdMsgSlackAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
     const daemon = { sendMsg } as unknown as RelayDaemonConnection
-    const manager = new SharedBotManager(
+    const manager = new RelayIngressManager(
       deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
     )
     const internals = manager as unknown as ManagerInternals
@@ -185,7 +185,7 @@ describe('SharedBotManager shared Slack session actions', () => {
       daemonId: DAEMON_ID,
       integrationId: INTEGRATION_ID
     })
-    const shortcut: SharedSlackSessionShortcut = {
+    const shortcut: HttpSlackSessionShortcut = {
       triggerId: 'trigger-shortcut',
       channelId: 'C123',
       threadTs: 'T1',
@@ -199,7 +199,7 @@ describe('SharedBotManager shared Slack session actions', () => {
       agentId: AGENT_ID,
       integrationId: INTEGRATION_ID,
       sessionKey: 'C123/T1',
-      msgId: sharedSlackShortcutMsgId(BOT_ID, shortcut),
+      msgId: httpSlackShortcutMsgId(BOT_ID, shortcut),
       botId: BOT_ID,
       userId: 'U-ALICE',
       payload: {
@@ -214,7 +214,7 @@ describe('SharedBotManager shared Slack session actions', () => {
   it('forwards the tapping user, and omits it entirely when the interaction named none', () => {
     const sendMsg = vi.fn(async (msg: RdMsgSlackAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
     const daemon = { sendMsg } as unknown as RelayDaemonConnection
-    const manager = new SharedBotManager(
+    const manager = new RelayIngressManager(
       deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
     )
     const internals = manager as unknown as ManagerInternals
@@ -235,23 +235,23 @@ describe('SharedBotManager shared Slack session actions', () => {
   })
 
   it('uses distinct ids for distinct selected values even if receipt metadata is reused', () => {
-    expect(sharedSlackActionMsgId(BOT_ID, action({ model: 'opus-4.8' }))).not.toBe(
-      sharedSlackActionMsgId(BOT_ID, action({ model: 'sonnet-5' }))
+    expect(httpSlackActionMsgId(BOT_ID, action({ model: 'opus-4.8' }))).not.toBe(
+      httpSlackActionMsgId(BOT_ID, action({ model: 'sonnet-5' }))
     )
   })
 
   it('uses distinct ids for two real clicks with different Slack action timestamps', () => {
     expect(
-      sharedSlackActionMsgId(BOT_ID, action({ interactionId: JSON.stringify(['ac_set_model', '1720000000.000200']) }))
+      httpSlackActionMsgId(BOT_ID, action({ interactionId: JSON.stringify(['ac_set_model', '1720000000.000200']) }))
     ).not.toBe(
-      sharedSlackActionMsgId(BOT_ID, action({ interactionId: JSON.stringify(['ac_set_model', '1720000000.000201']) }))
+      httpSlackActionMsgId(BOT_ID, action({ interactionId: JSON.stringify(['ac_set_model', '1720000000.000201']) }))
     )
   })
 
   it('rejects a tampered/stale target instead of falling back to the channel owner', () => {
     const sendMsg = vi.fn()
     const warn = vi.fn()
-    const manager = new SharedBotManager(
+    const manager = new RelayIngressManager(
       deps({ getDaemon: () => ({ sendMsg }) as unknown as RelayDaemonConnection, log: { ...silentLog, warn } })
     )
     const internals = manager as unknown as ManagerInternals
@@ -274,7 +274,7 @@ describe('SharedBotManager shared Slack session actions', () => {
   })
 })
 
-describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
+describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
   const online = (
     sendMsg = vi.fn(async (m: { msgId: string }): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
   ) => ({
@@ -322,7 +322,7 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
   it('reports the first route of a thread once, not on every message', async () => {
     const reportThreadAssign = vi.fn(() => true)
     const { daemon, sendMsg } = online()
-    const manager = new SharedBotManager(deps({ getDaemon: () => daemon, reportThreadAssign }))
+    const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, reportThreadAssign }))
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(channelOwned())
 
@@ -344,7 +344,7 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
   it('does NOT report for an `auto`-owned channel (every message re-resolves locally)', async () => {
     const reportThreadAssign = vi.fn(() => true)
     const { daemon, sendMsg } = online()
-    const manager = new SharedBotManager(deps({ getDaemon: () => daemon, reportThreadAssign }))
+    const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, reportThreadAssign }))
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(channelAutoOwned())
 
@@ -361,7 +361,7 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
     const isAgentBotApp = vi.fn((_agentId: string, _platform: string, _channel: string, appId: string) => {
       return appId === 'AMANAGED'
     })
-    const manager = new SharedBotManager(deps({ getDaemon: () => daemon, reportThreadAssign, isAgentBotApp }))
+    const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, reportThreadAssign, isAgentBotApp }))
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(channelAutoOwned())
 
@@ -393,7 +393,7 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
     let ready = false
     const reportThreadAssign = vi.fn(() => ready) // false ⇒ "link not READY, dropped"
     const { daemon } = online()
-    const manager = new SharedBotManager(deps({ getDaemon: () => daemon, reportThreadAssign }))
+    const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, reportThreadAssign }))
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(channelOwned())
 
@@ -412,7 +412,7 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
   it('retries the latest channel snapshot dropped while the CP link was down', () => {
     let ready = false
     const reportBotChannels = vi.fn(() => ready)
-    const manager = new SharedBotManager(deps({ reportBotChannels }))
+    const manager = new RelayIngressManager(deps({ reportBotChannels }))
     const internals = manager as unknown as ManagerInternals
     const first = { botId: BOT_ID, channels: [{ id: 'C123', name: 'first' }] } satisfies RcBotChannels
     const latest = { botId: BOT_ID, channels: [{ id: 'C456', name: 'latest' }] } satisfies RcBotChannels
@@ -439,7 +439,7 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
     try {
       let committed = false
       const reportBotRevoked = vi.fn(async () => committed)
-      const manager = new SharedBotManager(deps({ reportBotRevoked }))
+      const manager = new RelayIngressManager(deps({ reportBotRevoked }))
       const internals = manager as unknown as ManagerInternals
       const report = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 3 }
 
@@ -473,7 +473,7 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
         calls.push(m)
         return commitNext
       })
-      const manager = new SharedBotManager(deps({ reportBotRevoked }))
+      const manager = new RelayIngressManager(deps({ reportBotRevoked }))
       const internals = manager as unknown as ManagerInternals
       const current = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 2 }
       const delayed = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 1 }
@@ -508,7 +508,7 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
     try {
       let commitNext = false
       const reportBotRevoked = vi.fn(async () => commitNext)
-      const manager = new SharedBotManager(deps({ reportBotRevoked }))
+      const manager = new RelayIngressManager(deps({ reportBotRevoked }))
       const internals = manager as unknown as ManagerInternals
       // The auth.test dead-credential backstop: exact current revision, NO
       // eventAtMs — "dead NOW", unconditional on the CP's time arm.
@@ -547,7 +547,7 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
     vi.useFakeTimers()
     try {
       const reportBotRevoked = vi.fn(async () => false) // keep everything queued
-      const manager = new SharedBotManager(deps({ reportBotRevoked }))
+      const manager = new RelayIngressManager(deps({ reportBotRevoked }))
       const internals = manager as unknown as ManagerInternals
       const newer = { botId: BOT_ID, reason: 'tokens_revoked' as const, credentialRevision: 2, eventAtMs: 2_000 }
       const older = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 2, eventAtMs: 1_000 }
@@ -571,7 +571,7 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
     try {
       const resolvers: Array<(v: boolean) => void> = []
       const reportBotRevoked = vi.fn(() => new Promise<boolean>((resolve) => resolvers.push(resolve)))
-      const manager = new SharedBotManager(deps({ reportBotRevoked }))
+      const manager = new RelayIngressManager(deps({ reportBotRevoked }))
       const internals = manager as unknown as ManagerInternals
       const first = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 1 }
       // A reinstall bumped the generation and a SECOND revoke observed it — this
@@ -610,7 +610,7 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
       target: { agentId: AGENT_ID, daemonId: DAEMON_ID }
     }))
     const reportThreadAssign = vi.fn(() => true)
-    const manager = new SharedBotManager(deps({ getDaemon: () => daemon, lookupThread, reportThreadAssign }))
+    const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread, reportThreadAssign }))
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(channelOwned())
     // Remove the channel-owner rule so an un-mentioned follow-up misses local arbitration.
@@ -642,7 +642,7 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
       target: null
     }))
     const { daemon, sendMsg } = online()
-    const manager = new SharedBotManager(deps({ getDaemon: () => daemon, lookupThread }))
+    const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread }))
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(channelOwned())
     internals.router.updateRoutes(BOT_ID, {
@@ -666,7 +666,7 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
   })
 })
 
-describe('SharedBotManager conversation gating (resource-visibility §14.3)', () => {
+describe('RelayIngressManager conversation gating (resource-visibility §14.3)', () => {
   const fakeIngest = () => ({
     lookupUserName: vi.fn(async () => '@Alice'),
     postText: vi.fn(async () => {})
@@ -697,7 +697,7 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
 
   it('reports an unrouted gated DM as a kind:im conversation and notices once per conversation', async () => {
     const reportBotConversation = vi.fn(() => true)
-    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const manager = new RelayIngressManager(deps({ reportBotConversation }))
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(gatedAssignment())
     const ingest = fakeIngest()
@@ -718,7 +718,7 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
   })
 
   it('a first gated DM on a NON-authority pod still posts (single event copy, receiving pod owns it)', async () => {
-    const manager = new SharedBotManager(deps({ selfRelayId: () => PEER_RELAY }))
+    const manager = new RelayIngressManager(deps({ selfRelayId: () => PEER_RELAY }))
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(gatedAssignment()) // noticeAuthority = SELF_RELAY, not this pod
     const ingest = fakeIngest()
@@ -729,7 +729,7 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
   })
 
   it('a DM whose notice was already DELIVERED (noticedDmConversations) is latched on EVERY pod', async () => {
-    const manager = new SharedBotManager(deps())
+    const manager = new RelayIngressManager(deps())
     const internals = manager as unknown as ManagerInternals
     const a = gatedAssignment()
     a.noticedDmConversations = ['D42'] // delivery reported + re-stamped by the CP
@@ -744,7 +744,7 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
   it('a DM discovered while a public default routed it STILL gets its notice once unroutable', async () => {
     const reportNoticePosted = vi.fn(() => true)
     const daemon = { sendMsg: vi.fn(async (m: { msgId: string }) => ({ msgId: m.msgId, accepted: true })) }
-    const manager = new SharedBotManager(
+    const manager = new RelayIngressManager(
       deps({ reportNoticePosted, getDaemon: () => daemon as unknown as RelayDaemonConnection })
     )
     const internals = manager as unknown as ManagerInternals
@@ -791,7 +791,7 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
 
   it('reports a gated DM even when a non-gated default agent WINS the routing (mixed bot)', async () => {
     const reportBotConversation = vi.fn(() => true)
-    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const manager = new RelayIngressManager(deps({ reportBotConversation }))
     const internals = manager as unknown as ManagerInternals
     const a = gatedAssignment()
     // OTHER is org-visible and catches every unslugged DM as the group default.
@@ -829,7 +829,7 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
 
   it('resets the DM-report latch when the gated member set changes (new install needs its row)', async () => {
     const reportBotConversation = vi.fn(() => true)
-    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const manager = new RelayIngressManager(deps({ reportBotConversation }))
     const internals = manager as unknown as ManagerInternals
     const a = gatedAssignment()
     internals.router.upsert(a)
@@ -863,7 +863,7 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
   it('retries the DM report on the next DM when the CP link was down', async () => {
     let ready = false
     const reportBotConversation = vi.fn(() => ready)
-    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const manager = new RelayIngressManager(deps({ reportBotConversation }))
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(gatedAssignment())
     internals.ingests.set(BOT_ID, fakeIngest())
@@ -879,7 +879,7 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
 
   it('an unrouted @mention in a channel gets the notice but NO conversation report', async () => {
     const reportBotConversation = vi.fn(() => true)
-    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const manager = new RelayIngressManager(deps({ reportBotConversation }))
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(gatedAssignment())
     const ingest = fakeIngest()
@@ -896,7 +896,7 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
 
   /** Two manager instances = two relay pods; only the authority pod may post. */
   const pod = (authority: boolean) => {
-    const manager = new SharedBotManager(deps({ selfRelayId: () => (authority ? SELF_RELAY : PEER_RELAY) }))
+    const manager = new RelayIngressManager(deps({ selfRelayId: () => (authority ? SELF_RELAY : PEER_RELAY) }))
     const internals = manager as unknown as ManagerInternals
     const ingest = fakeIngest()
     internals.router.upsert(gatedAssignment()) // noticeAuthority = SELF_RELAY
@@ -952,7 +952,7 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
 
   it('no authority stamped (old CP / empty roster): no pod posts; DM discovery still reports', async () => {
     const reportBotConversation = vi.fn(() => true)
-    const manager = new SharedBotManager(deps({ reportBotConversation, selfRelayId: () => SELF_RELAY }))
+    const manager = new RelayIngressManager(deps({ reportBotConversation, selfRelayId: () => SELF_RELAY }))
     const internals = manager as unknown as ManagerInternals
     const a = gatedAssignment()
     delete a.noticeAuthority
@@ -969,7 +969,7 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
 
   it('does nothing gated-related for a bot with no gated members', async () => {
     const reportBotConversation = vi.fn(() => true)
-    const manager = new SharedBotManager(deps({ reportBotConversation }))
+    const manager = new RelayIngressManager(deps({ reportBotConversation }))
     const internals = manager as unknown as ManagerInternals
     const a = gatedAssignment()
     a.gatedAgentIds = []
@@ -989,7 +989,7 @@ describe('SharedBotManager conversation gating (resource-visibility §14.3)', ()
 // one signing secret, so the HMAC can authenticate but cannot discriminate —
 // only the composite key may route, and the verify-scan must never hand one
 // workspace's events to a sibling install (a cross-tenant leak, not a miss).
-describe('SharedBotManager.resolveVerified composite demux', () => {
+describe('RelayIngressManager.resolveVerified composite demux', () => {
   const BOT_T1 = 'aaaaaaaa-1111-4111-8111-111111111111'
   const BOT_T2 = 'aaaaaaaa-2222-4222-8222-222222222222'
   const BOT_LEGACY = 'aaaaaaaa-3333-4333-8333-333333333333'
@@ -1001,7 +1001,7 @@ describe('SharedBotManager.resolveVerified composite demux', () => {
   const sig = (secret: string) => `v0=${createHmac('sha256', secret).update(`v0:${ts}:${body}`).digest('hex')}`
 
   interface DemuxInternals {
-    router: SharedBotRouter
+    router: BotArbitrationRouter
     ingests: Map<string, { signingSecret: string; stop(): Promise<void> }>
     demuxByApiApp: Map<string, string>
     demuxByAppTeam: Map<string, string>
@@ -1012,7 +1012,7 @@ describe('SharedBotManager.resolveVerified composite demux', () => {
    *  start: router assignment + a secret-bearing ingest stand-in + (for a
    *  team-scoped bot) the assign-derived composite index entries. */
   const addBot = (
-    manager: SharedBotManager,
+    manager: RelayIngressManager,
     botId: string,
     signingSecret: string,
     opts: { apiAppId?: string; teamId?: string; indexed?: boolean } = {}
@@ -1033,7 +1033,7 @@ describe('SharedBotManager.resolveVerified composite demux', () => {
     if (opts.apiAppId && !opts.teamId) internals.demuxByApiApp.set(opts.apiAppId, botId)
   }
 
-  const resolve = (manager: SharedBotManager, over: { apiAppId?: string; teamId?: string; secret?: string }) =>
+  const resolve = (manager: RelayIngressManager, over: { apiAppId?: string; teamId?: string; secret?: string }) =>
     manager.resolveVerified({
       ...(over.apiAppId ? { apiAppId: over.apiAppId } : {}),
       ...(over.teamId ? { teamId: over.teamId } : {}),
@@ -1043,7 +1043,7 @@ describe('SharedBotManager.resolveVerified composite demux', () => {
     })
 
   it('demuxes sibling installs of one distributed app by (api_app_id, team_id)', () => {
-    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
     addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1' })
     addBot(manager, BOT_T2, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T2' })
 
@@ -1053,7 +1053,7 @@ describe('SharedBotManager.resolveVerified composite demux', () => {
   })
 
   it('never serves a team-scoped bot to another workspace via the signature scan', () => {
-    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
     // Composite index deliberately EMPTY (indexed:false) — only the router knows
     // the team ids, so resolution falls through to the verify-scan, where the
     // same-secret sibling MUST be skipped on the team-id guard.
@@ -1067,7 +1067,7 @@ describe('SharedBotManager.resolveVerified composite demux', () => {
   })
 
   it('fails closed when a distributed-app envelope carries no team id', () => {
-    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
     addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1' })
     addBot(manager, BOT_T2, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T2' })
 
@@ -1076,7 +1076,7 @@ describe('SharedBotManager.resolveVerified composite demux', () => {
   })
 
   it('keeps the legacy app-only fast path and scan learning for team-less bots', () => {
-    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
     addBot(manager, BOT_LEGACY, 'legacy-secret', {}) // no app id stamped — scan learns it
 
     const internals = manager as unknown as DemuxInternals
@@ -1093,7 +1093,7 @@ describe('SharedBotManager.resolveVerified composite demux', () => {
   // that gap, commit N+1, and broadcast its assign FIRST. Applying the stale
   // release would tear down the ingest of a credential it never described.
   it('unassign carrying an OLDER generation than the held assignment is ignored', async () => {
-    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
     const internals = manager as unknown as DemuxInternals
     internals.ingests.set(BOT_T1, { signingSecret: SHARED_SECRET, stop: async () => {} })
     internals.router.upsert({
@@ -1120,7 +1120,7 @@ describe('SharedBotManager.resolveVerified composite demux', () => {
   })
 
   it('unassign drops the composite index entries', async () => {
-    const manager = new SharedBotManager(deps({ clock: new FakeClock(NOW) }))
+    const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
     addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1' })
 
     await manager.unassign(BOT_T1)

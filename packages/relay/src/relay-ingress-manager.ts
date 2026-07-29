@@ -1,12 +1,12 @@
 /**
- * `SharedBotManager` (shared-bot-relay.md §10 / §12) — glues the CP's shared-bot
+ * `RelayIngressManager` (shared-bot-relay.md §10 / §12) — glues the CP's HTTP-bot
  * control frames (`rc/bot-assign` / `rc/bot-unassign` / `rc/routes` / `rc/assign`)
- * to the ingest lifecycle, arbitration ({@link SharedBotRouter}), and forwarding
+ * to the ingest lifecycle, arbitration ({@link BotArbitrationRouter}), and forwarding
  * onto the target daemon (`rd/msg` `im`).
  *
  * Flow: `rc/bot-assign` loads the bot's inbound routing + credentials; inbound
- * arrives via the shared HTTP `/slack/events` + `/slack/interactions` routes, which
- * demux to a bot via {@link SharedBotManager.resolveVerified} (Slack HMAC is the
+ * arrives via the public HTTP `/slack/events` + `/slack/interactions` routes, which
+ * demux to a bot via {@link RelayIngressManager.resolveVerified} (Slack HMAC is the
  * authenticator), normalize, arbitrate, and forward to the resolved daemon as a
  * pre-addressed `rd/msg(im)`. A daemon that is offline / has no connection here is a
  * TYPED delivery miss → bounded-loss drop + count (never a silent success, §17).
@@ -29,12 +29,8 @@ import type {
 } from '@agentconnect.md/protocol'
 import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from './log.js'
-import { SharedBotRouter, sessionKeyOf, type BotAssignment, type RouteTarget } from './shared-bot-router.js'
-import {
-  SlackSharedIngest,
-  type SharedSlackSessionAction,
-  type SharedSlackSessionShortcut
-} from './slack-shared-ingest.js'
+import { BotArbitrationRouter, sessionKeyOf, type BotAssignment, type RouteTarget } from './bot-arbitration.js'
+import { SlackHttpIngest, type HttpSlackSessionAction, type HttpSlackSessionShortcut } from './slack-http-ingest.js'
 import { verifySlackSignature } from './hooks/signature.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 
@@ -81,7 +77,7 @@ function isOlderRevokeReport(incoming: RcBotRevoked, queued: RcBotRevoked): bool
   return incoming.eventAtMs < queued.eventAtMs
 }
 
-export interface SharedBotManagerDeps {
+export interface RelayIngressManagerDeps {
   /** A live `rd/*` connection to a daemon on THIS relay, or undefined if none. */
   getDaemon: (daemonId: string) => RelayDaemonConnection | undefined
   /** Persist a channel's default agent chosen in the config modal (→ CP `rc/set-channel-agent`). */
@@ -99,13 +95,13 @@ export interface SharedBotManagerDeps {
   /** Report a workspace uninstall / token revocation (→ `rc/bot-revoked`) so the CP
    *  marks the Bot + its installs revoked. Returns `false` when the CP link wasn't
    *  READY, so the manager can retry on reconnect ({@link
-   *  SharedBotManager.flushPendingReports}) — this report is NOT droppable: Slack
+   *  RelayIngressManager.flushPendingReports}) — this report is NOT droppable: Slack
    *  acked the HTTP event before this ran and never redelivers it, and a dead token
    *  gives the CP nothing to observe. */
   reportBotRevoked: (m: RcBotRevoked) => Promise<boolean>
   /** Report the thread's now-resolved owner to the CP (→ `rc/thread-assign`). Returns
    *  `false` if the CP link was not READY and the frame was dropped, so the manager can
-   *  retry it when the link recovers ({@link SharedBotManager.flushPendingReports}). */
+   *  retry it when the link recovers ({@link RelayIngressManager.flushPendingReports}). */
   reportThreadAssign: (m: RcThreadAssign) => boolean
   /** Pull a thread's persisted owner from the CP on an affinity miss (→ `rc/thread-lookup`). */
   lookupThread: (m: RcThreadLookup) => Promise<import('@agentconnect.md/protocol').RcThreadLookupOk>
@@ -123,7 +119,7 @@ export interface SharedBotManagerDeps {
 /** Stable daemon-side dedup id for one Slack interaction. The hash deliberately omits
  *  open-config's one-shot triggerId (interactionId already identifies that click), so
  *  sensitive trigger material never leaks into logs or dedup keys. */
-export function sharedSlackActionMsgId(botId: string, action: SharedSlackSessionAction): string {
+export function httpSlackActionMsgId(botId: string, action: HttpSlackSessionAction): string {
   const { target, interactionId, kind } = action
   let value: string | boolean | undefined
   switch (action.kind) {
@@ -167,7 +163,7 @@ export function sharedSlackActionMsgId(botId: string, action: SharedSlackSession
   return `slack-action:${digest}`
 }
 
-export function sharedSlackShortcutMsgId(botId: string, shortcut: SharedSlackSessionShortcut): string {
+export function httpSlackShortcutMsgId(botId: string, shortcut: HttpSlackSessionShortcut): string {
   const digest = createHash('sha256')
     .update(
       JSON.stringify({
@@ -182,9 +178,9 @@ export function sharedSlackShortcutMsgId(botId: string, shortcut: SharedSlackSes
   return `slack-action:${digest}`
 }
 
-export class SharedBotManager {
-  private readonly router = new SharedBotRouter()
-  private readonly ingests = new Map<string, SlackSharedIngest>()
+export class RelayIngressManager {
+  private readonly router = new BotArbitrationRouter()
+  private readonly ingests = new Map<string, SlackHttpIngest>()
   /** Learned/assigned `api_app_id → botId` index — O(1) HTTP demux (self-populates on
    *  first verified delivery when the CP didn't stamp `apiAppId`). Bounded flush.
    *  Team-scoped bots (a distributed app's installs) NEVER enter this map — they
@@ -225,7 +221,7 @@ export class SharedBotManager {
     for (const k of [...this.gatedDmReported]) if (k.startsWith(prefix)) this.gatedDmReported.delete(k)
   }
 
-  constructor(private readonly deps: SharedBotManagerDeps) {}
+  constructor(private readonly deps: RelayIngressManagerDeps) {}
 
   /** Emit a thread-assign report; on a non-READY CP link stash it for retry. */
   private report(m: RcThreadAssign): void {
@@ -262,7 +258,7 @@ export class SharedBotManager {
     const queued = this.pendingRevokedReports.get(m.botId)
     if (queued && isOlderRevokeReport(m, queued)) {
       this.deps.log.warn(
-        `shared-bot(${m.botId}): dropping out-of-order revoke report (an at-least-as-new one is queued)`
+        `relay-ingress(${m.botId}): dropping out-of-order revoke report (an at-least-as-new one is queued)`
       )
       return
     }
@@ -328,7 +324,7 @@ export class SharedBotManager {
     this.clearGatedDmLatches(a.botId)
     this.router.upsert(a)
     if (a.platform !== 'slack') {
-      this.deps.log.warn(`shared-bot(${a.botId}): platform '${a.platform}' ingest not yet supported (milestone C)`)
+      this.deps.log.warn(`relay-ingress(${a.botId}): platform '${a.platform}' ingest not yet supported (milestone C)`)
       return
     }
     // Rebuild the ingest (secrets may have rotated). Idempotent: stop any existing.
@@ -346,7 +342,7 @@ export class SharedBotManager {
     } else if (a.apiAppId) {
       this.rememberApiApp(a.apiAppId, a.botId)
     }
-    const ingest = new SlackSharedIngest(
+    const ingest = new SlackHttpIngest(
       a.botId,
       { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret },
       {
@@ -361,7 +357,7 @@ export class SharedBotManager {
         onSessionAction: (action) => this.forwardSessionAction(a.botId, action),
         onSessionShortcut: (shortcut) => this.forwardSessionShortcut(a.botId, shortcut),
         onBotRevoked: (reason, eventAtMs) => {
-          this.deps.log.warn(`shared-bot(${a.botId}): workspace revoked the app (${reason})`)
+          this.deps.log.warn(`relay-ingress(${a.botId}): workspace revoked the app (${reason})`)
           // Echo the generation this assignment carries + when Slack says the
           // event happened: the CP refuses the report if a re-install has since
           // replaced the credential (lifecycle events are not ordered).
@@ -408,11 +404,11 @@ export class SharedBotManager {
     // NEWER assignment, the release describes a credential that has since been
     // replaced — the CP decided and broadcast in that order, and a re-install's
     // assign can overtake it. Dropping the stale release here is what keeps a
-    // live ingest alive; an unstamped release (transport flip, un-share, last
+    // live ingest alive; an unstamped release (transport flip, uninstall, last
     // install removed) is unconditional as before.
     const held = this.router.get(botId)?.credentialRevision
     if (credentialRevision !== undefined && held !== undefined && held > credentialRevision) {
-      this.deps.log.warn(`shared-bot(${botId}): ignoring stale unassign (rev ${credentialRevision} < held ${held})`)
+      this.deps.log.warn(`relay-ingress(${botId}): ignoring stale unassign (rev ${credentialRevision} < held ${held})`)
       return
     }
     this.clearGatedDmLatches(botId)
@@ -451,7 +447,7 @@ export class SharedBotManager {
     timestamp: string | undefined
     rawBody: Buffer
     signature: string | undefined
-  }): SlackSharedIngest | undefined {
+  }): SlackHttpIngest | undefined {
     const now = this.deps.clock.now()
     const { apiAppId, teamId, timestamp, rawBody, signature } = args
     // Composite fast path — assign-derived, so a hit is exact (still HMAC-verified).
@@ -495,7 +491,7 @@ export class SharedBotManager {
   private selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void {
     const route = this.router.targetForAgentId(botId, agentId)
     if (!route) {
-      this.deps.log.warn(`shared-bot(${botId}): ignored stale thread-agent selection for agent ${agentId}`)
+      this.deps.log.warn(`relay-ingress(${botId}): ignored stale thread-agent selection for agent ${agentId}`)
       return
     }
     const sessionKey = sessionKeyOf({ channel: channelId, thread: threadTs })
@@ -540,7 +536,7 @@ export class SharedBotManager {
     // Filter before arbitration so a managed agent's platform copy cannot mutate
     // thread affinity or produce a CP assignment report.
     if (this.isAgentBotMessage(botId, msg)) {
-      this.deps.log.debug(`shared-bot(${botId}): ignored AgentConnect bot message ${msg.msgId}`)
+      this.deps.log.debug(`relay-ingress(${botId}): ignored AgentConnect bot message ${msg.msgId}`)
       return
     }
     const sessionKey = sessionKeyOf(msg)
@@ -601,7 +597,7 @@ export class SharedBotManager {
     if (!daemon) {
       const n = (this.dropped.get(botId) ?? 0) + 1
       this.dropped.set(botId, n)
-      this.deps.log.warn(`shared-bot(${botId}): daemon ${tgt.daemonId} offline — dropped (total ${n})`)
+      this.deps.log.warn(`relay-ingress(${botId}): daemon ${tgt.daemonId} offline — dropped (total ${n})`)
       return
     }
     const rd: RdMsgIm = {
@@ -620,7 +616,7 @@ export class SharedBotManager {
       const n = (this.dropped.get(botId) ?? 0) + 1
       this.dropped.set(botId, n)
       this.deps.log.warn(
-        `shared-bot(${botId}): forward to ${tgt.daemonId} failed: ${(err as Error).message} (dropped ${n})`
+        `relay-ingress(${botId}): forward to ${tgt.daemonId} failed: ${(err as Error).message} (dropped ${n})`
       )
     }
   }
@@ -687,23 +683,25 @@ export class SharedBotManager {
       // Pool-wide DM latch = DELIVERY, reported after the post succeeds.
       if (msg.isDm) this.deps.reportNoticePosted({ botId, channel: msg.channel })
     } catch (err) {
-      this.deps.log.warn(`shared-bot(${botId}): gating notice failed in ch=${msg.channel}: ${(err as Error).message}`)
+      this.deps.log.warn(
+        `relay-ingress(${botId}): gating notice failed in ch=${msg.channel}: ${(err as Error).message}`
+      )
     }
   }
 
-  /** Forward a shared Slack status-modal action to the exact agent that rendered
+  /** Forward an HTTP Slack status-modal action to the exact agent that rendered
    *  the button. This intentionally does not use channel ownership: the operator may
    *  click an older Bob session after switching the channel default to Alice. */
-  private forwardSessionAction(botId: string, action: SharedSlackSessionAction): void {
+  private forwardSessionAction(botId: string, action: HttpSlackSessionAction): void {
     const { target, interactionId: _interactionId, userId, ...payload } = action
     const route = this.router.targetForAgent(botId, target.agentId, target.integrationId)
     if (!route) {
-      this.deps.log.warn(`shared-bot(${botId}): ignored stale session action for agent ${target.agentId}`)
+      this.deps.log.warn(`relay-ingress(${botId}): ignored stale session action for agent ${target.agentId}`)
       return
     }
     const daemon = this.deps.getDaemon(route.daemonId)
     if (!daemon) {
-      this.deps.log.warn(`shared-bot(${botId}): daemon ${route.daemonId} offline — session action dropped`)
+      this.deps.log.warn(`relay-ingress(${botId}): daemon ${route.daemonId} offline — session action dropped`)
       return
     }
     const rd: RdMsgSlackAction = {
@@ -711,7 +709,7 @@ export class SharedBotManager {
       agentId: route.agentId,
       integrationId: route.integrationId,
       sessionKey: target.sessionKey,
-      msgId: sharedSlackActionMsgId(botId, action),
+      msgId: httpSlackActionMsgId(botId, action),
       botId,
       ...(userId ? { userId } : {}),
       payload
@@ -720,16 +718,16 @@ export class SharedBotManager {
       .sendMsg(rd)
       .then((ack) => {
         if (!ack.accepted)
-          this.deps.log.warn(`shared-bot(${botId}): daemon rejected session action (${ack.reason ?? 'unknown'})`)
+          this.deps.log.warn(`relay-ingress(${botId}): daemon rejected session action (${ack.reason ?? 'unknown'})`)
       })
       .catch((err) =>
-        this.deps.log.warn(`shared-bot(${botId}): session action forward failed: ${(err as Error).message}`)
+        this.deps.log.warn(`relay-ingress(${botId}): session action forward failed: ${(err as Error).message}`)
       )
   }
 
   /** Resolve a message shortcut from live conversation ownership, then let the
    *  daemon resolve the exact bot-scoped session before it opens the modal. */
-  private forwardSessionShortcut(botId: string, shortcut: SharedSlackSessionShortcut): boolean {
+  private forwardSessionShortcut(botId: string, shortcut: HttpSlackSessionShortcut): boolean {
     const sessionKey = sessionKeyOf({ channel: shortcut.channelId, thread: shortcut.threadTs })
     const assignment = this.router.get(botId)
     if (!assignment) return false
@@ -758,7 +756,7 @@ export class SharedBotManager {
       agentId: route.agentId,
       integrationId: route.integrationId,
       sessionKey,
-      msgId: sharedSlackShortcutMsgId(botId, shortcut),
+      msgId: httpSlackShortcutMsgId(botId, shortcut),
       botId,
       ...(shortcut.userId ? { userId: shortcut.userId } : {}),
       payload: {
@@ -772,10 +770,10 @@ export class SharedBotManager {
       .sendMsg(rd)
       .then((ack) => {
         if (!ack.accepted)
-          this.deps.log.warn(`shared-bot(${botId}): daemon rejected session shortcut (${ack.reason ?? 'unknown'})`)
+          this.deps.log.warn(`relay-ingress(${botId}): daemon rejected session shortcut (${ack.reason ?? 'unknown'})`)
       })
       .catch((err) =>
-        this.deps.log.warn(`shared-bot(${botId}): session shortcut forward failed: ${(err as Error).message}`)
+        this.deps.log.warn(`relay-ingress(${botId}): session shortcut forward failed: ${(err as Error).message}`)
       )
     return true
   }

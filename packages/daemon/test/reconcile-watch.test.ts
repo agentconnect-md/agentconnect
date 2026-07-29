@@ -295,13 +295,13 @@ describe('Daemon watcher resilience: corrupt agent.json', () => {
 })
 
 describe('Daemon.reconcileSlackConnections', () => {
-  it('refreshes channel metadata when a shared send-only client is first bound', async () => {
+  it('refreshes channel metadata when an HTTP send-only client is first bound', async () => {
     const root = root1()
     const { daemon } = makeStubDaemon(root)
     await daemon.start()
 
     const shared = { botToken: 'xoxb-shared', botUserId: 'U_SHARED', stop: vi.fn().mockResolvedValue(undefined) }
-    ;(daemon as any).sharedSlackConns = new Map([['xoxb-shared', shared]])
+    ;(daemon as any).httpSlackConns = new Map([['xoxb-shared', shared]])
     ;(daemon as any).agents = new Map([
       [
         'bot-shared',
@@ -313,14 +313,14 @@ describe('Daemon.reconcileSlackConnections', () => {
     ])
     const refresh = vi.spyOn(daemon as any, 'refreshChannels').mockResolvedValue(undefined)
 
-    await (daemon as any).openSharedSlackConnections([...(daemon as any).agents.values()])
+    await (daemon as any).openHttpSlackConnections([...(daemon as any).agents.values()])
 
     expect((daemon as any).connByIntegration.get('int-shared')).toBe(shared)
     expect(refresh).toHaveBeenCalledOnce()
     expect(refresh).toHaveBeenCalledWith(shared)
 
     // A normal reconcile of an unchanged binding should not re-list Slack channels.
-    await (daemon as any).openSharedSlackConnections([...(daemon as any).agents.values()])
+    await (daemon as any).openHttpSlackConnections([...(daemon as any).agents.values()])
     expect(refresh).toHaveBeenCalledOnce()
     await daemon.stop()
   })
@@ -420,7 +420,7 @@ describe('Daemon.reconcileSlackConnections', () => {
     const telegramOld = conn('tg-old')
     const discordLive = conn('dc-live')
     const discordOld = conn('dc-old')
-    ;(daemon as any).sharedSlackConns = new Map([
+    ;(daemon as any).httpSlackConns = new Map([
       ['xoxb-live', sharedLive],
       ['xoxb-old', sharedOld]
     ])

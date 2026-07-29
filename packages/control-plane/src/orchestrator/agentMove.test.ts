@@ -12,7 +12,7 @@ import type {
 } from '../persistence/ports.js'
 import type { ControlSender } from './outbound.js'
 import type { HookService } from '../hooks/hook.service.js'
-import type { SharedBotOrchestrator } from './sharedBot.js'
+import type { HttpBotOrchestrator } from './httpBot.js'
 import type { CollabRoutesService } from './collabRoutes.service.js'
 import { AgentMoveConflict, AgentMoveFailed, AgentMoveService } from './agentMove.js'
 import { AgentSpecAssembler } from './agentSpecAssembler.js'
@@ -248,7 +248,7 @@ function make(
     } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['assignments'],
     control,
     hooks: { rebroadcastForAgent: async () => void calls.push('hooks') } as unknown as HookService,
-    sharedBot: { syncBot: async () => void calls.push('shared') } as unknown as SharedBotOrchestrator,
+    httpBot: { syncBot: async () => void calls.push('http') } as unknown as HttpBotOrchestrator,
     collabRoutes: { broadcast: async () => void calls.push('collab') } as unknown as CollabRoutesService,
     mutations,
     sessionOwners: { releaseSession: (key) => void releasedLive.push(key as typeof SESSION_KEY) }

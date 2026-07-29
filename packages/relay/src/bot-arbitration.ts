@@ -1,11 +1,11 @@
 /**
- * `SharedBotRouter` (shared-bot-relay.md §10) — the relay-side arbitration table
- * for shared bots. Holds each assigned bot's attributed routing table (pushed by
+ * `BotArbitrationRouter` (shared-bot-relay.md §10) — the relay-side arbitration table
+ * for HTTP bots. Holds each assigned bot's attributed routing table (pushed by
  * the CP via `rc/bot-assign` / `rc/routes`) plus live thread affinity, and
  * resolves one inbound message to its target `{ agentId, daemonId, integrationId }`.
  *
  * The ladder mirrors the daemon's local arbitration (routing-table.ts) but over
- * ALREADY-ATTRIBUTED routes, and adapted for the shared-bot ambiguity (all agents
+ * ALREADY-ATTRIBUTED routes, and adapted for the multi-agent ambiguity (all agents
  * answer as one bot user id): channel ownership → thread continuity → keyword
  * (agent slug) → the group's default agent for a bare @bot / DM. There is NO
  * unscoped mention rule (it would starve keyword disambiguation, §10.4); the bare
@@ -114,7 +114,7 @@ export function arbitrate(
   //    rule fires on any message — the operator's trigger choice).
   const ownedMention = scoped.find((r) => r.match.kind === 'mention' && kindMatches(r, msg, a.botUserId))
   if (ownedMention) return target(ownedMention)
-  // Conversation-scoped keyword (§14.3): slug disambiguation inside a shared DM
+  // Conversation-scoped keyword (§14.3): slug disambiguation inside a multi-agent DM
   // enabled for several gated agents — outranks the scoped auto so "<slug> …"
   // names its agent; an unslugged message falls through to the first auto route.
   const ownedKeyword = scoped.find((r) => r.match.kind === 'keyword' && kindMatches(r, msg, a.botUserId))
@@ -158,7 +158,7 @@ export function arbitrate(
 /** Cap on a bot's negative-affinity set before it is flushed (bounds CP lookups). */
 const MAX_NEGATIVE_AFFINITY = 10_000
 
-export class SharedBotRouter {
+export class BotArbitrationRouter {
   private readonly bots = new Map<string, BotAssignment>()
   /** Per-bot thread affinity: botId → (sessionKey → target). */
   private readonly affinity = new Map<string, Map<string, RouteTarget>>()
@@ -213,7 +213,7 @@ export class SharedBotRouter {
     return this.bots.get(botId)
   }
 
-  /** Resolve an opaque shared-status target to the current canonical daemon route.
+  /** Resolve an opaque relay-status target to the current canonical daemon route.
    *  Both agentId and integrationId must still belong to this bot; stale/tampered
    *  buttons are rejected instead of falling through to a channel's current owner. */
   targetForAgent(botId: string, agentId: string, integrationId: string): RouteTarget | undefined {
@@ -230,7 +230,7 @@ export class SharedBotRouter {
     return target(route)
   }
 
-  /** Resolve an agent picker value to one canonical route for this shared bot.
+  /** Resolve an agent picker value to one canonical route for this HTTP bot.
    *  Repeated scoped/keyword rules are fine when they point at the same integration;
    *  conflicting placements fail closed instead of choosing by array order. */
   targetForAgentId(botId: string, agentId: string): RouteTarget | undefined {

@@ -903,7 +903,7 @@ interface Pending {
   /** Trusted sender id for the message that started this turn. Approval audit rows use
    *  this actor, not the session's historical first trigger. */
   requesterId?: string
-  /** Exact integration that owns the reply path. Shared Slack turns encode it into the
+  /** Exact integration that owns the reply path. HTTP Slack turns encode it into the
    *  status controls so the relay can route each button to the right owner. */
   integrationId?: string
   /** Public avatar URL for this turn's Slack channel messages (icon_url), if the CP resolved one. */
@@ -1307,13 +1307,13 @@ export class Daemon {
   private dreamScheduler!: DreamScheduler
   private sessions!: SessionManager
   // integrationId -> the SlackConnection that owns it (for replies). Holds BOTH
-  // socket-mode (direct) and send-only (shared-bot) connections — a shared bot's
+  // socket-mode (direct) and send-only (HTTP-bot) connections — an HTTP bot's
   // send-only client is registered here too so replies/attachments/MCP reuse it.
   private connByIntegration = new Map<string, SlackConnection>()
-  // Shared-bot send-only Slack clients, keyed by xoxb (one per bot token; the relay
+  // HTTP-bot send-only Slack clients, keyed by xoxb (one per bot token; the relay
   // owns their inbound). Separate from the direct sockets so reconcile can dedup +
-  // tear down a bot's old direct socket when it flips to shared.
-  private sharedSlackConns = new Map<string, SlackConnection>()
+  // tear down a bot's old direct socket when it flips to HTTP transport.
+  private httpSlackConns = new Map<string, SlackConnection>()
   // integrationId -> the TelegramConnection that owns it (for replies). Separate from
   // connByIntegration so Slack reconcile (which reads `.appToken`) never sees a Telegram conn.
   private tgConnByIntegration = new Map<string, TelegramConnection>()
@@ -2148,8 +2148,8 @@ export class Daemon {
       }
     }
 
-    // open send-only Slack clients for shared bots (inbound lives on the relay).
-    await this.openSharedSlackConnections(agents)
+    // Open send-only Slack clients for HTTP bots (inbound lives on the relay).
+    await this.openHttpSlackConnections(agents)
     // Long-poll / gateway / WS platform connects (Telegram/Discord/Feishu) must NOT gate
     // boot: their start() awaits a bot-identity handshake (e.g. Telegram getMe) that can
     // HANG indefinitely when the platform API is unreachable — which would otherwise stall
@@ -2418,7 +2418,7 @@ export class Daemon {
    * Close platform clients whose credential key has no reference in the FINAL
    * active-agent roster, and evict every derived index that points at a removed
    * or re-keyed integration. Consolidation maps are the reference counts: direct
-   * Slack is keyed by appToken; shared Slack, Telegram and Discord by botToken.
+   * Slack is keyed by appToken; HTTP Slack, Telegram and Discord by botToken.
    *
    * A captured connection on a live turn is a temporary reference too. Detach
    * drains its own dispatch leases before reaching this method; the guard also
@@ -2525,11 +2525,11 @@ export class Daemon {
       await conn.stop()
       this.connections = this.connections.filter((candidate) => candidate !== conn)
     }
-    for (const [botToken, conn] of [...this.sharedSlackConns]) {
+    for (const [botToken, conn] of [...this.httpSlackConns]) {
       if (shared.has(botToken)) continue
       await this.waitForConnectionUses(conn)
       await conn.stop()
-      this.sharedSlackConns.delete(botToken)
+      this.httpSlackConns.delete(botToken)
     }
     for (const conn of [...this.telegramConns]) {
       if (telegram.has(conn.botToken)) continue
@@ -2638,24 +2638,24 @@ export class Daemon {
         )
       }
     }
-    // Shared-bot send-only clients (mode:'shared') — reconciled alongside the sockets.
-    await this.openSharedSlackConnections([...this.agents.values()])
+    // HTTP-bot send-only clients (wire mode `shared`) — reconciled alongside the sockets.
+    await this.openHttpSlackConnections([...this.agents.values()])
   }
 
   /**
-   * Open (or reuse) a SEND-ONLY Slack Web-API client per shared bot token and bind
+   * Open (or reuse) a SEND-ONLY Slack Web-API client per HTTP bot token and bind
    * it into `connByIntegration`, so replies / attachment fetches / MCP platform
    * tools / cron anchors resolve a connection for a `mode:'shared'` integration
    * (shared-bot-relay.md §11). No Socket Mode socket is opened — the bot's inbound
    * arrives from the relay as `rd/msg(im)`. Idempotent: an already-open client for
-   * the same xoxb is reused; when a bot flips direct→shared its old direct socket
+   * the same xoxb is reused; when a bot flips direct→HTTP transport its old direct socket
    * (same botToken) is stopped so it stops competing with the relay for the single
    * Socket Mode consumer.
    */
-  private async openSharedSlackConnections(agents: LoadedAgent[]): Promise<void> {
+  private async openHttpSlackConnections(agents: LoadedAgent[]): Promise<void> {
     const groups = consolidateShared(agents)
     for (const group of groups.values()) {
-      let conn = this.sharedSlackConns.get(group.botToken)
+      let conn = this.httpSlackConns.get(group.botToken)
       let bound = false
       if (!conn) {
         conn = new SlackConnection({
@@ -2671,10 +2671,10 @@ export class Daemon {
         })
         try {
           await conn.start()
-          this.sharedSlackConns.set(group.botToken, conn)
-          this.log.info(`slack: send-only (shared) client ready as bot user ${conn.botUserId}`)
+          this.httpSlackConns.set(group.botToken, conn)
+          this.log.info(`slack: send-only (HTTP) client ready as bot user ${conn.botUserId}`)
         } catch (err) {
-          this.log.warn(`slack: shared send-only client failed — retry on next reconcile: ${formatErr(err)}`)
+          this.log.warn(`slack: HTTP send-only client failed — retry on next reconcile: ${formatErr(err)}`)
           continue
         }
       }
@@ -2683,7 +2683,7 @@ export class Daemon {
         this.botUserIds[integrationId] = conn.botUserId
         this.connByIntegration.set(integrationId, conn)
       }
-      // Shared integrations still have the same xoxb Web API surface as direct
+      // HTTP integrations still have the same xoxb Web API surface as direct
       // sockets. Once a send-only client is bound, use it to seed the membership
       // snapshot too; otherwise rows created by shared routing know only the raw
       // channel id and the console can never render Slack's channel name.
@@ -4675,7 +4675,7 @@ export class Daemon {
   }
 
   /**
-   * A shared-bot inbound (`rd/msg` `im`): the relay already arbitrated the target
+   * An HTTP-bot inbound (`rd/msg` `im`): the relay already arbitrated the target
    * agent + integration, so this is the explicit-agent path — no local routing. The
    * reply flows out-of-band through the agent's send-only Slack connection
    * (`replyConnFor`), NOT `rd/chat` (that is webchat-only). The `rd/ack` is a plain
@@ -4694,22 +4694,22 @@ export class Daemon {
     // API. Mirror the lookup here so session metadata/history can label the sender.
     const conn = this.connByIntegration.get(msg.integrationId)
     if (conn) this.nameResolver?.noteMessage(conn, normalized)
-    // Shared-bot ingress is pre-addressed and bypasses onInbound(), so repeat the
+    // HTTP-bot ingress is pre-addressed and bypasses onInbound(), so repeat the
     // terminal agent-bot suppression here before commands or model admission.
     if (this.isAgentBotMessage(normalized)) {
       this.log.debug(`relay: consumed AgentConnect bot message ${msg.msgId} without waking ${msg.agentId}`)
       return { msgId: msg.msgId, accepted: true }
     }
-    // Conversation gating (§14) last-hop backstop: the relay arbitrates shared-bot
+    // Conversation gating (§14) last-hop backstop: the relay arbitrates HTTP-bot
     // routing, but a stale relay route snapshot must not activate a private agent in
     // an Off conversation. Admission = a bindRule scoped to this conversation (the
-    // CP ships a gated install's enabled set even in shared mode).
+    // CP ships a gated install's enabled set even in relay-managed mode).
     if (!this.gatedAdmission(msg.integrationId, normalized)) {
       this.maybeGatedNotice(normalized, [msg.integrationId])
       this.log.debug(`relay: dropped ${msg.msgId} for gated integration ${msg.integrationId} (conversation off)`)
       return { msgId: msg.msgId, accepted: true }
     }
-    // Shared-bot IM bypasses onInbound() because the relay already arbitrated the
+    // HTTP-bot IM bypasses onInbound() because the relay already arbitrated the
     // target. It must still intercept control commands before dispatch — especially
     // `!resume`, otherwise an open loop circuit drops the only recovery message.
     const command = parseCommand(normalized.text)
@@ -4726,7 +4726,7 @@ export class Daemon {
       this.handleCommand(command, normalized, target)
       return { msgId: msg.msgId, accepted: true }
     }
-    // Shared-bot ingress bypasses onInbound(), so repeat its `!stop` thread-mute gate:
+    // HTTP-bot ingress bypasses onInbound(), so repeat its `!stop` thread-mute gate:
     // while muted, implicit routing (thread affinity / keyword / auto / dm) never
     // dispatches — only an explicit @mention does, and it clears the mute. Muted traffic
     // still enters the transcript so the agent catches up when re-activated (§8.5).
@@ -4752,8 +4752,8 @@ export class Daemon {
     return { msgId: msg.msgId, accepted: true }
   }
 
-  /** Apply one shared-bot interaction after relay routing. Re-check every daemon-owned
-   *  boundary before opening or mutating anything: the agent, shared Slack integration,
+  /** Apply one HTTP-bot interaction after relay routing. Re-check every daemon-owned
+   *  boundary before opening or mutating anything: the agent, HTTP Slack integration,
    *  local connection, session owner, and (when retained) exact delivery binding must all
    *  still agree. Message shortcuts resolve their channel/thread coordinates here. */
   private handleRelaySlackAction(msg: RdMsgSlackAction): RdAck {
@@ -6743,7 +6743,7 @@ export class Daemon {
         .map((r) => {
           const mention = attachmentMention(r.attachments)
           return {
-            // A shared Slack app gives every agent-authored message the same bot_id.
+            // A shareable Slack app gives every agent-authored message the same bot_id.
             // Prefer our stable per-message metadata so a remote A is not mistaken for
             // this local B and then discarded by SessionManager's own-author filter.
             sender: r.agentAuthorId ?? (r.isBot && ours.has(r.sender) ? agentId : r.sender),
@@ -9420,8 +9420,8 @@ export class Daemon {
 
   /** Opaque routing target attached to daemon-rendered interactive Slack blocks when
    * inbound actions belong to the relay instead of this process's Socket Mode edge. */
-  private sharedSlackSessionTarget(p: Pick<Pending, 'agentId' | 'integrationId' | 'sessionKey'>): string | undefined {
-    return p.integrationId && this.isSharedSlackIntegration(p.agentId, p.integrationId)
+  private httpSlackSessionTarget(p: Pick<Pending, 'agentId' | 'integrationId' | 'sessionKey'>): string | undefined {
+    return p.integrationId && this.isHttpSlackIntegration(p.agentId, p.integrationId)
       ? encodeSharedSlackStatusTarget({
           agentId: p.agentId,
           integrationId: p.integrationId,
@@ -10065,9 +10065,9 @@ export class Daemon {
     return `${this.webAppBase()}${orgSeg}/agents/${encodeURIComponent(agentId)}`
   }
 
-  /** Whether this turn's reply rides a shared Slack integration. The relay owns that
-   *  app's Socket Mode connection, so interactive actions must use relay-recognized ids. */
-  private isSharedSlackIntegration(agentId: string, integrationId?: string): boolean {
+  /** Whether this turn's reply rides an HTTP Slack integration. The relay owns that
+   *  app's inbound edge, so interactive actions must use relay-recognized ids. */
+  private isHttpSlackIntegration(agentId: string, integrationId?: string): boolean {
     if (!integrationId) return false
     const agent = this.agents.get(agentId)
     const int = agent?.integrations.find((i) => i.id === integrationId)
@@ -10076,7 +10076,7 @@ export class Daemon {
 
   /** Whether this turn's Slack bot is SHAREABLE (multi-agent). Only a shareable bot
    *  has another agent to switch to, so the in-thread "Switch agent" control is gated
-   *  on this — a single-agent shared bot routes the same way but omits the option. */
+   *  on this — a single-agent HTTP bot routes the same way but omits the option. */
   private isShareableSlackIntegration(agentId: string, integrationId?: string): boolean {
     if (!integrationId) return false
     const agent = this.agents.get(agentId)
@@ -10346,7 +10346,7 @@ export class Daemon {
       // as usage_update / turn-end land.
       p.lastStatusBar = key
       const link = this.sessionLink(p.acpSessionId)
-      const sessionTarget = this.sharedSlackSessionTarget(p)
+      const sessionTarget = this.httpSlackSessionTarget(p)
       const shared =
         sessionTarget && p.integrationId
           ? {
@@ -10674,7 +10674,7 @@ export class Daemon {
       channel: p.channel,
       resolve: resolveResult
     })
-    const blocks = buildPermissionCard(requestId, params, this.sharedSlackSessionTarget(p))
+    const blocks = buildPermissionCard(requestId, params, this.httpSlackSessionTarget(p))
     const fallback = `Permission requested: ${params.toolCall?.title ?? 'a tool call'}`
     const ts = await this.postCardSerialized(p, (slack) =>
       slack.postBlocks(p.channel, blocks, fallback, p.statusThread, {
@@ -11094,7 +11094,7 @@ export class Daemon {
     const target = elicitTarget(params)
     if (!target) return undefined
     const requestId = isApproval ? randomUUID() : `elicit-${++this.elicitSeq}`
-    const blocks = buildElicitationCard(requestId, params, this.sharedSlackSessionTarget(p))
+    const blocks = buildElicitationCard(requestId, params, this.httpSlackSessionTarget(p))
     if (!blocks) return undefined
     const fallback = (params as { message?: string }).message ?? 'The agent needs your input'
     let resolveResult!: (res: CreateElicitationResponse) => void
@@ -14367,7 +14367,7 @@ export class Daemon {
     await Promise.resolve(this.relays?.stop()).catch((e) => errors.push(e))
     for (const run of [...this.slackRetryRuns.values()]) await Promise.resolve(run.promise).catch((e) => errors.push(e))
     for (const c of this.connections) await Promise.resolve(c.stop()).catch((e) => errors.push(e))
-    for (const c of this.sharedSlackConns.values()) await Promise.resolve(c.stop()).catch((e) => errors.push(e))
+    for (const c of this.httpSlackConns.values()) await Promise.resolve(c.stop()).catch((e) => errors.push(e))
     for (const c of this.telegramConns) await Promise.resolve(c.stop()).catch((e) => errors.push(e))
     for (const c of this.discordConns) await Promise.resolve(c.stop()).catch((e) => errors.push(e))
     for (const c of this.feishuConns) await Promise.resolve(c.stop()).catch((e) => errors.push(e))

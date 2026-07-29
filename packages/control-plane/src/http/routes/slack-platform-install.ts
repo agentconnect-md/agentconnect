@@ -73,7 +73,7 @@ export function slackPlatformInstallRoutes(deps: HttpDeps) {
         }
         const orgId = req.orgCtx!.orgId
         // Events-API-only: same relay precondition as an http quick-install.
-        if (!relayHttpBase(deps.config.PUBLIC_RELAY_URL) || !deps.sharedBot.hasConnectedRelay()) {
+        if (!relayHttpBase(deps.config.PUBLIC_RELAY_URL) || !deps.httpBot.hasConnectedRelay()) {
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,
@@ -271,7 +271,7 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
               { installId: row.id, botId: existing.id, boundAgentId: otherAgent.agentId, targetAgentId: agent.id },
               'slack platform re-install: workspace already bound to another agent'
             )
-            await deps.sharedBot.syncBot(existing.id)
+            await deps.httpBot.syncBot(existing.id)
             return fail('agent_taken')
           }
           if (installs.length === 0) {
@@ -285,7 +285,7 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
               ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {})
             })
           }
-          await deps.sharedBot.syncBot(existing.id)
+          await deps.httpBot.syncBot(existing.id)
         } else {
           const created = await installNewSlackBot(deps, req.log, {
             orgId: OrgId(row.orgId),

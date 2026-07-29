@@ -17,12 +17,12 @@ import { buildRelayServer } from './server.js'
 import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-server.js'
 import { createRelayBrowserServer } from './relay-browser-server.js'
 import { WebchatRouter } from './webchat-router.js'
-import { SharedBotManager } from './shared-bot-manager.js'
+import { RelayIngressManager } from './relay-ingress-manager.js'
 import { SlackEventDedup } from './slack-event-dedup.js'
 import { registerSlackHttpIngress } from './slack-http-ingress.js'
 import { CollaborationRouter } from './collaboration-router.js'
 import { createAgentMsgRouter } from './agent-msg-router.js'
-import type { BotAssignment } from './shared-bot-router.js'
+import type { BotAssignment } from './bot-arbitration.js'
 import { HookTable } from './hooks/hook-table.js'
 import { HookRateLimiter } from './hooks/rate-limit.js'
 import { registerHookIngress } from './hooks/ingress.js'
@@ -62,7 +62,7 @@ async function main(): Promise<void> {
   // Build the server first so the CP client can log through its pino instance. The
   // health probes and the CP-revoke callback read the client / rd server through a
   // holder (both are constructed below, once the logger exists).
-  const held: { client?: RelayCpClient; rdServer?: RelayDaemonServer; sharedBot?: SharedBotManager } = {}
+  const held: { client?: RelayCpClient; rdServer?: RelayDaemonServer; relayIngress?: RelayIngressManager } = {}
 
   // The bot-agnostic collaboration routing snapshot (agent-collaboration §2.3/§6.2).
   // The CP ships it over `rc/collab-routes`; the cross-daemon `rd/agentmsg` router
@@ -132,22 +132,22 @@ async function main(): Promise<void> {
       // revoked grants cannot survive a reconnect while a CP outage still leaves
       // the last verified bindings available.
       memoryBindings.clear()
-      held.sharedBot?.flushPendingReports()
+      held.relayIngress?.flushPendingReports()
     },
     // CP revoked a daemon's credential/membership — drop its rd/* connection now (§9).
     onRevoke: (daemonId) => held.rdServer?.revoke(daemonId),
-    // Shared-bot control (§10): the manager is constructed below (after rdServer);
-    // these callbacks only fire once the relay is READY, so `held.sharedBot` is set.
+    // HTTP-bot control (§10): the manager is constructed below (after rdServer);
+    // these callbacks only fire once the relay is READY, so `held.relayIngress` is set.
     onBotAssign: (a) =>
-      void held.sharedBot
+      void held.relayIngress
         ?.assign(toBotAssignment(a))
         .catch((err) => log.error(`relay: bot-assign failed: ${String(err)}`)),
     onBotUnassign: (a) =>
-      void held.sharedBot
+      void held.relayIngress
         ?.unassign(a.botId, a.credentialRevision)
         .catch((err) => log.error(`relay: bot-unassign failed: ${String(err)}`)),
     onRoutes: (r) =>
-      held.sharedBot?.updateRoutes(r.botId, {
+      held.relayIngress?.updateRoutes(r.botId, {
         members: r.members,
         agents: r.agents.map((x) => ({ agentId: x.agentId, name: x.name })),
         routes: r.routes,
@@ -158,7 +158,7 @@ async function main(): Promise<void> {
         noticedDmConversations: r.noticedDmConversations
       }),
     onAssign: (a) =>
-      held.sharedBot?.setAffinity(a.botId, a.sessionKey, {
+      held.relayIngress?.setAffinity(a.botId, a.sessionKey, {
         agentId: a.agentId,
         daemonId: a.daemonId,
         integrationId: ''
@@ -176,11 +176,11 @@ async function main(): Promise<void> {
   })
   held.client = client
 
-  // Shared-bot manager (§10): loads each `rc/bot-assign`'s inbound routing + creds and
-  // arbitrates/forwards inbound. Constructed before `listen()` so the shared Slack HTTP
+  // Relay ingress manager (§10): loads each `rc/bot-assign`'s inbound routing + creds and
+  // arbitrates/forwards inbound. Constructed before `listen()` so the Slack HTTP
   // ingress can register its routes; `getDaemon` late-binds the rd/* server (created
   // after listen). Inbound arrives on `/slack/events` + `/slack/interactions` below.
-  const sharedBot = new SharedBotManager({
+  const relayIngress = new RelayIngressManager({
     getDaemon: (daemonId) => held.rdServer?.get(daemonId),
     setChannelAgent: (botId, channelId, agentId) => client.emitSetChannelAgent({ botId, channelId, agentId }),
     reportBotChannels: (m) => client.emitBotChannels(m),
@@ -195,12 +195,12 @@ async function main(): Promise<void> {
     clock: systemClock,
     log
   })
-  held.sharedBot = sharedBot
+  held.relayIngress = relayIngress
 
-  // Shared Slack HTTP ingress (POST /slack/events + /slack/interactions) — the pool's
+  // Slack HTTP ingress (POST /slack/events + /slack/interactions) — the pool's
   // ONE inbound Events API surface. Each POST is demuxed+HMAC-verified to a bot, deduped
   // by event_id, then arbitrated + forwarded. Routes must register before listen.
-  registerSlackHttpIngress(server, { manager: () => held.sharedBot, dedup: new SlackEventDedup(systemClock), log })
+  registerSlackHttpIngress(server, { manager: () => held.relayIngress, dedup: new SlackEventDedup(systemClock), log })
 
   // Public webhook ingress (POST /webhooks/in/:token). Routes must register
   // before listen; the rd/* server only exists after it — hence the late bind.
@@ -303,7 +303,7 @@ async function main(): Promise<void> {
     // stop the CP client, then close the http server.
     for (const ws of rdServer.wss.clients) ws.close(1012, 'relay restarting')
     for (const ws of browserServer.clients) ws.close(1012, 'relay restarting')
-    await held.sharedBot?.stopAll()
+    await held.relayIngress?.stopAll()
     await client.stop()
     await server.close()
     process.exit(0)

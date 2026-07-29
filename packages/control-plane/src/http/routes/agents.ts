@@ -803,7 +803,7 @@ export function agentRoutes(deps: HttpDeps) {
       crons: deps.repos.cron,
       control: deps.control,
       hooks: deps.hooks,
-      sharedBot: deps.sharedBot,
+      httpBot: deps.httpBot,
       collabRoutes: deps.collabRoutes,
       mutations: deps.agentMutations,
       sessionOwners: deps.sessionOwners,
@@ -1869,7 +1869,7 @@ export function agentRoutes(deps: HttpDeps) {
     // collaborator who can't even view a restricted agent 404s. Identities never
     // ride the wire, but the DERIVED conversation-gating flag does (§14/§9): a
     // visibility flip re-converges every integration of the agent — direct installs
-    // get a fresh spec push, shared bots a route recompile — best-effort, with the
+    // get a fresh spec push, HTTP bots a route recompile — best-effort, with the
     // reconcile roster as the durable backstop.
     r.put(
       '/agents/:id/sharing',

@@ -269,7 +269,7 @@ describe('GET /integrations/slack/platform/callback', () => {
     const bot = await prisma.bot.findUniqueOrThrow({
       where: { slackAppId_teamId: { slackAppId: PLATFORM.appId, teamId: 'T0WORKSPACE' } }
     })
-    await app.deps.sharedBot.revokeBot(bot.id, 'app_uninstalled')
+    await app.deps.httpBot.revokeBot(bot.id, 'app_uninstalled')
     const revoked = await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })
     expect(revoked.revokedAt).toBeInstanceOf(Date)
     expect(await prisma.integration.count({ where: { botId: bot.id, status: 'revoked' } })).toBe(1)
@@ -321,15 +321,15 @@ describe('GET /integrations/slack/platform/callback', () => {
     // NOW the stale event lands. A relay that missed the re-assign echoes revision 1;
     // one that already applied it echoes revision 2 with the OLD occurrence time.
     // Both must be refused.
-    await app.deps.sharedBot.revokeBot(bot.id, 'app_uninstalled', { revision: 1, eventAtMs: uninstalledAt })
-    await app.deps.sharedBot.revokeBot(bot.id, 'app_uninstalled', { revision: 2, eventAtMs: uninstalledAt })
+    await app.deps.httpBot.revokeBot(bot.id, 'app_uninstalled', { revision: 1, eventAtMs: uninstalledAt })
+    await app.deps.httpBot.revokeBot(bot.id, 'app_uninstalled', { revision: 2, eventAtMs: uninstalledAt })
 
     const after = await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })
     expect(after.revokedAt).toBeNull()
     expect(await prisma.integration.count({ where: { botId: bot.id, status: 'active' } })).toBe(1)
 
     // A genuine LATER uninstall of the current generation still works.
-    await app.deps.sharedBot.revokeBot(bot.id, 'app_uninstalled', {
+    await app.deps.httpBot.revokeBot(bot.id, 'app_uninstalled', {
       revision: 2,
       eventAtMs: after.credentialInstalledAt!.getTime() + 1000
     })
