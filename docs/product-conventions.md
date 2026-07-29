@@ -105,6 +105,19 @@ gives the two visibilities different surfaces, matching how DMs already behave:
   conversation is channel-like, that row carries a channel's trigger choice, so an
   editor may also opt it into every message.
 
+A preserved row does not outlive the visibility that created it. When a restricted agent
+becomes org-visible its group-DM and DM rows go inert — the Console stops showing them,
+so honouring one would leave the agent answering a conversation with no visible control
+to stop it. It falls back to the same defaults every org-visible agent has: mention in a
+group DM, every message in a DM.
+
+A shared bot is one Slack identity, so a mention in a group DM cannot name which agent
+behind it is meant, and the slug that disambiguates a shared DM does not apply — a DM
+activates on any message, which a slug can outrank, while a group DM activates on the
+mention itself. A group DM served by a shared bot therefore converges on exactly one
+agent, the same way an ownerless channel does: the bot's earliest active install among
+those that enabled it.
+
 A conversation first mistaken for a channel converts to a group DM once resolved, and
 that conversion returns it to Off: the trigger it carried was a channel's default, never
 an operator's choice for this conversation. The resolved classification is durable — it

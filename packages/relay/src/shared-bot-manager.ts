@@ -363,8 +363,10 @@ export class SharedBotManager {
     // the gated installs still need their pending Off row to ever be enableable.
     // A group DM is discovered the same way — Slack never lists one as membership, so
     // an unreported one could never be enabled. It is only ever *addressed* by mention,
-    // so unlike a DM it is reported only when it names this bot.
-    const addressesBot = msg.isDm || (msg.isGroupDm === true && msg.mentionedBots.length > 0)
+    // so unlike a DM it is reported only when it names THIS bot: `mentionedBots` also
+    // holds the humans and other apps named in the same message.
+    const namesThisBot = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
+    const addressesBot = msg.isDm || (msg.isGroupDm === true && namesThisBot)
     if (addressesBot && !msg.sender.isBot && hasGatedMembers) await this.reportGatedConversation(botId, msg)
     const prior = this.router.peekAffinity(botId, sessionKey)
     let tgt = this.router.route(botId, msg)

@@ -418,6 +418,33 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       expect(compiled).toEqual([expect.objectContaining({ agentId: ALICE, match: { kind: 'mention' } })])
     })
 
+    // One Slack identity cannot say WHICH agent a group-DM mention meant, and the slug
+    // that disambiguates a shared DM does not apply (the mention rung outranks keyword).
+    // Two identical scoped mention routes would let relay order decide silently, so the
+    // conversation converges on the earliest install instead.
+    it('converges a group DM enabled by TWO gated agents onto the earliest install', async () => {
+      gatedAgents = new Set([ALICE, BOB])
+      channels = [
+        channel({ integrationId: INT_B, channelId: 'G42', kind: 'mpim', agentId: BOB, trigger: 'mention' }),
+        channel({ integrationId: INT_A, channelId: 'G42', kind: 'mpim', agentId: ALICE, trigger: 'mention' })
+      ]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      const g42 = assign.routes.filter((r) => r.scope?.channel === 'G42')
+      // ALICE is the earliest install (INT_A) — one route, hers, regardless of row order.
+      expect(g42).toEqual([expect.objectContaining({ agentId: ALICE, match: { kind: 'mention' } })])
+    })
+
+    // §14.4: the console hides a preserved direct row once its owner is org-visible, so
+    // compiling it would be behaviour the operator cannot see or stop.
+    it('makes a preserved group-DM row inert once its owner is no longer gated', async () => {
+      gatedAgents = new Set()
+      channels = [channel({ integrationId: INT_A, channelId: 'G42', kind: 'mpim', agentId: ALICE, trigger: 'any' })]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.routes.filter((r) => r.scope?.channel === 'G42')).toEqual([])
+    })
+
     it('recordNoticePosted re-stamps the pool with the DELIVERED conversation', async () => {
       gatedAgents = new Set([ALICE])
       const orch = makeOrch()

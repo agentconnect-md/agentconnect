@@ -2225,6 +2225,13 @@ export type ChannelTrigger = 'off' | 'mention' | 'any'
  *  Slack group DM: observed like an `im`, mention-gated like a channel. */
 export type ConversationKind = 'channel' | 'im' | 'mpim'
 
+/** A conversation the bot was never invited to and that is never enumerated — a DM or a
+ *  Slack group DM. Its row exists only because observation created it, which is why a
+ *  preserved one is inert for a non-gated owner: there is no console control over it. */
+export function isDirectConversationKind(kind: ConversationKind | undefined): boolean {
+  return kind === 'im' || kind === 'mpim'
+}
+
 /** One conversation the integration's bot participates in, as reported by the daemon. */
 export interface IntegrationChannelRecord {
   integrationId: IntegrationId

@@ -61,6 +61,7 @@ import type {
   ExternalMemoryGrantRepo,
   MemoryPluginInstallationRepo
 } from '../persistence/ports.js'
+import { isDirectConversationKind } from '../persistence/ports.js'
 import { mcpProxyDef, relayHttpOrigin } from './mcpProvider.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from './memoryConnection.js'
 import type { DaemonId } from '../domain/ids.js'
@@ -214,8 +215,13 @@ export function integrationToSpec(
   channels: IntegrationChannelRecord[] = [],
   gated = false
 ): IntegrationSpec {
+  // A preserved DIRECT row (§14.4) is inert here. Its "any message" was an editor's
+  // choice while the agent was restricted, and the console hides the row once it is
+  // not — honouring it would leave an org-visible agent answering every message in a
+  // conversation with no visible control to turn it off. Such an agent reaches its DMs
+  // through the unscoped dm default and a group DM through the unscoped mention default.
   const channelRules: IntegrationBindRule[] = channels
-    .filter((c) => c.trigger === 'any' && c.kind !== 'im')
+    .filter((c) => c.trigger === 'any' && !isDirectConversationKind(c.kind))
     .map((c) => ({ channel: c.channelId, match: { kind: 'auto' as const } }))
   const bindRules = gated ? gatedBindRules(channels) : [...DEFAULT_BIND_RULES, ...channelRules]
   if (i.platform === 'telegram') {
