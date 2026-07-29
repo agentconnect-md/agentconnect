@@ -36,6 +36,13 @@ class SpyControl {
   }
 }
 
+class FlakyControl extends SpyControl {
+  override async integrationUpsert(daemonId: string, spec: IntegrationUpsert): Promise<void> {
+    await super.integrationUpsert(daemonId, spec)
+    if (this.upserts.length === 1) throw new Error('simulated integration push failure')
+  }
+}
+
 async function placedAgent(): Promise<string> {
   await seedDaemon(prisma, DAEMON, {
     capabilities: { platforms: ['feishu'], runtimes: ['claude'], acp: true, features: [] }
@@ -317,5 +324,60 @@ describe('Feishu/Lark one-click app registration', () => {
     expect(unsupported.json()).toMatchObject({ status: 'failed', failureReason: 'agent_unavailable' })
     expect(await prisma.bot.count()).toBe(0)
     expect(await prisma.integration.count()).toBe(0)
+  })
+
+  it('retries a failed daemon push without duplicating the persisted integration', async () => {
+    const agentId = await placedAgent()
+    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+      const form = new URLSearchParams(String(init?.body))
+      if (form.get('action') === 'begin') {
+        return new Response(
+          JSON.stringify({
+            verification_uri_complete: 'https://accounts.feishu.cn/device?user_code=RETRY',
+            device_code: 'retry-device-code',
+            expires_in: 600,
+            interval: 1
+          })
+        )
+      }
+      return new Response(
+        JSON.stringify({
+          client_id: 'cli_retry',
+          client_secret: 'retry-secret',
+          user_info: { tenant_brand: 'feishu' }
+        })
+      )
+    })
+    const control = new FlakyControl()
+    const app = buildHttpApp(prisma, undefined, undefined, control as unknown as ControlSender, {
+      feishuAppRegistration: service(fetcher)
+    })
+    running = app
+
+    const started = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/feishu/app`,
+      payload: { agentId }
+    })
+    const { id } = started.json() as { id: string }
+    const first = await app.app.inject({ method: 'GET', url: `${ORG}/integrations/feishu/app/${id}` })
+    expect(first.json()).toMatchObject({ status: 'pending', integrationId: null })
+    const persisted = await prisma.integration.findFirstOrThrow({ where: { agentId, platform: 'feishu' } })
+    expect(await prisma.integration.count()).toBe(1)
+    expect(await prisma.feishuAppRegistration.findUnique({ where: { id } })).toMatchObject({
+      status: 'authorized',
+      integrationId: persisted.id,
+      appSecret: 'retry-secret'
+    })
+
+    const retried = await app.app.inject({ method: 'GET', url: `${ORG}/integrations/feishu/app/${id}` })
+    expect(retried.json()).toMatchObject({ status: 'completed', integrationId: persisted.id })
+    expect(await prisma.integration.count()).toBe(1)
+    expect(control.upserts).toHaveLength(2)
+    expect(await prisma.feishuAppRegistration.findUnique({ where: { id } })).toMatchObject({
+      status: 'completed',
+      appSecret: null,
+      targetKey: null
+    })
   })
 })

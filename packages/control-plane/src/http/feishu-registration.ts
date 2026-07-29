@@ -74,10 +74,6 @@ function targetKey(orgId: OrgId, agentId: AgentId): string {
   return `${orgId}:${agentId}`
 }
 
-function failureReason(error: unknown): FeishuRegistrationFailure {
-  return error instanceof FeishuRegistrationSetupError ? error.reason : 'setup_failed'
-}
-
 function publicSnapshot(row: FeishuAppRegistrationRecord): FeishuRegistrationSnapshot {
   const status = row.status === 'authorized' ? 'pending' : row.status
   return {
@@ -180,13 +176,16 @@ export class FeishuAppRegistrationService {
           region: current.resolvedRegion
         })
       } catch (error) {
-        if (error instanceof FeishuRegistrationRetryError) {
-          await this.store.releaseAuthorized(id, claimToken)
-        } else {
+        if (error instanceof FeishuRegistrationSetupError) {
           await this.store.settle(id, claimToken, {
             status: 'failed',
-            failureReason: failureReason(error)
+            failureReason: error.reason
           })
+        } else {
+          // DB/control delivery may fail after the reserved bot/integration was
+          // already persisted. Keep credentials retryable; the idempotent
+          // finalizer will reuse those rows on the next browser poll.
+          await this.store.releaseAuthorized(id, claimToken)
         }
         return publicSnapshot((await this.store.get(id)) ?? current)
       }
