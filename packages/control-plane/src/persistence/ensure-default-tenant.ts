@@ -14,7 +14,6 @@
 import type { PrismaClient } from '../generated/prisma/client.js'
 import { DEFAULT_ORG_ID, DEFAULT_ORG_SLUG, DEFAULT_OWNER_EMAIL, DEFAULT_OWNER_ID } from '../config/defaults.js'
 import { withTx } from './prisma.js'
-import { ensurePresetAgentsProvisioned } from './preset-agents.js'
 
 export async function ensureDefaultTenant(prisma: PrismaClient, opts?: { presetAgents?: boolean }): Promise<void> {
   await withTx(prisma, async (tx) => {
@@ -48,6 +47,16 @@ export async function ensureDefaultTenant(prisma: PrismaClient, opts?: { presetA
     // Idempotent + collision-aware: this runs on EVERY no-auth boot, against an
     // org that may already hold a preset row or a user agent on the reserved
     // slug. A system write — the default tenant has no acting user.
-    if (opts?.presetAgents !== false) await ensurePresetAgentsProvisioned(tx, org.id)
+    //
+    // LAZY import on purpose. The preset seam reaches `PgAgentRepo`, which imports
+    // `@agentconnect.md/protocol`; a static import would drag that whole graph into
+    // every consumer of this module — including `prisma/seed.ts`, which runs as a
+    // bare `tsx` process with no `development` export condition and so would need
+    // protocol's `dist/` built just to create an Org row. Loading it only when
+    // presets are actually enabled keeps the seed's import graph at Prisma + config.
+    if (opts?.presetAgents !== false) {
+      const { ensurePresetAgentsProvisioned } = await import('./preset-agents.js')
+      await ensurePresetAgentsProvisioned(tx, org.id)
+    }
   })
 }

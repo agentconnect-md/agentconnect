@@ -81,7 +81,11 @@ export async function setup({ provide }: GlobalSetupContext): Promise<void> {
   })
 
   // Seed default Org + owner User so FK-bearing fixtures have a tenancy anchor.
-  await execa('pnpm', ['exec', 'tsx', seedEntry], {
+  // `--conditions development` matches how Vitest resolves workspace deps
+  // (`@agentconnect.md/*` → their `src/`): this is a SPAWNED node process, so
+  // without it any import that reaches a workspace package needs that package's
+  // `dist/` built, and the suite would depend on build order.
+  await execa('pnpm', ['exec', 'tsx', '--conditions', 'development', seedEntry], {
     cwd: packageRoot,
     env: { ...process.env, DATABASE_URL: url },
     stdio: 'inherit'
