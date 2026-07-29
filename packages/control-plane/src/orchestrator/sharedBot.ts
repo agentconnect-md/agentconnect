@@ -183,13 +183,34 @@ export class SharedBotOrchestrator {
    * + its installs revoked, release the relay ingest, and pull the send-only
    * specs from member daemons (mirrors the integration DELETE route's push).
    * Idempotent — a duplicate report finds no active installs and only re-stamps.
+   *
+   * GENERATION-FENCED. Slack does not order `app_uninstalled`/`tokens_revoked`,
+   * so a delayed event from a prior install can arrive after the workspace has
+   * re-installed; applying it would revoke a live, freshly-authorized bot and
+   * silently kill its integrations. The compare-and-set in `revokeIfCurrent`
+   * refuses that report, and the rest of this method — which is what actually
+   * tears the bot down — is skipped with it.
    */
-  async revokeBot(botId: string, reason: 'app_uninstalled' | 'tokens_revoked'): Promise<void> {
+  async revokeBot(
+    botId: string,
+    reason: 'app_uninstalled' | 'tokens_revoked',
+    fence: { revision?: number; eventAtMs?: number } = {}
+  ): Promise<void> {
     const bot = await this.bots.get(BotId(botId))
     if (!bot) return
     // Snapshot members BEFORE the flip — listForBot is active-only.
     const installs = await this.integrations.listForBot(bot.id)
-    await this.bots.setRevoked(bot.id, new Date())
+    const applied = await this.bots.revokeIfCurrent(bot.id, new Date(), {
+      ...(fence.revision !== undefined ? { revision: fence.revision } : {}),
+      ...(fence.eventAtMs !== undefined ? { eventAt: new Date(fence.eventAtMs) } : {})
+    })
+    if (!applied) {
+      this.log.info(
+        { botId: bot.id, reason, reportedRevision: fence.revision, currentRevision: bot.credentialRevision },
+        'shared-bot: stale revoke ignored — credential was replaced since the event'
+      )
+      return
+    }
     await this.integrations.markRevokedForBot(bot.id)
     await this.unassign(bot)
     for (const integration of installs) {
@@ -763,6 +784,9 @@ export class SharedBotOrchestrator {
       ...(bot.teamId ? { teamId: bot.teamId } : {}),
       // Persisted at OAuth exchange; spares the relay an auth.test round-trip.
       ...(bot.botUserId ? { botUserId: bot.botUserId } : {}),
+      // Generation of the credentials below — echoed back on `rc/bot-revoked` so a
+      // revocation observed under a REPLACED credential cannot kill this one.
+      credentialRevision: bot.credentialRevision,
       secrets: { botToken: secret.botToken, signingSecret: secret.signingSecret ?? '' },
       members: compiled.members,
       agents: compiled.agents,

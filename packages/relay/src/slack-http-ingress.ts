@@ -31,7 +31,7 @@ export const SLACK_BODY_LIMIT = 1024 * 1024
 
 /** The minimum an ingest must expose to the route (satisfied by `SlackSharedIngest`). */
 export interface SlackIngestHandlers {
-  handleEvent(event: SlackMessageEvent | undefined): Promise<void>
+  handleEvent(event: SlackMessageEvent | undefined, eventAtMs?: number): Promise<void>
   handleInteraction(body: SlackInteractiveBody): Promise<unknown>
 }
 
@@ -65,6 +65,11 @@ interface SlackEventEnvelope {
   api_app_id?: string
   team_id?: string
   event_id?: string
+  /** Seconds since epoch — when the event HAPPENED (not when it was delivered).
+   *  Load-bearing for app-lifecycle events: Slack does not order them, so the CP
+   *  needs the occurrence time to reject an uninstall that predates the
+   *  credential it would revoke. */
+  event_time?: number
   event?: SlackMessageEvent
 }
 
@@ -114,7 +119,8 @@ export function registerSlackHttpIngress(app: FastifyInstance, deps: SlackHttpIn
       if (deps.dedup.seen(body.event_id)) return reply.code(200).send()
 
       // Ack NOW (Slack's 3s window); forward async. A forward miss is bounded loss.
-      void ingest.handleEvent(body.event).catch((err) => {
+      // `event_time` is seconds → ms for the CP's revocation fence.
+      void ingest.handleEvent(body.event, body.event_time ? body.event_time * 1000 : undefined).catch((err) => {
         deps.log.warn(`slack ingress: event handler error: ${(err as Error).message}`)
       })
       return reply.code(200).send()

@@ -401,7 +401,10 @@ export interface SlackSharedIngestDeps {
   onSessionShortcut: (shortcut: SharedSlackSessionShortcut) => boolean
   /** The workspace uninstalled the app / revoked its tokens — the bot's credential
    *  is dead; report upstream so the CP marks it revoked. */
-  onBotRevoked?: (reason: 'app_uninstalled' | 'tokens_revoked') => void
+  /** `eventAtMs` = Slack's envelope `event_time` (when the uninstall HAPPENED),
+   *  forwarded so the CP can reject an event that predates the credential it
+   *  would revoke. Undefined when the envelope carried no `event_time`. */
+  onBotRevoked?: (reason: 'app_uninstalled' | 'tokens_revoked', eventAtMs?: number) => void
   /** Test seam for the bot-token Web API client. */
   webClientFactory?: (botToken: string, options?: WebClientOptions) => WebClient
   log: Logger
@@ -482,14 +485,14 @@ export class SlackSharedIngest {
   /** Handle one verified `/slack/events` envelope after demux + HMAC. Forwards
    *  top-level chat after removing this app's own echo. Never throws — HTTP 200 was
    *  already sent; a forward miss is bounded loss at the forwarder. */
-  async handleEvent(event: SlackMessageEvent | undefined): Promise<void> {
+  async handleEvent(event: SlackMessageEvent | undefined, eventAtMs?: number): Promise<void> {
     try {
       // App lifecycle: the workspace pulled the app / revoked its tokens. Not a
       // chat event (no user/bot_id — isRoutableEvent would drop it), so branch
       // before the chat filters. `tokens_revoked` is treated as a full revoke —
       // the app has exactly one bot token, and Slack sends it when that dies.
       if (event?.type === 'app_uninstalled' || event?.type === 'tokens_revoked') {
-        this.deps.onBotRevoked?.(event.type)
+        this.deps.onBotRevoked?.(event.type, eventAtMs)
         return
       }
       if (event && this.isOwnMembershipChange(event)) {

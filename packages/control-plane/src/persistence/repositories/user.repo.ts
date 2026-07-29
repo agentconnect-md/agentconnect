@@ -14,7 +14,7 @@
  * lowercase everywhere so invites and sign-ins can't miss on case.
  */
 import type { PrismaClient } from '../../generated/prisma/client.js'
-import type { PrismaLike } from '../prisma.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import {
   type UserRepo,
   type ProvisionOidcUserInput,
@@ -94,11 +94,20 @@ const isP2002 = (err: unknown): boolean => (err as { code?: string }).code === '
  * same slug-allocation logic as signup. `db` may be an interactive transaction
  * client. Slug collisions fall back to a numeric suffix, then a userId-derived slug.
  *
+ * ATOMIC (preset-agents.md §3.2): the whole body runs in ONE transaction —
+ * `withAmbientTx` opens it on a root client and composes under the waitlist
+ * redeem's existing one. The org, its membership, the preset agent, and the
+ * `preset_agent` marker must commit together: the marker is the idempotency
+ * record, so a crash that committed the agent but not the marker would leave the
+ * next boot's backfill seeing a reserved-slug collision and permanently recording
+ * `skipped` — a marker that no longer describes the preset that exists, with no
+ * repair path (creation has no later trigger). Rollback is the only safe answer.
+ *
  * Each candidate is claimed with a conflict-TOLERANT insert (`createMany` +
  * `skipDuplicates` ⇒ `INSERT … ON CONFLICT DO NOTHING`), which reports a taken slug as
  * `count: 0` instead of raising. Never allocate by catching the unique violation of a
- * plain INSERT: this may run inside an interactive transaction (the waitlist redeem),
- * and in Postgres ANY failed statement aborts the WHOLE transaction — the caught P2002
+ * plain INSERT: this now ALWAYS runs inside an interactive transaction, and in
+ * Postgres ANY failed statement aborts the WHOLE transaction — the caught P2002
  * would poison every following query with 25P02 and surface as a 500. A read-then-insert
  * has the same flaw, since two concurrent allocations can pick the same free candidate.
  */
@@ -109,38 +118,34 @@ export async function ensurePersonalOrg(
   email?: string | null,
   opts?: { presetAgents?: boolean }
 ): Promise<void> {
-  const already = await db.membership.findFirst({ where: { userId, role: 'owner' } })
-  if (already) return
-  const base = personalOrgBase(displayName, email)
-  const name = `${base.charAt(0).toUpperCase()}${base.slice(1)}'s organization`
-  const baseSlug = slugify(base)
-  const candidates = [baseSlug, `${baseSlug}-2`, `${baseSlug}-3`, `org-${userId.slice(-8).toLowerCase()}`]
-  for (const slug of candidates) {
-    // `count: 0` ⇒ the slug is taken (by a committed row, or by a concurrent inserter
-    // this statement waited on) — move to the next candidate with the transaction
-    // still healthy. `count: 1` ⇒ the row is OURS, and `slug` is unique, so reading it
-    // back by slug cannot pick up someone else's org.
-    const { count } = await db.org.createMany({ data: [{ name, slug }], skipDuplicates: true })
-    if (count === 0) continue
-    const org = await db.org.findUniqueOrThrow({ where: { slug }, select: { id: true } })
-    try {
-      await db.membership.create({ data: { orgId: org.id, userId, role: 'owner' } })
+  await withAmbientTx(db, async (tx) => {
+    const already = await tx.membership.findFirst({ where: { userId, role: 'owner' } })
+    if (already) return
+    const base = personalOrgBase(displayName, email)
+    const name = `${base.charAt(0).toUpperCase()}${base.slice(1)}'s organization`
+    const baseSlug = slugify(base)
+    const candidates = [baseSlug, `${baseSlug}-2`, `${baseSlug}-3`, `org-${userId.slice(-8).toLowerCase()}`]
+    for (const slug of candidates) {
+      // `count: 0` ⇒ the slug is taken (by a committed row, or by a concurrent inserter
+      // this statement waited on) — move to the next candidate with the transaction
+      // still healthy. `count: 1` ⇒ the row is OURS, and `slug` is unique, so reading it
+      // back by slug cannot pick up someone else's org.
+      const { count } = await tx.org.createMany({ data: [{ name, slug }], skipDuplicates: true })
+      if (count === 0) continue
+      const org = await tx.org.findUniqueOrThrow({ where: { slug }, select: { id: true } })
+      await tx.membership.create({ data: { orgId: org.id, userId, role: 'owner' } })
       // Org-creation seam (preset-agents.md §3.2): a new personal org is born with
       // the `agentconnect` general preset. A brand-new org cannot collide on the
-      // reserved slug, so no expected-failure statement runs here — safe under the
-      // waitlist redeem's ambient transaction.
+      // reserved slug, so no expected-failure statement runs here — safe under an
+      // ambient transaction. A throw rolls the org + membership back with it (no
+      // compensating delete needed, and none would be legal on an aborted tx).
       if (opts?.presetAgents !== false) {
-        await provisionPresetAgents(db, { orgId: org.id, createdByUserId: userId })
+        await provisionPresetAgents(tx, { orgId: org.id, createdByUserId: userId })
       }
-    } catch (err) {
-      // Outside a transaction this keeps an empty org from leaking; inside one the
-      // rollback does it (and this delete is itself a no-op on the aborted tx).
-      await db.org.delete({ where: { id: org.id } }).catch(() => {})
-      throw err
+      return
     }
-    return
-  }
-  throw new Error('could not allocate a unique slug for the personal org')
+    throw new Error('could not allocate a unique slug for the personal org')
+  })
 }
 
 export class PgUserRepo implements UserRepo {

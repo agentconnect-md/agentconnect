@@ -12,11 +12,12 @@ import { useProfile } from '@/lib/profile'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { consoleKeys } from '@/lib/swr-keys'
 import {
+  ApiError,
   creatorLabel,
   startSlackInstall,
   startSlackPlatformInstall,
+  getSlackPlatformInstall,
   getSlackInstall,
-  fetchIntegrations,
   fetchSlackConfig,
   saveSlackConfig,
   fetchAgentHooks,
@@ -98,6 +99,15 @@ export const PLATFORMS: { key: Platform; label: string }[] = [
 /** The trigger cadences (design vocabulary: "when created / updated / mention only"
  *  — the stored event patterns + the mentionOnly flag encode the choice).
  *  `desc` stays a one-liner so the design's 3-up tiles keep equal height. */
+// Why a platform "Add to Slack" round trip ended without connecting. Keyed by the
+// CP's short reason code (the same note its close page shows).
+const PLATFORM_INSTALL_FAILURES: Record<string, string> = {
+  denied: 'The install was cancelled in Slack.',
+  expired: 'This install link expired — start again.',
+  workspace_taken: 'That Slack workspace is already connected to another organization.',
+  error: 'Slack could not complete the install. Please try again.'
+}
+
 const GH_TRIGGER_TILES: { mode: GhTriggerMode; label: string; desc: string }[] = [
   { mode: 'first', label: GH_TRIGGER_LABEL.first, desc: 'When opened, plus later @mentions.' },
   {
@@ -1042,13 +1052,13 @@ export default function AddIntegrationModal({
     transport: 'socket' | 'http'
   } | null>(null)
   // Platform-published "Add to Slack" app (preset-agents.md §5.3): one click, no app
-  // to create and no tokens — the CP finishes the install in the OAuth callback, so
-  // the modal just polls the integrations list until the new install appears.
+  // to create and no tokens — the CP finishes the install in the OAuth callback, and
+  // the modal polls THAT install row for its terminal state.
   const [platformAvailable, setPlatformAvailable] = useState(false)
   const [platformPhase, setPlatformPhase] = useState<'idle' | 'authorizing'>('idle')
   const [platformErr, setPlatformErr] = useState<string | null>(null)
-  // Integration ids that existed when the popup opened — completion = a NEW slack one.
-  const platformBaseline = useRef<Set<string>>(new Set())
+  // The pending install being polled (its id doubles as the OAuth state).
+  const [platformInstallId, setPlatformInstallId] = useState<string | null>(null)
 
   // Webhook path: the form, then the created row. HMAC is an optional second
   // factor; when selected, the row carries the ONE-TIME signing-secret echo.
@@ -1807,16 +1817,14 @@ export default function AddIntegrationModal({
     }
   }, [mode, platform, slackFunnel])
 
-  // Kick off the platform-app install: mint the state-bound authorize URL, open it
-  // in a popup, and snapshot the current integration ids — the poll below watches
-  // for a NEW slack integration on this agent (the callback creates it server-side).
+  // Kick off the platform-app install: mint the state-bound authorize URL and open
+  // it in a popup. The install row's id is what the poll below follows.
   const startPlatformInstall = async () => {
     if (busyRef.current) return
     setPlatformErr(null)
     try {
-      const baseline = await fetchIntegrations()
-      platformBaseline.current = new Set(baseline.filter((i) => i.agentId === agent.id).map((i) => i.id))
       const r = await startSlackPlatformInstall(agent.id)
+      setPlatformInstallId(r.id)
       window.open(r.installUrl, '_blank', 'noopener,width=680,height=760')
       setPlatformPhase('authorizing')
     } catch (e) {
@@ -1824,20 +1832,28 @@ export default function AddIntegrationModal({
     }
   }
 
-  // While the user approves in the Slack tab, poll until the callback has minted
-  // the integration, then close (the console lists refetch on modal close).
+  // While the user approves in the Slack tab, poll the INSTALL ROW for its terminal
+  // state. Watching the integration list for a new row would hang on the common
+  // re-authorization path: re-installing a workspace this agent already has only
+  // rotates the token server-side and creates no integration.
   useEffect(() => {
-    if (mode !== 'create' || platformPhase !== 'authorizing') return
+    if (mode !== 'create' || platformPhase !== 'authorizing' || !platformInstallId) return
     let alive = true
+    const stop = (message: string) => {
+      setPlatformPhase('idle')
+      setPlatformInstallId(null)
+      setPlatformErr(message)
+    }
     const tick = async () => {
       try {
-        const list = await fetchIntegrations()
-        const landed = list.some(
-          (i) => i.agentId === agent.id && i.platform === 'slack' && !platformBaseline.current.has(i.id)
-        )
-        if (alive && landed) onClose()
-      } catch {
-        /* transient — keep polling */
+        const s = await getSlackPlatformInstall(platformInstallId)
+        if (!alive || s.status === 'pending') return
+        if (s.status === 'completed') return onClose() // lists refetch on close
+        stop(PLATFORM_INSTALL_FAILURES[s.failureReason ?? ''] ?? 'The Slack install did not complete.')
+      } catch (e) {
+        // 404 = the row was TTL-reaped (an abandoned tab), which is terminal —
+        // anything else is transient, so keep polling.
+        if (alive && e instanceof ApiError && e.status === 404) stop(PLATFORM_INSTALL_FAILURES.expired!)
       }
     }
     const h = setInterval(() => void tick(), 2500)
@@ -1846,7 +1862,7 @@ export default function AddIntegrationModal({
       alive = false
       clearInterval(h)
     }
-  }, [mode, platformPhase, agent.id, onClose])
+  }, [mode, platformPhase, platformInstallId, onClose])
 
   // While the user approves the install in the other tab, poll until the CP has the
   // bot token, then reveal the app-level-token step. Cleared on close / phase change.

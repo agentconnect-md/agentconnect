@@ -49,6 +49,8 @@ function bot(over: Partial<BotRecord> = {}): BotRecord {
     teamId: null,
     botUserId: null,
     revokedAt: null,
+    credentialRevision: 1,
+    credentialInstalledAt: null,
     discordAppId: null,
     shareable: true,
     transport: 'http',
@@ -118,11 +120,16 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       [ALICE]: agent(ALICE, 'alice', D1),
       [BOB]: agent(BOB, 'bob', D2)
     }
-    const bots: Pick<BotRepo, 'get' | 'listHttpActive' | 'setRevoked'> = {
+    const bots: Pick<BotRepo, 'get' | 'listHttpActive' | 'revokeIfCurrent'> = {
       get: async () => botRow,
       listHttpActive: async () => [botRow],
-      setRevoked: async (_id, at) => {
+      // Mirrors the SQL CAS: both arms conjunctive, each skipped when the report
+      // didn't carry it, and `credentialInstalledAt: null` passes the time arm.
+      revokeIfCurrent: async (_id, at, fence) => {
+        if (fence.revision !== undefined && fence.revision !== botRow.credentialRevision) return false
+        if (fence.eventAt && botRow.credentialInstalledAt && botRow.credentialInstalledAt >= fence.eventAt) return false
         botRevokedAt = at
+        return true
       }
     }
     const botSecret: Pick<BotSecretStore, 'get'> = {
@@ -748,6 +755,51 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       { daemonId: D1, integrationId: INT_A },
       { daemonId: D2, integrationId: INT_B }
     ])
+  })
+
+  // Slack does not guarantee lifecycle-event ordering: an `app_uninstalled` from a
+  // PRIOR install can be delivered after the workspace re-installed. Applying it
+  // would revoke a live, freshly-authorized bot and kill its integrations.
+  it('revokeBot ignores a report whose credential generation was superseded', async () => {
+    botRow = bot({ credentialRevision: 2 }) // re-install bumped it since the event
+
+    await makeOrch().revokeBot(BOT, 'app_uninstalled', { revision: 1 })
+
+    expect(botRevokedAt).toBeNull() // fresh install untouched…
+    expect(integrations.map((i) => i.status)).toEqual(['active', 'active'])
+    expect(ch.sends).toEqual([]) // …not unassigned from the pool…
+    expect(removals).toEqual([]) // …and its daemon specs stay
+  })
+
+  // The load-bearing arm: a relay that already received the re-install's assignment
+  // echoes the NEW revision, so only the event's own occurrence time reveals that it
+  // predates the credential it would kill.
+  it('revokeBot ignores a report that predates the current credential', async () => {
+    const installedAt = new Date('2026-07-29T12:00:00Z')
+    botRow = bot({ credentialRevision: 2, credentialInstalledAt: installedAt })
+
+    await makeOrch().revokeBot(BOT, 'app_uninstalled', {
+      revision: 2, // current — only the timestamp can catch this one
+      eventAtMs: installedAt.getTime() - 60_000
+    })
+
+    expect(botRevokedAt).toBeNull()
+    expect(integrations.map((i) => i.status)).toEqual(['active', 'active'])
+    expect(removals).toEqual([])
+  })
+
+  it('revokeBot applies a report from the CURRENT generation', async () => {
+    const installedAt = new Date('2026-07-29T12:00:00Z')
+    botRow = bot({ credentialRevision: 2, credentialInstalledAt: installedAt })
+
+    await makeOrch().revokeBot(BOT, 'app_uninstalled', {
+      revision: 2,
+      eventAtMs: installedAt.getTime() + 60_000 // uninstalled AFTER this credential
+    })
+
+    expect(botRevokedAt).toBeInstanceOf(Date)
+    expect(integrations.map((i) => i.status)).toEqual(['revoked', 'revoked'])
+    expect(removals).toHaveLength(2)
   })
 
   it('revokeBot is idempotent — a duplicate report finds no active installs', async () => {

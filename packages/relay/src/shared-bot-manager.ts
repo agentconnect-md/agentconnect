@@ -22,6 +22,7 @@ import type {
   RdMsgSlackAction,
   RcBotChannels,
   RcBotConversation,
+  RcBotRevoked,
   WireNormalizedMessage,
   RcThreadAssign,
   RcThreadLookup
@@ -65,9 +66,12 @@ export interface SharedBotManagerDeps {
    *  notice later, never a lost enablement path. */
   reportNoticePosted: (m: { botId: string; channel: string }) => boolean
   /** Report a workspace uninstall / token revocation (→ `rc/bot-revoked`) so the CP
-   *  marks the Bot + its installs revoked. Best-effort: loss self-heals — outbound
-   *  with the dead token fails and the console converges on the next report. */
-  reportBotRevoked: (m: { botId: string; reason: 'app_uninstalled' | 'tokens_revoked' }) => boolean
+   *  marks the Bot + its installs revoked. Returns `false` when the CP link wasn't
+   *  READY, so the manager can retry on reconnect ({@link
+   *  SharedBotManager.flushPendingReports}) — this report is NOT droppable: Slack
+   *  acked the HTTP event before this ran and never redelivers it, and a dead token
+   *  gives the CP nothing to observe. */
+  reportBotRevoked: (m: RcBotRevoked) => boolean
   /** Report the thread's now-resolved owner to the CP (→ `rc/thread-assign`). Returns
    *  `false` if the CP link was not READY and the frame was dropped, so the manager can
    *  retry it when the link recovers ({@link SharedBotManager.flushPendingReports}). */
@@ -170,6 +174,13 @@ export class SharedBotManager {
   /** Latest bot-level channel snapshot dropped while the CP link was down. A full
    *  snapshot supersedes any older one for the same bot. */
   private readonly pendingChannelReports = new Map<string, RcBotChannels>()
+  /** Revocation reports the CP link wasn't up for, keyed by botId (one bot revokes
+   *  once; a later report for the same bot supersedes). Unlike the other queues
+   *  this one is not merely an optimization: Slack already acked the HTTP event
+   *  and will never redeliver it, and no CP-side probe can discover a dead token,
+   *  so a dropped report leaves the console showing an uninstalled app as active
+   *  forever. Flushed on READY by {@link flushPendingReports}. */
+  private readonly pendingRevokedReports = new Map<string, RcBotRevoked>()
   /** §14 one-time gating-notice latch (`botId:channel`) on the AUTHORITY pod —
    *  correct because only one pod ever posts (deterministic per-bot authority). */
   private readonly gatedNoticesSent = new Set<string>()
@@ -201,9 +212,15 @@ export class SharedBotManager {
     else this.pendingChannelReports.set(m.botId, m)
   }
 
-  /** Re-emit reports and channel snapshots dropped while the CP link was down
-   *  (wired to the client's onReady). Each queue stops at the first frame that still
-   *  can't be sent, keeping the rest. */
+  /** Emit a revocation report; on a non-READY CP link queue it for reconnect. */
+  private reportRevoked(m: RcBotRevoked): void {
+    if (this.deps.reportBotRevoked(m)) this.pendingRevokedReports.delete(m.botId)
+    else this.pendingRevokedReports.set(m.botId, m)
+  }
+
+  /** Re-emit reports, channel snapshots, and revocations dropped while the CP link
+   *  was down (wired to the client's onReady). Each queue stops at the first frame
+   *  that still can't be sent, keeping the rest. */
   flushPendingReports(): void {
     for (const [key, m] of [...this.pendingReports]) {
       if (!this.deps.reportThreadAssign(m)) break
@@ -212,6 +229,13 @@ export class SharedBotManager {
     for (const [botId, snapshot] of [...this.pendingChannelReports]) {
       if (!this.deps.reportBotChannels(snapshot)) break
       this.pendingChannelReports.delete(botId)
+    }
+    // Replayed AS OBSERVED — `credentialRevision`/`eventAtMs` still describe the
+    // generation that was live when Slack sent the event, which is exactly what
+    // the CP's fence needs after an outage that spanned a re-install.
+    for (const [botId, m] of [...this.pendingRevokedReports]) {
+      if (!this.deps.reportBotRevoked(m)) break
+      this.pendingRevokedReports.delete(botId)
     }
   }
 
@@ -254,9 +278,17 @@ export class SharedBotManager {
           this.selectThreadAgent(a.botId, channelId, threadTs, agentId),
         onSessionAction: (action) => this.forwardSessionAction(a.botId, action),
         onSessionShortcut: (shortcut) => this.forwardSessionShortcut(a.botId, shortcut),
-        onBotRevoked: (reason) => {
+        onBotRevoked: (reason, eventAtMs) => {
           this.deps.log.warn(`shared-bot(${a.botId}): workspace revoked the app (${reason})`)
-          this.deps.reportBotRevoked({ botId: a.botId, reason })
+          // Echo the generation this assignment carries + when Slack says the
+          // event happened: the CP refuses the report if a re-install has since
+          // replaced the credential (lifecycle events are not ordered).
+          this.reportRevoked({
+            botId: a.botId,
+            reason,
+            ...(a.credentialRevision !== undefined ? { credentialRevision: a.credentialRevision } : {}),
+            ...(eventAtMs !== undefined ? { eventAtMs } : {})
+          })
         },
         log: this.deps.log
       }

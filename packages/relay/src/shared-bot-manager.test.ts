@@ -84,6 +84,7 @@ interface ManagerInternals {
     }
   >
   reportChannels(snapshot: RcBotChannels): void
+  reportRevoked(m: { botId: string; reason: 'app_uninstalled' | 'tokens_revoked'; credentialRevision?: number }): void
   selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
   forwardSessionAction(botId: string, action: SharedSlackSessionAction): void
   forwardSessionShortcut(botId: string, shortcut: SharedSlackSessionShortcut): boolean
@@ -426,6 +427,31 @@ describe('SharedBotManager thread affinity (report + pull-on-miss)', () => {
     expect(reportBotChannels).toHaveBeenLastCalledWith(latest)
     manager.flushPendingReports()
     expect(reportBotChannels).toHaveBeenCalledTimes(3)
+  })
+
+  // A revocation is NOT droppable like the other best-effort reports: Slack acked
+  // the HTTP event before the relay's handler ran and never redelivers it, a dead
+  // token gives the CP nothing to probe, and assignment reconciliation would just
+  // republish the stale active state — the console would show an uninstalled app
+  // as live forever.
+  it('retries a revocation report received while the CP link was down', () => {
+    let ready = false
+    const reportBotRevoked = vi.fn(() => ready)
+    const manager = new SharedBotManager(deps({ reportBotRevoked }))
+    const internals = manager as unknown as ManagerInternals
+    const report = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 3 }
+
+    internals.reportRevoked(report)
+    expect(reportBotRevoked).toHaveBeenCalledTimes(1) // attempted, refused by the link
+
+    ready = true
+    manager.flushPendingReports()
+    // Replayed verbatim — the revision still describes the generation that was
+    // live when Slack sent the event, which is what the CP's fence needs.
+    expect(reportBotRevoked).toHaveBeenCalledTimes(2)
+    expect(reportBotRevoked).toHaveBeenLastCalledWith(report)
+    manager.flushPendingReports()
+    expect(reportBotRevoked).toHaveBeenCalledTimes(2) // queue drained
   })
 
   it('pulls the persisted owner from the CP on an un-mentioned thread follow-up and forwards it', async () => {

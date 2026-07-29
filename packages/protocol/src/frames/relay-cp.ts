@@ -543,6 +543,12 @@ export const RcBotAssign = z.object({
   // team_id)` key can demux — a signature scan would verify against every sibling
   // install. When set, the relay demuxes this bot ONLY on the composite key.
   teamId: z.string().optional(),
+  // Install GENERATION of the credentials below — advanced by the CP every time a
+  // fresh credential lands on this bot. The relay echoes it back in
+  // `rc/bot-revoked` so the CP can refuse a revocation observed under a credential
+  // that has since been replaced (Slack does not order lifecycle events). Absent
+  // ⇒ the CP applies revocations without the revision arm of the fence.
+  credentialRevision: z.number().int().nonnegative().optional(),
   secrets: RcBotSecrets,
   members: z.array(z.object({ daemonId: z.string().uuid(), agentIds: z.array(z.string().uuid()) })),
   agents: z.array(RcAgentDirEntry).default([]), // member directory (id→name) for the config modal
@@ -642,15 +648,33 @@ export const RcNoticePosted = z.object({
 })
 export type RcNoticePosted = z.infer<typeof RcNoticePosted>
 
-// R→C EVT (fire-and-forget) — the workspace uninstalled the Slack app
-// (`app_uninstalled`) or revoked its tokens (`tokens_revoked`). The relay cannot
-// serve the bot any longer (its token is dead); the CP marks the Bot revoked,
-// flips its integrations to `revoked`, and unassigns the bot from the pool.
-// Loss is tolerable: the next inbound POST for the bot fails verification /
-// outbound fails auth, and the periodic reconcile converges the console state.
+// R→C EVT — the workspace uninstalled the Slack app (`app_uninstalled`) or revoked
+// its tokens (`tokens_revoked`). The relay cannot serve the bot any longer (its
+// token is dead); the CP marks the Bot revoked, flips its integrations to
+// `revoked`, and unassigns the bot from the pool.
+//
+// NOT droppable: Slack acks the HTTP event before the relay's async handler runs,
+// so it is never redelivered, and a dead token gives the CP nothing to observe —
+// assignment reconciliation would just republish the stale active state forever.
+// The relay BUFFERS this across a CP-link outage and flushes on READY, like
+// `rc/thread-assign`.
+//
+// The two fence fields answer Slack's unordered lifecycle delivery: a delayed
+// event from a PRIOR install must not revoke the credential that replaced it.
+// The CP applies the revocation only if BOTH still hold (each arm is skipped when
+// its field is absent — fail-open, an uninstall must eventually take effect).
 export const RcBotRevoked = z.object({
   botId: z.string().uuid(),
-  reason: z.enum(['app_uninstalled', 'tokens_revoked'])
+  reason: z.enum(['app_uninstalled', 'tokens_revoked']),
+  // The `credentialRevision` this relay held for the bot when it observed the
+  // event (from `rc/bot-assign`). Catches a relay that had not yet received the
+  // re-install's assignment.
+  credentialRevision: z.number().int().nonnegative().optional(),
+  // Slack's envelope `event_time` in MILLISECONDS — when the uninstall actually
+  // HAPPENED. The load-bearing arm: a relay that already applied the newer
+  // assignment would echo the NEW revision, so only the event's own timestamp can
+  // reveal that it predates the current credential.
+  eventAtMs: z.number().int().nonnegative().optional()
 })
 export type RcBotRevoked = z.infer<typeof RcBotRevoked>
 

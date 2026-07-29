@@ -11,6 +11,9 @@ import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { GENERAL_PRESET, PresetAgentBackfill, provisionPresetAgents } from '../../src/persistence/index.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
+import { ensurePersonalOrg } from '../../src/persistence/repositories/user.repo.js'
+import { ensureDefaultTenant } from '../../src/persistence/ensure-default-tenant.js'
+import type { PrismaClient } from '../../src/generated/prisma/client.js'
 import { AgentId, DaemonId } from '../../src/domain/ids.js'
 
 const silentLog = { info() {}, warn() {} }
@@ -146,6 +149,107 @@ describe('one-time backfill', () => {
       where: { orgId_name: { orgId: clean.id, name: 'agentconnect' } }
     })
     expect(stillGone).toBeNull()
+  })
+})
+
+/**
+ * The JIT-signup path reaches the seam with the ROOT client, not a transaction —
+ * so `ensurePersonalOrg` must open one itself. Without that, a crash after the
+ * agent commit but before the `preset_agent` marker would leave an org whose
+ * reserved slug is taken by an agent no marker describes: the next boot's
+ * backfill sees the collision and writes a PERMANENT `skipped`, and nothing ever
+ * repairs it (creation has no later trigger).
+ */
+describe('org-creation atomicity (§3.2)', () => {
+  // Fault injection at the LAST write of the seam. Wrapping `$transaction` is what
+  // makes this a real test: the callback must receive the POISONED client, or the
+  // seam would happily commit through the untouched one.
+  function prismaFailingPresetMarker(): PrismaClient {
+    const poison = (tx: PrismaClient): PrismaClient =>
+      new Proxy(tx, {
+        get(target, prop, receiver) {
+          if (prop !== 'presetAgent') return Reflect.get(target, prop, receiver) as unknown
+          return {
+            ...(Reflect.get(target, prop, receiver) as object),
+            create: () => Promise.reject(new Error('injected: preset marker write failed'))
+          }
+        }
+      }) as PrismaClient
+    return new Proxy(prisma, {
+      get(target, prop, receiver) {
+        if (prop !== '$transaction') return Reflect.get(target, prop, receiver) as unknown
+        return (fn: (tx: PrismaClient) => Promise<unknown>) =>
+          (target as PrismaClient).$transaction((tx) => fn(poison(tx as unknown as PrismaClient)))
+      }
+    }) as PrismaClient
+  }
+
+  it('a failed preset write rolls the whole personal org back (JIT signup, no ambient tx)', async () => {
+    const user = await prisma.user.create({
+      data: { id: randomUUID(), email: `rollback-${randomUUID().slice(0, 8)}@example.com`, displayName: 'Rollback' }
+    })
+
+    await expect(ensurePersonalOrg(prismaFailingPresetMarker(), user.id, 'Rollback', user.email)).rejects.toThrow(
+      /injected/
+    )
+
+    // Nothing partially committed: no org, no membership, and above all no agent
+    // squatting the reserved slug with no marker to describe it.
+    expect(await prisma.membership.findFirst({ where: { userId: user.id } })).toBeNull()
+    expect(await prisma.agent.findFirst({ where: { name: GENERAL_PRESET.name, createdByUserId: user.id } })).toBeNull()
+
+    // And the path is genuinely re-runnable afterwards — the failure left no trace
+    // that would make the retry collide.
+    await ensurePersonalOrg(prisma, user.id, 'Rollback', user.email)
+    const membership = await prisma.membership.findFirstOrThrow({ where: { userId: user.id } })
+    const row = await prisma.presetAgent.findUnique({
+      where: { orgId_preset: { orgId: membership.orgId, preset: 'general' } }
+    })
+    expect(row?.status).toBe('created')
+    const agent = await prisma.agent.findUnique({
+      where: { orgId_name: { orgId: membership.orgId, name: GENERAL_PRESET.name } }
+    })
+    expect(agent?.id).toBe(row?.agentId)
+  })
+
+  it('composes under an ambient transaction instead of nesting (waitlist redeem)', async () => {
+    const user = await prisma.user.create({
+      data: { id: randomUUID(), email: `ambient-${randomUUID().slice(0, 8)}@example.com`, displayName: 'Ambient' }
+    })
+
+    // The redeem's own transaction wraps the seam; a rollback out here must undo
+    // the preset too (the whole point of composing rather than opening a nested one).
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await ensurePersonalOrg(tx, user.id, 'Ambient', user.email)
+        // The seam's writes ARE visible inside the caller's transaction.
+        const m = await tx.membership.findFirstOrThrow({ where: { userId: user.id } })
+        expect(
+          await tx.presetAgent.findUnique({ where: { orgId_preset: { orgId: m.orgId, preset: 'general' } } })
+        ).not.toBeNull()
+        throw new Error('redeem failed after provisioning')
+      })
+    ).rejects.toThrow(/redeem failed/)
+
+    expect(await prisma.membership.findFirst({ where: { userId: user.id } })).toBeNull()
+    expect(await prisma.agent.findFirst({ where: { createdByUserId: user.id } })).toBeNull()
+  })
+
+  it('the no-auth default tenant provisions the preset in its own transaction', async () => {
+    // Truncated DB: re-seeding is the same call production makes at boot.
+    await prisma.presetAgent.deleteMany({ where: { orgId: DEFAULT_ORG_ID } })
+    await prisma.agent.deleteMany({ where: { orgId: DEFAULT_ORG_ID, name: GENERAL_PRESET.name } })
+
+    await ensureDefaultTenant(prisma)
+
+    const row = await prisma.presetAgent.findUnique({
+      where: { orgId_preset: { orgId: DEFAULT_ORG_ID, preset: 'general' } }
+    })
+    expect(row?.status).toBe('created')
+
+    // Idempotent across boots — no duplicate agent, no second marker attempt.
+    await ensureDefaultTenant(prisma)
+    expect(await prisma.agent.count({ where: { orgId: DEFAULT_ORG_ID, name: GENERAL_PRESET.name } })).toBe(1)
   })
 })
 

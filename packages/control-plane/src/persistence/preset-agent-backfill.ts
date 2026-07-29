@@ -19,7 +19,7 @@
  */
 import type { PrismaClient } from '../generated/prisma/client.js'
 import { withTx } from './prisma.js'
-import { GENERAL_PRESET, markPresetSkipped, provisionPresetAgents } from './preset-agents.js'
+import { ensurePresetAgentsProvisioned } from './preset-agents.js'
 
 export interface PresetBackfillLog {
   info(obj: unknown, msg?: string): void
@@ -45,27 +45,11 @@ export class PresetAgentBackfill {
     let failed = 0
     for (const org of orgs) {
       try {
-        const wasSkipped = await withTx(this.prisma, async (tx) => {
-          // Re-check inside the tx — a concurrent seam write (org just created?
-          // impossible for pre-existing orgs, but harmless) or a prior partial
-          // run may have landed a row since the worklist query.
-          const existing = await tx.presetAgent.findUnique({
-            where: { orgId_preset: { orgId: org.id, preset: 'general' } },
-            select: { orgId: true }
-          })
-          if (existing) return null
-          const collision = await tx.agent.findUnique({
-            where: { orgId_name: { orgId: org.id, name: GENERAL_PRESET.name } },
-            select: { id: true }
-          })
-          if (collision) {
-            await markPresetSkipped(tx, org.id, 'general')
-            return true
-          }
-          // System write: the backfill has no acting user (§3.2 attribution).
-          await provisionPresetAgents(tx, { orgId: org.id })
-          return false
-        })
+        // Re-checks inside the tx — a concurrent seam write (org just created?
+        // impossible for pre-existing orgs, but harmless) or a prior partial run
+        // may have landed a row since the worklist query. System write: the
+        // backfill has no acting user (§3.2 attribution).
+        const wasSkipped = await withTx(this.prisma, (tx) => ensurePresetAgentsProvisioned(tx, org.id))
         if (wasSkipped === true) skipped++
         else if (wasSkipped === false) provisioned++
       } catch (err) {

@@ -1813,6 +1813,14 @@ export interface BotRecord {
   /** Stamped when the workspace uninstalled the app / revoked its tokens
    *  (`rc/bot-revoked`); a platform-app re-install clears it. */
   revokedAt: Date | null
+  /** Install generation of the CURRENT credential — advanced on every (re)install.
+   *  Echoed through rc/bot-assign → rc/bot-revoked so a revocation observed under
+   *  an older generation cannot kill a newer one (Slack does not order lifecycle
+   *  events). */
+  credentialRevision: number
+  /** When the current credential landed; null for bots created before the fence
+   *  (their revocations skip the timestamp check and rely on the revision). */
+  credentialInstalledAt: Date | null
   /** Discord application (client) id — lets the console offer a ready-made invite URL. */
   discordAppId: string | null
   /** Feishu/Lark gateway region for this bot; null for non-feishu bots (and feishu bots
@@ -1857,9 +1865,32 @@ export interface BotRepo {
   /** The Bot backing one workspace install of a distributed app — CROSS-ORG lookup
    *  by the composite demux key (a workspace binds to exactly one org). */
   getBySlackAppTeam(slackAppId: string, teamId: string): Promise<BotRecord | null>
-  /** Stamp (`app_uninstalled`/`tokens_revoked`) or clear (platform re-install)
-   *  the bot's revocation marker. */
-  setRevoked(id: BotId, at: Date | null): Promise<void>
+  /**
+   * A fresh credential landed on an EXISTING bot (platform re-install / token
+   * rotation): advance the install generation, stamp when it landed, and clear
+   * any revocation in ONE statement. Returns the new revision so the caller can
+   * log/broadcast it. Anything that observed the previous credential is now
+   * stale by construction.
+   *
+   * This is also the ONLY way to un-revoke a bot — there is deliberately no bare
+   * `setRevoked(id, null)`: reviving a credential without advancing its
+   * generation would leave a delayed uninstall from the dead one able to kill it.
+   */
+  bumpCredential(id: BotId, at: Date): Promise<number>
+  /**
+   * Compare-and-set revocation — the ONLY way `rc/bot-revoked` is applied.
+   * Refuses (returns false, writing nothing) when the reported generation is no
+   * longer current, so a delayed uninstall from a prior install cannot kill the
+   * credential that replaced it:
+   *  - `revision` — the generation the reporting relay held. A mismatch means a
+   *    re-install has happened since; refuse.
+   *  - `eventAt` — when Slack says the event HAPPENED. Refuse if the current
+   *    credential was installed at-or-after it (covers the common case where the
+   *    relay already received the newer assignment and would echo its revision).
+   * Both are optional: a report carrying neither still applies (fail-open — an
+   * uninstall must eventually take effect).
+   */
+  revokeIfCurrent(id: BotId, at: Date, fence: { revision?: number; eventAt?: Date }): Promise<boolean>
   /** Callers must refuse while the bot is installed (FK Restrict backstops). */
   delete(id: BotId): Promise<void>
 }
@@ -2107,12 +2138,21 @@ export interface SlackInstallStore {
 // alongside slack_install.
 // ───────────────────────────────────────────────────────────────────────────
 
+export type SlackPlatformInstallStatus = 'pending' | 'completed' | 'failed'
+
 export interface SlackPlatformInstallRecord {
   id: string // == OAuth state (random uuid)
   orgId: OrgId
   agentId: AgentId // bind target (defaults to the org's `agentconnect` preset)
+  /** Terminal state of the OAuth round trip — the console's completion signal. */
+  status: SlackPlatformInstallStatus
+  /** Short code (same note the callback's close page shows) when `failed`. */
+  failureReason: string | null
+  /** The workspace's Bot once `completed`. */
+  botId: string | null
   createdByUserId: string | null
   createdAt: Date
+  settledAt: Date | null
 }
 
 export interface SlackPlatformInstallStore {
@@ -2123,8 +2163,20 @@ export interface SlackPlatformInstallStore {
     createdByUserId?: string
   }): Promise<SlackPlatformInstallRecord>
   get(id: string): Promise<SlackPlatformInstallRecord | null>
+  /**
+   * Record the terminal outcome of the OAuth round trip. Deliberately NOT a
+   * delete: the row is the signal the console polls, and a successful
+   * RE-authorization creates no new integration, so "an integration appeared"
+   * cannot distinguish success from a still-open tab. Only ever settles a
+   * `pending` row (a double callback keeps the first outcome).
+   */
+  settle(
+    id: string,
+    outcome: { status: 'completed'; botId?: string } | { status: 'failed'; failureReason: string }
+  ): Promise<void>
   delete(id: string): Promise<void>
-  /** TTL sweep: delete pending rows created before `staleBefore`; returns the count. */
+  /** TTL sweep: delete rows created before `staleBefore` (settled or not — a
+   *  settled row has already been observed, or the tab is long gone). */
   reapExpired(staleBefore: Date): Promise<number>
 }
 

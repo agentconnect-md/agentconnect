@@ -472,10 +472,25 @@ describe('SlackSharedIngest channel membership events', () => {
     )
     await ingest.start()
 
-    await ingest.handleEvent({ type })
+    // The envelope's `event_time` rides along (already ms here): the CP fences a
+    // revocation that predates the credential it would kill.
+    await ingest.handleEvent({ type }, 1_700_000_000_000)
 
-    expect(onBotRevoked).toHaveBeenCalledWith(type)
+    expect(onBotRevoked).toHaveBeenCalledWith(type, 1_700_000_000_000)
     expect(onMessage).not.toHaveBeenCalled()
+  })
+
+  it('reports a revocation with no occurrence time when the envelope omitted event_time', async () => {
+    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
+    const onBotRevoked = vi.fn()
+    const ingest = new SlackSharedIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onBotRevoked }))
+    await ingest.start()
+
+    await ingest.handleEvent({ type: 'app_uninstalled' })
+
+    // Fail-open at the CP (an uninstall must eventually take effect), so the
+    // relay reports it rather than withholding an unfenced revocation.
+    expect(onBotRevoked).toHaveBeenCalledWith('app_uninstalled', undefined)
   })
 })
 

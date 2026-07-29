@@ -93,6 +93,39 @@ export async function markPresetSkipped(db: PrismaLike, orgId: string, preset: P
   await db.presetAgent.create({ data: { orgId, preset, status: 'skipped' } })
 }
 
+/**
+ * Idempotent, collision-aware provisioning for an org that may ALREADY have a
+ * `preset_agent` row or a user agent squatting the reserved slug — the shape the
+ * backfill and the no-auth default tenant need (both run against orgs of unknown
+ * age, repeatedly, at every boot).
+ *
+ * `null` ⇒ nothing to do (a row already settles this org), `true` ⇒ recorded a
+ * permanent `skipped` (slug collision: never rename a user's agent, §3.3),
+ * `false` ⇒ provisioned. The caller supplies the transaction: all three outcomes
+ * must commit atomically with whatever else that caller is writing.
+ */
+export async function ensurePresetAgentsProvisioned(
+  tx: PrismaLike,
+  orgId: string,
+  createdByUserId?: string | null
+): Promise<boolean | null> {
+  const existing = await tx.presetAgent.findUnique({
+    where: { orgId_preset: { orgId, preset: 'general' } },
+    select: { orgId: true }
+  })
+  if (existing) return null
+  const collision = await tx.agent.findUnique({
+    where: { orgId_name: { orgId, name: GENERAL_PRESET.name } },
+    select: { id: true }
+  })
+  if (collision) {
+    await markPresetSkipped(tx, orgId, 'general')
+    return true
+  }
+  await provisionPresetAgents(tx, { orgId, ...(createdByUserId ? { createdByUserId } : {}) })
+  return false
+}
+
 function toRecord(r: {
   orgId: string
   preset: string

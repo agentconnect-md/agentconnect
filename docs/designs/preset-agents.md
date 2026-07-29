@@ -5,25 +5,27 @@ seam + one-time backfill + `preset_agent` state, the `agentconnect` general pres
 console tolerance for unplaced agents), together with §5.3 Fulfillment B — the
 platform-published "Add to Slack" app (env credentials, state-bound install route,
 `Bot.teamId` + composite relay demux, uninstall/revocation lifecycle) — pulled
-forward from M4 so the preset agent is Slack-connectable from day one. M1–M2
-remain proposed.
+forward from M4 so the preset agent is Slack-connectable from day one. M1–M2 remain
+proposed. **§4 is superseded** and is retained only as reference — see the direction
+change below.
 
-**Direction change (2026-07-29): the dedicated assistant preset is CANCELLED.**
-There will be no second built-in `agentconnect-assistant` agent. Instead,
-assistant/admin capabilities are planned to fold into the `agentconnect` general
-preset itself: a first step would give its **webapp (Playground/webchat) sessions**
-the AgentConnect MCP admin toolset — the tools already exist platform-side
-(agent-assistant.md P0 read tools, P1 write tools with confirm gates, P2 OAuth AS)
-— with the per-session delegated credential (P4's webchat half) still the security
-prerequisite before any admin tool reaches a session. §4, the assistant rows of
-§2/§3.1, and the M3/M5 phases below are retained as historical context only; the
-reserved assistant slugs stay reserved (impersonation guard + naming option).
-`PresetAgentKind` carries only `general`.
+**Direction change (2026-07-29) — one preset, no dedicated assistant agent.** There
+is exactly one preset agent, `agentconnect` (display name **AgentConnect**), and
+there will be no second built-in `agentconnect-assistant`; `PresetAgentKind` carries
+only `general`. Assistant/admin capabilities are planned to fold into that one
+general preset instead, and the planned first step gives its **webapp
+(Playground/webchat) sessions** the AgentConnect MCP admin toolset. The tools
+themselves already exist platform-side (agent-assistant.md P0 read tools, P1 write
+tools with confirm gates, P2 OAuth AS); the per-session delegated credential
+(agent-assistant.md P4's webchat half) remains the security prerequisite before any
+admin tool reaches a session, and is not built. §4 records the cancelled
+dedicated-assistant shape and is kept as the reference for that fold-in; the reserved
+assistant slugs stay reserved (impersonation guard + naming option, §3.3).
 
-**Builds on:** [agent-assistant.md](agent-assistant.md) (AgentConnect MCP + OAuth shipped;
-the built-in assistant P3 and delegated credentials P4 are pending — this design changes
-_when_ that assistant is provisioned, not _what_ it is),
-[shared-bot-relay.md](shared-bot-relay.md) (implemented),
+**Builds on:** [agent-assistant.md](agent-assistant.md) (its AgentConnect MCP and
+embedded OAuth AS are available — external AI tools connect today; its built-in
+assistant agent, P3, is cancelled by this design, and its delegated credential, P4,
+is still planned), [shared-bot-relay.md](shared-bot-relay.md) (implemented),
 [slack-install-smoothing.md](slack-install-smoothing.md) (implemented),
 [resource-visibility.md](resource-visibility.md) (implemented).
 
@@ -37,59 +39,60 @@ integration credentials — before anything talks back.
 
 The target shape:
 
-1. The org is born with two preset agents already in it, unplaced:
-   **`agentconnect-assistant`**, a built-in setup/operations assistant wired to the
-   AgentConnect MCP and available to every member, and **`agentconnect`**, a
-   general-purpose agent (coding, code review, everyday tasks).
-2. `agentconnect run` connects the org's first daemon, and the presets are placed
+1. The org is born with one preset agent already in it, unplaced: **`agentconnect`**
+   (display name **AgentConnect**), a general-purpose agent — coding, code review,
+   everyday tasks — and the deterministic bind target for the platform's Slack and
+   GitHub entry points.
+2. `agentconnect run` connects the org's first daemon, and the preset is placed
    onto it automatically.
 3. The console shows a **Getting-started checklist** derived from real system state.
-   Every remaining step has two paths: click through the console, or ask the assistant
-   to do it conversationally — it drives the same control-plane operations
-   through the MCP write tools.
+   Every remaining step deep-links to the console surface that performs it, and the
+   same derived state is exposed as an AgentConnect MCP read tool (§6.3) — so an AI
+   tool the user has already connected opens from the same truth, and so do the
+   general preset's own webapp sessions once the admin toolset lands there (§4).
 4. Connecting Slack is one action: hosted deployments offer a platform-published
    **"Add to Slack"**; self-hosted deployments run the existing quick-install funnel
    against a predefined manifest.
 
-Four pieces, each independently useful: preset provisioning (§3), the assistant as a
-re-triggered agent-assistant (§4), the predefined Slack app (§5), and the checklist
-(§6).
+Three pieces, each independently useful: preset provisioning (§3), the predefined
+Slack app (§5), and the checklist (§6). §4 is the superseded fourth — a dedicated
+assistant agent — retained as the reference for folding admin tools into the general
+preset.
 
 ## 2. Decisions
 
-| Topic                      | Decision                                                                                                                                                                                                                                                                                                                                                                        | Rejected alternatives                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Assistant identity         | Reuse agent-assistant `kind='assistant'` (P3) wholesale; this design only changes when it is provisioned and its slug                                                                                                                                                                                                                                                           | A parallel "preset assistant" type — two built-ins with admin-tool access doubles the security surface for no product gain                                                                                                                                                                                                                                                                                                                                                               |
-| Creation & placement       | **Creation at org creation; placement at first daemon.** Both preset rows are written transactionally with the org itself — unplaced, runtime deferred (§3.2). A CP hook after `register/ok` then auto-places still-unplaced presets onto the first daemon, one-shot per preset: the first placement of any kind settles it, so a later unplacement by the user is never fought | Creating at first-daemon-online (an earlier revision): coupling creation to a daemon imported partial-state machinery — a one-slot or codex-only daemon creates only one preset — made creation wait on runtime readiness, and left the console empty until a daemon appeared. agent-assistant v2's org-creation objection ("no placement target") conflated creation with placement — creation needs none. Owner-manual-only (v2 status quo) remains as the disable/move/re-enable path |
-| Assistant visibility       | `org` — available to every member, fixed per agent-assistant v2; sharing/call-policy writes stay rejected (the lock guards openness), and the row carries no personal creator (§3.2)                                                                                                                                                                                            | `restricted` / private-to-owner (an earlier revision of this design): delegated credentials already make per-message authority exactly the caller's own, so the privacy bought no security and cost every non-owner the conversational entry. If ever revisited: `restricted` admits the **creator**, and collaborators can enroll daemons — a restricted assistant must carry no creator grant                                                                                          |
-| Credential model           | **Minimal P4 is a prerequisite**: delegated-key minting at webchat-token verification, webchat/Playground only. The IM identity-binding half of P4 stays deferred                                                                                                                                                                                                               | A static owner-scoped key, even with owner-locked reachability: an org can have several owners, and a static key authorizes and audits as the key's user rather than the actual initiating owner — breaking the inherited credential-is-identity model and §7's acting-user audit guarantee. Any repair (a request/session-bound, non-substitutable actor credential) is the minimal delegated minting already required                                                                  |
-| Preset deletion            | Assistant: disable, never delete (v2 §3.2 semantics). General agent: freely deletable and **never auto-recreated**                                                                                                                                                                                                                                                              | Existence-check provisioning — it resurrects what the user deleted                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Idempotency                | **Per-preset `preset_agent` row** (`status ∈ {created, skipped}`, `placementSettledAt`), written with the agent row. Creation is transactional with the org (or the one-time backfill) and never retries; auto-placement retries on register events only while a preset is unplaced and unsettled. A deleted preset is never recreated — creation has no later trigger          | A single org-level stamp (cannot express per-preset placement); existence-check provisioning (resurrection); creating at daemon time (see the Creation & placement row)                                                                                                                                                                                                                                                                                                                  |
-| Non-empty orgs             | **Both presets for every org** — new orgs at creation, existing orgs via a one-time backfill — whatever agents they already have: the assistant is a platform capability, and the general agent must exist deterministically because both Slack fulfillments and the GitHub flow bind to it by default                                                                          | Creating the general agent only for empty orgs — leaves the predefined Slack app without a deterministic bind target, and an org that pre-created agents still benefits from the branded default; creating neither                                                                                                                                                                                                                                                                       |
-| Assistant on Slack         | None in v1 — webchat/Playground only                                                                                                                                                                                                                                                                                                                                            | A predefined assistant Slack app now: unsafe until Slack-user ↔ AgentConnect-user identity binding exists (P4's deferred half). With only workspace-level identity, anyone in the workspace could borrow the delegated authority                                                                                                                                                                                                                                                         |
-| Predefined Slack app count | **One** shareable app backing the general agent; dedicated per-agent apps remain the guided upgrade via quick-install                                                                                                                                                                                                                                                           | Two apps (assistant app deferred, above); one app per preset agent                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Topic                      | Decision                                                                                                                                                                                                                                                                                                                                                                 | Rejected alternatives                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Assistant capabilities     | **No dedicated built-in assistant agent** (2026-07-29). Assistant/admin capabilities fold into the single `agentconnect` general preset; the planned first step is the AgentConnect MCP admin toolset inside its **webapp (Playground/webchat) sessions**. `PresetAgentKind` carries only `general`                                                                      | A second built-in agent — agent-assistant.md's `kind='assistant'` (P3), re-triggered by this design (§4): a separately provisioned identity with admin-tool access costs its own preset row, placement rules, restricted profile, and fixed-property guards for a conversational entry the same toolset can offer from an agent the org already has       |
+| Creation & placement       | **Creation at org creation; placement at first daemon.** The preset row is written transactionally with the org itself — unplaced, runtime deferred (§3.2). A CP hook after `register/ok` then auto-places a still-unplaced preset onto the first daemon, one-shot: the first placement of any kind settles it, so a later unplacement by the user is never fought       | Creating at first-daemon-online (an earlier revision): coupling creation to a daemon imported partial-state machinery, made creation wait on runtime readiness, and left the console empty until a daemon appeared. Creation needs no placement target                                                                                                    |
+| Credential model           | **Minimal P4 is the prerequisite** before any admin tool reaches a session: delegated-key minting at webchat-token verification, webchat/Playground only. The IM identity-binding half of P4 stays deferred                                                                                                                                                              | A static owner-scoped key, even with owner-locked reachability: an org can have several owners, and a static key authorizes and audits as the key's user rather than the actual initiating owner — breaking the inherited credential-is-identity model and §7's acting-user audit guarantee. Any repair is the minimal delegated minting already required |
+| Preset deletion            | The general preset is **freely deletable and never auto-recreated**                                                                                                                                                                                                                                                                                                      | Existence-check provisioning — it resurrects what the user deleted                                                                                                                                                                                                                                                                                        |
+| Idempotency                | **Per-preset `preset_agent` row** (`status ∈ {created, skipped}`, `placementSettledAt`), written with the agent row. Creation is transactional with the org (or the one-time backfill) and never retries; auto-placement retries on register events only while the preset is unplaced and unsettled. A deleted preset is never recreated — creation has no later trigger | A single org-level stamp (cannot express per-preset placement); existence-check provisioning (resurrection); creating at daemon time (see the Creation & placement row)                                                                                                                                                                                   |
+| Non-empty orgs             | **The preset for every org** — new orgs at creation, existing orgs via a one-time backfill — whatever agents they already have: the general agent must exist deterministically because both Slack fulfillments and the GitHub flow bind to it by default                                                                                                                 | Creating it only for empty orgs — leaves the predefined Slack app without a deterministic bind target, and an org that pre-created agents still benefits from the branded default; creating none at all                                                                                                                                                   |
+| Predefined Slack app count | **One** shareable app backing the general agent; dedicated per-agent apps remain the guided upgrade via quick-install                                                                                                                                                                                                                                                    | One app per preset agent; a second app for a separate built-in assistant (§4)                                                                                                                                                                                                                                                                             |
 
 ## 3. Preset agents
 
-### 3.1 The two agents
+### 3.1 The preset agent
 
-|                       | `agentconnect-assistant`                                                                                                              | `agentconnect`                                                                                                         |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Kind                  | `assistant` (P3)                                                                                                                      | `standard`                                                                                                             |
-| Visibility            | `org`, fixed; sharing/call-policy writes rejected (v2 guards). Mutable only through the owner-only `/orgs/:orgId/assistant` endpoints | `org`, editable                                                                                                        |
-| Runtime               | `claude`, fixed by the template (v2 §8.2 allowlist); auto-placed only onto a daemon that reports it                                   | **Unset at creation** (deferred, §3.2); set at placement from the daemon's reported runtimes, preferring a `ready` one |
-| Profile               | Restricted: no shell/file tools, locked scratch workspace (v2 §8.2)                                                                   | Ordinary agent profile                                                                                                 |
-| Workspace             | Locked scratch                                                                                                                        | Scratch; attaching a repository is a checklist step                                                                    |
-| MCP                   | Exactly one injected server: the CP AgentConnect MCP with a per-session delegated key (P4). No memory/collab/platform tools           | Daemon defaults, nothing extra                                                                                         |
-| Icon                  | Fixed brand glyph + color (stable, recognizable — not the random default)                                                             | Fixed brand glyph + color                                                                                              |
-| Persona               | CP-generated immutable prompt (v2 §8.3) + onboarding opening (§6.4)                                                                   | Preset description: general dev agent — code review, coding tasks, everyday questions                                  |
-| Integrations at birth | None, ever (v1)                                                                                                                       | None; it is the default bind target for the predefined Slack app (§5) and the GitHub install flow                      |
+|                       | `agentconnect`                                                                                                                                                              |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Display name          | **AgentConnect**                                                                                                                                                            |
+| Kind                  | An ordinary agent row — no built-in discriminator ships (§4)                                                                                                                |
+| Visibility            | `org`, editable                                                                                                                                                             |
+| Runtime               | **Unset at creation** (deferred, §3.2); set at placement from the daemon's reported runtimes, preferring a `ready` one                                                      |
+| Profile               | Ordinary agent profile                                                                                                                                                      |
+| Workspace             | Scratch; attaching a repository is a checklist step                                                                                                                         |
+| MCP                   | Daemon defaults, nothing extra. The planned successor to §4 adds the AgentConnect MCP admin toolset to its **webapp sessions only**, gated on the per-session delegated key |
+| Icon                  | Fixed brand glyph + color (stable, recognizable — not the random default)                                                                                                   |
+| Persona               | Preset description: general dev agent — code review, coding tasks, everyday questions                                                                                       |
+| Integrations at birth | None; it is the default bind target for the predefined Slack app (§5) and the GitHub install flow                                                                           |
 
 ### 3.2 Creation, placement, and state
 
 **Creation — at org creation, unplaced.** One transaction, run by the org-creation
 service seam (every path — JIT personal orgs, the no-auth default tenant — funnels
-through it), writes both agent rows and their `preset_agent` records. No daemon, no
+through it), writes the agent row and its `preset_agent` record. No daemon, no
 capacity, no runtime is needed:
 
 - `Agent.runtime` becomes **nullable** ("deferred exec config", additive migration —
@@ -97,23 +100,19 @@ capacity, no runtime is needed:
   runtime is a valid _unplaced_ agent; the invariant moves to placement, which
   requires choosing one. The wire is untouched: `AgentSpec.runtime` is already
   optional, and specs are only assembled for placed agents.
-- The general preset is created with runtime **unset**; the assistant preset carries
-  `claude`, fixed by its template rather than guessed.
+- The preset is created with runtime **unset**.
 - Existing orgs receive a **one-time backfill** with identical semantics; a
   reserved-name collision there writes a `skipped` row (§3.3). New orgs cannot
-  collide — they have no agents yet.
+  collide — they have no agents.
 
 **Auto-placement — at first daemon online.** A CP hook after `register/ok`
 (`ws/handlers/register.ts`; today's only first-connect behavior is the hostname
-name-seed in `daemon.repo.ts`) asynchronously places still-unplaced presets onto the
+name-seed in `daemon.repo.ts`) asynchronously places a still-unplaced preset onto the
 daemon, never blocking the handshake:
 
-- **Assistant first** under the daemon's `maxAgents`; the assistant is placed only when
-  the daemon reports `claude` (`RegisterReq.capabilities.runtimes` — a bare id list
-  suffices; no auth information is involved). A codex-only daemon therefore places
-  the general agent alone, and the assistant waits for a claude-capable daemon with a
-  checklist hint. Widening the allowlist stays with agent-assistant.md.
-- The general preset's **runtime is set now**, from the daemon's reported runtimes —
+- **Under the daemon's `maxAgents`.** A daemon already at capacity places nothing;
+  the preset stays unplaced and unsettled and is retried on a later register event.
+- The preset's **runtime is set now**, from the daemon's reported runtimes —
   preferring one whose probe status (below) is `ready` on the current connection,
   else any reported one.
 - Placement deliberately does **not** require readiness: an agent placed on a
@@ -123,14 +122,14 @@ daemon, never blocking the handshake:
   `preset_agent.placementSettledAt`. Auto-placement only ever considers a preset with
   `daemonId` null **and** no stamp, so a user who unplaces or moves an agent is never
   fought. An unplaced, unsettled preset retries on later register events (capacity
-  freed, a claude-capable daemon arriving).
+  freed, another daemon arriving).
 - **Settling is not only placement.** An explicit opt-out settles too, atomically
-  with the action: `DELETE /assistant` (which retains the row as `inactive`, v2
-  §3.2) and deleting the general preset both stamp `placementSettledAt`. Status
-  alone cannot carry this — an unplaced agent is `inactive` as well — so the stamp
-  is the only signal the hook consults, and a disable made before any daemon ever
-  connects is honored: the next registration must not place, let alone re-enable,
-  a disabled assistant. Contract case: disable-before-first-daemon.
+  with the action: deleting the preset stamps `placementSettledAt` on its
+  `preset_agent` row, so a delete made before any daemon ever connects is honored —
+  the next registration must not place, let alone recreate, what the user removed.
+  Status alone cannot carry this: an unplaced agent is `inactive` as well, so the
+  stamp is the only signal the hook consults. Contract case:
+  delete-before-first-daemon.
 
 **Probe status — for the checklist.** Presence is not signed-in, and the current
 facts cannot even express the difference: `FactsRuntimeProfile.authRequired` is
@@ -164,13 +163,10 @@ currently the creation service; extracting its core into a service callable by t
 route, the org-creation seam, and the placement hook is part of this work — a raw
 repo write is not acceptable.
 
-**Attribution.** The **general** agent stamps `createdByUserId` from the user whose
-action created the org (the initial owner; null for the backfill). The **assistant**'s `createdByUserId` is **null**: a built-in carries no personal creator, and
-its mutable surface is the owner-gated `/orgs/:orgId/assistant` endpoints regardless
-of any grant — generic agent-write routes reject `kind='assistant'` (v2
-fixed-property guards) — so conversing is org-wide while configuring stays with
-owners. Auto-placement writes an audit row carrying the daemon and the affected
-agents.
+**Attribution.** The preset stamps `createdByUserId` from the user whose action
+created the org (the initial owner; null for the backfill) — it is an ordinary agent
+from that moment on, owned and editable like any other. Auto-placement writes an
+audit row carrying the daemon and the affected agent.
 
 **Opt-out.** An org-level setting (default on) checked by the creation seam and the
 backfill. Self-hosted fleets that want it off globally can set the org default at
@@ -184,10 +180,10 @@ Add `RESERVED_AGENT_SLUGS = {'agentconnect', 'agentconnect-assistant', 'agent-as
 protection today, and presets must not be impersonable. This lands **before** any
 preset ships.
 
-The built-in assistant's slug becomes `agentconnect-assistant` — brand-prefixed like
-its sibling `agentconnect`, and "assistant" rather than "admin" because it serves
-every member, not only administrators; update agent-assistant.md P3 when
-implementing.
+The assistant-family slugs stay reserved even though no built-in assistant agent
+ships (§4): a user-created agent must never be able to wear a platform-sounding
+name, and reserving them keeps the naming option open should admin capabilities ever
+want an identity of their own. Only `agentconnect` is actually provisioned.
 
 Collisions can only arise in the backfill — a new org has no agents. The org keeps
 its agent: the backfill writes a `skipped` state row for that preset and never
@@ -210,30 +206,93 @@ runtime/model/effort controls render disabled with a "set when placed" hint unti
 then. Placing through either surface stamps `placementSettledAt` for a preset
 (§3.2). Both form factors follow the console's responsive conventions.
 
-## 4. The assistant — delta to agent-assistant.md
+## 4. [SUPERSEDED] The dedicated assistant agent — delta to agent-assistant.md
 
-Reused unchanged from P3/P4: the `AgentKind` discriminator and partial unique index,
-fixed-property guards, the restricted runtime profile, the immutable prompt template,
-`GET|PUT|DELETE /orgs/:orgId/assistant`, `denyDelegated` route families, the
-confirm-gates on destructive MCP tools, and session privacy by `initiatorUserId`.
+> **Superseded 2026-07-29. Nothing in §4 is a shipping requirement.** The second
+> built-in agent described here — `agentconnect-assistant`, agent-assistant.md's
+> `kind='assistant'` (P3) — is cancelled: it is never provisioned, has no preset
+> row, no auto-placement, and no `AgentKind` discriminator ships.
+>
+> **Successor shape.** Assistant/admin capabilities fold into the one `agentconnect`
+> general preset (§3.1). The planned first step: the AgentConnect MCP admin toolset
+> becomes available inside that agent's **webapp (Playground/webchat) sessions**,
+> gated on the same per-session delegated credential this section relies on
+> (agent-assistant.md P4, webchat half — still the security prerequisite, still
+> unbuilt). This section is retained because that shape reuses the machinery
+> described here: session-bound credential minting and binding, a closed and
+> auditable tool surface, schema-level confirm-gates, per-initiator session privacy,
+> and the onboarding prompt opening.
 
-Changes this design introduces:
+Would have been reused unchanged from P3/P4: the `AgentKind` discriminator and
+partial unique index, fixed-property guards, the restricted runtime profile, the
+immutable prompt template, `GET|PUT|DELETE /orgs/:orgId/assistant`, `denyDelegated`
+route families, the confirm-gates on destructive MCP tools, and session privacy by
+`initiatorUserId`.
 
-1. **Slug**: `agentconnect-assistant` (§3.3).
+Deltas this design would have introduced:
+
+1. **Slug**: `agentconnect-assistant` (§3.3 — still reserved, never provisioned).
 2. **Provisioning**: created at org creation (unplaced) and auto-placed at
    first-daemon-online (§3.2), _in addition to_ the owner's `PUT /assistant` for
-   move/re-enable. `DELETE /assistant` (disable) is the owner's opt-out after the
-   fact.
-3. **Prompt**: the immutable template gains an onboarding opening — read
-   `getOnboardingStatus` (§6.3) first, propose exactly one next step, act only through
-   tools and restate destructive operations before running them.
-4. **P4 scope**: only the webchat-token delegated-minting half is required here. IM
-   identity binding — and with it any Slack presence for the assistant — stays
-   deferred.
+   move/re-enable, with `DELETE /assistant` (disable) as the owner's opt-out after
+   the fact. Auto-placement additionally required a daemon reporting `claude`
+   (`RegisterReq.capabilities.runtimes` — a bare id list, no auth information), so a
+   codex-only daemon would place the general agent alone and the assistant would
+   wait for a claude-capable daemon behind a checklist hint. `DELETE /assistant`
+   (which retains the row as `inactive`, v2 §3.2) stamped `placementSettledAt`
+   atomically, so a disable made before any daemon ever connected was honored — the
+   next registration must not place, let alone re-enable, a disabled assistant.
+   Contract case: disable-before-first-daemon.
+3. **Prompt**: the immutable template gains an onboarding opening — fetch
+   `getOnboardingStatus` (§6.3) at session start, lead with the single most valuable
+   incomplete step, propose exactly one next step, act only through tools with their
+   existing confirm-gates, and restate destructive operations before running them.
+   (Formerly §6.4.)
+4. **P4 scope**: only the webchat-token delegated-minting half is required. IM
+   identity binding — and with it any Slack presence — stays deferred.
 
-Visibility deliberately matches v2 (`org`, fixed): every member gets the
-conversational entry, the Playground pins the assistant for everyone, and session
-privacy by `initiatorUserId` carries the cross-user isolation (§7).
+Visibility deliberately matched v2 (`org`, fixed): every member would get the
+conversational entry, the Playground would pin the assistant for everyone, and
+session privacy by `initiatorUserId` would carry the cross-user isolation.
+
+### 4.1 Superseded decisions (moved out of §2)
+
+| Topic                | Decision (superseded)                                                                                                                                                                                                   | Rejected alternatives                                                                                                                                                                                                                                                                                                                                                            |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Assistant identity   | Reuse agent-assistant `kind='assistant'` (P3) wholesale; this design changed only when it is provisioned and its slug                                                                                                   | A parallel "preset assistant" type — two built-ins with admin-tool access doubles the security surface for no product gain                                                                                                                                                                                                                                                       |
+| Assistant visibility | `org` — available to every member, fixed per agent-assistant v2; sharing/call-policy writes stay rejected (the lock guards openness), and the row carries no personal creator                                           | `restricted` / private-to-owner (an earlier revision): delegated credentials already make per-message authority exactly the caller's own, so the privacy bought no security and cost every non-owner the conversational entry. If ever revisited: `restricted` admits the **creator**, and collaborators can enroll daemons — a restricted assistant must carry no creator grant |
+| Assistant deletion   | Disable, never delete (v2 §3.2 semantics); its `createdByUserId` is **null** (a built-in carries no personal creator) and its mutable surface is the owner-gated `/orgs/:orgId/assistant` endpoints regardless of grant | Generic agent-write routes reaching a built-in — v2's fixed-property guards reject `kind='assistant'` there so conversing is org-wide while configuring stays with owners                                                                                                                                                                                                        |
+| Assistant on Slack   | None in v1 — webchat/Playground only                                                                                                                                                                                    | A predefined assistant Slack app: unsafe until Slack-user ↔ AgentConnect-user identity binding exists (P4's deferred half). With only workspace-level identity, anyone in the workspace could borrow the delegated authority                                                                                                                                                     |
+
+### 4.2 Superseded properties (the assistant column of §3.1)
+
+|                       | `agentconnect-assistant`                                                                                                              |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Kind                  | `assistant` (P3)                                                                                                                      |
+| Visibility            | `org`, fixed; sharing/call-policy writes rejected (v2 guards). Mutable only through the owner-only `/orgs/:orgId/assistant` endpoints |
+| Runtime               | `claude`, fixed by the template (v2 §8.2 allowlist); auto-placed only onto a daemon that reports it                                   |
+| Profile               | Restricted: no shell/file tools, locked scratch workspace (v2 §8.2)                                                                   |
+| Workspace             | Locked scratch                                                                                                                        |
+| MCP                   | Exactly one injected server: the CP AgentConnect MCP with a per-session delegated key (P4). No memory/collab/platform tools           |
+| Icon                  | Fixed brand glyph + color                                                                                                             |
+| Persona               | CP-generated immutable prompt (v2 §8.3) + the onboarding opening above                                                                |
+| Integrations at birth | None, ever                                                                                                                            |
+
+### 4.3 Superseded security considerations (moved out of §7)
+
+- **Owner-only mutability**: the assistant would be configured solely through the
+  owner-gated `/orgs/:orgId/assistant` endpoints; generic writes targeting
+  `kind='assistant'` are rejected, and delegated principals cannot modify the
+  assistant through the assistant (agent-assistant.md §6.3) — nobody talks the
+  assistant into unlocking itself.
+- **Cross-user content isolation**: assistant sessions would be private to their
+  `initiatorUserId` (owners keep the governance exemption), and memory tools stay
+  removed — agent memory is shared state, so one member's information must not
+  surface in another member's conversation (agent-assistant.md v2 decisions).
+- **No IM surface** until identity binding exists.
+- **Open question, superseded**: widening the assistant runtime allowlist beyond
+  `claude` (needs a codex-equivalent restricted profile) — tracked in
+  agent-assistant.md.
 
 ## 5. Predefined Slack app
 
@@ -298,8 +357,8 @@ widening is a product event — a coordinated re-auth — not a routine PR.
 The platform app backs the general preset agent as the default owner of a **shareable**
 bot (`Bot.shareable`); additional agents can ride the same bot later via channel
 ownership and mention arbitration (shared-bot-relay.md). Dedicated per-agent Slack
-identities remain the upgrade path through quick-install — a step the assistant can
-walk a user through.
+identities remain the upgrade path through quick-install, surfaced by the console's
+integration flow.
 
 ## 6. Onboarding checklist
 
@@ -321,74 +380,62 @@ bit is a per-user dismissal.
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Daemon connected               | daemon status `ready`                                                                                                                                                                    |
 | Runtime signed in              | at least one **ready** runtime (§3.2, latest stored probe status) — non-empty profiles are not enough: they include installed-but-logged-out (`auth_required`) and failed-probe runtimes |
-| Meet your agents               | every preset placement-settled — `placementSettledAt` stamped, `skipped`, or the preset deleted (§3.2)                                                                                   |
-| Talk to your assistant         | an assistant session exists                                                                                                                                                              |
+| Meet your agent                | the preset is placement-settled — `placementSettledAt` stamped, `skipped`, or the preset deleted (§3.2)                                                                                  |
 | Connect Slack                  | a Slack integration exists                                                                                                                                                               |
 | Connect GitHub                 | a GitHub App installation exists                                                                                                                                                         |
 | Give your agent a repository   | general agent's workspace ≠ scratch                                                                                                                                                      |
-| Finish your first conversation | a completed standard-agent session exists                                                                                                                                                |
+| Finish your first conversation | a completed session exists                                                                                                                                                               |
 | Invite teammates               | org member count > 1                                                                                                                                                                     |
 
 ### 6.3 One state, two consumers
 
 A single BFF endpoint — `GET /orgs/:orgId/onboarding` → items with status — consumed
 by (a) the console checklist and (b) a new AgentConnect MCP **read** tool,
-`getOnboardingStatus`, so the assistant opens conversations from the same truth and
-proposes the actual next step. Each todo item carries two CTAs: a console deep link,
-and "Ask Assistant" (Playground with a prefilled intent). The two surfaces can never
-disagree because neither owns the state.
-
-### 6.4 Assistant prompt hook
-
-The assistant's immutable prompt instructs: fetch `getOnboardingStatus` at session
-start, lead with the single most valuable incomplete step, and perform setup only
-through MCP tools with their existing confirm-gates.
+`getOnboardingStatus`, so an AI tool the user has already connected
+(agent-assistant.md §6) reads the same truth and proposes the actual next step — and
+so do the general preset's own webapp sessions once the admin toolset lands there
+(§4). Each todo item carries a console deep link. The two surfaces can never disagree
+because neither owns the state.
 
 ## 7. Security considerations
 
 - **Confused deputy / actor identity**: per-session delegated credentials are a
-  prerequisite, not an option — with the assistant open to every member they are the
+  prerequisite, not an option, before any admin tool reaches a session — they are the
   entire guarantee: each tool call executes through the REST layer as the initiating
   user, so RBAC and visibility are evaluated live per message and a member can never
-  do through the assistant what they could not do in the console. Roles resolve live,
-  so a demotion applies immediately. Any static key would authorize and audit as its
-  key user rather than the actual actor.
-- **Owner-only mutability**: the assistant is configured solely through the
-  owner-gated `/orgs/:orgId/assistant` endpoints; generic writes targeting
-  `kind='assistant'` are rejected, and delegated principals cannot modify the
-  assistant through the assistant (v2 §6.3) — nobody talks the assistant into
-  unlocking itself.
-- **Cross-user content isolation**: assistant sessions are private to their
-  `initiatorUserId` (owners keep the governance exemption), and memory tools stay
-  removed — agent memory is shared state, so one member's information must not
-  surface in another member's conversation (v2 decisions, unchanged).
-- **Provisioning parity**: presets are created through the same validation core as
+  do through an agent's admin tools what they could not do in the console. Roles
+  resolve live, so a demotion applies immediately. Any static key would authorize and
+  audit as its key user rather than the actual actor.
+- **Provisioning parity**: the preset is created through the same validation core as
   `POST /agents` (§3.2), never a raw repo write.
-- **Reserved slugs** prevent impersonating built-ins (§3.3).
-- **No IM surface** for the assistant until identity binding exists (§4).
+- **Reserved slugs** prevent impersonating built-ins (§3.3), including the
+  assistant-family names that are reserved but never provisioned.
 - **Auditability**, per path: org-creation provisioning records the creating user
   as actor; the backfill records a system actor (no user performed it);
-  auto-placement records a system actor with the daemon and affected agents
-  (§3.2); manual placement records the placing user. Every assistant write logs
-  through the MCP operation log with the acting user's identity.
+  auto-placement records a system actor with the daemon and affected agent
+  (§3.2); manual placement records the placing user. Every MCP write logs through
+  the operation log with the acting user's identity (agent-assistant.md §9.3).
+- The security properties the superseded assistant agent would have carried — its
+  owner-only mutability, per-initiator session isolation, and the absence of any IM
+  surface — are recorded in §4.3.
 
 ## 8. Phasing
 
-| Phase       | Contents                                                                                                                                                                                                                                                                                                                                                                                                                         | Depends on                    |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| M0          | Auto-creation, **no new UI**: `RESERVED_AGENT_SLUGS`; nullable `Agent.runtime`; org-creation seam + one-time backfill + `preset_agent` state; the **general** preset created for new orgs and backfilled orgs. The console only needs to tolerate an unplaced, runtime-less agent (render "—"; existing edit/placement paths keep working)                                                                                       | Nothing new                   |
-| M1          | Auto-placement at first daemon online + the probe-status facts field — still CP-side only                                                                                                                                                                                                                                                                                                                                        | M0                            |
-| M2          | Console UX: Choose/Add-daemon CTA (§3.4); checklist + `/onboarding` endpoint + `needsOnboarding` rework; Fulfillment A auto-bind                                                                                                                                                                                                                                                                                                 | M0 (M1 for placement states)  |
-| M3          | ~~agent-assistant P3 + minimal P4 (webchat delegated key); the **assistant** preset (creation + backfill + auto-placement); `getOnboardingStatus` tool + prompt hook~~ **CANCELLED as a dedicated preset** (see the direction-change note): the successor shape is the AgentConnect MCP admin toolset injected into the **general** preset's webapp sessions, with minimal P4 (per-session delegated key) still the prerequisite | M0–M2                         |
-| M4 (hosted) | Distributed Slack app: platform env creds, install route + state, `teamId` schema + composite relay demux, uninstall/revoke lifecycle                                                                                                                                                                                                                                                                                            | Independent of M3; relay pool |
-| M5          | IM identity binding → ~~assistant Slack DMs~~ admin tools beyond webapp sessions; guided per-agent app upgrades                                                                                                                                                                                                                                                                                                                  | M3, M4                        |
+| Phase                  | Contents                                                                                                                                                                                                                                                                                                                               | Depends on                    |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| M0                     | Auto-creation, **no new UI**: `RESERVED_AGENT_SLUGS`; nullable `Agent.runtime`; org-creation seam + one-time backfill + `preset_agent` state; the general preset created for new orgs and backfilled orgs. The console only needs to tolerate an unplaced, runtime-less agent (render "—"; existing edit/placement paths keep working) | Nothing new                   |
+| M1                     | Auto-placement at first daemon online + the probe-status facts field — still CP-side only                                                                                                                                                                                                                                              | M0                            |
+| M2                     | Console UX: Choose/Add-daemon CTA (§3.4); checklist + `/onboarding` endpoint + `needsOnboarding` rework; Fulfillment A auto-bind                                                                                                                                                                                                       | M0 (M1 for placement states)  |
+| M3 (planned successor) | Admin tools inside the general preset's **webapp (Playground/webchat) sessions**: minimal P4 (per-session delegated key) first as the security prerequisite, then the AgentConnect MCP admin toolset scoped to those sessions, plus the `getOnboardingStatus` read tool (§6.3). Replaces the cancelled dedicated assistant preset (§4) | M0–M2; agent-assistant.md P4  |
+| M4 (hosted)            | Distributed Slack app: platform env creds, install route + state, `teamId` schema + composite relay demux, uninstall/revoke lifecycle. **Pulled forward and implemented in M0** (§5.3)                                                                                                                                                 | Independent of M3; relay pool |
+| M5                     | Guided per-agent Slack app upgrades. Any admin surface outside webapp sessions additionally needs the IM identity-binding half of agent-assistant.md P4; the superseded assistant's Slack DMs are cancelled with §4                                                                                                                    | M3, M4                        |
 
 ## 9. Open questions
 
-- Widening the assistant runtime allowlist beyond `claude` (needs a codex-equivalent
-  restricted profile) — tracked in agent-assistant.md.
-- Final branding: display names and the fixed glyph/color pair for both presets.
 - Whether provisioning should also seed a starter cron or memory note (leaning no —
-  the checklist plus the assistant cover discovery).
+  the checklist covers discovery).
 - The exact opt-out surface for self-hosted fleets (org setting vs deploy-time env
   default).
+- How far the successor shape (§4) scopes the admin toolset inside a general-purpose
+  agent's webapp sessions — the general preset is an ordinary, shell-capable agent,
+  so the restricted-profile reasoning of §4.2 does not transfer unchanged.

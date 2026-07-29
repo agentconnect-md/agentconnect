@@ -38,6 +38,27 @@ export function withTx<T>(prisma: PrismaClient, fn: (tx: Prisma.TransactionClien
   return prisma.$transaction(fn)
 }
 
+/**
+ * Run `fn` atomically whether or not the caller already holds a transaction:
+ * open one on a root client, COMPOSE under an ambient `TransactionClient`.
+ *
+ * Prisma has no nested transactions, so a helper that unconditionally called
+ * `$transaction` would break every caller that already runs inside one. The
+ * `'$transaction' in db` probe is the same discriminator the repositories use
+ * (e.g. `PgAgentRepo.transaction`) — a `TransactionClient` deliberately omits
+ * that method.
+ *
+ * Use this for multi-statement invariants that must be all-or-nothing even when
+ * reached from a plain client (org creation writes the org, its membership, and
+ * its preset agent + marker; a partial commit there is unrecoverable — see
+ * `ensurePersonalOrg`). Composing means the OUTER transaction's boundary wins:
+ * a rollback out there also undoes what `fn` wrote, which is the intent.
+ */
+export function withAmbientTx<T>(db: PrismaLike, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  if ('$transaction' in db) return (db as PrismaClient).$transaction(fn)
+  return fn(db as Prisma.TransactionClient)
+}
+
 /** Probe DB reachability with a trivial round-trip — backs the readiness probe
  *  (`/readyz`). Rejects when the connection is down. */
 export async function pingDb(prisma: PrismaLike): Promise<void> {

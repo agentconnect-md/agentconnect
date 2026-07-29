@@ -531,6 +531,14 @@ export interface SlackPlatformInstallDto {
   id: string
   installUrl: string
 }
+/** `GET /integrations/slack/platform-install/:id` — the completion signal the modal
+ *  polls while the authorize tab is open. */
+export interface SlackPlatformInstallStatusDto {
+  id: string
+  status: 'pending' | 'completed' | 'failed'
+  failureReason: string | null
+  botId: string | null
+}
 /** `PUT /slack/config` body — the caller's own Slack App Configuration token. The
  *  access (config) token is required; the refresh token is optional (adds durability). */
 export interface SlackConfigInput {
@@ -2491,11 +2499,19 @@ export async function finalizeSlackInstall(
 // Mint a pending install of the deployment's distributed Slack app and get the
 // slack.com authorize URL to open. `agentId` optional — the CP defaults to the
 // org's `agentconnect` preset agent. The callback finishes the install
-// server-side; the console just refetches integrations when the popup closes.
+// server-side; the console polls the row below to learn when it landed.
 export async function startSlackPlatformInstall(agentId?: string): Promise<SlackPlatformInstallDto> {
   return apiPost<SlackPlatformInstallDto>(`${orgBase()}/integrations/slack/platform-install`, {
     ...(agentId ? { agentId } : {})
   })
+}
+
+// Poll one platform-app install to completion. The ROW's terminal state is the
+// signal, deliberately not "did a new integration appear": re-authorizing a
+// workspace the agent already has only rotates the token, creating no
+// integration, so list growth would never fire on that path.
+export async function getSlackPlatformInstall(id: string): Promise<SlackPlatformInstallStatusDto> {
+  return apiGet<SlackPlatformInstallStatusDto>(`${orgBase()}/integrations/slack/platform-install/${id}`)
 }
 
 // ── Slack org config token (Settings) ──

@@ -43,6 +43,7 @@ function toBotAssignment(a: import('@agentconnect.md/protocol').RcBotAssign): Bo
     secrets: { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret },
     ...(a.apiAppId ? { apiAppId: a.apiAppId } : {}),
     ...(a.teamId ? { teamId: a.teamId } : {}),
+    ...(a.credentialRevision !== undefined ? { credentialRevision: a.credentialRevision } : {}),
     ...(a.botUserId ? { botUserId: a.botUserId } : {}),
     members: a.members,
     agents: a.agents.map((x) => ({ agentId: x.agentId, name: x.name })),

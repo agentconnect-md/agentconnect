@@ -1170,6 +1170,23 @@ export const SlackPlatformInstallStartDto = z.object({
   installUrl: z.string() // https://slack.com/oauth/v2/authorize?… the console opens
 })
 
+/**
+ * `GET /integrations/slack/platform-install/:id` — the console's completion
+ * poll while the Slack authorize tab is open. The row's own terminal state is
+ * the signal: a successful RE-authorization of a workspace the agent already
+ * has rotates the token WITHOUT creating an integration, so watching the
+ * integration list for growth would hang forever on that (common) path.
+ */
+export const SlackPlatformInstallStatusDto = z.object({
+  id: z.string(),
+  status: z.enum(['pending', 'completed', 'failed']),
+  /** Short code identifying the failure ('denied' | 'expired' | 'workspace_taken' |
+   *  'error') — the console renders a message from it. Null unless `failed`. */
+  failureReason: z.string().nullable(),
+  /** The workspace's bot once completed (console deep-link); null otherwise. */
+  botId: z.string().nullable()
+})
+
 /** `GET /integrations/slack/app/:installId` — funnel progress poll. NEVER tokens. */
 export const SlackAppStatusDto = z.object({
   installId: z.string(),

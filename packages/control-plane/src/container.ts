@@ -1051,10 +1051,14 @@ export function buildContainer(
         .catch((err) => http.log.error({ err }, 'relay: shared-bot reconcile on disconnect failed'))
     },
     // A workspace uninstalled the app / revoked its tokens — mark the Bot + its
-    // installs revoked and release the bot from the pool. Swallow+log.
+    // installs revoked and release the bot from the pool, unless the report is
+    // stale (the fence fields; Slack does not order lifecycle events). Swallow+log.
     onBotRevoked: async (m) => {
       try {
-        await sharedBot.revokeBot(m.botId, m.reason)
+        await sharedBot.revokeBot(m.botId, m.reason, {
+          ...(m.credentialRevision !== undefined ? { revision: m.credentialRevision } : {}),
+          ...(m.eventAtMs !== undefined ? { eventAtMs: m.eventAtMs } : {})
+        })
       } catch (err) {
         http.log.error({ err, botId: m.botId }, 'relay: bot-revoked handling failed')
       }

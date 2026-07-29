@@ -280,11 +280,13 @@ export class RelayCpClient {
   }
 
   /** Emit one workspace uninstall / token-revocation report (`rc/bot-revoked`).
-   *  Best-effort: a drop self-heals — outbound with the dead token keeps failing
-   *  and the next lifecycle event (or operator action) re-converges the CP. */
+   *  Returns `false` (without sending) if the link isn't READY so the manager can
+   *  retry on reconnect — NOT droppable: Slack acked the event before the relay's
+   *  handler ran and never redelivers it, and no CP-side probe can discover a dead
+   *  token, so a lost report leaves an uninstalled app shown as active forever. */
   emitBotRevoked(m: RcBotRevoked): boolean {
     if (this.state !== 'READY' || !this.transport) {
-      this.deps.log.warn(`relay: dropping rc/bot-revoked for ${m.botId} (link ${this.state})`)
+      this.deps.log.warn(`relay: deferring rc/bot-revoked for ${m.botId} (link ${this.state})`)
       return false
     }
     this.transport.send(JSON.stringify(buildRelayCpFrame('rc/bot-revoked', m)))

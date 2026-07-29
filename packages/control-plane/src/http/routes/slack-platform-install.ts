@@ -33,7 +33,12 @@ import { resolveWebAppUrl } from '../../config/env.js'
 import { SLACK_BOT_SCOPES, slackPlatformOAuthRedirectUri } from '../slack-manifest.js'
 import { installNewSlackBot } from '../install-slack.js'
 import { closePageHtml, relayHttpBase } from './slack-install.js'
-import { SlackPlatformInstallStartBody, SlackPlatformInstallStartDto, ErrorDto } from '../dto/index.js'
+import {
+  SlackPlatformInstallStartBody,
+  SlackPlatformInstallStartDto,
+  SlackPlatformInstallStatusDto,
+  ErrorDto
+} from '../dto/index.js'
 
 const SLACK_AUTHORIZE_URL = 'https://slack.com/oauth/v2/authorize'
 
@@ -108,6 +113,30 @@ export function slackPlatformInstallRoutes(deps: HttpDeps) {
         return reply.code(201).send({ id: install.id, installUrl: url.toString() })
       }
     )
+
+    r.get(
+      '/integrations/slack/platform-install/:id',
+      {
+        schema: {
+          tags: [Tag.Integrations],
+          summary: 'Poll platform Slack app install',
+          description:
+            'Completion signal for the "Add to Slack" round trip: `pending` while the authorize tab is open, then `completed` (the Bot + install are live) or `failed` with a short reason code. Returns no tokens.',
+          operationId: 'getSlackPlatformInstall',
+          params: z.object({ id: z.string() }),
+          response: { 200: SlackPlatformInstallStatusDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const row = await deps.repos.slackPlatformInstall.get(req.params.id)
+        // Org-scoped read: the id is an unforgeable OAuth state, but this route is
+        // still tenant-bound like every other org resource.
+        if (!row || row.orgId !== req.orgCtx!.orgId) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'install not found' })
+        }
+        return { id: row.id, status: row.status, failureReason: row.failureReason, botId: row.botId }
+      }
+    )
   }
 }
 
@@ -151,7 +180,18 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
 
         if (req.query.error || !req.query.code || !req.query.state) return back('denied')
         const row = await deps.repos.slackPlatformInstall.get(req.query.state)
-        if (!row) return back('expired') // unknown / already-consumed / reaped state
+        // Single-use state. The row now SURVIVES the callback (it is the console's
+        // completion signal), so "already consumed" is a status check rather than
+        // absence — without it a replayed callback would re-run the whole install
+        // and advance the credential generation a second time.
+        if (!row || row.status !== 'pending') return back('expired')
+        // Settle the row with the SAME note the close page shows: it is the
+        // console's completion signal (the poll can't infer success from a new
+        // integration — a re-authorization need not create one).
+        const fail = async (note: Parameters<typeof closePageHtml>[0]): Promise<FastifyReply> => {
+          await deps.repos.slackPlatformInstall.settle(row.id, { status: 'failed', failureReason: note })
+          return back(note)
+        }
 
         const exchanged = await api.exchangeOAuth({
           clientId: platform.clientId,
@@ -161,7 +201,7 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
         })
         if (!exchanged.ok) {
           req.log.warn({ installId: row.id, error: exchanged.error }, 'slack platform oauth exchange failed')
-          return back('error')
+          return fail('error')
         }
         const result = exchanged.result
         // The code must be for OUR distributed app, and the composite demux key
@@ -169,14 +209,13 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
         // unroutable (or wrong-app) bot.
         if (result.appId !== platform.appId || !result.teamId) {
           req.log.warn({ installId: row.id, appId: result.appId }, 'slack platform oauth: unexpected app/team')
-          return back('error')
+          return fail('error')
         }
 
         const agent = await deps.repos.agent.get(row.agentId)
         if (!agent || agent.orgId !== row.orgId) {
           // Target deleted while the tab was open — nothing sane to bind to.
-          await deps.repos.slackPlatformInstall.delete(row.id)
-          return back('error')
+          return fail('error')
         }
 
         const existing = await deps.repos.bot.getBySlackAppTeam(platform.appId, result.teamId)
@@ -184,20 +223,26 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
           // A workspace binds to exactly one org (the demux key is global).
           // Don't leak WHICH org holds it.
           req.log.warn({ installId: row.id, botId: existing.id }, 'slack platform install: workspace already bound')
-          await deps.repos.slackPlatformInstall.delete(row.id)
-          return back('workspace_taken')
+          return fail('workspace_taken')
         }
 
+        let botId: string
         if (existing) {
           // Re-install into the same org: the Bot row is the durable identity —
           // rotate to the fresh token, clear any uninstall marker, and make sure
           // the target agent has an active install; then reconverge the pool.
+          botId = existing.id
           await deps.repos.botSecret.put(BotId(existing.id), {
             botToken: result.botToken,
             appToken: null,
             signingSecret: platform.signingSecret
           })
-          await deps.repos.bot.setRevoked(existing.id, null)
+          // Advance the install GENERATION (and clear the revocation marker with
+          // it, in one statement). MUST happen before the syncBot below so the
+          // pool is re-assigned with the new revision: any `app_uninstalled` from
+          // the install this one replaces is now fenced out (§5.3 lifecycle).
+          const revision = await deps.repos.bot.bumpCredential(BotId(existing.id), new Date())
+          req.log.info({ botId: existing.id, revision }, 'slack platform re-install: credential generation advanced')
           const installs = await deps.repos.integration.listForBot(existing.id)
           if (!installs.some((i) => i.agentId === agent.id)) {
             await deps.repos.integration.create({
@@ -212,7 +257,7 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
           }
           await deps.sharedBot.syncBot(existing.id)
         } else {
-          await installNewSlackBot(deps, req.log, {
+          const created = await installNewSlackBot(deps, req.log, {
             orgId: OrgId(row.orgId),
             agent,
             name: result.teamName ? `AgentConnect (${result.teamName})` : 'AgentConnect',
@@ -226,9 +271,13 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
             signingSecret: platform.signingSecret,
             ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {})
           })
+          botId = created.botId
         }
 
-        await deps.repos.slackPlatformInstall.delete(row.id)
+        // Terminal state, not deletion: the console polls this row to learn the
+        // OAuth tab finished. A re-authorization that only rotated the token
+        // creates no integration, so row growth cannot be the success test.
+        await deps.repos.slackPlatformInstall.settle(row.id, { status: 'completed', botId })
         return back('connected')
       }
     )

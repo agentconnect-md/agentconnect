@@ -15,8 +15,12 @@ function toRecord(r: SlackPlatformInstall): SlackPlatformInstallRecord {
     id: r.id,
     orgId: OrgId(r.orgId),
     agentId: AgentId(r.agentId),
+    status: r.status,
+    failureReason: r.failureReason,
+    botId: r.botId,
     createdByUserId: r.createdByUserId,
-    createdAt: r.createdAt
+    createdAt: r.createdAt,
+    settledAt: r.settledAt
   }
 }
 
@@ -43,6 +47,26 @@ export class PgSlackPlatformInstallStore implements SlackPlatformInstallStore {
   async get(id: string): Promise<SlackPlatformInstallRecord | null> {
     const row = await this.prisma.slackPlatformInstall.findUnique({ where: { id } })
     return row ? toRecord(row) : null
+  }
+
+  async settle(
+    id: string,
+    outcome: { status: 'completed'; botId?: string } | { status: 'failed'; failureReason: string }
+  ): Promise<void> {
+    // `status: 'pending'` in the WHERE: a double callback (Slack retry / a
+    // double-clicked tab) keeps the FIRST outcome rather than overwriting a
+    // completed install with a late failure. updateMany so a reaped row is a
+    // no-op, not a throw.
+    await this.prisma.slackPlatformInstall.updateMany({
+      where: { id, status: 'pending' },
+      data: {
+        status: outcome.status,
+        settledAt: new Date(),
+        ...(outcome.status === 'completed'
+          ? { ...(outcome.botId ? { botId: outcome.botId } : {}) }
+          : { failureReason: outcome.failureReason })
+      }
+    })
   }
 
   async delete(id: string): Promise<void> {

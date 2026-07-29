@@ -28,6 +28,10 @@ export interface BotAssignment {
    *  id AND the signing secret, so this bot may only be demuxed on the composite
    *  `(api_app_id, team_id)` key — never by app id or signature scan alone. */
   teamId?: string
+  /** Install GENERATION of `secrets` (CP-assigned). Echoed back on `rc/bot-revoked`
+   *  so the CP can refuse a revocation that was observed under a credential a
+   *  re-install has since replaced — Slack does not order lifecycle events. */
+  credentialRevision?: number
   /** Resolved lazily by the ingest (auth.test) — used for mention + echo suppression. */
   botUserId?: string
   members: { daemonId: string; agentIds: string[] }[]

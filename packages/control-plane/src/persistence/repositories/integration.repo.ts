@@ -60,6 +60,8 @@ function toBotRecord(b: BotJoined): BotRecord {
     teamId: b.teamId,
     botUserId: b.botUserId,
     revokedAt: b.revokedAt,
+    credentialRevision: b.credentialRevision,
+    credentialInstalledAt: b.credentialInstalledAt,
     discordAppId: b.discordAppId,
     feishuRegion: (b.feishuRegion as FeishuRegion | null) ?? null,
     shareable: b.shareable,
@@ -95,6 +97,10 @@ export class PgBotRepo implements BotRepo {
         ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {}),
         ...(input.shareable !== undefined ? { shareable: input.shareable } : {}),
         ...(input.transport !== undefined ? { transport: input.transport } : {}),
+        // Generation 1 (the column default) lands NOW — so a lifecycle event that
+        // predates this credential is fenced out even on a bot's first install.
+        // Legacy rows keep a null stamp and fall back to the revision arm alone.
+        credentialInstalledAt: new Date(),
         ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
       },
       include: botInclude
@@ -155,8 +161,35 @@ export class PgBotRepo implements BotRepo {
     return b ? toBotRecord(b) : null
   }
 
-  async setRevoked(id: BotId, at: Date | null): Promise<void> {
-    await this.db.bot.update({ where: { id }, data: { revokedAt: at } })
+  async bumpCredential(id: BotId, at: Date): Promise<number> {
+    // One statement: the generation advance, its timestamp, and clearing the
+    // revocation marker are the SAME event ("a fresh credential landed"). A
+    // reader can never observe a live bot whose generation still matches a
+    // report that was already in flight for the dead credential.
+    const row = await this.db.bot.update({
+      where: { id },
+      data: { credentialRevision: { increment: 1 }, credentialInstalledAt: at, revokedAt: null },
+      select: { credentialRevision: true }
+    })
+    return row.credentialRevision
+  }
+
+  async revokeIfCurrent(id: BotId, at: Date, fence: { revision?: number; eventAt?: Date }): Promise<boolean> {
+    // CAS in the WHERE clause — no read-then-write window. Both predicates are
+    // conjunctive and each is skipped when the report didn't carry it (fail-open:
+    // an uninstall must eventually take effect). `credentialInstalledAt: null`
+    // (a bot predating the fence) also passes the timestamp arm via the OR.
+    const { count } = await this.db.bot.updateMany({
+      where: {
+        id,
+        ...(fence.revision !== undefined ? { credentialRevision: fence.revision } : {}),
+        ...(fence.eventAt
+          ? { OR: [{ credentialInstalledAt: null }, { credentialInstalledAt: { lt: fence.eventAt } }] }
+          : {})
+      },
+      data: { revokedAt: at }
+    })
+    return count > 0
   }
 
   async delete(id: BotId): Promise<void> {
