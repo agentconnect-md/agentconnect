@@ -7,19 +7,16 @@ import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
  * DiscordAction). The daemon's applyAction resolves these against a live
  * FeishuConnection.
  *
- * FORMATTING: ordinary Feishu v1 output is TEXT-ONLY. A text message
- * (`msg_type:'text'`) has no HTML/MarkdownV2 parse mode — markup renders literally —
- * so BOTH the agent's reply (`post`) and daemon "chrome" (progress / reasoning / plan /
- * tool-output) are emitted as PLAIN text with no escaping and no parse_mode (unlike
- * Telegram's HTML). The only card is the static platform-permission notice built below;
- * it has an open-URL button and does not enter this action model. The text-message hard
- * constraint is a per-message length cap, so long output is chunked (see
- * chunkForFeishu). Fenced code blocks (```) are kept for tool output — they render
- * harmlessly as literal fences.
+ * The agent reply uses one CardKit entity for the whole turn: `card-start` publishes a
+ * streaming card with a Thinking state, `card-stream` replaces one markdown element
+ * with the cumulative answer (CardKit renders the diff with its native typewriter
+ * effect), and `card-final` replaces the card with the completed answer + optional
+ * linked footer. Transcript rows remain `post` actions with `recordOnly:true`, so card
+ * transport and persistence stay independent. Progress / reasoning / plan / tool-output
+ * remain short plain-text chrome messages.
  *
- * Kinds mirror TelegramAction/DiscordAction so the daemon's dispatch stays parallel:
- *  - `post`        the agent's reply (recorded into the transcript).
- *  - `notice`      a system line posted but NOT recorded (e.g. the done footer).
+ * Kinds otherwise mirror TelegramAction/DiscordAction so dispatch stays parallel:
+ *  - `post`        records the agent's reply into the transcript (`recordOnly:true`).
  *  - `typing`      a transient hint. Feishu has no typing/chat-action API, so the
  *                  applier treats this as a no-op — kept only for dispatch parity.
  *  - `progress`    the SINGLE in-place progress message (medium/high), edited in place.
@@ -34,12 +31,13 @@ import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
  * reuses {@link renderStatusReply}.
  */
 export type FeishuAction =
-  // `recordOnly: true` writes to the transcript without sending — minimal mode keeps the
-  // full audit trail while the chat shows only the single `live-reply` message.
+  | { kind: 'card-start' }
+  | { kind: 'card-stream'; text: string }
+  | { kind: 'card-final'; text: string; link?: string }
+  | { kind: 'card-cancel' }
+  // CardKit owns visible answer delivery. These rows retain the existing transcript
+  // segmentation without also posting duplicate text messages into the chat.
   | { kind: 'post'; text: string; recordOnly?: boolean }
-  // `live-reply` is minimal mode's single, in-place agent reply (post-once/edit-thereafter,
-  // like `progress`) — display only, NOT recorded.
-  | { kind: 'live-reply'; text: string }
   | { kind: 'notice'; text: string }
   | { kind: 'typing' }
   | { kind: 'progress'; text: string }
@@ -51,9 +49,83 @@ export type FeishuAction =
  *  to a safe cap like Telegram (4096) / Discord (2000). */
 export const FEISHU_MESSAGE_LIMIT = 4000
 
+/** Stable CardKit element id targeted by `cardElement.content`. */
+export const FEISHU_STREAMING_ELEMENT_ID = 'agentconnect_reply'
+
+/** Initial CardKit 2.0 reply card. `streaming_mode` makes element updates render
+ * incrementally in clients that support CardKit streaming. */
+export function buildStreamingReplyCard(): Record<string, unknown> {
+  return {
+    schema: '2.0',
+    config: {
+      streaming_mode: true,
+      update_multi: true,
+      summary: { content: '[Generating…]' },
+      streaming_config: {
+        print_frequency_ms: { default: 70 },
+        print_step: { default: 1 },
+        print_strategy: 'fast'
+      }
+    },
+    body: {
+      direction: 'vertical',
+      padding: '12px 12px 12px 12px',
+      elements: [
+        {
+          tag: 'markdown',
+          element_id: FEISHU_STREAMING_ELEMENT_ID,
+          content: 'Thinking…'
+        }
+      ]
+    }
+  }
+}
+
+function cardSummary(text: string): string {
+  const plain = text
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/[*_`#>[\]()~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return plain.slice(0, 120) || 'Completed'
+}
+
+function footerLink(link: string): string {
+  return link.replace(/\(/g, '%28').replace(/\)/g, '%29')
+}
+
+/** Completed CardKit 2.0 reply. The footer is intentionally part of the card rather
+ * than a second message, so the answer has one stable visual surface. */
+export function buildCompletedReplyCard(text: string, link?: string): Record<string, unknown> {
+  const elements: Record<string, unknown>[] = [{ tag: 'markdown', content: text }]
+  if (link) {
+    elements.push(
+      { tag: 'hr' },
+      {
+        tag: 'markdown',
+        text_size: 'notation',
+        content: `AI-generated content is for reference only. [View session](${footerLink(link)})`
+      }
+    )
+  }
+  return {
+    schema: '2.0',
+    config: {
+      streaming_mode: false,
+      update_multi: true,
+      summary: { content: cardSummary(text) }
+    },
+    body: {
+      direction: 'vertical',
+      padding: '12px 12px 12px 12px',
+      elements
+    }
+  }
+}
+
 /** Static JSON 2.0 card used only for platform permission/configuration failures.
  * The button opens app settings directly, so no card callback or public endpoint is
- * required. Ordinary agent output remains plain text. */
+ * required. It is separate from the streaming reply lifecycle above. */
 export function buildPermissionUpdateCard(
   updateUrl: string,
   description: string,
@@ -219,16 +291,25 @@ export function renderStatusReply(info: FeishuStatusInfo, link?: string): string
 
 export class FeishuConverger {
   private buf = ''
+  /** Visible card content. Non-minimal modes accumulate the whole turn; minimal
+   * keeps only the current answer segment while earlier segments remain transcript-only. */
+  private cardText = ''
+  private lastStreamText = ''
+  private cardBoundary = false
   private reasoningBuf = ''
   private reasoningDirty = false
   private toolTitles = new Map<string, string>()
   private toolOutputs = new Map<string, string>()
   private emittedOutput = new Set<string>()
-  // minimal mode only — see the OutputConverger (Slack) for the segment/record contract.
+  // minimal mode only — see OutputConverger (Slack) for the segment/record contract.
   private segmentReset = false
   private recordDirty = false
 
   constructor(private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high') {}
+
+  onStart(): FeishuAction[] {
+    return this.mode === 'none' ? [] : [{ kind: 'card-start' }]
+  }
 
   /** True while body text OR reasoning is pending — the daemon (re)arms the idle-flush timer on it. */
   hasBuffered(): boolean {
@@ -236,35 +317,43 @@ export class FeishuConverger {
     return this.buf.trim().length > 0 || this.reasoningDirty
   }
 
-  /** Idle-timer flush: one in-place reasoning update (high) placed ABOVE the body, then the body.
-   *  minimal: just refresh the single in-place `live-reply` with the current segment. */
+  /** Whether a newer safe answer snapshot is ready for the periodic CardKit stream timer. */
+  hasStreamingUpdate(): boolean {
+    const trimmed = this.cardText.trim()
+    return (
+      this.mode !== 'none' &&
+      trimmed.length > 0 &&
+      !isNoResponsePrefix(trimmed) &&
+      this.cardText !== this.lastStreamText
+    )
+  }
+
+  /** Return one cumulative CardKit element update and mark that snapshot as emitted. */
+  streamUpdate(): FeishuAction[] {
+    if (!this.hasStreamingUpdate()) return []
+    this.lastStreamText = this.cardText
+    return [{ kind: 'card-stream', text: this.cardText }]
+  }
+
+  /** Idle-timer flush: update the answer card, record the buffered body, and drain
+   * high-mode reasoning. Minimal mode only refreshes the current card segment here;
+   * its transcript segment closes at a semantic boundary or turn end. */
   flushBuffered(): FeishuAction[] {
-    if (this.mode === 'minimal') {
-      const trimmed = this.buf.trim()
-      if (!trimmed || isNoResponsePrefix(trimmed)) return []
-      return [{ kind: 'live-reply', text: this.liveDisplay(this.buf) }]
-    }
-    return [...this.drainReasoning(), ...this.flush()]
+    if (this.mode === 'minimal') return this.streamUpdate()
+    return [...this.drainReasoning(), ...this.flush(false)]
   }
 
-  /** minimal: a Feishu text message caps at FEISHU_MESSAGE_LIMIT; head-clamp the live view
-   *  when longer (the full segment still reaches the transcript via the paired `recordOnly` posts). */
-  private liveDisplay(text: string): string {
-    const chunks = chunkForFeishu(text, FEISHU_MESSAGE_LIMIT)
-    return chunks.length <= 1 ? text : `${chunks[0]}\n\n…full reply in the web session`
-  }
-
-  /** minimal: close the current reply segment — full text as `recordOnly` post(s) for the
-   *  transcript plus the single `live-reply` refresh for the chat. Guards on `recordDirty` so a
-   *  segment already closed by an earlier boundary isn't re-recorded. */
-  private closeSegment(): FeishuAction[] {
+  /** Minimal mode: close the current reply segment into the transcript. The card itself
+   * stays one message and is replaced with the next answer segment after a tool boundary. */
+  private closeSegment(includeStream = true): FeishuAction[] {
     this.segmentReset = true
-    if (!this.recordDirty || !this.buf.trim()) return []
+    const stream = includeStream ? this.streamUpdate() : []
+    if (!this.recordDirty || !this.buf.trim()) return stream
     if (isNoResponsePrefix(this.buf.trim())) return []
     const text = this.buf
     this.recordDirty = false
     return [
-      { kind: 'live-reply', text: this.liveDisplay(text) },
+      ...stream,
       ...chunkForFeishu(text, FEISHU_MESSAGE_LIMIT).map(
         (t) => ({ kind: 'post', text: t, recordOnly: true }) as FeishuAction
       )
@@ -277,21 +366,26 @@ export class FeishuConverger {
     return [{ kind: 'reasoning', text: renderReasoning(this.reasoningBuf) }]
   }
 
-  private flush(): FeishuAction[] {
+  /** Record one non-minimal body window. A semantic boundary starts the next answer
+   * chunk on a fresh paragraph inside the same card; an idle flush does not. */
+  private flush(boundary: boolean, includeStream = true): FeishuAction[] {
     const trimmed = this.buf.trim()
     if (!trimmed) {
       this.buf = ''
-      return []
+      if (!this.cardText.trim()) this.cardText = ''
+      if (boundary && this.cardText.trim()) this.cardBoundary = true
+      return includeStream ? this.streamUpdate() : []
     }
     if (isNoResponsePrefix(trimmed)) return []
     const text = this.buf
     this.buf = ''
-    // none: record the reply into the transcript WITHOUT sending it — `recordOnly` runs before
-    // the connection check, so it lands even though replyConn is unset for this mode.
-    const recordOnly = this.mode === 'none'
-    return chunkForFeishu(text, FEISHU_MESSAGE_LIMIT).map(
-      (t) => ({ kind: 'post', text: t, ...(recordOnly ? { recordOnly: true } : {}) }) as FeishuAction
-    )
+    if (boundary) this.cardBoundary = true
+    return [
+      ...(includeStream ? this.streamUpdate() : []),
+      ...chunkForFeishu(text, FEISHU_MESSAGE_LIMIT).map(
+        (t) => ({ kind: 'post', text: t, recordOnly: true }) as FeishuAction
+      )
+    ]
   }
 
   private toolLabel(update: { toolCallId?: string; title?: string }): string {
@@ -333,9 +427,14 @@ export class FeishuConverger {
         const text = content?.type === 'text' ? (content.text ?? '') : ''
         if (this.mode === 'minimal' && this.segmentReset && text) {
           this.buf = ''
+          this.cardText = ''
           this.segmentReset = false
+        } else if (this.mode !== 'minimal' && this.cardBoundary && text) {
+          if (this.cardText && !this.cardText.endsWith('\n') && !text.startsWith('\n')) this.cardText += '\n\n'
+          this.cardBoundary = false
         }
         this.buf += text
+        this.cardText += text
         if (this.mode === 'minimal' && text.trim()) this.recordDirty = true
         return []
       }
@@ -352,8 +451,8 @@ export class FeishuConverger {
         // minimal keeps the reply intact (no body flush) — just show typing.
         if (this.mode === 'minimal') return [{ kind: 'typing' }]
         // none: record the buffered body, send nothing (no typing indicator either).
-        if (this.mode === 'none') return this.flush()
-        return [...this.flush(), { kind: 'typing' }]
+        if (this.mode === 'none') return this.flush(true)
+        return [...this.flush(true), { kind: 'typing' }]
       }
       case 'tool_call':
       case 'tool_call_update': {
@@ -365,40 +464,69 @@ export class FeishuConverger {
           rawOutput?: unknown
         }
         const label = this.toolLabel(u)
-        // minimal: close the segment (record + settle live message); activity = typing only.
+        // minimal: close the transcript segment; activity remains generic.
         if (this.mode === 'minimal') return [{ kind: 'typing' }, ...this.closeSegment()]
-        if (this.mode === 'none') return this.flush()
-        if (this.mode === 'low') return [...this.flush(), { kind: 'typing' }]
-        const actions: FeishuAction[] = [...this.flush(), { kind: 'typing' }, { kind: 'progress', text: `🔨 ${label}` }]
+        if (this.mode === 'none') return this.flush(true)
+        if (this.mode === 'low') return [...this.flush(true), { kind: 'typing' }]
+        const actions: FeishuAction[] = [
+          ...this.flush(true),
+          { kind: 'typing' },
+          { kind: 'progress', text: `🔨 ${label}` }
+        ]
         if (this.mode === 'high') actions.push(...this.drainToolOutput(u))
         return actions
       }
       case 'plan': {
         const entries = (update as { entries?: PlanEntry[] }).entries ?? []
         if (this.mode === 'minimal') return [{ kind: 'typing' }]
-        if (this.mode === 'none') return this.flush()
-        if (this.mode === 'low') return [...this.flush(), { kind: 'typing' }]
-        return [...this.flush(), { kind: 'plan', text: renderPlan(entries) }]
+        if (this.mode === 'none') return this.flush(true)
+        if (this.mode === 'low') return [...this.flush(true), { kind: 'typing' }]
+        return [...this.flush(true), { kind: 'plan', text: renderPlan(entries) }]
       }
       default:
         return []
     }
   }
 
-  /** Turn end: flush remaining body; in medium/high append a done footer with the deep link. */
+  /** Turn end: persist the last body window and replace the streaming entity with the
+   * completed answer. The optional footer link is embedded into that same final card. */
   onFinal(link?: string): FeishuAction[] {
-    if (isNoResponseBody(this.buf.trim())) {
+    const display = this.cardText.trim()
+    if (isNoResponseBody(display)) {
       this.buf = ''
+      this.cardText = ''
       this.recordDirty = false
-      return []
+      return this.mode === 'none' ? [] : [{ kind: 'card-cancel' }]
     }
-    // minimal: settle the single live message on the final segment (and record it). No footer.
-    if (this.mode === 'minimal') return this.closeSegment()
-    // none: record the final body only; nothing is sent to the chat.
-    if (this.mode === 'none') return this.flush()
-    if (this.mode === 'low') return [...this.flush()]
-    const reasoning = this.drainReasoning()
-    const footer: FeishuAction[] = link ? [{ kind: 'notice', text: `✅ done — ${link}` }] : []
-    return [...reasoning, ...this.flush(), ...footer]
+    const actions =
+      this.mode === 'minimal' ? this.closeSegment(false) : [...this.drainReasoning(), ...this.flush(false, false)]
+    if (this.mode === 'none') return actions
+    if (!display) return [...actions, { kind: 'card-cancel' }]
+    this.cardText = display
+    this.lastStreamText = display
+    return [...actions, { kind: 'card-final', text: display, ...(link ? { link } : {}) }]
+  }
+
+  /** Prompt failure after the card has started: preserve any useful runtime-authored
+   * error text, otherwise append one concise failure line, then close the card. */
+  onFailure(reason: string, link?: string): FeishuAction[] {
+    const display = this.cardText.trim()
+    if (isNoResponseBody(display)) {
+      this.buf = ''
+      this.cardText = ''
+      this.recordDirty = false
+      return this.mode === 'none' ? [] : [{ kind: 'card-cancel' }]
+    }
+    const notice = `⚠️ Agent failed to respond: ${reason}`
+    const covered = display.includes(reason)
+    const finalText = covered ? this.cardText : display ? `${this.cardText}\n\n${notice}` : notice
+    const actions =
+      this.mode === 'minimal' ? this.closeSegment(false) : [...this.drainReasoning(), ...this.flush(false, false)]
+    if (!covered) actions.push({ kind: 'post', text: notice, recordOnly: true })
+    if (this.mode === 'none') return actions
+    this.cardText = finalText
+    this.lastStreamText = finalText
+    actions.push({ kind: 'card-final', text: finalText, ...(link ? { link } : {}) })
+    return actions
   }
 }
