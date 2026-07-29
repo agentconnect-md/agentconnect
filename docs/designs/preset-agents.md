@@ -6,7 +6,7 @@ console tolerance for unplaced agents), together with §5.3 Fulfillment B — th
 platform-published "Add to Slack" app (env credentials, state-bound install route,
 `Bot.teamId` + composite relay demux, uninstall/revocation lifecycle) — pulled
 forward from M4 so the preset agent is Slack-connectable from day one. M1–M2 remain
-proposed. **§4 is superseded** and is retained only as reference — see the direction
+proposed. The dedicated assistant agent is **cancelled** (§4) — see the direction
 change below.
 
 **Direction change (2026-07-29) — one preset, no dedicated assistant agent.** There
@@ -55,9 +55,8 @@ The target shape:
    against a predefined manifest.
 
 Three pieces, each independently useful: preset provisioning (§3), the predefined
-Slack app (§5), and the checklist (§6). §4 is the superseded fourth — a dedicated
-assistant agent — retained as the reference for folding admin tools into the general
-preset.
+Slack app (§5), and the checklist (§6). §4 records the fourth that was cancelled —
+a dedicated assistant agent — and where its successor lives instead.
 
 ## 2. Decisions
 
@@ -206,93 +205,31 @@ runtime/model/effort controls render disabled with a "set when placed" hint unti
 then. Placing through either surface stamps `placementSettledAt` for a preset
 (§3.2). Both form factors follow the console's responsive conventions.
 
-## 4. [SUPERSEDED] The dedicated assistant agent — delta to agent-assistant.md
+## 4. The assistant agent — cancelled
 
-> **Superseded 2026-07-29. Nothing in §4 is a shipping requirement.** The second
-> built-in agent described here — `agentconnect-assistant`, agent-assistant.md's
-> `kind='assistant'` (P3) — is cancelled: it is never provisioned, has no preset
-> row, no auto-placement, and no `AgentKind` discriminator ships.
->
-> **Successor shape.** Assistant/admin capabilities fold into the one `agentconnect`
-> general preset (§3.1). The planned first step: the AgentConnect MCP admin toolset
-> becomes available inside that agent's **webapp (Playground/webchat) sessions**,
-> gated on the same per-session delegated credential this section relies on
-> (agent-assistant.md P4, webchat half — still the security prerequisite, still
-> unbuilt). This section is retained because that shape reuses the machinery
-> described here: session-bound credential minting and binding, a closed and
-> auditable tool surface, schema-level confirm-gates, per-initiator session privacy,
-> and the onboarding prompt opening.
+A previous revision of this design re-triggered agent-assistant.md's built-in
+assistant agent (P3, `kind='assistant'`, slug `agentconnect-assistant`) as a
+SECOND preset. **That is cancelled** (2026-07-29): it is never provisioned, has
+no preset row, no auto-placement, and no `AgentKind` discriminator ships.
+`PresetAgentKind` carries only `general`; the assistant slugs stay reserved
+(§3.3) purely as an impersonation guard.
 
-Would have been reused unchanged from P3/P4: the `AgentKind` discriminator and
-partial unique index, fixed-property guards, the restricted runtime profile, the
-immutable prompt template, `GET|PUT|DELETE /orgs/:orgId/assistant`, `denyDelegated`
-route families, the confirm-gates on destructive MCP tools, and session privacy by
-`initiatorUserId`.
+Assistant/admin capabilities fold into the one `agentconnect` general preset
+instead (§3.1). The planned first step: the AgentConnect MCP admin toolset
+becomes available inside that agent's **webapp (Playground/webchat) sessions**,
+gated on the per-session delegated credential of agent-assistant.md §4 (P4's
+webchat half) — still the security prerequisite, still unbuilt.
 
-Deltas this design would have introduced:
-
-1. **Slug**: `agentconnect-assistant` (§3.3 — still reserved, never provisioned).
-2. **Provisioning**: created at org creation (unplaced) and auto-placed at
-   first-daemon-online (§3.2), _in addition to_ the owner's `PUT /assistant` for
-   move/re-enable, with `DELETE /assistant` (disable) as the owner's opt-out after
-   the fact. Auto-placement additionally required a daemon reporting `claude`
-   (`RegisterReq.capabilities.runtimes` — a bare id list, no auth information), so a
-   codex-only daemon would place the general agent alone and the assistant would
-   wait for a claude-capable daemon behind a checklist hint. `DELETE /assistant`
-   (which retains the row as `inactive`, v2 §3.2) stamped `placementSettledAt`
-   atomically, so a disable made before any daemon ever connected was honored — the
-   next registration must not place, let alone re-enable, a disabled assistant.
-   Contract case: disable-before-first-daemon.
-3. **Prompt**: the immutable template gains an onboarding opening — fetch
-   `getOnboardingStatus` (§6.3) at session start, lead with the single most valuable
-   incomplete step, propose exactly one next step, act only through tools with their
-   existing confirm-gates, and restate destructive operations before running them.
-   (Formerly §6.4.)
-4. **P4 scope**: only the webchat-token delegated-minting half is required. IM
-   identity binding — and with it any Slack presence — stays deferred.
-
-Visibility deliberately matched v2 (`org`, fixed): every member would get the
-conversational entry, the Playground would pin the assistant for everyone, and
-session privacy by `initiatorUserId` would carry the cross-user isolation.
-
-### 4.1 Superseded decisions (moved out of §2)
-
-| Topic                | Decision (superseded)                                                                                                                                                                                                   | Rejected alternatives                                                                                                                                                                                                                                                                                                                                                            |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Assistant identity   | Reuse agent-assistant `kind='assistant'` (P3) wholesale; this design changed only when it is provisioned and its slug                                                                                                   | A parallel "preset assistant" type — two built-ins with admin-tool access doubles the security surface for no product gain                                                                                                                                                                                                                                                       |
-| Assistant visibility | `org` — available to every member, fixed per agent-assistant v2; sharing/call-policy writes stay rejected (the lock guards openness), and the row carries no personal creator                                           | `restricted` / private-to-owner (an earlier revision): delegated credentials already make per-message authority exactly the caller's own, so the privacy bought no security and cost every non-owner the conversational entry. If ever revisited: `restricted` admits the **creator**, and collaborators can enroll daemons — a restricted assistant must carry no creator grant |
-| Assistant deletion   | Disable, never delete (v2 §3.2 semantics); its `createdByUserId` is **null** (a built-in carries no personal creator) and its mutable surface is the owner-gated `/orgs/:orgId/assistant` endpoints regardless of grant | Generic agent-write routes reaching a built-in — v2's fixed-property guards reject `kind='assistant'` there so conversing is org-wide while configuring stays with owners                                                                                                                                                                                                        |
-| Assistant on Slack   | None in v1 — webchat/Playground only                                                                                                                                                                                    | A predefined assistant Slack app: unsafe until Slack-user ↔ AgentConnect-user identity binding exists (P4's deferred half). With only workspace-level identity, anyone in the workspace could borrow the delegated authority                                                                                                                                                     |
-
-### 4.2 Superseded properties (the assistant column of §3.1)
-
-|                       | `agentconnect-assistant`                                                                                                              |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Kind                  | `assistant` (P3)                                                                                                                      |
-| Visibility            | `org`, fixed; sharing/call-policy writes rejected (v2 guards). Mutable only through the owner-only `/orgs/:orgId/assistant` endpoints |
-| Runtime               | `claude`, fixed by the template (v2 §8.2 allowlist); auto-placed only onto a daemon that reports it                                   |
-| Profile               | Restricted: no shell/file tools, locked scratch workspace (v2 §8.2)                                                                   |
-| Workspace             | Locked scratch                                                                                                                        |
-| MCP                   | Exactly one injected server: the CP AgentConnect MCP with a per-session delegated key (P4). No memory/collab/platform tools           |
-| Icon                  | Fixed brand glyph + color                                                                                                             |
-| Persona               | CP-generated immutable prompt (v2 §8.3) + the onboarding opening above                                                                |
-| Integrations at birth | None, ever                                                                                                                            |
-
-### 4.3 Superseded security considerations (moved out of §7)
-
-- **Owner-only mutability**: the assistant would be configured solely through the
-  owner-gated `/orgs/:orgId/assistant` endpoints; generic writes targeting
-  `kind='assistant'` are rejected, and delegated principals cannot modify the
-  assistant through the assistant (agent-assistant.md §6.3) — nobody talks the
-  assistant into unlocking itself.
-- **Cross-user content isolation**: assistant sessions would be private to their
-  `initiatorUserId` (owners keep the governance exemption), and memory tools stay
-  removed — agent memory is shared state, so one member's information must not
-  surface in another member's conversation (agent-assistant.md v2 decisions).
-- **No IM surface** until identity binding exists.
-- **Open question, superseded**: widening the assistant runtime allowlist beyond
-  `claude` (needs a codex-equivalent restricted profile) — tracked in
-  agent-assistant.md.
+Little of the cancelled shape transfers, which is why it is not retained here:
+its identity machinery (a `kind` discriminator, fixed-property guards, a
+dedicated `/orgs/:orgId/assistant` surface) exists to make a second built-in
+agent unlike an ordinary one, while the successor's host IS an ordinary,
+user-editable agent — and its mandatory restricted runtime profile (no shell, no
+file tools) is actively wrong for a general-purpose development agent. What DOES
+carry over is documented in the live sections it belongs to: session-bound
+credential minting in agent-assistant.md §4, and the closed, auditable,
+confirm-gated tool surface in §6. The full cancelled design is in git history
+(this file before 2026-07-29) if the rationale is ever needed.
 
 ## 5. Predefined Slack app
 
@@ -428,9 +365,9 @@ because neither owns the state.
   auto-placement records a system actor with the daemon and affected agent
   (§3.2); manual placement records the placing user. Every MCP write logs through
   the operation log with the acting user's identity (agent-assistant.md §9.3).
-- The security properties the superseded assistant agent would have carried — its
-  owner-only mutability, per-initiator session isolation, and the absence of any IM
-  surface — are recorded in §4.3.
+- Per-initiator session isolation and the confirm-gated, auditable tool surface
+  remain requirements of the successor shape (§4) and are specified where they
+  live: agent-assistant.md §4 (credential) and §6 (tools).
 
 ## 8. Phasing
 
@@ -441,7 +378,7 @@ because neither owns the state.
 | M2                     | Console UX: Choose/Add-daemon CTA (§3.4); checklist + `/onboarding` endpoint + `needsOnboarding` rework; Fulfillment A auto-bind                                                                                                                                                                                                       | M0 (M1 for placement states)  |
 | M3 (planned successor) | Admin tools inside the general preset's **webapp (Playground/webchat) sessions**: minimal P4 (per-session delegated key) first as the security prerequisite, then the AgentConnect MCP admin toolset scoped to those sessions, plus the `getOnboardingStatus` read tool (§6.3). Replaces the cancelled dedicated assistant preset (§4) | M0–M2; agent-assistant.md P4  |
 | M4 (hosted)            | Distributed Slack app: platform env creds, install route + state, `teamId` schema + composite relay demux, uninstall/revoke lifecycle. **Pulled forward and implemented in M0** (§5.3)                                                                                                                                                 | Independent of M3; relay pool |
-| M5                     | Guided per-agent Slack app upgrades. Any admin surface outside webapp sessions additionally needs the IM identity-binding half of agent-assistant.md P4; the superseded assistant's Slack DMs are cancelled with §4                                                                                                                    | M3, M4                        |
+| M5                     | Guided per-agent Slack app upgrades. Any admin surface outside webapp sessions additionally needs the IM identity-binding half of agent-assistant.md P4; the cancelled assistant's Slack DMs went with it (§4)                                                                                                                         | M3, M4                        |
 
 ## 9. Open questions
 
