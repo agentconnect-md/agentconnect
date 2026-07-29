@@ -12,9 +12,11 @@ import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
  * streaming card with a Thinking state, `card-stream` replaces one markdown element
  * with the cumulative answer (CardKit renders the diff with its native typewriter
  * effect), and `card-final` replaces the card with the completed answer + optional
- * linked footer. Transcript rows remain `post` actions with `recordOnly:true`, so card
- * transport and persistence stay independent. Progress / reasoning / plan / tool-output
- * remain short plain-text chrome messages.
+ * linked footer. A compact overflow menu keeps View session available throughout the
+ * card lifecycle and exposes Cancel run only while the turn is active. Transcript rows
+ * remain `post` actions with `recordOnly:true`, so card transport and persistence stay
+ * independent. Progress / reasoning / plan / tool-output remain short plain-text chrome
+ * messages.
  *
  * Kinds otherwise mirror TelegramAction/DiscordAction so dispatch stays parallel:
  *  - `post`        records the agent's reply into the transcript (`recordOnly:true`).
@@ -25,11 +27,11 @@ import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
  *  - `plan`        the SINGLE in-place plan-summary message (medium/high).
  *  - `tool-output` a finished tool's output as a fenced code block (high only), not recorded.
  *
- * There is deliberately NO per-turn `status-bar` action (unlike Slack/Discord):
- * Feishu v1 has no interactive session controls, so session state and controls are
- * exposed on demand via typed /commands instead (`/status`, `/stop`, `/cancel`,
- * `/fast` — see commands/commands.ts + daemon.handleCommand). The `/status` reply
- * reuses {@link renderStatusReply}.
+ * There is deliberately NO separate per-turn `status-bar` action (unlike
+ * Slack/Discord). Lark keeps its two compact actions in the reply card's overflow menu;
+ * the fuller session state and controls remain available via typed /commands
+ * (`/status`, `/stop`, `/cancel`, `/fast` — see commands/commands.ts +
+ * daemon.handleCommand). The `/status` reply reuses {@link renderStatusReply}.
  */
 export type FeishuAction =
   | { kind: 'card-start' }
@@ -53,9 +55,15 @@ export const FEISHU_MESSAGE_LIMIT = 4000
 /** Stable CardKit element id targeted by `cardElement.content`. */
 export const FEISHU_STREAMING_ELEMENT_ID = 'agentconnect_reply'
 
+/** Stable CardKit overflow identity returned by `card.action.trigger`. */
+export const FEISHU_REPLY_ACTIONS_ELEMENT_ID = 'agentconnect_actions'
+export const FEISHU_REPLY_ACTION_VALUE = 'agentconnect_reply'
+export const FEISHU_REPLY_CANCEL_OPTION = 'cancel'
+
 /** Initial CardKit 2.0 reply card. `streaming_mode` makes element updates render
  * incrementally in clients that support CardKit streaming. */
-export function buildStreamingReplyCard(): Record<string, unknown> {
+export function buildStreamingReplyCard(sessionUrl?: string): Record<string, unknown> {
+  const menu = cardSessionMenu(sessionUrl, true)
   return {
     schema: '2.0',
     config: {
@@ -76,7 +84,8 @@ export function buildStreamingReplyCard(): Record<string, unknown> {
           tag: 'markdown',
           element_id: FEISHU_STREAMING_ELEMENT_ID,
           content: 'Thinking…'
-        }
+        },
+        ...(menu ? [menu] : [])
       ]
     }
   }
@@ -99,7 +108,7 @@ function escapeFooterText(value: string): string {
     .replace(/([\\`*_[\]~<>])/g, '\\$1')
 }
 
-function footerLink(value: string): string | undefined {
+function cardLink(value: string): string | undefined {
   try {
     const url = new URL(value)
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined
@@ -111,12 +120,44 @@ function footerLink(value: string): string | undefined {
   }
 }
 
+function cardSessionMenu(sessionUrl: string | undefined, cancellable: boolean): Record<string, unknown> | undefined {
+  const url = sessionUrl ? cardLink(sessionUrl) : undefined
+  const options = [
+    ...(cancellable
+      ? [
+          {
+            text: { tag: 'plain_text', content: 'Cancel run' },
+            value: FEISHU_REPLY_CANCEL_OPTION
+          }
+        ]
+      : []),
+    ...(url
+      ? [
+          {
+            text: { tag: 'plain_text', content: 'View session' },
+            value: 'session',
+            multi_url: { url }
+          }
+        ]
+      : [])
+  ]
+  if (options.length === 0) return undefined
+  return {
+    tag: 'overflow',
+    element_id: FEISHU_REPLY_ACTIONS_ELEMENT_ID,
+    width: 'default',
+    options,
+    value: { action: FEISHU_REPLY_ACTION_VALUE },
+    margin: '8px 0px 0px 0px'
+  }
+}
+
 /** Reuse the canonical Slack/GitHub attribution sentence while applying CardKit
  * markdown links and escaping at this platform boundary. */
 function attributionFooter(info: ReplyAttributionInfo): string {
   const botName = escapeFooterText(info.botName) || 'unknown agent'
-  const botUrl = footerLink(info.botUrl)
-  const sessionUrl = footerLink(info.sessionUrl)
+  const botUrl = cardLink(info.botUrl)
+  const sessionUrl = cardLink(info.sessionUrl)
   return renderAttributionMessage({
     agent: botUrl ? `[${botName}](${botUrl})` : botName,
     runtime: escapeFooterText(info.runtime),
@@ -127,7 +168,11 @@ function attributionFooter(info: ReplyAttributionInfo): string {
 
 /** Completed CardKit 2.0 reply. The footer is intentionally part of the card rather
  * than a second message, so the answer has one stable visual surface. */
-export function buildCompletedReplyCard(text: string, attribution?: ReplyAttributionInfo): Record<string, unknown> {
+export function buildCompletedReplyCard(
+  text: string,
+  attribution?: ReplyAttributionInfo,
+  sessionUrl = attribution?.sessionUrl
+): Record<string, unknown> {
   const elements: Record<string, unknown>[] = [{ tag: 'markdown', content: text }]
   if (attribution) {
     elements.push({
@@ -136,6 +181,8 @@ export function buildCompletedReplyCard(text: string, attribution?: ReplyAttribu
       content: attributionFooter(attribution)
     })
   }
+  const menu = cardSessionMenu(sessionUrl, false)
+  if (menu) elements.push(menu)
   return {
     schema: '2.0',
     config: {

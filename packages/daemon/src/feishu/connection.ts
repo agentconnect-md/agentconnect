@@ -9,12 +9,15 @@ import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
 import { SlackSendQueue } from '../slack/send-queue.js'
+import type { InteractionActor } from '../slack/connection.js'
 import { normalizeFeishuMessage, type FeishuAttachmentLike, type FeishuMessageLike } from './normalize.js'
 import {
   buildCompletedReplyCard,
   buildPermissionUpdateCard,
   buildStreamingReplyCard,
   chunkForFeishu,
+  FEISHU_REPLY_ACTION_VALUE,
+  FEISHU_REPLY_CANCEL_OPTION,
   FEISHU_STREAMING_ELEMENT_ID
 } from './render.js'
 
@@ -73,12 +76,13 @@ export function consolidateFeishu(agents: Agent[]): Map<string, ConsolidatedFeis
 export interface FeishuDeps {
   group: ConsolidatedFeishuGroup
   onMessage: (msg: NormalizedMessage) => void
+  /** Fired when a user selects Cancel run from an active reply card's overflow menu.
+   * The connection resolves the callback message id to the turn's local session key. */
+  onStatusAction?: (a: { kind: 'cancel'; sessionKey: string; actor?: InteractionActor }) => void
   newTraceId: () => string
   log?: Logger
   /** Min spacing (ms) between outbound writes (serialized send-queue). Tests pass 0. */
   sendIntervalMs?: number
-  // NOTE: no onCallback/onStatusAction/onSelectAction in v1; the permission card's
-  // button is an open-URL behavior and sends no callback.
 }
 
 /** The raw `im.message.receive_v1` event body the WSClient dispatches. `data` IS the
@@ -100,6 +104,36 @@ export interface FeishuRawEvent {
     // per-thread session keying + threaded replies (see normalize + postMessage).
     root_id?: string
     mentions?: { key?: string; id?: { open_id?: string }; name?: string }[]
+  }
+}
+
+/** The raw `card.action.trigger` body delivered by the Lark WSClient. CardKit v2
+ * nests message/chat ids under `context`; root-level fallbacks cover older payloads. */
+export interface FeishuRawCardActionEvent {
+  context?: {
+    open_message_id?: string
+    open_chat_id?: string
+  }
+  open_message_id?: string
+  open_chat_id?: string
+  operator?: {
+    open_id?: string
+    user_id?: string
+    union_id?: string
+    name?: string
+  }
+  action?: {
+    value?: unknown
+    tag?: string
+    name?: string
+    option?: string
+  }
+}
+
+export interface FeishuCardActionResponse {
+  toast?: {
+    type: 'info' | 'success' | 'warning' | 'error'
+    content: string
   }
 }
 
@@ -153,12 +187,20 @@ export interface FeishuStreamingCard {
   messageId?: string
 }
 
+export interface FeishuStreamingCardControls {
+  sessionKey: string
+  sessionUrl: string
+}
+
 /** The handle the connection holds: outbound {@link FeishuApi} + the WSClient lifecycle. */
 export interface FeishuClientHandle {
   api: FeishuApi
-  /** Open the WSClient long-connection, dispatching each `im.message.receive_v1` event
-   *  to `onEvent`. Resolves once the first handshake succeeds. */
-  startWs(onEvent: (event: FeishuRawEvent) => void): Promise<void>
+  /** Open the WSClient long-connection, dispatching inbound messages and CardKit
+   * interactions. Resolves once the first handshake succeeds. */
+  startWs(
+    onEvent: (event: FeishuRawEvent) => void,
+    onCardAction: (event: FeishuRawCardActionEvent) => FeishuCardActionResponse | undefined
+  ): Promise<void>
   /** Close the WSClient (there is NO WSClient.stop()). */
   close(): void
 }
@@ -323,10 +365,13 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
 
   return {
     api,
-    async startWs(onEvent) {
+    async startWs(onEvent, onCardAction) {
       const dispatcher = new Lark.EventDispatcher({}).register({
         'im.message.receive_v1': async (data: FeishuRawEvent) => {
           onEvent(data)
+        },
+        'card.action.trigger': async (data: FeishuRawCardActionEvent) => {
+          return onCardAction(data)
         }
       })
       ws = new Lark.WSClient({ appId, appSecret, domain, loggerLevel: Lark.LoggerLevel.error })
@@ -479,7 +524,13 @@ export class FeishuConnection {
   private queue: SlackSendQueue
   /** CardKit sequence numbers are scoped to a card entity and must increase across
    * element, settings, and full-card updates. */
-  private streamingCards = new Map<string, { sequence: number; lastText: string }>()
+  private streamingCards = new Map<
+    string,
+    { sequence: number; lastText: string; messageId: string; sessionUrl?: string }
+  >()
+  /** Card actions identify their source message, so active reply messages resolve back
+   * to the daemon's local session key without putting that key in client-visible JSON. */
+  private cardSessions = new Map<string, { channel: string; sessionKey: string }>()
   /** App-level permission failures repeat across streamed writes. Announce once per
    * connection, with a bounded retry when the bot currently cannot send the card. */
   private globalPermissionIssues = new Set<Exclude<FeishuPermissionIssue, 'chat-access'>>()
@@ -535,24 +586,55 @@ export class FeishuConnection {
     }
     log?.debug(`feishu: opening WSClient long-connection (app ${this.appId}, bot ${this.botOpenId || '?'})…`)
 
-    await this.handle.startWs((event) => {
-      // The 3s constraint: ONLY normalize + hand off (which enqueues) — never await the
-      // agent turn here.
-      try {
-        const like = this.toLike(event)
-        // Skip our own messages — the agent's replies must not re-trigger a turn.
-        if (like.senderOpenId && like.senderOpenId === this.botOpenId) return
-        const msg = normalizeFeishuMessage(like, { traceId: this.deps.newTraceId() })
-        log?.debug(
-          `feishu: inbound ch=${msg.channel} user=${msg.sender.id} isBot=${msg.sender.isBot} isDm=${msg.isDm} ` +
-            `mentions=[${msg.mentionedBots.join(',')}] text=${JSON.stringify(msg.text.slice(0, 80))}`
-        )
-        this.deps.onMessage(msg)
-      } catch (err) {
-        log?.debug(`feishu: inbound normalize failed: ${(err as Error).message}`)
-      }
-    })
+    await this.handle.startWs(
+      (event) => {
+        // The 3s constraint: ONLY normalize + hand off (which enqueues) — never await the
+        // agent turn here.
+        try {
+          const like = this.toLike(event)
+          // Skip our own messages — the agent's replies must not re-trigger a turn.
+          if (like.senderOpenId && like.senderOpenId === this.botOpenId) return
+          const msg = normalizeFeishuMessage(like, { traceId: this.deps.newTraceId() })
+          log?.debug(
+            `feishu: inbound ch=${msg.channel} user=${msg.sender.id} isBot=${msg.sender.isBot} isDm=${msg.isDm} ` +
+              `mentions=[${msg.mentionedBots.join(',')}] text=${JSON.stringify(msg.text.slice(0, 80))}`
+          )
+          this.deps.onMessage(msg)
+        } catch (err) {
+          log?.debug(`feishu: inbound normalize failed: ${(err as Error).message}`)
+        }
+      },
+      (event) => this.handleCardAction(event)
+    )
     log?.debug('feishu: WSClient long-connection established')
+  }
+
+  /** Resolve an active reply's overflow selection and acknowledge it within Lark's
+   * callback deadline. The daemon owns the actual cancellation and resulting card
+   * lifecycle; removing the mapping first makes redelivered clicks idempotent. */
+  private handleCardAction(event: FeishuRawCardActionEvent): FeishuCardActionResponse | undefined {
+    const messageId = event.context?.open_message_id ?? event.open_message_id
+    const channel = event.context?.open_chat_id ?? event.open_chat_id
+    const actorId = event.operator?.open_id ?? event.operator?.user_id
+    const value = asRecord(event.action?.value)
+    if (
+      !messageId ||
+      !actorId ||
+      event.action?.tag !== 'overflow' ||
+      event.action.option !== FEISHU_REPLY_CANCEL_OPTION ||
+      value?.action !== FEISHU_REPLY_ACTION_VALUE
+    )
+      return undefined
+
+    const target = this.cardSessions.get(messageId)
+    if (!target || (channel && target.channel !== channel) || !this.deps.onStatusAction) return undefined
+    this.cardSessions.delete(messageId)
+    this.deps.onStatusAction({
+      kind: 'cancel',
+      sessionKey: target.sessionKey,
+      actor: { userId: actorId }
+    })
+    return { toast: { type: 'info', content: 'Cancellation requested.' } }
   }
 
   /** Adapt a raw `im.message.receive_v1` event to the pure normalizer's plain-object
@@ -736,14 +818,26 @@ export class FeishuConnection {
 
   /** Create a CardKit entity and publish one IM message that references it. The initial
    * card is visible immediately as `Thinking…`; later updates address the entity id. */
-  async startStreamingCard(channel: string, threadAnchor?: string): Promise<FeishuStreamingCard | undefined> {
+  async startStreamingCard(
+    channel: string,
+    threadAnchor?: string,
+    controls?: FeishuStreamingCardControls
+  ): Promise<FeishuStreamingCard | undefined> {
     return this.queue.enqueue(async () => {
       try {
-        const created = await this.handle.api.createCardEntity(buildStreamingReplyCard())
+        const created = await this.handle.api.createCardEntity(buildStreamingReplyCard(controls?.sessionUrl))
         if (!created.cardId) throw new Error('cardkit.card.create returned no card_id')
         const sent = await this.sendCardEntity(channel, threadAnchor, created.cardId)
         if (!sent.messageId) throw new Error('CardKit IM send returned no message_id')
-        this.streamingCards.set(created.cardId, { sequence: 0, lastText: '' })
+        this.streamingCards.set(created.cardId, {
+          sequence: 0,
+          lastText: '',
+          messageId: sent.messageId,
+          ...(controls ? { sessionUrl: controls.sessionUrl } : {})
+        })
+        if (controls) {
+          this.cardSessions.set(sent.messageId, { channel, sessionKey: controls.sessionKey })
+        }
         await this.postPermissionUpdateCard(channel, threadAnchor)
         return { cardId: created.cardId, messageId: sent.messageId }
       } catch (err) {
@@ -799,12 +893,17 @@ export class FeishuConnection {
       state.sequence += 1
       let updated = false
       try {
-        await this.handle.api.updateCardEntity(card.cardId, buildCompletedReplyCard(text, attribution), state.sequence)
+        await this.handle.api.updateCardEntity(
+          card.cardId,
+          buildCompletedReplyCard(text, attribution, state.sessionUrl),
+          state.sequence
+        )
         updated = true
       } catch (err) {
         this.rememberPermissionIssue(err, channel)
         this.deps.log?.debug(`feishu: streaming card final update failed (${card.cardId}): ${(err as Error).message}`)
       } finally {
+        this.cardSessions.delete(state.messageId)
         this.streamingCards.delete(card.cardId)
       }
       await this.postPermissionUpdateCard(channel)
@@ -814,6 +913,8 @@ export class FeishuConnection {
 
   /** Retract an unfinished Thinking card (silent/no-response or a cancelled turn). */
   async cancelStreamingCard(channel: string, card: FeishuStreamingCard): Promise<void> {
+    const state = this.streamingCards.get(card.cardId)
+    if (state) this.cardSessions.delete(state.messageId)
     this.streamingCards.delete(card.cardId)
     const messageId = card.messageId
     if (!messageId) return
@@ -981,6 +1082,8 @@ export class FeishuConnection {
   }
 
   async stop(): Promise<void> {
+    this.streamingCards.clear()
+    this.cardSessions.clear()
     this.handle.close()
   }
 }

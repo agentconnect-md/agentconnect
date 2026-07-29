@@ -20,6 +20,7 @@ export const AGENTCONNECT_FEISHU_SCOPES = [
 ] as const
 
 export const AGENTCONNECT_FEISHU_EVENTS = ['im.message.receive_v1'] as const
+export const AGENTCONNECT_FEISHU_CALLBACKS = ['card.action.trigger'] as const
 
 export const AGENTCONNECT_FEISHU_APP_TEMPLATE = {
   archetype: 'PersonalAgent',
@@ -27,7 +28,8 @@ export const AGENTCONNECT_FEISHU_APP_TEMPLATE = {
   addons: {
     preset: true,
     scopes: { tenant: [...AGENTCONNECT_FEISHU_SCOPES] },
-    events: { items: { tenant: [...AGENTCONNECT_FEISHU_EVENTS] } }
+    events: { items: { tenant: [...AGENTCONNECT_FEISHU_EVENTS] } },
+    callbacks: { items: [...AGENTCONNECT_FEISHU_CALLBACKS] }
   }
 } as const
 

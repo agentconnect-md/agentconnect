@@ -6,7 +6,11 @@ import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
-import { AGENTCONNECT_FEISHU_EVENTS, AGENTCONNECT_FEISHU_SCOPES } from '../../src/http/feishu-app-template.js'
+import {
+  AGENTCONNECT_FEISHU_CALLBACKS,
+  AGENTCONNECT_FEISHU_EVENTS,
+  AGENTCONNECT_FEISHU_SCOPES
+} from '../../src/http/feishu-app-template.js'
 import {
   OfficialFeishuRegistrationProvider,
   type PollFeishuRegistration,
@@ -118,7 +122,8 @@ describe('Feishu/Lark one-click app registration', () => {
     expect(decodeAddons(authorizationUrl.searchParams.get('addons')!)).toMatchObject({
       preset: true,
       scopes: { tenant: [...AGENTCONNECT_FEISHU_SCOPES] },
-      events: { items: { tenant: [...AGENTCONNECT_FEISHU_EVENTS] } }
+      events: { items: { tenant: [...AGENTCONNECT_FEISHU_EVENTS] } },
+      callbacks: { items: [...AGENTCONNECT_FEISHU_CALLBACKS] }
     })
     await first.close()
 
