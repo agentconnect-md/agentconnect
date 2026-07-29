@@ -435,6 +435,22 @@ describe('SharedBotOrchestrator — attributed route compilation (§10)', () => 
       expect(g42).toEqual([expect.objectContaining({ agentId: ALICE, match: { kind: 'mention' } })])
     })
 
+    // The two rules meet here: an INERT row must not win the convergence it is excluded
+    // from. Alice's preserved row is earlier, but she is org-visible and compiles
+    // nothing — electing her would leave the conversation served by nobody.
+    it('skips an org-visible agent when electing the group DM owner', async () => {
+      gatedAgents = new Set([BOB])
+      channels = [
+        channel({ integrationId: INT_A, channelId: 'G42', kind: 'mpim', agentId: ALICE, trigger: 'any' }),
+        channel({ integrationId: INT_B, channelId: 'G42', kind: 'mpim', agentId: BOB, trigger: 'mention' })
+      ]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.routes.filter((r) => r.scope?.channel === 'G42')).toEqual([
+        expect.objectContaining({ agentId: BOB, match: { kind: 'mention' } })
+      ])
+    })
+
     // §14.4: the console hides a preserved direct row once its owner is org-visible, so
     // compiling it would be behaviour the operator cannot see or stop.
     it('makes a preserved group-DM row inert once its owner is no longer gated', async () => {

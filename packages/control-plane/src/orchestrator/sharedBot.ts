@@ -588,8 +588,14 @@ export class SharedBotOrchestrator {
     // it either: unlike a DM's `auto` base, the mention rung outranks keyword. So a group
     // DM converges on ONE agent exactly as an ownerless channel does (§10.1) — the bot's
     // earliest active install among those that enabled it.
+    //
+    // Only a GATED install can be a candidate. A preserved row of a now-org-visible agent
+    // is inert (it is skipped below), so letting it claim ownership would elect an owner
+    // that compiles nothing AND lock out the restricted agent that actually has the
+    // conversation enabled — leaving the group DM served by nobody.
     const groupDmOwner = new Map<string, string>()
     for (const p of placed) {
+      if (!p.gated) continue
       for (const c of chans) {
         if (c.kind !== 'mpim' || c.trigger === 'off' || c.agentId !== p.integration.agentId) continue
         if (!groupDmOwner.has(c.channelId)) groupDmOwner.set(c.channelId, p.integration.agentId)
