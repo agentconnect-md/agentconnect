@@ -16,6 +16,12 @@ export interface InvocationContextState {
   active: boolean
 }
 
+export interface RevocableInvocationExecution<T> {
+  result: Promise<T>
+  /** Synchronously remove all authority while allowing already-authorized work to settle. */
+  revoke(): void
+}
+
 declare module 'fastify' {
   interface FastifyRequest {
     delegatedInvocation?: {
@@ -31,15 +37,23 @@ export class InternalInvocationAuth {
   private readonly storage = new AsyncLocalStorage<InvocationContextState>()
 
   async run<T>(context: InvocationContext, fn: () => Promise<T>): Promise<T> {
+    return this.start(context, fn).result
+  }
+
+  start<T>(context: InvocationContext, fn: () => Promise<T>): RevocableInvocationExecution<T> {
     const state: InvocationContextState = { context, pending: new Map(), active: true }
-    return this.storage.run(state, async () => {
+    const revoke = () => {
+      state.active = false
+      state.pending.clear()
+    }
+    const result = this.storage.run(state, async () => {
       try {
         return await fn()
       } finally {
-        state.active = false
-        state.pending.clear()
+        revoke()
       }
     })
+    return { result, revoke }
   }
 
   issue(method: string, path: string): string | null {

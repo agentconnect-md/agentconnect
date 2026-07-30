@@ -480,12 +480,32 @@ export function mcpRoutes(deps: HttpDeps) {
       if (!invocationContext) return sendWireResponse(await dispatch())
 
       const context = invocationContext
+      const deadlineMs = context.startedAt.getTime() + MCP_INVOCATION_EXECUTION_TIMEOUT_MS
+      const entryNowMs = deps.clock.now()
+      if (!Number.isFinite(entryNowMs) || !Number.isFinite(deadlineMs) || entryNowMs >= deadlineMs) {
+        try {
+          await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, new Date(entryNowMs))
+        } catch (err) {
+          req.log.error({ err, invocationId: context.invocationId }, 'mcp: expired invocation mark failed')
+        }
+        return sendAmbiguous(reply)
+      }
+
       let executionFinished = false
-      const execution = deps.internalInvocationAuth
-        .run(context, dispatch)
+      let deadlineTriggered = false
+      const invocationExecution = deps.internalInvocationAuth.start(context, dispatch)
+      const execution = invocationExecution.result
         .then(async (wire) => {
-          const completedAt = new Date(deps.clock.now())
+          const completedAtMs = deps.clock.now()
+          const completedAt = new Date(completedAtMs)
           try {
+            if (!Number.isFinite(completedAtMs) || completedAtMs >= deadlineMs) {
+              invocationExecution.revoke()
+              if (!deadlineTriggered) {
+                await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, completedAt)
+              }
+              return { kind: 'ambiguous' as const }
+            }
             if (wire.bytes.byteLength > MCP_INVOCATION_MAX_RESPONSE_BYTES) {
               await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, completedAt)
               return { kind: 'ambiguous' as const }
@@ -497,7 +517,9 @@ export function mcpRoutes(deps: HttpDeps) {
               responseBytes: wire.bytes,
               completedAt
             })
-            return completed ? { kind: 'response' as const, wire } : { kind: 'ambiguous' as const }
+            if (completed) return { kind: 'response' as const, wire }
+            await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, completedAt)
+            return { kind: 'ambiguous' as const }
           } catch (err) {
             req.log.error({ err, invocationId: context.invocationId }, 'mcp: invocation completion failed')
             try {
@@ -519,6 +541,10 @@ export function mcpRoutes(deps: HttpDeps) {
       const timedOut = new Promise<{ kind: 'ambiguous' } | { kind: 'response'; wire: McpWireResponse }>((resolve) => {
         timer = deps.clock.setTimeout(
           () => {
+            deadlineTriggered = true
+            // Revoke synchronously, before the ambiguity CAS awaits database I/O.
+            // Already-authorized subrequests may settle; no later stage can mint.
+            invocationExecution.revoke()
             void (async () => {
               try {
                 await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, new Date(deps.clock.now()))
@@ -532,7 +558,7 @@ export function mcpRoutes(deps: HttpDeps) {
               }
             })()
           },
-          Math.max(0, context.startedAt.getTime() + MCP_INVOCATION_EXECUTION_TIMEOUT_MS - deps.clock.now())
+          Math.max(0, deadlineMs - entryNowMs)
         )
       })
       const outcome = await Promise.race([execution, timedOut])

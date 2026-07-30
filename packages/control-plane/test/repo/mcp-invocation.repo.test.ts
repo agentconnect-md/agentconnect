@@ -673,6 +673,33 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     expect(await repo.get(INVOCATION)).toMatchObject({ status: 'running' })
   })
 
+  it.each([
+    [MCP_INVOCATION_EXECUTION_TIMEOUT_MS - 1, true],
+    [MCP_INVOCATION_EXECUTION_TIMEOUT_MS, false],
+    [MCP_INVOCATION_EXECUTION_TIMEOUT_MS + 1, false]
+  ] as const)(
+    'atomically accepts completion only before the durable deadline: elapsed=%d',
+    async (elapsed, accepted) => {
+      const delegation = await fixtures()
+      const repo = invocationRepo(prisma)
+      await repo.mint(mintInput(delegation.id))
+      await repo.claim(claimInput(delegation))
+
+      expect(
+        await repo.complete({
+          invocationId: INVOCATION,
+          status: 'succeeded',
+          responseStatus: 200,
+          responseBytes: Buffer.from('boundary'),
+          completedAt: at(1_000 + elapsed)
+        })
+      ).toBe(accepted)
+      expect(await repo.get(INVOCATION)).toMatchObject({
+        status: accepted ? 'succeeded' : 'running'
+      })
+    }
+  )
+
   it('makes a late completion lose to running-to-ambiguous recovery', async () => {
     const delegation = await fixtures()
     const repo = invocationRepo(prisma)

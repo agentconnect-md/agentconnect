@@ -96,6 +96,20 @@ const delegatedSelfMutationDenied = (): RestResult => ({
   })
 })
 
+const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** PostgreSQL's uuid type is case-insensitive; mirror that semantic identity
+ * before dispatch so a differently-cased path cannot bypass the host guard. */
+function sameUuid(left: string | undefined, right: unknown): boolean {
+  return (
+    typeof left === 'string' &&
+    typeof right === 'string' &&
+    UUID_TEXT.test(left) &&
+    UUID_TEXT.test(right) &&
+    left.toLowerCase() === right.toLowerCase()
+  )
+}
+
 /** Mirrors the REST `AgentSlug` shape (dto) — re-validated authoritatively by the route. */
 const AgentSlug = z
   .string()
@@ -267,7 +281,7 @@ export const MCP_TOOLS: McpToolDef[] = [
       })
       .strict(),
     call: async (ctx, a) =>
-      ctx.delegatedAgentId === a.agentId
+      sameUuid(ctx.delegatedAgentId, a.agentId)
         ? delegatedSelfMutationDenied()
         : ctx.send('PATCH', org(ctx, `/agents/${seg(a.agentId)}`), bodyOf(a, 'agentId'))
   },
@@ -284,7 +298,7 @@ export const MCP_TOOLS: McpToolDef[] = [
       })
       .strict(),
     call: async (ctx, a) => {
-      if (ctx.delegatedAgentId === a.agentId) return delegatedSelfMutationDenied()
+      if (sameUuid(ctx.delegatedAgentId, a.agentId)) return delegatedSelfMutationDenied()
       const target = await ctx.get(org(ctx, `/agents/${seg(a.agentId)}`))
       if (target.statusCode !== 200) return target
       const name = (JSON.parse(target.body) as { name?: unknown }).name

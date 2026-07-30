@@ -235,8 +235,15 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
     if (input.responseBytes.byteLength > MCP_INVOCATION_MAX_RESPONSE_BYTES) {
       throw new RangeError('MCP invocation response exceeds the 256 KiB persistence limit')
     }
+    const completedAtMs = input.completedAt.getTime()
+    if (!Number.isFinite(completedAtMs)) return false
     const completed = await this.db.mcpInvocation.updateMany({
-      where: { id: input.invocationId, status: 'running' },
+      where: {
+        id: input.invocationId,
+        status: 'running',
+        // Strict boundary: a completion at startedAt + 120s is already late.
+        startedAt: { gt: new Date(completedAtMs - MCP_INVOCATION_EXECUTION_TIMEOUT_MS) }
+      },
       data: {
         status: input.status,
         responseStatus: input.responseStatus,

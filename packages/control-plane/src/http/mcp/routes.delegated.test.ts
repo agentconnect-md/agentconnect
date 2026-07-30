@@ -5,6 +5,7 @@ import type { InvocationAssertionClaimResult, InvocationContext } from './invoca
 import { InternalInvocationAuth } from './internal-invocation-auth.js'
 import { mcpRoutes } from './routes.js'
 import type { HttpDeps } from '../deps.js'
+import type { Clock, TimerHandle } from '../../domain/clock.js'
 import { FakeClock } from '../../../test/fakes/fake-clock.js'
 import {
   MCP_INVOCATION_EXECUTION_TIMEOUT_MS,
@@ -45,7 +46,38 @@ afterEach(async () => {
   await Promise.all(opened.splice(0).map((app) => app.close()))
 })
 
-function harness(claimResult: InvocationAssertionClaimResult = { kind: 'execute', context: CONTEXT }): Harness {
+class DelayedTimerClock implements Clock {
+  private current: number
+  private nextId = 1
+  private readonly timers = new Map<number, () => void>()
+
+  constructor(startMs: number) {
+    this.current = startMs
+  }
+
+  now(): number {
+    return this.current
+  }
+
+  setTimeout(fn: () => void, _ms: number): TimerHandle {
+    const id = this.nextId++
+    this.timers.set(id, fn)
+    return id
+  }
+
+  clearTimeout(handle: TimerHandle): void {
+    this.timers.delete(handle as number)
+  }
+
+  elapseWithoutTimers(ms: number): void {
+    this.current += ms
+  }
+}
+
+function harness(
+  claimResult: InvocationAssertionClaimResult = { kind: 'execute', context: CONTEXT },
+  depsClock?: Clock
+): Harness {
   const app = Fastify()
   opened.push(app)
   const clock = new FakeClock(Date.parse('2026-07-30T00:00:00.000Z'))
@@ -75,7 +107,7 @@ function harness(claimResult: InvocationAssertionClaimResult = { kind: 'execute'
   })
 
   const deps = {
-    clock,
+    clock: depsClock ?? clock,
     repos: {
       audit: { append: async (event: Record<string, unknown>) => void audits.push(event) },
       mcpInvocation: { complete, markAmbiguous }
@@ -270,7 +302,8 @@ describe('delegated POST /api/v1/mcp', () => {
     expect(res.body).toContain('may have taken effect')
     expect(h.markAmbiguous).toHaveBeenCalledWith(CONTEXT.invocationId, new Date(h.clock.now()))
     release()
-    await vi.waitFor(() => expect(h.complete).toHaveBeenCalledOnce())
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(h.complete).not.toHaveBeenCalled()
     expect(await h.markAmbiguous.mock.results[0]!.value).toBe(true)
   })
 
@@ -289,6 +322,75 @@ describe('delegated POST /api/v1/mcp', () => {
     const res = await pending
     expect(res.statusCode).toBe(409)
     expect(res.body).toContain('may have taken effect')
+    expect(h.markAmbiguous).toHaveBeenCalledOnce()
+  })
+
+  it('returns ambiguous without entering the tool when the durable deadline has already arrived', async () => {
+    const h = harness({
+      kind: 'execute',
+      context: {
+        ...CONTEXT,
+        startedAt: new Date(CONTEXT.startedAt.getTime() - MCP_INVOCATION_EXECUTION_TIMEOUT_MS)
+      }
+    })
+
+    const res = await post(h)
+
+    expect(res.statusCode).toBe(409)
+    expect(res.body).toContain('may have taken effect')
+    expect(h.nested).not.toHaveBeenCalled()
+    expect(h.complete).not.toHaveBeenCalled()
+    expect(h.markAmbiguous).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a completion at the exact deadline even when the event-loop timer has not fired', async () => {
+    const delayedClock = new DelayedTimerClock(CONTEXT.startedAt.getTime())
+    const h = harness({ kind: 'execute', context: CONTEXT }, delayedClock)
+    let release!: () => void
+    h.nested.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve([{ id: 'late-at-boundary' }])
+        })
+    )
+
+    const pending = post(h)
+    await vi.waitFor(() => expect(h.nested).toHaveBeenCalledOnce())
+    delayedClock.elapseWithoutTimers(MCP_INVOCATION_EXECUTION_TIMEOUT_MS)
+    release()
+    const res = await pending
+
+    expect(res.statusCode).toBe(409)
+    expect(res.body).toContain('may have taken effect')
+    expect(h.complete).not.toHaveBeenCalled()
+    expect(h.markAmbiguous).toHaveBeenCalledOnce()
+  })
+
+  it('revokes delegated authority before timeout persistence so a multi-stage tool cannot issue its second write', async () => {
+    const h = harness()
+    const targetId = '66666666-6666-4666-8666-666666666666'
+    const deleted = vi.fn(async () => ({ ok: true }))
+    h.app.get(`/api/v1/orgs/org-1/agents/${targetId}`, { preHandler: h.app.humanAuth }, async () => {
+      h.clock.advance(MCP_INVOCATION_EXECUTION_TIMEOUT_MS)
+      return { id: targetId, name: 'victim' }
+    })
+    h.app.delete(`/api/v1/orgs/org-1/agents/${targetId}`, { preHandler: h.app.humanAuth }, deleted)
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'deleteAgent', arguments: { agentId: targetId, confirm: 'victim' } }
+      })
+    )
+
+    const res = await post(h, body)
+
+    expect(res.statusCode).toBe(409)
+    expect(res.body).toContain('may have taken effect')
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(deleted).not.toHaveBeenCalled()
+    expect(h.complete).not.toHaveBeenCalled()
     expect(h.markAmbiguous).toHaveBeenCalledOnce()
   })
 

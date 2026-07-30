@@ -206,6 +206,21 @@ describe('delegated MCP route with durable assertions', () => {
     expect(await prisma.agent.findUnique({ where: { id: HOST_AGENT } })).not.toBeNull()
   })
 
+  it.each([
+    ['updateAgent', { agentId: HOST_AGENT.toUpperCase(), model: 'uppercase-bypass' }],
+    ['deleteAgent', { agentId: HOST_AGENT.toUpperCase(), confirm: 'agent-a111' }]
+  ] as const)('treats an uppercase PostgreSQL UUID as the same host for %s', async (tool, args) => {
+    const request = await delegated('collaborator', rpcBody(tool, args))
+    const issue = vi.spyOn(request.app.deps.internalInvocationAuth, 'issue')
+    const result = toolResult((await post(request)).body)
+
+    expect(result.isError).toBe(true)
+    expect(result.content[0]!.text).toContain('403')
+    expect(issue).not.toHaveBeenCalled()
+    const host = await prisma.agent.findUniqueOrThrow({ where: { id: HOST_AGENT } })
+    expect(host.runtimeOverrides).toBeNull()
+  })
+
   it('uses the delegated user and delegation as the admitted rate-limit key', async () => {
     const check = vi.fn(() => null)
     const request = await delegated('collaborator', rpcBody('listAgents'), {
@@ -350,6 +365,21 @@ describe('delegated MCP route with durable assertions', () => {
     expect(second.rawPayload).toEqual(first.rawPayload)
     expect(second.headers['content-type']).toBe(first.headers['content-type'])
     expect(await prisma.agent.count({ where: { name: { startsWith: 'delegated-' } } })).toBe(1)
+    expect(await prisma.auditEvent.count({ where: { kind: 'mcp_tool_call' } })).toBe(1)
+  })
+
+  it('linearizes two concurrent POSTs so the delegated write executes at most once', async () => {
+    const name = `delegated-concurrent-${randomUUID()}`
+    const request = await delegated('collaborator', rpcBody('createAgent', { name, runtime: 'claude' }))
+
+    const responses = await Promise.all([post(request), post(request)])
+
+    expect(responses.some((response) => response.statusCode === 200)).toBe(true)
+    expect(responses.every((response) => response.statusCode === 200 || response.statusCode === 409)).toBe(true)
+    if (responses.every((response) => response.statusCode === 200)) {
+      expect(responses[1]!.rawPayload).toEqual(responses[0]!.rawPayload)
+    }
+    expect(await prisma.agent.count({ where: { name } })).toBe(1)
     expect(await prisma.auditEvent.count({ where: { kind: 'mcp_tool_call' } })).toBe(1)
   })
 

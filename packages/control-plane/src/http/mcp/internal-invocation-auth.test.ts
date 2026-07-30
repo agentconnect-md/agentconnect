@@ -63,6 +63,28 @@ describe('InternalInvocationAuth', () => {
     await expect(detachedAttempt).resolves.toBeInstanceOf(Error)
   })
 
+  it('revokes an active run immediately, clears pending nonces, and prevents later issuance', async () => {
+    const auth = new InternalInvocationAuth()
+    let pendingNonce = ''
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const started = Promise.withResolvers<void>()
+    const execution = auth.start(CONTEXT, async () => {
+      pendingNonce = auth.issue('GET', '/api/v1/me')!
+      started.resolve()
+      await gate
+      return auth.issue('DELETE', '/api/v1/orgs/org-1/agents/target')
+    })
+    await started.promise
+
+    execution.revoke()
+    expect(auth.authorizeInjectedRequest(request(pendingNonce))).toBe(false)
+    release()
+    await expect(execution.result).rejects.toThrow(/active invocation context/)
+  })
+
   it('rejects a nonce consumed by an inherited descendant after run resolves without projecting authority', async () => {
     const auth = new InternalInvocationAuth()
     let releaseDetached!: () => void
