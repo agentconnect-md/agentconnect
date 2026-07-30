@@ -9,8 +9,9 @@
 // connector docs (the deploy-overridable HELP_MCP_URL target, passed in by the
 // shell) rather than the design's hard-coded modelcontextprotocol.io URL.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Icon } from '@/components/ui'
+import { LogoMark } from '@/components/marks'
 import { cpRestBase } from '@/lib/api'
 
 // The public MCP endpoint: a dedicated origin when the deploy sets MCP_URL
@@ -22,6 +23,104 @@ function mcpEndpointUrl(): string {
 }
 
 const TAGLINE = 'Connects as you — your role, your permissions'
+
+// The design fills this column with a screenshot of the claude.ai connector
+// pane. It is drawn from our own tokens rather than shipped as a raster: a
+// captured PNG would be light-mode only under a console that themes, and it
+// would age out the next time that pane is restyled. Three frames — find
+// Connectors, fill the dialog, press Connect — cycle in place, since the last
+// of them is a separate step the sentence above doesn't have room to name.
+const FILM_MS = 2600
+
+function ConnectorFilm({ url }: { url: string }) {
+  const [frame, setFrame] = useState(0)
+
+  useEffect(() => {
+    // The globals.css reduced-motion block only collapses transitions; a
+    // self-advancing cycle has to stop itself.
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
+    const t = setInterval(() => setFrame((f) => (f + 1) % 3), FILM_MS)
+    return () => clearInterval(t)
+  }, [])
+
+  return (
+    <div
+      className="relative mt-[2px] h-[140px] w-full overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-sunken)"
+      aria-hidden
+    >
+      <Frame on={frame === 0}>
+        <div className="w-[168px] rounded-sm border border-(--border-subtle) bg-(--surface-card) p-[7px] shadow-(--shadow-xs)">
+          <span className="block px-[7px] pb-[3px] font-sans text-[9px] font-medium leading-normal text-(--text-tertiary)">
+            Customize
+          </span>
+          {NAV.map((item) => (
+            <span
+              key={item.label}
+              className={
+                item.on
+                  ? 'flex items-center gap-[7px] rounded-xs bg-(--surface-active) px-[7px] py-[4px] font-sans text-[10.5px] font-semibold leading-normal text-(--text-primary)'
+                  : 'flex items-center gap-[7px] rounded-xs px-[7px] py-[4px] font-sans text-[10.5px] font-normal leading-normal text-(--text-secondary)'
+              }
+            >
+              <Icon name={item.icon} size={11} />
+              {item.label}
+            </span>
+          ))}
+        </div>
+      </Frame>
+
+      <Frame on={frame === 1}>
+        <div className="w-full rounded-sm border border-(--border-subtle) bg-(--surface-card) p-[10px] shadow-(--shadow-xs)">
+          <span className="block pb-[7px] font-sans text-[11px] font-semibold leading-normal text-(--text-primary)">
+            Add custom connector
+          </span>
+          <span className="mb-[5px] block rounded-xs border border-(--border-default) px-[7px] py-[5px] font-sans text-[9.5px] leading-normal text-(--text-secondary)">
+            AgentConnect
+          </span>
+          <span className="block truncate rounded-xs border border-(--brand) px-[7px] py-[5px] font-mono text-[9.5px] leading-normal text-(--text-primary)">
+            {url}
+          </span>
+          <span className="mt-[8px] ml-auto block w-fit rounded-xs bg-(--surface-active) px-[11px] py-[4px] font-sans text-[9.5px] font-semibold leading-normal text-(--text-secondary)">
+            Add
+          </span>
+        </div>
+      </Frame>
+
+      <Frame on={frame === 2}>
+        <div className="flex flex-col items-center gap-[7px]">
+          <LogoMark size={24} />
+          <span className="font-sans text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
+            You are not connected yet
+          </span>
+          <span className="rounded-sm bg-(--brand) px-[13px] py-[5px] font-sans text-[10.5px] font-semibold leading-normal text-white">
+            Connect
+          </span>
+        </div>
+      </Frame>
+    </div>
+  )
+}
+
+const NAV = [
+  { label: 'Skills', icon: 'scroll-text', on: false },
+  { label: 'Connectors', icon: 'blocks', on: true },
+  { label: 'Plugins', icon: 'unplug', on: false },
+  { label: 'Memory', icon: 'history', on: false }
+]
+
+function Frame({ on, children }: { on: boolean; children: ReactNode }) {
+  return (
+    <div
+      className={
+        on
+          ? 'absolute inset-0 flex items-center justify-center p-2 transition-opacity opacity-100'
+          : 'absolute inset-0 flex items-center justify-center p-2 transition-opacity opacity-0'
+      }
+    >
+      {children}
+    </div>
+  )
+}
 
 type CopyTarget = 'url' | 'cli'
 
@@ -51,24 +150,21 @@ export default function ConnectAiModal({ onClose, moreUrl }: { onClose: () => vo
 
   return (
     <div className="scrim" onClick={onClose}>
-      <div className="modal max-w-[600px]" onClick={(e) => e.stopPropagation()}>
+      <div className="modal max-w-[520px]" onClick={(e) => e.stopPropagation()}>
         <div className="modalhead">
           <Icon name="plug" size={20} color="var(--text-secondary)" />
           <span className="font-sans text-[17px] font-semibold tracking-[-0.012em] leading-normal">
             Connect your AI
           </span>
-          {/* The tagline replaces the old intro paragraph, so mobile — where it
-              would never fit beside the title — carries it in the body instead. */}
-          <span className="ml-auto hidden font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) desktop:block">
-            {TAGLINE}
-          </span>
-          <button type="button" className="iconbtn ml-auto desktop:ml-[6px]" aria-label="Close" onClick={onClose}>
+          <button type="button" className="iconbtn ml-auto" aria-label="Close" onClick={onClose}>
             <Icon name="x" size={16} />
           </button>
         </div>
 
         <div className="modalbody flex flex-col">
-          <p className="m-0 pb-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) desktop:hidden">
+          {/* The design sits this beside the title; at this width that wraps the
+              header onto two lines, so it leads the body instead. */}
+          <p className="m-0 pb-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
             {TAGLINE}
           </p>
 
@@ -100,9 +196,7 @@ export default function ConnectAiModal({ onClose, moreUrl }: { onClose: () => vo
                 Settings → Connectors →&#32;
                 <strong className="font-semibold text-(--text-primary)">Add custom connector</strong>
               </span>
-              <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                Sign-in picks the org and access level
-              </span>
+              <ConnectorFilm url={url} />
             </div>
           </div>
 
