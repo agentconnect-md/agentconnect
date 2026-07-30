@@ -2,10 +2,16 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useConsoleData } from '@/lib/data-context'
+import { useProfile } from '@/lib/profile'
 import type { DaemonConnectDto } from '@/lib/api'
 import { daemonCommands } from '@/lib/daemon-commands'
 import { Button, Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
+import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
+
+/** What the CP already gave the provisioned row — skip the /sharing write when the
+ *  operator leaves it alone. */
+const DEFAULT_SHARING: SharingValue = { visibility: 'org', sharedWith: [] }
 
 interface CommandTab {
   key: string
@@ -89,10 +95,17 @@ export default function AddDaemonModal({
   onDone?: () => void
   registerDismiss: (handler: () => void) => () => void
 }) {
-  const { provisionDaemon, daemons, refresh, deleteDaemon } = useConsoleData()
+  const { provisionDaemon, daemons, refresh, deleteDaemon, renameDaemon, saveSharing } = useConsoleData()
+  const { me } = useProfile()
   const [connect, setConnect] = useState<DaemonConnectDto | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [cancelling, setCancelling] = useState(false)
+  // Optional overrides applied on Done: an empty name keeps the daemon's own
+  // reported one, and the default sharing skips the /sharing write entirely.
+  const [name, setName] = useState('')
+  const [sharing, setSharing] = useState<SharingValue>(DEFAULT_SHARING)
+  const [saving, setSaving] = useState(false)
+  const [saveErr, setSaveErr] = useState<string | null>(null)
   const provisioned = useRef(false)
   const provisionPending = useRef<Promise<DaemonConnectDto> | null>(null)
 
@@ -139,6 +152,25 @@ export default function AddDaemonModal({
   }, [cancelling, connect, connected, deleteDaemon, onClose])
 
   useEffect(() => registerDismiss(() => void cancel()), [cancel, registerDismiss])
+
+  // Finish: apply the optional name + visibility to the row the daemon just claimed,
+  // then close (or chain on). Both writes are skipped when untouched, so the plain
+  // "connect and go" path stays a single click. A failure keeps the dialog open —
+  // the daemon IS connected either way, so nothing here is worth rolling back.
+  const finish = async () => {
+    if (saving || !connect) return
+    setSaving(true)
+    setSaveErr(null)
+    try {
+      const next = name.trim()
+      if (next && next !== row?.name) await renameDaemon(connect.daemonId, next)
+      if (!sameSharing(sharing, DEFAULT_SHARING)) await saveSharing('daemons', connect.daemonId, sharing)
+      ;(onDone ?? onClose)()
+    } catch (e) {
+      setSaveErr(e instanceof Error ? e.message : String(e))
+      setSaving(false)
+    }
+  }
 
   return (
     <>
@@ -190,6 +222,33 @@ export default function AddDaemonModal({
             </>
           )}
         </div>
+        {/* Both are optional overrides on the row the daemon claims: leave the name
+            blank to keep the one it reports (the placeholder, once it has connected),
+            and the visibility on Everyone to keep the org-wide default. Written on
+            Done (see `finish`). */}
+        <div className="fld mt-[14px]">
+          <span className="fldlbl">
+            Name <span className="font-normal text-(--text-tertiary)">· optional</span>
+          </span>
+          <input
+            className="inp"
+            value={name}
+            maxLength={64}
+            spellCheck={false}
+            placeholder={(connected && row?.name) || 'edge-1'}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && connected) void finish()
+            }}
+          />
+        </div>
+        <VisibilityField value={sharing} onChange={setSharing} creatorUserId={me?.userId} />
+        {saveErr && (
+          <div className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
+            <Icon name="triangle-alert" size={15} />
+            {saveErr}
+          </div>
+        )}
       </div>
       <div className="modalfoot">
         <span className="mono text-[11px] text-(--text-tertiary)">
@@ -197,8 +256,12 @@ export default function AddDaemonModal({
         </span>
         <div className="flex-1" />
         {connected ? (
-          <Button variant="primary" onClick={onDone ?? onClose}>
-            {onDone ? 'Continue' : 'Done'}
+          <Button
+            variant="primary"
+            onClick={() => void finish()}
+            className={saving ? 'cursor-default opacity-60' : undefined}
+          >
+            {saving ? 'Saving…' : onDone ? 'Continue' : 'Done'}
           </Button>
         ) : (
           // Can't finish until the daemon connects — offer a Cancel that cleans up

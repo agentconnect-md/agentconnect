@@ -14,11 +14,16 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     daemons: mocks.daemons,
+    members: [],
     provisionDaemon: mocks.provisionDaemon,
     deleteDaemon: mocks.deleteDaemon,
     refresh: mocks.refresh
   })
 }))
+
+// The dialog reads the signed-in user (it pins them in the visibility share set);
+// the real hook fetches /me on mount, which would reach for the CP from a unit test.
+vi.mock('@/lib/profile', () => ({ useProfile: () => ({ user: null, me: null }) }))
 
 import { ModalProvider, useModal } from './ModalProvider'
 
