@@ -257,7 +257,8 @@ describe('InvocationAssertionAuthenticator', () => {
         agentId: AGENT_ID,
         daemonId: DAEMON_ID,
         orgId: ORG_ID,
-        userId: USER_ID
+        userId: USER_ID,
+        startedAt: new Date(NOW)
       }
     })
     expect(h.claimInputs).toEqual([

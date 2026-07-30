@@ -1177,6 +1177,8 @@ export interface McpInvocationRepo {
   claim(input: ClaimMcpInvocationInput): Promise<ClaimMcpInvocationResult>
   /** running → succeeded/failed; false means a terminal/ambiguous state won first. */
   complete(input: CompleteMcpInvocationInput): Promise<boolean>
+  /** Mark exactly one running invocation ambiguous; false means another terminal state won. */
+  markAmbiguous(invocationId: string, completedAt: Date): Promise<boolean>
   /** Recover executions at or before the deadline as conservatively ambiguous. */
   markAmbiguousBefore(executionDeadline: Date, completedAt: Date): Promise<number>
   get(invocationId: string): Promise<McpInvocationRecord | null>

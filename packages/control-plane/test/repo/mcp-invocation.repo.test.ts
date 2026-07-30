@@ -697,6 +697,36 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     })
   })
 
+  it('marks only the named running invocation ambiguous', async () => {
+    const delegation = await fixtures()
+    const repo = invocationRepo(prisma)
+    await repo.mint(mintInput(delegation.id))
+    await repo.claim(claimInput(delegation))
+    await repo.mint(
+      mintInput(delegation.id, {
+        invocationId: OTHER_INVOCATION,
+        assertionHash: 'peppered:assertion-2'
+      })
+    )
+    await repo.claim(
+      claimInput(delegation, {
+        invocationId: OTHER_INVOCATION,
+        assertionHash: 'peppered:assertion-2'
+      })
+    )
+
+    expect(await repo.markAmbiguous(INVOCATION, at(122_000))).toBe(true)
+    expect(await repo.markAmbiguous(INVOCATION, at(123_000))).toBe(false)
+    expect(await repo.get(INVOCATION)).toMatchObject({
+      status: 'ambiguous',
+      completedAt: at(122_000)
+    })
+    expect(await repo.get(OTHER_INVOCATION)).toMatchObject({
+      status: 'running',
+      completedAt: null
+    })
+  })
+
   it('reaps unused assertions and cached terminals only in their own windows', async () => {
     const delegation = await fixtures(at(10_000))
     const repo = invocationRepo(prisma, { now: () => at(12_000).getTime() })

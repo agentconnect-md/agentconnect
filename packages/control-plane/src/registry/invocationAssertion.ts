@@ -6,10 +6,10 @@
  */
 import { createHmac, randomBytes } from 'node:crypto'
 
-const ASSERTION_PREFIX = 'ac_mcp_assert_v1_'
+export const INVOCATION_ASSERTION_PREFIX = 'ac_mcp_assert_v1_'
 const ASSERTION_BYTES = 32
 const ASSERTION_BODY_LENGTH = 43
-const ASSERTION_RE = new RegExp(`^${ASSERTION_PREFIX}[A-Za-z0-9_-]{${ASSERTION_BODY_LENGTH}}$`)
+const ASSERTION_RE = new RegExp(`^${INVOCATION_ASSERTION_PREFIX}[A-Za-z0-9_-]{${ASSERTION_BODY_LENGTH}}$`)
 const HASH_DOMAIN = 'agentconnect:mcp-invocation-assertion:v1\0'
 
 export interface MintedInvocationAssertion {
@@ -23,7 +23,7 @@ export class InvocationAssertionCodec {
   constructor(private readonly pepper: string) {}
 
   mint(): MintedInvocationAssertion {
-    const plaintext = `${ASSERTION_PREFIX}${randomBytes(ASSERTION_BYTES).toString('base64url')}`
+    const plaintext = `${INVOCATION_ASSERTION_PREFIX}${randomBytes(ASSERTION_BYTES).toString('base64url')}`
     const minted = {
       persistence: Object.freeze({ assertionHash: this.hashUnchecked(plaintext) })
     } as MintedInvocationAssertion

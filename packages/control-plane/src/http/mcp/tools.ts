@@ -22,6 +22,8 @@ import { z } from 'zod'
  *  against the versioned REST surface (`/api/v1`-relative paths). */
 export interface McpToolCtx {
   orgId: string
+  /** Present only for a webchat assertion; its host agent may not mutate itself. */
+  delegatedAgentId?: string
   get(path: string, query?: Record<string, string | number | undefined>): Promise<RestResult>
   /** Mutating request with an optional JSON body — only `write: true` tools may use it. */
   send(method: 'POST' | 'PATCH' | 'PUT' | 'DELETE', path: string, body?: Record<string, unknown>): Promise<RestResult>
@@ -83,6 +85,15 @@ function confirmMismatch(expected: string): RestResult {
 const notFound = (what: string): RestResult => ({
   statusCode: 404,
   body: JSON.stringify({ error: 'Not Found', statusCode: 404, message: `${what} not found` })
+})
+
+const delegatedSelfMutationDenied = (): RestResult => ({
+  statusCode: 403,
+  body: JSON.stringify({
+    error: 'Forbidden',
+    statusCode: 403,
+    message: 'a delegated webchat invocation cannot update or delete its host agent'
+  })
 })
 
 /** Mirrors the REST `AgentSlug` shape (dto) — re-validated authoritatively by the route. */
@@ -255,7 +266,10 @@ export const MCP_TOOLS: McpToolDef[] = [
         pause: z.boolean().optional().describe('true pauses the agent; false resumes it')
       })
       .strict(),
-    call: (ctx, a) => ctx.send('PATCH', org(ctx, `/agents/${seg(a.agentId)}`), bodyOf(a, 'agentId'))
+    call: async (ctx, a) =>
+      ctx.delegatedAgentId === a.agentId
+        ? delegatedSelfMutationDenied()
+        : ctx.send('PATCH', org(ctx, `/agents/${seg(a.agentId)}`), bodyOf(a, 'agentId'))
   },
   {
     name: 'deleteAgent',
@@ -270,6 +284,7 @@ export const MCP_TOOLS: McpToolDef[] = [
       })
       .strict(),
     call: async (ctx, a) => {
+      if (ctx.delegatedAgentId === a.agentId) return delegatedSelfMutationDenied()
       const target = await ctx.get(org(ctx, `/agents/${seg(a.agentId)}`))
       if (target.statusCode !== 200) return target
       const name = (JSON.parse(target.body) as { name?: unknown }).name

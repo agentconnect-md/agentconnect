@@ -666,6 +666,7 @@ export function buildContainer(
       : undefined
 
   const httpDeps: HttpDeps = {
+    clock,
     repos: {
       agent: repos.agent,
       assignment: repos.assignment,
@@ -703,6 +704,7 @@ export function buildContainer(
       githubInstallation: repos.githubInstallation,
       agentRepoAuth: repos.agentRepoAuth,
       audit: repos.audit,
+      mcpInvocation: repos.mcpInvocation,
       oauth: repos.oauth
     },
     registry,

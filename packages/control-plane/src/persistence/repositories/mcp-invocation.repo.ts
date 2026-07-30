@@ -247,6 +247,14 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
     return completed.count === 1
   }
 
+  async markAmbiguous(invocationId: string, completedAt: Date): Promise<boolean> {
+    const marked = await this.db.mcpInvocation.updateMany({
+      where: { id: invocationId, status: 'running' },
+      data: { status: 'ambiguous', completedAt }
+    })
+    return marked.count === 1
+  }
+
   async markAmbiguousBefore(executionDeadline: Date, completedAt: Date): Promise<number> {
     const marked = await this.db.mcpInvocation.updateMany({
       where: {

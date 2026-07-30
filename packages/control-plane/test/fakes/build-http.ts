@@ -180,6 +180,7 @@ export function buildHttpApp(
   const internalInvocationAuth = depsOverrides?.internalInvocationAuth ?? new InternalInvocationAuth()
 
   const deps: HttpDeps = {
+    clock,
     repos: {
       agent: agentRepo,
       assignment: new PgAssignmentRepo(prisma),
@@ -217,6 +218,7 @@ export function buildHttpApp(
       presetAgent: presetAgentRepo,
       integrationChannel: integrationChannelRepo,
       audit: auditRepo,
+      mcpInvocation: mcpInvocationRepo,
       oauth: oauthRepo
     },
     registry: new DaemonRegistryService(daemonRepo, new PgRuntimeProfileRepo(prisma), daemonLifecycleOpRepo, clock),

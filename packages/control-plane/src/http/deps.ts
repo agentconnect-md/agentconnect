@@ -41,8 +41,10 @@ import type {
   GithubInstallationRepo,
   AgentRepoAuthorizationRepo,
   DaemonLifecycleOpRepo,
-  OAuthRepo
+  OAuthRepo,
+  McpInvocationRepo
 } from '../persistence/ports.js'
+import type { Clock } from '../domain/clock.js'
 import type { OAuthService } from '../registry/oauthService.js'
 import type { GithubService } from '../github/service.js'
 import type { GithubUserAuthzService } from '../github/user-authz.js'
@@ -123,6 +125,8 @@ export interface HttpServerConfig extends HumanAuthConfig {
 }
 
 export interface HttpDeps {
+  /** Shared process clock: delegated MCP execution uses the same timer seam as its reaper. */
+  clock: Clock
   repos: {
     agent: AgentRepo
     assignment: AssignmentRepo
@@ -196,6 +200,8 @@ export interface HttpDeps {
     agentRepoAuth: AgentRepoAuthorizationRepo
     /** Append-only events feed (§3.12) — WebUI CRUD writes land here (`cron_change`, …). */
     audit: AuditRepo
+    /** Durable one-time delegated MCP execution ledger. */
+    mcpInvocation: McpInvocationRepo
     /** Embedded OAuth AS protocol state (agent-assistant.md §7): clients, codes, grants. */
     oauth: OAuthRepo
   }

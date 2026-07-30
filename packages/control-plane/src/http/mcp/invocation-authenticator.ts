@@ -20,6 +20,8 @@ export interface InvocationContext {
   daemonId: string
   orgId: string
   userId: string
+  /** Durable CAS claim time; the outer execution deadline is anchored here. */
+  startedAt: Date
 }
 
 export type InvocationAssertionDenialReason =
@@ -116,15 +118,6 @@ export class InvocationAssertionAuthenticator {
     const metadataDenial = this.validateMetadata(invocation, metadata)
     if (metadataDenial) return this.deny(metadataDenial)
 
-    const context: InvocationContext = {
-      invocationId: invocation.id,
-      delegationId: delegation.id,
-      conversationId: delegation.conversationId,
-      agentId: delegation.agentId,
-      daemonId: delegation.daemonId,
-      orgId: delegation.orgId,
-      userId: delegation.userId
-    }
     const claimed = await this.deps.invocations.claim({
       invocationId: invocation.id,
       assertionHash,
@@ -137,9 +130,27 @@ export class InvocationAssertionAuthenticator {
       daemonId: DaemonId(delegation.daemonId)
     })
     if (claimed.kind === 'claimed') {
-      return sameInvocation(claimed.invocation, invocation)
-        ? { kind: 'execute', context }
-        : this.deny('claim_state_invalid')
+      const startedAt = claimed.invocation.startedAt
+      if (
+        !sameInvocation(claimed.invocation, invocation) ||
+        !(startedAt instanceof Date) ||
+        !Number.isFinite(startedAt.getTime())
+      ) {
+        return this.deny('claim_state_invalid')
+      }
+      return {
+        kind: 'execute',
+        context: {
+          invocationId: invocation.id,
+          delegationId: delegation.id,
+          conversationId: delegation.conversationId,
+          agentId: delegation.agentId,
+          daemonId: delegation.daemonId,
+          orgId: delegation.orgId,
+          userId: delegation.userId,
+          startedAt: new Date(startedAt)
+        }
+      }
     }
     if (claimed.kind === 'existing') {
       if (!sameInvocation(claimed.invocation, invocation)) return this.deny('claim_state_invalid')

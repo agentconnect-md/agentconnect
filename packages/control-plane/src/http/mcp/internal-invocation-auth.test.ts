@@ -14,7 +14,8 @@ const CONTEXT: InvocationContext = {
   agentId: '44444444-4444-4444-8444-444444444444',
   daemonId: '55555555-5555-4555-8555-555555555555',
   orgId: 'org-1',
-  userId: 'user-1'
+  userId: 'user-1',
+  startedAt: new Date('2026-07-30T00:00:00.000Z')
 }
 
 function request(nonce?: string, method = 'GET', url = '/api/v1/me'): FastifyRequest {

@@ -167,6 +167,23 @@ describe('POST /api/v1/mcp — auth', () => {
 })
 
 describe('POST /api/v1/mcp — protocol', () => {
+  it('keeps the public /v1/mcp alias on the ordinary personal-key path', async () => {
+    const app = build()
+    const { key } = await makeUserWithKey('collaborator')
+    const res = await app.app.inject({
+      method: 'POST',
+      url: '/v1/mcp',
+      headers: {
+        authorization: `Bearer ${key}`,
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json'
+      },
+      payload: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: nextId++, method: 'initialize', params: INIT_PARAMS }))
+    })
+    expect(res.statusCode).toBe(200)
+    expect((mcpMessage(res).result as { serverInfo?: { name?: string } }).serverInfo?.name).toBe('agentconnect')
+  })
+
   it('initialize returns the agentconnect server info and tool capability', async () => {
     const app = build({ PUBLIC_WEB_URL: 'https://console.example.test' })
     const { key } = await makeUserWithKey('collaborator')
