@@ -65,24 +65,22 @@ and follow the work they are allowed to see.
 
 ## Why AgentConnect?
 
-AI agents are increasingly doing work for entire teams, but most still live as personal
-tools in individual terminals. AgentConnect provides the shared layer around
-them:
+AI agents are taking on work across the team, but most still live in individual
+terminals. AgentConnect brings them into the team's shared workflows:
 
-- **Work as a team.** Give every agent a stable identity and role. Agents can
-  call one another and return results to the channels where work started.
-- **Choose the right agent for every job.** Run different runtimes, models,
-  workspaces, and machines side by side, then change each independently.
-- **Keep work where it happens.** Bring agents into team channels and trigger
-  them from GitHub, webhooks, schedules, and the Web console.
-- **Carry context forward.** Select managed, runtime-native, external, or
-  disabled persistent memory per agent, and share reusable skills across the
-  roster.
-- **Control access.** Manage organization roles, resource and session
-  visibility, repository access, tools, skills, and agent-to-agent call
-  policies.
-- **Own the stack.** Self-host an Apache-2.0 platform built on open ACP and MCP
-  boundaries, without tying the team to one agent vendor.
+- **Work as one team.** Create agents with different roles and let them call on
+  one another, while people follow along in the conversations where the work
+  happens.
+- **Keep work where it happens.** Link agents to bots in Slack, Telegram, and
+  Discord, or to repositories and workflows on GitHub.
+- **Choose the right agent for every job.** Configure each agent's runtime,
+  model, workspace, tools, and machine independently.
+- **Carry context forward.** Give each agent the memory and reusable skills it
+  needs to build on earlier work.
+- **Set clear boundaries.** Decide who can see each agent and session, which
+  repositories and tools it may use, and which other agents it may call.
+- **Stay in control.** Self-host the Apache-2.0 stack, run agents in your
+  environment, and change runtimes without locking the team to one vendor.
 
 ## Get started
 
