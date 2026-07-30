@@ -1,27 +1,21 @@
-import type { AgentRecord } from '../persistence/ports.js'
-import { renderAgentIconPng } from '../agents/agent-icon-render.js'
-import { agentIconKey, type IconStore } from '../icons/icon-store.js'
+import type { IconStore } from '../icons/icon-store.js'
+import { loadBotProfileIcon, type BotProfileIconAgent } from './bot-profile-icon.js'
 
 const DISCORD_API = 'https://discord.com/api/v10'
 const DISCORD_TIMEOUT_MS = 5000
-const STORED_ICON_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+const DISCORD_ICON_SIZE = 512
+const DISCORD_ICON_BACKGROUND = '#ffffff'
 
-type DiscordIconAgent = Pick<AgentRecord, 'id' | 'icon' | 'runtime'>
+export type DiscordBotIconSyncer = (botToken: string, agent: BotProfileIconAgent) => Promise<void>
 
-export type DiscordBotIconSyncer = (botToken: string, agent: DiscordIconAgent) => Promise<void>
-
-async function iconData(agent: DiscordIconAgent, iconStore?: IconStore): Promise<string> {
-  if (agent.icon?.kind === 'image') {
-    if (!iconStore) throw new Error('uploaded agent icon store is unavailable')
-    const stored = await iconStore.get(agentIconKey(agent.id))
-    if (!stored) throw new Error('uploaded agent icon is missing')
-    if (!STORED_ICON_TYPES.has(stored.contentType)) {
-      throw new Error(`uploaded agent icon has unsupported content type ${stored.contentType}`)
-    }
-    return `data:${stored.contentType};base64,${Buffer.from(stored.bytes).toString('base64')}`
-  }
-
-  const png = await renderAgentIconPng(agent.icon, agent.runtime)
+async function iconData(agent: BotProfileIconAgent, iconStore?: IconStore): Promise<string> {
+  const icon = await loadBotProfileIcon(agent, iconStore, DISCORD_ICON_SIZE)
+  const { default: sharp } = await import('sharp')
+  const png = await sharp(icon.bytes)
+    .resize(DISCORD_ICON_SIZE, DISCORD_ICON_SIZE, { fit: 'cover' })
+    .flatten({ background: DISCORD_ICON_BACKGROUND })
+    .png()
+    .toBuffer()
   return `data:image/png;base64,${png.toString('base64')}`
 }
 
@@ -39,9 +33,11 @@ async function patchIcon(botToken: string, path: string, field: 'avatar' | 'icon
   if (!res.ok) throw new Error(`${path} returned ${res.status}`)
 }
 
-/** Apply the Agent icon to both Discord identities: the bot user (messages and
- * member lists) and the application (install/profile surfaces). Both calls are
- * attempted; the route treats any failure as cosmetic and keeps the integration. */
+/** Apply an opaque high-resolution Agent icon to both Discord identities: the
+ * bot user (messages and member lists) and the application (install/profile
+ * surfaces). The white plate keeps transparent icons consistent instead of
+ * exposing Discord's dark avatar backdrop. Both calls are attempted; the route
+ * treats any failure as cosmetic and keeps the integration. */
 export function createDiscordBotIconSyncer(iconStore?: IconStore): DiscordBotIconSyncer {
   return async (botToken, agent) => {
     const data = await iconData(agent, iconStore)

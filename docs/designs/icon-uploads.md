@@ -109,7 +109,8 @@ the fallback. (Org icons are console-only and need no daemon push.)
 **Client UX** (`AgentIconPicker`, reused for org): an _Upload_ button → file input
 (`accept="image/png,image/jpeg,image/webp"`) → **client-side square crop + resize to
 ≤256×256** on a `<canvas>` → `canvas.toBlob('image/png')` → `fetch(url, {method:'PUT',
-body: blob})`. Resizing client-side means the server never needs `sharp`.
+body: blob})`. Resizing client-side keeps upload validation header-only; `sharp` is
+used later only when Telegram profile sync must convert the canonical icon to JPG.
 
 **Server validation / security (client resizing is untrusted).** A caller can POST
 arbitrary bytes straight at the API, so the CP re-validates independently:
@@ -133,9 +134,15 @@ arbitrary bytes straight at the API, so the CP re-validates independently:
   busted by `?v=<lastModified>`); glyph/runtime → rasterized PNG via `@resvg/resvg-js`.
   For an `image` icon the resolved `iconUrl` is the store URL directly, so Slack/browsers
   normally fetch the store and never hit this endpoint; the redirect is the fallback.
-  Registering a new Discord bot also applies these same bytes to both the bot-user
-  avatar and application icon. That external profile sync is cosmetic and best-effort:
-  a Discord or object-store failure is logged without rolling back the integration.
+  Registering a new Discord bot derives an opaque 512×512 PNG on a neutral white
+  background and applies it to both the bot-user avatar and application icon. This
+  avoids low-resolution scaling and prevents transparent icon regions from exposing
+  Discord's dark avatar backdrop. The derivative stays in memory; the canonical stored
+  icon is unchanged. That external profile sync is cosmetic and best-effort: a Discord,
+  conversion, or object-store failure is logged without rolling back the integration.
+  Registering a new Telegram bot similarly converts the icon to the JPG format required
+  by Bot API `setMyProfilePhoto` and uploads it as the bot's profile picture. Conversion
+  or Telegram API failure is also cosmetic and does not roll back the integration.
 - **Org** — `GET /v1/orgs/:id/icon`, mirroring the agent endpoint (public, unauth,
   version-root + `/v1` alias — an `<img src>` can't send a bearer, and a logo isn't
   sensitive). `image` → store URL; glyph → rasterized; null → deterministic default glyph.
