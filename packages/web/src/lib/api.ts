@@ -622,6 +622,8 @@ export interface BotDto {
   lastUsedAt: string | null // ISO-8601; stamped when last freed; null ⇒ never used
   freedFromAgent: string | null // agent it was last freed from ("freed from support-bot")
   teamId?: string | null // Slack workspace id (T…) — platform-app installs only
+  workspaceId?: string | null // external workspace identity used only for Console grouping
+  workspaceName?: string | null // human-readable external workspace label
   revokedAt?: string | null // workspace uninstalled the app / revoked tokens; null ⇒ live
   createdAt: string // ISO-8601
 }

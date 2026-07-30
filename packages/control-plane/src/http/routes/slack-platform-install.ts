@@ -245,6 +245,7 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
           // rotate to the fresh token, clear any uninstall marker, and make sure
           // the target agent has an active install; then reconverge the pool.
           botId = existing.id
+          await deps.repos.bot.setWorkspaceMetadata(existing.id, result.teamId, result.teamName)
           // ONE transition: the fresh token and the generation it belongs to
           // commit together, so no reader (notably restart reconciliation, which
           // does not filter on `revokedAt`) can broadcast the new credential
@@ -319,6 +320,8 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
             prebuilt: true,
             slackAppId: platform.appId,
             teamId: result.teamId,
+            workspaceId: result.teamId,
+            ...(result.teamName ? { workspaceName: result.teamName } : {}),
             ...(result.botUserId ? { botUserId: result.botUserId } : {}),
             signingSecret: platform.signingSecret,
             ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {})

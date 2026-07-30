@@ -1790,6 +1790,9 @@ export interface CreateBotInput {
   /** Slack workspace id (T…), from the platform app's OAuth exchange. Together with
    *  `slackAppId` it is the relay demux key for a distributed app. Public metadata. */
   teamId?: string
+  /** Display-only external workspace metadata; never used for routing/admission. */
+  workspaceId?: string
+  workspaceName?: string
   /** Slack bot user id, from the OAuth exchange (`bot_user_id`). Public metadata. */
   botUserId?: string
   /** Discord application (client) id, decoded from the bot token. Public metadata, NOT a secret. */
@@ -1818,6 +1821,10 @@ export interface BotRecord {
   /** Slack workspace id (T…); non-null only for platform-app installs, where
    *  (slackAppId, teamId) is the relay demux key. */
   teamId: string | null
+  /** Display-only external workspace metadata; unlike teamId, this never changes
+   *  routing or install admission. */
+  workspaceId: string | null
+  workspaceName: string | null
   /** Slack bot user id, persisted from the OAuth exchange; null for legacy bots. */
   botUserId: string | null
   /** Stamped when the workspace uninstalled the app / revoked its tokens
@@ -1863,8 +1870,11 @@ export interface BotRepo {
   create(input: CreateBotInput): Promise<BotRecord>
   get(id: BotId): Promise<BotRecord | null>
   listForOrg(orgId: OrgId): Promise<BotRecord[]>
-  /** Legacy HTTP Slack bots created before app-id persistence was wired. */
-  listHttpMissingSlackAppId(): Promise<BotRecord[]>
+  /** Record workspace metadata learned from OAuth/auth.test. A missing name
+   *  preserves the last known label. */
+  setWorkspaceMetadata(id: BotId, workspaceId: string, workspaceName: string | null): Promise<void>
+  /** Slack bots missing public app/workspace identity metadata. */
+  listSlackMissingIdentity(): Promise<BotRecord[]>
   /** Backfill only a missing id; never replace an established Slack app identity. */
   setSlackAppIdIfMissing(id: BotId, slackAppId: string): Promise<boolean>
   /** Stamp the freed-bot display hints when its LAST integration is removed. */

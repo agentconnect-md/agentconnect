@@ -340,6 +340,8 @@ const MOCK_MEMBERS: MemberDto[] = [
 
 // Demo bot roster (MOCK_MODE only) — one per platform so the Settings platform
 // cards + the Add-integration reuse picker render populated with no CP running.
+// The two Slack rows sit in distinct workspaces so the conditional grouping is
+// visible in design/dev mode.
 // Discord rows carry a real-shaped application id so the "Add to Discord" invite
 // link is exercised. `createdBy` ids resolve to MOCK_MEMBERS names via creatorLabel.
 const MOCK_BOTS: BotDto[] = [
@@ -349,6 +351,8 @@ const MOCK_BOTS: BotDto[] = [
     platform: 'slack',
     prebuilt: false,
     slackAppId: 'A0DEPLOYBOT',
+    workspaceId: 'T0ENGINEERING',
+    workspaceName: 'Engineering',
     discordAppId: null,
     createdBy: 'u_dana',
     transport: 'socket',
@@ -361,18 +365,20 @@ const MOCK_BOTS: BotDto[] = [
   },
   {
     id: 'bot_slack_free',
-    name: 'support-bot',
+    name: 'AgentConnect',
     platform: 'slack',
-    prebuilt: false,
+    prebuilt: true,
     slackAppId: 'A0SUPPORTBT',
+    workspaceId: 'T0SUPPORT',
+    workspaceName: 'Support',
     discordAppId: null,
-    createdBy: 'u_sam',
+    createdBy: null,
     transport: 'http',
     shareable: false,
     inUseByAgentId: null,
     agentIds: [],
     lastUsedAt: '2026-06-28T00:00:00Z',
-    freedFromAgent: 'review',
+    freedFromAgent: null,
     createdAt: '2026-01-20T00:00:00Z'
   },
   {

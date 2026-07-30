@@ -1282,6 +1282,9 @@ export const BotDto = z.object({
   freedFromAgent: z.string().nullable(),
   /** Slack workspace id (T…) — set for platform-app installs (preset-agents.md §5.3). */
   teamId: z.string().nullable(),
+  /** External workspace metadata used only to label/group bots in the Console. */
+  workspaceId: z.string().nullable(),
+  workspaceName: z.string().nullable(),
   /** The workspace uninstalled the app / revoked its tokens (`rc/bot-revoked`);
    *  a platform-app re-install clears it. ISO-8601, null ⇒ live. */
   revokedAt: z.string().nullable(),

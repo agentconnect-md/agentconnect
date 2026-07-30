@@ -51,6 +51,8 @@ function toDto(b: BotRecord): BotDtoT {
     lastUsedAt: b.lastUsedAt?.toISOString() ?? null,
     freedFromAgent: b.lastAgentName,
     teamId: b.teamId,
+    workspaceId: b.workspaceId,
+    workspaceName: b.workspaceName,
     revokedAt: b.revokedAt?.toISOString() ?? null,
     createdAt: b.createdAt.toISOString()
   }
@@ -95,7 +97,7 @@ export function botRoutes(deps: HttpDeps) {
           tags: [Tag.Bots],
           summary: 'List bots',
           description:
-            "The org's durable platform bot identities, including freed and prebuilt bots offered for reuse.",
+            "The org's durable platform bot identities, including freed and built-in bots offered for reuse.",
           operationId: 'listBots',
           response: { 200: BotListDto }
         }
@@ -151,11 +153,6 @@ export function botRoutes(deps: HttpDeps) {
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'only Slack apps can be refreshed' })
         }
-        if (bot.prebuilt) {
-          return reply
-            .code(409)
-            .send({ error: 'Conflict', statusCode: 409, message: 'prebuilt Slack apps are managed by AgentConnect' })
-        }
         if (!bot.slackAppId) {
           return reply.code(409).send({
             error: 'Conflict',
@@ -176,13 +173,19 @@ export function botRoutes(deps: HttpDeps) {
         // modify the wrong Slack app.
         const checked = await deps.verifySlackBot?.(secret.botToken)
         const appIdentityMatches = checked?.status === 'ok' && checked.appId === bot.slackAppId
-        let manifest: SlackBotRefreshDtoT['manifest'] = 'manual_update_required'
+        if (appIdentityMatches && checked.teamId) {
+          await deps.repos.bot.setWorkspaceMetadata(bot.id, checked.teamId, checked.teamName)
+        }
+        // A built-in app's manifest is deployment-managed rather than owned by
+        // the signed-in user's Slack config token. Refresh still verifies its
+        // installed scopes so the Console can offer the platform OAuth reinstall.
+        let manifest: SlackBotRefreshDtoT['manifest'] = bot.prebuilt ? 'synced' : 'manual_update_required'
         const api = deps.slackConfigApi
         // Manifest sync needs a config token that owns THIS app — i.e. the caller's
         // own (per-user). If they don't own it (or stored none), Slack rejects the
         // export/update and `manifest` stays `manual_update_required` — the graceful
         // fallback the DTO already surfaces via the Slack settings links.
-        if (api && appIdentityMatches && req.principal) {
+        if (!bot.prebuilt && api && appIdentityMatches && req.principal) {
           const config = await resolveUserConfigAccessToken(deps, bot.orgId, req.principal.userId, new Date())
           if (config.ok) {
             const exported = await api.exportApp(config.accessToken, bot.slackAppId)

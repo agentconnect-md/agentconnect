@@ -28,6 +28,7 @@ describe('verifySlackBot (auth.test)', () => {
       name: 'matrix_test',
       appId: 'A0123',
       teamId: 'T0123',
+      teamName: 'Acme',
       scopes: ['chat:write', 'channels:read', 'assistant:write']
     })
   })
@@ -39,6 +40,7 @@ describe('verifySlackBot (auth.test)', () => {
       name: 'Acme',
       appId: null,
       teamId: null,
+      teamName: 'Acme',
       scopes: null
     })
   })
@@ -56,6 +58,7 @@ describe('verifySlackBot (auth.test)', () => {
       name: 'matrix_test',
       appId: 'A0123',
       teamId: null,
+      teamName: null,
       scopes: null
     })
     expect(globalThis.fetch).toHaveBeenNthCalledWith(
@@ -72,6 +75,7 @@ describe('verifySlackBot (auth.test)', () => {
       name: null,
       appId: null,
       teamId: null,
+      teamName: null,
       scopes: null
     })
   })

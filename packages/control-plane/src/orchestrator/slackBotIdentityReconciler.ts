@@ -1,8 +1,7 @@
 /**
- * Repairs HTTP Slack bot rows created before their public Slack app id was
- * persisted. The id is resolved from the already-stored bot token and written
- * only when the column is still null, so an established identity is never
- * replaced by a delayed or stale lookup.
+ * Repairs Slack bot rows created before public app/workspace identity was
+ * persisted. Values are resolved from the already-stored bot token. The app id
+ * is written only while missing; workspace metadata is display-only.
  *
  * This is a background convergence loop, not part of GET /bots: opening the
  * Settings page must not fan out to Slack or turn a metadata read into a write.
@@ -20,9 +19,16 @@ export interface SlackBotIdentityReconcilerLog {
   error(obj: unknown, msg?: string): void
 }
 
-export type ResolveSlackAppId = (botToken: string) => Promise<string | null>
+export interface ResolvedSlackIdentity {
+  appId: string | null
+  workspaceId: string | null
+  workspaceName: string | null
+}
+
+export type ResolveSlackIdentity = (botToken: string) => Promise<ResolvedSlackIdentity | null>
 
 const SLACK_APP_ID = /^A[A-Z0-9]+$/
+const SLACK_WORKSPACE_ID = /^T[A-Z0-9]+$/
 
 export class SlackBotIdentityReconciler {
   private timer: TimerHandle | undefined
@@ -32,7 +38,7 @@ export class SlackBotIdentityReconciler {
   constructor(
     private readonly bots: BotRepo,
     private readonly secrets: BotSecretStore,
-    private readonly resolveAppId: ResolveSlackAppId,
+    private readonly resolveIdentity: ResolveSlackIdentity,
     private readonly clock: Clock,
     private readonly cfg: SlackBotIdentityReconcilerConfig,
     private readonly log?: SlackBotIdentityReconcilerLog
@@ -68,14 +74,23 @@ export class SlackBotIdentityReconciler {
     }
     this.running = true
     try {
-      for (const bot of await this.bots.listHttpMissingSlackAppId()) {
+      for (const bot of await this.bots.listSlackMissingIdentity()) {
         try {
           const secret = await this.secrets.get(bot.id)
           if (!secret) continue
-          const appId = await this.resolveAppId(secret.botToken)
-          if (!appId || !SLACK_APP_ID.test(appId)) continue
-          if (await this.bots.setSlackAppIdIfMissing(bot.id, appId)) {
-            this.log?.info({ botId: bot.id, slackAppId: appId }, 'slack-bot-identity: backfilled app id')
+          const identity = await this.resolveIdentity(secret.botToken)
+          if (!identity) continue
+          if (identity.appId && SLACK_APP_ID.test(identity.appId)) {
+            if (await this.bots.setSlackAppIdIfMissing(bot.id, identity.appId)) {
+              this.log?.info({ botId: bot.id, slackAppId: identity.appId }, 'slack-bot-identity: backfilled app id')
+            }
+          }
+          if (identity.workspaceId && SLACK_WORKSPACE_ID.test(identity.workspaceId)) {
+            await this.bots.setWorkspaceMetadata(bot.id, identity.workspaceId, identity.workspaceName)
+            this.log?.info(
+              { botId: bot.id, workspaceId: identity.workspaceId },
+              'slack-bot-identity: refreshed workspace metadata'
+            )
           }
         } catch (err) {
           this.log?.warn({ err, botId: bot.id }, 'slack-bot-identity: bot lookup failed')

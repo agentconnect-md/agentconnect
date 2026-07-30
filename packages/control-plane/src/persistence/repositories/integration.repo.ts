@@ -59,6 +59,8 @@ function toBotRecord(b: BotJoined): BotRecord {
     prebuilt: b.prebuilt,
     slackAppId: b.slackAppId,
     teamId: b.teamId,
+    workspaceId: b.workspaceId,
+    workspaceName: b.workspaceName,
     botUserId: b.botUserId,
     revokedAt: b.revokedAt,
     credentialRevision: b.credentialRevision,
@@ -94,6 +96,8 @@ export class PgBotRepo implements BotRepo {
         ...(input.prebuilt !== undefined ? { prebuilt: input.prebuilt } : {}),
         ...(input.slackAppId ? { slackAppId: input.slackAppId } : {}),
         ...(input.teamId ? { teamId: input.teamId } : {}),
+        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+        ...(input.workspaceName ? { workspaceName: input.workspaceName } : {}),
         ...(input.botUserId ? { botUserId: input.botUserId } : {}),
         ...(input.discordAppId ? { discordAppId: input.discordAppId } : {}),
         ...(input.feishuAppId ? { feishuAppId: input.feishuAppId } : {}),
@@ -121,9 +125,22 @@ export class PgBotRepo implements BotRepo {
     return rows.map(toBotRecord)
   }
 
-  async listHttpMissingSlackAppId(): Promise<BotRecord[]> {
+  async setWorkspaceMetadata(id: BotId, workspaceId: string, workspaceName: string | null): Promise<void> {
+    await this.db.bot.update({
+      where: { id },
+      data: {
+        workspaceId,
+        ...(workspaceName ? { workspaceName } : {})
+      }
+    })
+  }
+
+  async listSlackMissingIdentity(): Promise<BotRecord[]> {
     const rows = await this.db.bot.findMany({
-      where: { platform: 'slack', transport: 'http', slackAppId: null },
+      where: {
+        platform: 'slack',
+        OR: [{ transport: 'http', slackAppId: null }, { workspaceId: null }, { workspaceName: null }]
+      },
       include: botInclude,
       orderBy: { createdAt: 'asc' }
     })

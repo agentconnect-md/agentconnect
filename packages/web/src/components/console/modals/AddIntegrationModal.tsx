@@ -2763,7 +2763,7 @@ export default function AddIntegrationModal({
           </div>
         )}
         {/* A bot is installed on one agent at a time and OUTLIVES its integration:
-            reuse a freed / prebuilt one, or create a new bot for this platform.
+            reuse a freed / builtin one, or create a new bot for this platform.
             (Webhook and GitHub are bot-less — their bodies render above instead.) */}
         {platform !== 'webhook' && platform !== 'github' && !hideIdentitySection && (
           <div className="mb-3 grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
@@ -2845,7 +2845,7 @@ export default function AddIntegrationModal({
                         </span>
                       )}
                       {b.prebuilt && (
-                        <span className="badge bg-(--surface-active) text-(--text-tertiary)">prebuilt</span>
+                        <span className="badge bg-(--surface-active) text-(--text-tertiary)">builtin</span>
                       )}
                     </div>
                     <div className="mt-[2px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">

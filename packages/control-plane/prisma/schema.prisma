@@ -1379,6 +1379,12 @@ model Bot {
   // (slackAppId, teamId) identifies a workspace's Bot. NULL for legacy /
   // single-workspace bots. Public metadata, NOT secret material.
   teamId                String?
+  // External workspace identity used only to label/group bot rows in the Console.
+  // Slack fills this from auth.test/OAuth for every bot kind. It is deliberately
+  // separate from teamId, whose non-null value marks a distributed platform-app
+  // install and participates in relay demux/admission behavior.
+  workspaceId           String?
+  workspaceName         String?
   // Slack bot user id ("U…"/"B…"), from the OAuth exchange (`bot_user_id`). Saves
   // the relay an auth.test round-trip and backs echo suppression. Public metadata.
   botUserId             String?

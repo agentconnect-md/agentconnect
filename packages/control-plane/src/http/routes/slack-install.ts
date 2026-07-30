@@ -357,13 +357,10 @@ export function slackInstallRoutes(deps: HttpDeps) {
           })
         }
 
-        // Name: operator-chosen at start, else the bot user name Slack derives, else the agent's.
-        let name = row.name
-        if (!name && deps.verifySlackBot) {
-          const check = await deps.verifySlackBot(row.botToken)
-          if (check.status === 'ok') name = check.name
-        }
-        name = name || agent.name
+        // auth.test supplies display-only workspace metadata for the Settings
+        // grouping. It also remains the fallback source for an omitted app name.
+        const botCheck = deps.verifySlackBot ? await deps.verifySlackBot(row.botToken) : null
+        const name = row.name || (botCheck?.status === 'ok' ? botCheck.name : null) || agent.name
         const release = deps.agentMutations.tryBeginMutation(agent.id)
         if (!release) {
           return reply.code(409).send({
@@ -396,6 +393,8 @@ export function slackInstallRoutes(deps: HttpDeps) {
             botToken: row.botToken,
             transport: row.transport,
             slackAppId: row.appId,
+            ...(botCheck?.status === 'ok' && botCheck.teamId ? { workspaceId: botCheck.teamId } : {}),
+            ...(botCheck?.status === 'ok' && botCheck.teamName ? { workspaceName: botCheck.teamName } : {}),
             // socket: the pasted xapp; http: the signing secret captured at create. The
             // shareable choice rides the finalize body (installNewSlackBot coerces it off
             // for socket regardless).

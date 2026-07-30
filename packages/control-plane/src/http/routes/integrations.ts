@@ -533,6 +533,8 @@ export function integrationRoutes(deps: HttpDeps) {
             botToken: slack.botToken,
             transport,
             ...(botCheck?.status === 'ok' && botCheck.appId ? { slackAppId: botCheck.appId } : {}),
+            ...(botCheck?.status === 'ok' && botCheck.teamId ? { workspaceId: botCheck.teamId } : {}),
+            ...(botCheck?.status === 'ok' && botCheck.teamName ? { workspaceName: botCheck.teamName } : {}),
             ...(slack.appToken ? { appToken: slack.appToken } : {}),
             ...(slack.signingSecret ? { signingSecret: slack.signingSecret } : {}),
             ...(req.body.shareable === true ? { shareable: true } : {}),

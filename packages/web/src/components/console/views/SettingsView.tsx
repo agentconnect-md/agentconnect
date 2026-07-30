@@ -23,6 +23,7 @@ import { useProfile } from '@/lib/profile'
 import { useOrgs } from '@/lib/org-context'
 import { initialsFrom } from '@/lib/auth'
 import {
+  ApiError,
   createOrgInviteLink,
   creatorLabel,
   fetchGithubInstallUrl,
@@ -31,9 +32,11 @@ import {
   fetchOrgInviteLink,
   memberDisplayName,
   refreshSlackBot,
+  getSlackPlatformInstall,
   revokeOrgInviteLink,
   ROLE_LABELS,
   syncGithubInstallations,
+  startSlackPlatformInstall,
   updateOrg,
   uploadOrgIcon,
   type BotDto,
@@ -58,7 +61,7 @@ import UninstallGithubInstallationModal from '@/components/console/modals/Uninst
 // The free-bot sub-line shows where the bot came from without repeating
 // historical usage metadata in the list row.
 function botSubline(b: BotDto): string {
-  return b.freedFromAgent ? `freed from ${b.freedFromAgent}` : b.prebuilt ? 'prebuilt' : ''
+  return b.freedFromAgent ? `freed from ${b.freedFromAgent}` : b.prebuilt ? 'builtin' : ''
 }
 
 function feishuAppSettingsUrl(appId: string | null | undefined, region: 'feishu' | 'lark'): string {
@@ -103,7 +106,7 @@ const MEMBER_GRID = 'grid-cols-[2fr_1.4fr_auto]'
 // Design grid (`isSettings` Bots card): Bot | Sharable | Agents | Created by |
 // actions. The 100px action track fits refresh + platform link + delete and stays
 // identical across rows; below 480px "Created by" is dropped to preserve space.
-const BOT_GRID = 'grid-cols-[2fr_0.9fr_1.5fr_100px] min-[480px]:grid-cols-[2fr_0.9fr_1.5fr_1fr_100px]'
+const BOT_GRID = 'grid-cols-[3fr_1.1fr_1fr_100px] min-[480px]:grid-cols-[2fr_0.9fr_1.5fr_1fr_100px]'
 const BOT_PLATFORMS = [
   { platform: 'slack', label: 'Slack', noun: 'app' },
   { platform: 'discord', label: 'Discord', noun: 'bot' },
@@ -111,6 +114,35 @@ const BOT_PLATFORMS = [
   { platform: 'feishu', label: 'Lark', noun: 'bot' }
 ] as const
 type BotPlatform = (typeof BOT_PLATFORMS)[number]['platform']
+
+type BotRosterRow = { kind: 'workspace'; key: string; label: string } | { kind: 'bot'; key: string; bot: BotDto }
+
+// Preserve the server's bot order within each workspace. The heading is rendered
+// only when this produces several groups, so single-workspace organizations keep
+// the compact flat list.
+function botRosterRows(bots: BotDto[]): BotRosterRow[] {
+  const groups = new Map<string, { label: string; bots: BotDto[] }>()
+  for (const bot of bots) {
+    const workspaceId = bot.workspaceId?.trim() || null
+    const workspaceName = bot.workspaceName?.trim() || null
+    const key = workspaceId ? `id:${workspaceId}` : workspaceName ? `name:${workspaceName.toLowerCase()}` : 'unknown'
+    const current = groups.get(key)
+    if (current) {
+      if (workspaceName && current.label === workspaceId) current.label = workspaceName
+      current.bots.push(bot)
+      continue
+    }
+    groups.set(key, {
+      label: workspaceName ?? workspaceId ?? 'Workspace unavailable',
+      bots: [bot]
+    })
+  }
+  if (groups.size <= 1) return bots.map((bot) => ({ kind: 'bot', key: bot.id, bot }))
+  return [...groups].flatMap(([workspaceKey, group]) => [
+    { kind: 'workspace', key: `workspace:${workspaceKey}`, label: group.label },
+    ...group.bots.map((bot) => ({ kind: 'bot' as const, key: bot.id, bot }))
+  ])
+}
 
 // One merged channel row for a bot's expandable roster.
 interface BotChannelView {
@@ -231,8 +263,22 @@ function DefaultDispatchPicker({
   )
 }
 
-function SlackRefreshNotice({ result }: { result: SlackBotRefreshDto }) {
-  const { needsAttention, message, action } = slackRefreshNoticeState(result)
+function SlackRefreshNotice({
+  result,
+  builtin,
+  reinstalling,
+  onReinstall
+}: {
+  result: SlackBotRefreshDto
+  builtin?: boolean
+  reinstalling?: boolean
+  onReinstall?: () => void
+}) {
+  const { needsAttention, message: defaultMessage, action } = slackRefreshNoticeState(result)
+  const message =
+    builtin && result.authorization === 'invalid'
+      ? 'Slack rejected this workspace authorization. Reinstall the app to reconnect it.'
+      : defaultMessage
 
   return (
     <div
@@ -248,11 +294,20 @@ function SlackRefreshNotice({ result }: { result: SlackBotRefreshDto }) {
           <span className="mono ml-1 text-[11px]">Missing: {result.missingScopes.join(', ')}</span>
         )}
       </span>
-      {action && (
+      {action?.label === 'Reinstall workspace' && onReinstall ? (
+        <button
+          type="button"
+          className="lnk flex-none border-0 bg-transparent p-0"
+          disabled={reinstalling}
+          onClick={onReinstall}
+        >
+          {reinstalling ? 'Reinstalling…' : action.label}
+        </button>
+      ) : action ? (
         <a href={action.href} target="_blank" rel="noopener noreferrer" className="lnk flex-none">
           {action.label}
         </a>
-      )}
+      ) : null}
     </div>
   )
 }
@@ -608,7 +663,15 @@ function BotsCard({
   targetBotId: string | null
   onDelete: (b: BotDto) => void
 }) {
-  const { bots, integrations, getAgent, setBotShareable, setChannelAgent, loading: dataLoading } = useConsoleData()
+  const {
+    bots,
+    integrations,
+    getAgent,
+    setBotShareable,
+    setChannelAgent,
+    refresh,
+    loading: dataLoading
+  } = useConsoleData()
   const [platform, setPlatform] = useState<BotPlatform>('slack')
   // Bot row expanded to its channel roster (one at a time), the bot whose
   // shareable PATCH is in flight, and the last toggle denial to surface (the CP
@@ -618,12 +681,14 @@ function BotsCard({
   const [botErr, setBotErr] = useState<{ id: string; msg: string } | null>(null)
   const [slackRefreshBusyId, setSlackRefreshBusyId] = useState<string | null>(null)
   const [slackRefresh, setSlackRefresh] = useState<Record<string, { result?: SlackBotRefreshDto; error?: string }>>({})
+  const [slackReinstall, setSlackReinstall] = useState<{ botId: string; installId: string } | null>(null)
 
   const targetBotPlatform = BOT_PLATFORMS.find(
     (item) => item.platform === bots.find((bot) => bot.id === targetBotId)?.platform
   )?.platform
   const { label, noun } = BOT_PLATFORMS.find((item) => item.platform === platform)!
   const platformBots = bots.filter((b) => b.platform === platform)
+  const rosterRows = botRosterRows(platformBots)
 
   useEffect(() => {
     if (!targetBotId || !targetBotPlatform) return
@@ -656,6 +721,7 @@ function BotsCard({
     try {
       const result = await refreshSlackBot(b.id)
       setSlackRefresh((current) => ({ ...current, [b.id]: { result } }))
+      refresh()
     } catch (e) {
       setSlackRefresh((current) => ({
         ...current,
@@ -665,6 +731,82 @@ function BotsCard({
       setSlackRefreshBusyId(null)
     }
   }
+
+  const reinstallBuiltinSlackApp = async (b: BotDto) => {
+    if (slackReinstall || slackRefreshBusyId) return
+    setSlackRefresh((current) => {
+      const result = current[b.id]?.result
+      return { ...current, [b.id]: result ? { result } : {} }
+    })
+    try {
+      const started = await startSlackPlatformInstall(b.agentIds[0])
+      setSlackReinstall({ botId: b.id, installId: started.id })
+      window.open(started.installUrl, '_blank', 'noopener,width=680,height=760')
+    } catch (e) {
+      setSlackRefresh((current) => {
+        const result = current[b.id]?.result
+        const error = e instanceof Error ? e.message : String(e)
+        return { ...current, [b.id]: result ? { result, error } : { error } }
+      })
+    }
+  }
+
+  useEffect(() => {
+    if (!slackReinstall) return
+    const { botId, installId } = slackReinstall
+    let stopped = false
+
+    const stop = () => {
+      stopped = true
+      clearInterval(timer)
+    }
+    const fail = (message: string) => {
+      stop()
+      setSlackReinstall(null)
+      setSlackRefresh((current) => {
+        const result = current[botId]?.result
+        return { ...current, [botId]: result ? { result, error: message } : { error: message } }
+      })
+    }
+    const tick = async () => {
+      try {
+        const status = await getSlackPlatformInstall(installId)
+        if (stopped || status.status === 'pending') return
+        if (status.status === 'failed') {
+          fail(
+            status.failureReason === 'denied'
+              ? 'The reinstall was cancelled in Slack.'
+              : 'Slack could not complete the reinstall. Please try again.'
+          )
+          return
+        }
+
+        stop()
+        setSlackReinstall(null)
+        setSlackRefreshBusyId(botId)
+        try {
+          const result = await refreshSlackBot(botId)
+          setSlackRefresh((current) => ({ ...current, [botId]: { result } }))
+          refresh()
+        } catch (e) {
+          setSlackRefresh((current) => ({
+            ...current,
+            [botId]: { error: e instanceof Error ? e.message : String(e) }
+          }))
+        } finally {
+          setSlackRefreshBusyId(null)
+        }
+      } catch (e) {
+        if (!stopped && e instanceof ApiError && e.status === 404) {
+          fail('This reinstall link expired. Please try again.')
+        }
+      }
+    }
+
+    const timer = setInterval(() => void tick(), 2500)
+    void tick()
+    return stop
+  }, [refresh, slackReinstall])
 
   return (
     <div className="card mt-[18px]">
@@ -703,13 +845,28 @@ function BotsCard({
         <span className="whitespace-nowrap max-[479px]:hidden">Created by</span>
         <span />
       </div>
-      {platformBots.map((b) => {
+      {rosterRows.map((row) => {
+        if (row.kind === 'workspace') {
+          return (
+            <div
+              key={row.key}
+              className="flex items-center gap-2 border-b border-(--border-subtle) bg-(--surface-sunken) px-4 py-2"
+            >
+              <span className="font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
+                Workspace
+              </span>
+              <span className="mono min-w-0 truncate text-[12px] text-(--text-secondary)">{row.label}</span>
+            </div>
+          )
+        }
+        const b = row.bot
         const free = b.agentIds.length === 0
         const open = openBotId === b.id
         const channels = open ? botChannels(b, integrations) : []
         const hasChannelRows = channels.some((c) => c.kind === 'channel')
         const slackState = slackRefresh[b.id]
-        const refreshingSlack = slackRefreshBusyId === b.id
+        const reinstallingSlack = slackReinstall?.botId === b.id
+        const refreshingSlack = slackRefreshBusyId === b.id || reinstallingSlack
         const slackNeedsAttention = slackState?.result
           ? slackRefreshNoticeState(slackState.result).needsAttention
           : false
@@ -746,8 +903,8 @@ function BotsCard({
                     <PlatformMark platform={b.platform} fillPct={100} />
                   </span>
                 </span>
-                <span className="mono truncate text-[12.5px]">{b.name}</span>
-                {b.prebuilt && <span className="badge bg-(--surface-active) text-(--text-tertiary)">prebuilt</span>}
+                <span className="mono min-w-0 flex-1 truncate text-[12.5px]">{b.name}</span>
+                {b.prebuilt && <span className="badge bg-(--surface-active) text-(--text-tertiary)">builtin</span>}
                 {/* Workspace uninstalled the app / revoked its tokens (rc/bot-revoked):
                     the credential is dead until a re-install refreshes it. */}
                 {b.revokedAt && (
@@ -761,7 +918,9 @@ function BotsCard({
                 {/* Transport tag (Slack) — makes the Sharable column's disabled state
                     self-explanatory: only an http bot may be shared. */}
                 {platform === 'slack' && (
-                  <span className="badge bg-(--surface-active) text-(--text-tertiary)">{b.transport ?? 'socket'}</span>
+                  <span className="badge bg-(--surface-active) text-(--text-tertiary) max-[479px]:hidden">
+                    {b.transport ?? 'socket'}
+                  </span>
                 )}
               </div>
               <span
@@ -805,7 +964,7 @@ function BotsCard({
                 {b.createdBy ? creatorLabel(b.createdBy, me) : b.prebuilt ? 'AgentConnect' : '—'}
               </span>
               <span className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
-                {platform === 'slack' && !b.prebuilt && b.slackAppId && canWrite && (
+                {platform === 'slack' && b.slackAppId && canWrite && (
                   <button
                     className={`iconbtn h-7 w-7 flex-none ${
                       slackNeedsAttention ? 'border-(--amber-500) bg-(--status-paused-soft) text-(--amber-500)' : ''
@@ -890,7 +1049,14 @@ function BotsCard({
                 Couldn&apos;t refresh this Slack app — {slackState.error}
               </div>
             )}
-            {slackState?.result && <SlackRefreshNotice result={slackState.result} />}
+            {slackState?.result && (
+              <SlackRefreshNotice
+                result={slackState.result}
+                builtin={b.prebuilt}
+                reinstalling={reinstallingSlack}
+                onReinstall={b.prebuilt ? () => void reinstallBuiltinSlackApp(b) : undefined}
+              />
+            )}
             {open && (
               <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 pb-[14px] pl-10 pt-3">
                 {channels.length > 0 ? (

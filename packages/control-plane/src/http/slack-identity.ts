@@ -26,6 +26,7 @@ export type SlackBotVerification =
       name: string | null
       appId: string | null
       teamId: string | null
+      teamName: string | null
       scopes: string[] | null
     } // valid; scopes from x-oauth-scopes
   | { status: 'invalid' } // Slack definitively rejected the credential
@@ -109,7 +110,14 @@ export const verifySlackBot: SlackBotVerifier = async (botToken) => {
           .filter(Boolean)
       : null
     const appId = body.app_id ?? (body.bot_id ? await resolveBotAppId(botToken, body.bot_id) : null)
-    return { status: 'ok', name: body.user ?? body.team ?? null, appId, teamId: body.team_id ?? null, scopes }
+    return {
+      status: 'ok',
+      name: body.user ?? body.team ?? null,
+      appId,
+      teamId: body.team_id ?? null,
+      teamName: body.team ?? null,
+      scopes
+    }
   } catch {
     return { status: 'unreachable' }
   }

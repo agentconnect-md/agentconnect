@@ -44,6 +44,9 @@ export interface InstallSlackBotArgs {
   /** Slack workspace id ("T…") — platform-app installs persist it as the composite
    *  relay demux key (Bot.teamId). Public metadata. */
   teamId?: string
+  /** Display-only workspace identity/name learned from OAuth or auth.test. */
+  workspaceId?: string
+  workspaceName?: string
   /** Slack bot user id from the OAuth exchange. Public metadata. */
   botUserId?: string
   /** Provisioned by AgentConnect (the platform app), not a console user. */
@@ -89,6 +92,8 @@ export async function installNewSlackBot(
     transport,
     ...(slackAppId ? { slackAppId } : {}),
     ...(args.teamId ? { teamId: args.teamId } : {}),
+    ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+    ...(args.workspaceName ? { workspaceName: args.workspaceName } : {}),
     ...(args.botUserId ? { botUserId: args.botUserId } : {}),
     ...(args.prebuilt ? { prebuilt: true } : {}),
     ...(shareable ? { shareable: true } : {}),

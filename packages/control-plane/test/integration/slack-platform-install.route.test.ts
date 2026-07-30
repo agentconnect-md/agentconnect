@@ -11,6 +11,7 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { provisionPresetAgents } from '../../src/persistence/index.js'
+import { SLACK_BOT_SCOPES } from '../../src/http/slack-manifest.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 import type {
   SlackConfigApi,
@@ -188,6 +189,8 @@ describe('GET /integrations/slack/platform/callback', () => {
       prebuilt: true,
       botUserId: 'U0BOT',
       name: 'AgentConnect (Acme)',
+      workspaceId: 'T0WORKSPACE',
+      workspaceName: 'Acme',
       revokedAt: null
     })
     expect(bot!.secret).toMatchObject({ botToken: 'xoxb-workspace-token', signingSecret: PLATFORM.signingSecret })
@@ -196,6 +199,25 @@ describe('GET /integrations/slack/platform/callback', () => {
     })
     expect(bot!.integrations).toHaveLength(1)
     expect(bot!.integrations[0]).toMatchObject({ agentId: preset!.id, status: 'active' })
+
+    app.deps.verifySlackBot = async () => ({
+      status: 'ok',
+      name: 'agentconnect',
+      appId: PLATFORM.appId,
+      teamId: 'T0WORKSPACE',
+      teamName: 'Acme',
+      scopes: [...SLACK_BOT_SCOPES]
+    })
+    const refreshed = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/bots/${bot!.id}/slack/refresh`
+    })
+    expect(refreshed.statusCode).toBe(200)
+    expect(refreshed.json()).toMatchObject({
+      manifest: 'synced',
+      authorization: 'current',
+      missingScopes: []
+    })
 
     // The row SURVIVES as the console's completion signal, but the state is still
     // single-use: a replayed callback is refused rather than re-running the install.
