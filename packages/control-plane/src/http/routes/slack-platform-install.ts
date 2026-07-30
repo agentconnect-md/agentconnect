@@ -312,7 +312,12 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
           const revision = await deps.repos.botCredential.install(
             BotId(existing.id),
             { botToken: result.botToken, appToken: null, signingSecret: platform.signingSecret },
-            new Date()
+            new Date(),
+            // A row-level Settings reinstall has no target agent. Restore only
+            // memberships tagged with the revoked credential generation; if the
+            // user deliberately freed the bot, those rows were deleted and
+            // nothing is reattached.
+            { restoreRevokedMemberships: !!expectedBot }
           )
           req.log.info({ botId: existing.id, revision }, 'slack platform re-install: credential generation advanced')
           if (agent) {

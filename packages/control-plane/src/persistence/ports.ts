@@ -2074,8 +2074,15 @@ export interface RevokeBotResult {
  */
 export interface BotCredentialWriter {
   /** A fresh credential landed (platform re-install / rotation): store it and
-   *  advance the generation as one step. Returns the new revision. */
-  install(botId: BotId, material: BotSecretMaterial, at: Date): Promise<number>
+   *  advance the generation as one step. A bot-bound Settings reinstall may
+   *  also restore only memberships revoked with the credential being replaced;
+   *  all three writes remain one transaction. Returns the new revision. */
+  install(
+    botId: BotId,
+    material: BotSecretMaterial,
+    at: Date,
+    options?: { restoreRevokedMemberships?: boolean }
+  ): Promise<number>
   /** Apply `rc/bot-revoked` behind its generation fence, flipping the bot and
    *  its active installs together. */
   revoke(botId: BotId, at: Date, fence: { revision?: number; eventAt?: Date }): Promise<RevokeBotResult>
@@ -2470,8 +2477,12 @@ export interface IntegrationRepo {
    *  earliest is the group's default agent). */
   listForBot(botId: BotId): Promise<IntegrationRecord[]>
   /** Flip every ACTIVE integration of `botId` to `revoked` (workspace uninstall /
-   *  token revocation). Returns the affected integration ids. */
-  markRevokedForBot(botId: BotId): Promise<IntegrationId[]>
+   *  token revocation), recording the credential generation that owned it.
+   *  Returns the affected integration ids. */
+  markRevokedForBot(botId: BotId, credentialRevision: number): Promise<IntegrationId[]>
+  /** Restore memberships revoked with exactly `credentialRevision`. Historical
+   *  revoked rows and deliberately deleted/free memberships stay untouched. */
+  restoreRevokedForBot(botId: BotId, credentialRevision: number): Promise<number>
   delete(id: IntegrationId): Promise<void>
 }
 

@@ -1486,20 +1486,23 @@ enum IntegrationStatus {
 }
 
 model Integration {
-  id              String            @id @db.Uuid // IntegrationSpec.integrationId
-  orgId           String
-  agentId         String            @db.Uuid // owner ⇒ delivery daemon (agent.daemonId)
+  id                        String            @id @db.Uuid // IntegrationSpec.integrationId
+  orgId                     String
+  agentId                   String            @db.Uuid // owner ⇒ delivery daemon (agent.daemonId)
   // The identity this install runs as. NO @unique: a shareable bot fans out to
   // one Integration row per agent (shared-bot-relay.md §4.1). A classic
   // (non-shareable) bot is still capped at ≤1 install by the create route.
-  botId           String            @db.Uuid
-  platform        Platform          @default(slack)
-  name            String // Slack app / display name (mirrors bot.name at install time)
-  status          IntegrationStatus @default(active)
-  feishuRegion    String? // Feishu/Lark open-platform gateway: 'feishu' (open.feishu.cn) | 'lark' (open.larksuite.com). NULL ⇒ 'feishu' (default / non-feishu integrations). Public config, NOT secret.
-  createdByUserId String? // WebUI user who installed it (audit)
-  createdAt       DateTime          @default(now()) @db.Timestamptz(6)
-  updatedAt       DateTime          @updatedAt @db.Timestamptz(6)
+  botId                     String            @db.Uuid
+  platform                  Platform          @default(slack)
+  name                      String // Slack app / display name (mirrors bot.name at install time)
+  status                    IntegrationStatus @default(active)
+  // Credential generation whose uninstall/token-revocation flipped this row.
+  // Null for active rows and user-freed rows (which are deleted, not revoked).
+  revokedCredentialRevision Int?
+  feishuRegion              String? // Feishu/Lark open-platform gateway: 'feishu' (open.feishu.cn) | 'lark' (open.larksuite.com). NULL ⇒ 'feishu' (default / non-feishu integrations). Public config, NOT secret.
+  createdByUserId           String? // WebUI user who installed it (audit)
+  createdAt                 DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt                 DateTime          @updatedAt @db.Timestamptz(6)
 
   org             Org                  @relation(fields: [orgId], references: [id], onDelete: Cascade)
   agent           Agent                @relation(fields: [agentId], references: [id], onDelete: Cascade)

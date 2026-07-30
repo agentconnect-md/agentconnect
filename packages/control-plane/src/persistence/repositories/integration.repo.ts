@@ -488,7 +488,7 @@ export class PgIntegrationRepo implements IntegrationRepo {
     return rows.map(toRecord)
   }
 
-  async markRevokedForBot(botId: BotId): Promise<IntegrationId[]> {
+  async markRevokedForBot(botId: BotId, credentialRevision: number): Promise<IntegrationId[]> {
     // Read-then-flip inside one statement pair: the ids are needed by the caller
     // (spec removal per daemon), and updateMany returns only a count.
     const rows = await this.db.integration.findMany({
@@ -498,9 +498,17 @@ export class PgIntegrationRepo implements IntegrationRepo {
     if (rows.length === 0) return []
     await this.db.integration.updateMany({
       where: { id: { in: rows.map((r) => r.id) } },
-      data: { status: 'revoked' }
+      data: { status: 'revoked', revokedCredentialRevision: credentialRevision }
     })
     return rows.map((r) => IntegrationId(r.id))
+  }
+
+  async restoreRevokedForBot(botId: BotId, credentialRevision: number): Promise<number> {
+    const { count } = await this.db.integration.updateMany({
+      where: { botId, status: 'revoked', revokedCredentialRevision: credentialRevision },
+      data: { status: 'active', revokedCredentialRevision: null }
+    })
+    return count
   }
 
   async delete(id: IntegrationId): Promise<void> {

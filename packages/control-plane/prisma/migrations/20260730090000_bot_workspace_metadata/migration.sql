@@ -12,6 +12,25 @@ ALTER TABLE "bot"
 ALTER TABLE "slack_platform_install"
   ALTER COLUMN "agentId" DROP NOT NULL;
 
+-- Tie each revoked membership to the credential generation whose uninstall
+-- revoked it. A later Settings reauthorization can then revive only the
+-- memberships from the credential it replaces, while a deliberately freed bot
+-- (whose integration row was deleted) stays free.
+ALTER TABLE "integration"
+  ADD COLUMN "revokedCredentialRevision" INTEGER;
+
+-- Preserve the currently revoked membership set on upgrades. Prisma stamps an
+-- integration's updatedAt when the same revoke transaction flips it, so this
+-- excludes older revoked history (and a later revoke of an already-free bot).
+UPDATE "integration" AS i
+SET "revokedCredentialRevision" = b."credentialRevision"
+FROM "bot" AS b
+WHERE
+  i."botId" = b."id"
+  AND i."status" = 'revoked'
+  AND b."revokedAt" IS NOT NULL
+  AND i."updatedAt" >= b."revokedAt";
+
 -- Existing platform-app rows already have the stable workspace id, and their
 -- generated name carries the OAuth team name. This makes current installations
 -- groupable immediately; custom legacy apps converge through the existing Slack
