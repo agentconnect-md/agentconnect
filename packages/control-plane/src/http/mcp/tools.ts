@@ -98,17 +98,29 @@ const delegatedSelfMutationDenied = (): RestResult => ({
 
 const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+const CanonicalUuid = z.string().regex(UUID_TEXT, 'must be a canonical UUID')
+
+function canonicalUuid(value: unknown): string | null {
+  const parsed = CanonicalUuid.safeParse(value)
+  return parsed.success ? parsed.data.toLowerCase() : null
+}
+
 /** PostgreSQL's uuid type is case-insensitive; mirror that semantic identity
  * before dispatch so a differently-cased path cannot bypass the host guard. */
 function sameUuid(left: string | undefined, right: unknown): boolean {
-  return (
-    typeof left === 'string' &&
-    typeof right === 'string' &&
-    UUID_TEXT.test(left) &&
-    UUID_TEXT.test(right) &&
-    left.toLowerCase() === right.toLowerCase()
-  )
+  const canonicalLeft = canonicalUuid(left)
+  const canonicalRight = canonicalUuid(right)
+  return canonicalLeft !== null && canonicalLeft === canonicalRight
 }
+
+const invalidAgentId = (): RestResult => ({
+  statusCode: 400,
+  body: JSON.stringify({
+    error: 'Bad Request',
+    statusCode: 400,
+    message: 'agentId must be a canonical UUID'
+  })
+})
 
 /** Mirrors the REST `AgentSlug` shape (dto) — re-validated authoritatively by the route. */
 const AgentSlug = z
@@ -268,7 +280,7 @@ export const MCP_TOOLS: McpToolDef[] = [
     write: true,
     schema: z
       .object({
-        agentId: z.string().min(1).describe('The agent id (from listAgents)'),
+        agentId: CanonicalUuid.describe('The agent id (from listAgents)'),
         displayName: z.string().min(1).nullable().optional(),
         description: z.string().nullable().optional(),
         runtime: z.string().min(1).optional(),
@@ -280,10 +292,13 @@ export const MCP_TOOLS: McpToolDef[] = [
         pause: z.boolean().optional().describe('true pauses the agent; false resumes it')
       })
       .strict(),
-    call: async (ctx, a) =>
-      sameUuid(ctx.delegatedAgentId, a.agentId)
+    call: async (ctx, a) => {
+      const agentId = canonicalUuid(a.agentId)
+      if (!agentId) return invalidAgentId()
+      return sameUuid(ctx.delegatedAgentId, agentId)
         ? delegatedSelfMutationDenied()
-        : ctx.send('PATCH', org(ctx, `/agents/${seg(a.agentId)}`), bodyOf(a, 'agentId'))
+        : ctx.send('PATCH', org(ctx, `/agents/${seg(agentId)}`), bodyOf(a, 'agentId'))
+    }
   },
   {
     name: 'deleteAgent',
@@ -293,17 +308,19 @@ export const MCP_TOOLS: McpToolDef[] = [
     destructive: true,
     schema: z
       .object({
-        agentId: z.string().min(1).describe('The agent id (from listAgents)'),
+        agentId: CanonicalUuid.describe('The agent id (from listAgents)'),
         confirm: z.string().min(1).describe('The agent’s exact `name` (slug) — a deliberate re-type, not a copy')
       })
       .strict(),
     call: async (ctx, a) => {
-      if (sameUuid(ctx.delegatedAgentId, a.agentId)) return delegatedSelfMutationDenied()
-      const target = await ctx.get(org(ctx, `/agents/${seg(a.agentId)}`))
+      const agentId = canonicalUuid(a.agentId)
+      if (!agentId) return invalidAgentId()
+      if (sameUuid(ctx.delegatedAgentId, agentId)) return delegatedSelfMutationDenied()
+      const target = await ctx.get(org(ctx, `/agents/${seg(agentId)}`))
       if (target.statusCode !== 200) return target
       const name = (JSON.parse(target.body) as { name?: unknown }).name
       if (typeof name !== 'string' || name !== a.confirm) return confirmMismatch('the agent’s `name` (slug)')
-      return ctx.send('DELETE', org(ctx, `/agents/${seg(a.agentId)}`))
+      return ctx.send('DELETE', org(ctx, `/agents/${seg(agentId)}`))
     }
   },
   {

@@ -207,19 +207,26 @@ describe('delegated MCP route with durable assertions', () => {
   })
 
   it.each([
-    ['updateAgent', { agentId: HOST_AGENT.toUpperCase(), model: 'uppercase-bypass' }],
-    ['deleteAgent', { agentId: HOST_AGENT.toUpperCase(), confirm: 'agent-a111' }]
-  ] as const)('treats an uppercase PostgreSQL UUID as the same host for %s', async (tool, args) => {
-    const request = await delegated('collaborator', rpcBody(tool, args))
-    const issue = vi.spyOn(request.app.deps.internalInvocationAuth, 'issue')
-    const result = toolResult((await post(request)).body)
+    ['updateAgent', { agentId: HOST_AGENT.toUpperCase(), model: 'uppercase-bypass' }, '403'],
+    ['deleteAgent', { agentId: HOST_AGENT.toUpperCase(), confirm: 'agent-a111' }, '403'],
+    ['updateAgent', { agentId: HOST_AGENT.replaceAll('-', ''), model: 'hyphenless-bypass' }, 'Invalid arguments'],
+    ['deleteAgent', { agentId: HOST_AGENT.replaceAll('-', ''), confirm: 'agent-a111' }, 'Invalid arguments'],
+    ['updateAgent', { agentId: `{${HOST_AGENT}}`, model: 'braced-bypass' }, 'Invalid arguments'],
+    ['deleteAgent', { agentId: `{${HOST_AGENT}}`, confirm: 'agent-a111' }, 'Invalid arguments']
+  ] as const)(
+    'blocks PostgreSQL-equivalent host UUID text before dispatch for %s',
+    async (tool, args, expectedMessage) => {
+      const request = await delegated('collaborator', rpcBody(tool, args))
+      const issue = vi.spyOn(request.app.deps.internalInvocationAuth, 'issue')
+      const result = toolResult((await post(request)).body)
 
-    expect(result.isError).toBe(true)
-    expect(result.content[0]!.text).toContain('403')
-    expect(issue).not.toHaveBeenCalled()
-    const host = await prisma.agent.findUniqueOrThrow({ where: { id: HOST_AGENT } })
-    expect(host.runtimeOverrides).toBeNull()
-  })
+      expect(result.isError).toBe(true)
+      expect(result.content[0]!.text).toContain(expectedMessage)
+      expect(issue).not.toHaveBeenCalled()
+      const host = await prisma.agent.findUniqueOrThrow({ where: { id: HOST_AGENT } })
+      expect(host.runtimeOverrides).toBeNull()
+    }
+  )
 
   it('uses the delegated user and delegation as the admitted rate-limit key', async () => {
     const check = vi.fn(() => null)
