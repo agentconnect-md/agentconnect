@@ -13,6 +13,8 @@ import type {
 } from '@agentconnect.md/protocol'
 import { WireError } from '@agentconnect.md/connection'
 import {
+  MAX_CONVERSATION_FENCES,
+  MAX_SEEN_CELL_IDS,
   PRIVATE_MCP_MAX_FRAME_BYTES,
   PRIVATE_MCP_MAX_PIPELINED_REQUESTS,
   SessionMcpBroker,
@@ -240,32 +242,248 @@ describe('SessionMcpBroker immutable registration', () => {
     await expect((await import('node:fs/promises')).readdir(h.root).then((entries) => entries.length)).resolves.toBe(1)
   })
 
-  it('bounds expired history and retired-cell tombstones', async () => {
+  it('retains conversation and cell fences permanently across delegation expiry', async () => {
     const h = await harness()
-    const count = 150
-    for (let index = 0; index < count; index += 1) {
-      const suffix = String(index).padStart(12, '0')
-      const cell = `expired-${index}`
-      const row = binding({
-        isolationCellId: cell,
-        conversationId: `22222222-2222-4222-8222-${suffix}`,
-        delegationId: `44444444-4444-4444-8444-${suffix}`,
-        expiresAt: '2026-07-31T00:00:01.000Z'
-      })
-      await h.broker.registerCell(row)
-      await h.broker.releaseCell(row)
-    }
-    expect(h.broker.debugStats()).toMatchObject({ activeCells: 0, historyEntries: count, retiredCellIds: count })
+    const expiredSoon = binding({ expiresAt: '2026-07-31T00:00:01.000Z', generation: 2 })
+    await h.broker.registerCell(expiredSoon)
+    await h.broker.releaseCell(expiredSoon)
 
     h.setNow(Date.parse('2026-07-31T00:00:02.000Z'))
-    await h.broker.registerCell(
-      binding({
-        isolationCellId: 'fresh-cell',
-        conversationId: OTHER_CONVERSATION_ID,
-        delegationId: NEXT_DELEGATION_ID
-      })
-    )
-    expect(h.broker.debugStats()).toMatchObject({ activeCells: 1, historyEntries: 1, retiredCellIds: 0 })
+    await expect(
+      h.broker.registerCell(
+        binding({
+          isolationCellId: OTHER_CELL_ID,
+          generation: 1,
+          expiresAt: '2026-07-31T12:00:00.000Z'
+        })
+      )
+    ).rejects.toThrow(/stale generation/i)
+    await expect(
+      h.broker.registerCell(
+        binding({
+          isolationCellId: CELL_ID,
+          generation: 3,
+          expiresAt: '2026-07-31T12:00:00.000Z'
+        })
+      )
+    ).rejects.toThrow(/cell.*cannot be reused/i)
+    expect(h.broker.capacityStats()).toEqual({
+      conversationFences: { count: 1, cap: MAX_CONVERSATION_FENCES, exhausted: false },
+      seenCellIds: { count: 1, cap: MAX_SEEN_CELL_IDS, exhausted: false }
+    })
+  })
+
+  it('preflights both permanent fence capacities before any state or resource mutation', async () => {
+    const randomToken = vi.fn(() => 'unused-token')
+    const h = await harness({
+      randomToken,
+      testCapacityLimits: { maxConversationFences: 1, maxSeenCellIds: 2 }
+    })
+    const first = binding()
+    await h.broker.registerCell(first)
+    await h.broker.releaseCell(first)
+    const beforeEntries = await (await import('node:fs/promises')).readdir(h.root)
+
+    await expect(
+      h.broker.registerCell(
+        binding({
+          isolationCellId: OTHER_CELL_ID,
+          conversationId: OTHER_CONVERSATION_ID,
+          delegationId: NEXT_DELEGATION_ID
+        })
+      )
+    ).rejects.toThrow(/isolated-host capacity/i)
+    expect(h.broker.capacityStats()).toEqual({
+      conversationFences: { count: 1, cap: 1, exhausted: true },
+      seenCellIds: { count: 1, cap: 2, exhausted: false }
+    })
+    expect(await (await import('node:fs/promises')).readdir(h.root)).toEqual(beforeEntries)
+    expect(randomToken).toHaveBeenCalledTimes(1)
+  })
+
+  it('allows an existing conversation to advance when conversation capacity is full', async () => {
+    const h = await harness({
+      testCapacityLimits: { maxConversationFences: 1, maxSeenCellIds: 2 }
+    })
+    const first = binding()
+    await h.broker.registerCell(first)
+    await h.broker.releaseCell(first)
+
+    await expect(
+      h.broker.registerCell(
+        binding({
+          isolationCellId: OTHER_CELL_ID,
+          generation: 2,
+          delegationId: NEXT_DELEGATION_ID
+        })
+      )
+    ).resolves.not.toBeNull()
+    expect(h.broker.capacityStats()).toEqual({
+      conversationFences: { count: 1, cap: 1, exhausted: true },
+      seenCellIds: { count: 2, cap: 2, exhausted: true }
+    })
+  })
+
+  it('returns an exact active binding idempotently even when both capacities are full', async () => {
+    const h = await harness({
+      testCapacityLimits: { maxConversationFences: 1, maxSeenCellIds: 1 }
+    })
+    const first = await h.broker.registerCell(binding())
+    await expect(h.broker.registerCell(binding())).resolves.toEqual(first)
+    expect(h.broker.capacityStats()).toEqual({
+      conversationFences: { count: 1, cap: 1, exhausted: true },
+      seenCellIds: { count: 1, cap: 1, exhausted: true }
+    })
+  })
+
+  it('does not advance an existing high-water mark when the seen-cell capacity is full', async () => {
+    const h = await harness({
+      testCapacityLimits: { maxConversationFences: 1, maxSeenCellIds: 1 }
+    })
+    await h.broker.registerCell(binding())
+    await h.broker.releaseCell(binding())
+
+    await expect(
+      h.broker.registerCell(
+        binding({
+          isolationCellId: OTHER_CELL_ID,
+          generation: 2,
+          delegationId: NEXT_DELEGATION_ID
+        })
+      )
+    ).rejects.toThrow(/isolated-host capacity/i)
+    await expect(
+      h.broker.registerCell(
+        binding({
+          isolationCellId: 'third-cell',
+          generation: 1
+        })
+      )
+    ).rejects.toThrow(/isolated-host capacity/i)
+  })
+
+  it('serializes concurrent contenders for the final fence slot', async () => {
+    const h = await harness({
+      testCapacityLimits: { maxConversationFences: 1, maxSeenCellIds: 1 }
+    })
+    const attempts = await Promise.allSettled([
+      h.broker.registerCell(binding()),
+      h.broker.registerCell(
+        binding({
+          isolationCellId: OTHER_CELL_ID,
+          conversationId: OTHER_CONVERSATION_ID,
+          delegationId: NEXT_DELEGATION_ID
+        })
+      )
+    ])
+
+    expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1)
+    expect(attempts.filter((attempt) => attempt.status === 'rejected')).toHaveLength(1)
+    expect(attempts.find((attempt) => attempt.status === 'rejected')).toMatchObject({
+      reason: expect.objectContaining({ message: expect.stringMatching(/isolated-host capacity/i) })
+    })
+    expect(h.broker.capacityStats()).toEqual({
+      conversationFences: { count: 1, cap: 1, exhausted: true },
+      seenCellIds: { count: 1, cap: 1, exhausted: true }
+    })
+  })
+
+  it('burns cell identity and advances the generation fence before listener creation', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'ac-private-broker-long-root-'))
+    roots.push(parent)
+    const longRoot = join(parent, 'x'.repeat(96))
+    const h = await harness({
+      socketRoot: longRoot,
+      testCapacityLimits: { maxConversationFences: 1, maxSeenCellIds: 3 }
+    })
+    const failed = binding({ generation: 2, delegationId: NEXT_DELEGATION_ID })
+
+    await expect(h.broker.registerCell(failed)).rejects.toThrow()
+    expect(h.broker.capacityStats()).toEqual({
+      conversationFences: { count: 1, cap: 1, exhausted: true },
+      seenCellIds: { count: 1, cap: 3, exhausted: false }
+    })
+    await expect(h.broker.registerCell(failed)).rejects.toThrow(/cell.*cannot be reused/i)
+    await expect(
+      h.broker.registerCell(
+        binding({
+          isolationCellId: OTHER_CELL_ID,
+          generation: 1,
+          expiresAt: '2026-07-31T12:00:00.000Z'
+        })
+      )
+    ).rejects.toThrow(/stale generation/i)
+
+    const retryRoot = await mkdtemp(join(tmpdir(), 'ac-private-broker-retry-'))
+    roots.push(retryRoot)
+    ;(h.deps as { socketRoot: string }).socketRoot = retryRoot
+    await expect(
+      h.broker.registerCell(
+        binding({
+          isolationCellId: OTHER_CELL_ID,
+          generation: 2,
+          delegationId: NEXT_DELEGATION_ID
+        })
+      )
+    ).resolves.not.toBeNull()
+  })
+
+  it('rejects invalid and oversized identifiers without consuming capacity or creating resources', async () => {
+    const randomToken = vi.fn(() => 'unused-token')
+    const h = await harness({
+      randomToken,
+      testCapacityLimits: { maxConversationFences: 1, maxSeenCellIds: 1 }
+    })
+    for (const row of [
+      binding({ isolationCellId: '' }),
+      binding({ agentId: '' }),
+      binding({ conversationId: 'x'.repeat(257) }),
+      binding({ delegationId: '' })
+    ]) {
+      await expect(h.broker.registerCell(row)).rejects.toThrow(/identifier/i)
+    }
+    await expect(h.broker.registerCell(binding({ generation: 0 }))).rejects.toThrow(/generation/i)
+    await expect(h.broker.registerCell(binding({ expiresAt: 'not-a-timestamp' }))).rejects.toThrow(/expiry/i)
+    expect(h.broker.capacityStats()).toEqual({
+      conversationFences: { count: 0, cap: 1, exhausted: false },
+      seenCellIds: { count: 0, cap: 1, exhausted: false }
+    })
+    expect(randomToken).not.toHaveBeenCalled()
+    expect(await (await import('node:fs/promises')).readdir(h.root)).toEqual([])
+  })
+
+  it('never grows either fence beyond its hard cap under repeated refusal', async () => {
+    const h = await harness({
+      testCapacityLimits: {
+        maxConversationFences: MAX_CONVERSATION_FENCES + 1,
+        maxSeenCellIds: MAX_SEEN_CELL_IDS + 1
+      }
+    })
+    expect(h.broker.capacityStats()).toEqual({
+      conversationFences: { count: 0, cap: MAX_CONVERSATION_FENCES, exhausted: false },
+      seenCellIds: { count: 0, cap: MAX_SEEN_CELL_IDS, exhausted: false }
+    })
+
+    const bounded = await harness({
+      testCapacityLimits: { maxConversationFences: 1, maxSeenCellIds: 1 }
+    })
+    await bounded.broker.registerCell(binding())
+    await bounded.broker.releaseCell(binding())
+    for (let index = 0; index < 20; index += 1) {
+      await expect(
+        bounded.broker.registerCell(
+          binding({
+            isolationCellId: `refused-cell-${index}`,
+            conversationId: OTHER_CONVERSATION_ID,
+            delegationId: NEXT_DELEGATION_ID
+          })
+        )
+      ).rejects.toThrow(/isolated-host capacity/i)
+    }
+    expect(bounded.broker.capacityStats()).toEqual({
+      conversationFences: { count: 1, cap: 1, exhausted: true },
+      seenCellIds: { count: 1, cap: 1, exhausted: true }
+    })
   })
 
   it('enforces monotonic generations, same-generation identity, and generation-fenced release', async () => {
@@ -1069,6 +1287,19 @@ describe('SessionMcpBroker forwarding', () => {
     )
     await h.broker.stop()
     expect(h.broker.getCellMount(OTHER_CELL_ID)).toBeNull()
+    expect(h.broker.capacityStats()).toEqual({
+      conversationFences: { count: 1, cap: MAX_CONVERSATION_FENCES, exhausted: false },
+      seenCellIds: { count: 2, cap: MAX_SEEN_CELL_IDS, exhausted: false }
+    })
+    await expect(
+      h.broker.registerCell(
+        binding({
+          isolationCellId: 'cell-after-stop',
+          generation: 3,
+          delegationId: NEXT_DELEGATION_ID
+        })
+      )
+    ).rejects.toThrow(/broker is stopped/i)
   })
 })
 

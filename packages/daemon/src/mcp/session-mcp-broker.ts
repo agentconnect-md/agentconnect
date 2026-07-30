@@ -23,6 +23,10 @@ const DEFAULT_RECOVERY_POLL_MS = 250
 export const PRIVATE_MCP_MAX_FRAME_BYTES = 256 * 1024
 export const PRIVATE_MCP_MAX_PIPELINED_REQUESTS = 8
 export const PRIVATE_MCP_MAX_PENDING_REQUESTS = 8
+export const MAX_CONVERSATION_FENCES = 32_768
+export const MAX_SEEN_CELL_IDS = 262_144
+const MAX_BINDING_IDENTIFIER_BYTES = 256
+const MAX_EXPIRY_BYTES = 64
 
 const ASSERTION_DENIED_BODY = Buffer.from(
   JSON.stringify({ error: 'Unauthorized', statusCode: 401, message: 'invocation assertion denied' })
@@ -77,6 +81,14 @@ export interface SessionMcpBrokerDeps {
   recoveryPollMs?: number
   setTimeout?: typeof globalThis.setTimeout
   clearTimeout?: typeof globalThis.clearTimeout
+  /**
+   * Test-only capacity reduction. Values are always clamped to the immutable
+   * production hard caps, so ordinary construction cannot raise them.
+   */
+  testCapacityLimits?: {
+    maxConversationFences?: number
+    maxSeenCellIds?: number
+  }
 }
 
 export interface RegisterSessionMcpCell {
@@ -107,7 +119,6 @@ interface DelegationHistory {
   generation: number
   delegationId: string
   expiresAt: string
-  expiresAtMs: number
 }
 
 interface CellBinding extends RegisterSessionMcpCell {
@@ -144,7 +155,25 @@ class AmbiguousInvocationError extends Error {
 class DefiniteMcpError extends Error {}
 
 function logicalKey(input: Pick<RegisterSessionMcpCell, 'agentId' | 'conversationId'>): string {
-  return `${input.agentId}\0${input.conversationId}`
+  return JSON.stringify([input.agentId, input.conversationId])
+}
+
+function validateIdentifier(name: string, value: unknown): asserts value is string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    Buffer.byteLength(value, 'utf8') > MAX_BINDING_IDENTIFIER_BYTES
+  ) {
+    throw new Error(`${name} identifier must be non-empty and at most ${MAX_BINDING_IDENTIFIER_BYTES} bytes`)
+  }
+}
+
+function capacityLimit(value: number | undefined, hardCap: number, name: string): number {
+  if (value === undefined) return hardCap
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${name} test capacity must be a positive safe integer`)
+  }
+  return Math.min(value, hardCap)
 }
 
 function sameRegistration(a: CellBinding, b: RegisterSessionMcpCell): boolean {
@@ -277,31 +306,51 @@ export class SessionMcpBroker {
   private readonly cells = new Map<string, CellBinding>()
   private readonly conversations = new Map<string, CellBinding>()
   private readonly history = new Map<string, DelegationHistory>()
-  private readonly retiredCellIds = new Map<string, number>()
+  private readonly seenCellIds = new Set<string>()
   private readonly activeTokens = new Set<string>()
+  private readonly maxConversationFences: number
+  private readonly maxSeenCellIds: number
   private mutationTail: Promise<void> = Promise.resolve()
   private stopped = false
 
-  constructor(private readonly deps: SessionMcpBrokerDeps) {}
+  constructor(private readonly deps: SessionMcpBrokerDeps) {
+    this.maxConversationFences = capacityLimit(
+      deps.testCapacityLimits?.maxConversationFences,
+      MAX_CONVERSATION_FENCES,
+      'conversation fence'
+    )
+    this.maxSeenCellIds = capacityLimit(deps.testCapacityLimits?.maxSeenCellIds, MAX_SEEN_CELL_IDS, 'seen cell id')
+  }
 
   async registerCell(input: RegisterSessionMcpCell): Promise<McpStdioServer | null> {
     return this.serialized(async () => {
       if (this.stopped) throw new Error('private MCP broker is stopped')
       if (input.platform !== 'webchat') return null
+      validateIdentifier('isolation cell', input.isolationCellId)
+      validateIdentifier('agent', input.agentId)
+      validateIdentifier('conversation', input.conversationId)
+      validateIdentifier('delegation', input.delegationId)
       const now = this.now()
-      this.pruneExpiredState(now)
-      const expiresAtMs = Date.parse(input.expiresAt)
-      if (!Number.isFinite(expiresAtMs) || expiresAtMs <= now) return null
       if (!Number.isSafeInteger(input.generation) || input.generation <= 0) {
         throw new Error('delegation generation must be a positive safe integer')
       }
+      if (
+        typeof input.expiresAt !== 'string' ||
+        input.expiresAt.length === 0 ||
+        Buffer.byteLength(input.expiresAt, 'utf8') > MAX_EXPIRY_BYTES
+      ) {
+        throw new Error('delegation expiry must be a bounded timestamp')
+      }
+      const expiresAtMs = Date.parse(input.expiresAt)
+      if (!Number.isFinite(expiresAtMs)) throw new Error('delegation expiry must be a valid timestamp')
+      if (expiresAtMs <= now) return null
 
       const currentCell = this.cells.get(input.isolationCellId)
       if (currentCell) {
         if (sameRegistration(currentCell, input)) return currentCell.descriptor
         throw new Error(`isolation cell ${input.isolationCellId} is already bound`)
       }
-      if (this.retiredCellIds.has(input.isolationCellId)) {
+      if (this.seenCellIds.has(input.isolationCellId)) {
         throw new Error(`isolation cell ${input.isolationCellId} cannot be reused`)
       }
 
@@ -323,15 +372,27 @@ export class SessionMcpBroker {
         }
       }
 
-      const binding = await this.createBinding(input, expiresAtMs)
-      this.cells.set(input.isolationCellId, binding)
-      this.conversations.set(key, binding)
+      const needsConversationFence = prior === undefined
+      if (
+        (needsConversationFence && this.history.size >= this.maxConversationFences) ||
+        this.seenCellIds.size >= this.maxSeenCellIds
+      ) {
+        throw new Error('isolated-host capacity error: permanent authority fence capacity exhausted')
+      }
+
+      // Burn authority before any fallible resource creation. A failed listener
+      // may be retried only with a fresh cell id, never by rolling back fences.
+      this.seenCellIds.add(input.isolationCellId)
       this.history.set(key, {
         generation: input.generation,
         delegationId: input.delegationId,
-        expiresAt: input.expiresAt,
-        expiresAtMs
+        expiresAt: input.expiresAt
       })
+
+      const binding = await this.createBinding(input, expiresAtMs)
+      // Publish the live binding only after every private resource is ready.
+      this.cells.set(input.isolationCellId, binding)
+      this.conversations.set(key, binding)
       return binding.descriptor
     })
   }
@@ -350,17 +411,37 @@ export class SessionMcpBroker {
   debugStats(): {
     activeCells: number
     historyEntries: number
-    retiredCellIds: number
+    seenCellIds: number
     connections: number
+    stopped: boolean
   } {
-    this.pruneExpiredState(this.now())
     let connections = 0
     for (const binding of this.cells.values()) connections += binding.connections.size
     return {
       activeCells: this.cells.size,
       historyEntries: this.history.size,
-      retiredCellIds: this.retiredCellIds.size,
-      connections
+      seenCellIds: this.seenCellIds.size,
+      connections,
+      stopped: this.stopped
+    }
+  }
+
+  /** Bounded, identifier-free authority-fence health for daemon diagnostics. */
+  capacityStats(): {
+    conversationFences: { count: number; cap: number; exhausted: boolean }
+    seenCellIds: { count: number; cap: number; exhausted: boolean }
+  } {
+    return {
+      conversationFences: {
+        count: this.history.size,
+        cap: this.maxConversationFences,
+        exhausted: this.history.size >= this.maxConversationFences
+      },
+      seenCellIds: {
+        count: this.seenCellIds.size,
+        cap: this.maxSeenCellIds,
+        exhausted: this.seenCellIds.size >= this.maxSeenCellIds
+      }
     }
   }
 
@@ -381,8 +462,6 @@ export class SessionMcpBroker {
       const bindings = [...this.cells.values()]
       for (const binding of bindings) this.detachBinding(binding)
       await Promise.all(bindings.map((binding) => this.destroyBinding(binding)))
-      this.history.clear()
-      this.retiredCellIds.clear()
     })
   }
 
@@ -759,7 +838,6 @@ export class SessionMcpBroker {
     if (this.conversations.get(logicalKey(binding)) === binding) {
       this.conversations.delete(logicalKey(binding))
     }
-    this.retiredCellIds.set(binding.isolationCellId, binding.expiresAtMs)
     this.activeTokens.delete(binding.token)
   }
 
@@ -782,15 +860,6 @@ export class SessionMcpBroker {
       return token
     }
     throw new Error('could not allocate a unique private MCP token')
-  }
-
-  private pruneExpiredState(now: number): void {
-    for (const [key, value] of this.history) {
-      if (value.expiresAtMs <= now) this.history.delete(key)
-    }
-    for (const [cellId, expiresAtMs] of this.retiredCellIds) {
-      if (expiresAtMs <= now) this.retiredCellIds.delete(cellId)
-    }
   }
 
   private async serialized<T>(fn: () => Promise<T>): Promise<T> {
