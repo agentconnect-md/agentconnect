@@ -2886,15 +2886,33 @@ export async function updateMe(patch: { name: string }): Promise<MeDto> {
   return apiPatch<MeDto>('/me', patch)
 }
 
-// The Slack workspace behind the signed-in account (GET /me/slack-identity),
-// resolved by the CP from the sign-in provider. `linked: false` covers both "not
-// signed in with Slack" and "this deployment can't look it up", so the console
-// renders the same nothing for either.
-export type MySlackIdentityDto =
-  { linked: false } | { linked: true; teamId: string; userId: string; teamName?: string; teamDomain?: string }
+// The account's linked sign-in methods (GET /me/social-identities). Served by the
+// CP rather than read from the identity provider in the browser: the CP caches the
+// upstream lookup and makes it from next to the provider, which is worth ~2s on a
+// cold profile load. Already narrowed for rendering — no connector `rawData` here.
+export interface MySocialIdentityDto {
+  target: string
+  userId: string
+  name?: string
+  email?: string
+  avatar?: string
+  /** Where this account lives at its provider, when that is addressable. */
+  profileUrl?: string
+  /** Slack only. `url` is absent when Slack sent no domain — the `T…` id alone
+   *  does not address a workspace, so the label renders as plain text. */
+  workspace?: { teamId: string; name?: string; domain?: string; url?: string }
+}
 
-export async function fetchMySlackIdentity(): Promise<MySlackIdentityDto> {
-  return apiGet<MySlackIdentityDto>('/me/social-identities/slack')
+export interface MySocialAccountDto {
+  identities: MySocialIdentityDto[]
+  /** Drives whether linking has to collect an ownership code first; Logto
+   *  answers 403 to an identity change the caller has not re-proven. */
+  hasSecurityVerificationMethod: boolean
+  primaryEmail?: string
+}
+
+export async function fetchMySocialAccount(): Promise<MySocialAccountDto> {
+  return apiGet<MySocialAccountDto>('/me/social-identities')
 }
 
 async function putMyProfilePicture(blob: Blob): Promise<MeDto> {

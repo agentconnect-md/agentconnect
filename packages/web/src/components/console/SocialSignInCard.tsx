@@ -5,21 +5,32 @@ import useSWR from 'swr'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { SocialLoginMark } from '@/components/marks'
 import { initialsFrom } from '@/lib/auth'
-import { fetchMySlackIdentity, resolveMySocialConnectorId, unlinkMySocialIdentity } from '@/lib/api'
-import { slackWorkspaceLine, slackWorkspaceUrl } from '@/lib/slack-identity'
+import {
+  fetchMySocialAccount,
+  resolveMySocialConnectorId,
+  unlinkMySocialIdentity,
+  type MySocialAccountDto,
+  type MySocialIdentityDto
+} from '@/lib/api'
 import {
   LogtoAccountError,
   accountErrorMessage,
   createSocialState,
   createSocialVerification,
-  fetchAccountProfile,
   requestEmailVerification,
   verifyEmailCode,
-  socialIdentityDetails,
   writeSocialLinkFlow,
   type AccountNotice
 } from '@/lib/logto-account'
 import { SOCIAL_LOGIN_PROVIDERS, type SocialLoginProvider } from '@/lib/social-login-providers'
+
+const byTarget = (account: MySocialAccountDto, target: string): MySocialIdentityDto | undefined =>
+  account.identities.find((identity) => identity.target === target)
+
+/** Name the workspace the way its own members would. The `T…` id is a last
+ *  resort — it is an id, not a name, and readers here manage their own accounts. */
+const workspaceLabel = (workspace: NonNullable<MySocialIdentityDto['workspace']>): string =>
+  workspace.name ?? (workspace.domain ? `${workspace.domain}.slack.com` : workspace.teamId)
 
 function ProviderMark({ provider }: { provider: SocialLoginProvider }) {
   return (
@@ -260,25 +271,19 @@ export default function SocialSignInCard({
     error,
     isValidating,
     mutate
-  } = useSWR('logto-account-sign-in-methods', fetchAccountProfile, {
+  } = useSWR('logto-account-sign-in-methods', fetchMySocialAccount, {
     // Provider rows are static; linked identity details load once per mount
     // and refresh only after an explicit retry or mutation.
     revalidateOnFocus: false,
     revalidateOnReconnect: false,
     shouldRetryOnError: false
   })
-  // The CP's server-side read of the Slack workspace. Deliberately its own key:
-  // an error, or a deployment that cannot resolve identities, must cost nothing
-  // but this one line — never the linking UI it sits in.
-  const { data: slack } = useSWR('me-slack-identity', fetchMySlackIdentity, { shouldRetryOnError: false })
-  const workspaceLine = slackWorkspaceLine(slack)
-  const workspaceUrl = slackWorkspaceUrl(slack)
   const [pendingUnlink, setPendingUnlink] = useState<SocialLoginProvider>()
   const [pendingVerify, setPendingVerify] = useState<SocialLoginProvider>()
   const [busyProvider, setBusyProvider] = useState<SocialLoginProvider['target']>()
   const currentAccount = error ? undefined : account
   const linkedProviderCount = currentAccount
-    ? SOCIAL_LOGIN_PROVIDERS.filter((provider) => currentAccount.identities[provider.target]).length
+    ? SOCIAL_LOGIN_PROVIDERS.filter((provider) => byTarget(currentAccount, provider.target)).length
     : 0
 
   // Logto refuses an identity change the caller has not re-proven, so accounts
@@ -366,8 +371,9 @@ export default function SocialSignInCard({
 
         <div aria-busy={isValidating}>
           {SOCIAL_LOGIN_PROVIDERS.map((provider, index) => {
-            const identity = currentAccount?.identities[provider.target]
-            const details = identity ? socialIdentityDetails(provider.target, identity) : undefined
+            const details = currentAccount ? byTarget(currentAccount, provider.target) : undefined
+            const identity = details
+            const workspace = details?.workspace
             const canUnlink = linkedProviderCount > 1
             return (
               <div
@@ -399,8 +405,8 @@ export default function SocialSignInCard({
                               {details.email}
                             </ExternalLine>
                           ) : null}
-                          {provider.target === 'slack' && workspaceLine ? (
-                            <ExternalLine href={workspaceUrl}>{workspaceLine}</ExternalLine>
+                          {workspace ? (
+                            <ExternalLine href={workspace.url}>{workspaceLabel(workspace)}</ExternalLine>
                           ) : null}
                         </div>
                       </div>

@@ -20,40 +20,6 @@ describe('Logto Account API', () => {
     vi.unstubAllGlobals()
   })
 
-  it('loads current identities without fetching the static provider list', async () => {
-    const fetchMock = vi.fn(async (_input: URL | RequestInfo, _init?: RequestInit) => {
-      return new Response(
-        JSON.stringify({
-          identities: {
-            github: {
-              userId: 'github-user',
-              details: { name: 'Octo Cat', email: 'octo@example.test' }
-            }
-          }
-        }),
-        { status: 200 }
-      )
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    const { fetchAccountProfile } = await import('./logto-account')
-    const { SOCIAL_LOGIN_PROVIDERS } = await import('./social-login-providers')
-    const account = await fetchAccountProfile()
-
-    expect(account.identities.github?.details).toEqual({
-      name: 'Octo Cat',
-      email: 'octo@example.test'
-    })
-    expect(SOCIAL_LOGIN_PROVIDERS).toEqual([
-      { target: 'github', name: 'GitHub' },
-      { target: 'google', name: 'Google' },
-      { target: 'slack', name: 'Slack' }
-    ])
-    expect(fetchMock).toHaveBeenCalledOnce()
-    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('https://login.example.test/api/my-account')
-    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('authorization')).toBe('Bearer opaque-account-token')
-  })
-
   it('keeps only the short-lived connector choice and CSRF state for the callback', async () => {
     const values = new Map<string, string>()
     vi.stubGlobal('sessionStorage', {
@@ -86,45 +52,5 @@ describe('Logto Account API', () => {
         linking: true
       })
     ).toBe('That Google account is already linked to another AgentConnect account.')
-  })
-})
-
-describe('socialIdentityDetails profile links', () => {
-  const identity = (details: Record<string, unknown>) => ({ userId: 'x', details })
-
-  it('addresses a GitHub account by the login in the connector rawData', async () => {
-    const { socialIdentityDetails } = await import('./logto-account')
-    expect(socialIdentityDetails('github', identity({ rawData: { userInfo: { login: 'octocat' } } })).profileUrl).toBe(
-      'https://github.com/octocat'
-    )
-  })
-
-  it('addresses a Slack member inside their own workspace', async () => {
-    const { socialIdentityDetails } = await import('./logto-account')
-    expect(
-      socialIdentityDetails(
-        'slack',
-        identity({
-          rawData: {
-            'https://slack.com/team_domain': 'example-workspace',
-            'https://slack.com/user_id': 'U0EXAMPLE1'
-          }
-        })
-      ).profileUrl
-    ).toBe('https://example-workspace.slack.com/team/U0EXAMPLE1')
-  })
-
-  it('sends Google to the account page, the only thing it actually addresses', async () => {
-    const { socialIdentityDetails } = await import('./logto-account')
-    expect(socialIdentityDetails('google', identity({})).profileUrl).toBe('https://myaccount.google.com/profile')
-  })
-
-  it('omits the link when the provider gave no handle, so the row stays plain text', async () => {
-    const { socialIdentityDetails } = await import('./logto-account')
-    // A GitHub identity with no login, and a Slack workspace with no domain.
-    expect(socialIdentityDetails('github', identity({ rawData: {} })).profileUrl).toBeUndefined()
-    expect(
-      socialIdentityDetails('slack', identity({ rawData: { 'https://slack.com/user_id': 'U0EXAMPLE1' } })).profileUrl
-    ).toBeUndefined()
   })
 })

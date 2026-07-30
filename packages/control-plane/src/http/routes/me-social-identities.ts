@@ -51,6 +51,36 @@ const SlackIdentityDto = z.discriminatedUnion('linked', [
   })
 ])
 
+/** One linked sign-in method, narrowed to what the Profile card renders. The
+ *  connector's `rawData` is deliberately absent — it is a whole OIDC payload,
+ *  and none of it needs to reach a browser. */
+const SocialIdentitySummaryDto = z.object({
+  target: z.string(),
+  userId: z.string(),
+  name: z.string().optional(),
+  email: z.string().optional(),
+  avatar: z.string().optional(),
+  /** Where this account lives at its provider, when that is addressable. */
+  profileUrl: z.string().optional(),
+  /** Slack only — the workspace it belongs to. */
+  workspace: z
+    .object({
+      teamId: z.string(),
+      name: z.string().optional(),
+      domain: z.string().optional(),
+      url: z.string().optional()
+    })
+    .optional()
+})
+
+const SocialAccountDto = z.object({
+  identities: z.array(SocialIdentitySummaryDto),
+  /** Logto refuses an identity change the caller has not re-proven while this
+   *  holds, so the console collects a code before starting one. */
+  hasSecurityVerificationMethod: z.boolean(),
+  primaryEmail: z.string().optional()
+})
+
 // No 'link': that runs in the browser against the Account API, so its provider
 // errors (422 "already in use" and friends) are mapped there, not here.
 type Operation = 'authorize' | 'unlink' | 'read'
@@ -176,10 +206,35 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
       }
     )
 
-    // A READ, unlike its siblings: it reports the Slack workspace an account
-    // signed in with — the one server-side path to that pair, since a Logto
-    // access token carries the Logto subject and never the connector identity.
-    // Read-only metadata; nothing may treat it as an authorization statement.
+    // A READ, unlike its siblings, and the one the Profile card loads from.
+    // It exists so the browser does not call Logto directly: from here the
+    // upstream read is cached and made next to Logto, instead of once per page
+    // load from wherever the user happens to be. Read-only metadata; nothing
+    // may treat it as an authorization statement.
+    r.get(
+      '/me/social-identities',
+      {
+        preHandler: app.oidcAuth,
+        schema: {
+          tags: [Tag.Profile],
+          summary: 'Get your sign-in methods',
+          description:
+            'The social accounts linked to your profile, narrowed to what the console renders, plus whether Logto will require you to re-verify before they can change.',
+          operationId: 'getMySocialIdentities',
+          response: { 200: SocialAccountDto, 429: ErrorDto, 502: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const identity = deps.logtoIdentity
+        if (!identity) return reply.code(503).send(unavailable)
+        try {
+          return await identity.socialAccountFor(req.oidcSubject!)
+        } catch (error) {
+          return logtoFailure(reply, error, 'read')
+        }
+      }
+    )
+
     r.get(
       '/me/social-identities/slack',
       {

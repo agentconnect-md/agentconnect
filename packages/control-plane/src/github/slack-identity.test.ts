@@ -178,3 +178,70 @@ describe('LogtoIdentityService.slackIdentityFor', () => {
     expect(await svc.slackIdentityFor('sub-1')).toBeNull()
   })
 })
+
+describe('LogtoIdentityService.socialAccountFor', () => {
+  const account = (extra: Record<string, unknown> = {}) => ({
+    primaryEmail: 'dev@example.test',
+    identities: {
+      github: { userId: '9', details: { name: 'Octo Cat', rawData: { userInfo: { login: 'octocat' } } } },
+      slack: slackUser(SLACK_RAW).identities.slack
+    },
+    ...extra
+  })
+
+  it('narrows each identity for rendering and addresses it at its provider', async () => {
+    const { fetchImpl } = fakeLogto({ 'sub-1': account() })
+    const result = await svcOf(fetchImpl).socialAccountFor('sub-1')
+
+    const github = result.identities.find((i) => i.target === 'github')
+    expect(github).toMatchObject({ name: 'Octo Cat', profileUrl: 'https://github.com/octocat' })
+
+    const slack = result.identities.find((i) => i.target === 'slack')
+    expect(slack?.profileUrl).toBe('https://example-workspace.slack.com/team/U0EXAMPLE1')
+    expect(slack?.workspace).toEqual({
+      teamId: 'T0EXAMPLE1',
+      name: 'Example Workspace',
+      domain: 'example-workspace',
+      url: 'https://example-workspace.slack.com'
+    })
+  })
+
+  it('never leaks the connector rawData to the caller', async () => {
+    // It is a whole OIDC payload; none of it needs to reach a browser.
+    const { fetchImpl } = fakeLogto({ 'sub-1': account() })
+    const result = await svcOf(fetchImpl).socialAccountFor('sub-1')
+    expect(JSON.stringify(result)).not.toContain('rawData')
+    expect(JSON.stringify(result)).not.toContain('at_hash')
+  })
+
+  it('mirrors Logto: a password, an email, or a phone means re-verification', async () => {
+    const cases: Array<[Record<string, unknown>, boolean]> = [
+      [{ primaryEmail: 'dev@example.test' }, true],
+      [{ primaryEmail: null, primaryPhone: '+100000000' }, true],
+      [{ primaryEmail: null, hasPassword: true }, true],
+      [{ primaryEmail: null, primaryPhone: null, hasPassword: false }, false]
+    ]
+    for (const [fields, expected] of cases) {
+      const { fetchImpl } = fakeLogto({ 'sub-1': { identities: {}, ...fields } })
+      expect((await svcOf(fetchImpl).socialAccountFor('sub-1')).hasSecurityVerificationMethod).toBe(expected)
+    }
+  })
+
+  it('serves the Slack projection and the account from ONE upstream read', async () => {
+    // The whole point of moving this behind the CP: a profile load must not cost
+    // one upstream fetch per projection.
+    const { fetchImpl, calls } = fakeLogto({ 'sub-1': account() })
+    const svc = svcOf(fetchImpl)
+    await svc.socialAccountFor('sub-1')
+    await svc.slackIdentityFor('sub-1')
+    expect(calls.user).toBe(1)
+  })
+
+  it('reports an account that is gone as having nothing linked', async () => {
+    const { fetchImpl } = fakeLogto({})
+    expect(await svcOf(fetchImpl).socialAccountFor('missing')).toEqual({
+      identities: [],
+      hasSecurityVerificationMethod: false
+    })
+  })
+})
