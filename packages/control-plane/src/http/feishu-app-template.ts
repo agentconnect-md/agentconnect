@@ -13,6 +13,7 @@ import {
 } from './platform-app-description.js'
 
 export const AGENTCONNECT_FEISHU_SCOPES = [
+  'application:application.app_version:readonly',
   'application:application:patch',
   'contact:contact.base:readonly',
   'contact:user.base:readonly',

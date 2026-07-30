@@ -76,9 +76,11 @@ async function assertNoUnpublishedVersion(
 
 /**
  * Update a self-built Feishu/Lark application's icon and submit the resulting
- * application version. The app must grant `application:application:patch`;
- * provider review, when required by the tenant, completes asynchronously. A
- * pre-existing unpublished version makes the sync stop before changing the app.
+ * application version. The app must grant
+ * `application:application.app_version:readonly` and
+ * `application:application:patch`; provider review, when required by the
+ * tenant, completes asynchronously. A pre-existing unpublished version makes
+ * the sync stop before changing the app.
  */
 export function createFeishuAppIconSyncer(iconStore?: IconStore, fetcher: typeof fetch = fetch): FeishuAppIconSyncer {
   return async (appId, appSecret, region, agent) => {

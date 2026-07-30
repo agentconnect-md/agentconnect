@@ -174,7 +174,12 @@ describe('Feishu/Lark one-click app registration', () => {
       callbacks: { items: [...AGENTCONNECT_FEISHU_CALLBACKS] }
     })
     expect(addons).toMatchObject({
-      scopes: { tenant: expect.arrayContaining(['application:application:patch']) }
+      scopes: {
+        tenant: expect.arrayContaining([
+          'application:application.app_version:readonly',
+          'application:application:patch'
+        ])
+      }
     })
     await first.close()
 
