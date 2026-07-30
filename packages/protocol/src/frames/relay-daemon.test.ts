@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   RdMsg,
+  RdMsgWebchat,
   RdAck,
   RdChat,
   RdAgentMsg,
@@ -123,6 +124,35 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
         })
       ).ok
     ).toBe(false)
+  })
+
+  it('strips a browser-forged delegation and preserves the trusted outer reference', () => {
+    const attackerDelegation = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      generation: 99,
+      expiresAt: '2027-07-07T00:00:00.000Z'
+    }
+    const trustedDelegation = {
+      id: DELEGATION_ID,
+      generation: 2,
+      expiresAt: TS
+    }
+
+    const browserOp = RelayWebchatOp.parse({
+      op: 'turn',
+      text: 'hello',
+      delegation: attackerDelegation
+    })
+    expect(browserOp).toEqual({ op: 'turn', text: 'hello' })
+    expect(browserOp).not.toHaveProperty('delegation')
+
+    const delivery = RdMsgWebchat.parse({
+      ...turnMsg,
+      delegation: trustedDelegation,
+      payload: browserOp
+    })
+    expect(delivery.delegation).toEqual(trustedDelegation)
+    expect(delivery.payload).not.toHaveProperty('delegation')
   })
 
   it('rd/ack carries a rejection verdict (reason, no turn stream)', () => {
