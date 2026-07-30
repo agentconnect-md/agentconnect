@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 
 /**
- * The confirmation copy is the product promise (docs/product-conventions.md).
- * An agent on native runtime memory has no per-session capture gate, so the
- * dialog must NOT tell that user their conversation stops feeding shared memory.
+ * The audience label and confirmation copy are product promises
+ * (docs/product-conventions.md). An agent on native runtime memory has no
+ * per-session capture gate, so the dialog must NOT tell that user their
+ * conversation stops feeding shared memory.
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -44,6 +45,9 @@ async function openTightenDialog(nativeMemory: boolean): Promise<string> {
       />
     )
   })
+  const everyone = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Everyone')
+  expect(everyone?.title).toBe('Visible to everyone who can view the agent')
+  expect(container.textContent).not.toContain('Org')
   const privateButton = [...container.querySelectorAll('button')].find((b) => b.textContent?.includes('Private'))
   await act(async () => privateButton?.click())
   return document.body.textContent ?? ''

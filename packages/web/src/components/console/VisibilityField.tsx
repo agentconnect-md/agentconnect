@@ -138,7 +138,7 @@ function VisibilityTiles({ restricted, onPick }: { restricted: boolean; onPick: 
   }
   return (
     <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
-      {tile('org', 'globe', 'Everyone', 'Everyone in your org can see it.')}
+      {tile('org', 'globe', 'Everyone', 'All members can see it.')}
       {tile('restricted', 'lock', 'Selected', 'Only people you choose.')}
     </div>
   )
@@ -272,8 +272,8 @@ function ShareWithList({
           <div className="flex items-start gap-[7px] border-t border-(--border-subtle) bg-(--surface-sunken) px-3 py-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
             <Icon name="info" size={13} className="mt-[2px] flex-none" />
             <span>
-              The creator (pinned above) always has access — you can’t remove them. Org owners can always see restricted
-              resources too.
+              The creator (pinned above) always has access — you can’t remove them. Organization owners can always see
+              restricted resources too.
             </span>
           </div>
         </>
@@ -366,7 +366,8 @@ function ShareWithPills({
       <div className="mt-[10px] flex items-start gap-[6px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
         <Icon name="info" size={13} className="mt-[2px] flex-none" />
         <span>
-          The creator always has access — you can’t remove them. Org owners can always see restricted resources too.
+          The creator always has access — you can’t remove them. Organization owners can always see restricted resources
+          too.
         </span>
       </div>
     </>
@@ -404,7 +405,7 @@ export function VisibilityValue({
   // The chips are the EXPLICIT grant (creator + share set). Org owners can always see
   // a restricted resource on top of that (governance override — the same thing the
   // share editor spells out), so name it here too rather than implying exclusivity.
-  const ownerNote = 'Org owners can always see restricted resources too.'
+  const ownerNote = 'Organization owners can always see restricted resources too.'
   const title = resolved.length > 0 ? `${resolved.map(memberDisplayName).join(', ')} — ${ownerNote}` : ownerNote
   return (
     <span className="inline-flex items-center gap-2" title={title}>

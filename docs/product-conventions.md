@@ -13,6 +13,10 @@ empty states, toasts, or error messages. Rewrite the copy around what the user c
 needs to know; if an implementation detail does not change either, omit it. Technical
 component names belong in logs, developer tooling, and architecture documentation.
 
+Visibility controls use audience language: show **Everyone** for the internal `org`
+value, never **Org** or "org-visible". Keep **Organization** only when the copy is
+actually about organization management, membership, or ownership.
+
 ## Planned daemon lifecycle status
 
 A pending daemon upgrade or restart is a planned transition, not an unexpected outage.
