@@ -397,9 +397,9 @@ importers:
 
   packages/message:
     dependencies:
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+      '@agentconnect.md/protocol':
+        specifier: workspace:*
+        version: link:../protocol
     devDependencies:
       typescript:
         specifier: ^6.0.3
@@ -410,9 +410,6 @@ importers:
 
   packages/protocol:
     dependencies:
-      '@agentconnect.md/message':
-        specifier: workspace:*
-        version: link:../message
       zod:
         specifier: ^4.4.3
         version: 4.4.3

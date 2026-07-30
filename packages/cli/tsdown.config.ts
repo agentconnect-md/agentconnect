@@ -1,9 +1,9 @@
 import { defineConfig } from 'tsdown'
 
 // Ship the CLI as a ~self-contained bundle, exactly like the daemon: alwaysBundle
-// inlines EVERY import (incl. message through the workspace-only protocol, plus
-// connection), and neverBundle keeps ws's OPTIONAL native speedups external
-// (loaded via try/catch require — absent at runtime is fine).
+// inlines EVERY import (incl. the workspace-only protocol and connection), and
+// neverBundle keeps ws's OPTIONAL native speedups external (loaded via try/catch
+// require — absent at runtime is fine).
 // neverBundle wins over alwaysBundle, so the natives stay out. The published
 // manifest is stripped to zero runtime deps at release time (see release.config.js).
 //

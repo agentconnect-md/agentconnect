@@ -42,13 +42,13 @@ callback endpoint is required; the CP only orchestrates. Concretely:
 
 ## Monorepo (pnpm workspace, `packages/*`)
 
-| Package                          | Stack                              | Role                                                                                                                                                                         |
-| -------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@agentconnect.md/message`       | TypeScript + zod                   | Shared message model and pure Slack, Lark, Telegram, and Discord normalization; contains no platform SDKs or I/O.                                                            |
-| `@agentconnect.md/protocol`      | zod                                | Shared wire contract — the daemon↔CP WS frames + fencing fields (`sessionEpoch`/`seq`/`launchId`). Single source of truth, imported by both daemon and CP via `workspace:*`. |
-| `@agentconnect.md/daemon`        | Node CLI (commander)               | The edge unit. Exposes the `agentconnect` CLI bin. Many CLI subcommands are still stubs (`run` and `chat` are the live ones).                                                |
-| `@agentconnect.md/control-plane` | Fastify + Prisma (Postgres)        | One Fastify process co-hosts the C2 BFF REST surface **and** the daemon WS endpoint on one port / one Postgres connection.                                                   |
-| `@agentconnect.md/web`           | Next.js 16 + React 19 + Tailwind 4 | Config / monitoring console.                                                                                                                                                 |
+| Package                          | Stack                              | Role                                                                                                                                                             |
+| -------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@agentconnect.md/message`       | TypeScript                         | Pure Slack, Lark, Telegram, and Discord normalization; depends on protocol types and contains no platform SDKs or I/O.                                           |
+| `@agentconnect.md/protocol`      | zod                                | Shared wire contract — frames, normalized message schemas, and fencing fields (`sessionEpoch`/`seq`/`launchId`). Single source of truth for every wire consumer. |
+| `@agentconnect.md/daemon`        | Node CLI (commander)               | The edge unit. Exposes the `agentconnect` CLI bin. Many CLI subcommands are still stubs (`run` and `chat` are the live ones).                                    |
+| `@agentconnect.md/control-plane` | Fastify + Prisma (Postgres)        | One Fastify process co-hosts the C2 BFF REST surface **and** the daemon WS endpoint on one port / one Postgres connection.                                       |
+| `@agentconnect.md/web`           | Next.js 16 + React 19 + Tailwind 4 | Config / monitoring console.                                                                                                                                     |
 
 When you change a frame in `protocol`, both daemon and CP consume it — rebuild
 `protocol` (or rely on its `development` export → `./src/index.ts`) and check both sides.
