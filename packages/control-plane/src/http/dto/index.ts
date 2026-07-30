@@ -2020,7 +2020,11 @@ export const SessionListPageDto = z.object({
   sessions: SessionListDto,
   // Counting is skipped on cursor pages; the first page remains authoritative.
   total: z.number().int().nonnegative().nullable(),
-  nextCursor: z.string().nullable()
+  nextCursor: z.string().nullable(),
+  // Org-level "any session exists" boolean (first page only) — deliberately a bare
+  // boolean so the getting-started checklist can derive its conversation step
+  // org-wide without exposing metadata of sessions the caller cannot see.
+  orgHasSessions: z.boolean().optional()
 })
 
 /** `GET /sessions/:id` — the deep-link detail view, served from CP-stored

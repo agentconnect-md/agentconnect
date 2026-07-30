@@ -295,6 +295,9 @@ export interface SessionListPageDto {
   sessions: SessionDto[]
   total: number | null
   nextCursor: string | null
+  /** Org-level "any session exists" boolean (first page only) — a bare boolean so the
+   *  getting-started conversation step can be org-wide without exposing hidden rows. */
+  orgHasSessions?: boolean
 }
 
 export interface SessionListFilters {
@@ -323,6 +326,7 @@ export interface SessionListPage {
   sessions: Session[]
   total: number | null
   nextCursor: string | null
+  orgHasSessions?: boolean
 }
 
 export interface SessionRelationDto {
@@ -1711,7 +1715,8 @@ export async function fetchSessions(
   return {
     sessions: page.sessions.map(sessionFromDto),
     total: page.total,
-    nextCursor: page.nextCursor
+    nextCursor: page.nextCursor,
+    ...(page.orgHasSessions !== undefined ? { orgHasSessions: page.orgHasSessions } : {})
   }
 }
 

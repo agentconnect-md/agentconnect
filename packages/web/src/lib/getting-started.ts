@@ -59,8 +59,13 @@ export function computeGettingStarted(input: {
   members: MemberDto[]
   /** Auth mode: no-auth deployments have a single implicit org and no member list. */
   authOn: boolean
+  /** Org-level "any session exists" (GET /sessions `orgHasSessions`, a bare boolean over
+   *  the FULL org). Preferred over `sessions` for the conversation step: the list is
+   *  caller-visibility-filtered, so restricted/private-only orgs would under-report.
+   *  Undefined (not yet loaded / older CP) falls back to the visible list. */
+  orgHasSessions?: boolean
 }): GettingStarted {
-  const { agents, daemons, integrations, sessions, members, authOn } = input
+  const { agents, daemons, integrations, sessions, members, authOn, orgHasSessions } = input
   // Pick a chat-capable / bindable agent for the agent-scoped CTAs. Prefer the built-in
   // `agentconnect` preset — the canonical agent every org gets — else the first agent.
   const builtin = agents.find((a) => a.builtin)
@@ -106,11 +111,16 @@ export function computeGettingStarted(input: {
     },
     {
       key: 'conversation',
-      label: 'Complete your first conversation',
+      label: 'Start your first conversation',
       expl: 'Send one message and watch the agent work — in a connected channel or in the Playground.',
-      // COMPLETED, not merely minted: a running or failed session hasn't finished a
-      // conversation yet ('completed' is the daemon's terminal success status).
-      done: sessions.some((s) => s.statusLabel === 'completed'),
+      // Product decision (2026-07-30, mirrored in preset-agents.md §6.2): ANY session
+      // in the org ticks this — a session existing at all means a conversation has
+      // been driven here (Playground or a channel), which is exactly what this step
+      // teaches. Requiring a terminal status (or "your own" session) made orgs with
+      // live sessions re-run a chat just to clear the step. `orgHasSessions` is the
+      // org-wide boolean (unfiltered by visibility); the caller-visible list is only
+      // the fallback while it hasn't loaded / on an older CP.
+      done: orgHasSessions ?? sessions.length > 0,
       ctaLabel: 'Start a conversation',
       action: { kind: 'chat' }
     }
