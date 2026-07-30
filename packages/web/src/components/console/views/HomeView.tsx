@@ -11,6 +11,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useOrgs } from '@/lib/org-context'
+import { useOnboardingRedirect } from '@/lib/use-onboarding-redirect'
 import { useConsoleData } from '@/lib/data-context'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
@@ -91,11 +92,16 @@ export default function HomeView() {
   const { orgPath } = useOrgs()
   const { agents, daemons, crons, allSessions, usage24h, getAgent, loading } = useConsoleData()
   const { openPlayground, pgSend, pgSetModel, pgSetEffort, pgSetPermissionMode } = usePlayground()
+  // Home is the default landing, so it owns the fresh-org bounce to /onboarding.
+  const holdForOnboarding = useOnboardingRedirect()
 
   // An agent can take a session only when its owning daemon is serving AND that
   // runtime is signed in (its last probe wasn't rejected with ACP auth-required).
   const isOnline = (a: Agent) =>
-    effectiveAgentStatus(a.status, daemons.find((d) => d.daemonId === a.daemon)?.status) === 'online'
+    effectiveAgentStatus(
+      a.status,
+      daemons.find((d) => d.daemonId === a.daemon)
+    ) === 'online'
   const authRequiredFor = (a: Agent) =>
     !!daemons.find((d) => d.daemonId === a.daemon)?.runtimeModels.find((r) => r.runtime === a.runtime)?.authRequired
   const agentReady = (a: Agent) => isOnline(a) && !authRequiredFor(a)
@@ -245,6 +251,10 @@ export default function HomeView() {
       )
     }
   })
+
+  // While the redirect to /onboarding is in flight (or the skip flag is still being
+  // read), hold a spinner so the empty composer never flashes behind it.
+  if (holdForOnboarding) return <LoadingState fill />
 
   return (
     <div className="wrap max-w-[1000px] max-desktop:px-4 max-desktop:pt-4 max-desktop:pb-24">

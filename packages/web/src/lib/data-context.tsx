@@ -213,6 +213,9 @@ interface ConsoleData {
   /** Command a daemon to install `version` + relaunch onto it; returns the opened op. */
   upgradeDaemon: (daemonId: string, version: string) => Promise<DaemonLifecycleOpDto>
   refresh: () => void
+  /** Revalidate ONLY the session lists — for after an action known to mint a session
+   *  (e.g. a Playground send), without re-pulling every console read model. */
+  refreshSessions: () => void
   /** True until the very first pull of ALL read models has settled (any org switch re-arms it). */
   loading: boolean
   /** Per-model first-load flags — each clears when ITS pull settles, so a slow
@@ -720,6 +723,9 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(() => {
     void revalidateConsole()
   }, [revalidateConsole])
+  const refreshSessions = useCallback(() => {
+    void revalidateSessionLists()
+  }, [revalidateSessionLists])
 
   const drainSessionRefreshes = useCallback(
     async (generation: number) => {
@@ -1271,6 +1277,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       restartDaemon,
       upgradeDaemon,
       refresh,
+      refreshSessions,
       loading,
       agentsLoading,
       sessionsLoading,
@@ -1333,6 +1340,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       restartDaemon,
       upgradeDaemon,
       refresh,
+      refreshSessions,
       loading,
       agentsLoading,
       sessionsLoading,

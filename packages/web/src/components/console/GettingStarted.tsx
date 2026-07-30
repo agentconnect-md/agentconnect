@@ -17,8 +17,8 @@ import { usePathname } from 'next/navigation'
 import { useConsoleData } from '@/lib/data-context'
 import { usePlayground } from './PlaygroundProvider'
 import { isAuthConfigured } from '@/lib/auth'
-import { computeGettingStarted } from '@/lib/getting-started'
-import { GsRows, MeetYourAgents, useGsActions } from './GettingStartedChecklist'
+import { computeGettingStarted, type GsAction } from '@/lib/getting-started'
+import { AddToSlackRow, GsRows, MeetYourAgents, useGsActions } from './GettingStartedChecklist'
 import { Button, Icon } from '@/components/ui'
 
 // A r=10.5 progress ring (viewBox 0 0 26 26), rotated so it fills clockwise from 12
@@ -65,6 +65,17 @@ export default function GettingStarted() {
   if (loading || gs.allDone || onOnboardingRoute) return null
 
   const shortLabel = `${gs.done}/${gs.total}`
+
+  // Modals (add daemon, set up agent, connect Slack) stack above the drawer (their scrim
+  // is z-900, the drawer z-80), so the checklist stays open behind them — the user returns
+  // to it when the modal closes. Only close the drawer for actions that navigate the page
+  // away (runtime sign-in, GitHub workspace, Home chat, invite teammates → router.push).
+  const runFromDrawer = (action: GsAction) => {
+    const navigates =
+      action.kind === 'runtime' || action.kind === 'github' || action.kind === 'chat' || action.kind === 'members'
+    if (navigates) setDrawerOpen(false)
+    runAction(action)
+  }
 
   return (
     <>
@@ -127,20 +138,21 @@ export default function GettingStarted() {
                 items={gs.items}
                 expanded={expanded}
                 onToggle={(key) => setExpanded((cur) => (cur === key ? null : key))}
-                runAction={(action) => {
-                  setDrawerOpen(false)
-                  runAction(action)
-                }}
+                runAction={runFromDrawer}
                 renderItem={(it, ctx) =>
                   it.key === 'agent' ? (
                     <MeetYourAgents
                       done={it.done}
                       open={ctx.open}
                       toggle={ctx.toggle}
-                      onConnect={() => {
-                        setDrawerOpen(false)
-                        runAction(it.action)
-                      }}
+                      onConnect={() => runFromDrawer(it.action)}
+                    />
+                  ) : it.key === 'slack' ? (
+                    <AddToSlackRow
+                      done={it.done}
+                      open={ctx.open}
+                      toggle={ctx.toggle}
+                      onManual={() => runFromDrawer(it.action)}
                     />
                   ) : null
                 }

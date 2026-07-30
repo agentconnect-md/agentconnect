@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   provisionDaemon: vi.fn(),
   reconnectDaemon: vi.fn(),
   deleteDaemon: vi.fn(),
+  updateAgent: vi.fn(),
+  moveAgent: vi.fn(),
   refresh: vi.fn(),
   push: vi.fn(),
   skipOnboarding: vi.fn()
@@ -36,8 +38,14 @@ vi.mock('@/lib/data-context', () => ({
     provisionDaemon: mocks.provisionDaemon,
     reconnectDaemon: mocks.reconnectDaemon,
     deleteDaemon: mocks.deleteDaemon,
+    updateAgent: mocks.updateAgent,
+    moveAgent: mocks.moveAgent,
     refresh: mocks.refresh
   })
+}))
+// RuntimeSelect pulls the ACP registry context + AgentMark; stub it to the picked value.
+vi.mock('@/components/console/RuntimeSelect', () => ({
+  RuntimeSelect: ({ value }: { value: string }) => `runtime-${value}`
 }))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => `/acme${path}` }) }))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ user: { email: 'dana@acme.dev', initials: 'DR' } }) }))
@@ -100,6 +108,8 @@ beforeEach(() => {
   mocks.reconnectDaemon.mockReset()
   mocks.deleteDaemon.mockReset().mockResolvedValue(undefined)
   mocks.refresh.mockReset()
+  mocks.updateAgent.mockReset().mockResolvedValue(undefined)
+  mocks.moveAgent.mockReset().mockResolvedValue(undefined)
   mocks.push.mockReset()
   mocks.skipOnboarding.mockReset()
   host = document.createElement('div')
@@ -160,5 +170,46 @@ describe('onboarding — daemon online reveal', () => {
     expect(mocks.push).toHaveBeenCalledWith('/acme/home')
     // an online daemon that has connected is never deleted on the way out
     expect(mocks.deleteDaemon).not.toHaveBeenCalled()
+  })
+})
+
+describe('onboarding — configure the built-in agent', () => {
+  beforeEach(() => {
+    mocks.daemons = [
+      {
+        daemonId: 'dmn_new',
+        status: 'online',
+        name: 'edge-1',
+        runtimeModels: [{ runtime: 'claude', models: ['claude-sonnet-4-5'] }]
+      }
+    ]
+    // The org's unplaced built-in preset: no daemon, deferred runtime.
+    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
+  })
+
+  it('shows the configure step for an unplaced built-in agent instead of the reveal', async () => {
+    await render()
+    expect(host.textContent).toContain('Configure')
+    expect(host.textContent).toContain('runtime-claude') // RuntimeSelect stub, seeded from the daemon
+    expect(host.textContent).not.toContain('Your daemon is online')
+  })
+
+  it('sets the runtime BEFORE moving the agent onto the connected daemon, then reveals', async () => {
+    await render()
+    await click('Save and continue')
+    expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: 'claude', model: 'claude-sonnet-4-5' })
+    expect(mocks.moveAgent).toHaveBeenCalledWith('ag_ac', 'dmn_new')
+    // Order matters: the CP rejects a move on a runtime-less agent.
+    const updateOrder = mocks.updateAgent.mock.invocationCallOrder[0] ?? 0
+    const moveOrder = mocks.moveAgent.mock.invocationCallOrder[0] ?? Infinity
+    expect(updateOrder).toBeLessThan(moveOrder)
+    expect(mocks.refresh).toHaveBeenCalled()
+  })
+
+  it('lets the user skip to the reveal without configuring', async () => {
+    await render()
+    await click('Skip for now')
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Your daemon is online')
   })
 })

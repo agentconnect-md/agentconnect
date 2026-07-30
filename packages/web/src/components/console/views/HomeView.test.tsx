@@ -24,6 +24,8 @@ vi.mock('next/link', () => ({
   default: ({ children }: { children: React.ReactNode }) => <a>{children}</a>
 }))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (p: string) => `/acme${p}` }) }))
+// The fresh-org bounce is covered by its own logic (lib/onboarding); hold it open here.
+vi.mock('@/lib/use-onboarding-redirect', () => ({ useOnboardingRedirect: () => false }))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     agents: mocks.agents,

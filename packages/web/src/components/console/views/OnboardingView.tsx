@@ -10,7 +10,10 @@ import { isAuthConfigured } from '@/lib/auth'
 import { daemonCompletesOnboarding, firstReconnectableDaemonId, skipOnboarding } from '@/lib/onboarding'
 import { daemonCommands } from '@/lib/daemon-commands'
 import { computeGettingStarted } from '@/lib/getting-started'
-import { GsRows, MeetYourAgents, useGsActions } from '@/components/console/GettingStartedChecklist'
+import { AddToSlackRow, GsRows, MeetYourAgents, useGsActions } from '@/components/console/GettingStartedChecklist'
+import { RuntimeSelect } from '@/components/console/RuntimeSelect'
+import { FALLBACK_RUNTIME_IDS, agentIsPlaced, agentLabel, modelLabel, preferredModelFor } from '@/lib/data'
+import type { Agent, DaemonRow } from '@/lib/data'
 import type { DaemonConnectDto } from '@/lib/api'
 
 // Onboarding (design: "AgentConnect Onboarding"). Connecting a daemon is the ONLY
@@ -42,6 +45,8 @@ export default function OnboardingView() {
     provisionDaemon,
     reconnectDaemon,
     deleteDaemon,
+    updateAgent,
+    moveAgent,
     refresh
   } = useConsoleData()
   const { orgPath } = useOrgs()
@@ -55,6 +60,36 @@ export default function OnboardingView() {
   const daemonReady = daemons.some(daemonCompletesOnboarding)
   const offlineDaemonId = firstReconnectableDaemonId(daemons)
   const loading = (agentsLoading || daemonsLoading) && daemons.length === 0 && agents.length === 0
+
+  // Once a daemon is serving, configure the org's built-in `agentconnect` preset before
+  // the checklist reveal: auto-assign it to that daemon and let the user pick a runtime +
+  // model (design: the built-in agent replaces "create your first agent"). The preset
+  // ships unplaced (daemon '—', deferred runtime); it's ready once both are set. Older
+  // orgs without the preset just skip straight to the reveal.
+  const builtinAgent = agents.find((a) => a.builtin)
+  const placementDaemon = daemons.find((d) => d.status === 'online') ?? daemons.find(daemonCompletesOnboarding)
+  const needsAgentSetup = !!builtinAgent && !!placementDaemon && !agentIsPlaced(builtinAgent)
+  const [skipSetup, setSkipSetup] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveErr, setSaveErr] = useState<string | null>(null)
+
+  // Runtime becomes mandatory at placement, so set it FIRST, then move onto the daemon
+  // (the CP rejects a move on a runtime-less agent). refresh() flips needsAgentSetup off,
+  // advancing the screen to the reveal on its own.
+  const saveAgentSetup = async (runtime: string, model: string) => {
+    if (!builtinAgent || !placementDaemon) return
+    setSaving(true)
+    setSaveErr(null)
+    try {
+      await updateAgent(builtinAgent.id, { runtime, ...(model ? { model } : {}) })
+      await moveAgent(builtinAgent.id, placementDaemon.daemonId)
+      await refresh()
+    } catch (e) {
+      setSaveErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
 
   // --- Daemon provisioning (mirrors AddDaemonModal / the old wizard step 0) ----------
   const [connect, setConnect] = useState<DaemonCommand | null>(null)
@@ -133,13 +168,7 @@ export default function OnboardingView() {
     <div className="flex min-h-full items-center justify-center px-5 py-10">
       {loading ? (
         <LoadingState fill />
-      ) : daemonReady ? (
-        <RevealChecklist
-          gs={computeGettingStarted({ agents, daemons, integrations, sessions: allSessions, members, authOn })}
-          runAction={runAction}
-          onFinish={goConsole}
-        />
-      ) : (
+      ) : !daemonReady ? (
         <ConnectDaemon
           cmd={cmd}
           mintErr={mintErr}
@@ -148,6 +177,21 @@ export default function OnboardingView() {
           listeningId={listeningId}
           elapsedLabel={elapsedLabel}
           onExplore={goConsole}
+        />
+      ) : needsAgentSetup && !skipSetup ? (
+        <ConfigureAgent
+          agent={builtinAgent!}
+          daemon={placementDaemon!}
+          saving={saving}
+          err={saveErr}
+          onSave={saveAgentSetup}
+          onSkip={() => setSkipSetup(true)}
+        />
+      ) : (
+        <RevealChecklist
+          gs={computeGettingStarted({ agents, daemons, integrations, sessions: allSessions, members, authOn })}
+          runAction={runAction}
+          onFinish={goConsole}
         />
       )}
     </div>
@@ -254,6 +298,137 @@ function ConnectDaemon({
   )
 }
 
+// --- Phase 1.5: place + configure the built-in agent on the just-connected daemon ----
+// Daemon is fixed (the one we just brought online); the user only picks runtime + model.
+// Mirrors AddAgentModal's Daemon/Runtime/Model row: runtime ids come from the daemon's
+// reported profiles (else the static fallback), models from the chosen runtime's profile.
+function ConfigureAgent({
+  agent,
+  daemon,
+  saving,
+  err,
+  onSave,
+  onSkip
+}: {
+  agent: Agent
+  daemon: DaemonRow
+  saving: boolean
+  err: string | null
+  onSave: (runtime: string, model: string) => void
+  onSkip: () => void
+}) {
+  const runtimeIds = daemon.runtimeModels.length ? daemon.runtimeModels.map((r) => r.runtime) : FALLBACK_RUNTIME_IDS
+  const [runtime, setRuntime] = useState(runtimeIds[0] ?? '')
+  const effectiveRuntime = runtimeIds.includes(runtime) ? runtime : (runtimeIds[0] ?? '')
+  const models = daemon.runtimeModels.find((r) => r.runtime === effectiveRuntime)?.models ?? []
+  const [model, setModel] = useState('')
+  // Keep the selection valid as the runtime (and so the model set) changes.
+  const selectedModel = models.includes(model) ? model : preferredModelFor(daemon, effectiveRuntime)
+
+  return (
+    <div className="flex w-full max-w-[520px] flex-col gap-[22px]">
+      <div className="flex flex-col items-center gap-[11px] text-center">
+        <span className="flex h-11 w-11 items-center justify-center rounded-[11px] border border-(--border-default) bg-(--surface-card) text-(--brand) shadow-(--shadow-xs)">
+          <Icon name="bot" size={21} />
+        </span>
+        <div className="font-mono text-[11px] font-semibold uppercase leading-none tracking-[.12em] text-(--brand)">
+          Set up your agent
+        </div>
+        <h1 className="font-sans text-[28px] font-semibold leading-[1.2] tracking-[-.02em] text-(--text-primary)">
+          Configure {agentLabel(agent)}
+        </h1>
+        <p className="max-w-[430px] font-sans text-[14.5px] font-normal leading-[1.55] text-(--text-secondary)">
+          Your org&rsquo;s built-in agent runs on the daemon you just connected. Pick a runtime and model, and
+          it&rsquo;s ready to work.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-[14px] rounded-[10px] border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-xs)">
+        <div className="fld">
+          <span className="fldlbl">Daemon</span>
+          <div className="inp cursor-not-allowed" title="Set to the daemon you just connected">
+            <span className="truncate text-(--text-primary)">{daemon.name}</span>
+            <span className="ml-auto flex-none font-sans text-[11.5px] leading-none text-(--text-tertiary)">
+              just connected
+            </span>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
+          <div className="fld">
+            <span className="fldlbl">Runtime</span>
+            <RuntimeSelect
+              value={effectiveRuntime}
+              options={runtimeIds}
+              onChange={(next) => {
+                setRuntime(next)
+                setModel('')
+              }}
+            />
+          </div>
+          <div className="fld">
+            <span className="fldlbl">Model</span>
+            <div
+              className={models.length ? 'inp relative' : 'inp cursor-not-allowed'}
+              title={models.length ? undefined : 'This runtime reports no selectable models'}
+            >
+              <span className={`truncate ${models.length ? '' : 'text-(--text-tertiary)'}`}>
+                {models.length ? modelLabel(selectedModel) : '—'}
+              </span>
+              {models.length > 0 && (
+                <>
+                  <Icon name="chevron-down" size={15} color="var(--text-tertiary)" className="flex-none" />
+                  <select
+                    value={selectedModel}
+                    onChange={(e) => setModel(e.target.value)}
+                    className="absolute inset-0 cursor-pointer opacity-0"
+                    aria-label="Model"
+                  >
+                    {models.map((m) => (
+                      <option key={m} value={m}>
+                        {modelLabel(m)}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+        {err && (
+          <div className="flex items-start gap-2 font-sans text-[12.5px] leading-[1.5] text-(--status-error)">
+            <Icon name="alert-triangle" size={15} className="mt-[1px] flex-none" />
+            <span>{err}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-col items-center gap-3">
+        <div className="flex w-full flex-col items-stretch gap-[10px] desktop:w-auto desktop:flex-row desktop:items-center desktop:justify-center">
+          <Button
+            size="lg"
+            disabled={saving || !effectiveRuntime}
+            onClick={() => onSave(effectiveRuntime, selectedModel)}
+          >
+            {saving ? (
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+            ) : (
+              <Icon name="check" size={16} />
+            )}
+            {saving ? 'Saving…' : 'Save and continue'}
+          </Button>
+          <Button size="lg" variant="ghost" disabled={saving} onClick={onSkip}>
+            Skip for now
+            <Icon name="arrow-right" size={15} />
+          </Button>
+        </div>
+        <div className="text-center font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+          You can change the runtime and model any time from the agent&rsquo;s settings.
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // --- Phase 2: daemon online → the same checklist the console shows -------------------
 function RevealChecklist({
   gs,
@@ -309,6 +484,13 @@ function RevealChecklist({
                   open={ctx.open}
                   toggle={ctx.toggle}
                   onConnect={() => runAction(it.action)}
+                />
+              ) : it.key === 'slack' ? (
+                <AddToSlackRow
+                  done={it.done}
+                  open={ctx.open}
+                  toggle={ctx.toggle}
+                  onManual={() => runAction(it.action)}
                 />
               ) : null
             }

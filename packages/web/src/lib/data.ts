@@ -69,6 +69,14 @@ export function effectiveAgentStatus(
   return agentStatus
 }
 
+// "Placed" = the agent has a daemon AND a runtime, so it can actually run. Every org
+// ships the built-in `agentconnect` preset UNPLACED (daemon '—', deferred runtime '');
+// configuring it (onboarding's agent step) or creating a user agent flips this true. It
+// is the signal for "the org is set up" — used by the onboarding gate + getting-started.
+export function agentIsPlaced(agent: Pick<Agent, 'daemon' | 'runtime'>): boolean {
+  return agent.daemon !== '—' && agent.runtime !== ''
+}
+
 export type LaneKind = 'msg' | 'plan' | 'tool' | 'edit' | 'done'
 
 export interface LaneInfo {
