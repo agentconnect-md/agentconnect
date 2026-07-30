@@ -10,20 +10,20 @@
 
 <p align="center">
   <sub><strong>FROM</strong>&nbsp;&nbsp;
-  <img src="https://api.iconify.design/logos/slack-icon.svg" width="16" height="16" alt="Slack" title="Slack" />&nbsp;&nbsp;
-  <img src="https://cdn.simpleicons.org/telegram" width="16" height="16" alt="Telegram" title="Telegram" />&nbsp;&nbsp;
-  <img src="https://cdn.simpleicons.org/discord" width="16" height="16" alt="Discord" title="Discord" />&nbsp;&nbsp;
-  <img src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/lark.svg" width="16" height="16" alt="Lark and Feishu" title="Lark / Feishu" />&nbsp;&nbsp;
-  <img src="https://cdn.simpleicons.org/github/181717/e6edf3" width="16" height="16" alt="GitHub" title="GitHub" />&nbsp;&nbsp;
-  <img src="https://api.iconify.design/logos/webhooks.svg" width="16" height="16" alt="Webhook" title="Webhook" />
+  <a href="https://slack.com"><img src="https://api.iconify.design/logos/slack-icon.svg" width="16" height="16" alt="Slack" title="Slack" /></a>&nbsp;&nbsp;
+  <a href="https://telegram.org"><img src="https://cdn.simpleicons.org/telegram" width="16" height="16" alt="Telegram" title="Telegram" /></a>&nbsp;&nbsp;
+  <a href="https://discord.com"><img src="https://cdn.simpleicons.org/discord" width="16" height="16" alt="Discord" title="Discord" /></a>&nbsp;&nbsp;
+  <a href="https://www.larksuite.com"><img src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/lark.svg" width="16" height="16" alt="Lark and Feishu" title="Lark / Feishu" /></a>&nbsp;&nbsp;
+  <a href="https://github.com"><img src="https://cdn.simpleicons.org/github/181717/e6edf3" width="16" height="16" alt="GitHub" title="GitHub" /></a>&nbsp;&nbsp;
+  <a href="https://en.wikipedia.org/wiki/Webhook"><img src="https://api.iconify.design/logos/webhooks.svg" width="16" height="16" alt="Webhook" title="Webhook" /></a>
   &nbsp;&nbsp;&nbsp;&nbsp;
   <strong>WITH</strong>&nbsp;&nbsp;
-  <img src="https://cdn.simpleicons.org/claude" width="16" height="16" alt="Claude" title="Claude" />&nbsp;&nbsp;
-  <img src="https://api.iconify.design/tabler/brand-openai.svg?color=%23808896" width="16" height="16" alt="OpenAI" title="OpenAI" />&nbsp;&nbsp;
-  <img src="https://cdn.simpleicons.org/googlegemini" width="16" height="16" alt="Gemini" title="Gemini" />&nbsp;&nbsp;
-  <img src="https://cdn.simpleicons.org/deepseek" width="16" height="16" alt="DeepSeek" title="DeepSeek" />&nbsp;&nbsp;
-  <img src="https://cdn.simpleicons.org/opencode/000000/e6edf3" width="16" height="16" alt="OpenCode" title="OpenCode" />&nbsp;&nbsp;
-  <img src="https://cdn.simpleicons.org/pi/000000/e6edf3" width="16" height="16" alt="Pi" title="Pi" />&nbsp;&nbsp;
+  <a href="https://claude.com"><img src="https://cdn.simpleicons.org/claude" width="16" height="16" alt="Claude" title="Claude" /></a>&nbsp;&nbsp;
+  <a href="https://openai.com"><img src="https://api.iconify.design/tabler/brand-openai.svg?color=%23808896" width="16" height="16" alt="OpenAI" title="OpenAI" /></a>&nbsp;&nbsp;
+  <a href="https://gemini.google.com"><img src="https://cdn.simpleicons.org/googlegemini" width="16" height="16" alt="Gemini" title="Gemini" /></a>&nbsp;&nbsp;
+  <a href="https://www.deepseek.com"><img src="https://cdn.simpleicons.org/deepseek" width="16" height="16" alt="DeepSeek" title="DeepSeek" /></a>&nbsp;&nbsp;
+  <a href="https://opencode.ai"><img src="https://cdn.simpleicons.org/opencode/000000/e6edf3" width="16" height="16" alt="OpenCode" title="OpenCode" /></a>&nbsp;&nbsp;
+  <a href="https://pi.dev"><img src="https://cdn.simpleicons.org/pi/000000/e6edf3" width="16" height="16" alt="Pi" title="Pi" /></a>&nbsp;&nbsp;
   <strong>ANY ACP AGENT</strong></sub>
 </p>
 
