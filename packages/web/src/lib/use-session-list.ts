@@ -100,6 +100,8 @@ export function useSessionList(orgId: string | null | undefined, filters: Sessio
   return {
     sessions,
     total: pages[0]?.total ?? 0,
+    /** Org-level "any session exists" (first page carries it; older CPs omit it). */
+    orgHasSessions: pages[0]?.orgHasSessions,
     nextCursor,
     loadingMore,
     loadMore,

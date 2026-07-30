@@ -525,6 +525,11 @@ export class PgSessionRepo implements SessionRepo {
     }
   }
 
+  async orgHasAny(orgId: OrgId): Promise<boolean> {
+    const row = await this.db.sessionMeta.findFirst({ where: { orgId }, select: { id: true } })
+    return row !== null
+  }
+
   async listFacets(q: SessionFacetQuery): Promise<SessionFacetIndex> {
     if (queryAgentIds(q).length === 0) return { agents: [], integrations: [], channels: [], triggers: [] }
 

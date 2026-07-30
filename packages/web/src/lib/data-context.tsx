@@ -111,6 +111,10 @@ interface ConsoleData {
   agents: Agent[]
   daemons: DaemonRow[]
   allSessions: Session[]
+  /** Org-level "any session exists" (bare boolean from GET /sessions page 1) — the
+   *  getting-started conversation step derives from it so restricted/private-only
+   *  orgs don't under-report. Undefined until loaded / on older CPs. */
+  orgHasSessions?: boolean
   sessionFacets: SessionFacets
   sessionsNextCursor: string | null
   /** Per-session body-free SSE invalidation counter for open transcript views. */
@@ -675,6 +679,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
 
   const {
     sessions: realSessions,
+    orgHasSessions,
     nextCursor: sessionsNextCursor,
     loadingMore: sessionsLoadingMore,
     loadMore: loadMoreSessions,
@@ -1236,6 +1241,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       agents,
       daemons,
       allSessions,
+      orgHasSessions,
       sessionFacets,
       sessionsNextCursor,
       sessionActivityVersionById,
@@ -1301,6 +1307,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       agents,
       daemons,
       allSessions,
+      orgHasSessions,
       sessionFacets,
       sessionsNextCursor,
       sessionActivityVersionById,

@@ -80,6 +80,35 @@ describe('session visibility — list & detail', () => {
     expect(asOwner).toEqual(expect.arrayContaining([orgSession, ownSession, otherSession, orphanSession]))
   })
 
+  it('reports orgHasSessions even when every session is hidden from the caller', async () => {
+    const viewer = await makeUser('sv-ohs-viewer', 'collaborator')
+    const other = await makeUser('sv-ohs-other', 'collaborator')
+
+    // Before any session exists: the boolean is present and false on the first page.
+    const viewerApp = appAs(viewer)
+    const emptyPage = (await viewerApp.app.inject({ method: 'GET', url: `${ORG}/sessions` })).json() as {
+      sessions: unknown[]
+      orgHasSessions?: boolean
+    }
+    expect(emptyPage.orgHasSessions).toBe(false)
+
+    // The org's ONLY session is another member's private one — invisible to the
+    // viewer, but the bare boolean still reports the org has sessions, so the
+    // getting-started conversation step doesn't ask for a redundant chat.
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    await seedSessionMeta(prisma, `s-ohs-${randomUUID()}`, agentId, {
+      visibility: 'private',
+      ownerIdentity: `user:${other}`
+    })
+    const page = (await viewerApp.app.inject({ method: 'GET', url: `${ORG}/sessions` })).json() as {
+      sessions: unknown[]
+      orgHasSessions?: boolean
+    }
+    expect(page.sessions).toHaveLength(0)
+    expect(page.orgHasSessions).toBe(true)
+  })
+
   it('keeps keyset pagination stable under the visibility predicate', async () => {
     const viewer = await makeUser('sv-page', 'collaborator')
     const other = await makeUser('sv-page-other', 'collaborator')

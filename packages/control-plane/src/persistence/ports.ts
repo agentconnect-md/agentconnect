@@ -974,6 +974,10 @@ export interface SessionRepo {
   /** Filter, keyset-page, and order in Postgres; usage is hydrated only for the
    *  returned page. `total` is computed only when explicitly requested. */
   listPage(q: SessionPageQuery): Promise<SessionPageRecord>
+  /** Org-level "any session exists" — a bare boolean over the org's FULL session set
+   *  (no visibility predicate), safe to return to any org member: it reveals nothing
+   *  about sessions the caller can't see. Drives the getting-started conversation step. */
+  orgHasAny(orgId: OrgId): Promise<boolean>
   /** One latest representative per distinct facet value after applying every
    *  other active facet. The database reduces the full history before returning
    *  this compact index to the HTTP layer. */

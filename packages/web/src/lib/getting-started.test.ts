@@ -95,6 +95,19 @@ describe('computeGettingStarted', () => {
     expect(convo([{ id: 's1', statusLabel: 'completed', triggeredBy: 'u_teammate' } as Session])).toBe(true)
   })
 
+  it('prefers the org-wide orgHasSessions boolean over the caller-visible list', () => {
+    const convo = (orgHasSessions: boolean | undefined, sessions: Session[] = []) =>
+      computeGettingStarted({ ...empty, sessions, orgHasSessions }).items.find((i) => i.key === 'conversation')!.done
+    // a collaborator who can see NO sessions still gets the tick when the org has some
+    // (restricted/private rows are filtered out of GET /sessions)
+    expect(convo(true)).toBe(true)
+    // the boolean is authoritative in both directions once present
+    expect(convo(false, [{ id: 's1' } as Session])).toBe(false)
+    // not yet loaded / older CP: fall back to the visible list
+    expect(convo(undefined, [{ id: 's1' } as Session])).toBe(true)
+    expect(convo(undefined)).toBe(false)
+  })
+
   it('points agent-scoped CTAs at the built-in agent first, else the first agent', () => {
     const withBuiltin = computeGettingStarted({
       ...empty,

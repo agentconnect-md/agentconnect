@@ -386,11 +386,17 @@ export function sessionRoutes(deps: HttpDeps) {
             ? [AgentId(req.query.agentId)]
             : []
           : visibleAgentIds
+        // Org-level "any session exists" boolean (first page only). Computed over the
+        // FULL org — including sessions the caller can't see — which is safe precisely
+        // because it is a bare boolean; the getting-started conversation step derives
+        // from it so a collaborator in an active org isn't asked to run a redundant chat.
+        const orgHasSessions = cursor ? undefined : await deps.repos.session.orgHasAny(orgOf(req))
         if (selectedAgentIds.length === 0) {
           return {
             sessions: [],
             total: cursor ? null : 0,
-            nextCursor: null
+            nextCursor: null,
+            ...(orgHasSessions !== undefined ? { orgHasSessions } : {})
           }
         }
 
@@ -416,7 +422,8 @@ export function sessionRoutes(deps: HttpDeps) {
         return {
           sessions: page.sessions.map((session) => sessionDto(session, hookMetadata)),
           total: page.total,
-          nextCursor
+          nextCursor,
+          ...(orgHasSessions !== undefined ? { orgHasSessions } : {})
         }
       }
     )

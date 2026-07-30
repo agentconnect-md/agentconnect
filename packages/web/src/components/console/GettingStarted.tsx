@@ -42,7 +42,8 @@ function Ring({ ring, size, track }: { ring: string; size: number; track: number
 }
 
 export default function GettingStarted() {
-  const { agents, daemons, integrations, allSessions, members, agentsLoading, daemonsLoading } = useConsoleData()
+  const { agents, daemons, integrations, allSessions, orgHasSessions, members, agentsLoading, daemonsLoading } =
+    useConsoleData()
   const { openPlayground } = usePlayground()
   const { runAction, firstAgent } = useGsActions()
   const pathname = usePathname()
@@ -52,8 +53,9 @@ export default function GettingStarted() {
   const [expanded, setExpanded] = useState<string | null>(null)
 
   const gs = useMemo(
-    () => computeGettingStarted({ agents, daemons, integrations, sessions: allSessions, members, authOn }),
-    [agents, daemons, integrations, allSessions, members, authOn]
+    () =>
+      computeGettingStarted({ agents, daemons, integrations, sessions: allSessions, members, authOn, orgHasSessions }),
+    [agents, daemons, integrations, allSessions, members, authOn, orgHasSessions]
   )
 
   // Show on every console page while the checklist is incomplete — including a

@@ -39,6 +39,7 @@ export default function OnboardingView() {
     daemons,
     integrations,
     allSessions,
+    orgHasSessions,
     members,
     agentsLoading,
     daemonsLoading,
@@ -218,7 +219,15 @@ export default function OnboardingView() {
         />
       ) : (
         <RevealChecklist
-          gs={computeGettingStarted({ agents, daemons, integrations, sessions: allSessions, members, authOn })}
+          gs={computeGettingStarted({
+            agents,
+            daemons,
+            integrations,
+            sessions: allSessions,
+            members,
+            authOn,
+            orgHasSessions
+          })}
           runAction={runAction}
           onFinish={goConsole}
         />
