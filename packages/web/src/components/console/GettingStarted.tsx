@@ -16,7 +16,6 @@ import { useMemo, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { useConsoleData } from '@/lib/data-context'
 import { usePlayground } from './PlaygroundProvider'
-import { useProfile } from '@/lib/profile'
 import { isAuthConfigured } from '@/lib/auth'
 import { computeGettingStarted, type GsAction } from '@/lib/getting-started'
 import { AddToSlackRow, GsRows, MeetYourAgents, useGsActions } from './GettingStartedChecklist'
@@ -46,19 +45,15 @@ export default function GettingStarted() {
   const { agents, daemons, integrations, allSessions, members, agentsLoading, daemonsLoading } = useConsoleData()
   const { openPlayground } = usePlayground()
   const { runAction, firstAgent } = useGsActions()
-  const { me } = useProfile()
   const pathname = usePathname()
   const authOn = isAuthConfigured()
 
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
 
-  // Webchat sessions record the runner's userId or email as `triggeredBy` — scope
-  // "your first conversation" to the current user (see computeGettingStarted).
-  const meIds = useMemo(() => [me?.userId, me?.email].filter((x): x is string => !!x), [me?.userId, me?.email])
   const gs = useMemo(
-    () => computeGettingStarted({ agents, daemons, integrations, sessions: allSessions, members, authOn, meIds }),
-    [agents, daemons, integrations, allSessions, members, authOn, meIds]
+    () => computeGettingStarted({ agents, daemons, integrations, sessions: allSessions, members, authOn }),
+    [agents, daemons, integrations, allSessions, members, authOn]
   )
 
   // Show on every console page while the checklist is incomplete — including a
