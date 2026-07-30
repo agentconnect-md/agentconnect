@@ -1521,6 +1521,7 @@ export default function AgentDetailView() {
             loading={agentSessionsLoading}
             allHref={orgPath(`/sessions?agent=${da.id}`)}
             emptyText="No sessions yet."
+            showAgent={false}
             className="max-desktop:rounded-lg"
           />
         </div>
