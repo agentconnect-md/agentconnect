@@ -23,7 +23,7 @@ export default function EditDaemonModal({ daemon, onClose }: { daemon: DaemonRow
     setErr(null)
     try {
       const next = name.trim()
-      if (next && next !== daemon.name) await renameDaemon(daemon.daemonId, next)
+      if (daemon.canEdit && next && next !== daemon.name) await renameDaemon(daemon.daemonId, next)
       if (daemon.canManageSharing && !sameSharing(sharing, initialSharing.current))
         await saveSharing('daemons', daemon.daemonId, sharing)
       onClose()
@@ -54,6 +54,7 @@ export default function EditDaemonModal({ daemon, onClose }: { daemon: DaemonRow
             spellCheck={false}
             autoFocus
             placeholder="edge-1"
+            disabled={!daemon.canEdit}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') void save()
@@ -63,7 +64,7 @@ export default function EditDaemonModal({ daemon, onClose }: { daemon: DaemonRow
         <VisibilityField
           value={sharing}
           onChange={setSharing}
-          creatorUserId={daemon.createdBy || null}
+          ownerUserId={daemon.ownerUserId}
           disabled={!daemon.canManageSharing}
         />
         {err && (

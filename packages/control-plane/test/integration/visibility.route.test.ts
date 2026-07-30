@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -16,6 +17,18 @@ import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
+const PRUNE_STALE_RESOURCE_SHARES_MIGRATION = readFileSync(
+  new URL('../../prisma/migrations/20260730153000_prune_stale_resource_shares/migration.sql', import.meta.url),
+  'utf8'
+)
+const RESOURCE_OWNERSHIP_MIGRATION = readFileSync(
+  new URL('../../prisma/migrations/20260730150000_resource_ownership/migration.sql', import.meta.url),
+  'utf8'
+)
+const RESOURCE_OWNERSHIP_BACKFILL = RESOURCE_OWNERSHIP_MIGRATION.slice(
+  RESOURCE_OWNERSHIP_MIGRATION.indexOf('UPDATE "public"."agent"'),
+  RESOURCE_OWNERSHIP_MIGRATION.indexOf('CREATE INDEX')
+)
 
 const users = () => new PgUserRepo(prisma)
 const opened: HttpApp[] = []
@@ -87,7 +100,11 @@ describe('agent visibility — write gates', () => {
     const viewer = await makeUser('w-viewer', 'viewer')
     const other = await makeUser('w-other', 'collaborator')
     const R = randomUUID()
-    await seedAgent(prisma, R, { visibility: 'restricted', sharedWith: [grantee, viewer] })
+    await seedAgent(prisma, R, {
+      visibility: 'restricted',
+      sharedWith: [grantee, viewer],
+      createdByUserId: DEFAULT_OWNER_ID
+    })
 
     const patch = (u: string) =>
       appAs(u).app.inject({ method: 'PATCH', url: `${ORG}/agents/${R}`, payload: { description: 'x' } })
@@ -110,14 +127,18 @@ describe('agent visibility — write gates', () => {
   })
 })
 
-describe('agent sharing endpoint (canManageSharing === canEdit, §13.3)', () => {
+describe('agent sharing endpoint (canManageSharing === canEdit for owned rows, §13.3)', () => {
   it('a shared collaborator can re-share, a shared viewer cannot, and unshared members 404 regardless of role', async () => {
     const grantee = await makeUser('sh-grantee', 'collaborator')
     const viewer = await makeUser('sh-viewer', 'viewer')
     const other = await makeUser('sh-other', 'collaborator')
     const owner = await makeUser('sh-owner', 'owner')
     const R = randomUUID()
-    await seedAgent(prisma, R, { visibility: 'restricted', sharedWith: [grantee, viewer] })
+    await seedAgent(prisma, R, {
+      visibility: 'restricted',
+      sharedWith: [grantee, viewer],
+      createdByUserId: DEFAULT_OWNER_ID
+    })
 
     const share = (u: string, sharedWith: string[]) =>
       appAs(u).app.inject({
@@ -137,7 +158,7 @@ describe('agent sharing endpoint (canManageSharing === canEdit, §13.3)', () => 
     const owner = await makeUser('int-owner', 'owner')
     const member = await makeUser('int-member', 'collaborator')
     const R = randomUUID()
-    await seedAgent(prisma, R, { visibility: 'org' })
+    await seedAgent(prisma, R, { visibility: 'org', createdByUserId: owner })
     const res = await appAs(owner).app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${R}/sharing`,
@@ -447,6 +468,126 @@ describe('agent call policy endpoint', () => {
 })
 
 describe('member removal transfers resource ownership (transactional, §8)', () => {
+  it('migration preserves truly ownerless rows while repairing a departed recorded creator', async () => {
+    const departed = await makeUser(`ownership-backfill-${randomUUID()}`, 'collaborator')
+    const ownerlessId = randomUUID()
+    const departedCreatorId = randomUUID()
+    await seedAgent(prisma, ownerlessId)
+    await seedAgent(prisma, departedCreatorId, { createdByUserId: departed })
+    await prisma.agent.update({ where: { id: departedCreatorId }, data: { ownerUserId: null } })
+    await prisma.membership.delete({ where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: departed } } })
+
+    expect(RESOURCE_OWNERSHIP_BACKFILL).toContain('WHEN resource."createdByUserId" IS NOT NULL')
+    await prisma.$executeRawUnsafe(RESOURCE_OWNERSHIP_BACKFILL)
+
+    const rows = await prisma.agent.findMany({
+      where: { id: { in: [ownerlessId, departedCreatorId] } },
+      select: { id: true, ownerUserId: true }
+    })
+    expect(rows.find((row) => row.id === ownerlessId)?.ownerUserId).toBeNull()
+    expect(rows.find((row) => row.id === departedCreatorId)?.ownerUserId).toBe(DEFAULT_OWNER_ID)
+  })
+
+  it('migration removes historical non-member share ids from all five resource types', async () => {
+    const sub = `ownership-stale-${randomUUID()}`
+    const email = `${sub}@acme.dev`
+    const departing = await makeUser(sub, 'collaborator')
+    const daemonId = randomUUID()
+    const agentId = randomUUID()
+    const cronId = randomUUID()
+    const providerId = randomUUID()
+    const sourceId = randomUUID()
+    const sharedWith = [departing, DEFAULT_OWNER_ID, departing]
+    const resource = {
+      visibility: 'restricted' as const,
+      sharedWith,
+      createdByUserId: DEFAULT_OWNER_ID
+    }
+
+    await seedDaemon(prisma, daemonId, resource)
+    await seedAgent(prisma, agentId, { ...resource, daemonId })
+    await prisma.cronDef.create({
+      data: {
+        id: cronId,
+        orgId: DEFAULT_ORG_ID,
+        agentId,
+        schedule: '0 * * * *',
+        timezone: 'UTC',
+        trigger: 'historical stale share cleanup',
+        ...resource,
+        ownerUserId: DEFAULT_OWNER_ID
+      }
+    })
+    await prisma.mcpProvider.create({
+      data: {
+        id: providerId,
+        orgId: DEFAULT_ORG_ID,
+        name: `stale-share-${providerId.slice(0, 8)}`,
+        url: 'https://mcp.example.com/sse',
+        ...resource,
+        ownerUserId: DEFAULT_OWNER_ID
+      }
+    })
+    await prisma.skillSource.create({
+      data: {
+        id: sourceId,
+        orgId: DEFAULT_ORG_ID,
+        name: `stale-share-${sourceId.slice(0, 8)}`,
+        source: 'example-org/example-kit',
+        ...resource,
+        ownerUserId: DEFAULT_OWNER_ID
+      }
+    })
+
+    // Recreate the pre-fix state: membership is gone, but stable share ids
+    // remain. The exact committed migration must repair this upgrade state.
+    await prisma.membership.delete({ where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: departing } } })
+    await prisma.$executeRawUnsafe(PRUNE_STALE_RESOURCE_SHARES_MIGRATION)
+
+    const select = { sharedWith: true } as const
+    const rows = await Promise.all([
+      prisma.agent.findUniqueOrThrow({ where: { id: agentId }, select }),
+      prisma.daemon.findUniqueOrThrow({ where: { id: daemonId }, select }),
+      prisma.cronDef.findUniqueOrThrow({ where: { id: cronId }, select }),
+      prisma.mcpProvider.findUniqueOrThrow({ where: { id: providerId }, select }),
+      prisma.skillSource.findUniqueOrThrow({ where: { id: sourceId }, select })
+    ])
+    for (const row of rows) expect(row.sharedWith).toEqual([DEFAULT_OWNER_ID])
+
+    const reinvited = await users().addMemberByEmail(DEFAULT_ORG_ID, email, 'collaborator')
+    expect(reinvited.userId).toBe(departing)
+    expect((await appAs(departing).app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })).statusCode).toBe(404)
+  })
+
+  it('keeps an ownerless org-visible resource public and disables sharing management', async () => {
+    const daemonId = randomUUID()
+    await seedDaemon(prisma, daemonId)
+
+    const app = appAs(DEFAULT_OWNER_ID).app
+    const listed = (await app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as Array<{
+      daemonId: string
+      ownerUserId: string | null
+      canEdit: boolean
+      canManageSharing: boolean
+    }>
+    expect(listed.find((daemon) => daemon.daemonId === daemonId)).toMatchObject({
+      ownerUserId: null,
+      canEdit: true,
+      canManageSharing: false
+    })
+
+    const restricted = await app.inject({
+      method: 'PUT',
+      url: `${ORG}/daemons/${daemonId}/sharing`,
+      payload: { visibility: 'restricted', sharedWith: [] }
+    })
+    expect(restricted.statusCode).toBe(403)
+    expect(await prisma.daemon.findUniqueOrThrow({ where: { id: daemonId } })).toMatchObject({
+      ownerUserId: null,
+      visibility: 'org'
+    })
+  })
+
   it('transfers all five resource types, preserves creator audit, and prunes stale shares', async () => {
     const departingEmail = 'ownership-departing@acme.dev'
     const departing = await makeUser('ownership-departing', 'collaborator')
@@ -513,6 +654,25 @@ describe('member removal transfers resource ownership (transactional, §8)', () 
       expect(row.createdByUserId).toBe(departing)
       expect(row.sharedWith).not.toContain(departing)
     }
+
+    const app = appAs(DEFAULT_OWNER_ID).app
+    const readModels = await Promise.all([
+      app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` }),
+      app.inject({ method: 'GET', url: `${ORG}/crons/${cronId}` }),
+      app.inject({ method: 'GET', url: `${ORG}/mcp-providers/${providerId}` }),
+      app.inject({ method: 'GET', url: `${ORG}/skill-sources/${sourceId}` })
+    ])
+    for (const response of readModels) {
+      expect(response.statusCode).toBe(200)
+      expect((response.json() as { ownerUserId: string | null }).ownerUserId).toBe(DEFAULT_OWNER_ID)
+    }
+    const daemonList = await app.inject({ method: 'GET', url: `${ORG}/daemons` })
+    expect(daemonList.statusCode).toBe(200)
+    expect(
+      (daemonList.json() as Array<{ daemonId: string; ownerUserId: string | null }>).find(
+        (daemon) => daemon.daemonId === daemonId
+      )?.ownerUserId
+    ).toBe(DEFAULT_OWNER_ID)
 
     // Re-inviting reuses the same app_user id, but neither old ownership nor an
     // old share grant comes back.

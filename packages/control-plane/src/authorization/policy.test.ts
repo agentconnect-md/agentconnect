@@ -24,6 +24,7 @@ const OTHER = 'user_other'
 const ctx = (userId: string, role: OrgMemberRole): ViewCtx => ({ userId, role })
 
 const orgVisible: Shareable = { ownerUserId: RESOURCE_OWNER, visibility: 'org', sharedWith: [] }
+const ownerlessOrg: Shareable = { ownerUserId: null, visibility: 'org', sharedWith: [] }
 const restricted: Shareable = { ownerUserId: RESOURCE_OWNER, visibility: 'restricted', sharedWith: [GRANTEE] }
 const orphaned: Shareable = { ownerUserId: null, visibility: 'restricted', sharedWith: [] }
 
@@ -78,9 +79,9 @@ describe('canEdit', () => {
   })
 })
 
-describe('canManageSharing (relaxed to === canEdit, §13.3)', () => {
-  it('is identical to canEdit across the whole matrix', () => {
-    const resources = [orgVisible, restricted, orphaned]
+describe('canManageSharing (§13.3)', () => {
+  it('is identical to canEdit for resources with a current owner', () => {
+    const resources = [orgVisible, restricted]
     const roles: OrgMemberRole[] = ['owner', 'collaborator', 'viewer']
     const users = [RESOURCE_OWNER, GRANTEE, OTHER]
     for (const r of resources) {
@@ -97,6 +98,12 @@ describe('canManageSharing (relaxed to === canEdit, §13.3)', () => {
     expect(canManageSharing(restricted, ctx(GRANTEE, 'collaborator'))).toBe(true)
     expect(canManageSharing(restricted, ctx(GRANTEE, 'viewer'))).toBe(false)
     expect(canManageSharing(orgVisible, ctx(OTHER, 'collaborator'))).toBe(true)
+  })
+
+  it('keeps ownerless org-visible resources public while preserving content edits', () => {
+    const collaborator = ctx(OTHER, 'collaborator')
+    expect(canEdit(ownerlessOrg, collaborator)).toBe(true)
+    expect(canManageSharing(ownerlessOrg, collaborator)).toBe(false)
   })
 })
 

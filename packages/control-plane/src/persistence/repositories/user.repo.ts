@@ -27,6 +27,40 @@ import {
 import { provisionPresetAgents } from '../preset-agents.js'
 import { OrgMembershipMissing } from '../errors.js'
 
+const RESOURCE_AUTHORITY_TABLES = ['agent', 'daemon', 'cron_def', 'mcp_provider', 'skill_source'] as const
+
+/**
+ * Replace one local user identity with another in a resource's effective
+ * authority fields. Creator/modifier attribution is deliberately not touched:
+ * those columns are audit history, while ownerUserId/sharedWith are live access.
+ */
+function mergeResourceAuthoritySql(table: (typeof RESOURCE_AUTHORITY_TABLES)[number], from: string, to: string) {
+  return Prisma.sql`
+    UPDATE ${Prisma.raw(`"public"."${table}"`)} AS resource
+    SET
+      "ownerUserId" = CASE
+        WHEN resource."ownerUserId" = ${from} THEN ${to}
+        ELSE resource."ownerUserId"
+      END,
+      "sharedWith" = (
+        SELECT COALESCE(array_agg(deduplicated.user_id ORDER BY deduplicated.first_ordinal), ARRAY[]::TEXT[])
+        FROM (
+          SELECT mapped.user_id, MIN(mapped.ordinality) AS first_ordinal
+          FROM (
+            SELECT
+              CASE WHEN shared.user_id = ${from} THEN ${to} ELSE shared.user_id END AS user_id,
+              shared.ordinality
+            FROM unnest(COALESCE(resource."sharedWith", ARRAY[]::TEXT[]))
+              WITH ORDINALITY AS shared(user_id, ordinality)
+          ) AS mapped
+          GROUP BY mapped.user_id
+        ) AS deduplicated
+      )
+    WHERE resource."ownerUserId" = ${from}
+       OR ${from} = ANY(COALESCE(resource."sharedWith", ARRAY[]::TEXT[]))
+  `
+}
+
 // app_user row → the caller's own profile. Synthetic placeholder emails read as
 // "no email" (never displayed), same as the member record below.
 function toProfileRecord(u: {
@@ -258,19 +292,129 @@ export class PgUserRepo implements UserRepo {
    * placeholder stays.
    */
   private async upgradeSyntheticEmail(userId: string, email: string): Promise<void> {
-    const holder = await this.db.user.findUnique({ where: { email }, include: { memberships: true } })
-    if (!holder) {
-      await this.db.user.update({ where: { id: userId }, data: { email } }).catch(() => {})
-      return
+    // A new membership can appear between the discovery read and our locks
+    // (another owner may invite this email to a second org). Retry from a fresh
+    // snapshot instead of locking a newly discovered child after its parent/user:
+    // that would invert the resource-write lock order.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const holder = await this.db.user.findUnique({ where: { email }, include: { memberships: true } })
+      if (!holder) {
+        try {
+          await this.db.user.update({ where: { id: userId }, data: { email } })
+          return
+        } catch (err) {
+          // An invite may have created the email holder after the lookup. Retry
+          // from a fresh snapshot so its memberships and resource authority are
+          // merged instead of caching a false-success provisioning result.
+          if (isP2002(err)) continue
+          throw err
+        }
+      }
+      if (holder.id === userId || holder.oidcSubject) return
+
+      const expectedOrgIds = [...new Set(holder.memberships.map((membership) => membership.orgId))].sort()
+      const userIds = [holder.id, userId].sort()
+      const outcome = await withAmbientTx(this.db, async (tx) => {
+        // Parent before child, matching lockResourceWriteMemberships. KEY SHARE
+        // keeps an org deletion from cascading through memberships while this
+        // identity merge is moving their authority.
+        if (expectedOrgIds.length > 0) {
+          await tx.$queryRaw(Prisma.sql`
+            SELECT "id"
+            FROM "org"
+            WHERE "id" IN (${Prisma.join(expectedOrgIds)})
+            ORDER BY "id"
+            FOR KEY SHARE
+          `)
+        }
+
+        // Fence both the invited identity and the canonical recipient across all
+        // currently observed orgs. Stable (orgId, userId) order matches the
+        // member-removal/resource-write protocol.
+        const lockedMemberships =
+          expectedOrgIds.length === 0
+            ? []
+            : await tx.$queryRaw<Array<{ id: string; orgId: string; userId: string }>>(Prisma.sql`
+                SELECT "id", "orgId", "userId"
+                FROM "membership"
+                WHERE "orgId" IN (${Prisma.join(expectedOrgIds)})
+                  AND "userId" IN (${Prisma.join(userIds)})
+                ORDER BY "orgId", "userId"
+                FOR UPDATE
+              `)
+
+        // Membership/resource writers take their membership locks before an FK
+        // can lock app_user. Keep that order here too.
+        const lockedUsers = await tx.$queryRaw<Array<{ id: string; email: string; oidcSubject: string | null }>>(
+          Prisma.sql`
+            SELECT "id", "email", "oidcSubject"
+            FROM "app_user"
+            WHERE "id" IN (${Prisma.join(userIds)})
+            ORDER BY "id"
+            FOR UPDATE
+          `
+        )
+        const byId = new Map(lockedUsers.map((user) => [user.id, user]))
+        const lockedHolder = byId.get(holder.id)
+        const canonical = byId.get(userId)
+        if (
+          !lockedHolder ||
+          !canonical ||
+          lockedHolder.email !== email ||
+          lockedHolder.oidcSubject !== null ||
+          !isSyntheticEmail(canonical.email)
+        ) {
+          return 'retry' as const
+        }
+
+        // The app_user locks now block any later membership FK insert. Re-read
+        // and ensure every currently committed row was among the rows locked
+        // above; otherwise end this no-write attempt and acquire the wider sorted
+        // lock set on the next pass.
+        const currentMemberships = await tx.membership.findMany({
+          where: {
+            OR: [
+              { userId: holder.id },
+              ...(expectedOrgIds.length > 0 ? [{ userId, orgId: { in: expectedOrgIds } }] : [])
+            ]
+          }
+        })
+        const lockedMembershipIds = new Set(lockedMemberships.map((membership) => membership.id))
+        if (currentMemberships.some((membership) => !lockedMembershipIds.has(membership.id))) {
+          return 'retry' as const
+        }
+
+        const holderMemberships = currentMemberships.filter((membership) => membership.userId === holder.id)
+        if (holderMemberships.length > 0) {
+          await tx.membership.createMany({
+            data: holderMemberships.map((membership) => ({
+              orgId: membership.orgId,
+              userId,
+              role: membership.role
+            })),
+            skipDuplicates: true
+          })
+        }
+
+        // Resource-table order matches removeMember. Translate grants as well as
+        // ownership: sharedWith has no FK, so deleting the invited row alone
+        // would otherwise strand a stale id. The SQL de-duplicates after
+        // replacement while preserving first-seen order.
+        for (const table of RESOURCE_AUTHORITY_TABLES) {
+          await tx.$executeRaw(mergeResourceAuthoritySql(table, holder.id, userId))
+        }
+
+        await tx.user.delete({ where: { id: holder.id } }) // frees the unique email
+        await tx.user.update({ where: { id: userId }, data: { email } })
+        return 'merged' as const
+      })
+      if (outcome === 'merged') return
     }
-    if (holder.id === userId || holder.oidcSubject) return
-    for (const m of holder.memberships) {
-      await this.db.membership
-        .create({ data: { orgId: m.orgId, userId, role: m.role } })
-        .catch((err) => (isP2002(err) ? undefined : Promise.reject(err))) // already a member — keep their role
-    }
-    await this.db.user.delete({ where: { id: holder.id } }) // frees the unique email
-    await this.db.user.update({ where: { id: userId }, data: { email } }).catch(() => {})
+
+    // A rejected provisioning promise is evicted by the auth plugin, so the
+    // caller can retry from a fresh membership snapshot instead of being
+    // silently memoized without its invite.
+    throw new Error('identity membership changed during merge; retry sign-in')
   }
 
   /**

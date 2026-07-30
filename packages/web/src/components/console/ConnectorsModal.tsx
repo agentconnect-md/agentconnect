@@ -413,7 +413,7 @@ function ConnectionForm({
         />
       ))}
 
-      <VisibilityField value={sharing} onChange={setSharing} creatorUserId={me?.userId} />
+      <VisibilityField value={sharing} onChange={setSharing} ownerUserId={me?.userId} />
 
       <div>
         <Button

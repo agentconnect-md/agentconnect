@@ -1,88 +1,90 @@
 -- Separate effective resource ownership from immutable creation attribution.
+BEGIN;
+
 ALTER TABLE "public"."agent" ADD COLUMN "ownerUserId" TEXT;
 ALTER TABLE "public"."daemon" ADD COLUMN "ownerUserId" TEXT;
 ALTER TABLE "public"."cron_def" ADD COLUMN "ownerUserId" TEXT;
 ALTER TABLE "public"."mcp_provider" ADD COLUMN "ownerUserId" TEXT;
 ALTER TABLE "public"."skill_source" ADD COLUMN "ownerUserId" TEXT;
 
--- Preserve the creator as owner while they are still a member. For resources
--- whose creator already left (or was deleted), hand ownership to a deterministic
--- current organization owner. An already-orphaned organization leaves this
--- nullable; last-member/account-deletion semantics are intentionally separate.
+-- Preserve the creator as owner while they are still a member. If a recorded
+-- creator left before this migration, apply the same transfer-to-org-owner rule
+-- as member removal. A NULL creator is genuinely ownerless/system-created and
+-- must stay ownerless; migration must not silently claim it.
 UPDATE "public"."agent" AS resource
-SET "ownerUserId" = COALESCE(
-  CASE WHEN EXISTS (
+SET "ownerUserId" = CASE
+  WHEN EXISTS (
     SELECT 1 FROM "public"."membership" AS member
     WHERE member."orgId" = resource."orgId"
       AND member."userId" = resource."createdByUserId"
-  ) THEN resource."createdByUserId" END,
-  (
+  ) THEN resource."createdByUserId"
+  WHEN resource."createdByUserId" IS NOT NULL THEN (
     SELECT member."userId" FROM "public"."membership" AS member
     WHERE member."orgId" = resource."orgId" AND member."role" = 'owner'
     ORDER BY member."userId"
     LIMIT 1
   )
-);
+END;
 
 UPDATE "public"."daemon" AS resource
-SET "ownerUserId" = COALESCE(
-  CASE WHEN EXISTS (
+SET "ownerUserId" = CASE
+  WHEN EXISTS (
     SELECT 1 FROM "public"."membership" AS member
     WHERE member."orgId" = resource."orgId"
       AND member."userId" = resource."createdByUserId"
-  ) THEN resource."createdByUserId" END,
-  (
+  ) THEN resource."createdByUserId"
+  WHEN resource."createdByUserId" IS NOT NULL THEN (
     SELECT member."userId" FROM "public"."membership" AS member
     WHERE member."orgId" = resource."orgId" AND member."role" = 'owner'
     ORDER BY member."userId"
     LIMIT 1
   )
-);
+END;
 
 UPDATE "public"."cron_def" AS resource
-SET "ownerUserId" = COALESCE(
-  CASE WHEN EXISTS (
+SET "ownerUserId" = CASE
+  WHEN EXISTS (
     SELECT 1 FROM "public"."membership" AS member
     WHERE member."orgId" = resource."orgId"
       AND member."userId" = resource."createdByUserId"
-  ) THEN resource."createdByUserId" END,
-  (
+  ) THEN resource."createdByUserId"
+  WHEN resource."createdByUserId" IS NOT NULL THEN (
     SELECT member."userId" FROM "public"."membership" AS member
     WHERE member."orgId" = resource."orgId" AND member."role" = 'owner'
     ORDER BY member."userId"
     LIMIT 1
   )
-);
+END;
 
 UPDATE "public"."mcp_provider" AS resource
-SET "ownerUserId" = COALESCE(
-  CASE WHEN EXISTS (
+SET "ownerUserId" = CASE
+  WHEN EXISTS (
     SELECT 1 FROM "public"."membership" AS member
     WHERE member."orgId" = resource."orgId"
       AND member."userId" = resource."createdByUserId"
-  ) THEN resource."createdByUserId" END,
-  (
+  ) THEN resource."createdByUserId"
+  WHEN resource."createdByUserId" IS NOT NULL THEN (
     SELECT member."userId" FROM "public"."membership" AS member
     WHERE member."orgId" = resource."orgId" AND member."role" = 'owner'
     ORDER BY member."userId"
     LIMIT 1
   )
-);
+END;
 
 UPDATE "public"."skill_source" AS resource
-SET "ownerUserId" = COALESCE(
-  CASE WHEN EXISTS (
+SET "ownerUserId" = CASE
+  WHEN EXISTS (
     SELECT 1 FROM "public"."membership" AS member
     WHERE member."orgId" = resource."orgId"
       AND member."userId" = resource."createdByUserId"
-  ) THEN resource."createdByUserId" END,
-  (
+  ) THEN resource."createdByUserId"
+  WHEN resource."createdByUserId" IS NOT NULL THEN (
     SELECT member."userId" FROM "public"."membership" AS member
     WHERE member."orgId" = resource."orgId" AND member."role" = 'owner'
     ORDER BY member."userId"
     LIMIT 1
   )
-);
+END;
 
 CREATE INDEX "agent_orgId_ownerUserId_idx" ON "public"."agent"("orgId", "ownerUserId");
 CREATE INDEX "daemon_orgId_ownerUserId_idx" ON "public"."daemon"("orgId", "ownerUserId");
@@ -110,3 +112,5 @@ ALTER TABLE "public"."skill_source"
   ADD CONSTRAINT "skill_source_ownerUserId_fkey"
   FOREIGN KEY ("ownerUserId") REFERENCES "public"."app_user"("id")
   ON DELETE SET NULL ON UPDATE CASCADE;
+
+COMMIT;

@@ -137,6 +137,13 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
     if ((err as { code?: string }).code === 'P2002') {
       return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'resource already exists' })
     }
+    if ((err as { code?: string }).code === 'RESOURCE_OWNER_MISSING') {
+      return reply.code(409).send({
+        error: 'Conflict',
+        statusCode: 409,
+        message: 'ownerless resource cannot be restricted'
+      })
+    }
     const status = typeof err.statusCode === 'number' ? err.statusCode : 500
     if (status >= 500) req.log.error({ err }, 'unhandled error')
     return reply.code(status).send({

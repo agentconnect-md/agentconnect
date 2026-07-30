@@ -15,11 +15,10 @@
  * - `RestrictedLock` — the small lock glyph shown next to a restricted resource's
  *   name in list rows.
  *
- * The creator is pinned as a non-removable locked chip (they always have access). Every
- * OTHER member — owners included — is a normal toggleable option you can add to / remove
- * from the share set. (Org owners also always see restricted resources via the server's
- * governance override, but we still let them be added explicitly.) Sharing is gated
- * server-side by canManageSharing (=== canEdit).
+ * The current resource owner is pinned as a non-removable locked chip because
+ * ownership always grants access. Every other member, including organization
+ * owners, is a normal share target. Sharing is gated server-side by
+ * canManageSharing.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Avatar, Icon } from '@/components/ui'
@@ -51,21 +50,19 @@ function memberInitials(m: Pick<MemberDto, 'name' | 'email'>): string {
   return initialsFrom(m.name ?? '', m.email ?? undefined)
 }
 
-/** Members eligible to be toggled into the share set: everyone EXCEPT the creator
- *  (who is pinned as a non-removable entry, so toggling can't imply removing their
- *  access). Owners ARE included — they're addable like any other member. */
-function useSharePool(creatorUserId?: string | null): MemberDto[] {
+/** Members eligible to be toggled into the share set: everyone except the
+ *  resource owner, whose ownership access cannot be removed here. */
+function useSharePool(ownerUserId?: string | null): MemberDto[] {
   const { members } = useConsoleData()
-  return useMemo(() => members.filter((m) => m.userId !== creatorUserId), [members, creatorUserId])
+  return useMemo(() => members.filter((m) => m.userId !== ownerUserId), [members, ownerUserId])
 }
 
-/** The resource's creator, resolved to a member row so it can be pinned into the
- *  access list as a non-editable entry. Undefined when unknown or no longer a member. */
-function useCreator(creatorUserId?: string | null): MemberDto | undefined {
+/** The resource owner, resolved to a member row for the pinned access entry. */
+function useOwner(ownerUserId?: string | null): MemberDto | undefined {
   const { members } = useConsoleData()
   return useMemo(
-    () => (creatorUserId ? members.find((m) => m.userId === creatorUserId) : undefined),
-    [members, creatorUserId]
+    () => (ownerUserId ? members.find((m) => m.userId === ownerUserId) : undefined),
+    [members, ownerUserId]
   )
 }
 
@@ -74,14 +71,14 @@ function useCreator(creatorUserId?: string | null): MemberDto | undefined {
 export function VisibilityField({
   value,
   onChange,
-  creatorUserId,
+  ownerUserId,
   disabled,
   label = 'Visibility'
 }: {
   value: SharingValue
   onChange: (next: SharingValue) => void
-  /** The resource creator's userId (self on create) — excluded from the pool. */
-  creatorUserId?: string | null
+  /** The current resource owner's userId (self on create) — excluded from the pool. */
+  ownerUserId?: string | null
   disabled?: boolean
   /** Field label (e.g. "Team visibility" in the agent Access section). */
   label?: string
@@ -108,9 +105,9 @@ export function VisibilityField({
       )}
       {restricted &&
         (isMobile ? (
-          <ShareWithPills selected={value.sharedWith} onToggle={toggle} creatorUserId={creatorUserId} />
+          <ShareWithPills selected={value.sharedWith} onToggle={toggle} ownerUserId={ownerUserId} />
         ) : (
-          <ShareWithList selected={value.sharedWith} onToggle={toggle} creatorUserId={creatorUserId} />
+          <ShareWithList selected={value.sharedWith} onToggle={toggle} ownerUserId={ownerUserId} />
         ))}
     </div>
   )
@@ -149,14 +146,14 @@ function VisibilityTiles({ restricted, onPick }: { restricted: boolean; onPick: 
 function ShareWithList({
   selected,
   onToggle,
-  creatorUserId
+  ownerUserId
 }: {
   selected: string[]
   onToggle: (userId: string) => void
-  creatorUserId?: string | null
+  ownerUserId?: string | null
 }) {
-  const pool = useSharePool(creatorUserId)
-  const creator = useCreator(creatorUserId)
+  const pool = useSharePool(ownerUserId)
+  const owner = useOwner(ownerUserId)
   const [q, setQ] = useState('')
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -197,13 +194,13 @@ function ShareWithList({
         }`}
       >
         <Icon name="search" size={14} color="var(--text-tertiary)" className="flex-none" />
-        {creator && (
+        {owner && (
           <span
-            title="The creator always has access — you can’t remove them"
+            title="The resource owner always has access — you can’t remove them"
             className="inline-flex items-center gap-[5px] rounded-full bg-(--surface-active) py-[2px] pr-[7px] pl-[3px] font-sans text-[11.5px] font-medium leading-normal"
           >
-            <Avatar src={creator.picture} initials={memberInitials(creator)} size={17} fontSize={8} />
-            {memberDisplayName(creator)}
+            <Avatar src={owner.picture} initials={memberInitials(owner)} size={17} fontSize={8} />
+            {memberDisplayName(owner)}
             <Icon name="lock" size={10} color="var(--text-tertiary)" className="flex-none" />
           </span>
         )}
@@ -271,10 +268,7 @@ function ShareWithList({
           </div>
           <div className="flex items-start gap-[7px] border-t border-(--border-subtle) bg-(--surface-sunken) px-3 py-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
             <Icon name="info" size={13} className="mt-[2px] flex-none" />
-            <span>
-              The creator (pinned above) always has access — you can’t remove them. Organization owners can always see
-              restricted resources too.
-            </span>
+            <span>The resource owner (pinned above) always has access — you can’t remove them.</span>
           </div>
         </>
       )}
@@ -312,16 +306,16 @@ function VisibilityPills({ restricted, onPick }: { restricted: boolean; onPick: 
 function ShareWithPills({
   selected,
   onToggle,
-  creatorUserId
+  ownerUserId
 }: {
   selected: string[]
   onToggle: (userId: string) => void
-  creatorUserId?: string | null
+  ownerUserId?: string | null
 }) {
-  const pool = useSharePool(creatorUserId)
-  const creator = useCreator(creatorUserId)
+  const pool = useSharePool(ownerUserId)
+  const owner = useOwner(ownerUserId)
 
-  // The creator's non-removable "always has access" pill.
+  // The resource owner's non-removable "always has access" pill.
   const lockedPill = (m: MemberDto) => (
     <span
       key={m.userId}
@@ -338,7 +332,7 @@ function ShareWithPills({
     <>
       <span className="fldlbl mt-[14px] block">Share with</span>
       <div className="mt-[6px] flex flex-wrap gap-2">
-        {creator && lockedPill(creator)}
+        {owner && lockedPill(owner)}
         {pool.map((m) => {
           const on = selected.includes(m.userId)
           return (
@@ -365,10 +359,7 @@ function ShareWithPills({
       </div>
       <div className="mt-[10px] flex items-start gap-[6px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
         <Icon name="info" size={13} className="mt-[2px] flex-none" />
-        <span>
-          The creator always has access — you can’t remove them. Organization owners can always see restricted resources
-          too.
-        </span>
+        <span>The resource owner always has access — you can’t remove them.</span>
       </div>
     </>
   )
@@ -379,14 +370,12 @@ function ShareWithPills({
 export function VisibilityValue({
   visibility,
   sharedWith,
-  createdBy
+  ownerUserId
 }: {
   visibility: ResourceVisibility
   sharedWith: string[]
-  /** The creator's userId. They ALWAYS have access (the share editor pins them as a
-   *  non-removable chip), so they lead the access list — without them a resource
-   *  restricted to just its creator would resolve to nobody. */
-  createdBy?: string | null
+  /** Current resource owner. Ownership grants access independently of sharedWith. */
+  ownerUserId?: string | null
 }) {
   const { members } = useConsoleData()
   if (visibility === 'org') {
@@ -397,31 +386,29 @@ export function VisibilityValue({
       </span>
     )
   }
-  // Creator first, then the shared set (deduped — the creator may also be listed).
-  const ids = createdBy ? [createdBy, ...sharedWith.filter((id) => id !== createdBy)] : sharedWith
+  // Owner first, then the explicit share set (deduped for legacy rows).
+  const ids = ownerUserId ? [ownerUserId, ...sharedWith.filter((id) => id !== ownerUserId)] : sharedWith
   const resolved = ids.map((id) => members.find((m) => m.userId === id)).filter((m): m is MemberDto => !!m)
   const shown = resolved.slice(0, 3)
   const extra = resolved.length - shown.length
-  // The chips are the EXPLICIT grant (creator + share set). Org owners can always see
-  // a restricted resource on top of that (governance override — the same thing the
-  // share editor spells out), so name it here too rather than implying exclusivity.
-  const ownerNote = 'Organization owners can always see restricted resources too.'
-  const title = resolved.length > 0 ? `${resolved.map(memberDisplayName).join(', ')} — ${ownerNote}` : ownerNote
+  const title =
+    resolved.length > 0
+      ? `${resolved.map(memberDisplayName).join(', ')} can access this restricted resource.`
+      : 'Restricted resource'
   return (
     <span className="inline-flex items-center gap-2" title={title}>
       <Icon name="lock" size={14} color="var(--text-tertiary)" className="flex-none" />
       {resolved.length === 0 ? (
-        // Only when nothing resolves (no/unknown creator and an empty or stale
-        // share set) — everyone with access has left the org, or a legacy row.
+        // Only when no current owner/share identity resolves (legacy or corrupt row).
         <span className="font-sans text-[12.5px] font-medium leading-normal">Restricted</span>
       ) : (
         <span className="inline-flex">
           {shown.map((m, i) => (
             <span
               key={m.userId}
-              // Nested titles REPLACE the parent's on hover, and the avatars are the
-              // main hover target — repeat the owner disclosure so it's never hidden.
-              title={`${memberDisplayName(m)} — ${ownerNote}`}
+              // Nested titles replace the parent's on hover, and the avatars are
+              // the main hover target, so repeat this member's access state.
+              title={`${memberDisplayName(m)} can access this restricted resource.`}
               className={i === 0 ? 'inline-flex' : 'inline-flex -ml-[6px]'}
             >
               <Avatar

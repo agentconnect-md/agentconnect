@@ -1410,7 +1410,7 @@ export default function SessionDetailView() {
         />
       )}
 
-      {owner?.canManageSharing && !owner.name.startsWith(MOCK_PREFIX) && session.agentId && (
+      {owner?.canEdit && !owner.name.startsWith(MOCK_PREFIX) && session.agentId && (
         <ApprovalRequestsCard
           agentId={session.agentId}
           sessionId={session.realSessionId ?? session.id}

@@ -373,7 +373,7 @@ export default function EditAgentModal({
   )
   const inboundEffectivePeerIds = reachability.incomingByAgentId.get(agent.id) ?? []
   const outboundEffectivePeerIds = reachability.outgoingByAgentId.get(agent.id) ?? []
-  const callVisibilityEditable = agent.canManageSharing
+  const callVisibilityEditable = agent.canEdit
 
   // Switching runtime invalidates the model and the effort level (both vocabularies
   // are per-runtime), so reset both to the runtime default. (MCP enablement is edited
@@ -483,8 +483,9 @@ export default function EditAgentModal({
       // — the guard above rejected one).
       if (hasSpecChanges && !soloPlacement) await updateAgent(agent.id, patch)
       if (placementRequested) await moveAgent(agent.id, daemonId)
-      // Sharing + agent-call visibility ride their own endpoints (canManageSharing
-      // gate) — only write when they actually changed, and never during a move.
+      // Sharing and agent-call visibility ride their own endpoints. Sharing uses
+      // canManageSharing; call policy is a normal agent edit and uses canEdit.
+      // Only write when they actually changed, and never during a move.
       if (!soloPlacement && hasSharingChanges) await saveSharing('agents', agent.id, sharing)
       if (!soloPlacement && hasCallPolicyChanges) {
         const body: AgentCallPolicyInput = {
@@ -789,7 +790,7 @@ export default function EditAgentModal({
                 <VisibilityField
                   value={sharing}
                   onChange={setSharing}
-                  creatorUserId={agent.createdBy || null}
+                  ownerUserId={agent.ownerUserId}
                   disabled={!agent.canManageSharing}
                   label="Team visibility"
                 />

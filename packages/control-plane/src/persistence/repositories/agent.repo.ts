@@ -188,6 +188,7 @@ export class PgAgentRepo implements AgentRepo {
       await lockHookReviewOrgProducerScope(tx, input.orgId)
       const memberships = await lockResourceWriteMemberships(tx, {
         orgId: input.orgId,
+        visibility: input.visibility ?? 'org',
         actorUserId: input.createdByUserId,
         ownerUserId,
         sharedWith: input.sharedWith
@@ -527,10 +528,15 @@ export class PgAgentRepo implements AgentRepo {
     byUserId?: string
   ): Promise<AgentRecord> {
     return this.transaction(async (tx) => {
-      const existing = await tx.agent.findUniqueOrThrow({ where: { id: agentId }, select: { orgId: true } })
+      const existing = await tx.agent.findUniqueOrThrow({
+        where: { id: agentId },
+        select: { orgId: true, ownerUserId: true }
+      })
       const memberships = await lockResourceWriteMemberships(tx, {
         orgId: existing.orgId,
+        visibility: sharing.visibility,
         actorUserId: byUserId,
+        ownerUserId: existing.ownerUserId ?? undefined,
         sharedWith: sharing.sharedWith
       })
       // A sharing change is a human edit — advance the last-modified audit

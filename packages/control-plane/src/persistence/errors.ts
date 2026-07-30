@@ -96,3 +96,17 @@ export class OrgMembershipMissing extends Error {
     this.name = 'OrgMembershipMissing'
   }
 }
+
+/**
+ * Restricted visibility requires a durable owner. Ownerless org-visible rows
+ * remain editable, but cannot be made restricted until an explicit,
+ * provenance-aware ownership workflow assigns one.
+ */
+export class ResourceOwnerMissing extends Error {
+  readonly code = 'RESOURCE_OWNER_MISSING' as const
+
+  constructor() {
+    super('ownerless resource cannot be restricted')
+    this.name = 'ResourceOwnerMissing'
+  }
+}

@@ -19,8 +19,8 @@
 //      own repo so CP-owned effects can run.
 //
 // Grant rows are visible to anyone who can view the agent; conversion,
-// authorize and revoke only for canEdit (canManageSharing — the DTO mirror;
-// viewers see a read-only card). "Authorize repository" opens AddAgentRepoModal
+// authorize and revoke require canEdit (viewers see a read-only card).
+// "Authorize repository" opens AddAgentRepoModal
 // (the design's inline add-expander is skipped — established precedent: the
 // modal owns the picker/tier/preflight flow).
 
@@ -109,11 +109,11 @@ export function WorkspaceCard({
     const mode = searchParams.get('editws')
     if (autoEdited.current || !mode) return
     autoEdited.current = true
-    if (agent.canManageSharing) setEditMode(mode === 'scratch' ? 'scratch' : 'github')
+    if (agent.canEdit) setEditMode(mode === 'scratch' ? 'scratch' : 'github')
     const sp = new URLSearchParams(searchParams)
     sp.delete('editws')
     router.replace(`${pathname}${sp.size ? `?${sp}` : ''}`, { scroll: false })
-  }, [searchParams, agent.canManageSharing, pathname, router])
+  }, [searchParams, agent.canEdit, pathname, router])
 
   const isGithub = ws.mode === 'github'
   const isGithubApp = ws.mode === 'github' && !!ws.installationId
@@ -126,7 +126,7 @@ export function WorkspaceCard({
   } = useSWR(reposKey, ([, orgId, , agentId]) => fetchAgentRepos(agentId, orgId))
   const repos = reposData ?? []
   const loadError = reposData === undefined && reposError
-  const canEdit = agent.canManageSharing
+  const canEdit = agent.canEdit
   const branch = header?.branch ?? (ws.mode === 'github' ? ws.branch : null)
   // A manual checkout has no App installation to mint a write token from, so its
   // effective workspace access is read regardless of the stored preference.

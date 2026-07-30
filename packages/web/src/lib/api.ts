@@ -187,9 +187,11 @@ export interface AgentDto {
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
   lastModifiedAt: string // ISO-8601
   lastModifiedBy: string | null // editor's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
-  visibility: ResourceVisibility // 'org' = all members; 'restricted' = creator + owners + sharedWith
+  visibility: ResourceVisibility // 'org' = all members; 'restricted' = ownerUserId + sharedWith
   sharedWith: string[] // app_user.id set (only meaningful when restricted)
-  canManageSharing: boolean // whether the caller may change this resource's sharing (= canEdit)
+  ownerUserId: string | null // current ownership arm; null for system/legacy ownerless rows
+  canEdit: boolean // whether the caller may change non-sharing agent settings
+  canManageSharing: boolean // whether the caller may change this resource's sharing
   callPolicy: AgentCallPolicy // which peer agents may call this agent as a sub-agent
   allowedCallerAgentIds: string[] // agent.id set, meaningful when callPolicy='selected'
   outboundPolicy: AgentCallPolicy // which peer agents this agent may discover/call
@@ -436,6 +438,8 @@ export interface CronDto {
   lastModifiedAt: string // ISO-8601
   visibility: ResourceVisibility
   sharedWith: string[]
+  ownerUserId: string | null
+  canEdit: boolean
   canManageSharing: boolean
 }
 
@@ -811,6 +815,8 @@ export interface DaemonViewDto {
   lastModifiedBy: string | null // editor's userId (resolved to a name / "You" in the UI); null for CLI/self-registered
   visibility: ResourceVisibility
   sharedWith: string[]
+  ownerUserId: string | null
+  canEdit: boolean
   canManageSharing: boolean
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
@@ -1461,6 +1467,8 @@ export function agentFromDto(d: AgentDto): Agent {
     lastModifiedAt: fmtDate(d.lastModifiedAt),
     visibility: d.visibility,
     sharedWith: d.sharedWith,
+    ownerUserId: d.ownerUserId,
+    canEdit: d.canEdit,
     canManageSharing: d.canManageSharing,
     callPolicy: d.callPolicy,
     allowedCallerAgentIds: d.allowedCallerAgentIds,
@@ -1687,6 +1695,8 @@ export function daemonFromDto(d: DaemonViewDto): DaemonRow {
     lastModifiedAt: fmtDate(d.lastModifiedAt),
     visibility: d.visibility,
     sharedWith: d.sharedWith,
+    ownerUserId: d.ownerUserId,
+    canEdit: d.canEdit,
     canManageSharing: d.canManageSharing
   }
 }
@@ -2483,13 +2493,13 @@ export async function moveAgent(agentId: string, daemonId: string): Promise<Agen
 }
 
 // Set an agent's visibility + share set (PUT /agents/:id/sharing). Separate from the
-// content PATCH; gated server-side by canManageSharing (=== canEdit).
+// content PATCH; gated server-side by canManageSharing.
 export async function updateAgentSharing(agentId: string, body: SharingInput): Promise<Agent> {
   return agentFromDto(await apiPut<AgentDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/sharing`, body))
 }
 
 // Set both directions of agent-to-agent visibility/call authorization. Uses the
-// same edit gate as agent sharing (`canManageSharing` in the DTO).
+// normal agent edit gate (`canEdit` in the DTO).
 export async function updateAgentCallPolicy(agentId: string, body: AgentCallPolicyInput): Promise<Agent> {
   return agentFromDto(await apiPut<AgentDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/call-policy`, body))
 }
@@ -3188,9 +3198,11 @@ export interface McpProviderDto {
   /** Open-connector service slug (e.g. "stripe") for kind='open_connector' — used to
    *  resolve the provider's catalog icon. Absent for custom providers. */
   service?: string
-  visibility: ResourceVisibility // 'org' = everyone; 'restricted' = creator + owners + sharedWith
+  visibility: ResourceVisibility // 'org' = everyone; 'restricted' = ownerUserId + sharedWith
   sharedWith: string[] // app_user.id set (only meaningful when restricted)
-  createdBy: string | null // creator userId (pins the non-removable share chip)
+  createdBy: string | null // immutable creator audit
+  ownerUserId: string | null // current ownership arm; null for ownerless rows
+  canEdit: boolean // whether THIS caller may change non-sharing provider settings
   canManageSharing: boolean // whether THIS caller may change the provider's sharing
   url: string
   /** Upstream auth header keys; values are secret and never returned. */
@@ -3253,7 +3265,7 @@ export async function deleteMcpProvider(id: string): Promise<void> {
 }
 
 // Set a provider's visibility + share set (PUT /mcp-providers/:id/sharing). Separate
-// from the content PATCH; gated server-side by canManageSharing (=== canEdit).
+// from the content PATCH; gated server-side by canManageSharing.
 export async function updateMcpProviderSharing(id: string, body: SharingInput): Promise<McpProviderDto> {
   return apiPut<McpProviderDto>(`${orgBase()}/mcp-providers/${encodeURIComponent(id)}/sharing`, body)
 }
@@ -3272,6 +3284,8 @@ export interface SkillSourceDto {
   visibility: ResourceVisibility
   sharedWith: string[]
   createdBy: string | null
+  ownerUserId: string | null
+  canEdit: boolean
   canManageSharing: boolean
   createdAt: string // ISO-8601
 }

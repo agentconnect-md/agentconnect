@@ -12,13 +12,15 @@
  *   the departed ID before it can persist stale authority.
  */
 import { Prisma } from '../generated/prisma/client.js'
-import { OrgMembershipMissing } from './errors.js'
+import { OrgMembershipMissing, ResourceOwnerMissing } from './errors.js'
+import type { ResourceVisibility } from './ports.js'
 
 export interface ResourceMembershipWrite {
   orgId: string
+  visibility: ResourceVisibility
   /** Human principal performing the write. Absent for trusted internal writes. */
   actorUserId?: string
-  /** Initial owner on create. Absent for system-owned/legacy-compatible rows. */
+  /** Current owner whose membership makes this ownership-bearing write valid. */
   ownerUserId?: string
   /** Requested share vector; undefined means this write does not set sharing. */
   sharedWith?: readonly string[]
@@ -44,6 +46,7 @@ export async function lockResourceWriteMemberships(
     FOR KEY SHARE
   `)
   if (org.length === 0) throw new OrgMembershipMissing()
+  if (input.visibility === 'restricted' && !input.ownerUserId) throw new ResourceOwnerMissing()
 
   const required = [input.actorUserId, input.ownerUserId].filter((id): id is string => id !== undefined)
   const ids = [...new Set([...required, ...(input.sharedWith ?? [])])].sort()

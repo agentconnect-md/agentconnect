@@ -83,8 +83,11 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
     case AuthorizationAction.ResourceView:
       return resourceIsVisible(request.resource, principal)
     case AuthorizationAction.ResourceEdit:
-    case AuthorizationAction.ResourceManageSharing:
       return resourceIsEditable(request.resource, principal)
+    case AuthorizationAction.ResourceManageSharing:
+      // Ownerless org-visible resources may still be edited, but cannot be
+      // pulled restricted: there is no identity that could later reopen them.
+      return request.resource.ownerUserId !== null && resourceIsEditable(request.resource, principal)
     case AuthorizationAction.SessionView:
       return request.resource.visibility === 'org' || identityOwnsSession(request.resource, request.identitySet)
     // Re-classification (§4.3) is owner-only: identity match with the recorded

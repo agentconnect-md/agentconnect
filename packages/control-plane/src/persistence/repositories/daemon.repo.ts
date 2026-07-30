@@ -69,6 +69,7 @@ export class PgDaemonRepo implements DaemonRepo {
     return withAmbientTx(this.db, async (tx) => {
       await lockResourceWriteMemberships(tx, {
         orgId,
+        visibility: 'org',
         actorUserId: createdByUserId,
         ownerUserId: createdByUserId
       })
@@ -184,10 +185,15 @@ export class PgDaemonRepo implements DaemonRepo {
     byUserId?: string
   ): Promise<DaemonRecord> {
     return withAmbientTx(this.db, async (tx) => {
-      const existing = await tx.daemon.findUniqueOrThrow({ where: { id: daemonId }, select: { orgId: true } })
+      const existing = await tx.daemon.findUniqueOrThrow({
+        where: { id: daemonId },
+        select: { orgId: true, ownerUserId: true }
+      })
       const memberships = await lockResourceWriteMemberships(tx, {
         orgId: existing.orgId,
+        visibility: sharing.visibility,
         actorUserId: byUserId,
+        ownerUserId: existing.ownerUserId ?? undefined,
         sharedWith: sharing.sharedWith
       })
       // A sharing change is a human edit — advance the last-modified audit

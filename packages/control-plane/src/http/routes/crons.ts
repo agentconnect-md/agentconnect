@@ -54,11 +54,13 @@ function toDto(c: CronRecord, ctx: ViewCtx): CronDtoT {
     // The creator's userId (web resolves it to a display name / "You"); a synthesized
     // `<sub>@oidc.local` placeholder means a non-human creator → null (shows "—").
     createdBy: c.createdBy && !isSyntheticEmail(c.createdBy.email) ? c.createdBy.userId : null,
+    ownerUserId: c.ownerUserId,
     createdAt: c.createdAt.toISOString(),
     lastModifiedBy: c.lastModifiedBy && !isSyntheticEmail(c.lastModifiedBy.email) ? c.lastModifiedBy.userId : null,
     lastModifiedAt: c.lastModifiedAt.toISOString(),
     visibility: c.visibility,
     sharedWith: c.sharedWith,
+    canEdit: canEdit(c, ctx),
     canManageSharing: canManageSharing(c, ctx)
   }
 }
@@ -453,8 +455,9 @@ export function cronRoutes(deps: HttpDeps) {
     )
 
     // Set who can see this cron (visibility + share set). Gated exactly like a
-    // content edit (canManageSharing === canEdit, §13.3). A cron owns its visibility
-    // independently of its target agent. Visibility never rides the wire.
+    // content edit on owned rows (§13.3); ownerless rows stay org-visible. A
+    // cron owns its visibility independently of its target agent. Visibility
+    // never rides the wire.
     r.put(
       '/crons/:id/sharing',
       {
@@ -462,7 +465,7 @@ export function cronRoutes(deps: HttpDeps) {
           tags: [Tag.Crons],
           summary: 'Set cron sharing',
           description:
-            'Set the cron’s visibility (org-wide vs restricted) and share set. Requires edit rights on the cron; sharedWith is intersected with current org members.',
+            'Set an owned cron’s visibility (org-wide vs restricted) and share set. Requires edit rights on the cron; ownerless crons stay org-visible, and sharedWith is intersected with current org members.',
           operationId: 'setCronSharing',
           params: IdParam,
           body: SetSharingBody,

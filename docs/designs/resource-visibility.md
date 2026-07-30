@@ -58,15 +58,18 @@ canEdit(res, ctx) =
     ? false // A viewer is always read-only
     : canView(res, ctx)
 
-canManageSharing(res, ctx) = canEdit(res, ctx) // Relaxed in section 13.3
+canManageSharing(res, ctx) =
+  res.ownerUserId !== null && // Ownerless org resources stay public
+  canEdit(res, ctx) // Relaxed in section 13.3 for owned resources
 ```
 
 The unit-test truth table follows directly. After relaxation,
-`canManageSharing` equals `canEdit` on every row:
+`canManageSharing` equals `canEdit` on resources with a current owner:
 
 | Scenario                                | Role         | Resource owner? | In `sharedWith`? | Visibility | `canView` | `canEdit` | `canManageSharing` |
 | --------------------------------------- | ------------ | --------------- | ---------------- | ---------- | --------- | --------- | ------------------ |
-| Default resource, any collaborator      | collaborator | No              | N/A              | org        | Yes       | Yes       | Yes                |
+| Owned org resource, any collaborator    | collaborator | No              | N/A              | org        | Yes       | Yes       | Yes                |
+| Ownerless default resource              | collaborator | N/A             | N/A              | org        | Yes       | Yes       | No                 |
 | Default resource, viewer                | viewer       | No              | N/A              | org        | Yes       | No        | No                 |
 | Restricted, unshared collaborator       | collaborator | No              | No               | restricted | No        | No        | No                 |
 | Restricted, shared collaborator         | collaborator | No              | Yes              | restricted | Yes       | Yes       | Yes                |
@@ -74,19 +77,22 @@ The unit-test truth table follows directly. After relaxation,
 | Restricted, ownership arm               | collaborator | Yes             | N/A              | restricted | Yes       | Yes       | Yes                |
 | Restricted, unshared organization owner | owner        | No              | No               | restricted | No        | No        | No                 |
 
-**Sharing management was relaxed to "any editor may change sharing."**
-`canManageSharing` now equals `canEdit`. A collaborator or owner for whom
-`canView` is true may change `visibility` and `sharedWith`. Viewers remain
-read-only.
+**Sharing management was relaxed to "any editor may change sharing" for
+resources with a current owner.** A collaborator or owner for whom `canView`
+is true may change `visibility` and `sharedWith`. Viewers remain read-only.
+Ownerless organization-visible resources remain content-editable but expose
+no sharing control: without a durable owner, restricting one would either
+orphan it or let an arbitrary collaborator seize it.
 
 This has two consequences:
 
 1. **Restriction strength depends on shared collaborators.** A collaborator can
    share onward or switch the resource to organization-wide visibility. A
    resource owner who needs tighter control should share only with viewers.
-2. **Any collaborator can change an `org` resource to restricted and select
-   only themselves**, hiding it from other collaborators and organization
-   owners. The resource's ownership arm retains access and can restore it.
+2. **Any collaborator can change an owned `org` resource to restricted and
+   select only themselves**, hiding it from other collaborators and
+   organization owners. The resource's ownership arm retains access and can
+   restore it.
 
 Both are accepted under a model of collaborator trust within an organization.
 
@@ -141,7 +147,10 @@ Section 6 defines the index strategy.
 Persistence records additionally retain raw `createdByUserId` for audit and
 the joined creator used by Console DTOs. Creation defaults ownership to the
 creator when one exists; system-created rows may remain ownerless and are
-organization-visible by default.
+organization-visible by default. Ownerless rows cannot be changed to
+restricted visibility. Assigning ownership later requires a separate,
+provenance-aware workflow; the sharing endpoint never lets an arbitrary editor
+claim one.
 
 After the schema change, run
 `pnpm --filter @agentconnect.md/control-plane prisma:generate` to regenerate the
@@ -330,8 +339,10 @@ needed, use `where: { cron: { ...visibilityWhere(viewer) } }`.
 
 ### 5.8 Sharing writes through dedicated `/api/v1` endpoints
 
-Sharing writes use the **same gate as content edits**, because section 13.3
-relaxed `canManageSharing` to `canEdit`. There is no separate governance guard.
+Sharing writes use the **same gate as content edits for resources with a
+current owner**, because section 13.3 relaxed `canManageSharing` to `canEdit`
+for those rows. Ownerless organization-visible resources remain editable but
+cannot be restricted.
 Register three route pairs with prefix-relative paths inside the existing
 organization subtree, for example `r.put('/agents/:id/sharing', ...)`. The
 organization routes are mounted at `server.ts:143-146`, and `API_V1_PREFIX` is
@@ -345,7 +356,7 @@ defined at `version.ts:26`. Public paths are
   `visibility` and `sharedWith`, stamp
   `lastModifiedByUserId`, and make it idempotent. The paired GET returns
   `{ visibility, sharedWith: string[], canManageSharing: boolean }`, where the
-  boolean is the caller's `canEdit` result.
+  boolean is the caller's `canEdit` result only when `ownerUserId` is present.
 - `/daemons/:id/sharing` uses `DaemonRepo.setSharing`, and
   `/crons/:id/sharing` follows the same shape.
 - **Validate `sharedWith` on write:** every ID must currently belong to the
@@ -461,6 +472,26 @@ shared/exclusive membership lock pair establishes a commit order:
 - if removal commits first, the queued write observes the missing actor/owner
   and fails, while a departed share target is omitted.
 
+The ownership migration sequence also intersects all five existing share
+vectors with current organization membership. This repairs stale stable user
+IDs left by older removal paths before a later re-invite can reactivate them.
+
+The initial ownership migration is not safe to run while any older Control
+Plane binary, admin job, or operator tool can still write organizations,
+memberships, or the five resource tables: older writers neither initialize nor
+transfer `ownerUserId`. Drain every such writer before applying the migrations,
+and start the ownership-aware version only after `migrate deploy` completes
+successfully. Each migration is explicitly transactional; if a later migration
+fails after an earlier one committed, keep the application stopped and repair
+forward.
+
+This is a coordinated, **forward-only** deployment boundary, not a rolling
+mixed-version upgrade. Once the ownership-aware binary has transferred an
+owner, rolling back only the application binary is unsupported: the old policy
+would read immutable `createdByUserId` as authority and could restore a departed
+creator's access. Recovery requires a forward fix or a coordinated full
+database restore, not an old-binary restart.
+
 The HTTP `resolveShareSet` call remains useful early normalization, but it is
 not the correctness boundary because membership can change before the resource
 write commits.
@@ -555,19 +586,23 @@ handler.
 ## 11. Web Console
 
 - **DTOs and Console:** `AgentDto`, `DaemonViewDto`, and `CronDto` carry
-  `visibility`, `sharedWith`, and server-computed `canManageSharing` in
+  `visibility`, `sharedWith`, `ownerUserId`, and server-computed `canEdit` /
+  `canManageSharing` in
   `http/dto/index.ts`; web `api.ts` mirrors them:
   `AgentDto` at `:82-100`, `DaemonViewDto` at `:309-325`, and `CronDto` at
   `:183-197`. Map them through `agentFromDto` at `api.ts:639` and
   `daemonFromDto` at `api.ts:744`. Add
   `fetchSharing(kind, id)` and
   `updateSharing(kind, id, { visibility, sharedWith })`.
-- **Compute `canManageSharing`, equal to `canEdit`, on the server.** It depends
-  on scalar `ownerUserId` and `sharedWith`, while `dto.createdBy` may be null
-  for a synthetic-email creator because of the
+- **Compute `canManageSharing` on the server.** It equals `canEdit` for owned
+  resources and is false for ownerless rows. It depends on scalar
+  `ownerUserId` and `sharedWith`, while `dto.createdBy` may be null for a
+  synthetic-email creator because of the
   `isSyntheticEmail` gates at `agents.ts:69`, `crons.ts:44`, and
   `daemons.ts:61`. Client derivation would diverge from the server predicate.
-- **Member selector:** store and transmit raw user IDs. Reuse the ID-to-name
+- **Member selector:** store and transmit raw user IDs. Pin `ownerUserId`, not
+  immutable `createdBy`, because ownership may transfer while creation
+  attribution does not. Reuse the ID-to-name
   directory through `setMemberDirectory`, `creatorLabel`,
   `useConsoleData().members`, `Avatar` at `ui.tsx:39`, and
   `memberDisplayName` at `api.ts:607`. The member data comes from
@@ -583,10 +618,10 @@ handler.
   cards in `AgentDetailView` and `DaemonDetailView` have separate desktop and
   `isMobile` JSX branches; see `AgentDetailView.tsx:34,49` and `useIsMobile`.
   Add the sharing control and badge to both.
-- Gate enabled controls client-side by `dto.canManageSharing`, which now equals
-  the caller's `canEdit`, while treating server 403 as authoritative. A viewer
-  who can see but not edit sees read-only visibility state and the
-  `sharedWith` member list.
+- Gate enabled controls client-side by `dto.canManageSharing`, which equals the
+  caller's `canEdit` only when the row has an owner, while treating server 403
+  as authoritative. A viewer or a user viewing an ownerless row sees read-only
+  visibility state and the `sharedWith` member list.
 
 ## 12. Test plan
 
@@ -637,9 +672,10 @@ while `visibilityWhere(undefined)` equals `{}`.
    `UpdateAgentBody` is strict and returns 400 for extra fields, and the
    architecture supports a separate surface.
 2. **Add GIN indexes immediately** for `sharedWith` on all three tables.
-3. **Relax `canManageSharing = canEdit`.** An owner or collaborator who can view
-   and edit a resource can change sharing; only a viewer is read-only. Role never
-   widens resource visibility.
+3. **Relax `canManageSharing = canEdit` for owned resources.** An owner or
+   collaborator who can view and edit an owned resource can change sharing;
+   only a viewer is read-only. Ownerless org-visible resources stay public.
+   Role never widens resource visibility.
 4. **Preserve `sharedWith` when changing `restricted -> org`** so switching
    back restores the selection. The `org` predicate already ignores shares.
 5. **Separate ownership from creation attribution.** `ownerUserId` drives
@@ -647,9 +683,9 @@ while `visibilityWhere(undefined)` equals `{}`.
    immutable audit history.
 6. **Show non-managers read-only sharing state.** Anyone for whom `canView` is
    true sees visibility and the `sharedWith` members. Edit controls use
-   `canEdit`, equal to the relaxed `canManageSharing`. After relaxation only
-   viewers can view without editing. Showing co-sharees read-only is accepted
-   as minor information disclosure within the same resource.
+   `canManageSharing`, which equals `canEdit` for owned rows and is false for
+   ownerless rows. Showing co-sharees read-only is accepted as minor
+   information disclosure within the same resource.
 7. **Drop the entire SSE `/stream` envelope for an invisible agent.** Resolve
    `agentId -> canView` per envelope and send nothing when false. A restricted
    agent remains completely invisible, matching list/get 404 semantics.
