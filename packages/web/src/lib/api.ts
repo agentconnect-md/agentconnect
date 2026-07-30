@@ -2823,6 +2823,17 @@ export async function updateMe(patch: { name: string }): Promise<MeDto> {
   return apiPatch<MeDto>('/me', patch)
 }
 
+// The Slack workspace behind the signed-in account (GET /me/slack-identity),
+// resolved by the CP from the sign-in provider. `linked: false` covers both "not
+// signed in with Slack" and "this deployment can't look it up", so the console
+// renders the same nothing for either.
+export type MySlackIdentityDto =
+  { linked: false } | { linked: true; teamId: string; userId: string; teamName?: string; teamDomain?: string }
+
+export async function fetchMySlackIdentity(): Promise<MySlackIdentityDto> {
+  return apiGet<MySlackIdentityDto>('/me/social-identities/slack')
+}
+
 async function putMyProfilePicture(blob: Blob): Promise<MeDto> {
   const path = '/me/picture'
   const res = await fetch(`${cpBase()}${path}`, {

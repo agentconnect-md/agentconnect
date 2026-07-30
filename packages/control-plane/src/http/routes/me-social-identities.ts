@@ -16,7 +16,9 @@ import { Tag } from '../plugins/openapi.js'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 
 const ConnectorId = z.string().trim().min(1).max(128)
-const SocialTarget = z.enum(['github', 'google'])
+// Must stay in step with the console's SOCIAL_LOGIN_PROVIDERS: a target the UI
+// offers but this rejects is a Connect button that 400s.
+const SocialTarget = z.enum(['github', 'google', 'slack'])
 const State = z.string().min(32).max(256)
 const ConnectorData = z
   .record(z.string().max(64), z.string().max(4096))
@@ -28,7 +30,24 @@ const LinkBody = z.object({ connectorId: ConnectorId, connectorData: ConnectorDa
 const LinkDto = z.object({ linked: z.literal(true) })
 const TargetParam = z.object({ target: z.string().trim().min(1).max(128) })
 
-type Operation = 'authorize' | 'link' | 'unlink'
+/** The Slack workspace behind the caller's account. `linked: false` is a real
+ *  answer (no Slack identity), not an error — a Logto 404 for the user resolves
+ *  to it too, since an account that is gone has no identity to report. */
+const SlackIdentityDto = z.discriminatedUnion('linked', [
+  z.object({ linked: z.literal(false) }),
+  z.object({
+    linked: z.literal(true),
+    /** Slack workspace id (`T…`). */
+    teamId: z.string(),
+    /** Slack user id (`U…`) — scoped to that workspace. */
+    userId: z.string(),
+    /** Workspace display name / subdomain, when Slack sent them. */
+    teamName: z.string().optional(),
+    teamDomain: z.string().optional()
+  })
+])
+
+type Operation = 'authorize' | 'link' | 'unlink' | 'read'
 
 function socialCallbackUrl(deps: HttpDeps): string | undefined {
   const webUrl = resolveWebAppUrl(deps.config)
@@ -196,6 +215,35 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
           return reply.code(204).send(null)
         } catch (error) {
           return logtoFailure(reply, error, 'unlink')
+        }
+      }
+    )
+
+    // A READ, unlike its siblings: it reports the Slack workspace an account
+    // signed in with — the one server-side path to that pair, since a Logto
+    // access token carries the Logto subject and never the connector identity.
+    // Read-only metadata; nothing may treat it as an authorization statement.
+    r.get(
+      '/me/social-identities/slack',
+      {
+        preHandler: app.oidcAuth,
+        schema: {
+          tags: [Tag.Profile],
+          summary: 'Get your Slack workspace identity',
+          description:
+            'The Slack workspace id and user id behind your account, as recorded by the sign-in provider. Returns `linked: false` when you have not connected Slack.',
+          operationId: 'getMySlackIdentity',
+          response: { 200: SlackIdentityDto, 429: ErrorDto, 502: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const identity = deps.logtoIdentity
+        if (!identity) return reply.code(503).send(unavailable)
+        try {
+          const slack = await identity.slackIdentityFor(req.oidcSubject!)
+          return slack ? { linked: true as const, ...slack } : { linked: false as const }
+        } catch (error) {
+          return logtoFailure(reply, error, 'read')
         }
       }
     )

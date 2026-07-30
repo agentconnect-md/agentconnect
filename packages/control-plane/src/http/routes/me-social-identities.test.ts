@@ -76,4 +76,106 @@ describe('my social identities routes', () => {
       await app.close()
     }
   })
+
+  it('accepts slack as a linkable target, matching the console provider list', async () => {
+    // The console offers Slack; a server-side allowlist that omitted it would
+    // turn that Connect button into a 400.
+    const identity = {
+      createSocialAuthorization: vi.fn(async () => ({
+        connectorId: 'slack-connector',
+        redirectTo: 'https://slack.example.test/authorize'
+      }))
+    }
+    const app = await slackApp({ logtoIdentity: identity } as unknown as HttpDeps)
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/me/social-identities/authorization-uri',
+        payload: { target: 'slack', state: 's'.repeat(64) }
+      })
+      expect(res.statusCode).toBe(200)
+      expect(identity.createSocialAuthorization).toHaveBeenCalledWith(
+        'slack',
+        'https://app.example.test/auth/social/callback',
+        's'.repeat(64)
+      )
+    } finally {
+      await app.close()
+    }
+  })
+})
+
+/** A routes-only app whose oidcAuth stamps a fixed subject. */
+async function slackApp(partial: Partial<HttpDeps>) {
+  const deps = { ...partial, config: { PUBLIC_WEB_URL: 'https://app.example.test' } } as unknown as HttpDeps
+  const app = Fastify()
+  installZod(app)
+  app.decorate('oidcAuth', async (req) => {
+    req.oidcSubject = 'logto-user'
+  })
+  await app.register(meSocialIdentityRoutes(deps))
+  return app
+}
+
+describe('GET /me/social-identities/slack', () => {
+  it('returns the workspace identity behind the caller’s subject', async () => {
+    const slackIdentityFor = vi.fn(async () => ({
+      teamId: 'T0EXAMPLE1',
+      userId: 'U0EXAMPLE1',
+      teamName: 'Example Workspace'
+    }))
+    const app = await slackApp({ logtoIdentity: { slackIdentityFor } } as unknown as HttpDeps)
+    try {
+      const res = await app.inject({ method: 'GET', url: '/me/social-identities/slack' })
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({
+        linked: true,
+        teamId: 'T0EXAMPLE1',
+        userId: 'U0EXAMPLE1',
+        teamName: 'Example Workspace'
+      })
+      expect(slackIdentityFor).toHaveBeenCalledWith('logto-user')
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('reports "not linked" for an account that never connected Slack', async () => {
+    const app = await slackApp({
+      logtoIdentity: { slackIdentityFor: vi.fn(async () => null) }
+    } as unknown as HttpDeps)
+    try {
+      const res = await app.inject({ method: 'GET', url: '/me/social-identities/slack' })
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({ linked: false })
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('503s when the deployment cannot resolve identities, like its siblings', async () => {
+    const app = await slackApp({} as unknown as HttpDeps)
+    try {
+      const res = await app.inject({ method: 'GET', url: '/me/social-identities/slack' })
+      expect(res.statusCode).toBe(503)
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('502s when the provider is unreachable, rather than claiming "not linked"', async () => {
+    const app = await slackApp({
+      logtoIdentity: {
+        slackIdentityFor: vi.fn(async () => {
+          throw new LogtoApiError('logto unreachable', 0, true)
+        })
+      }
+    } as unknown as HttpDeps)
+    try {
+      const res = await app.inject({ method: 'GET', url: '/me/social-identities/slack' })
+      expect(res.statusCode).toBe(502)
+    } finally {
+      await app.close()
+    }
+  })
 })
