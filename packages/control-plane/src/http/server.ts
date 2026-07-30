@@ -137,6 +137,13 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
     if ((err as { code?: string }).code === 'P2002') {
       return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'resource already exists' })
     }
+    if ((err as { code?: string }).code === 'ORG_OWNER_REQUIRED') {
+      return reply.code(409).send({
+        error: 'Conflict',
+        statusCode: 409,
+        message: 'an organization needs at least one owner'
+      })
+    }
     if ((err as { code?: string }).code === 'RESOURCE_OWNER_MISSING') {
       return reply.code(409).send({
         error: 'Conflict',

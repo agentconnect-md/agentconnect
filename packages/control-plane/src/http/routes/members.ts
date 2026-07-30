@@ -101,28 +101,7 @@ export function memberRoutes(deps: HttpDeps) {
         if (denyNonOwner(req, reply)) return
         const orgId = req.orgCtx!.orgId
         const userId = req.params.id
-        const current = (await deps.repos.user.listMembers(orgId)).find((m) => m.userId === userId)
-        if (!current) {
-          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'member not found' })
-        }
-        // Demoting the final owner would orphan the org.
-        if (current.role === 'owner' && req.body.role !== 'owner') {
-          const owners = await deps.repos.org.countOwners(orgId)
-          if (owners <= 1) {
-            return reply
-              .code(409)
-              .send({ error: 'Conflict', statusCode: 409, message: 'an organization needs at least one owner' })
-          }
-        }
-        const updated = await deps.repos.user.setMemberRole(orgId, userId, req.body.role)
-        // Compensate the check-then-act window: two concurrent demotes can both
-        // pass the pre-check — if the org just lost its last owner, restore.
-        if (current.role === 'owner' && (await deps.repos.org.countOwners(orgId)) === 0) {
-          await deps.repos.user.setMemberRole(orgId, userId, 'owner')
-          return reply
-            .code(409)
-            .send({ error: 'Conflict', statusCode: 409, message: 'an organization needs at least one owner' })
-        }
+        const updated = await deps.repos.user.setMemberRole(orgId, userId, req.body.role, req.orgCtx!.userId)
         return toDto(updated, deps)
       }
     )
@@ -144,41 +123,8 @@ export function memberRoutes(deps: HttpDeps) {
         if (denyNonOwner(req, reply)) return
         const orgId = req.orgCtx!.orgId
         const userId = req.params.id
-        const members = await deps.repos.user.listMembers(orgId)
-        const current = members.find((m) => m.userId === userId)
-        if (!current) {
-          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'member not found' })
-        }
-        if (current.role === 'owner') {
-          const owners = await deps.repos.org.countOwners(orgId)
-          if (owners <= 1) {
-            return reply
-              .code(409)
-              .send({ error: 'Conflict', statusCode: 409, message: 'an organization needs at least one owner' })
-          }
-        }
         const actingUserId = req.orgCtx!.userId
-        const transferToUserId =
-          userId === actingUserId
-            ? members
-                .filter((member) => member.role === 'owner' && member.userId !== userId)
-                .map((member) => member.userId)
-                .sort()[0]
-            : actingUserId
-        if (!transferToUserId) {
-          return reply
-            .code(409)
-            .send({ error: 'Conflict', statusCode: 409, message: 'an organization needs at least one owner' })
-        }
-        await deps.repos.user.removeMember(orgId, userId, transferToUserId)
-        // Compensate the check-then-act window (see PATCH above): if the org just
-        // lost its last owner to a concurrent removal, put this membership back.
-        if (current.role === 'owner' && (await deps.repos.org.countOwners(orgId)) === 0) {
-          await deps.repos.user.addMember(orgId, userId, 'owner').catch(() => {})
-          return reply
-            .code(409)
-            .send({ error: 'Conflict', statusCode: 409, message: 'an organization needs at least one owner' })
-        }
+        await deps.repos.user.removeMember(orgId, userId, actingUserId)
         return reply.code(204).send(null)
       }
     )
