@@ -173,6 +173,49 @@ describe('replayTo — register-time convergence', () => {
     expect(d.recordVisibilityAck).not.toHaveBeenCalled()
   })
 
+  it('pauses and resumes instead of abandoning a set it knows is stale', async () => {
+    vi.useFakeTimers()
+    try {
+      // Pages stay full and the unacked count never drops: changes are landing
+      // as fast as we ack. A round cap would walk away from gates we KNOW are
+      // stale; the loop must yield and come back instead.
+      const warn = vi.fn()
+      const visibilitySnapshotForDaemon = vi.fn(async () => page(500))
+      const countUnackedVisibility = vi.fn(async () => 5_000)
+      const sessionVisibilitySnapshot = vi.fn(async () => ({ ok: true }))
+      const push = new SessionVisibilityPushService({
+        repos: {
+          session: {
+            recordVisibilityAck: vi.fn(async () => {}),
+            visibilitySnapshotForDaemon,
+            countUnackedVisibility,
+            get: vi.fn(async () => null)
+          } as never,
+          agent: { get: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+        },
+        control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot } as never,
+        connReg: connReg(),
+        log: { warn }
+      })
+
+      await push.replayTo(DAEMON as never)
+      // It stopped (no spin) …
+      expect(sessionVisibilitySnapshot).toHaveBeenCalledTimes(2)
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ unacked: 5_000 }),
+        expect.stringContaining('resuming')
+      )
+
+      // … and it comes back on its own, rather than waiting for a register that
+      // a still-connected daemon may never perform again.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(sessionVisibilitySnapshot.mock.calls.length).toBeGreaterThan(2)
+      push.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('sends nothing to a daemon that does not advertise the feature', async () => {
     const d = deps({ snapshotPages: [page(3)], connReg: connReg({ feature: false }) as never })
     await d.push.replayTo(DAEMON as never)

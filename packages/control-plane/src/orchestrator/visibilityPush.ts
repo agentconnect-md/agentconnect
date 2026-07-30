@@ -35,10 +35,12 @@ import { NoConnection, type ControlSender } from './outbound.js'
 /** Entries per snapshot frame. The schema caps at 1000; stay well under the
  *  256 KiB frame ceiling. */
 const SNAPSHOT_CHUNK = 500
-/** Runaway guard on the paging loop below. Each round acks its page, so the
- *  unacknowledged set shrinks by up to SNAPSHOT_CHUNK per round; this bounds a
- *  pathological daemon at 100k gates per register rather than looping forever. */
-const MAX_SNAPSHOT_ROUNDS = 200
+/** How long to wait before resuming a replay that stalled — i.e. one where the
+ *  unacknowledged set stopped shrinking because new changes are landing as fast
+ *  as we ack them. A pause, never an abandonment: the remaining gates are known
+ *  to be stale, and `replayTo` otherwise only runs on register, which a daemon
+ *  that stays connected may not do again for a long time. */
+const REPLAY_RETRY_MS = 30_000
 
 export interface VisibilityPushDeps {
   repos: { session: SessionRepo; agent: AgentRepo }
@@ -52,7 +54,16 @@ function toPush(s: SessionMetaRecord): SessionVisibilityPush {
 }
 
 export class SessionVisibilityPushService {
+  /** daemonId → pending resume of a replay that stalled (see `scheduleRetry`). */
+  private readonly retries = new Map<string, ReturnType<typeof setTimeout>>()
+
   constructor(private readonly deps: VisibilityPushDeps) {}
+
+  /** Drop pending resumes (process shutdown / test teardown). */
+  stop(): void {
+    for (const timer of this.retries.values()) clearTimeout(timer)
+    this.retries.clear()
+  }
 
   /**
    * A daemon can only be pushed to if it is connected AND advertises the
@@ -100,23 +111,57 @@ export class SessionVisibilityPushService {
    * replay. Failure is swallowed — the next register tries again.
    */
   async replayTo(daemonId: DaemonId): Promise<void> {
+    this.cancelRetry(daemonId)
     if (!this.supports(daemonId)) return
     // Page until nothing is left unacknowledged. Ordering alone is not enough:
     // with more unacked rows than one page holds, a single pass would ack the
     // first page and leave the rest carrying a stale gate until some LATER
-    // register happened to run — which, for a daemon that stays connected, may
-    // be never. Each round acks its page, so the unacked set strictly shrinks.
-    for (let round = 0; round < MAX_SNAPSHOT_ROUNDS; round++) {
-      const snapshot = await this.deps.repos.session.visibilitySnapshotForDaemon(daemonId, SNAPSHOT_CHUNK)
-      if (snapshot.length === 0) return
-      if (!(await this.sendSnapshotChunk(daemonId, snapshot))) return // offline / rejected: next register retries
-      if (snapshot.length < SNAPSHOT_CHUNK) return // the page was not full: nothing behind it
-      if ((await this.deps.repos.session.countUnackedVisibility(daemonId)) === 0) return
+    // register — which, for a daemon that stays connected, may never come.
+    //
+    // The loop is bounded by PROGRESS, not by a round count: each page acks its
+    // entries, so the unacknowledged set strictly shrinks and the loop ends. A
+    // fixed cap would instead walk away from gates we KNOW are stale, which is
+    // the privacy gap this replay exists to close.
+    let previousUnacked = Number.POSITIVE_INFINITY
+    for (;;) {
+      const page = await this.deps.repos.session.visibilitySnapshotForDaemon(daemonId, SNAPSHOT_CHUNK)
+      if (page.length === 0) return
+      if (!(await this.sendSnapshotChunk(daemonId, page))) return // offline / rejected: next register retries
+      if (page.length < SNAPSHOT_CHUNK) return // the page was not full: nothing behind it
+      const unacked = await this.deps.repos.session.countUnackedVisibility(daemonId)
+      if (unacked === 0) return
+      if (unacked >= previousUnacked) {
+        // Not converging — new changes are arriving at least as fast as we ack.
+        // Yield and resume rather than spin, and rather than leave it to chance.
+        this.scheduleRetry(daemonId, unacked)
+        return
+      }
+      previousUnacked = unacked
     }
+  }
+
+  /** Resume a stalled replay later. One outstanding timer per daemon; unref'd so
+   *  it never holds the process open, and cancelled by the next `replayTo`. */
+  private scheduleRetry(daemonId: DaemonId, unacked: number): void {
     this.deps.log?.warn(
-      { daemonId, rounds: MAX_SNAPSHOT_ROUNDS },
-      'session visibility replay hit the round cap with gates still unacknowledged'
+      { daemonId, unacked, retryMs: REPLAY_RETRY_MS },
+      'session visibility replay not converging — resuming shortly'
     )
+    if (this.retries.has(daemonId)) return
+    const timer = setTimeout(() => {
+      this.retries.delete(daemonId)
+      void this.replayTo(daemonId)
+    }, REPLAY_RETRY_MS)
+    timer.unref?.()
+    this.retries.set(daemonId, timer)
+  }
+
+  private cancelRetry(daemonId: DaemonId): void {
+    const timer = this.retries.get(daemonId)
+    if (timer) {
+      clearTimeout(timer)
+      this.retries.delete(daemonId)
+    }
   }
 
   /** One snapshot frame + its acks. False ⇒ stop replaying (the daemon is gone

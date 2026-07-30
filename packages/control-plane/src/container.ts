@@ -1193,6 +1193,7 @@ export function buildContainer(
       feishuRegistrationReaper.stop()
       relaySweeper.stop()
       slackBotIdentityReconciler.stop()
+      visibilityPush.stop()
       await Promise.allSettled([
         ...relayRegistrationTasks,
         ...(installationDoorbell ? [installationDoorbell.settle()] : [])
