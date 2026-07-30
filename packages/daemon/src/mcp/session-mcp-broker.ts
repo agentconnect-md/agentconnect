@@ -109,6 +109,10 @@ export interface ReleaseSessionMcpCell {
   generation: number
 }
 
+/** Immutable authority fence emitted only after a token-authenticated bridge
+ * connection for this exact cell transitions from established to closed. */
+export type SessionMcpBridgeDisconnected = ReleaseSessionMcpCell
+
 export interface SessionMcpCellMount {
   sourceDirectory: string
   sourceSocketPath: string
@@ -308,6 +312,7 @@ export class SessionMcpBroker {
   private readonly history = new Map<string, DelegationHistory>()
   private readonly seenCellIds = new Set<string>()
   private readonly activeTokens = new Set<string>()
+  private readonly bridgeDisconnectListeners = new Set<(event: SessionMcpBridgeDisconnected) => void>()
   private readonly maxConversationFences: number
   private readonly maxSeenCellIds: number
   private mutationTail: Promise<void> = Promise.resolve()
@@ -405,6 +410,11 @@ export class SessionMcpBroker {
       sourceSocketPath: binding.sourceSocketPath,
       targetDirectory: this.deps.inCellSocketDirectory
     }
+  }
+
+  subscribeBridgeDisconnect(listener: (event: SessionMcpBridgeDisconnected) => void): () => void {
+    this.bridgeDisconnectListeners.add(listener)
+    return () => this.bridgeDisconnectListeners.delete(listener)
   }
 
   /** Non-secret lifecycle counters used by health checks and resource-bound tests. */
@@ -539,6 +549,8 @@ export class SessionMcpBroker {
     socket.setEncoding('utf8')
     let buffer = ''
     let pending = 0
+    let authenticated = false
+    let disconnectEmitted = false
     socket.on('data', (chunk: string) => {
       buffer += chunk
       if (Buffer.byteLength(buffer) > PRIVATE_MCP_MAX_FRAME_BYTES) {
@@ -555,6 +567,14 @@ export class SessionMcpBroker {
         return
       }
       for (const request of decoded.messages) {
+        if (
+          !authenticated &&
+          isNarrowIpcRequest(request) &&
+          binding.accepting &&
+          tokenMatches(binding.token, request.token)
+        ) {
+          authenticated = true
+        }
         pending += 1
         void this.handle(binding, request, socket).finally(() => {
           pending -= 1
@@ -564,7 +584,28 @@ export class SessionMcpBroker {
     socket.on('error', () => {
       // Cell-local bridge failures never escape into the daemon.
     })
-    socket.on('close', () => binding.connections.delete(socket))
+    socket.on('close', () => {
+      binding.connections.delete(socket)
+      // Active release flips `accepting` before closing its sockets, so a normal
+      // manager teardown cannot recursively re-enter the lifecycle callback.
+      if (!authenticated || !binding.accepting || disconnectEmitted) return
+      disconnectEmitted = true
+      const event: SessionMcpBridgeDisconnected = {
+        isolationCellId: binding.isolationCellId,
+        agentId: binding.agentId,
+        conversationId: binding.conversationId,
+        delegationId: binding.delegationId,
+        generation: binding.generation
+      }
+      for (const listener of this.bridgeDisconnectListeners) {
+        try {
+          listener(event)
+        } catch {
+          // Lifecycle observers are containment boundaries; broker serving must
+          // not fail because a host-manager cleanup callback threw.
+        }
+      }
+    })
   }
 
   private async handle(binding: CellBinding, request: unknown, socket: net.Socket): Promise<void> {

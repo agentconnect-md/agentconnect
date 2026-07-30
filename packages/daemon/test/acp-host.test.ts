@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
-import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs'
+import { dirname, join, resolve, sep } from 'node:path'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import {
   AcpHost,
@@ -13,6 +13,11 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url))
 const fakeAgent = join(here, 'fixtures', 'fake-acp-agent.mjs')
+const delegatedSandboxRoots: string[] = []
+
+afterEach(() => {
+  for (const root of delegatedSandboxRoots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
 
 describe('AcpHost (against a fake ACP agent)', () => {
   it('initializes, creates a session, and streams an echoed reply', async () => {
@@ -518,5 +523,103 @@ describe('AcpHost.stop', () => {
     await host.start()
     await host.stop(200)
     expect(warns.join('\n')).toContain('ignored SIGTERM')
+  }, 15_000)
+})
+
+describe('AcpHost delegated sandbox launch', () => {
+  function fakeBwrap() {
+    const root = mkdtempSync(join(tmpdir(), 'ac-host-bwrap-'))
+    const resolvedRoot = realpathSync(root)
+    const repoRoot = realpathSync(resolve(here, '../../..'))
+    expect(resolvedRoot).not.toBe(repoRoot)
+    expect(resolvedRoot.startsWith(repoRoot + sep)).toBe(false)
+    delegatedSandboxRoots.push(root)
+    const bin = join(root, 'bin')
+    const argsFile = join(root, 'args')
+    const maskedRoot = join(root, 'broker')
+    const sourceDir = join(maskedRoot, 'cell-private')
+    const runtimeHome = join(root, 'home')
+    mkdirSync(bin)
+    mkdirSync(sourceDir, { recursive: true })
+    mkdirSync(runtimeHome)
+    const bwrap = join(bin, 'bwrap')
+    writeFileSync(
+      bwrap,
+      '#!/bin/sh\nprintf "%s\\n" "$@" > "$AC_BWRAP_ARGS"\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n'
+    )
+    chmodSync(bwrap, 0o755)
+    return { bin, argsFile, maskedRoot, sourceDir, runtimeHome, root }
+  }
+
+  it('masks the broker root for an ordinary untrusted ACP host without binding a cell back', async () => {
+    const fixture = fakeBwrap()
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      {
+        onUpdate: () => {},
+        env: { PATH: fixture.bin, AC_BWRAP_ARGS: fixture.argsFile },
+        inheritProcessEnv: false,
+        sandbox: {
+          mechanism: 'bwrap',
+          writable: [fixture.runtimeHome],
+          maskedReadRoots: [fixture.maskedRoot]
+        }
+      }
+    )
+    await host.start()
+    await host.stop()
+    const args = readFileSync(fixture.argsFile, 'utf8').split('\n')
+    expect(args).toContain('--unshare-pid')
+    expect(args).toContain('/proc')
+    const maskedRoot = realpathSync(fixture.maskedRoot)
+    expect(args.findIndex((arg, index) => arg === maskedRoot && args[index - 1] === '--tmpfs')).toBeGreaterThan(0)
+    expect(args).not.toContain(realpathSync(fixture.sourceDir))
+  }, 15_000)
+
+  it('reveals exactly its validated private cell bind after masking the common broker root', async () => {
+    const fixture = fakeBwrap()
+    const targetDir = join(fixture.root, 'private-endpoint')
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      {
+        onUpdate: () => {},
+        env: { PATH: fixture.bin, AC_BWRAP_ARGS: fixture.argsFile },
+        inheritProcessEnv: false,
+        sandbox: {
+          mechanism: 'bwrap',
+          writable: [fixture.runtimeHome],
+          maskedReadRoots: [fixture.maskedRoot],
+          delegatedCellMount: {
+            maskedRoot: fixture.maskedRoot,
+            sourceDir: fixture.sourceDir,
+            targetDir
+          }
+        }
+      }
+    )
+    await host.start()
+    await host.stop()
+    const args = readFileSync(fixture.argsFile, 'utf8').split('\n')
+    const mask = args.findIndex(
+      (arg, index) => arg === realpathSync(fixture.maskedRoot) && args[index - 1] === '--tmpfs'
+    )
+    const bind = args.findIndex((arg, index) => arg === realpathSync(fixture.sourceDir) && args[index - 1] === '--bind')
+    expect(mask).toBeGreaterThan(0)
+    expect(bind).toBeGreaterThan(mask)
+    expect(args[bind + 1]).toBe(join(realpathSync(fixture.root), 'private-endpoint'))
+  }, 15_000)
+
+  it('reports child terminal exactly once after an unexpected host crash', async () => {
+    const onTerminal = vi.fn()
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      { onUpdate: () => {}, onTerminal }
+    )
+    await host.start()
+    const child = (host as unknown as { child: import('node:child_process').ChildProcess }).child
+    child.kill('SIGKILL')
+    await vi.waitFor(() => expect(onTerminal).toHaveBeenCalledOnce())
+    await host.stop()
+    expect(onTerminal).toHaveBeenCalledOnce()
   }, 15_000)
 })

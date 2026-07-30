@@ -24,7 +24,7 @@ import {
 import type { RuntimeDef } from '../config/config-schema.js'
 import { resolveCommandPath } from '../runtimes/probe.js'
 import { augmentClaudeEfforts, isClaudeRuntimeDef, ULTRACODE_EFFORT } from './claude-runtime.js'
-import { sandboxWrap, type SandboxMechanism } from './sandbox.js'
+import { delegatedCellSandboxWrap, sandboxWrap, type DelegatedCellMount, type SandboxMechanism } from './sandbox.js'
 import type { Logger } from '../log.js'
 import { accountAppIsolation } from './account-apps.js'
 
@@ -132,6 +132,15 @@ export interface SessionConfigPrefs {
    *  agent's identity + description now travel per-session in the agent meta object
    *  (see SessionManager), which also carries the channel source. undefined ⇒ none. */
   systemPrompt?: string
+}
+
+export interface AcpSandboxLaunch {
+  mechanism: SandboxMechanism
+  writable: string[]
+  /** Daemon-owned private broker roots hidden from every untrusted bwrap host. */
+  maskedReadRoots?: string[]
+  /** Present only for an entitled host and already tied to its broker cell. */
+  delegatedCellMount?: DelegatedCellMount
 }
 
 /** The `session/set_config_option` call that applies a desired value, or the reason none is needed. */
@@ -498,7 +507,10 @@ export class AcpHost {
        *  the workspace, private runtime HOME, memory, and daemon socket dirs; tmp is
        *  added by sandboxWrap.
        *  Absent ⇒ run unconfined (fail-open). */
-      sandbox?: { mechanism: SandboxMechanism; writable: string[] }
+      sandbox?: AcpSandboxLaunch
+      /** Called once when the owned adapter process reaches terminal exit. The
+       *  delegated host manager uses this to tear down its fenced cell. */
+      onTerminal?: () => void
       log?: Logger
     }
   ) {}
@@ -568,7 +580,14 @@ export class AcpHost {
     // inside its agent dir + tmp. Fail-open — ensureHost only sets opts.sandbox when a
     // mechanism exists, so no mechanism ⇒ this is a no-op and the agent runs unconfined.
     const launch = this.opts.sandbox
-      ? sandboxWrap(resolved, spawnArgs, this.opts.sandbox)
+      ? this.opts.sandbox.delegatedCellMount
+        ? delegatedCellSandboxWrap(
+            resolved,
+            spawnArgs,
+            this.opts.sandbox.writable,
+            this.opts.sandbox.delegatedCellMount
+          )
+        : sandboxWrap(resolved, spawnArgs, this.opts.sandbox)
       : { cmd: resolved, args: spawnArgs }
     const child = spawn(launch.cmd, launch.args, {
       stdio: ['pipe', 'pipe', this.opts.suppressChildStderr ? 'ignore' : 'inherit'],
@@ -597,6 +616,11 @@ export class AcpHost {
         }
       }
       if (this.child === child) this.child = undefined
+      try {
+        this.opts.onTerminal?.()
+      } catch (err) {
+        this.opts.log?.debug(`acp: terminal observer failed: ${(err as Error).message}`)
+      }
     })
 
     if (!child.stdin || !child.stdout) {

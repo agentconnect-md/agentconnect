@@ -164,6 +164,22 @@ async function writeUntilClose(endpoint: string, body: string): Promise<void> {
   })
 }
 
+async function authenticatedSocket(endpoint: string, request: IpcRequest): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(endpoint)
+    let buffer = ''
+    socket.setEncoding('utf8')
+    socket.once('error', reject)
+    socket.on('data', (chunk: string) => {
+      buffer += chunk
+      const decoded = decodeFrames<IpcResponse>(buffer)
+      buffer = decoded.rest
+      if (decoded.messages[0]) resolve(socket)
+    })
+    socket.once('connect', () => socket.write(encodeFrame(request)))
+  })
+}
+
 describe('SessionMcpBroker immutable registration', () => {
   it('registers only webchat and never exposes CP authority in the descriptor', async () => {
     const h = await harness()
@@ -527,6 +543,62 @@ describe('SessionMcpBroker immutable registration', () => {
       })
     ).resolves.toMatchObject({ id: 7, ok: false, error: WEBCHAT_MCP_RECONNECT_ERROR })
     expect(h.mintMcpInvocation).not.toHaveBeenCalled()
+  })
+})
+
+describe('SessionMcpBroker authenticated bridge lifecycle', () => {
+  it('emits one immutable fenced disconnect after a valid-token bridge closes', async () => {
+    const h = await harness()
+    const server = await h.broker.registerCell(binding())
+    const events: unknown[] = []
+    h.broker.subscribeBridgeDisconnect((event) => events.push(event))
+    const socket = await authenticatedSocket(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+      id: 1,
+      token: descriptorEnv(server!).AC_MCP_TOKEN!,
+      op: 'listTools'
+    })
+
+    socket.destroy()
+    await vi.waitFor(() => expect(events).toHaveLength(1))
+    expect(events).toEqual([
+      {
+        isolationCellId: CELL_ID,
+        agentId: AGENT_ID,
+        conversationId: CONVERSATION_ID,
+        delegationId: DELEGATION_ID,
+        generation: 1
+      }
+    ])
+  })
+
+  it('does not emit for unauthenticated, wrong-token, oversized, or actively released sockets', async () => {
+    const h = await harness()
+    const server = await h.broker.registerCell(binding())
+    const endpoint = h.broker.getCellMount(CELL_ID)!.sourceSocketPath
+    const events: unknown[] = []
+    h.broker.subscribeBridgeDisconnect((event) => events.push(event))
+
+    await new Promise<void>((resolve, reject) => {
+      const socket = net.connect(endpoint)
+      socket.once('error', reject)
+      socket.once('connect', () => socket.destroy())
+      socket.once('close', resolve)
+    })
+    await expect(ipc(endpoint, { id: 1, token: 'wrong-token', op: 'listTools' })).resolves.toMatchObject({
+      ok: false
+    })
+    await writeUntilClose(endpoint, 'x'.repeat(PRIVATE_MCP_MAX_FRAME_BYTES + 1))
+
+    const authenticated = await authenticatedSocket(endpoint, {
+      id: 2,
+      token: descriptorEnv(server!).AC_MCP_TOKEN!,
+      op: 'listTools'
+    })
+    const closed = new Promise<void>((resolve) => authenticated.once('close', resolve))
+    await h.broker.releaseCell(binding())
+    await closed
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(events).toEqual([])
   })
 })
 
