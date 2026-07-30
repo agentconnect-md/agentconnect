@@ -63,11 +63,10 @@ export interface ViewCtx {
 }
 
 /** The visibility-bearing fields every shareable resource carries.
- *  `createdByUserId` is the RAW FK scalar (not the joined creator object, which is
- *  null once the user row is SetNull-deleted). It temporarily supplies the
- *  ownership arm until issue #271 separates ownership from audit attribution. */
+ *  Ownership is independent from immutable creation attribution and may move
+ *  when a member leaves the organization. */
 export interface Shareable {
-  createdByUserId: string | null
+  ownerUserId: string | null
   visibility: ResourceVisibility
   sharedWith: string[]
 }
@@ -153,9 +152,10 @@ export interface DaemonRecord {
   unreachableAt: Date | null
   createdAt: Date
   createdBy: AgentCreator | null // null for CLI/self-registered daemons (no WebUI principal)
-  /** Raw creator FK scalar — temporarily the visibility ownership arm, independent
-   *  of joined `createdBy`. null ⇒ CLI/self-registered. See issue #271. */
+  /** Raw immutable creator FK scalar, independent of joined `createdBy`. */
   createdByUserId: string | null
+  /** Current resource owner used by restricted visibility. */
+  ownerUserId: string | null
   visibility: ResourceVisibility
   sharedWith: string[] // app_user.id set; meaningful only when visibility='restricted'
   lastModifiedAt: Date // last human edit (provision/rename); defaults to createdAt
@@ -533,6 +533,8 @@ export interface CreateAgentInput {
   workspaceRepoId?: bigint
   capabilities?: string[]
   createdByUserId?: string // WebUI principal who created it (audit); null ⇒ daemon/CLI-created
+  /** Initial resource owner; defaults to `createdByUserId` when omitted. */
+  ownerUserId?: string
   /** Initial visibility (absent ⇒ DB default 'org', visible to all org members). */
   visibility?: ResourceVisibility
   /** Initial share set (app_user.id); only meaningful with visibility='restricted'. */
@@ -624,9 +626,10 @@ export interface AgentRecord {
   capabilities: string[]
   createdAt: Date
   createdBy: AgentCreator | null // null for daemon/CLI-created agents (no WebUI principal)
-  /** Raw creator FK scalar — temporarily the visibility ownership arm, independent
-   *  of joined `createdBy`. null ⇒ daemon/CLI-created. See issue #271. */
+  /** Raw immutable creator FK scalar, independent of joined `createdBy`. */
   createdByUserId: string | null
+  /** Current resource owner used by restricted visibility. */
+  ownerUserId: string | null
   visibility: ResourceVisibility
   sharedWith: string[] // app_user.id set; meaningful only when visibility='restricted'
   callPolicy: AgentCallPolicy
@@ -1211,6 +1214,8 @@ export interface UpsertCronInput {
   /** Creator (WebUI user) — stamped on CREATE only; an edit through the same
    *  upsert never reassigns it. */
   createdByUserId?: string
+  /** Initial resource owner; defaults to `createdByUserId` on create. */
+  ownerUserId?: string
   /** WebUI user performing THIS upsert → stamps the last-modified audit on both
    *  create and edit (absent under devAuth). */
   lastModifiedByUserId?: string
@@ -1235,9 +1240,10 @@ export interface CronRecord {
   lastRunAt: Date | null
   /** Creator, joined for the console (audit); null for CLI/legacy rows. */
   createdBy: { userId: string; displayName: string | null; email: string } | null
-  /** Raw creator FK scalar — temporarily the visibility ownership arm, independent
-   *  of joined `createdBy`. null ⇒ CLI/legacy rows. See issue #271. */
+  /** Raw immutable creator FK scalar, independent of joined `createdBy`. */
   createdByUserId: string | null
+  /** Current resource owner used by restricted visibility. */
+  ownerUserId: string | null
   visibility: ResourceVisibility
   sharedWith: string[] // app_user.id set; meaningful only when visibility='restricted'
   createdAt: Date
@@ -2966,9 +2972,11 @@ export interface UserRepo {
    */
   addMemberByEmail(orgId: string, email: string, role: OrgMemberRole): Promise<OrgMemberRecord>
 
-  /** Remove a member. Rejects with Prisma P2025 (→ 404) when absent. Callers
-   *  enforce owner-only access and the last-owner guard. */
-  removeMember(orgId: string, userId: string): Promise<void>
+  /** Remove a member, transfer all of their resource ownership, and prune their
+   *  share grants atomically. Rejects with a not-found-shaped error when the
+   *  target or transfer recipient is no longer eligible. Callers enforce
+   *  owner-only access and the last-owner guard. */
+  removeMember(orgId: string, userId: string, transferToUserId: string): Promise<void>
 
   /** Re-attach a known user to an org (the last-owner compensation path). */
   addMember(orgId: string, userId: string, role: OrgMemberRole): Promise<void>
@@ -3129,8 +3137,8 @@ export type McpTransport = 'http' | 'sse'
  *  Display + create-flow discriminator only — the relay/daemon wire is identical. */
 export type McpProviderKind = 'custom' | 'open_connector'
 
-/** Domain view of an `mcp_provider` row. A Shareable (visibility + sharedWith +
- *  createdByUserId), so the same OSS authorization policy as agents applies.
+/** Domain view of an `mcp_provider` row. A Shareable (owner + visibility +
+ *  sharedWith), so the same OSS authorization policy as agents applies.
  *  `url` is the non-secret upstream endpoint (may appear in DTOs); the upstream auth
  *  headers live in McpProviderSecretStore, the grant keys in McpGrantRepo — NEITHER
  *  ever rides this record. */
@@ -3141,6 +3149,7 @@ export interface McpProviderRecord extends Shareable {
   kind: McpProviderKind
   transport: McpTransport
   url: string
+  createdByUserId: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -3154,6 +3163,7 @@ export interface CreateMcpProviderInput {
   visibility?: ResourceVisibility // default 'org'
   sharedWith?: string[] // app_user.id set (only meaningful when visibility='restricted')
   createdByUserId?: string
+  ownerUserId?: string // defaults to createdByUserId
 }
 
 export interface UpdateMcpProviderInput {
@@ -3166,11 +3176,15 @@ export interface McpProviderRepo {
   create(input: CreateMcpProviderInput): Promise<McpProviderRecord>
   get(id: string): Promise<McpProviderRecord | null>
   /** The org's providers, filtered to what a supplied human principal may see
-   *  (org-visible OR created-by-them OR shared-with-them). Undefined is reserved
+   *  (org-visible OR owned-by-them OR shared-with-them). Undefined is reserved
    *  for unfiltered internal reads. */
   listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<McpProviderRecord[]>
   /** Set visibility + share set (console access only; never crosses the wire). */
-  setSharing(id: string, sharing: { visibility: ResourceVisibility; sharedWith: string[] }): Promise<McpProviderRecord>
+  setSharing(
+    id: string,
+    sharing: { visibility: ResourceVisibility; sharedWith: string[] },
+    byUserId?: string
+  ): Promise<McpProviderRecord>
   update(id: string, patch: UpdateMcpProviderInput): Promise<McpProviderRecord>
   delete(id: string): Promise<void>
   /**
@@ -3231,8 +3245,8 @@ export interface McpGrantRepo {
 //   upstream credential). Shareable, so the same visibility policy as agents/MCP.
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Domain view of a `skill_source` row. Shareable (visibility + sharedWith +
- *  createdByUserId). Nothing here is secret. */
+/** Domain view of a `skill_source` row. Shareable (owner + visibility +
+ *  sharedWith). Nothing here is secret. */
 export interface SkillSourceRecord extends Shareable {
   id: string
   orgId: OrgId
@@ -3242,6 +3256,7 @@ export interface SkillSourceRecord extends Shareable {
   ref: string | null
   subDir: string | null
   skills: string[] // empty ⇒ install every skill; else only these
+  createdByUserId: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -3257,6 +3272,7 @@ export interface CreateSkillSourceInput {
   visibility?: ResourceVisibility // default 'org'
   sharedWith?: string[]
   createdByUserId?: string
+  ownerUserId?: string // defaults to createdByUserId
 }
 
 export interface UpdateSkillSourceInput {
@@ -3276,7 +3292,11 @@ export interface SkillSourceRepo {
   listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<SkillSourceRecord[]>
   /** Look up a source by its org-unique name (used to resolve an agent's enable-list). */
   getByName(orgId: OrgId, name: string): Promise<SkillSourceRecord | null>
-  setSharing(id: string, sharing: { visibility: ResourceVisibility; sharedWith: string[] }): Promise<SkillSourceRecord>
+  setSharing(
+    id: string,
+    sharing: { visibility: ResourceVisibility; sharedWith: string[] },
+    byUserId?: string
+  ): Promise<SkillSourceRecord>
   update(id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceRecord>
   delete(id: string): Promise<void>
 }

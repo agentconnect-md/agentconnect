@@ -62,7 +62,7 @@ The action vocabulary represents the distinct OSS policies that exist today:
 | `organization.manage`       | none                               | owner only                                                    |
 | `resource.view`             | visibility, ownership arm, shares  | org-visible, owned, or explicitly shared                      |
 | `resource.edit`             | shareable resource                 | visible and role is not viewer                                |
-| `resource.sharing.manage`   | shareable resource                 | same as `resource.edit`                                       |
+| `resource.sharing.manage`   | shareable resource                 | same as `resource.edit`, and a current owner is required      |
 | `session.view`              | tier, owner identity, identity set | org-visible or identity-owned                                 |
 | `session.visibility.change` | tier, owner identity, identity set | identity-owned, or an org owner while the session remains org |
 
@@ -92,6 +92,10 @@ An organization owner therefore:
 - cannot discover, read, edit, or re-share another member's unshared restricted
   resource.
 
+An ownerless organization-visible resource remains editable but cannot be
+restricted or have its sharing controls changed. The sharing control does not
+double as an ownership-claim mechanism.
+
 This matches session visibility: organization-visible content follows normal
 role capabilities, while private content is not widened by role.
 
@@ -107,7 +111,7 @@ Human list queries apply:
 WHERE "orgId" = $orgId
   AND (
     "visibility" = 'org'
-    OR "createdByUserId" = $userId
+    OR "ownerUserId" = $userId
     OR "sharedWith" @> ARRAY[$userId]
   )
 ```
@@ -121,16 +125,22 @@ The SQL projection and in-memory `resource.view` rule are colocated and covered
 by the same truth-table tests. Paginated queries must not post-filter an
 already-sized page.
 
-## 6. Ownership follow-up
+## 6. Ownership transfer
 
-`createdByUserId` currently supplies both immutable creation attribution and
-the resource-ownership arm. Those meanings must separate before ownership can
-be transferred safely.
+`ownerUserId` supplies the resource-ownership arm; `createdByUserId` remains
+immutable creation attribution. Removing a member transfers every owned
+visibility carrier to a selected remaining organization owner and prunes every
+share vector before deleting the membership.
 
-[#271](https://github.com/agentconnect-md/agentconnect/issues/271) tracks a
-dedicated `ownerUserId` and atomic transfer to a remaining organization owner
-when a member leaves. The transaction must also prune every share vector and
-preserve `createdByUserId` for audit history.
+Removal locks the departing and recipient memberships exclusively, in stable
+order, before scanning resources. Resource creates and sharing writes hold
+compatible shared membership locks and recheck the actor, initial owner, and
+share targets inside the resource-write transaction. This prevents a queued
+write from persisting a departed stable user ID after the removal scan, and
+prevents a concurrent removal from invalidating the selected recipient.
+
+Concurrent last-owner mutation remains tracked in
+[#271](https://github.com/agentconnect-md/agentconnect/issues/271).
 
 ## 7. Verification
 

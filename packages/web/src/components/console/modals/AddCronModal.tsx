@@ -495,7 +495,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
         <VisibilityField
           value={sharing}
           onChange={setSharing}
-          creatorUserId={cron?.createdBy || me?.userId || null}
+          ownerUserId={cron ? cron.ownerUserId : (me?.userId ?? null)}
           disabled={!!cron && !cron.canManageSharing}
         />
 

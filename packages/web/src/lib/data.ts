@@ -291,11 +291,15 @@ export interface Agent {
   /** Last editor's userId — resolved to a name / "You" at render via creatorLabel; '' when CLI/self-created. */
   lastModifiedBy: string
   lastModifiedAt: string
-  /** 'org' = visible to all members; 'restricted' = creator + owners + sharedWith. */
+  /** 'org' = visible to all members; 'restricted' = ownerUserId + sharedWith. */
   visibility: ResourceVisibility
   /** app_user.id set granted view when restricted. */
   sharedWith: string[]
-  /** Whether the caller may change this agent's sharing (= canEdit). */
+  /** Current ownership arm; null for system-created/legacy ownerless rows. */
+  ownerUserId: string | null
+  /** Whether the caller may change non-sharing agent settings. */
+  canEdit: boolean
+  /** Whether the caller may change this agent's sharing. */
   canManageSharing: boolean
   /** Which peer agents may call this agent as a sub-agent. */
   callPolicy: AgentCallPolicy
@@ -875,7 +879,9 @@ export const AGENTS: Agent[] = (
       id: 'agentconnect',
       visibility: 'org',
       sharedWith: [],
-      canManageSharing: true,
+      ownerUserId: null,
+      canEdit: true,
+      canManageSharing: false,
       callPolicy: 'all',
       allowedCallerAgentIds: [],
       outboundPolicy: 'all',
@@ -924,6 +930,8 @@ export const AGENTS: Agent[] = (
       id: 'deploy',
       visibility: 'restricted',
       sharedWith: ['u_sam', 'u_ana', 'u_noah'],
+      ownerUserId: 'u_dana',
+      canEdit: true,
       canManageSharing: true,
       callPolicy: 'all',
       allowedCallerAgentIds: [],
@@ -1015,6 +1023,8 @@ export const AGENTS: Agent[] = (
       id: 'review',
       visibility: 'org',
       sharedWith: [],
+      ownerUserId: 'u_sam',
+      canEdit: true,
       canManageSharing: true,
       callPolicy: 'selected',
       allowedCallerAgentIds: ['deploy'],
@@ -1089,6 +1099,8 @@ export const AGENTS: Agent[] = (
       id: 'oncall',
       visibility: 'restricted',
       sharedWith: ['u_sam'],
+      ownerUserId: 'u_dana',
+      canEdit: true,
       canManageSharing: true,
       callPolicy: 'all',
       allowedCallerAgentIds: [],
@@ -1152,6 +1164,8 @@ export const AGENTS: Agent[] = (
       id: 'docs',
       visibility: 'org',
       sharedWith: [],
+      ownerUserId: 'u_ana',
+      canEdit: true,
       canManageSharing: true,
       callPolicy: 'selected',
       allowedCallerAgentIds: ['deploy', 'review'],
@@ -1605,11 +1619,15 @@ export interface DaemonRow {
   /** Last editor's userId — resolved to a name / "You" at render via creatorLabel; '' for CLI/self-registered. */
   lastModifiedBy: string
   lastModifiedAt: string
-  /** 'org' = visible to all members; 'restricted' = creator + owners + sharedWith. */
+  /** 'org' = visible to all members; 'restricted' = ownerUserId + sharedWith. */
   visibility: ResourceVisibility
   /** app_user.id set granted view when restricted. */
   sharedWith: string[]
-  /** Whether the caller may change this daemon's sharing (= canEdit). */
+  /** Current ownership arm; null for system-created/legacy ownerless rows. */
+  ownerUserId: string | null
+  /** Whether the caller may change non-sharing daemon settings. */
+  canEdit: boolean
+  /** Whether the caller may change this daemon's sharing. */
   canManageSharing: boolean
 }
 

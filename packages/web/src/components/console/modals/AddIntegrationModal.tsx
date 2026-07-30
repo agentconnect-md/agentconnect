@@ -1151,7 +1151,7 @@ export default function AddIntegrationModal({
     fetchAgentRepos(agentId, orgId)
   )
   const authorizedRepos = useMemo(() => agentReposData ?? [], [agentReposData])
-  const canEditAgent = agent.canManageSharing
+  const canEditAgent = agent.canEdit
   // Non-null ⇒ the nested authorize-repo dialog is open, prefilled with this
   // owner/repo + the minimum review/reporting tier ('' = no repo prefill).
   const [authRepoFor, setAuthRepoFor] = useState<{ repo: string; access: RepoAccess } | null>(null)

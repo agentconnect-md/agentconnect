@@ -209,13 +209,15 @@ export default function DaemonDetailView() {
               Restart
             </button>
           )}
-          <button
-            onClick={() => openModal('editDaemon', daemon)}
-            aria-label="Edit daemon"
-            className="flex h-11 w-11 flex-none cursor-pointer items-center justify-center rounded-md border border-(--border-default) bg-(--surface-card) text-(--text-secondary)"
-          >
-            <Icon name="pencil" size={16} />
-          </button>
+          {daemon.canEdit && (
+            <button
+              onClick={() => openModal('editDaemon', daemon)}
+              aria-label="Edit daemon"
+              className="flex h-11 w-11 flex-none cursor-pointer items-center justify-center rounded-md border border-(--border-default) bg-(--surface-card) text-(--text-secondary)"
+            >
+              <Icon name="pencil" size={16} />
+            </button>
+          )}
         </div>
 
         {/* metric grid — one seamless bordered card, internal dividers */}
@@ -445,14 +447,14 @@ export default function DaemonDetailView() {
                 <VisibilityValue
                   visibility={daemon.visibility}
                   sharedWith={daemon.sharedWith}
-                  createdBy={daemon.createdBy}
+                  ownerUserId={daemon.ownerUserId}
                 />
               </button>
             ) : (
               <VisibilityValue
                 visibility={daemon.visibility}
                 sharedWith={daemon.sharedWith}
-                createdBy={daemon.createdBy}
+                ownerUserId={daemon.ownerUserId}
               />
             )}
           </div>
@@ -502,7 +504,11 @@ export default function DaemonDetailView() {
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-[10px]">
-            <h1 className="ptitle" onDoubleClick={() => openModal('editDaemon', daemon)} title="Double-click to edit">
+            <h1
+              className="ptitle"
+              onDoubleClick={daemon.canEdit ? () => openModal('editDaemon', daemon) : undefined}
+              title={daemon.canEdit ? 'Double-click to edit' : undefined}
+            >
               {daemon.name}
             </h1>
             <span className="badge" style={{ background: s.bg, color: s.text }}>
@@ -543,16 +549,18 @@ export default function DaemonDetailView() {
             <>
               <div onClick={() => setMenuOpen(false)} className="fixed inset-0 z-45" />
               <div className="dmenu right-0" onClick={(e) => e.stopPropagation()}>
-                <button
-                  className="dmi"
-                  onClick={() => {
-                    setMenuOpen(false)
-                    openModal('editDaemon', daemon)
-                  }}
-                >
-                  <Icon name="pencil" size={15} />
-                  Edit
-                </button>
+                {daemon.canEdit && (
+                  <button
+                    className="dmi"
+                    onClick={() => {
+                      setMenuOpen(false)
+                      openModal('editDaemon', daemon)
+                    }}
+                  >
+                    <Icon name="pencil" size={15} />
+                    Edit
+                  </button>
+                )}
                 {canRestart && (
                   <button
                     className="dmi"
@@ -743,14 +751,14 @@ export default function DaemonDetailView() {
                       <VisibilityValue
                         visibility={daemon.visibility}
                         sharedWith={daemon.sharedWith}
-                        createdBy={daemon.createdBy}
+                        ownerUserId={daemon.ownerUserId}
                       />
                     </button>
                   ) : (
                     <VisibilityValue
                       visibility={daemon.visibility}
                       sharedWith={daemon.sharedWith}
-                      createdBy={daemon.createdBy}
+                      ownerUserId={daemon.ownerUserId}
                     />
                   )}
                 </span>

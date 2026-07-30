@@ -24,6 +24,7 @@ import {
   lockHookReviewAgentRepoScope,
   lockHookReviewOrgProducerScope
 } from '../review-projection-lock.js'
+import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 import { PgHookRepo } from './hook.repo.js'
 import { AgentWorkspaceIntegrationConflict } from '../errors.js'
 
@@ -153,9 +154,8 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     createdBy: a.createdBy
       ? { userId: a.createdBy.id, displayName: a.createdBy.displayName, email: a.createdBy.email }
       : null,
-    // Raw creator scalar temporarily supplies the visibility ownership arm,
-    // independent of the joined `createdBy` above. See issue #271.
     createdByUserId: a.createdByUserId,
+    ownerUserId: a.ownerUserId,
     visibility: a.visibility,
     sharedWith: a.sharedWith,
     callPolicy: a.callPolicy as AgentCallPolicy,
@@ -181,10 +181,18 @@ export class PgAgentRepo implements AgentRepo {
 
   async create(input: CreateAgentInput): Promise<AgentRecord> {
     const ws = input.workspace ?? { mode: 'scratch' }
+    const ownerUserId = input.ownerUserId ?? input.createdByUserId
     return this.transaction(async (tx) => {
       // Close organization deletion's no-agent-row enumeration window without
       // taking a parent-row lock in the reverse order of Hook CRUD.
       await lockHookReviewOrgProducerScope(tx, input.orgId)
+      const memberships = await lockResourceWriteMemberships(tx, {
+        orgId: input.orgId,
+        visibility: input.visibility ?? 'org',
+        actorUserId: input.createdByUserId,
+        ownerUserId,
+        sharedWith: input.sharedWith
+      })
       const a = await tx.agent.create({
         data: {
           id: input.id,
@@ -233,6 +241,7 @@ export class PgAgentRepo implements AgentRepo {
           ...(input.createdByUserId
             ? { createdByUserId: input.createdByUserId, lastModifiedByUserId: input.createdByUserId }
             : {}),
+          ...(ownerUserId ? { ownerUserId } : {}),
           workspaceMode: ws.mode,
           gitRepo: ws.mode === 'github' ? ws.gitRepo : null,
           gitBranch: ws.mode === 'github' ? (ws.gitBranch ?? 'main') : null,
@@ -248,7 +257,7 @@ export class PgAgentRepo implements AgentRepo {
           // Initial visibility (absent ⇒ DB default 'org'). sharedWith only bites
           // when restricted; a stray set under 'org' is inert (the predicate ignores it).
           ...(input.visibility ? { visibility: input.visibility } : {}),
-          ...(input.sharedWith ? { sharedWith: input.sharedWith } : {}),
+          ...(memberships.sharedWith ? { sharedWith: memberships.sharedWith } : {}),
           // Initial call policy (absent ⇒ DB default 'all'). allowedCallerAgentIds
           // only bites when 'selected'; the route intersects it with visible peers.
           ...(input.callPolicy ? { callPolicy: input.callPolicy } : {}),
@@ -518,19 +527,32 @@ export class PgAgentRepo implements AgentRepo {
     sharing: { visibility: AgentRecord['visibility']; sharedWith: string[] },
     byUserId?: string
   ): Promise<AgentRecord> {
-    // A sharing change is a human edit — advance the last-modified audit (editor
-    // stamped when known; absent under devAuth ⇒ leave the prior editor as-is).
-    const a = await this.db.agent.update({
-      where: { id: agentId },
-      data: {
+    return this.transaction(async (tx) => {
+      const existing = await tx.agent.findUniqueOrThrow({
+        where: { id: agentId },
+        select: { orgId: true, ownerUserId: true }
+      })
+      const memberships = await lockResourceWriteMemberships(tx, {
+        orgId: existing.orgId,
         visibility: sharing.visibility,
-        sharedWith: sharing.sharedWith,
-        lastModifiedAt: new Date(),
-        ...(byUserId ? { lastModifiedByUserId: byUserId } : {})
-      },
-      include: withUsers
+        actorUserId: byUserId,
+        ownerUserId: existing.ownerUserId ?? undefined,
+        sharedWith: sharing.sharedWith
+      })
+      // A sharing change is a human edit — advance the last-modified audit
+      // (editor stamped when known; absent under devAuth ⇒ leave it unchanged).
+      const a = await tx.agent.update({
+        where: { id: agentId },
+        data: {
+          visibility: sharing.visibility,
+          sharedWith: memberships.sharedWith ?? [],
+          lastModifiedAt: new Date(),
+          ...(byUserId ? { lastModifiedByUserId: byUserId } : {})
+        },
+        include: withUsers
+      })
+      return toRecord(a)
     })
-    return toRecord(a)
   }
 
   async setCallPolicy(

@@ -24,7 +24,7 @@ import type { AgentRecord, SkillSourceRecord } from '../../persistence/ports.js'
 import type { OrgId } from '../../domain/ids.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
-import { canView, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
+import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import { parseSkillRef } from '../../orchestrator/skillSource.js'
 import {
@@ -122,6 +122,8 @@ function toDto(s: SkillSourceRecord, ctx: ViewCtx): SkillSourceDtoT {
     visibility: s.visibility,
     sharedWith: s.sharedWith,
     createdBy: s.createdByUserId,
+    ownerUserId: s.ownerUserId,
+    canEdit: canEdit(s, ctx),
     canManageSharing: canManageSharing(s, ctx),
     createdAt: s.createdAt.toISOString()
   }
@@ -317,7 +319,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
             'Register an org-level shared-skills source (a repo / git URL / tree path fed to `npx skills`). `skills` empty ⇒ install every skill the source exposes. Rejected with 409 while any agent already enables skills under the requested source name — agents bind by name, so a new source must not silently capture existing selections.',
           operationId: 'createSkillSource',
           body: CreateSkillSourceBody,
-          response: { 201: SkillSourceDto, 400: ErrorDto, 403: ErrorDto, 409: ErrorDto }
+          response: { 201: SkillSourceDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -433,11 +435,11 @@ export function skillSourceRoutes(deps: HttpDeps) {
           tags: [Tag.Skills],
           summary: 'Set skill source sharing',
           description:
-            'Set the source’s visibility (org-wide vs restricted) and share set. Requires edit rights; sharedWith is intersected with current org members.',
+            'Set an owned source’s visibility (org-wide vs restricted) and share set. Requires edit rights; ownerless sources stay org-visible, and sharedWith is intersected with current org members.',
           operationId: 'setSkillSourceSharing',
           params: IdParam,
           body: SetSharingBody,
-          response: { 200: SkillSourceDto, 403: ErrorDto, 404: ErrorDto }
+          response: { 200: SkillSourceDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -452,10 +454,14 @@ export function skillSourceRoutes(deps: HttpDeps) {
         // against source visibility INSIDE that chain (routes/agents.ts), so a sharing
         // flip must not land between their check and their commit.
         const source = await serializeBySkillSource(orgOf(req), existing.name, () =>
-          deps.repos.skillSource.setSharing(existing.id, {
-            visibility: req.body.visibility,
-            sharedWith
-          })
+          deps.repos.skillSource.setSharing(
+            existing.id,
+            {
+              visibility: req.body.visibility,
+              sharedWith
+            },
+            req.principal?.userId
+          )
         )
         return toDto(source, ctxOf(req))
       }

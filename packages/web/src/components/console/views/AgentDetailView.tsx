@@ -1007,7 +1007,7 @@ export default function AgentDetailView() {
             <div className="card order-4 overflow-hidden max-desktop:rounded-lg">
               <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
                 <span className="font-sans text-[14px] font-semibold leading-normal">Access</span>
-                {!da.name.startsWith(MOCK_PREFIX) && da.canManageSharing && (
+                {!da.name.startsWith(MOCK_PREFIX) && da.canEdit && (
                   <>
                     <button
                       onClick={() => openModal('editAgent', da, { focusSection: 'access' })}
@@ -1033,7 +1033,7 @@ export default function AgentDetailView() {
                   Team visibility
                 </div>
                 <div className="mt-[10px]">
-                  <VisibilityValue visibility={da.visibility} sharedWith={da.sharedWith} createdBy={da.createdBy} />
+                  <VisibilityValue visibility={da.visibility} sharedWith={da.sharedWith} ownerUserId={da.ownerUserId} />
                 </div>
               </div>
               <div className="border-t border-(--border-subtle) px-4 py-[14px]">
@@ -1082,7 +1082,7 @@ export default function AgentDetailView() {
               <AgentSecretsCard agent={da} />
             </div>
 
-            {da.canManageSharing && !da.name.startsWith(MOCK_PREFIX) && (
+            {da.canEdit && !da.name.startsWith(MOCK_PREFIX) && (
               <ApprovalRequestsCard agentId={da.id} className="order-7 max-desktop:rounded-lg" />
             )}
           </div>
@@ -1543,7 +1543,7 @@ export default function AgentDetailView() {
               key={workspaceReadModelKey(da)}
               agentId={id}
               workdir={da.workdir}
-              canEdit={da.workspace.mode === 'scratch' && da.canManageSharing}
+              canEdit={da.workspace.mode === 'scratch' && da.canEdit}
               renderHeader={(header) => <WorkspaceCard agent={da} header={header} />}
             />
           </div>
@@ -1573,7 +1573,7 @@ export default function AgentDetailView() {
       {tab === 'memory' && (
         <MemoryPanel
           agentId={id}
-          canEdit={!da.name.startsWith(MOCK_PREFIX)}
+          canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit}
           memoryProvider={da.memoryProvider}
           autoDistill={da.memoryAutoDistill}
           memoryDreaming={da.memoryDreaming}
@@ -1595,9 +1595,9 @@ export default function AgentDetailView() {
             agentId={da.id}
             runtime={da.runtime}
             daemon={owningDaemon}
-            canEdit={!da.name.startsWith(MOCK_PREFIX)}
+            canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit}
           />
-          <AgentSkillsCard agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX)} />
+          <AgentSkillsCard agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit} />
           <div className="card overflow-hidden max-desktop:rounded-lg desktop:max-w-[760px]">
             <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal desktop:py-[13px]">
               Loaded from workspace

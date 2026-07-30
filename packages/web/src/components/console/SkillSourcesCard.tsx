@@ -130,7 +130,7 @@ function SourceTile({
       }
       footer={
         <div className="flex min-w-0 items-center gap-2">
-          <VisibilityValue visibility={s.visibility} sharedWith={s.sharedWith} createdBy={s.createdBy} />
+          <VisibilityValue visibility={s.visibility} sharedWith={s.sharedWith} ownerUserId={s.ownerUserId} />
           <span className="mono ml-auto min-w-0 truncate text-right text-[10.5px] text-(--text-disabled)">
             added {fmtDate(s.createdAt)}
           </span>
@@ -252,7 +252,7 @@ function CreateSkillSourceModal({ onClose }: { onClose: () => void }) {
               onChange={(e) => setSkills(e.target.value)}
             />
           </div>
-          <VisibilityField value={sharing} onChange={setSharing} creatorUserId={me?.userId} />
+          <VisibilityField value={sharing} onChange={setSharing} ownerUserId={me?.userId} />
         </div>
         {err && <div className="mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>}
       </div>
@@ -357,7 +357,7 @@ function EditSkillSourceModal({ source: s, onClose }: { source: SkillSourceDto; 
           <VisibilityField
             value={sharing}
             onChange={setSharing}
-            creatorUserId={s.createdBy}
+            ownerUserId={s.ownerUserId}
             disabled={!s.canManageSharing}
           />
         </div>

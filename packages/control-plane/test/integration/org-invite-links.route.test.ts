@@ -327,7 +327,7 @@ describe('POST /invite-links/accept', () => {
     expect(secondAttempt.statusCode).toBe(410)
     expect(secondAttempt.json()).toMatchObject({ code: 'INVITE_LINK_UNAVAILABLE' })
 
-    await new PgUserRepo(prisma).removeMember(DEFAULT_ORG_ID, dana.userId)
+    await new PgUserRepo(prisma).removeMember(DEFAULT_ORG_ID, dana.userId, DEFAULT_OWNER_ID)
     const reused = await acceptAs('invite-reuse', 'invite-reuse@acme.dev', link.token)
     expect(reused.statusCode).toBe(410)
     expect(reused.json()).toMatchObject({ code: 'INVITE_LINK_UNAVAILABLE' })
