@@ -42,12 +42,12 @@ export class InternalInvocationAuth {
     })
   }
 
-  issue(method: string, path: string): string {
+  issue(method: string, path: string): string | null {
     const state = this.storage.getStore()
     if (!state?.active) throw new Error('Internal invocation nonce issuance requires an active invocation context')
     const normalizedMethod = normalizeMethod(method)
     const normalizedPath = normalizePath(path)
-    if (!normalizedMethod || !normalizedPath) throw new Error('Invalid internal invocation method or path')
+    if (!normalizedMethod || !normalizedPath) return null
     const nonce = randomBytes(32).toString('base64url')
     state.pending.set(nonce, { method: normalizedMethod, path: normalizedPath })
     return nonce

@@ -131,6 +131,27 @@ describe('InternalInvocationAuth', () => {
     })
   })
 
+  it('keeps awaited work authoritative until the active run callback finishes', async () => {
+    const auth = new InternalInvocationAuth()
+
+    await auth.run(CONTEXT, async () => {
+      await Promise.resolve()
+      const nonce = auth.issue('GET', '/api/v1/me')
+      await Promise.resolve()
+
+      expect(auth.authorizeInjectedRequest(request(nonce))).toBe(true)
+    })
+  })
+
+  it('preserves null for invalid method or path inside an active run', async () => {
+    const auth = new InternalInvocationAuth()
+
+    await auth.run(CONTEXT, async () => {
+      expect(auth.issue('GET /', '/api/v1/me')).toBeNull()
+      expect(auth.issue('GET', '//[invalid')).toBeNull()
+    })
+  })
+
   it('consumes a nonce atomically exactly once', async () => {
     const auth = new InternalInvocationAuth()
 
