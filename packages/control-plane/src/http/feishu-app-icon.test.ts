@@ -22,12 +22,15 @@ describe('createFeishuAppIconSyncer', () => {
           status: 200
         })
       )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: 0, data: { items: [{ status: 1 }] } }), { status: 200 })
+      )
       .mockResolvedValueOnce(new Response(JSON.stringify({ code: 0 }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ code: 0 }), { status: 200 }))
 
     await createFeishuAppIconSyncer(undefined, fetcher)('cli_test', 'app-secret', 'lark', agent)
 
-    expect(fetcher).toHaveBeenCalledTimes(4)
+    expect(fetcher).toHaveBeenCalledTimes(5)
     expect(fetcher.mock.calls[0]?.[0]).toBe('https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal')
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({
       app_id: 'cli_test',
@@ -47,19 +50,25 @@ describe('createFeishuAppIconSyncer', () => {
     })
 
     expect(fetcher.mock.calls[2]?.[0]).toBe(
+      'https://open.larksuite.com/open-apis/application/v6/applications/cli_test/app_versions?lang=en_us&page_size=1&order=0'
+    )
+    expect(fetcher.mock.calls[2]?.[1]?.method).toBe('GET')
+    expect(fetcher.mock.calls[2]?.[1]?.headers).toMatchObject({ authorization: 'Bearer tenant-token' })
+
+    expect(fetcher.mock.calls[3]?.[0]).toBe(
       'https://open.larksuite.com/open-apis/application/v7/applications/cli_test/base'
     )
-    expect(fetcher.mock.calls[2]?.[1]?.method).toBe('PATCH')
-    expect(fetcher.mock.calls[2]?.[1]?.headers).toMatchObject({ authorization: 'Bearer tenant-token' })
-    expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body))).toEqual({
+    expect(fetcher.mock.calls[3]?.[1]?.method).toBe('PATCH')
+    expect(fetcher.mock.calls[3]?.[1]?.headers).toMatchObject({ authorization: 'Bearer tenant-token' })
+    expect(JSON.parse(String(fetcher.mock.calls[3]?.[1]?.body))).toEqual({
       avatar_url: 'https://cdn.example.test/app-icon'
     })
 
-    expect(fetcher.mock.calls[3]?.[0]).toBe(
+    expect(fetcher.mock.calls[4]?.[0]).toBe(
       'https://open.larksuite.com/open-apis/application/v7/applications/cli_test/publish'
     )
-    expect(fetcher.mock.calls[3]?.[1]?.method).toBe('POST')
-    expect(JSON.parse(String(fetcher.mock.calls[3]?.[1]?.body))).toEqual({
+    expect(fetcher.mock.calls[4]?.[1]?.method).toBe('POST')
+    expect(JSON.parse(String(fetcher.mock.calls[4]?.[1]?.body))).toEqual({
       remark: 'Sync the application icon with its AgentConnect agent',
       changelog: 'Updated the application icon'
     })
@@ -77,5 +86,26 @@ describe('createFeishuAppIconSyncer', () => {
       createFeishuAppIconSyncer(undefined, fetcher)('cli_test', 'app-secret', 'feishu', agent)
     ).rejects.toThrow('Lark/Feishu icon upload returned 200')
     expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not patch or publish an app that already has unpublished changes', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: 0, tenant_access_token: 'tenant-token' }), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: 0, data: { url: 'https://cdn.example.test/app-icon' } }), {
+          status: 200
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: 0, data: { items: [{ status: 4 }] } }), { status: 200 })
+      )
+
+    await expect(
+      createFeishuAppIconSyncer(undefined, fetcher)('cli_test', 'app-secret', 'feishu', agent)
+    ).rejects.toThrow('Lark/Feishu icon sync skipped: application has unpublished changes')
+    expect(fetcher).toHaveBeenCalledTimes(3)
   })
 })
