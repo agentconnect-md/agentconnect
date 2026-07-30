@@ -1,14 +1,16 @@
 import { createHash } from 'node:crypto'
-import type { McpInvocationMint } from '@agentconnect.md/protocol'
+import { DELEGATED_MCP_ASSERTION_FEATURE, type McpInvocationMint } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import type { Clock } from '../../domain/clock.js'
-import type { McpInvocationRecord, McpInvocationRepo, WebchatMcpDelegationRepo } from '../../persistence/ports.js'
-import type { InvocationAssertionCodec } from '../../registry/invocationAssertion.js'
 import {
-  resolveLiveWebchatMcpAuthority,
-  type LiveWebchatMcpAuthorityDeps,
-  type WebchatMcpAuthorityDenialReason
-} from '../../registry/webchatMcpAuthority.js'
+  MCP_INVOCATION_MAX_RESPONSE_BYTES,
+  MCP_INVOCATION_RESPONSE_CACHE_TTL_MS,
+  type McpInvocationRecord,
+  type McpInvocationRepo,
+  type WebchatMcpDelegationRepo
+} from '../../persistence/ports.js'
+import type { InvocationAssertionCodec } from '../../registry/invocationAssertion.js'
+import type { LiveWebchatMcpAuthorityDeps } from '../../registry/webchatMcpAuthority.js'
 
 export interface InvocationContext {
   invocationId: string
@@ -21,7 +23,6 @@ export interface InvocationContext {
 }
 
 export type InvocationAssertionDenialReason =
-  | WebchatMcpAuthorityDenialReason
   | 'assertion_format'
   | 'assertion_unknown'
   | 'invocation_id_invalid'
@@ -31,7 +32,8 @@ export type InvocationAssertionDenialReason =
   | 'method_mismatch'
   | 'tool_mismatch'
   | 'delegation_inactive'
-  | 'delegation_binding'
+  | 'daemon_unavailable'
+  | 'daemon_feature_missing'
   | 'assertion_expired'
   | 'claim_denied'
   | 'claim_state_invalid'
@@ -59,7 +61,7 @@ export interface InvocationAssertionClaimInput {
   parseMetadata(): ParsedInvocationMetadata | Promise<ParsedInvocationMetadata>
 }
 
-export interface InvocationAssertionAuthenticatorDeps extends LiveWebchatMcpAuthorityDeps {
+export interface InvocationAssertionAuthenticatorDeps extends Pick<LiveWebchatMcpAuthorityDeps, 'daemons'> {
   clock: Pick<Clock, 'now'>
   assertionCodec: Pick<InvocationAssertionCodec, 'hash'>
   delegations: Pick<WebchatMcpDelegationRepo, 'getCurrent'>
@@ -70,6 +72,7 @@ export interface InvocationAssertionAuthenticatorDeps extends LiveWebchatMcpAuth
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const IN_PROGRESS_RETRY_AFTER_MS = 250
+const MAX_DATE_MS = 8.64e15
 
 export class InvocationAssertionAuthenticator {
   constructor(private readonly deps: InvocationAssertionAuthenticatorDeps) {}
@@ -98,14 +101,11 @@ export class InvocationAssertionAuthenticator {
       return this.deny('delegation_inactive')
     }
 
-    const authority = await resolveLiveWebchatMcpAuthority(this.deps, {
-      conversationId: delegation.conversationId,
-      expectedUserId: delegation.userId,
-      orgId: delegation.orgId,
-      agentId: delegation.agentId,
-      daemonId: delegation.daemonId
-    })
-    if (!authority.ok) return this.deny(authority.reason)
+    const daemon = this.deps.daemons.get(delegation.daemonId)
+    if (!daemon?.reachable || daemon.state !== 'READY') return this.deny('daemon_unavailable')
+    if (!daemon.capabilities?.features?.includes(DELEGATED_MCP_ASSERTION_FEATURE)) {
+      return this.deny('daemon_feature_missing')
+    }
 
     let metadata: ParsedInvocationMetadata
     try {
@@ -116,8 +116,6 @@ export class InvocationAssertionAuthenticator {
     const metadataDenial = this.validateMetadata(invocation, metadata)
     if (metadataDenial) return this.deny(metadataDenial)
 
-    if (invocation.status !== 'issued') return this.classifyReplay(invocation)
-
     const context: InvocationContext = {
       invocationId: invocation.id,
       delegationId: delegation.id,
@@ -125,11 +123,12 @@ export class InvocationAssertionAuthenticator {
       agentId: delegation.agentId,
       daemonId: delegation.daemonId,
       orgId: delegation.orgId,
-      userId: authority.userId
+      userId: delegation.userId
     }
-    // Authority resolution and lazy JSON parsing may take time. The repository's
-    // deadline predicates must use the instant of the CAS attempt, not request
-    // admission time, or a near-expiry assertion could start after 30 seconds.
+    // Delegation/liveness prechecks and lazy JSON parsing may take time. The
+    // repository's deadline predicates must use the instant of the CAS attempt,
+    // not request admission time, or a near-expiry assertion could start after
+    // 30 seconds.
     const claimNowMs = this.deps.clock.now()
     if (!Number.isFinite(claimNowMs)) return this.deny('claim_denied')
     const claimed = await this.deps.invocations.claim({
@@ -138,7 +137,7 @@ export class InvocationAssertionAuthenticator {
       delegationId: delegation.id,
       generation: delegation.generation,
       conversationId: delegation.conversationId,
-      userId: authority.userId,
+      userId: delegation.userId,
       orgId: OrgId(delegation.orgId),
       agentId: AgentId(delegation.agentId),
       daemonId: DaemonId(delegation.daemonId),
@@ -150,9 +149,11 @@ export class InvocationAssertionAuthenticator {
         : this.deny('claim_state_invalid')
     }
     if (claimed.kind === 'existing') {
-      return sameInvocation(claimed.invocation, invocation)
-        ? this.classifyReplay(claimed.invocation)
-        : this.deny('claim_state_invalid')
+      if (!sameInvocation(claimed.invocation, invocation)) return this.deny('claim_state_invalid')
+      const observedAt = this.deps.clock.now()
+      return Number.isFinite(observedAt)
+        ? this.classifyReplay(claimed.invocation, observedAt)
+        : this.deny('cached_response_invalid')
     }
     if (claimed.kind === 'expired') return this.deny('assertion_expired')
     return this.deny('claim_denied')
@@ -174,13 +175,25 @@ export class InvocationAssertionAuthenticator {
     return toolName === invocation.toolName ? null : 'tool_mismatch'
   }
 
-  private classifyReplay(invocation: McpInvocationRecord): InvocationAssertionClaimResult {
+  private classifyReplay(invocation: McpInvocationRecord, observedAt: number): InvocationAssertionClaimResult {
     if (invocation.status === 'running') {
       return { kind: 'in_progress', retryAfterMs: IN_PROGRESS_RETRY_AFTER_MS }
     }
-    if (invocation.status === 'ambiguous') return { kind: 'ambiguous' }
+    if (invocation.status === 'ambiguous') {
+      return hasFreshCompletion(invocation.completedAt, observedAt)
+        ? { kind: 'ambiguous' }
+        : this.deny('cached_response_invalid')
+    }
     if (invocation.status === 'succeeded' || invocation.status === 'failed') {
-      if (invocation.responseStatus === null || invocation.responseBytes === null) {
+      if (
+        !hasFreshCompletion(invocation.completedAt, observedAt) ||
+        !Number.isInteger(invocation.responseStatus) ||
+        invocation.responseStatus === null ||
+        invocation.responseStatus < 100 ||
+        invocation.responseStatus > 599 ||
+        !(invocation.responseBytes instanceof Uint8Array) ||
+        invocation.responseBytes.byteLength > MCP_INVOCATION_MAX_RESPONSE_BYTES
+      ) {
         return this.deny('cached_response_invalid')
       }
       return {
@@ -201,6 +214,15 @@ export class InvocationAssertionAuthenticator {
     }
     return { kind: 'denied', reason }
   }
+}
+
+function hasFreshCompletion(completedAt: Date | null, observedAt: number): boolean {
+  if (!(completedAt instanceof Date) || !Number.isFinite(observedAt)) return false
+  const completedMs = completedAt.getTime()
+  if (!Number.isFinite(completedMs) || completedMs > MAX_DATE_MS - MCP_INVOCATION_RESPONSE_CACHE_TTL_MS) {
+    return false
+  }
+  return observedAt < completedMs + MCP_INVOCATION_RESPONSE_CACHE_TTL_MS
 }
 
 function sameInvocation(left: McpInvocationRecord, right: McpInvocationRecord): boolean {

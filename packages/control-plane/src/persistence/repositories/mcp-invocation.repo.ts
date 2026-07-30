@@ -3,21 +3,24 @@
  * status-predicated compare-and-set; responses are retained byte-for-byte.
  */
 import { Prisma, type McpInvocation } from '../../generated/prisma/client.js'
+import { canView } from '../../domain/visibility.js'
 import type { PrismaLike } from '../prisma.js'
-import type {
-  ClaimMcpInvocationInput,
-  ClaimMcpInvocationResult,
-  CompleteMcpInvocationInput,
-  McpInvocationRecord,
-  McpInvocationRepo,
-  MintMcpInvocationInput,
-  MintMcpInvocationResult,
-  ReapMcpInvocationsResult
+import {
+  MCP_INVOCATION_MAX_RESPONSE_BYTES,
+  MCP_INVOCATION_RESPONSE_CACHE_TTL_MS,
+  type ClaimMcpInvocationInput,
+  type ClaimMcpInvocationResult,
+  type CompleteMcpInvocationInput,
+  type McpInvocationRecord,
+  type McpInvocationRepo,
+  type MintMcpInvocationInput,
+  type MintMcpInvocationResult,
+  type OrgMemberRole,
+  type ReapMcpInvocationsResult
 } from '../ports.js'
 
-export const MCP_INVOCATION_MAX_RESPONSE_BYTES = 256 * 1024
+export { MCP_INVOCATION_MAX_RESPONSE_BYTES, MCP_INVOCATION_RESPONSE_CACHE_TTL_MS } from '../ports.js'
 export const MCP_INVOCATION_EXECUTION_TIMEOUT_MS = 120_000
-export const MCP_INVOCATION_RESPONSE_CACHE_TTL_MS = 15 * 60_000
 
 const isP2002 = (error: unknown): boolean => (error as { code?: string }).code === 'P2002'
 const isP2003 = (error: unknown): boolean => (error as { code?: string }).code === 'P2003'
@@ -116,18 +119,43 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
 
   async claim(input: ClaimMcpInvocationInput): Promise<ClaimMcpInvocationResult> {
     return this.inTransaction(async (tx) => {
-      // Claim is the final delegated-authority gate. Preserve the placement
-      // writer's Agent → Delegation lock order: a placement change takes the
-      // agent UPDATE lock and revokes the delegation before this can proceed.
-      const [agent] = await tx.$queryRaw<{ daemonId: string | null }[]>(
-        Prisma.sql`
-          SELECT "daemonId"
-          FROM "agent"
-          WHERE "id" = ${input.agentId}
-          FOR SHARE
-        `
-      )
-      if (!agent || agent.daemonId !== input.daemonId) return { kind: 'denied' }
+      // This is the durable authorization snapshot for both first execution
+      // and every replay. The lock order matches authority writers:
+      // Membership → Agent → Conversation → Delegation → Preset → Invocation.
+      // In particular, member removal prunes Agent.sharedWith only after
+      // deleting Membership, so taking Membership first avoids lock inversion.
+      const [membership] = await tx.$queryRaw<{ role: string }[]>(Prisma.sql`
+        SELECT "role"
+        FROM "membership"
+        WHERE "orgId" = ${input.orgId}
+          AND "userId" = ${input.userId}
+        FOR SHARE
+      `)
+      if (!membership || !isOrgMemberRole(membership.role)) return { kind: 'denied' }
+
+      const [agent] = await tx.$queryRaw<
+        {
+          id: string
+          orgId: string
+          daemonId: string | null
+          createdByUserId: string | null
+          visibility: 'org' | 'restricted'
+          sharedWith: string[]
+        }[]
+      >(Prisma.sql`
+        SELECT "id", "orgId", "daemonId", "createdByUserId", "visibility", "sharedWith"
+        FROM "agent"
+        WHERE "id" = ${input.agentId}
+        FOR SHARE
+      `)
+      if (
+        !agent ||
+        agent.orgId !== input.orgId ||
+        agent.daemonId !== input.daemonId ||
+        !canView(agent, { userId: input.userId, role: membership.role })
+      ) {
+        return { kind: 'denied' }
+      }
 
       const conversation = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
         SELECT "id"
@@ -159,6 +187,15 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
         FOR SHARE
       `)
       if (parent.length === 0) return { kind: 'denied' }
+
+      const [preset] = await tx.$queryRaw<{ agentId: string | null }[]>(Prisma.sql`
+        SELECT "agentId"
+        FROM "preset_agent"
+        WHERE "orgId" = ${input.orgId}
+          AND "preset" = 'general'
+        FOR SHARE
+      `)
+      if (!preset || preset.agentId !== input.agentId) return { kind: 'denied' }
 
       const claimed = await tx.mcpInvocation.updateMany({
         where: {
@@ -246,4 +283,8 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
       return { markedAmbiguous: marked.count, deleted: deleted.count }
     })
   }
+}
+
+function isOrgMemberRole(role: string): role is OrgMemberRole {
+  return role === 'owner' || role === 'collaborator' || role === 'viewer'
 }

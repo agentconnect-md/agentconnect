@@ -1,10 +1,12 @@
 import { createHash, createHmac } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { DELEGATED_MCP_ASSERTION_FEATURE } from '@agentconnect.md/protocol'
+import { canView } from '../../domain/visibility.js'
 import type {
   ClaimMcpInvocationInput,
   ClaimMcpInvocationResult,
   McpInvocationRecord,
+  OrgMemberRole,
   WebchatMcpDelegationRecord
 } from '../../persistence/ports.js'
 import { InvocationAssertionCodec } from '../../registry/invocationAssertion.js'
@@ -23,6 +25,8 @@ const DAEMON_ID = '55555555-5555-4555-8555-555555555555'
 const ORG_ID = 'org-1'
 const USER_ID = 'user-1'
 const PEPPER = 'test-pepper-that-is-at-least-thirty-two-characters'
+const RESPONSE_CACHE_TTL_MS = 15 * 60_000
+const MAX_RESPONSE_BYTES = 256 * 1024
 const REQUEST_BYTES = Buffer.from('{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"listAgents"}}')
 const REQUEST_HASH = createHash('sha256').update(REQUEST_BYTES).digest('hex')
 
@@ -74,7 +78,7 @@ function harness() {
       orgId: ORG_ID,
       agentId: AGENT_ID
     } as { conversationId: string; userId: string; orgId: string; agentId: string } | null,
-    role: 'member' as 'owner' | 'member' | 'viewer' | null,
+    role: 'collaborator' as OrgMemberRole | null,
     agent: {
       id: AGENT_ID,
       orgId: ORG_ID,
@@ -100,42 +104,9 @@ function harness() {
   }
   const reasons: InvocationAssertionDenialReason[] = []
   const claimInputs: ClaimMcpInvocationInput[] = []
-  let authorityReads = 0
   const deps = {
     clock: { now: () => state.now },
     assertionCodec: codec,
-    conversations: {
-      findOwner: vi.fn(async () => {
-        authorityReads += 1
-        return state.conversation?.userId ?? null
-      }),
-      owns: vi.fn(async (binding: { conversationId: string; userId: string; orgId: string; agentId: string }) => {
-        const row = state.conversation
-        return (
-          row !== null &&
-          row.conversationId === binding.conversationId &&
-          row.userId === binding.userId &&
-          row.orgId === binding.orgId &&
-          row.agentId === binding.agentId
-        )
-      })
-    },
-    orgs: { roleOf: vi.fn(async () => state.role) },
-    agents: { get: vi.fn(async () => state.agent) },
-    presets: {
-      get: vi.fn(async () =>
-        state.presetAgentId
-          ? {
-              orgId: ORG_ID,
-              preset: 'general' as const,
-              agentId: state.presetAgentId,
-              status: 'created' as const,
-              placementSettledAt: new Date(NOW),
-              createdAt: new Date(NOW)
-            }
-          : null
-      )
-    },
     daemons: { get: vi.fn(() => state.live) },
     delegations: {
       getCurrent: vi.fn(async () =>
@@ -150,8 +121,33 @@ function harness() {
         claimInputs.push(input)
         const current = state.invocation
         if (!current) return { kind: 'not_found' }
-        if (state.now >= current.assertionExpires.getTime()) return { kind: 'expired' }
+        const memberCanView =
+          state.role !== null &&
+          state.agent !== null &&
+          canView(state.agent, { userId: input.userId, role: state.role })
+        const exactAuthority =
+          memberCanView &&
+          state.agent?.id === input.agentId &&
+          state.agent.orgId === input.orgId &&
+          state.agent.daemonId === input.daemonId &&
+          state.conversation?.conversationId === input.conversationId &&
+          state.conversation.userId === input.userId &&
+          state.conversation.orgId === input.orgId &&
+          state.conversation.agentId === input.agentId &&
+          state.currentGeneration === input.generation &&
+          state.delegation?.id === input.delegationId &&
+          state.delegation.generation === input.generation &&
+          state.delegation.conversationId === input.conversationId &&
+          state.delegation.userId === input.userId &&
+          state.delegation.orgId === input.orgId &&
+          state.delegation.agentId === input.agentId &&
+          state.delegation.daemonId === input.daemonId &&
+          state.delegation.revokedAt === null &&
+          state.delegation.expiresAt.getTime() > input.now.getTime() &&
+          state.presetAgentId === input.agentId
+        if (!exactAuthority) return { kind: 'denied' }
         if (current.status !== 'issued') return { kind: 'existing', invocation: current }
+        if (state.now >= current.assertionExpires.getTime()) return { kind: 'expired' }
         state.invocation = { ...current, status: 'running', startedAt: input.now }
         return { kind: 'claimed', invocation: state.invocation }
       })
@@ -177,8 +173,7 @@ function harness() {
     minted,
     deps,
     authenticator,
-    input,
-    authorityReads: () => authorityReads
+    input
   }
 }
 
@@ -323,7 +318,7 @@ describe('InvocationAssertionAuthenticator', () => {
         status,
         responseStatus: status === 'succeeded' ? 200 : 500,
         responseBytes: bytes,
-        completedAt: new Date(NOW + 1_000)
+        completedAt: new Date(NOW - 1_000)
       })
 
       const result = await h.authenticator.claim(h.input())
@@ -335,7 +330,7 @@ describe('InvocationAssertionAuthenticator', () => {
       })
       if (result.kind !== 'completed') throw new Error('expected completed')
       expect(Buffer.from(result.responseBytes)).toEqual(bytes)
-      expect(h.authorityReads()).toBeGreaterThan(0)
+      expect(h.deps.invocations.claim).toHaveBeenCalledOnce()
     }
   )
 
@@ -344,9 +339,116 @@ describe('InvocationAssertionAuthenticator', () => {
     ['ambiguous', { kind: 'ambiguous' }]
   ] as const)('maps an authorized %s replay without another execution', async (status, expected) => {
     const h = harness()
-    h.state.invocation = invocation(h.minted.persistence.assertionHash, { status })
+    h.state.invocation = invocation(h.minted.persistence.assertionHash, {
+      status,
+      completedAt: status === 'ambiguous' ? new Date(NOW - 1_000) : null
+    })
 
     expect(await h.authenticator.claim(h.input())).toEqual(expected)
+  })
+
+  it.each([
+    [RESPONSE_CACHE_TTL_MS - 1, 'completed'],
+    [RESPONSE_CACHE_TTL_MS, 'denied'],
+    [RESPONSE_CACHE_TTL_MS + 1, 'denied']
+  ] as const)('expires completed response replay at the exact 15-minute boundary: %dms', async (age, kind) => {
+    const h = harness()
+    h.state.now = NOW + age
+    h.state.delegation = {
+      ...h.state.delegation!,
+      expiresAt: new Date(NOW + RESPONSE_CACHE_TTL_MS * 2)
+    }
+    h.state.invocation = invocation(h.minted.persistence.assertionHash, {
+      status: 'succeeded',
+      completedAt: new Date(NOW),
+      responseStatus: 200,
+      responseBytes: Buffer.from('cached')
+    })
+
+    expect((await h.authenticator.claim(h.input())).kind).toBe(kind)
+  })
+
+  it.each([
+    [RESPONSE_CACHE_TTL_MS - 1, 'ambiguous'],
+    [RESPONSE_CACHE_TTL_MS, 'denied'],
+    [RESPONSE_CACHE_TTL_MS + 1, 'denied']
+  ] as const)('expires ambiguous replay at the exact 15-minute boundary: %dms', async (age, kind) => {
+    const h = harness()
+    h.state.now = NOW + age
+    h.state.delegation = {
+      ...h.state.delegation!,
+      expiresAt: new Date(NOW + RESPONSE_CACHE_TTL_MS * 2)
+    }
+    h.state.invocation = invocation(h.minted.persistence.assertionHash, {
+      status: 'ambiguous',
+      completedAt: new Date(NOW)
+    })
+
+    expect((await h.authenticator.claim(h.input())).kind).toBe(kind)
+  })
+
+  it.each([
+    ['missing completion time', { completedAt: null }],
+    ['invalid completion time', { completedAt: new Date(Number.NaN) }],
+    ['overflowing completion time', { completedAt: new Date(8.64e15) }],
+    ['missing HTTP status', { responseStatus: null }],
+    ['status below HTTP range', { responseStatus: 99 }],
+    ['status above HTTP range', { responseStatus: 600 }],
+    ['non-integer HTTP status', { responseStatus: 200.5 }],
+    ['missing response bytes', { responseBytes: null }],
+    ['non-byte response body', { responseBytes: 'cached' as unknown as Uint8Array }],
+    ['oversized response bytes', { responseBytes: new Uint8Array(MAX_RESPONSE_BYTES + 1) }]
+  ] as const)('fails closed for corrupt cached terminal rows: %s', async (_name, patch) => {
+    const h = harness()
+    h.state.invocation = invocation(h.minted.persistence.assertionHash, {
+      status: 'succeeded',
+      completedAt: new Date(NOW),
+      responseStatus: 200,
+      responseBytes: Buffer.from('cached'),
+      ...patch
+    })
+
+    expect(await h.authenticator.claim(h.input())).toEqual({
+      kind: 'denied',
+      reason: 'cached_response_invalid'
+    })
+  })
+
+  it('clones cached response bytes before returning them', async () => {
+    const h = harness()
+    const stored = Buffer.from([1, 2, 3])
+    h.state.invocation = invocation(h.minted.persistence.assertionHash, {
+      status: 'succeeded',
+      completedAt: new Date(NOW),
+      responseStatus: 200,
+      responseBytes: stored
+    })
+
+    const result = await h.authenticator.claim(h.input())
+
+    if (result.kind !== 'completed') throw new Error('expected completed')
+    result.responseBytes[0] = 9
+    expect(stored).toEqual(Buffer.from([1, 2, 3]))
+  })
+
+  it('classifies replay against a fresh finite observation time after the transaction', async () => {
+    const h = harness()
+    const cached = invocation(h.minted.persistence.assertionHash, {
+      status: 'succeeded',
+      completedAt: new Date(NOW),
+      responseStatus: 200,
+      responseBytes: Buffer.from('cached')
+    })
+    h.state.invocation = cached
+    h.deps.invocations.claim.mockImplementationOnce(async () => {
+      h.state.now = NOW + RESPONSE_CACHE_TTL_MS
+      return { kind: 'existing', invocation: cached }
+    })
+
+    expect(await h.authenticator.claim(h.input())).toEqual({
+      kind: 'denied',
+      reason: 'cached_response_invalid'
+    })
   })
 
   it.each([
@@ -414,12 +516,12 @@ describe('InvocationAssertionAuthenticator', () => {
     expect(JSON.stringify(result)).not.toContain(h.minted.persistence.assertionHash)
   })
 
-  it('revalidates all live facts before observing replay state', async () => {
+  it('revalidates all durable facts transactionally before observing replay state', async () => {
     const h = harness()
     h.state.invocation = invocation(h.minted.persistence.assertionHash, { status: 'running' })
     h.state.role = null
 
-    expect(await h.authenticator.claim(h.input())).toEqual({ kind: 'denied', reason: 'membership_missing' })
-    expect(h.authorityReads()).toBeGreaterThan(0)
+    expect(await h.authenticator.claim(h.input())).toEqual({ kind: 'denied', reason: 'claim_denied' })
+    expect(h.deps.invocations.claim).toHaveBeenCalledOnce()
   })
 })

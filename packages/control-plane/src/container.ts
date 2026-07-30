@@ -405,10 +405,6 @@ export function buildContainer(
   const invocationAssertions = new InvocationAssertionAuthenticator({
     clock,
     assertionCodec: invocationAssertionCodec,
-    conversations: repos.webchatConversation,
-    orgs: repos.org,
-    agents: repos.agent,
-    presets: repos.presetAgent,
     daemons: connReg,
     delegations: repos.webchatMcpDelegation,
     invocations: repos.mcpInvocation,

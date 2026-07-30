@@ -1151,6 +1151,9 @@ export type ClaimMcpInvocationResult =
   | { kind: 'denied' }
   | { kind: 'not_found' }
 
+export const MCP_INVOCATION_MAX_RESPONSE_BYTES = 256 * 1024
+export const MCP_INVOCATION_RESPONSE_CACHE_TTL_MS = 15 * 60_000
+
 export interface CompleteMcpInvocationInput {
   invocationId: string
   status: 'succeeded' | 'failed'

@@ -172,10 +172,6 @@ export function buildHttpApp(
     new InvocationAssertionAuthenticator({
       clock,
       assertionCodec: new InvocationAssertionCodec(TEST_API_KEY_PEPPER),
-      conversations: webchatConversationRepo,
-      orgs: orgRepo,
-      agents: agentRepo,
-      presets: presetAgentRepo,
       daemons: liveness,
       delegations: webchatMcpDelegationRepo,
       invocations: mcpInvocationRepo,

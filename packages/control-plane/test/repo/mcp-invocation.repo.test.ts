@@ -4,6 +4,7 @@ import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { PgWebchatMcpDelegationRepo } from '../../src/persistence/repositories/webchat-mcp-delegation.repo.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
+import { PgUserRepo, type PrismaLike } from '../../src/persistence/index.js'
 import {
   MCP_INVOCATION_EXECUTION_TIMEOUT_MS,
   MCP_INVOCATION_MAX_RESPONSE_BYTES,
@@ -14,6 +15,7 @@ import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 
 const CONVERSATION = 'c1111111-1111-4111-8111-111111111111'
 const AGENT = 'a1111111-1111-4111-8111-111111111111'
+const OTHER_AGENT = 'a2222222-2222-4222-8222-222222222222'
 const DAEMON = 'd1111111-1111-4111-8111-111111111111'
 const OTHER_DAEMON = 'd2222222-2222-4222-8222-222222222222'
 const INVOCATION = '11111111-1111-4111-8111-111111111111'
@@ -44,9 +46,29 @@ async function expectPending(promise: Promise<unknown>): Promise<void> {
   expect(settled).toBe(false)
 }
 
+async function expectDatabaseWait(): Promise<void> {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    const [state] = await prisma.$queryRaw<{ blocked: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND cardinality(pg_blocking_pids(pid)) > 0
+      ) AS blocked
+    `
+    if (state?.blocked) return
+    await new Promise<void>((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error('expected an invocation authority operation to wait on a row lock')
+}
+
 async function fixtures(delegationExpiresAt = at(60 * 60_000)) {
   await seedDaemon(prisma, DAEMON)
   await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+  await prisma.presetAgent.create({
+    data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: AGENT, status: 'created' }
+  })
   await prisma.webchatConversation.create({
     data: {
       id: CONVERSATION,
@@ -109,6 +131,86 @@ function claimInput(delegation: { id: string; generation: number }, extra: Recor
     now: at(1_000),
     ...extra
   }
+}
+
+type InvocationObservation = 'issued claim' | 'terminal replay'
+
+async function prepareObservation(
+  repo: PgMcpInvocationRepo,
+  delegation: { id: string; generation: number },
+  observation: InvocationObservation
+): Promise<void> {
+  await repo.mint(mintInput(delegation.id))
+  if (observation === 'issued claim') return
+  expect((await repo.claim(claimInput(delegation))).kind).toBe('claimed')
+  expect(
+    await repo.complete({
+      invocationId: INVOCATION,
+      status: 'succeeded',
+      responseStatus: 200,
+      responseBytes: Buffer.from('cached'),
+      completedAt: at(2_000)
+    })
+  ).toBe(true)
+}
+
+async function exerciseAuthorityRace(
+  delegation: { id: string; generation: number },
+  observation: InvocationObservation,
+  authority: {
+    write(db: PrismaLike): Promise<void>
+    restore(): Promise<void>
+  }
+): Promise<void> {
+  const repo = new PgMcpInvocationRepo(prisma)
+  await prepareObservation(repo, delegation, observation)
+
+  const observed = barrier()
+  const releaseObservation = barrier()
+  const observing = prisma.$transaction(
+    async (tx) => {
+      const result = await new PgMcpInvocationRepo(tx).claim(claimInput(delegation))
+      observed.release()
+      await releaseObservation.promise
+      return result
+    },
+    { timeout: 20_000 }
+  )
+  await observed.promise
+
+  const writingAfterObservation = authority.write(prisma)
+  await expectDatabaseWait()
+  releaseObservation.release()
+
+  expect((await observing).kind).toBe(observation === 'issued claim' ? 'claimed' : 'existing')
+  await writingAfterObservation
+
+  await authority.restore()
+  if (observation === 'issued claim') {
+    await prisma.mcpInvocation.update({
+      where: { id: INVOCATION },
+      data: { status: 'issued', startedAt: null }
+    })
+  }
+
+  const written = barrier()
+  const releaseWrite = barrier()
+  const writingFirst = prisma.$transaction(
+    async (tx) => {
+      await authority.write(tx)
+      written.release()
+      await releaseWrite.promise
+    },
+    { timeout: 20_000 }
+  )
+  await written.promise
+
+  const observingAfterWrite = repo.claim(claimInput(delegation))
+  await expectDatabaseWait()
+  releaseWrite.release()
+
+  await writingFirst
+  expect(await observingAfterWrite).toEqual({ kind: 'denied' })
 }
 
 describe('PgMcpInvocationRepo (real Postgres)', () => {
@@ -223,6 +325,94 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     expect(claims.filter((result) => result.kind === 'existing')).toHaveLength(1)
     expect(await repo.get(INVOCATION)).toMatchObject({ status: 'running', startedAt: at(1_000) })
   })
+
+  it.each(['issued claim', 'terminal replay'] as const)(
+    'linearizes %s against membership removal in both lock orders',
+    async (observation) => {
+      const delegation = await fixtures()
+
+      await exerciseAuthorityRace(delegation, observation, {
+        async write(db) {
+          await new PgUserRepo(db).removeMember(DEFAULT_ORG_ID, DEFAULT_OWNER_ID)
+        },
+        async restore() {
+          await prisma.membership.create({
+            data: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID, role: 'owner' }
+          })
+        }
+      })
+    }
+  )
+
+  it.each(['issued claim', 'terminal replay'] as const)(
+    'linearizes %s against an authority-removing role demotion in both lock orders',
+    async (observation) => {
+      const delegation = await fixtures()
+      await new PgAgentRepo(prisma).setSharing(AgentId(AGENT), {
+        visibility: 'restricted',
+        sharedWith: []
+      })
+
+      await exerciseAuthorityRace(delegation, observation, {
+        async write(db) {
+          await new PgUserRepo(db).setMemberRole(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, 'viewer')
+        },
+        async restore() {
+          await new PgUserRepo(prisma).setMemberRole(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, 'owner')
+        }
+      })
+    }
+  )
+
+  it.each(['issued claim', 'terminal replay'] as const)(
+    'linearizes %s against visibility tightening and sharedWith pruning in both lock orders',
+    async (observation) => {
+      const delegation = await fixtures()
+      await new PgUserRepo(prisma).setMemberRole(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, 'collaborator')
+      await new PgAgentRepo(prisma).setSharing(AgentId(AGENT), {
+        visibility: 'restricted',
+        sharedWith: [DEFAULT_OWNER_ID]
+      })
+
+      await exerciseAuthorityRace(delegation, observation, {
+        async write(db) {
+          await new PgAgentRepo(db).setSharing(AgentId(AGENT), {
+            visibility: 'restricted',
+            sharedWith: []
+          })
+        },
+        async restore() {
+          await new PgAgentRepo(prisma).setSharing(AgentId(AGENT), {
+            visibility: 'restricted',
+            sharedWith: [DEFAULT_OWNER_ID]
+          })
+        }
+      })
+    }
+  )
+
+  it.each(['issued claim', 'terminal replay'] as const)(
+    'linearizes %s against general-preset replacement in both lock orders',
+    async (observation) => {
+      const delegation = await fixtures()
+      await seedAgent(prisma, OTHER_AGENT, { daemonId: DAEMON })
+
+      await exerciseAuthorityRace(delegation, observation, {
+        async write(db) {
+          await db.presetAgent.update({
+            where: { orgId_preset: { orgId: DEFAULT_ORG_ID, preset: 'general' } },
+            data: { agentId: OTHER_AGENT }
+          })
+        },
+        async restore() {
+          await prisma.presetAgent.update({
+            where: { orgId_preset: { orgId: DEFAULT_ORG_ID, preset: 'general' } },
+            data: { agentId: AGENT }
+          })
+        }
+      })
+    }
+  )
 
   it('never reissues running or terminal invocations', async () => {
     const delegation = await fixtures()
