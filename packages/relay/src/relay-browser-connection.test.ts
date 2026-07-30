@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { RdAck, RdMsgWebchat, WebchatMcpDelegationReference } from '@agentconnect.md/protocol'
-import type { ServerTransport } from '@agentconnect.md/connection'
+import { WireError, type ServerTransport } from '@agentconnect.md/connection'
 import { RelayBrowserConnection, parseBrowserFrame } from './relay-browser-connection.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { Logger } from './log.js'
@@ -310,28 +310,61 @@ describe('RelayBrowserConnection', () => {
     expect(transport.last('error')).toEqual({ type: 'error', message: 'delivery failed' })
   })
 
-  it('does not disclose a delegation reference through delivery logs or browser errors', async () => {
-    const warnings: string[] = []
-    const log: Logger = {
-      debug: () => {},
-      info: () => {},
-      warn: (message) => warnings.push(message),
-      error: () => {}
+  it('logs safe delivery-failure categories without raw messages, details, payload, or delegation fields', async () => {
+    const sensitivePayload = `browser said secret; delegation=${JSON.stringify(DELEGATION)}`
+    const cases: Array<{ error: unknown; diagnostic: string }> = [
+      {
+        error: new WireError('INTERNAL', `no ack after 5 tries for ${DELEGATION.id}`, true),
+        diagnostic: 'kind=ack_timeout code=INTERNAL retryable=true'
+      },
+      {
+        error: new WireError('INTERNAL', 'connection closed', true),
+        diagnostic: 'kind=connection_closed code=INTERNAL retryable=true'
+      },
+      {
+        error: new WireError('BAD_PAYLOAD', `invalid correlated reply: ${sensitivePayload}`, false, {
+          delegation: DELEGATION,
+          payload: sensitivePayload
+        }),
+        diagnostic: 'kind=remote_protocol code=BAD_PAYLOAD retryable=false'
+      },
+      {
+        error: new WireError(`secret-${DELEGATION.generation}`, sensitivePayload, false),
+        diagnostic: 'kind=unknown_wire_error'
+      },
+      {
+        error: new Error(sensitivePayload),
+        diagnostic: 'kind=unknown_error'
+      }
+    ]
+
+    for (const { error, diagnostic } of cases) {
+      const warnings: string[] = []
+      const log: Logger = {
+        debug: () => {},
+        info: () => {},
+        warn: (message) => warnings.push(message),
+        error: () => {}
+      }
+      const sendMsg = vi.fn(async () => {
+        throw error
+      })
+      const { transport } = build({
+        daemon: { sendMsg } as unknown as RelayDaemonConnection,
+        delegation: DELEGATION,
+        log
+      })
+
+      transport.feed({ text: sensitivePayload })
+      await tick()
+
+      expect(warnings).toEqual([`relay: webchat op delivery failed ${diagnostic}`])
+      const observable = JSON.stringify({ warnings, browserError: transport.last('error') })
+      expect(observable).not.toContain(DELEGATION.id)
+      expect(observable).not.toContain(String(DELEGATION.generation))
+      expect(observable).not.toContain(DELEGATION.expiresAt)
+      expect(observable).not.toContain(sensitivePayload)
     }
-    const sendMsg = vi.fn(async () => {
-      throw new Error(`failed frame ${JSON.stringify(DELEGATION)}`)
-    })
-    const { transport } = build({
-      daemon: { sendMsg } as unknown as RelayDaemonConnection,
-      delegation: DELEGATION,
-      log
-    })
-
-    transport.feed({ text: 'hi' })
-    await tick()
-
-    expect(warnings.join('\n')).not.toContain(DELEGATION.id)
-    expect(JSON.stringify(transport.last('error'))).not.toContain(DELEGATION.id)
   })
 
   it('treats browser close as transport observability while an accepted turn keeps completing', async () => {

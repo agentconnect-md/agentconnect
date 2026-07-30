@@ -14,15 +14,48 @@
  */
 import { randomUUID } from 'node:crypto'
 import {
+  ErrorCode,
   RelayWebchatOp,
   type RdChat,
   type RdMsgWebchat,
   type WebchatMcpDelegationReference
 } from '@agentconnect.md/protocol'
-import type { ServerTransport } from '@agentconnect.md/connection'
+import { WireError, type ServerTransport } from '@agentconnect.md/connection'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { ChatSink } from './webchat-router.js'
 import type { Logger } from './log.js'
+
+const ACK_TIMEOUT_MESSAGE =
+  /^no ack after [1-9]\d* tries for [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const REMOTE_PROTOCOL_CODES: ReadonlySet<string> = new Set([
+  'UNKNOWN_FRAME',
+  'FRAME_TOO_LARGE',
+  'PROTOCOL_STATE',
+  'BAD_PAYLOAD'
+])
+
+/**
+ * Preserve actionable delivery telemetry without ever copying error messages or
+ * details: both may contain the exact rd/msg, including browser content and the
+ * opaque delegation reference.
+ */
+function deliveryFailureDiagnostic(error: unknown): string {
+  if (!(error instanceof WireError)) return 'kind=unknown_error'
+
+  const parsedCode = ErrorCode.safeParse(error.code)
+  if (!parsedCode.success) return 'kind=unknown_wire_error'
+
+  const code = parsedCode.data
+  let kind = 'wire_error'
+  if (code === 'INTERNAL' && error.retryable && ACK_TIMEOUT_MESSAGE.test(error.message)) {
+    kind = 'ack_timeout'
+  } else if (code === 'INTERNAL' && error.retryable && error.message === 'connection closed') {
+    kind = 'connection_closed'
+  } else if (REMOTE_PROTOCOL_CODES.has(code)) {
+    kind = 'remote_protocol'
+  }
+  return `kind=${kind} code=${code} retryable=${error.retryable}`
+}
 
 export interface RelayBrowserConnDeps {
   /** The conversation id (== chatId == sessionKey); fresh or resumed. */
@@ -162,10 +195,10 @@ export class RelayBrowserConnection implements ChatSink {
       } else if (op.op === 'resume') {
         this.send({ type: 'resumed', ack: browserAck })
       }
-    } catch {
+    } catch (error) {
       // Lower layers may include the outbound frame in an error. Do not let the opaque
       // delegation reference become log content.
-      this.deps.log.warn('relay: webchat op delivery failed')
+      this.deps.log.warn(`relay: webchat op delivery failed ${deliveryFailureDiagnostic(error)}`)
       this.send({ type: 'error', message: 'delivery failed' })
     }
   }
