@@ -5,27 +5,30 @@
 // name, platform mark + channel, relative time. The small Card/CardLink/EmptyRow
 // primitives live here too — HomeView's other cards reuse them.
 
-import { type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react'
 import Link from 'next/link'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 import { AgentIconView, PlatformMark } from '@/components/marks'
 import { sessionPlatform, type Session } from '@/lib/data'
+import { useIsMobile } from '@/lib/use-is-mobile'
 
 export function Card({
   title,
   action,
   className,
-  children
+  children,
+  ref
 }: {
   title: string
   action?: ReactNode
   className?: string
   children: ReactNode
+  ref?: Ref<HTMLDivElement>
 }) {
   return (
-    <div className={`card overflow-hidden ${className ?? ''}`}>
+    <div ref={ref} className={`card overflow-hidden ${className ?? ''}`}>
       <div className="cardhead justify-between">
         <span className="cardtitle">{title}</span>
         {action}
@@ -83,7 +86,9 @@ export function RecentSessionsCard({
   allHref,
   emptyText,
   limit = 6,
-  className
+  className,
+  showAgent = true,
+  fillHeight = false
 }: {
   title?: string
   sessions: Session[]
@@ -92,45 +97,86 @@ export function RecentSessionsCard({
   emptyText: ReactNode
   limit?: number
   className?: string
+  /** Agent detail already scopes to one agent — hide the redundant icon+name there. */
+  showAgent?: boolean
+  /** Card height is set externally (Home: match the right column) — round the fitted row count UP and let the body scroll. */
+  fillHeight?: boolean
 }) {
   const { orgPath } = useOrgs()
   const { getAgent } = useConsoleData()
-  const recent = sessions.slice(0, limit)
+  const cardRef = useRef<HTMLDivElement>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const [fit, setFit] = useState<number | null>(null)
+  // Mobile stacks the card in normal flow, so its height is its own content —
+  // measuring there would feed back into itself. Fit rows on desktop only.
+  const isMobile = useIsMobile()
+  const canFill = fillHeight && !isMobile
+  useEffect(() => {
+    if (!canFill) return
+    const el = cardRef.current
+    const body = bodyRef.current
+    if (!el || !body) return
+    const measure = () => {
+      const row = body.querySelector<HTMLElement>('a.row')
+      if (!row || row.offsetHeight === 0) return
+      setFit(Math.max(1, Math.ceil(body.clientHeight / row.offsetHeight)))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [canFill, sessions.length])
+  const recent = sessions.slice(0, canFill && fit !== null ? fit : limit)
   return (
-    <Card title={title} action={<CardLink href={allHref}>All sessions</CardLink>} className={className}>
-      {loading && recent.length === 0 ? (
-        Array.from({ length: 4 }, (_, i) => <SessionRowSkeleton key={i} i={i} />)
-      ) : recent.length === 0 ? (
-        <EmptyRow>{emptyText}</EmptyRow>
-      ) : (
-        recent.map((s) => {
-          const owner = s.agentId ? getAgent(s.agentId) : undefined
-          return (
-            <Link key={s.id} href={orgPath(`/sessions/${s.id}`)} className="row click grid-cols-[1fr_auto] gap-3">
-              <span className="min-w-0">
-                <span className="block truncate font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
-                  {s.title}
-                </span>
-                <span className="mt-[3px] flex items-center gap-[6px] text-(--text-tertiary)">
-                  <span className="av h-[15px] w-[15px] rounded-xs">
-                    <AgentIconView icon={owner?.icon} runtime={owner?.runtime ?? s.runtime ?? 'claude'} size={15} />
+    <Card
+      ref={cardRef}
+      title={title}
+      action={<CardLink href={allHref}>All sessions</CardLink>}
+      className={`${fillHeight ? 'desktop:flex desktop:flex-col' : ''} ${className ?? ''}`}
+    >
+      <div ref={bodyRef} className={fillHeight ? 'desktop:min-h-0 desktop:flex-1 desktop:overflow-y-auto' : undefined}>
+        {loading && recent.length === 0 ? (
+          Array.from({ length: 4 }, (_, i) => <SessionRowSkeleton key={i} i={i} />)
+        ) : recent.length === 0 ? (
+          <EmptyRow>{emptyText}</EmptyRow>
+        ) : (
+          recent.map((s) => {
+            const owner = s.agentId ? getAgent(s.agentId) : undefined
+            return (
+              <Link key={s.id} href={orgPath(`/sessions/${s.id}`)} className="row click grid-cols-[1fr_auto] gap-3">
+                <span className="min-w-0">
+                  <span className="block truncate font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
+                    {s.title}
                   </span>
-                  <span className="truncate font-sans text-[11.5px] leading-normal">{s.agentName || '—'}</span>
-                  {s.channel && (
-                    <>
-                      <span className="imark h-4 w-4 rounded-xs">
-                        <PlatformMark platform={sessionPlatform(s)} fillPct={90} />
-                      </span>
-                      <span className="mono truncate text-[11px]">{s.channel}</span>
-                    </>
-                  )}
+                  <span className="mt-[3px] flex items-center gap-[6px] text-(--text-tertiary)">
+                    {showAgent && (
+                      <>
+                        <span className="av h-[15px] w-[15px] rounded-xs">
+                          <AgentIconView
+                            icon={owner?.icon}
+                            runtime={owner?.runtime ?? s.runtime ?? 'claude'}
+                            size={15}
+                          />
+                        </span>
+                        <span className="truncate font-sans text-[11.5px] leading-normal">{s.agentName || '—'}</span>
+                      </>
+                    )}
+                    {s.channel && (
+                      <>
+                        <span className="imark h-4 w-4 rounded-xs">
+                          <PlatformMark platform={sessionPlatform(s)} fillPct={90} />
+                        </span>
+                        <span className="mono truncate text-[11px]">{s.channel}</span>
+                      </>
+                    )}
+                  </span>
                 </span>
-              </span>
-              <span className="mono self-start whitespace-nowrap text-[11.5px] text-(--text-tertiary)">{s.time}</span>
-            </Link>
-          )
-        })
-      )}
+                <span className="mono self-start whitespace-nowrap text-[11.5px] text-(--text-tertiary)">{s.time}</span>
+              </Link>
+            )
+          })
+        )}
+      </div>
     </Card>
   )
 }
