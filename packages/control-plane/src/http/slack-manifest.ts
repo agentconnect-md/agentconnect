@@ -15,7 +15,7 @@
  * change them here, change them in packages/web/src/lib/slack-manifest.ts too.
  */
 import { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
-import { platformAppDescription, SLACK_APP_DESCRIPTION_MAX_LENGTH } from './platform-app-description.js'
+import { platformAppDescription, SLACK_APP_DESCRIPTION_MAX_BYTES, utf8ByteLength } from './platform-app-description.js'
 
 /**
  * Bot token scopes the Slack app requests. Widening this list later forces every
@@ -125,7 +125,7 @@ function buildManagedManifest(name: string, options: SlackManifestOptions = {}):
       bot_user: { display_name: displayName, always_online: true },
       app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
       agent_view: {
-        agent_description: platformAppDescription(options.description, SLACK_APP_DESCRIPTION_MAX_LENGTH),
+        agent_description: platformAppDescription(options.description, SLACK_APP_DESCRIPTION_MAX_BYTES, utf8ByteLength),
         suggested_prompts: []
       },
       shortcuts: [

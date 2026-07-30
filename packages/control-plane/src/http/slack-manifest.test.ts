@@ -8,7 +8,11 @@ import {
   DEFAULT_SLACK_APP_NAME
 } from './slack-manifest.js'
 import { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
-import { DEFAULT_PLATFORM_APP_DESCRIPTION, SLACK_APP_DESCRIPTION_MAX_LENGTH } from './platform-app-description.js'
+import {
+  DEFAULT_PLATFORM_APP_DESCRIPTION,
+  SLACK_APP_DESCRIPTION_MAX_BYTES,
+  utf8ByteLength
+} from './platform-app-description.js'
 
 // The PUBLIC form — `/v1`, not the internal `/api/v1` (see SLACK_OAUTH_CALLBACK_PATH).
 const REDIRECT = 'https://cp.example/v1/integrations/slack/oauth/callback'
@@ -71,7 +75,10 @@ describe('buildInstallManifest', () => {
   })
 
   it('uses the agent description with a fallback and a Unicode-safe platform limit', () => {
-    const description = `${'a'.repeat(297)}😀tail`
+    const description = `${'a'.repeat(297)}😀`
+    expect(description.length).toBeLessThan(SLACK_APP_DESCRIPTION_MAX_BYTES)
+    expect(utf8ByteLength(description)).toBeGreaterThan(SLACK_APP_DESCRIPTION_MAX_BYTES)
+
     const custom = buildInstallManifest('acme-bot', REDIRECT, { description }) as {
       features: { agent_view: { agent_description: string } }
     }
@@ -79,8 +86,8 @@ describe('buildInstallManifest', () => {
       features: { agent_view: { agent_description: string } }
     }
 
-    expect(custom.features.agent_view.agent_description).toBe(`${'a'.repeat(297)}😀…`)
-    expect(custom.features.agent_view.agent_description.length).toBe(SLACK_APP_DESCRIPTION_MAX_LENGTH)
+    expect(custom.features.agent_view.agent_description).toBe(`${'a'.repeat(297)}…`)
+    expect(utf8ByteLength(custom.features.agent_view.agent_description)).toBe(SLACK_APP_DESCRIPTION_MAX_BYTES)
     expect(fallback.features.agent_view.agent_description).toBe(DEFAULT_PLATFORM_APP_DESCRIPTION)
   })
 

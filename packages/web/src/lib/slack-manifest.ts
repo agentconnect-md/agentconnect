@@ -73,7 +73,14 @@ export const SLACK_BOT_EVENTS = [
 /** Fallback name so the manifest / deep link are always valid before the user types one. */
 export const DEFAULT_SLACK_APP_NAME = 'agentconnect'
 export const DEFAULT_SLACK_APP_DESCRIPTION = 'AI agent powered by AgentConnect.'
-export const SLACK_APP_DESCRIPTION_MAX_LENGTH = 300
+export const SLACK_APP_DESCRIPTION_MAX_BYTES = 300
+
+const ELLIPSIS = '…'
+const UTF8_ENCODER = new TextEncoder()
+
+function utf8ByteLength(value: string): number {
+  return UTF8_ENCODER.encode(value).byteLength
+}
 
 export interface SlackAppManifest {
   display_information: { name: string; background_color?: string }
@@ -113,14 +120,17 @@ export interface SlackManifestOpts {
 
 function slackAppDescription(description: string | null | undefined): string {
   const value = description?.trim() || DEFAULT_SLACK_APP_DESCRIPTION
-  if (value.length <= SLACK_APP_DESCRIPTION_MAX_LENGTH) return value
+  if (utf8ByteLength(value) <= SLACK_APP_DESCRIPTION_MAX_BYTES) return value
 
   let head = ''
+  let bytes = utf8ByteLength(ELLIPSIS)
   for (const character of value) {
-    if (head.length + character.length >= SLACK_APP_DESCRIPTION_MAX_LENGTH) break
+    const characterBytes = utf8ByteLength(character)
+    if (bytes + characterBytes > SLACK_APP_DESCRIPTION_MAX_BYTES) break
     head += character
+    bytes += characterBytes
   }
-  return `${head.trimEnd()}…`
+  return `${head.trimEnd()}${ELLIPSIS}`
 }
 
 /** The two names the manifest carries — mirrors the agent's naming model:
