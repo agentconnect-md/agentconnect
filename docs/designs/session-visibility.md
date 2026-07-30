@@ -409,8 +409,9 @@ two layers:
 reliably attributed back to source turns, so tightening a session stops
 _future_ capture but does not retract what was distilled while it was
 org-visible. This is a stated product caveat, surfaced in the §4.3 flow —
-the guarantee is "private stops the transcript and stops feeding shared
-memory from the moment of tightening", not retroactive amnesia.
+the guarantee is "private hides the transcript at CP commit and stops
+feeding shared memory once every affected daemon has acked (`applied`)",
+not retroactive amnesia.
 
 Per-owner memory namespaces are a possible future relaxation, but the
 exclusion gate is the shipping requirement — the `private` tier's guarantee
@@ -468,4 +469,11 @@ link ends public access without touching the session row.
   tightening in either commit order never yields an org-visible child of a
   private parent, including the depth-2 interleaving (grandchild insert
   racing an ancestor cascade); tighten-cutover staging — the §4.3 response
-  stays `pending` until daemon ACK and flips to `applied`.
+  stays `pending` until daemon ACK and flips to `applied`; the §5.1 capture
+  gate — an A2A child starts with capture excluded, an `org` child opens
+  capture only after its CP-confirmed gate frame (exercising the initial
+  revision, so local fail-closed state is not mistaken for an
+  already-stored duplicate), and a stale-`org` delegation racing a parent
+  tighten never opens capture; duplicate delivery — losing the first ACK
+  and retrying with an equal revision yields a fresh ACK without
+  reapplying state.
