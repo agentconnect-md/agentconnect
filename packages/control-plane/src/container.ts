@@ -46,6 +46,8 @@ import {
   PgSessionRepo,
   PgSessionUsageRepo,
   PgWebchatConversationRepo,
+  PgWebchatMcpDelegationRepo,
+  PgMcpInvocationRepo,
   PgLaunchRepo,
   PgSecretLeaseRepo,
   PgIntegrationRepo,
@@ -102,6 +104,8 @@ import { DaemonAuthService } from './registry/authService.js'
 import { ApiKeyService } from './registry/apiKeyService.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
+import { InvocationAssertionCodec } from './registry/invocationAssertion.js'
+import { WebchatMcpDelegationService } from './registry/webchatMcpDelegationService.js'
 import { OrgInviteLinkCodec } from './registry/orgInviteLink.js'
 import { OrgInviteLinkService } from './registry/orgInviteLinkService.js'
 import { WaitlistService } from './registry/waitlistService.js'
@@ -164,6 +168,9 @@ export interface Container {
   readonly defaults: { orgId: string; ownerId: string }
   /** The process readiness gate — the bootstrap flips it at SIGTERM (`/readyz`). */
   readonly readiness: Readiness
+  /** Live webchat preset entitlement + one-time assertion minting. Transport
+   *  handlers consume this seam without reconstructing authority checks. */
+  readonly webchatMcpDelegation: WebchatMcpDelegationService
   /** Arm the Clock-driven background loops (the cron-run reaper). Prod calls this
    *  after `listen`; tests never do, so no live timer arms under a `FakeClock`. */
   startBackground(): void
@@ -215,6 +222,8 @@ export function buildContainer(
     session: new PgSessionRepo(prisma),
     sessionUsage: new PgSessionUsageRepo(prisma),
     webchatConversation: new PgWebchatConversationRepo(prisma),
+    webchatMcpDelegation: new PgWebchatMcpDelegationRepo(prisma),
+    mcpInvocation: new PgMcpInvocationRepo(prisma),
     launch: new PgLaunchRepo(prisma),
     lease: new PgSecretLeaseRepo(prisma),
     integration: new PgIntegrationRepo(prisma),
@@ -370,6 +379,20 @@ export function buildContainer(
 
   // The derived in-memory connection index every hot lookup hits.
   const connReg = new ConnectionRegistry()
+
+  // Built-in general-preset webchat entitlement. Assertions use a dedicated
+  // prefix and hash domain even though the deployment pepper is shared.
+  const webchatMcpDelegation = new WebchatMcpDelegationService({
+    clock,
+    assertionCodec: new InvocationAssertionCodec(config.API_KEY_PEPPER),
+    conversations: repos.webchatConversation,
+    orgs: repos.org,
+    agents: repos.agent,
+    presets: repos.presetAgent,
+    daemons: connReg,
+    delegations: repos.webchatMcpDelegation,
+    invocations: repos.mcpInvocation
+  })
 
   // The relay analogue — relayId → live relay socket, so the CP can push
   // rc/daemon-revoke to connected relays (§9). Roster still comes from the DB.
@@ -1178,6 +1201,7 @@ export function buildContainer(
     relayGateway: (app: FastifyInstance) => createRelayWsServer(app, relayWsDeps),
     defaults: { orgId: DEFAULT_ORG_ID, ownerId: DEFAULT_OWNER_ID },
     readiness,
+    webchatMcpDelegation,
     startBackground() {
       cronRunReaper.start()
       hookRunReaper.start()
