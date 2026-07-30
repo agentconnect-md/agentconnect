@@ -13,8 +13,12 @@ export interface BotProfileIcon {
 
 /** Load the Agent icon as raster bytes for an external platform profile.
  * Uploaded images come from the configured store; glyph/runtime descriptors
- * reuse the public icon endpoint's PNG renderer. */
-export async function loadBotProfileIcon(agent: BotProfileIconAgent, iconStore?: IconStore): Promise<BotProfileIcon> {
+ * reuse the public icon endpoint's PNG renderer at the consumer's target size. */
+export async function loadBotProfileIcon(
+  agent: BotProfileIconAgent,
+  iconStore?: IconStore,
+  renderWidth = 128
+): Promise<BotProfileIcon> {
   if (agent.icon?.kind === 'image') {
     if (!iconStore) throw new Error('uploaded agent icon store is unavailable')
     const stored = await iconStore.get(agentIconKey(agent.id))
@@ -26,7 +30,7 @@ export async function loadBotProfileIcon(agent: BotProfileIconAgent, iconStore?:
   }
 
   return {
-    bytes: await renderAgentIconPng(agent.icon, agent.runtime),
+    bytes: await renderAgentIconPng(agent.icon, agent.runtime, renderWidth),
     contentType: 'image/png'
   }
 }
