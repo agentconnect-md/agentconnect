@@ -75,21 +75,36 @@ describe('Lark CardKit reply lifecycle', () => {
     }
     expect(initial.config.streaming_mode).toBe(true)
     expect(initial.body.elements[0]).toMatchObject({
-      element_id: FEISHU_STREAMING_ELEMENT_ID,
-      content: 'Thinking…'
-    })
-    expect(initial.body.elements[1]).toMatchObject({
-      tag: 'overflow',
-      element_id: FEISHU_REPLY_ACTIONS_ELEMENT_ID,
-      options: [
+      tag: 'column_set',
+      columns: [
         {
-          text: { tag: 'plain_text', content: 'Cancel run' },
-          value: 'cancel'
+          width: 'weighted',
+          elements: [
+            {
+              element_id: FEISHU_STREAMING_ELEMENT_ID,
+              content: 'Thinking…'
+            }
+          ]
         },
         {
-          text: { tag: 'plain_text', content: 'View session' },
-          value: 'session',
-          multi_url: { url: attribution.sessionUrl }
+          width: 'auto',
+          elements: [
+            {
+              tag: 'overflow',
+              element_id: FEISHU_REPLY_ACTIONS_ELEMENT_ID,
+              options: [
+                {
+                  text: { tag: 'plain_text', content: 'Cancel run' },
+                  value: 'cancel'
+                },
+                {
+                  text: { tag: 'plain_text', content: 'View session' },
+                  value: 'session',
+                  multi_url: { url: attribution.sessionUrl }
+                }
+              ]
+            }
+          ]
         }
       ]
     })
@@ -100,24 +115,49 @@ describe('Lark CardKit reply lifecycle', () => {
     expect(completed.body.elements).toEqual([
       { tag: 'markdown', content: 'Done' },
       {
-        tag: 'markdown',
-        text_size: 'notation',
-        content:
-          'sent by [Review Bot](https://agentconnect.example/agents/review-bot) (Codex · gpt-5.6) · [open in session](https://agentconnect.example/sessions/123)'
+        tag: 'hr'
       },
       {
-        tag: 'overflow',
-        element_id: FEISHU_REPLY_ACTIONS_ELEMENT_ID,
-        width: 'default',
-        options: [
+        tag: 'column_set',
+        flex_mode: 'none',
+        horizontal_spacing: '8px',
+        horizontal_align: 'right',
+        columns: [
           {
-            text: { tag: 'plain_text', content: 'View session' },
-            value: 'session',
-            multi_url: { url: attribution.sessionUrl }
+            tag: 'column',
+            width: 'weighted',
+            weight: 1,
+            vertical_align: 'center',
+            elements: [
+              {
+                tag: 'markdown',
+                text_size: 'notation',
+                content:
+                  'sent by [Review Bot](https://agentconnect.example/agents/review-bot) (Codex · gpt-5.6) · [open in session](https://agentconnect.example/sessions/123)'
+              }
+            ]
+          },
+          {
+            tag: 'column',
+            width: 'auto',
+            vertical_align: 'center',
+            elements: [
+              {
+                tag: 'overflow',
+                element_id: FEISHU_REPLY_ACTIONS_ELEMENT_ID,
+                width: 'default',
+                options: [
+                  {
+                    text: { tag: 'plain_text', content: 'View session' },
+                    value: 'session',
+                    multi_url: { url: attribution.sessionUrl }
+                  }
+                ],
+                value: { action: 'agentconnect_reply' }
+              }
+            ]
           }
-        ],
-        value: { action: 'agentconnect_reply' },
-        margin: '8px 0px 0px 0px'
+        ]
       }
     ])
   })
