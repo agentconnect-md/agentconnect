@@ -6,7 +6,7 @@
 // via openModal's 2nd arg — a DaemonRow (reconnect / delete daemon) or an Agent
 // (add integration / delete / edit agent); the kind selects which the render casts it to.
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Agent, DaemonRow, IntegrationRow } from '@/lib/data'
 import type { CronDto, HookDto } from '@/lib/api'
 import AddAgentModal from './modals/AddAgentModal'
@@ -66,24 +66,40 @@ const Ctx = createContext<ModalData | null>(null)
 
 export function ModalProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState<{ kind: ModalKind; target?: ModalTarget; opts?: ModalOpts } | null>(null)
-  const openModal = useCallback(
-    (kind: ModalKind, target?: ModalTarget, opts?: ModalOpts) => setOpen({ kind, target, opts }),
-    []
-  )
-  const close = useCallback(() => setOpen(null), [])
+  const dismissHandler = useRef<(() => void) | null>(null)
+  const openModal = useCallback((kind: ModalKind, target?: ModalTarget, opts?: ModalOpts) => {
+    dismissHandler.current = null
+    setOpen({ kind, target, opts })
+  }, [])
+  const close = useCallback(() => {
+    dismissHandler.current = null
+    setOpen(null)
+  }, [])
+  const requestClose = useCallback(() => {
+    const dismiss = dismissHandler.current
+    if (dismiss) dismiss()
+    else close()
+  }, [close])
+  const registerDismiss = useCallback((handler: () => void) => {
+    dismissHandler.current = handler
+    return () => {
+      if (dismissHandler.current === handler) dismissHandler.current = null
+    }
+  }, [])
 
   const value = useMemo<ModalData>(() => ({ openModal }), [openModal])
 
   // Dialogs hold in-progress form state, so a stray click on the scrim must not
-  // discard it — only Esc (or the explicit Cancel / ×) closes.
+  // discard it. Esc asks the active dialog to dismiss first, so dialogs that own
+  // cleanup can share the same path as their explicit Cancel button.
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close()
+      if (e.key === 'Escape') requestClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, close])
+  }, [open, requestClose])
 
   return (
     <Ctx.Provider value={value}>
@@ -109,6 +125,7 @@ export function ModalProvider({ children }: { children: ReactNode }) {
               <AddDaemonModal
                 onClose={close}
                 onDone={open.target ? () => openModal('editAgent', open.target, open.opts) : undefined}
+                registerDismiss={registerDismiss}
               />
             )}
             {open.kind === 'integration' && open.target && (

@@ -22,7 +22,7 @@ import { Icon } from '@/components/ui'
 import { SocialLoginMark, Spinner, Wordmark } from '@/components/marks'
 import { getMyAccess, joinWaitlist, type WaitlistIntake } from '@/lib/api'
 import { getUser, isAuthConfigured, login, logout } from '@/lib/auth'
-import { SOCIAL_LOGIN_PROVIDERS, type SocialLoginTarget } from '@/lib/social-login-providers'
+import { socialLoginProviders, type SocialLoginTarget } from '@/lib/social-login-providers'
 
 type Phase = 'loading' | 'intake' | 'auth' | 'onlist' | 'error'
 type Platform = 'slack' | 'telegram' | 'discord'
@@ -37,7 +37,7 @@ const INTAKE_KEY = 'ac.wl.intake'
 const PROVIDER_KEY = 'ac.wl.provider'
 const TEAM_SIZES = ['Just me', '2–10', '11–50', '51–200', '200+']
 const PROVIDER_LABELS: Record<string, string> = Object.fromEntries(
-  SOCIAL_LOGIN_PROVIDERS.map((p) => [p.target, `via ${p.name}`])
+  socialLoginProviders().map((p) => [p.target, `via ${p.name}`])
 )
 const PLATFORMS: { id: Platform; label: string; Mark: typeof FaSlack }[] = [
   { id: 'slack', label: 'Slack', Mark: FaSlack },
@@ -373,7 +373,7 @@ export default function Waitlist() {
                   typing, no spoofing.
                 </p>
                 <div className="mt-[26px] flex max-w-[380px] flex-col gap-3">
-                  {SOCIAL_LOGIN_PROVIDERS.map((provider) => (
+                  {socialLoginProviders().map((provider) => (
                     <button
                       key={provider.target}
                       type="button"

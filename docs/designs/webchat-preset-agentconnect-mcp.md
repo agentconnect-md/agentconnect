@@ -57,9 +57,8 @@ This design deliberately separates:
      sessions are ineligible.
    - Webchat sessions on non-preset agents are ineligible.
 4. The webchat session is private to its initiating user under
-   `session-visibility.md`. An organization owner's read-only governance exception,
-   if retained by that design, does not grant the ability to join, resume, or send
-   messages into the conversation.
+   `session-visibility.md`. Organization ownership grants no read, join, resume,
+   or send access to another user's conversation.
 5. The enabled catalog is the existing curated read/write catalog. Existing
    exclusions for credential, membership, organization, access-control, bot, and
    hook writes remain in force.
@@ -1052,8 +1051,8 @@ With two members using the same preset agent:
   broader access;
 - a role change between two calls changes the second call's authority;
 - session list/detail/messages obey private-session visibility;
-- an organization owner who can inspect a private session under the governance
-  exception still cannot join or act through that session.
+- an organization owner cannot inspect, join, or act through another user's
+  private session.
 
 ## 15. Observability
 

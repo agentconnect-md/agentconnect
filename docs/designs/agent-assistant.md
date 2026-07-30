@@ -407,7 +407,9 @@ Resource `lastModifiedByUserId` naturally records the **actual user** because th
 Session list/detail reads the **CP database** (`SessionMeta`, synchronized from daemon `event/session` snapshots in `sessions.ts:116-183`; transcript body remains daemon-fetched). Visibility normally derives from agent. Assistant would be organization-visible, but **its sessions are private per-user operational conversations**:
 
 - Add optional `initiatorUserId` to `event/session` snapshot (`protocol/frames/telemetry.ts`) and `SessionMeta` (assistant session = delegated userId; ordinary agent omits it, unchanged behavior).
-- CP routes filter `kind='assistant'` rows to `initiatorUserId === viewer.userId` or owner (governance exemption). Apply the same gate to `/sessions/:id/messages` and `tool-body`.
+- CP routes filter `kind='assistant'` rows to
+  `initiatorUserId === viewer.userId`; organization role is not a visibility
+  bypass. Apply the same gate to `/sessions/:id/messages` and `tool-body`.
 - Webchat Playground list is already scoped by conversation ownership; no change.
 
 ---

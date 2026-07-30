@@ -10,7 +10,7 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { OrgId } from '../domain/ids.js'
-import type { ViewCtx } from './visibility.js'
+import { AuthorizationAction, can, type ViewCtx } from '../authorization/policy.js'
 
 /** The org the request acts on — set by the org-scope guard on every
  *  `/orgs/:orgId` route before the handler runs. */
@@ -31,14 +31,14 @@ function forbid(reply: FastifyReply, message: string): void {
 /** Writes on org resources (agents, daemons, integrations, crons, bots):
  *  owners and collaborators pass, viewers are read-only. */
 export function denyViewerWrite(req: FastifyRequest, reply: FastifyReply): boolean {
-  if (req.orgCtx!.role !== 'viewer') return false
+  if (can(ctxOf(req), { action: AuthorizationAction.OrganizationWrite })) return false
   forbid(reply, 'viewers are read-only')
   return true
 }
 
 /** Member management + org info changes: owners only. */
 export function denyNonOwner(req: FastifyRequest, reply: FastifyReply): boolean {
-  if (req.orgCtx!.role === 'owner') return false
+  if (can(ctxOf(req), { action: AuthorizationAction.OrganizationManage })) return false
   forbid(reply, 'only an organization owner can do this')
   return true
 }

@@ -27,11 +27,9 @@ import { Tag } from '../plugins/openapi.js'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 
 const ConnectorId = z.string().trim().min(1).max(128)
-// Must stay in step with the console's SOCIAL_LOGIN_PROVIDERS: a target the UI
-// offers but this rejects is a Connect button that 400s.
-const SocialTarget = z.enum(['github', 'google', 'slack'])
-const TargetParamStrict = z.object({ target: SocialTarget })
 const ConnectorDto = z.object({ connectorId: ConnectorId })
+/** Unlink takes any stored target, including one this deployment has since
+ *  stopped offering — you must always be able to remove what you linked. */
 const TargetParam = z.object({ target: z.string().trim().min(1).max(128) })
 
 /** The Slack workspace behind the caller's account. `linked: false` is a real
@@ -134,6 +132,20 @@ function logtoFailure(reply: FastifyReply, error: unknown, operation: Operation)
 export function meSocialIdentityRoutes(deps: HttpDeps) {
   return async function meSocialIdentityRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+    // Shape only. WHICH methods a deployment offers is the console's call
+    // (SOCIAL_PROVIDERS, web lib/social-login-providers) and duplicating that
+    // decision here is what made the two sides disagree: the console falls back
+    // to its full catalog on an unrecognizable setting, and any second
+    // implementation of that rule drifts from it. The real gate is the tenant —
+    // socialConnectorIdFor 404s unless the admin configured that connector — so
+    // this route can never reject a method the console legitimately offers.
+    const SocialTarget = z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9_-]+$/, 'not a connector target')
+    const TargetParamStrict = z.object({ target: SocialTarget })
     const unavailable = {
       error: 'Service Unavailable',
       statusCode: 503,

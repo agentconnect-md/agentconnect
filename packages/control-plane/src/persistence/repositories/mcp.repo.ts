@@ -28,7 +28,7 @@ import type {
   ResourceVisibility,
   ViewCtx
 } from '../ports.js'
-import { visibilityWhere } from '../ports.js'
+import { visibilityWhere } from '../../authorization/policy.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { DaemonId, OrgId } from '../../domain/ids.js'
 
@@ -73,7 +73,7 @@ export class PgMcpProviderRepo implements McpProviderRepo {
   }
 
   // Same visibility filter as agents/daemons/crons: org-visible OR mine OR shared with
-  // me (owners/undefined ⇒ unfiltered). See visibilityWhere.
+  // me (undefined ⇒ unfiltered internal read). See visibilityWhere.
   async listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<McpProviderRecord[]> {
     const rows = await this.db.mcpProvider.findMany({
       where: { orgId, ...visibilityWhere(viewer) },

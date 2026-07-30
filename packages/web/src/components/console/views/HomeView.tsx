@@ -370,12 +370,19 @@ export default function HomeView() {
 
       {/* Dashboard grid. */}
       <div className="grid grid-cols-1 gap-4 desktop:grid-cols-[1.5fr_1fr]">
-        <RecentSessionsCard
-          sessions={allSessions}
-          loading={loading}
-          allHref={orgPath('/sessions')}
-          emptyText="No sessions yet — ask an agent above to start one."
-        />
+        {/* On desktop the right column dictates the row height: the card is
+            absolutely positioned (so it never stretches the row itself) and
+            fillHeight fits as many whole session rows as that height allows. */}
+        <div className="desktop:relative">
+          <RecentSessionsCard
+            sessions={allSessions}
+            loading={loading}
+            allHref={orgPath('/sessions')}
+            emptyText="No sessions yet — ask an agent above to start one."
+            fillHeight
+            className="desktop:absolute desktop:inset-0"
+          />
+        </div>
 
         <div className="flex flex-col gap-4">
           <Card title="Agents you use" action={<CardLink href={orgPath('/agents')}>All agents</CardLink>}>

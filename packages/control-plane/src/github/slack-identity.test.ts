@@ -51,7 +51,10 @@ const SLACK_RAW = {
   'https://slack.com/team_name': 'Example Workspace',
   'https://slack.com/team_domain': 'example-workspace',
   email: 'dev@example.test',
-  email_verified: true
+  email_verified: true,
+  // Slack's avatar reaches us only here: Logto fills the normalized `avatar`
+  // for github and google, but leaves it unset for slack.
+  picture: 'https://avatars.example.test/u0example1.png'
 }
 
 describe('LogtoIdentityService.slackIdentityFor', () => {
@@ -243,6 +246,25 @@ describe('LogtoIdentityService.socialAccountFor', () => {
       identities: [],
       hasSecurityVerificationMethod: false
     })
+  })
+})
+
+describe('LogtoIdentityService.socialAccountFor avatars', () => {
+  it('falls back to the raw picture claim when the connector fills no avatar', async () => {
+    const { fetchImpl } = fakeLogto({
+      'sub-1': {
+        identities: {
+          slack: slackUser(SLACK_RAW).identities.slack,
+          github: { userId: 'g', details: { avatar: 'https://avatars.example.test/gh.png' } }
+        }
+      }
+    })
+    const byTarget = Object.fromEntries(
+      (await svcOf(fetchImpl).socialAccountFor('sub-1')).identities.map((i) => [i.target, i.avatar])
+    )
+    expect(byTarget.slack).toBe('https://avatars.example.test/u0example1.png')
+    // The normalized field still wins where a connector does provide it.
+    expect(byTarget.github).toBe('https://avatars.example.test/gh.png')
   })
 })
 

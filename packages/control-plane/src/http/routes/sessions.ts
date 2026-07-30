@@ -15,10 +15,9 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import type { SessionVisibility } from '../../persistence/ports.js'
 import { AgentId, HookId, OrgId, SessionId } from '../../domain/ids.js'
 import { orgOf, ctxOf } from '../rbac.js'
-import { canView, canViewSession, identitySetOf } from '../visibility.js'
+import { canChangeSessionVisibility, canView, canViewSession, identitySetOf } from '../../authorization/policy.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { visibilityStateOf } from '../../orchestrator/visibilityPush.js'
@@ -100,26 +99,6 @@ function hookIdForSession(s: HookSessionRow): string | null {
 
 function sessionRelation(s: { id: string; agentId: string; title: string | null }) {
   return { id: s.id, agentId: s.agentId, title: s.title }
-}
-
-/**
- * Who may re-classify a session (§4.3): ONLY its recorded owner (identity
- * match). Roles grant nothing here, in either direction — an org owner pulling
- * someone's published session back to `private` is as much an intrusion on the
- * owner's decision as reading their DM would be, so there is no org-owner arm
- * at all (mirroring `canViewSession`). A row with no recorded owner is
- * re-classifiable by no one. `setVisibility` re-runs this predicate against the
- * FOR UPDATE-locked row: an ancestor cascade committing after the unlocked
- * pre-read re-owns the session, and the former owner's queued widen must be
- * refused. Note this is deliberately NOT the blanket `denyViewerWrite` guard
- * used elsewhere: the grant follows OWNERSHIP, so a viewer-role member who owns
- * a session keeps control of their own DM's visibility.
- */
-function canChangeSessionVisibility(
-  s: { visibility: SessionVisibility; ownerIdentity: string | null },
-  identitySet: ReadonlySet<string>
-): boolean {
-  return s.ownerIdentity != null && identitySet.has(s.ownerIdentity)
 }
 
 function hookMetadataForSession(metadata: Map<string, HookSessionMetadata>, session: HookSessionRow) {
@@ -382,9 +361,9 @@ export function sessionRoutes(deps: HttpDeps) {
           return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'invalid session cursor' })
         }
 
-        // The set of agents THIS caller may see (owner ⇒ all). Session metadata
-        // inherits visibility from the owning agent, so restricted-agent rows are
-        // hidden before any title/channel/usage metadata reaches the caller.
+        // The set of agents THIS caller may see under the resource policy. Roles
+        // never widen visibility, so restricted-agent rows are hidden before any
+        // title/channel/usage metadata reaches the caller.
         const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((agent) => agent.id)
         const visibleAgentIdSet = new Set<string>(visibleAgentIds)
         const selectedAgentIds = req.query.agentId
@@ -503,7 +482,7 @@ export function sessionRoutes(deps: HttpDeps) {
           // The §5.1 cutover state: CP read gates apply at commit, but the memory
           // boundary only takes effect once every affected daemon has acked.
           visibilityState: await visibilityStateOf(deps.visibilityPush, deps.repos, [s.id]),
-          canChangeVisibility: canChangeSessionVisibility(s, identitySet),
+          canChangeVisibility: canChangeSessionVisibility(s, ctx, identitySet),
           startedAt: s.startedAt.toISOString(),
           endedAt: s.endedAt ? s.endedAt.toISOString() : null
         }
@@ -645,20 +624,19 @@ export function sessionRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
         }
         const ctx = ctxOf(req)
-        if (!canChangeSessionVisibility(owned.session, identitySetOf(ctx))) {
+        if (!canChangeSessionVisibility(owned.session, ctx, identitySetOf(ctx))) {
           return reply
             .code(403)
             .send({ error: 'Forbidden', statusCode: 403, message: 'not allowed to change this session visibility' })
         }
         // The check above read an unlocked row. Re-run it inside the write's
         // transaction: an ancestor cascade committing in between can re-own this
-        // session (the former owner must not still widen it), and a tighten
-        // committing in between flips it private (a queued org-owner widen must
-        // not reopen it — the org-owner arm requires the LOCKED row to be org).
+        // session, and the former owner's parked request must not still apply —
+        // ownership is judged against the LOCKED row.
         const { affected, forbidden } = await deps.repos.session.setVisibility(
           SessionId(req.params.id),
           req.body.visibility,
-          (row) => canChangeSessionVisibility(row, identitySetOf(ctx))
+          (row) => canChangeSessionVisibility(row, ctx, identitySetOf(ctx))
         )
         if (forbidden) {
           return reply

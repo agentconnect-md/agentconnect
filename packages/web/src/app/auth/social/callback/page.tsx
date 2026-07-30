@@ -8,8 +8,7 @@ import {
   accountErrorMessage,
   saveSocialIdentity,
   takeSocialLinkFlow,
-  verifySocialVerification,
-  writeAccountNotice
+  verifySocialVerification
 } from '@/lib/logto-account'
 
 export default function SocialAccountCallback() {
@@ -51,13 +50,9 @@ export default function SocialAccountCallback() {
       // Best-effort: the link already succeeded, so a failure here must not be
       // reported as one. It only costs a stale row until the cache expires.
       .then(() => refreshMySocialIdentities().catch(() => undefined))
-      .then(() => {
-        writeAccountNotice({
-          kind: 'success',
-          message: `${flow.providerName} was linked.`
-        })
-        window.location.replace(flow.returnTo)
-      })
+      // Straight back to Profile: the row now shows the linked account, which
+      // says it better than a banner that outlives the action.
+      .then(() => window.location.replace(flow.returnTo))
       .catch((caught) => {
         setError(accountErrorMessage(caught, { providerName: flow.providerName, linking: true }))
       })

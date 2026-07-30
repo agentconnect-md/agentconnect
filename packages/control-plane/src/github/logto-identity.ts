@@ -108,12 +108,21 @@ export interface SocialAccount {
   primaryEmail?: string
 }
 
-/** The Slack workspace identity behind a console account. Both ids are required —
- *  a `U…` without its `T…` is not addressable, so a partial read is no read. */
+/**
+ * The Slack workspace identity behind a console account. Both ids are required —
+ * a `U…` without its `T…` is not addressable, so a partial read is no read.
+ *
+ * IDENTIFY A SLACK HUMAN BY THE PAIR, NOT BY `userId` ALONE. Slack's Web API
+ * documents the user id as workspace-scoped and says to store it together with
+ * the team id, and Enterprise Grid can give one person more than one id. Taking
+ * just `userId` off this type compiles, reads naturally, and drops the qualifier
+ * Slack asks you to keep. See docs/designs/slack-identity.md for what this does
+ * and does NOT claim about the OIDC `sub`.
+ */
 export interface SlackIdentity {
   /** Slack workspace id (`T…`). */
   teamId: string
-  /** Slack user id (`U…`) — scoped to that workspace. */
+  /** Slack user id (`U…`) — scoped to that workspace, NOT globally unique. */
   userId: string
   teamName?: string
   teamDomain?: string
@@ -441,7 +450,11 @@ function summarize(
   const raw = (details.rawData ?? {}) as Record<string, unknown>
   const name = firstString(details.name)
   const email = firstString(details.email)
-  const avatar = firstString(details.avatar)
+  // Not every connector fills the normalized `avatar`: Logto stores it for
+  // github and google but not for slack, whose picture survives only as the
+  // `picture` claim inside the raw payload. Falling back to it costs nothing
+  // and is what any OIDC connector carries.
+  const avatar = firstString(details.avatar, raw.picture)
   const profileUrl = providerProfileUrl(target, raw, slack)
   const workspace = slack
     ? {

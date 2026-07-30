@@ -192,7 +192,7 @@ function integrationSql(q: SessionFilterQuery): Prisma.Sql | null {
 }
 
 /**
- * The SQL mirror of `http/visibility.ts#canViewSession` (session-visibility.md
+ * The SQL mirror of `authorization/policy.ts#canViewSession` (session-visibility.md
  * §5). No role bypass — org owners included, every viewer sees `org` rows plus
  * `private` rows they own; only the internal/daemon-facing callers that pass no
  * viewer read unfiltered. `= ANY(array)` tolerates an empty identity set,
@@ -333,7 +333,7 @@ export class PgSessionRepo implements SessionRepo {
    * own parent was still `inherited_pending` when it arrived is pending too, so
    * settling one level unblocks the next. Every level is the same CAS on
    * `visibilitySource`, which is what keeps it conditional and one-time — a
-   * descendant an org owner has meanwhile re-classified is `explicit` and left
+   * descendant its owner has meanwhile re-classified is `explicit` and left
    * alone: reconciliation never overwrites a human decision.
    */
   private async settlePendingChildren(tx: PrismaLike, parent: SessionMetaRecord): Promise<SessionMetaRecord[]> {

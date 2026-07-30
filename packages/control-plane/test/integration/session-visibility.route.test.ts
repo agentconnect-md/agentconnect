@@ -554,7 +554,7 @@ describe('session visibility — §4.5 inheritance and cascade', () => {
     })
     expect(child.session).toMatchObject({ visibility: 'private', visibilitySource: 'inherited_pending' })
 
-    // A second pending child that an org owner re-classifies before settlement.
+    // A second pending child that its owner re-classifies before settlement.
     const pinned = await repo.recordMilestone({
       sessionId: SessionId(`s-pinned-child-${randomUUID()}`),
       parentSessionId: SessionId(parentId),

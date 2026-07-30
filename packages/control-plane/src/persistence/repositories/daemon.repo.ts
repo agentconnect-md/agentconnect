@@ -18,7 +18,7 @@ import type {
   HealthState,
   ViewCtx
 } from '../ports.js'
-import { visibilityWhere } from '../ports.js'
+import { visibilityWhere } from '../../authorization/policy.js'
 import { DaemonId, OrgId } from '../../domain/ids.js'
 import type { Heartbeat, FactsMcpServer } from '@agentconnect.md/protocol'
 
@@ -50,8 +50,8 @@ function toRecord(d: DaemonWithUsers): DaemonRecord {
     createdBy: d.createdBy
       ? { userId: d.createdBy.id, displayName: d.createdBy.displayName, email: d.createdBy.email }
       : null,
-    // Raw creator scalar for the visibility creator-arm — independent of the joined
-    // `createdBy` above, which is null once the user row is SetNull-deleted.
+    // Raw creator scalar temporarily supplies the visibility ownership arm,
+    // independent of the joined `createdBy` above. See issue #271.
     createdByUserId: d.createdByUserId,
     visibility: d.visibility,
     sharedWith: d.sharedWith,

@@ -9,17 +9,22 @@
 </p>
 
 <p align="center">
-  <sub><strong>FROM</strong></sub>&nbsp;&nbsp;
-  <img src="https://api.iconify.design/logos/slack-icon.svg" width="26" height="26" alt="Slack" title="Slack" />&nbsp;&nbsp;
-  <img src="https://api.iconify.design/logos/telegram.svg" width="26" height="26" alt="Telegram" title="Telegram" />&nbsp;&nbsp;
-  <img src="https://api.iconify.design/logos/discord-icon.svg" width="30" height="26" alt="Discord" title="Discord" />&nbsp;&nbsp;
-  <img src="https://api.iconify.design/icon-park/new-lark.svg?color=%233370FF" width="26" height="26" alt="Lark and Feishu" title="Lark / Feishu" />
+  <sub><strong>FROM</strong>&nbsp;&nbsp;
+  <a href="https://slack.com"><img src="https://api.iconify.design/logos/slack-icon.svg" width="16" height="16" alt="Slack" title="Slack" /></a>&nbsp;&nbsp;
+  <a href="https://telegram.org"><img src="https://cdn.simpleicons.org/telegram" width="16" height="16" alt="Telegram" title="Telegram" /></a>&nbsp;&nbsp;
+  <a href="https://discord.com"><img src="https://cdn.simpleicons.org/discord" width="16" height="16" alt="Discord" title="Discord" /></a>&nbsp;&nbsp;
+  <a href="https://www.larksuite.com"><img src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/lark.svg" width="16" height="16" alt="Lark and Feishu" title="Lark / Feishu" /></a>&nbsp;&nbsp;
+  <a href="https://github.com"><img src="https://cdn.simpleicons.org/github/181717/e6edf3" width="16" height="16" alt="GitHub" title="GitHub" /></a>&nbsp;&nbsp;
+  <a href="https://en.wikipedia.org/wiki/Webhook"><img src="https://api.iconify.design/logos/webhooks.svg" width="16" height="16" alt="Webhook" title="Webhook" /></a>
   &nbsp;&nbsp;&nbsp;&nbsp;
-  <sub><strong>WITH</strong></sub>&nbsp;&nbsp;
-  <img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/claude-color.svg" width="28" height="28" alt="Claude Code" title="Claude Code" />&nbsp;&nbsp;
-  <img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/codex-color.svg" width="28" height="28" alt="Codex" title="Codex" />&nbsp;&nbsp;
-  <img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/gemini-color.svg" width="28" height="28" alt="Gemini CLI" title="Gemini CLI" />&nbsp;&nbsp;
-  <sub><strong>ANY ACP AGENT</strong></sub>
+  <strong>WITH</strong>&nbsp;&nbsp;
+  <a href="https://claude.com"><img src="https://cdn.simpleicons.org/claude" width="16" height="16" alt="Claude" title="Claude" /></a>&nbsp;&nbsp;
+  <a href="https://openai.com"><img src="https://api.iconify.design/tabler/brand-openai.svg?color=%23808896" width="16" height="16" alt="OpenAI" title="OpenAI" /></a>&nbsp;&nbsp;
+  <a href="https://gemini.google.com"><img src="https://cdn.simpleicons.org/googlegemini" width="16" height="16" alt="Gemini" title="Gemini" /></a>&nbsp;&nbsp;
+  <a href="https://www.deepseek.com"><img src="https://cdn.simpleicons.org/deepseek" width="16" height="16" alt="DeepSeek" title="DeepSeek" /></a>&nbsp;&nbsp;
+  <a href="https://opencode.ai"><img src="https://cdn.simpleicons.org/opencode/000000/e6edf3" width="16" height="16" alt="OpenCode" title="OpenCode" /></a>&nbsp;&nbsp;
+  <a href="https://pi.dev"><img src="https://cdn.simpleicons.org/pi/000000/e6edf3" width="16" height="16" alt="Pi" title="Pi" /></a>&nbsp;&nbsp;
+  <strong>ANY ACP AGENT</strong></sub>
 </p>
 
 <p align="center">
@@ -50,39 +55,37 @@
   <a href="#explore">Explore</a>
 </p>
 
-AgentConnect is an open-source platform for teams to run and manage multiple AI
-agents together. Connect Claude Code, Codex, Gemini CLI, and other
-ACP-compatible runtimes to Slack, Telegram, Discord, Lark / Feishu, and
-webchat, or start work from GitHub events, webhooks, and schedules.
+AgentConnect is an open-source platform where teams and AI agents work together
+across the tools they already use, including Slack, Telegram, Discord, and
+GitHub. Connect Claude Code, Codex, Gemini CLI, or any ACP-compatible runtime,
+then start work from a conversation, pull request, issue, webhook, or schedule.
 
-Give each agent its own identity, runtime, model, workspace, memory, tools,
-skills, permissions, and placement. Agents can call one another while your team
-follows the work in shared channels and from one console.
+Give each agent a role, then choose the runtime, model, workspace, memory,
+tools, skills, permissions, and machine it needs. Agents can call one another
+while your team follows the work in shared channels and from one console.
 
-Agent execution stays in the environment you operate. The Control Plane
-coordinates the fleet without storing message bodies or sitting in the live
-message path.
+A small daemon runs the agents in the environment you operate. One console lets
+your team configure the fleet, connect channels and triggers, control access,
+and follow the work they are allowed to see.
 
 ## Why AgentConnect?
 
-AI agents are increasingly doing work for entire teams, but most still live as personal
-tools in individual terminals. AgentConnect provides the shared layer around
-them:
+AI agents are taking on work across the team, but most still live in individual
+terminals. AgentConnect brings them into the team's shared workflows:
 
-- **Work as a team.** Give every agent a stable identity and role. Agents can
-  call one another and return results to the channels where work started.
-- **Choose the right agent for every job.** Run different runtimes, models,
-  workspaces, and machines side by side, then change each independently.
-- **Keep work where it happens.** Bring agents into team channels and trigger
-  them from GitHub, webhooks, schedules, and the Web console.
-- **Carry context forward.** Select managed, runtime-native, external, or
-  disabled persistent memory per agent, and share reusable skills across the
-  roster.
-- **Control access.** Manage organization roles, resource and session
-  visibility, repository access, tools, skills, and agent-to-agent call
-  policies.
-- **Own the stack.** Self-host an Apache-2.0 platform built on open ACP and MCP
-  boundaries, without tying the team to one agent vendor.
+- **Work as one team.** Create agents with different roles and let them call on
+  one another, while people follow along in the conversations where the work
+  happens.
+- **Keep work where it happens.** Link agents to bots in Slack, Telegram, and
+  Discord, or to repositories and workflows on GitHub.
+- **Choose the right agent for every job.** Configure each agent's runtime,
+  model, workspace, tools, and machine independently.
+- **Carry context forward.** Give each agent the memory and reusable skills it
+  needs to build on earlier work.
+- **Set clear boundaries.** Decide who can see each agent and session, which
+  repositories and tools it may use, and which other agents it may call.
+- **Stay in control.** Self-host the Apache-2.0 stack, run agents in your
+  environment, and change runtimes without locking the team to one vendor.
 
 ## Get started
 

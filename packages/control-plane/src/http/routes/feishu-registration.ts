@@ -13,7 +13,7 @@ import type { HttpDeps } from '../deps.js'
 import { AgentId, OrgId } from '../../domain/ids.js'
 import { resolveAgentIconUrl } from '../../agents/agent-icon.js'
 import { denyViewerWrite, ctxOf } from '../rbac.js'
-import { canEdit, canView } from '../visibility.js'
+import { canEdit, canView } from '../../authorization/policy.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
 import {
   FeishuRegistrationConflictError,
