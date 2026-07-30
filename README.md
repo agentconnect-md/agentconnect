@@ -10,15 +10,20 @@
 
 <p align="center">
   <sub><strong>FROM</strong></sub>&nbsp;&nbsp;
-  <img src="https://api.iconify.design/logos/slack-icon.svg" width="26" height="26" alt="Slack" title="Slack" />&nbsp;&nbsp;
-  <img src="https://api.iconify.design/logos/telegram.svg" width="26" height="26" alt="Telegram" title="Telegram" />&nbsp;&nbsp;
-  <img src="https://api.iconify.design/logos/discord-icon.svg" width="30" height="26" alt="Discord" title="Discord" />&nbsp;&nbsp;
-  <img src="https://api.iconify.design/icon-park/new-lark.svg?color=%233370FF" width="26" height="26" alt="Lark and Feishu" title="Lark / Feishu" />
+  <img src="https://api.iconify.design/logos/slack-icon.svg" width="16" height="16" alt="Slack" title="Slack" />&nbsp;&nbsp;
+  <img src="https://api.iconify.design/logos/telegram.svg" width="16" height="16" alt="Telegram" title="Telegram" />&nbsp;&nbsp;
+  <img src="https://api.iconify.design/logos/discord-icon.svg" width="16" height="16" alt="Discord" title="Discord" />&nbsp;&nbsp;
+  <img src="https://api.iconify.design/icon-park/new-lark.svg" width="16" height="16" alt="Lark and Feishu" title="Lark / Feishu" />&nbsp;&nbsp;
+  <img src="https://api.iconify.design/simple-icons/github.svg?color=%23808896" width="16" height="16" alt="GitHub" title="GitHub" />&nbsp;&nbsp;
+  <img src="https://api.iconify.design/tabler/webhook.svg?color=%23808896" width="16" height="16" alt="Webhook" title="Webhook" />
   &nbsp;&nbsp;&nbsp;&nbsp;
   <sub><strong>WITH</strong></sub>&nbsp;&nbsp;
-  <img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/claude-color.svg" width="28" height="28" alt="Claude Code" title="Claude Code" />&nbsp;&nbsp;
-  <img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/codex-color.svg" width="28" height="28" alt="Codex" title="Codex" />&nbsp;&nbsp;
-  <img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/gemini-color.svg" width="28" height="28" alt="Gemini CLI" title="Gemini CLI" />&nbsp;&nbsp;
+  <img src="https://api.iconify.design/logos/claude-icon.svg" width="16" height="16" alt="Claude Code" title="Claude Code" />&nbsp;&nbsp;
+  <img src="https://api.iconify.design/logos/openai-icon.svg" width="16" height="16" alt="Codex" title="Codex" />&nbsp;&nbsp;
+  <img src="https://api.iconify.design/vscode-icons/file-type-gemini.svg" width="16" height="16" alt="Gemini CLI" title="Gemini CLI" />&nbsp;&nbsp;
+  <img src="https://api.iconify.design/simple-icons/cursor.svg?color=%23808896" width="16" height="16" alt="Cursor" title="Cursor" />&nbsp;&nbsp;
+  <img src="https://api.iconify.design/simple-icons/cline.svg?color=%23808896" width="16" height="16" alt="Cline" title="Cline" />&nbsp;&nbsp;
+  <img src="https://api.iconify.design/simple-icons/kimi.svg?color=%23808896" width="16" height="16" alt="Kimi" title="Kimi" />&nbsp;&nbsp;
   <sub><strong>ANY ACP AGENT</strong></sub>
 </p>
 
