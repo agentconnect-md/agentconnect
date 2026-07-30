@@ -3,14 +3,15 @@ import { loadBotProfileIcon, type BotProfileIconAgent } from './bot-profile-icon
 
 const TELEGRAM_API = 'https://api.telegram.org'
 const TELEGRAM_TIMEOUT_MS = 5000
+const TELEGRAM_ICON_SIZE = 512
 
 export type TelegramBotIconSyncer = (botToken: string, agent: BotProfileIconAgent) => Promise<void>
 
 async function telegramJpeg(agent: BotProfileIconAgent, iconStore?: IconStore): Promise<Buffer> {
-  const source = await loadBotProfileIcon(agent, iconStore)
+  const source = await loadBotProfileIcon(agent, iconStore, TELEGRAM_ICON_SIZE)
   const { default: sharp } = await import('sharp')
   return sharp(source.bytes)
-    .resize(512, 512, { fit: 'cover' })
+    .resize(TELEGRAM_ICON_SIZE, TELEGRAM_ICON_SIZE, { fit: 'cover' })
     .flatten({ background: '#ffffff' })
     .jpeg({ quality: 90 })
     .toBuffer()
