@@ -247,9 +247,7 @@ function ExternalLine({ href, mono = false, children }: { href?: string; mono?: 
 function Notice({ notice }: { notice: AccountNotice }) {
   return (
     <div
-      className={`border-b border-(--border-subtle) px-4 py-2.5 font-sans text-[12.5px] font-normal leading-normal ${
-        notice.kind === 'success' ? 'text-(--status-online)' : 'text-(--status-error)'
-      }`}
+      className="border-b border-(--border-subtle) px-4 py-2.5 font-sans text-[12.5px] font-normal leading-normal text-(--status-error)"
       role="status"
     >
       {notice.message}
@@ -321,7 +319,6 @@ export default function SocialSignInCard({
       window.location.assign(authorizationUri)
     } catch (caught) {
       onNotice({
-        kind: 'error',
         message: accountErrorMessage(caught, { providerName: provider.name, linking: true })
       })
       setBusyProvider(undefined)
@@ -332,7 +329,6 @@ export default function SocialSignInCard({
     await unlinkMySocialIdentity(provider.target)
     await mutate()
     setPendingUnlink(undefined)
-    onNotice({ kind: 'success', message: `${provider.name} was unlinked.` })
   }
 
   const shell = mobile
