@@ -781,7 +781,7 @@ export default function AgentDetailView() {
                     <span className="inline-flex h-4 w-4 desktop:hidden">
                       <AgentMark model={da.runtime} />
                     </span>
-                    <span className="imark hidden h-4 w-4 desktop:flex">
+                    <span className="imark hidden h-6 w-6 desktop:flex">
                       <AgentMark model={da.runtime} />
                     </span>
                     {runtimeLabel(da.runtime, runtimeMeta?.name)}

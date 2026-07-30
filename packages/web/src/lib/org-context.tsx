@@ -48,8 +48,8 @@ function writeLastSlug(slug: string): void {
  *  is the current slug param. */
 export function subPath(pathname: string, slug: string): string {
   const [, first, ...rest] = pathname.split('/')
-  if (first === slug) return `/${rest.join('/') || 'agents'}`
-  return pathname === '/' ? '/agents' : pathname
+  if (first === slug) return `/${rest.join('/') || 'home'}`
+  return pathname === '/' ? '/home' : pathname
 }
 
 /** The URL prefix shown next to the org slug ("appears in the URL") — THIS

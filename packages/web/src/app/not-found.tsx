@@ -4,8 +4,8 @@ import { NotFound } from '@/components/console/NotFound'
 // first segment like `/xxx` (the org-slug position), which the in-shell
 // `[slug]/[...notFound]` catch-all can't reach. Rendered by the root layout, so
 // there's no shell/org context: no rail, and global search isn't mounted (hence
-// `showSearch={false}`). "Go to agents" heads to `/`, which resolves to the
-// active org's agents list.
+// `showSearch={false}`). "Go home" heads to `/`, which resolves to the active
+// org's Home.
 export default function NotFoundPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-(--surface-app) p-6">
@@ -14,8 +14,8 @@ export default function NotFoundPage() {
           icon="compass"
           kind="PAGE"
           title="Page not found"
-          post="This page doesn’t exist. Check the address, or head back to your agents."
-          actionLabel="Go to agents"
+          post="This page doesn’t exist. Check the address, or head back home."
+          actionLabel="Go home"
           actionHref="/"
           showSearch={false}
         />

@@ -57,6 +57,7 @@ import { mergeSessionMessages } from '@/lib/session-transcript'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
+import { WORK_LANES, workCounts, workSummary } from '@/components/console/session-work'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import {
   sessionEffortAfterModelChange,
@@ -130,6 +131,30 @@ interface FmtStep {
   time?: string
   // Present only on real-transcript tool rows that carry a captured body.
   msg?: SessionMessageDto
+}
+
+// A step's non-text extras (code block, file chips, captured tool body) — rendered
+// identically in a turn's plain answer and in its collapsed "work" rows.
+function StepExtras({ step, sessionId }: { step: FmtStep; sessionId?: string }) {
+  return (
+    <>
+      {step.code && (
+        <div className="codeblk mt-[7px]" style={{ color: step.codeColor }}>
+          {step.code}
+        </div>
+      )}
+      {step.files.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-[6px]">
+          {step.files.map((f, fi) => (
+            <span key={fi} className="scope">
+              <span style={{ color: f.color }}>{f.tag}</span> {f.path}
+            </span>
+          ))}
+        </div>
+      )}
+      {step.msg && sessionId && <ToolBodyDetail msg={step.msg} sessionId={sessionId} />}
+    </>
+  )
 }
 
 function fmtTranscriptDuration(ms: number): string {
@@ -584,8 +609,15 @@ export default function SessionDetailView() {
   const [msgErr, setMsgErr] = useState<string | null>(null)
   const [tailReady, setTailReady] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
-  const [showThinking, setShowThinking] = useState(true)
-  const [showTools, setShowTools] = useState(true)
+  // Which bot turns have their collapsed "work" expanded (keyed by turn index).
+  const [expandedWork, setExpandedWork] = useState<Set<number>>(() => new Set())
+  const toggleWork = (ti: number) =>
+    setExpandedWork((prev) => {
+      const next = new Set(prev)
+      if (next.has(ti)) next.delete(ti)
+      else next.add(ti)
+      return next
+    })
   const [imagePreparing, setImagePreparing] = useState(false)
   const [imageError, setImageError] = useState<string | null>(null)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
@@ -982,19 +1014,6 @@ export default function SessionDetailView() {
   // Transcript visibility is presentation-only: keep the complete turn list for
   // usage/duration accounting, and derive a filtered tree for rendering. Live PLAN
   // steps are the playground equivalent of persisted THINK messages.
-  const isThinkingStep = (step: FmtStep): boolean => step.lane === 'THINK' || step.lane === 'PLAN'
-  const isToolStep = (step: FmtStep): boolean => step.lane === 'TOOL'
-  const hasThinkingSteps = turns.some((turn) => turn.kind === 'bot' && turn.steps.some((step) => isThinkingStep(step)))
-  const hasToolSteps = turns.some((turn) => turn.kind === 'bot' && turn.steps.some((step) => isToolStep(step)))
-  const hasActivityFilters = hasThinkingSteps || hasToolSteps
-  const visibleTurns: Turn[] = turns.flatMap((turn): Turn[] => {
-    if (turn.kind === 'user') return [turn]
-    const steps = turn.steps.filter(
-      (step) => (showThinking || !isThinkingStep(step)) && (showTools || !isToolStep(step))
-    )
-    return steps.length > 0 ? [{ ...turn, steps }] : []
-  })
-
   // Sole author reads as "You" when it's the viewer (webchat) — checked on the raw
   // triggeredBy id, not the display `user`, since a resolved name would mask the match.
   const soleAuthor = senderLabel(session.triggeredBy, session.user)
@@ -1273,7 +1292,7 @@ export default function SessionDetailView() {
             )}
             <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
               <span className="imark h-4 w-4 rounded-xs">
-                <PlatformMark platform={sessionIntegration} />
+                <PlatformMark platform={sessionIntegration} fillPct={100} />
               </span>
               {session.threadUrl ? (
                 <a
@@ -1461,198 +1480,129 @@ export default function SessionDetailView() {
           turns + live tail; on desktop the gutter div is a plain block so turns and
           the composer sit in the page flow exactly as before. */}
       <div className="flex flex-col gap-4 p-4 desktop:block desktop:p-0">
-        {hasActivityFilters && (
-          <div
-            className="flex flex-wrap items-center gap-[10px] desktop:mb-[14px]"
-            role="group"
-            aria-label="Transcript activity filters"
-          >
-            <span className="font-mono text-[11px] font-semibold uppercase leading-normal tracking-[.04em] text-(--text-tertiary)">
-              Show
-            </span>
-            <span className="inline-flex items-center gap-3">
-              {hasThinkingSteps && (
-                <label
-                  className="inline-flex cursor-pointer items-center gap-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)"
-                  title={showThinking ? 'Hide thinking' : 'Show thinking'}
-                >
-                  <input
-                    type="checkbox"
-                    checked={showThinking}
-                    onChange={(event) => setShowThinking(event.target.checked)}
-                    className="h-4 w-4 cursor-pointer accent-(--brand)"
-                  />
-                  thinking
-                </label>
-              )}
-              {hasToolSteps && (
-                <label
-                  className="inline-flex cursor-pointer items-center gap-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)"
-                  title={showTools ? 'Hide tool calls' : 'Show tool calls'}
-                >
-                  <input
-                    type="checkbox"
-                    checked={showTools}
-                    onChange={(event) => setShowTools(event.target.checked)}
-                    className="h-4 w-4 cursor-pointer accent-(--brand)"
-                  />
-                  tools
-                </label>
-              )}
-            </span>
-          </div>
-        )}
-        {visibleTurns.length > 0 && (
-          <div className="flex flex-col gap-4 desktop:gap-[14px]">
-            {visibleTurns.map((turn, ti) =>
+        {turns.length > 0 && (
+          <div className="flex flex-col gap-4 desktop:gap-[15px]">
+            {turns.map((turn, ti) =>
               turn.kind === 'user' ? (
-                <div key={ti} className="flex items-start gap-[10px] desktop:gap-[11px]">
-                  {turn.sp.handle === '@you' ? (
-                    <Avatar
-                      src={user.picture}
-                      initials={turn.sp.initials}
-                      size={30}
-                      fontSize={11}
-                      bg={turn.sp.avBg}
-                      fg={turn.sp.avText}
-                    />
-                  ) : (
-                    <span
-                      className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-full font-sans text-[11px] font-semibold leading-normal"
-                      style={{ background: turn.sp.avBg, color: turn.sp.avText }}
-                    >
-                      {turn.isCron ? (
-                        <Icon name="calendar-clock" size={15} />
-                      ) : usesIntegrationAvatar ? (
-                        <PlatformMark platform={sessionIntegration} />
-                      ) : (
-                        turn.sp.initials
-                      )}
-                    </span>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div className="mb-[5px] flex items-baseline gap-[7px]">
+                // 2b: user turns are right-aligned brand-soft bubbles. A sender label
+                // sits above the bubble only when it isn't you (platform user / cron).
+                <div key={ti} className="flex flex-col items-end gap-[3px]">
+                  {(turn.isCron || turn.sp.handle !== '@you') && (
+                    <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
                       {turn.isCron && turn.cronId ? (
-                        <Link
-                          className="lnk font-sans text-[13px] font-semibold leading-normal text-inherit"
-                          href={orgPath(`/crons/${turn.cronId}`)}
-                        >
+                        <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
                           {turn.sp.name}
                         </Link>
                       ) : (
-                        <span className="font-sans text-[13px] font-semibold leading-normal">{turn.sp.name}</span>
+                        <span>{turn.sp.name}</span>
                       )}
-                      {!turn.isCron && turn.sp.handle !== turn.sp.name && (
-                        <span className="mono text-[11px] text-(--text-tertiary)">{turn.sp.handle}</span>
-                      )}
-                      {/* Source-label chip is desktop-only chrome. */}
-                      <span className="hidden rounded-[3px] border border-(--border-strong) px-1 py-[1px] font-sans text-[9px] font-medium uppercase leading-normal tracking-[.06em] text-(--text-tertiary) desktop:inline">
-                        {turn.sourceLabel}
-                      </span>
-                      {turn.time && (
-                        <span className="mono ml-auto shrink-0 whitespace-nowrap text-[11px] text-(--text-tertiary)">
-                          {turn.time}
-                        </span>
-                      )}
-                    </div>
-                    <div className="rounded-[9px] border border-(--border-subtle) bg-(--surface-card) px-[13px] py-[10px] font-sans text-[13.5px] font-normal leading-[1.5] text-(--text-primary) desktop:px-[14px] desktop:py-[11px] desktop:leading-[1.55]">
-                      {turn.image && (
-                        <img
-                          src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
-                          alt={turn.image.name}
-                          className={`max-h-[360px] max-w-full rounded-md object-contain ${
-                            turn.text ? 'mb-[10px]' : ''
-                          }`}
-                        />
-                      )}
-                      {turn.text && <MessageText text={turn.text} />}
-                    </div>
+                      {turn.time && <span className="mono">{turn.time}</span>}
+                    </span>
+                  )}
+                  <div className="max-w-[86%] rounded-[12px_12px_4px_12px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary)">
+                    {turn.image && (
+                      <img
+                        src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
+                        alt={turn.image.name}
+                        className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
+                      />
+                    )}
+                    {turn.text && <MessageText text={turn.text} />}
                   </div>
                 </div>
               ) : (
-                <div key={ti} className="flex items-start gap-[10px] desktop:gap-[11px]">
-                  <span className="av h-[30px] w-[30px] flex-none rounded-md">
-                    <AgentIconView icon={owner?.icon} runtime={agentRuntime || turn.model} size={30} />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="mb-2 flex items-center gap-[7px]">
-                      <span className="font-sans text-[13px] font-semibold leading-normal">{turn.agentName}</span>
-                      {/* APP chip is desktop-only chrome. */}
-                      <span className="hidden rounded-[3px] border border-(--border-strong) px-1 py-[1px] font-sans text-[9px] font-semibold leading-normal tracking-[.06em] text-(--text-tertiary) desktop:inline">
-                        APP
+                (() => {
+                  // 2b: the spoken answer (MSG/DONE) is plain text; the agent's work
+                  // (reasoning / plan / tool / edit) collapses behind a per-turn toggle.
+                  const textSteps = turn.steps.filter((s) => !WORK_LANES.has(s.lane))
+                  const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
+                  // Reasoning steps / tool commands / edited FILES (distinct paths across
+                  // EDIT rows, since one EDIT row can touch several files).
+                  const { thinkCount, toolCount, editCount } = workCounts(workSteps)
+                  const summary = workSummary(thinkCount, toolCount, editCount)
+                  // Auto-open while a turn has produced only work (mid-stream), so the
+                  // live agent isn't hidden; collapse once its answer text lands.
+                  const openWork = expandedWork.has(ti) || textSteps.length === 0
+                  return (
+                    <div key={ti} className="flex items-start gap-[9px]">
+                      <span className="av h-[26px] w-[26px] flex-none rounded-md">
+                        <AgentIconView icon={owner?.icon} runtime={agentRuntime || turn.model} size={26} />
                       </span>
-                      {turn.time && (
-                        <span className="mono ml-auto shrink-0 whitespace-nowrap text-[11px] text-(--text-tertiary)">
-                          {turn.time}
-                        </span>
-                      )}
-                    </div>
-                    {/* Step card: `card` chrome on both widths (mobile radius 11); the inner
-                    padding gutter + per-row bottom rules are desktop, edge-to-edge rows
-                    with top rules are mobile. */}
-                    <div className="card overflow-hidden max-desktop:rounded-[11px]">
-                      <div className="desktop:px-[18px] desktop:pt-[6px] desktop:pb-3">
-                        {turn.steps.map((st, si) => (
-                          <div
-                            key={si}
-                            className={`grid grid-cols-[72px_1fr] gap-[11px] border-(--border-subtle) px-[14px] py-[11px] desktop:grid-cols-[90px_1fr] desktop:gap-[13px] desktop:border-b desktop:px-0 ${
-                              si > 0 ? 'border-t desktop:border-t-0' : ''
-                            }`}
-                          >
-                            <div className="flex flex-col items-end gap-[3px] self-start desktop:gap-1 desktop:pt-[1px]">
-                              <div className="flex items-center justify-end gap-[6px] desktop:gap-[7px]">
-                                <span
-                                  className="mono text-[10px] font-semibold tracking-[.02em]"
-                                  style={{ color: st.laneColor }}
-                                >
-                                  {st.lane}
-                                </span>
-                                <span className="dot h-[7px] w-[7px]" style={{ background: st.dot }} />
+                      <div className="min-w-0 flex-1">
+                        <div className="mb-[5px] flex items-center gap-[7px]">
+                          <span className="font-sans text-[13px] font-semibold leading-normal">{turn.agentName}</span>
+                          {turn.time && (
+                            <span className="mono ml-auto shrink-0 whitespace-nowrap text-[11px] text-(--text-tertiary)">
+                              {turn.time}
+                            </span>
+                          )}
+                        </div>
+                        {textSteps.map((st, si) => (
+                          <div key={si} className={si > 0 ? 'mt-2' : ''}>
+                            {st.text && (
+                              <div className="font-sans text-[13.5px] leading-[1.6] whitespace-pre-wrap text-(--text-primary)">
+                                <MessageText text={st.text} />
                               </div>
-                              {st.time && (
-                                <span className="mono whitespace-nowrap text-[10.5px] text-(--text-tertiary)">
-                                  {st.time}
-                                </span>
-                              )}
-                            </div>
-                            <div className="min-w-0">
-                              {st.text && (
-                                <div
-                                  className="font-sans text-[13px] leading-[1.5]"
-                                  style={{ fontWeight: st.weight, color: st.textColor }}
-                                >
-                                  <MessageText text={st.text} />
-                                </div>
-                              )}
-                              {st.code && (
-                                <div className="codeblk mt-[7px]" style={{ color: st.codeColor }}>
-                                  {st.code}
-                                </div>
-                              )}
-                              {st.files.length > 0 && (
-                                <div className="mt-2 flex flex-wrap gap-[6px]">
-                                  {st.files.map((f, fi) => (
-                                    <span key={fi} className="scope">
-                                      <span style={{ color: f.color }}>{f.tag}</span> {f.path}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                              {st.msg && sid && <ToolBodyDetail msg={st.msg} sessionId={sid} />}
-                            </div>
+                            )}
+                            <StepExtras step={st} sessionId={sid} />
                           </div>
                         ))}
+                        {workSteps.length > 0 && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => toggleWork(ti)}
+                              className="mt-2 inline-flex items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
+                              title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
+                            >
+                              <Icon
+                                name={openWork ? 'chevron-down' : 'chevron-right'}
+                                size={13}
+                                color="var(--text-tertiary)"
+                              />
+                              {summary || 'Details'}
+                            </button>
+                            {openWork && (
+                              <div className="mt-2 overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
+                                {workSteps.map((st, si) => (
+                                  <div
+                                    key={si}
+                                    className={`flex items-start gap-[11px] px-[14px] py-[10px] ${
+                                      si > 0 ? 'border-t border-(--border-subtle)' : ''
+                                    }`}
+                                  >
+                                    <div className="flex w-[52px] flex-none items-center gap-[6px] pt-[1px]">
+                                      <span className="dot h-[7px] w-[7px]" style={{ background: st.dot }} />
+                                      <span
+                                        className="mono text-[10px] font-semibold tracking-[.02em]"
+                                        style={{ color: st.laneColor }}
+                                      >
+                                        {st.lane}
+                                      </span>
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                      {st.text && (
+                                        <div
+                                          className="font-sans text-[13px] leading-[1.5]"
+                                          style={{ fontWeight: st.weight, color: st.textColor }}
+                                        >
+                                          <MessageText text={st.text} />
+                                        </div>
+                                      )}
+                                      <StepExtras step={st} sessionId={sid} />
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </>
+                        )}
                       </div>
                     </div>
-                  </div>
-                </div>
+                  )
+                })()
               )
             )}
-          </div>
-        )}
-        {turns.length > 0 && visibleTurns.length === 0 && (
-          <div className="card px-4 py-5 text-center font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-            All transcript activity is hidden by the current filters.
           </div>
         )}
 
@@ -1698,116 +1648,130 @@ export default function SessionDetailView() {
             {imageError && (
               <div className="font-sans text-[11.5px] font-medium leading-normal text-(--red-600)">{imageError}</div>
             )}
-            <div className="flex items-start gap-[10px] desktop:mt-4 desktop:gap-[11px]">
-              <Avatar src={user.picture} initials={user.initials} size={30} fontSize={11} />
+            {/* Sticky-to-bottom composer: pinned to the bottom of the scroll area so it's
+                always reachable while scrolling the transcript. Its opaque page-colour
+                background covers earlier turns scrolling behind it; the negative `bottom`
+                + matching bottom padding pull it flush past `.content`'s bottom padding
+                (else turns would show through that strip). A top gradient softens the
+                seam where the transcript slides underneath. */}
+            <div className="sticky z-10 bg-(--surface-app) bottom-[calc(-24px-env(safe-area-inset-bottom,0px))] pb-[calc(24px+env(safe-area-inset-bottom,0px))] pt-2 desktop:mt-4 desktop:bottom-[-26px] desktop:pb-[26px] desktop:pt-3">
               <div
-                className="pgcomposer relative min-w-0 flex-1 flex-col items-stretch gap-2 rounded-[11px] border border-(--border-default)"
-                onKeyDown={(event) => {
-                  if (event.key !== 'Escape') return
-                  setAttachMenuOpen(false)
-                  setComposerMenuOpen(null)
-                }}
-              >
-                <input
-                  ref={imageInputRef}
-                  type="file"
-                  accept="image/*"
-                  hidden
-                  onChange={(event) => void onImageFile(event.target.files?.[0])}
-                />
-                <div className="flex min-w-0 flex-col">
-                  {pgImage && (
-                    <div className="relative mb-2 w-fit">
-                      <img
-                        src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
-                        alt={pgImage.name}
-                        title={pgImage.name}
-                        className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
-                      />
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-x-0 -top-5 h-5 bg-gradient-to-b from-transparent to-(--surface-app)"
+              />
+              <div className="flex items-start gap-[10px] desktop:gap-[11px]">
+                <Avatar src={user.picture} initials={user.initials} size={30} fontSize={11} />
+                <div
+                  className="pgcomposer relative min-w-0 flex-1 flex-col items-stretch gap-2 rounded-[11px] border border-(--border-default)"
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Escape') return
+                    setAttachMenuOpen(false)
+                    setComposerMenuOpen(null)
+                  }}
+                >
+                  <input
+                    ref={imageInputRef}
+                    type="file"
+                    accept="image/*"
+                    hidden
+                    onChange={(event) => void onImageFile(event.target.files?.[0])}
+                  />
+                  <div className="flex min-w-0 flex-col">
+                    {pgImage && (
+                      <div className="relative mb-2 w-fit">
+                        <img
+                          src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
+                          alt={pgImage.name}
+                          title={pgImage.name}
+                          className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
+                        />
+                        <button
+                          type="button"
+                          className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
+                          title="Remove image"
+                          aria-label="Remove image"
+                          onClick={() => setPgImage(session.id)}
+                        >
+                          <Icon name="x" size={14} />
+                        </button>
+                      </div>
+                    )}
+                    <textarea
+                      className="pgin w-full border-0 px-1 py-2 focus:shadow-none"
+                      placeholder={`Message ${session.agentName}…`}
+                      value={pgInput}
+                      onChange={(e) => setPgInput(e.target.value)}
+                      onPaste={(event) => {
+                        const image = clipboardImageFile(event.clipboardData)
+                        if (!image) return
+                        event.preventDefault()
+                        void onImageFile(image)
+                      }}
+                      onKeyDown={(e) => {
+                        // Enter sends — but NOT while an IME is composing (that Enter
+                        // just confirms the candidate), and Shift+Enter is a newline.
+                        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                          e.preventDefault()
+                          onPgSend()
+                        }
+                      }}
+                    />
+                  </div>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <div className="relative flex-none">
                       <button
                         type="button"
-                        className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
-                        title="Remove image"
-                        aria-label="Remove image"
-                        onClick={() => setPgImage(session.id)}
+                        className="iconbtn h-7 w-7 rounded-sm"
+                        aria-label="Add"
+                        aria-haspopup="menu"
+                        aria-expanded={attachMenuOpen}
+                        disabled={imagePreparing}
+                        onClick={() => {
+                          setComposerMenuOpen(null)
+                          setAttachMenuOpen((open) => !open)
+                        }}
                       >
-                        <Icon name="x" size={14} />
+                        {imagePreparing ? <Spinner size={14} /> : <Icon name="plus" size={17} />}
                       </button>
-                    </div>
-                  )}
-                  <textarea
-                    className="pgin w-full border-0 px-1 py-2 focus:shadow-none"
-                    placeholder={`Message ${session.agentName}…`}
-                    value={pgInput}
-                    onChange={(e) => setPgInput(e.target.value)}
-                    onPaste={(event) => {
-                      const image = clipboardImageFile(event.clipboardData)
-                      if (!image) return
-                      event.preventDefault()
-                      void onImageFile(image)
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault()
-                        onPgSend()
-                      }
-                    }}
-                  />
-                </div>
-                <div className="flex min-w-0 items-center gap-2">
-                  <div className="relative flex-none">
-                    <button
-                      type="button"
-                      className="iconbtn h-7 w-7 rounded-sm"
-                      aria-label="Add"
-                      aria-haspopup="menu"
-                      aria-expanded={attachMenuOpen}
-                      disabled={imagePreparing}
-                      onClick={() => {
-                        setComposerMenuOpen(null)
-                        setAttachMenuOpen((open) => !open)
-                      }}
-                    >
-                      {imagePreparing ? <Spinner size={14} /> : <Icon name="plus" size={17} />}
-                    </button>
-                    {attachMenuOpen && (
-                      <>
-                        <div
-                          aria-hidden="true"
-                          className="fixed inset-0 z-40"
-                          onClick={() => setAttachMenuOpen(false)}
-                        ></div>
-                        <div
-                          role="menu"
-                          className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
-                        >
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="fopt"
-                            onClick={() => {
-                              setAttachMenuOpen(false)
-                              imageInputRef.current?.click()
-                            }}
+                      {attachMenuOpen && (
+                        <>
+                          <div
+                            aria-hidden="true"
+                            className="fixed inset-0 z-40"
+                            onClick={() => setAttachMenuOpen(false)}
+                          ></div>
+                          <div
+                            role="menu"
+                            className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
                           >
-                            <Icon name="image" size={16} color="var(--text-secondary)" />
-                            Add photos
-                          </button>
-                        </div>
-                      </>
-                    )}
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="fopt"
+                              onClick={() => {
+                                setAttachMenuOpen(false)
+                                imageInputRef.current?.click()
+                              }}
+                            >
+                              <Icon name="image" size={16} color="var(--text-secondary)" />
+                              Add photos
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    {pgStatusBar}
+                    <button
+                      className="sendbtn h-7 w-7 rounded-sm"
+                      aria-label={pgBusy ? 'Stop response' : 'Send message'}
+                      onClick={() =>
+                        pgBusy ? pgCancel(session.id, session.agentId ?? '', webchatConversationId) : onPgSend()
+                      }
+                      disabled={!pgBusy && (imagePreparing || (!pgInput.trim() && !pgImage))}
+                    >
+                      <Icon name={pgBusy ? 'square' : 'arrow-up'} size={pgBusy ? 10 : 14} />
+                    </button>
                   </div>
-                  {pgStatusBar}
-                  <button
-                    className="sendbtn h-7 w-7 rounded-sm"
-                    aria-label={pgBusy ? 'Stop response' : 'Send message'}
-                    onClick={() =>
-                      pgBusy ? pgCancel(session.id, session.agentId ?? '', webchatConversationId) : onPgSend()
-                    }
-                    disabled={!pgBusy && (imagePreparing || (!pgInput.trim() && !pgImage))}
-                  >
-                    <Icon name={pgBusy ? 'square' : 'arrow-up'} size={pgBusy ? 10 : 14} />
-                  </button>
                 </div>
               </div>
             </div>

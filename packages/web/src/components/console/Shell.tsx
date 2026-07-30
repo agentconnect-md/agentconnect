@@ -34,6 +34,7 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
+  { href: '/home', label: 'Home', icon: 'house' },
   { href: '/agents', label: 'Agents', icon: 'bot' },
   { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
   { href: '/crons', label: 'Schedules', icon: 'calendar-clock' },
@@ -46,10 +47,10 @@ const NAV_ITEMS: NavItem[] = [
 // destinations as equal columns plus a "More" slot that opens a bottom sheet.
 // (Schedules uses `alarm-clock` per the design, not `calendar-clock`.)
 const MOBILE_NAV: NavItem[] = [
+  { href: '/home', label: 'Home', icon: 'house' },
   { href: '/agents', label: 'Agents', icon: 'bot' },
   { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
-  { href: '/crons', label: 'Schedules', icon: 'alarm-clock' },
-  { href: '/daemons', label: 'Daemons', icon: 'server' }
+  { href: '/crons', label: 'Schedules', icon: 'alarm-clock' }
 ]
 
 // The "More" sheet's destinations — Analytics / Tools & Skills / Settings (the desktop rail
@@ -57,14 +58,16 @@ const MOBILE_NAV: NavItem[] = [
 // bar as a top-right avatar (mirroring the desktop top bar). The org switcher is
 // prepended separately, in the sheet itself.
 const MORE_ROWS: NavItem[] = [
+  { href: '/daemons', label: 'Daemons', icon: 'server' },
   { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
   { href: '/tools', label: 'Tools & Skills', icon: 'book-open' },
   { href: '/settings', label: 'Settings', icon: 'settings' }
 ]
 
-// List routes own the tab-bar + list app bar; every other route is a "push" screen
-// (back-button app bar, no bottom nav) on mobile.
-const LIST_ROUTES = ['/agents', '/sessions', '/crons', '/daemons']
+// Top-level routes own the tab-bar + list app bar (no back button, bottom nav shown);
+// every other route is a "push" screen (back-button app bar, no bottom nav) on mobile.
+// Home is a top-level surface (the default landing), not a push screen.
+const LIST_ROUTES = ['/home', '/agents', '/sessions', '/crons', '/daemons']
 const SESSION_FILTER_KEYS = ['agent', 'integration', 'channel', 'trigger']
 const CONSOLE_SWR_CONFIG = {
   dedupingInterval: 2_000,
@@ -81,6 +84,7 @@ const ADD_KIND: Record<string, 'agent' | 'cron' | 'daemon'> = {
 
 // Section label for the header breadcrumb, matched by path prefix.
 const SECTIONS: { prefix: string; label: string }[] = [
+  { prefix: '/home', label: 'Home' },
   { prefix: '/agents', label: 'Agents' },
   { prefix: '/sessions', label: 'Sessions' },
   { prefix: '/crons', label: 'Schedules' },
@@ -387,10 +391,10 @@ function ShellChrome({ children }: { children: ReactNode }) {
   }, [barePath])
 
   // No-auth mode has no identity and a single implicit org, so Profile / Settings
-  // don't exist — bounce any direct navigation to those routes back to the agents list.
+  // don't exist — bounce any direct navigation to those routes back to the home landing.
   useEffect(() => {
     if (!isAuthConfigured() && (barePath === '/profile' || barePath === '/settings')) {
-      router.replace(orgPath('/agents'))
+      router.replace(orgPath('/home'))
     }
   }, [barePath, router, orgPath])
 
@@ -438,7 +442,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
   // Back from a push screen: pop in-app history when there is any, else (deep-link /
   // hard refresh — no history) route to the parent list so "back" never leaves the app.
   const hasParentList = LIST_ROUTES.includes(`/${seg[0] ?? ''}`)
-  const parentList = hasParentList ? `/${seg[0]}` : '/agents'
+  const parentList = hasParentList ? `/${seg[0]}` : '/home'
   const parentListHref = orgPath(parentList + (seg[0] === 'sessions' ? sessionFilterSearch(locationSearch) : ''))
   const showDetailCrumb = hasParentList && seg.length >= 2 && crumb !== '' && pushTitle !== crumb
   const goBack = () => {
@@ -469,11 +473,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
           label already sitting next to the icon. */}
         <aside data-no-tooltip className={`rail${railCollapsed ? ' collapsed' : ''}${railAnim ? ' rail-anim' : ''}`}>
           <div className="railbrand">
-            <Link
-              href={orgPath('/agents')}
-              className="railbrand-logo cursor-pointer select-none"
-              aria-label="Go to Agents"
-            >
+            <Link href={orgPath('/home')} className="railbrand-logo cursor-pointer select-none" aria-label="Go to Home">
               <LogoMark />
               <span className="brandword font-sans text-[17px] font-semibold leading-normal tracking-[-.02em] text-white">
                 Agent<span className="text-(--magenta-300)">Connect</span>
@@ -509,7 +509,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
                 title={item.label}
                 className={on ? 'navitem on' : 'navitem'}
               >
-                <Icon name={item.icon} size={18} color={on ? 'var(--brand)' : undefined} />
+                <Icon name={item.icon} size={18} color={on ? '#fff' : undefined} />
                 <span>{item.label}</span>
               </Link>
             )
@@ -679,7 +679,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
           <header className="mtop">
             {isListRoute ? (
               <>
-                <Link href={orgPath('/agents')} className="mtop-logo select-none" aria-label="Go to Agents">
+                <Link href={orgPath('/home')} className="mtop-logo select-none" aria-label="Go to Home">
                   <LogoMark />
                 </Link>
                 <span className="mtop-title">{crumb}</span>

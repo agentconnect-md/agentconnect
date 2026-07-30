@@ -15,7 +15,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 //     org and replaces it in one step.
 // A stale cookie (renamed/removed org) is fine: the org context's
 // reconciliation replaces an unknown slug with the caller's real org.
-const CONSOLE_ROOTS = ['agents', 'sessions', 'daemons', 'crons', 'tools', 'usage', 'settings', 'profile']
+const CONSOLE_ROOTS = ['home', 'agents', 'sessions', 'daemons', 'crons', 'tools', 'usage', 'settings', 'profile']
 
 // A real slug or the reserved `-` — anything else in the cookie is ignored
 // (it goes straight into a redirect path, so validate strictly).
@@ -32,7 +32,7 @@ export function proxy(req: NextRequest) {
   const isEntry = pathname === '/' || CONSOLE_ROOTS.includes(first)
   if (!isEntry) return NextResponse.next()
 
-  const consolePath = pathname === '/' ? '/agents' : pathname
+  const consolePath = pathname === '/' ? '/home' : pathname
   const url = req.nextUrl.clone()
   const slug = lastOrgSlug(req)
   if (slug) {
