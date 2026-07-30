@@ -11490,11 +11490,26 @@ export class Daemon {
       }
       return
     }
-    // A runtime can ignore session/cancel and keep streaming after the bounded
-    // Dream await has detached. The collector is gone by then, so late output no
-    // longer has a trustworthy transcript owner and must not fall through to
-    // generic ACP evaluation, transcript, or delivery handling.
-    if (this.memoryExtractionQuarantines.has(extractionKey)) return
+    // A runtime can keep streaming after a Dream collector is released. Body-bearing
+    // updates no longer have a trustworthy transcript owner and stay quarantined,
+    // but a late usage snapshot is safe metadata and must still correct the
+    // session's latest-wins accounting.
+    const extractionQuarantineOwner = this.memoryExtractionQuarantines.get(extractionKey)
+    if (extractionQuarantineOwner) {
+      if (extractionQuarantineOwner === agentId && update?.sessionUpdate === 'usage_update') {
+        const rec = this.store.getSessionByAcpIdForAgent(agentId, sessionId)
+        if (rec?.platform === 'dream') {
+          this.store.setUsageSnapshot(rec.key, {
+            contextUsed: update.used,
+            contextSize: update.size,
+            costAmount: update.cost?.amount ?? undefined,
+            costCurrency: update.cost?.currency ?? undefined
+          })
+          this.emitStoredUsageReport(sessionId, agentId, rec.platform, rec.channel, rec.key, true)
+        }
+      }
+      return
+    }
     const p = this.pending.get(pendingTurnKey(agentId, sessionId))
     this.emitEvaluation({
       type: 'acp.update',

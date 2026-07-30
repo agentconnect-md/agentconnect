@@ -195,6 +195,13 @@ describe('Daemon evaluation surface', () => {
       evaluation: { observer: collector, runId: 'eval-run-dream' }
     })
     await daemon.start()
+    const usageReports: any[] = []
+    ;(daemon as any).cpClient = {
+      emitEventSession: vi.fn(),
+      emitSessionActivity: vi.fn(),
+      emitUsageReport: vi.fn((report: unknown) => usageReports.push(report)),
+      stop: vi.fn(async () => {})
+    }
 
     const started = await (daemon as any).dreamRunner().start(AGENT_ID, { trigger: 'manual' })
     let dream
@@ -266,6 +273,34 @@ describe('Daemon evaluation surface', () => {
         .map((row: { text: string }) => row.text)
         .join('\n')
     ).not.toContain('PRIVATE LATE DREAM UPDATE')
+
+    onUpdate('dream-session-1', {
+      sessionUpdate: 'usage_update',
+      used: 99,
+      size: 256_000,
+      cost: { amount: 0.09, currency: 'USD' }
+    })
+    expect((daemon as any).store.getUsage(session.key)).toMatchObject({
+      totalTokens: 12,
+      contextUsed: 99,
+      contextSize: 256_000,
+      costAmount: 0.09,
+      costCurrency: 'USD'
+    })
+    expect(usageReports.at(-1)).toMatchObject({
+      sessionId: 'dream-session-1',
+      agentId: AGENT_ID,
+      platform: 'dream',
+      channel: 'memory',
+      usage: {
+        totalTokens: 12,
+        contextUsed: 99,
+        contextSize: 256_000,
+        costAmount: 0.09,
+        costCurrency: 'USD'
+      }
+    })
+    expect(collector.events()).toHaveLength(eventCount)
 
     ;(daemon as any).recordDreamLifecycle({
       type: 'memory.dream.skill_accepted',
