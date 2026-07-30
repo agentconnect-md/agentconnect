@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractSlackMessageText } from './slack-message-text.js'
+import { extractSlackMessageText } from '../src/slack-message-text.js'
 
 describe('extractSlackMessageText', () => {
   it('preserves the source URL and embedded content of a forwarded Slack message', () => {

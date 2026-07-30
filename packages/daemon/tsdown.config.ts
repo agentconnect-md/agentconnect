@@ -9,16 +9,17 @@ const nativeExternals = ['bufferutil', 'utf-8-validate']
 
 // Ship the daemon as a ~self-contained bundle: alwaysBundle inlines EVERY import
 // (incl. deps kept in package.json "dependencies" and the workspace-only
-// @agentconnect.md/protocol), and neverBundle keeps the native modules external.
+// @agentconnect.md/message + protocol), and neverBundle keeps the native modules
+// external.
 // neverBundle wins over alwaysBundle, so the natives stay out. The published
 // manifest is then stripped to zero runtime deps at release time
 // (see release.config.js); the optional ws natives are never direct deps.
 //
-// @agentconnect.md/protocol resolves through its package "import" export to
-// ./dist/index.js, so it must be built before this bundle runs. The daemon's
-// `build` script guarantees that by building its workspace dependencies first
-// (`pnpm --filter '{.}^...' build && tsdown`), so the bundle always inlines a
-// fresh protocol without reaching past its public exports into ../protocol/src.
+// @agentconnect.md/message and protocol resolve through their package "import"
+// exports to ./dist/index.js, so they must be built before this bundle runs.
+// The daemon's `build` script guarantees that by building its workspace
+// dependencies first (`pnpm --filter '{.}^...' build && tsdown`), so the bundle
+// always inlines fresh shared packages without reaching into their source trees.
 export default defineConfig({
   entry: ['src/index.ts'],
   format: ['esm'],

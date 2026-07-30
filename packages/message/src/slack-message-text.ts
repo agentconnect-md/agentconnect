@@ -4,7 +4,7 @@
  * Kit `blocks` or legacy secondary `attachments`, leaving `text` as only a short
  * notification fallback (sometimes just an @mention).
  *
- * Keep this extractor dependency-free so Socket Mode, shared HTTP ingest, and
+ * Keep this extractor dependency-free so Socket Mode, HTTP ingest, and
  * conversations.replies backfill all present the same visible text to an agent.
  */
 
@@ -49,7 +49,6 @@ function richElementText(value: unknown): string {
 
   switch (element.type) {
     case 'text':
-      // Rich-text sections encode spacing inside adjacent inline text elements.
       return inlineString(element.text)
     case 'link':
       return linkedLabel(string(element.text), string(element.url))
@@ -117,8 +116,6 @@ function blockText(value: unknown): string {
         string(block.alt_text)
       ])
     default:
-      // Interactive controls (`actions`, `input`, etc.) are deliberately omitted:
-      // their labels are UI chrome, not message body or user-authored input.
       return ''
   }
 }
@@ -159,8 +156,6 @@ function attachmentText(value: unknown): string {
     string(attachment.from_url)
   ])
 
-  // `fallback` is usually a lossy duplicate of the structured visible fields.
-  // Use it only when the attachment exposes no richer readable representation.
   return structured || string(attachment.fallback)
 }
 

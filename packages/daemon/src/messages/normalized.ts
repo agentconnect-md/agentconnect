@@ -1,3 +1,5 @@
+import type { NormalizedPlatformMessage, PlatformAttachment } from '@agentconnect.md/message'
+
 /**
  * A file shared alongside a message. Platform ingresses carry metadata + a
  * fetch URL and download the bytes daemon-locally with the provider token.
@@ -5,7 +7,7 @@
  * plane. Both forms become ACP image/resource blocks at prompt assembly; the
  * daemon also retains bounded webchat images for authorized transcript replay.
  */
-export interface Attachment {
+export interface Attachment extends Omit<PlatformAttachment, 'sourceUrl'> {
   /** Stable source id (Slack file.id). */
   id: string
   /** Display name / title. */
@@ -20,7 +22,10 @@ export interface Attachment {
   inlineData?: Buffer
 }
 
-export interface NormalizedMessage {
+export interface NormalizedMessage extends Omit<
+  NormalizedPlatformMessage,
+  'source' | 'platform' | 'attachments' | 'trigger'
+> {
   msgId: string
   /**
    * A displayable, ordering-safe transcript timestamp when `msgId` itself is not
@@ -143,6 +148,18 @@ export interface NormalizedMessage {
   // output suppressed (transcript/session bookkeeping only). `channel` is then a
   // synthetic key, not a real platform channel.
   headless?: boolean
+}
+
+/**
+ * Promote the pure cross-transport message into the daemon's richer runtime
+ * model. Keeping this assignment type-checked makes a shared schema change fail
+ * here instead of relying on a relay payload assertion at the dispatch site.
+ */
+export function fromPlatformMessage(message: NormalizedPlatformMessage, transportScope?: string): NormalizedMessage {
+  return {
+    ...message,
+    ...(transportScope !== undefined ? { transportScope } : {})
+  }
 }
 
 type MessageIdentityFields = Pick<NormalizedMessage, 'msgId' | 'platform' | 'traceId' | 'transportScope'>

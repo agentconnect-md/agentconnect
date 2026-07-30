@@ -1,12 +1,8 @@
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt'
 import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
 import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'
-import {
-  decodeSlackStatusOverflowValue,
-  extractSlackMessageText,
-  isSlackSystemMessage,
-  SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID
-} from '@agentconnect.md/protocol'
+import { decodeSlackStatusOverflowValue, SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
+import { extractSlackMessageText, isSlackSystemMessage } from '@agentconnect.md/message'
 import type { Agent } from '../agents/agent-schema.js'
 import { normalizeSlackEvent, toAttachment, type SlackFile, type SlackMessageEvent } from './normalize.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
@@ -986,7 +982,9 @@ export class SlackConnection {
             text: extractSlackMessageText(m),
             isBot: Boolean(m.bot_id),
             chrome: m.metadata?.event_type === SLACK_CHROME_EVENT_TYPE,
-            attachments: (m.files ?? []).map(toAttachment).filter((a): a is Attachment => a !== null)
+            attachments: (m.files ?? [])
+              .map(toAttachment)
+              .filter((attachment): attachment is NonNullable<typeof attachment> => attachment !== null)
           })
           if (out.length >= maxMessages) return out
         }

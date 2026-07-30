@@ -1,6 +1,6 @@
 # Architecture Design: Daemon-Centric Messaging and Agent Execution
 
-> Status: Implemented (current architecture) — the architecture described here has been implemented in `packages/{protocol,daemon,control-plane,relay}` and serves as the upstream anchor for the detailed design documents
+> Status: Implemented (current architecture) — the architecture described here has been implemented in `packages/{message,protocol,daemon,control-plane,relay}` and serves as the upstream anchor for the detailed design documents
 > Scope: A new system that bridges messaging platforms (such as Slack and Telegram) to AI coding agents
 > Keywords: daemon-owned platform integrations, local ACP, control-plane/data-plane separation
 
@@ -115,6 +115,9 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
 
 ### 4.3 Platform Adapters (`slack-adapter`, `telegram-adapter`, etc.)
 
+- Pure message schemas and Slack/Lark event normalization shared by direct
+  daemon ingress and relay HTTP ingress live in `@agentconnect.md/message`; the
+  package contains no SDK clients, routing, or I/O.
 - Handle platform connections, authentication, message sending and receiving, rich-text and attachment normalization, and inbound/outbound mapping.
 - Hold platform credentials. See §9, Security.
 - Produce normalized internal messages and pass them through the daemon's local routing layer to the agent.

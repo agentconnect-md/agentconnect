@@ -141,7 +141,7 @@ the complete trust boundaries and failure model.
 
 ## Monorepo layout
 
-This repository is a pnpm workspace with eight packages:
+This repository is a pnpm workspace with nine packages:
 
 | Package                               | Path                                                         | Role                                                              |
 | ------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------- |
@@ -150,6 +150,7 @@ This repository is a pnpm workspace with eight packages:
 | `@agentconnect.md/control-plane`      | [`packages/control-plane`](packages/control-plane)           | Orchestration, registry, authentication, and Web UI BFF           |
 | `@agentconnect.md/daemon`             | [`packages/daemon`](packages/daemon)                         | Edge message processing and agent execution unit                  |
 | `@agentconnect.md/memory-plugin-mem0` | [`packages/memory-plugin-mem0`](packages/memory-plugin-mem0) | Mem0 Cloud and OSS memory-plugin profiles                         |
+| `@agentconnect.md/message`            | [`packages/message`](packages/message)                       | Shared message model and pure platform normalization              |
 | `@agentconnect.md/protocol`           | [`packages/protocol`](packages/protocol)                     | Shared daemon, relay, and Control Plane wire contracts            |
 | `@agentconnect.md/relay`              | [`packages/relay`](packages/relay)                           | HTTP bot, webhook, GitHub, and webchat ingress                    |
 | `@agentconnect.md/web`                | [`packages/web`](packages/web)                               | Next.js configuration and monitoring console                      |

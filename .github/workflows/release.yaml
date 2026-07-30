@@ -78,9 +78,10 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
       # Run directly under pnpm (not the docker action) so `pnpm publish` and the
-      # workspace are available to @semantic-release/exec. No separate protocol
-      # build step: the daemon's prepack build compiles its workspace deps
-      # (@agentconnect.md/protocol) first, so dist/ exists when the bundle runs.
+      # workspace are available to @semantic-release/exec. No separate shared
+      # package build step: the daemon's prepack build compiles its workspace
+      # deps (@agentconnect.md/message and @agentconnect.md/protocol) first, so
+      # their dist/ directories exist when the bundle runs.
       - name: Semantic Release
         id: semantic-release
         run: pnpm exec semantic-release

@@ -41,12 +41,12 @@ case "$MODE" in
 esac
 
 # Everything tsdown inlines into the CLI bundle: the CLI itself, its workspace
-# deps (protocol AND connection — the login auth probe uses connection's
-# ClientTransport, so a connection-layer change must retrigger a CLI publish),
-# and tsconfig.base.json (shapes the emitted JS). The lockfile is checked
-# separately below, scoped to the CLI's importers.
-CLI_PATHS="packages/cli packages/protocol packages/connection tsconfig.base.json"
-CLI_IMPORTERS="packages/cli packages/protocol packages/connection"
+# deps (message through protocol, plus connection — the login auth probe uses
+# connection's ClientTransport, so a connection-layer change must retrigger a
+# CLI publish), and tsconfig.base.json (shapes the emitted JS). The lockfile is
+# checked separately below, scoped to the CLI's importers.
+CLI_PATHS="packages/cli packages/message packages/protocol packages/connection tsconfig.base.json"
+CLI_IMPORTERS="packages/cli packages/message packages/protocol packages/connection"
 
 if [ -n "$LAST_TAG" ] && git rev-parse -q --verify "${LAST_TAG}^{commit}" > /dev/null; then
   # Word-splitting CLI_PATHS is deliberate: it is a list of pathspecs.

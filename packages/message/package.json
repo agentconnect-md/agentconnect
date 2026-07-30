@@ -1,7 +1,7 @@
 {
-  "name": "@agentconnect.md/protocol",
+  "name": "@agentconnect.md/message",
   "version": "1.0.0-dev",
-  "description": "AgentConnect shared wire contract — daemon ↔ control-plane WebSocket protocol (zod, 29 frames)",
+  "description": "AgentConnect shared message model and pure platform normalization for daemon and relay ingress",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
@@ -30,17 +30,18 @@
   "sideEffects": false,
   "types": "dist/index.d.ts",
   "dependencies": {
-    "@agentconnect.md/message": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
   },
   "keywords": [
     "agentconnect",
-    "protocol",
-    "websocket",
-    "zod"
+    "lark",
+    "message",
+    "normalization",
+    "slack"
   ],
   "engines": {
     "node": ">=24"

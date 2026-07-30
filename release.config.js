@@ -38,12 +38,12 @@ export default {
       '@semantic-release/exec',
       {
         // Order matters: bump → BUILD → strip deps. The build must run while
-        // `dependencies` still lists @agentconnect.md/protocol, because the
-        // daemon's build (`pnpm --filter '{.}^...' build && tsdown`) reads that
-        // field to build its workspace deps' dist/ first — and tsdown inlines
-        // protocol by resolving its built `import` export → ./dist/index.js.
+        // `dependencies` still lists @agentconnect.md/message and protocol,
+        // because the daemon's build (`pnpm --filter '{.}^...' build && tsdown`)
+        // reads that field to build its workspace deps' dist/ first — and tsdown
+        // inlines them by resolving their built `import` exports → ./dist/index.js.
         // If we strip deps BEFORE the build, `{.}^...` matches no projects,
-        // protocol/dist is never built, and tsdown SILENTLY externalizes the
+        // their dist/ directories are never built, and tsdown SILENTLY externalizes the
         // import (rolldown can't resolve a missing file) — shipping a bundle
         // that throws ERR_MODULE_NOT_FOUND. So: build first (deps intact, every
         // dependency inlined into dist/ — the daemon's only SQLite is built-in
@@ -64,7 +64,8 @@ export default {
     [
       // Publish the CLI (@agentconnect.md/cli) to npm the same way as the daemon:
       // a self-contained tsdown bundle stripped to zero runtime deps. Same
-      // build-then-strip ordering (its build inlines protocol + connection), and
+      // build-then-strip ordering (its build inlines message + protocol +
+      // connection), and
       // the same conditional skip — the CLI is the thin, stable bin and changes
       // far less often than the daemon, so most releases skip its publish. Its
       // change detector additionally tracks packages/connection (the login auth

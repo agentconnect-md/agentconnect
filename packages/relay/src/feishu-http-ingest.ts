@@ -1,9 +1,7 @@
 import { createDecipheriv, createHash, timingSafeEqual } from 'node:crypto'
+import { feishuEventToMessageLike, normalizeFeishuMessage, type FeishuRawEvent } from '@agentconnect.md/message'
 import {
-  feishuEventToMessageLike,
-  normalizeFeishuMessage,
   WireFeishuCardActionEvent,
-  type FeishuRawEvent,
   type WireFeishuCardActionResponse,
   type WireNormalizedMessage
 } from '@agentconnect.md/protocol'
