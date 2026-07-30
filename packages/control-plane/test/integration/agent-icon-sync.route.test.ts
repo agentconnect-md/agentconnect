@@ -21,7 +21,7 @@ afterEach(async () => {
 })
 
 describe('Agent icon bot profile fan-out', () => {
-  it('syncs dedicated Telegram/Discord bots only when the Agent icon changes', async () => {
+  it('syncs dedicated Telegram/Discord/Feishu bots only when the Agent icon changes', async () => {
     const store: IconStore = {
       put: vi.fn(async () => undefined),
       get: vi.fn(async () => null),
@@ -30,10 +30,14 @@ describe('Agent icon bot profile fan-out', () => {
     }
     const telegramSync = vi.fn(async (_botToken: string, _agent: BotProfileIconAgent) => {})
     const discordSync = vi.fn(async (_botToken: string, _agent: BotProfileIconAgent) => {})
+    const feishuSync = vi.fn(
+      async (_appId: string, _appSecret: string, _region: 'feishu' | 'lark', _agent: BotProfileIconAgent) => {}
+    )
     running = buildHttpApp(prisma, { S3_PUBLIC_BASE_URL: 'https://images.example.test' }, undefined, undefined, {
       iconStore: store,
       syncTelegramBotIcon: telegramSync,
-      syncDiscordBotIcon: discordSync
+      syncDiscordBotIcon: discordSync,
+      syncFeishuAppIcon: feishuSync
     })
 
     const create = await running.app.inject({
@@ -47,11 +51,22 @@ describe('Agent icon bot profile fan-out', () => {
 
     for (const [platform, token] of [
       ['telegram', 'telegram-token'],
-      ['discord', 'discord-token']
+      ['discord', 'discord-token'],
+      ['feishu', 'feishu-secret']
     ] as const) {
       const botId = BotId(randomUUID())
-      await running.deps.repos.bot.create({ id: botId, orgId, platform, name: `${platform}-bot` })
-      await running.deps.repos.botSecret.put(botId, { botToken: token, appToken: null, signingSecret: null })
+      await running.deps.repos.bot.create({
+        id: botId,
+        orgId,
+        platform,
+        name: `${platform}-bot`,
+        ...(platform === 'feishu' ? { feishuAppId: 'cli_feishu', feishuRegion: 'lark' } : {})
+      })
+      await running.deps.repos.botSecret.put(botId, {
+        botToken: token,
+        appToken: platform === 'feishu' ? 'cli_feishu' : null,
+        signingSecret: null
+      })
       await running.deps.repos.integration.create({
         id: IntegrationId(randomUUID()),
         orgId,
@@ -70,6 +85,7 @@ describe('Agent icon bot profile fan-out', () => {
     expect(ordinaryEdit.statusCode).toBe(200)
     expect(telegramSync).not.toHaveBeenCalled()
     expect(discordSync).not.toHaveBeenCalled()
+    expect(feishuSync).not.toHaveBeenCalled()
 
     const glyphEdit = await running.app.inject({
       method: 'PATCH',
@@ -80,6 +96,7 @@ describe('Agent icon bot profile fan-out', () => {
     await vi.waitFor(() => {
       expect(telegramSync).toHaveBeenCalledTimes(1)
       expect(discordSync).toHaveBeenCalledTimes(1)
+      expect(feishuSync).toHaveBeenCalledTimes(1)
     })
 
     const upload = await running.app.inject({
@@ -92,12 +109,17 @@ describe('Agent icon bot profile fan-out', () => {
     await vi.waitFor(() => {
       expect(telegramSync).toHaveBeenCalledTimes(2)
       expect(discordSync).toHaveBeenCalledTimes(2)
+      expect(feishuSync).toHaveBeenCalledTimes(2)
     })
     expect(telegramSync.mock.calls[1]?.[1].icon).toEqual({
       kind: 'image',
       generation: expect.any(String)
     })
     expect(discordSync.mock.calls[1]?.[1].icon).toEqual({
+      kind: 'image',
+      generation: expect.any(String)
+    })
+    expect(feishuSync.mock.calls[1]?.[3].icon).toEqual({
       kind: 'image',
       generation: expect.any(String)
     })
@@ -110,8 +132,11 @@ describe('Agent icon bot profile fan-out', () => {
     await vi.waitFor(() => {
       expect(telegramSync).toHaveBeenCalledTimes(3)
       expect(discordSync).toHaveBeenCalledTimes(3)
+      expect(feishuSync).toHaveBeenCalledTimes(3)
     })
     expect(telegramSync.mock.calls[2]?.[1].icon?.kind).toBe('glyph')
     expect(discordSync.mock.calls[2]?.[1].icon?.kind).toBe('glyph')
+    expect(feishuSync.mock.calls[2]?.[3].icon?.kind).toBe('glyph')
+    expect(feishuSync).toHaveBeenCalledWith('cli_feishu', 'feishu-secret', 'lark', expect.any(Object))
   })
 })

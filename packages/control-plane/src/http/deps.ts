@@ -71,6 +71,7 @@ import type { TelegramBotIconSyncer } from './telegram-bot-profile.js'
 import type { DiscordBotVerifier, DiscordMessageContentIntentEnsurer } from './discord-identity.js'
 import type { DiscordBotIconSyncer } from './discord-bot-profile.js'
 import type { FeishuBotVerifier } from './feishu-identity.js'
+import type { FeishuAppIconSyncer } from './feishu-app-icon.js'
 import type { FeishuAppRegistrationService } from './feishu-registration.js'
 import type { FeishuHttpAppConfigurator } from './feishu-app-config.js'
 import type { Readiness } from './readiness.js'
@@ -285,6 +286,9 @@ export interface HttpDeps {
   /** Applies the sensitive delivery URL and verification keys that the official
    *  one-click registration deeplink intentionally cannot carry. */
   configureFeishuHttpApp: FeishuHttpAppConfigurator
+  /** Applies an Agent icon to a self-built Feishu/Lark app and submits the
+   *  updated application version. Cosmetic and best-effort. */
+  syncFeishuAppIcon?: FeishuAppIconSyncer
   /** Owns the short-lived official Feishu/Lark device-registration poll. The
    *  browser sees only a deeplink + opaque id; credentials are finalized through
    *  BotSecretStore before the session becomes completed. */

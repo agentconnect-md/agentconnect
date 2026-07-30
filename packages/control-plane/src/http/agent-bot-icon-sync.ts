@@ -8,6 +8,7 @@ import type {
 } from '../persistence/ports.js'
 import type { BotProfileIconAgent } from './bot-profile-icon.js'
 import type { DiscordBotIconSyncer } from './discord-bot-profile.js'
+import type { FeishuAppIconSyncer } from './feishu-app-icon.js'
 import type { TelegramBotIconSyncer } from './telegram-bot-profile.js'
 
 interface AgentBotIconSyncDeps {
@@ -19,6 +20,7 @@ interface AgentBotIconSyncDeps {
   }
   syncTelegramBotIcon?: TelegramBotIconSyncer
   syncDiscordBotIcon?: DiscordBotIconSyncer
+  syncFeishuAppIcon?: FeishuAppIconSyncer
 }
 
 interface AgentBotIconSyncLogger {
@@ -28,7 +30,6 @@ interface AgentBotIconSyncLogger {
 interface CurrentBotIconState {
   bot: BotRecord
   agent: AgentRecord
-  sync: TelegramBotIconSyncer | DiscordBotIconSyncer
   version: string
 }
 
@@ -53,13 +54,11 @@ async function currentBotIconState(
   const bot = await deps.repos.bot.get(botId)
   if (!bot || bot.shareable || bot.revokedAt) return null
 
-  const sync =
-    bot.platform === 'telegram'
-      ? deps.syncTelegramBotIcon
-      : bot.platform === 'discord'
-        ? deps.syncDiscordBotIcon
-        : undefined
-  if (!sync) return null
+  const supported =
+    (bot.platform === 'telegram' && deps.syncTelegramBotIcon) ||
+    (bot.platform === 'discord' && deps.syncDiscordBotIcon) ||
+    (bot.platform === 'feishu' && deps.syncFeishuAppIcon)
+  if (!supported) return null
 
   const memberships = await deps.repos.integration.listForBot(bot.id)
   if (memberships.length !== 1) return null
@@ -71,7 +70,6 @@ async function currentBotIconState(
   return {
     bot,
     agent,
-    sync,
     version: `${bot.credentialRevision}:${membership.id}:${agent.id}:${agentIconVersion(agent)}`
   }
 }
@@ -93,7 +91,23 @@ async function syncBotIconUntilCurrent(
     }
 
     try {
-      await state.sync(secret.botToken, state.agent)
+      if (state.bot.platform === 'telegram' && deps.syncTelegramBotIcon) {
+        await deps.syncTelegramBotIcon(secret.botToken, state.agent)
+      } else if (state.bot.platform === 'discord' && deps.syncDiscordBotIcon) {
+        await deps.syncDiscordBotIcon(secret.botToken, state.agent)
+      } else if (state.bot.platform === 'feishu' && deps.syncFeishuAppIcon) {
+        // The secret row keeps the credential pair together; public bot
+        // metadata is only the fallback for older rows.
+        const appId = secret.appToken ?? state.bot.feishuAppId
+        if (!appId) {
+          log.warn(
+            { agentId: state.agent.id, botId: state.bot.id, platform: state.bot.platform },
+            'agent bot icon sync skipped: Feishu App ID is missing'
+          )
+          return
+        }
+        await deps.syncFeishuAppIcon(appId, secret.botToken, state.bot.feishuRegion ?? 'feishu', state.agent)
+      }
     } catch (err) {
       log.warn(
         { err, agentId: state.agent.id, botId: state.bot.id },
@@ -107,7 +121,7 @@ async function syncBotIconUntilCurrent(
   }
 }
 
-/** Push one changed Agent icon to each dedicated Telegram/Discord bot currently
+/** Push one changed Agent icon to each dedicated Telegram/Discord/Feishu bot currently
  * installed on it. Shared identities are deliberately excluded: one platform
  * avatar cannot represent several agents. After each provider call, re-read and
  * repair to the latest icon/current owner so detached requests are latest-wins.
