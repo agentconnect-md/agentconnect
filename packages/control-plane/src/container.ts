@@ -1252,7 +1252,7 @@ export function buildContainer(
     async shutdown() {
       cronRunReaper.stop()
       hookRunReaper.stop()
-      mcpInvocationReaper.stop()
+      const mcpInvocationSettled = mcpInvocationReaper.stopAndSettle()
       githubRunReporter?.stop()
       hookRedeliveryReconciler?.stop()
       installationDoorbell?.stop()
@@ -1263,6 +1263,7 @@ export function buildContainer(
       slackBotIdentityReconciler.stop()
       visibilityPush.stop()
       await Promise.allSettled([
+        mcpInvocationSettled,
         ...relayRegistrationTasks,
         visibilityPush.settle(),
         ...(installationDoorbell ? [installationDoorbell.settle()] : [])

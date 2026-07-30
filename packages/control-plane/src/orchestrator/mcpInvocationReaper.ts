@@ -17,7 +17,9 @@ interface ReaperLog {
  */
 export class McpInvocationReaper {
   private timer: TimerHandle | undefined
-  private stopped = true
+  private loopEnabled = false
+  private shutdownRequested = false
+  private activeTick: Promise<void> | undefined
 
   constructor(
     private readonly invocations: Pick<McpInvocationRepo, 'reap'>,
@@ -27,29 +29,52 @@ export class McpInvocationReaper {
   ) {}
 
   start(): void {
-    this.stopped = false
+    this.loopEnabled = true
+    this.shutdownRequested = false
     this.arm()
   }
 
   stop(): void {
-    this.stopped = true
+    this.loopEnabled = false
+    this.shutdownRequested = true
     if (this.timer !== undefined) {
       this.clock.clearTimeout(this.timer)
       this.timer = undefined
     }
   }
 
+  /** Stop scheduling, cancel work between repository phases, and await the one active DB call. */
+  async stopAndSettle(): Promise<void> {
+    this.stop()
+    await this.activeTick
+  }
+
   private arm(): void {
-    if (this.stopped) return
+    if (!this.loopEnabled || this.shutdownRequested) return
     if (this.timer !== undefined) this.clock.clearTimeout(this.timer)
     this.timer = this.clock.setTimeout(() => void this.tick(), MCP_INVOCATION_REAP_INTERVAL_MS)
   }
 
-  async tick(): Promise<void> {
-    this.timer = undefined
+  tick(): Promise<void> {
+    if (this.activeTick) return this.activeTick
+    if (this.shutdownRequested) return Promise.resolve()
+    if (this.timer !== undefined) {
+      this.clock.clearTimeout(this.timer)
+      this.timer = undefined
+    }
+    const active = this.runTick()
+    this.activeTick = active
+    void active.then(() => {
+      if (this.activeTick === active) this.activeTick = undefined
+    })
+    return active
+  }
+
+  private async runTick(): Promise<void> {
     try {
       const now = new Date(this.clock.now())
       const invocationResult = await this.invocations.reap(now)
+      if (this.shutdownRequested) return
       const deletedDelegations = await this.delegations.reapExpired(now)
       if (invocationResult.markedAmbiguous > 0 || invocationResult.deleted > 0 || deletedDelegations > 0) {
         this.log?.info(

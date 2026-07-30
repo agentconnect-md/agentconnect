@@ -23,6 +23,7 @@ import { MCP_INVOCATION_EXECUTION_TIMEOUT_MS } from '../../domain/mcp-invocation
 
 export { MCP_INVOCATION_MAX_RESPONSE_BYTES, MCP_INVOCATION_RESPONSE_CACHE_TTL_MS } from '../ports.js'
 export { MCP_INVOCATION_EXECUTION_TIMEOUT_MS } from '../../domain/mcp-invocation.js'
+export const MCP_INVOCATION_REAP_BATCH_SIZE = 100
 
 const isP2002 = (error: unknown): boolean => (error as { code?: string }).code === 'P2002'
 const isP2003 = (error: unknown): boolean => (error as { code?: string }).code === 'P2003'
@@ -288,25 +289,62 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
     return this.inTransaction(async (tx) => {
       const executionDeadline = new Date(now.getTime() - MCP_INVOCATION_EXECUTION_TIMEOUT_MS)
       const terminalBefore = new Date(now.getTime() - MCP_INVOCATION_RESPONSE_CACHE_TTL_MS)
-      const marked = await tx.mcpInvocation.updateMany({
-        where: {
-          status: 'running',
-          startedAt: { lte: executionDeadline }
-        },
-        data: { status: 'ambiguous', completedAt: now }
-      })
-      const deleted = await tx.mcpInvocation.deleteMany({
-        where: {
-          OR: [
-            { status: 'issued', assertionExpires: { lte: now } },
-            {
-              status: { in: ['succeeded', 'failed', 'ambiguous'] },
-              completedAt: { lte: terminalBefore }
-            }
-          ]
-        }
-      })
-      return { markedAmbiguous: marked.count, deleted: deleted.count }
+      const marked = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+        WITH candidates AS (
+          SELECT "id"
+          FROM "mcp_invocation"
+          WHERE "status" = 'running'
+            AND "startedAt" <= ${executionDeadline}
+          ORDER BY "startedAt", "id"
+          LIMIT ${MCP_INVOCATION_REAP_BATCH_SIZE}
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE "mcp_invocation" AS invocation
+        SET "status" = 'ambiguous', "completedAt" = ${now}
+        FROM candidates
+        WHERE invocation."id" = candidates."id"
+          AND invocation."status" = 'running'
+          AND invocation."startedAt" <= ${executionDeadline}
+        RETURNING invocation."id"
+      `)
+      const expiredIssued = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+        WITH candidates AS (
+          SELECT "id"
+          FROM "mcp_invocation"
+          WHERE "status" = 'issued'
+            AND "assertionExpires" <= ${now}
+          ORDER BY "assertionExpires", "id"
+          LIMIT ${MCP_INVOCATION_REAP_BATCH_SIZE}
+          FOR UPDATE SKIP LOCKED
+        )
+        DELETE FROM "mcp_invocation" AS invocation
+        USING candidates
+        WHERE invocation."id" = candidates."id"
+          AND invocation."status" = 'issued'
+          AND invocation."assertionExpires" <= ${now}
+        RETURNING invocation."id"
+      `)
+      const expiredTerminal = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+        WITH candidates AS (
+          SELECT "id"
+          FROM "mcp_invocation"
+          WHERE "status" IN ('succeeded', 'failed', 'ambiguous')
+            AND "completedAt" <= ${terminalBefore}
+          ORDER BY "completedAt", "id"
+          LIMIT ${MCP_INVOCATION_REAP_BATCH_SIZE}
+          FOR UPDATE SKIP LOCKED
+        )
+        DELETE FROM "mcp_invocation" AS invocation
+        USING candidates
+        WHERE invocation."id" = candidates."id"
+          AND invocation."status" IN ('succeeded', 'failed', 'ambiguous')
+          AND invocation."completedAt" <= ${terminalBefore}
+        RETURNING invocation."id"
+      `)
+      return {
+        markedAmbiguous: marked.length,
+        deleted: expiredIssued.length + expiredTerminal.length
+      }
     })
   }
 }

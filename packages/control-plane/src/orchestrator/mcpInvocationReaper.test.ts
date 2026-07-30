@@ -13,6 +13,16 @@ async function flush(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
 function setup() {
   const calls: string[] = []
   const clock = new FakeClock(NOW)
@@ -184,5 +194,54 @@ describe('McpInvocationReaper', () => {
     clock.advance(MCP_INVOCATION_REAP_INTERVAL_MS)
     await flush()
     expect(invocations.reap).toHaveBeenCalledTimes(1)
+  })
+
+  it('settles one in-flight tick on shutdown and performs no later delegation or DB work', async () => {
+    const clock = new FakeClock(NOW)
+    const invocationWork = deferred<{ markedAmbiguous: number; deleted: number }>()
+    const invocations = { reap: vi.fn(() => invocationWork.promise) }
+    const delegations = { reapExpired: vi.fn(async () => 0) }
+    const reaper = new McpInvocationReaper(invocations, delegations, clock)
+    reaper.start()
+
+    const firstTick = reaper.tick()
+    const duplicateTick = reaper.tick()
+    expect(duplicateTick).toBe(firstTick)
+    expect(invocations.reap).toHaveBeenCalledTimes(1)
+
+    let stopped = false
+    const stopping = reaper.stopAndSettle().then(() => {
+      stopped = true
+    })
+    await flush()
+    expect(stopped).toBe(false)
+    expect(delegations.reapExpired).not.toHaveBeenCalled()
+
+    invocationWork.resolve({ markedAmbiguous: 0, deleted: 0 })
+    await stopping
+    expect(delegations.reapExpired).not.toHaveBeenCalled()
+    expect(clock.pendingTimers()).toBe(0)
+
+    clock.advance(MCP_INVOCATION_REAP_INTERVAL_MS * 2)
+    await flush()
+    expect(invocations.reap).toHaveBeenCalledTimes(1)
+    expect(delegations.reapExpired).not.toHaveBeenCalled()
+  })
+
+  it('settles shutdown when the in-flight repository call rejects', async () => {
+    const clock = new FakeClock(NOW)
+    const invocationWork = deferred<{ markedAmbiguous: number; deleted: number }>()
+    const reaper = new McpInvocationReaper(
+      { reap: () => invocationWork.promise },
+      { reapExpired: vi.fn(async () => 0) },
+      clock
+    )
+    const ticking = reaper.tick()
+    const stopping = reaper.stopAndSettle()
+
+    invocationWork.reject(new Error('database closed'))
+
+    await expect(ticking).resolves.toBeUndefined()
+    await expect(stopping).resolves.toBeUndefined()
   })
 })

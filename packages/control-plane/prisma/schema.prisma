@@ -956,7 +956,9 @@ model McpInvocation {
   delegation WebchatMcpDelegation @relation(fields: [delegationId], references: [id], onDelete: Cascade)
 
   @@index([delegationId, createdAt])
-  @@index([status, assertionExpires])
+  @@index([status, assertionExpires, id])
+  @@index([status, startedAt, id])
+  @@index([status, completedAt, id])
   @@map("mcp_invocation")
 }
 

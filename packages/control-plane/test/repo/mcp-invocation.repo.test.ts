@@ -9,6 +9,7 @@ import { PgUserRepo, type PrismaLike } from '../../src/persistence/index.js'
 import {
   MCP_INVOCATION_EXECUTION_TIMEOUT_MS,
   MCP_INVOCATION_MAX_RESPONSE_BYTES,
+  MCP_INVOCATION_REAP_BATCH_SIZE,
   MCP_INVOCATION_RESPONSE_CACHE_TTL_MS,
   PgMcpInvocationRepo
 } from '../../src/persistence/repositories/mcp-invocation.repo.js'
@@ -25,6 +26,10 @@ const NOW = new Date('2026-07-30T00:00:00.000Z')
 
 const at = (milliseconds: number): Date => new Date(NOW.getTime() + milliseconds)
 const DEFAULT_CLAIM_CLOCK = { now: () => at(1_000).getTime() }
+
+function invocationUuid(prefix: number, index: number): string {
+  return `${prefix.toString(16).padStart(8, '0')}-1111-4111-8111-${index.toString(16).padStart(12, '0')}`
+}
 
 function invocationRepo(db: PrismaLike = prisma, clock: { now(): number } = DEFAULT_CLAIM_CLOCK): PgMcpInvocationRepo {
   return new PgMcpInvocationRepo(db, clock)
@@ -1133,5 +1138,157 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
       deleted: 0
     })
     expect(await repo.get(INVOCATION)).toMatchObject({ status: 'ambiguous' })
+  })
+
+  it('bounds every invocation reap class and drains each stable worklist across ticks', async () => {
+    const delegation = await fixtures(at(60 * 60_000))
+    const now = at(MCP_INVOCATION_RESPONSE_CACHE_TTL_MS + MCP_INVOCATION_EXECUTION_TIMEOUT_MS)
+    const count = MCP_INVOCATION_REAP_BATCH_SIZE + 1
+    await prisma.mcpInvocation.createMany({
+      data: [
+        ...Array.from({ length: count }, (_, index) => ({
+          id: invocationUuid(0x10000001, index),
+          delegationId: delegation.id,
+          assertionHash: `batch-issued-${index}`,
+          requestHash: 'request',
+          method: 'tools/list',
+          status: 'issued' as const,
+          assertionExpires: now,
+          createdAt: NOW
+        })),
+        ...Array.from({ length: count }, (_, index) => ({
+          id: invocationUuid(0x20000002, index),
+          delegationId: delegation.id,
+          assertionHash: `batch-running-${index}`,
+          requestHash: 'request',
+          method: 'tools/list',
+          status: 'running' as const,
+          assertionExpires: NOW,
+          startedAt: new Date(now.getTime() - MCP_INVOCATION_EXECUTION_TIMEOUT_MS),
+          createdAt: NOW
+        })),
+        ...Array.from({ length: count }, (_, index) => ({
+          id: invocationUuid(0x30000003, index),
+          delegationId: delegation.id,
+          assertionHash: `batch-terminal-${index}`,
+          requestHash: 'request',
+          method: 'tools/list',
+          status: 'succeeded' as const,
+          assertionExpires: NOW,
+          startedAt: NOW,
+          completedAt: new Date(now.getTime() - MCP_INVOCATION_RESPONSE_CACHE_TTL_MS),
+          responseStatus: 200,
+          responseBytes: Buffer.from('cached'),
+          createdAt: NOW
+        }))
+      ]
+    })
+
+    expect(await invocationRepo(prisma).reap(now)).toEqual({
+      markedAmbiguous: MCP_INVOCATION_REAP_BATCH_SIZE,
+      deleted: MCP_INVOCATION_REAP_BATCH_SIZE * 2
+    })
+    expect(await prisma.mcpInvocation.groupBy({ by: ['status'], _count: true })).toEqual(
+      expect.arrayContaining([
+        { status: 'issued', _count: 1 },
+        { status: 'running', _count: 1 },
+        { status: 'ambiguous', _count: MCP_INVOCATION_REAP_BATCH_SIZE }
+      ])
+    )
+
+    expect(await invocationRepo(prisma).reap(now)).toEqual({
+      markedAmbiguous: 1,
+      deleted: 2
+    })
+    expect(await prisma.mcpInvocation.groupBy({ by: ['status'], _count: true })).toEqual([
+      { status: 'ambiguous', _count: count }
+    ])
+  })
+
+  it('skips a locked oldest row without blocking or starving the rest of its bounded worklist', async () => {
+    const delegation = await fixtures(at(60 * 60_000))
+    const now = at(30_000)
+    const count = MCP_INVOCATION_REAP_BATCH_SIZE + 1
+    const ids = Array.from({ length: count }, (_, index) => invocationUuid(0x40000004, index))
+    await prisma.mcpInvocation.createMany({
+      data: ids.map((id, index) => ({
+        id,
+        delegationId: delegation.id,
+        assertionHash: `locked-issued-${index}`,
+        requestHash: 'request',
+        method: 'tools/list',
+        status: 'issued' as const,
+        assertionExpires: now,
+        createdAt: new Date(NOW.getTime() + index)
+      }))
+    })
+
+    const locked = barrier()
+    const release = barrier()
+    const holder = prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "mcp_invocation" WHERE "id" = ${ids[0]} FOR UPDATE`
+        locked.release()
+        await release.promise
+      },
+      { timeout: 20_000 }
+    )
+    await locked.promise
+
+    const first = await invocationRepo(prisma).reap(now)
+    expect(first).toEqual({ markedAmbiguous: 0, deleted: MCP_INVOCATION_REAP_BATCH_SIZE })
+    expect(await prisma.mcpInvocation.findUnique({ where: { id: ids[0]! } })).not.toBeNull()
+    release.release()
+    await holder
+
+    expect(await invocationRepo(prisma).reap(now)).toEqual({ markedAmbiguous: 0, deleted: 1 })
+    expect(await prisma.mcpInvocation.count()).toBe(0)
+  })
+
+  it('keeps an expired parent until every bounded child batch has been reaped', async () => {
+    const delegation = await fixtures(at(10_000))
+    const now = at(10_000)
+    const count = MCP_INVOCATION_REAP_BATCH_SIZE + 1
+    await prisma.mcpInvocation.createMany({
+      data: Array.from({ length: count }, (_, index) => ({
+        id: invocationUuid(0x50000005, index),
+        delegationId: delegation.id,
+        assertionHash: `parent-issued-${index}`,
+        requestHash: 'request',
+        method: 'tools/list',
+        status: 'issued' as const,
+        assertionExpires: now,
+        createdAt: NOW
+      }))
+    })
+    const invocations = invocationRepo(prisma)
+    const delegations = new PgWebchatMcpDelegationRepo(prisma)
+
+    expect(await invocations.reap(now)).toEqual({
+      markedAmbiguous: 0,
+      deleted: MCP_INVOCATION_REAP_BATCH_SIZE
+    })
+    expect(await delegations.reapExpired(now)).toBe(0)
+    expect(await prisma.webchatMcpDelegation.findUnique({ where: { id: delegation.id } })).not.toBeNull()
+
+    expect(await invocations.reap(now)).toEqual({ markedAmbiguous: 0, deleted: 1 })
+    expect(await delegations.reapExpired(now)).toBe(1)
+    expect(await prisma.webchatMcpDelegation.findUnique({ where: { id: delegation.id } })).toBeNull()
+  })
+
+  it('migrates stable-order indexes for each bounded reaper worklist', async () => {
+    const indexes = await prisma.$queryRaw<{ indexname: string }[]>`
+      SELECT indexname
+      FROM pg_indexes
+      WHERE schemaname = current_schema()
+        AND tablename = 'mcp_invocation'
+    `
+    expect(indexes.map(({ indexname }) => indexname)).toEqual(
+      expect.arrayContaining([
+        'mcp_invocation_status_assertionExpires_id_idx',
+        'mcp_invocation_status_startedAt_id_idx',
+        'mcp_invocation_status_completedAt_id_idx'
+      ])
+    )
   })
 })
