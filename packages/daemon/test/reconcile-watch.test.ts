@@ -492,13 +492,14 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
     // cpClient is wired AFTER start() so any backfill emits during start were no-ops.
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    const telegramIntegration = { id: 'tg-int', platform: 'telegram', telegram: { botToken: 'tg' } }
     ;(daemon as any).agents = new Map([
       [
         'bot-tg',
         {
           id: 'bot-tg',
           integrations: [
-            { id: 'tg-int', platform: 'telegram', telegram: { botToken: 'tg' } },
+            telegramIntegration,
             { id: 'slack-int', platform: 'slack', slack: { appToken: 'a', botToken: 'x' } }
           ]
         }
@@ -512,7 +513,11 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
 
     // Only the Telegram integration is enumerated — Slack has its own membership snapshot.
     expect(observed).toHaveBeenCalledOnce()
-    expect(observed).toHaveBeenCalledWith('bot-tg', 'telegram')
+    expect(observed).toHaveBeenCalledWith(
+      'bot-tg',
+      'telegram',
+      (daemon as any).transportScopeForIntegration(telegramIntegration)
+    )
     // A named chat carries its name; an unresolved one is id-only (console falls back to the id).
     const channels = [{ id: '-100123', name: 'Team Chat' }, { id: '-100456' }]
     expect(emit).toHaveBeenCalledOnce()
@@ -529,12 +534,13 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
 
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    const discordIntegration = { id: 'dc-int', platform: 'discord', discord: { botToken: 'dc' } }
     ;(daemon as any).agents = new Map([
       [
         'bot-dc',
         {
           id: 'bot-dc',
-          integrations: [{ id: 'dc-int', platform: 'discord', discord: { botToken: 'dc' } }]
+          integrations: [discordIntegration]
         }
       ]
     ])
@@ -544,7 +550,11 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
 
     ;(daemon as any).refreshObservedChannels()
 
-    expect(observed).toHaveBeenCalledWith('bot-dc', 'discord')
+    expect(observed).toHaveBeenCalledWith(
+      'bot-dc',
+      'discord',
+      (daemon as any).transportScopeForIntegration(discordIntegration)
+    )
     const channels = [{ id: '900123', name: 'general' }, { id: '900456' }]
     expect(emit).toHaveBeenCalledWith({ integrationId: 'dc-int', channels, authoritative: false })
     expect((daemon as any).channelSnapshots.get('dc-int')).toEqual({ channels, authoritative: false })
@@ -562,24 +572,24 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       getUserProfile: vi.fn()
     }
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    const feishuIntegration = {
+      id: 'fs-int',
+      platform: 'feishu',
+      feishu: { appId: 'cli_fs', appSecret: 'secret', region: 'lark' }
+    }
+    const transportScope = (daemon as any).transportScopeForIntegration(feishuIntegration)
     ;(daemon as any).agents = new Map([
       [
         'bot-fs',
         {
           id: 'bot-fs',
-          integrations: [
-            {
-              id: 'fs-int',
-              platform: 'feishu',
-              feishu: { appId: 'cli_fs', appSecret: 'secret', region: 'lark' }
-            }
-          ]
+          integrations: [feishuIntegration]
         }
       ]
     ])
     ;(daemon as any).fsConnByIntegration.set('fs-int', conn)
     vi.spyOn((daemon as any).store, 'listSessions').mockReturnValue([
-      { agentId: 'bot-fs', platform: 'feishu', channel: 'oc_group', triggeredBy: 'ou_sender' }
+      { agentId: 'bot-fs', platform: 'feishu', channel: 'oc_group', triggeredBy: 'ou_sender', transportScope }
     ])
     const observed = vi
       .spyOn((daemon as any).store, 'observedChannels')
@@ -592,10 +602,74 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       channel: 'oc_group',
       sender: { id: 'ou_sender', isBot: false }
     })
-    expect(observed).toHaveBeenCalledWith('bot-fs', 'feishu')
+    expect(observed).toHaveBeenCalledWith('bot-fs', 'feishu', transportScope)
     const channels = [{ id: 'oc_group', name: 'Product Chat' }]
     expect(emit).toHaveBeenCalledWith({ integrationId: 'fs-int', channels, authoritative: false })
     expect((daemon as any).channelSnapshots.get('fs-int')).toEqual({ channels, authoritative: false })
+    await daemon.stop()
+  })
+
+  it("does not attach a replaced Feishu app's session history to the new integration", async () => {
+    const root = root1()
+    const { daemon } = makeStubDaemon(root)
+    await daemon.start()
+
+    const emit = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    const oldIntegration = {
+      id: 'fs-old',
+      platform: 'feishu',
+      name: 'private-bot',
+      feishu: { appId: 'cli_old', appSecret: 'old-secret', region: 'lark' }
+    }
+    const newIntegration = {
+      id: 'fs-new',
+      platform: 'feishu',
+      name: 'private-bot',
+      feishu: { appId: 'cli_new', appSecret: 'new-secret', region: 'lark' }
+    }
+    ;(daemon as any).agents = new Map([['bot-fs', { id: 'bot-fs', integrations: [newIntegration] }]])
+    const store = (daemon as any).store
+    store.upsertSession({
+      key: 'old-session',
+      agentId: 'bot-fs',
+      platform: 'feishu',
+      channel: 'oc_old',
+      thread: 'old-thread',
+      transportScope: (daemon as any).transportScopeForIntegration(oldIntegration),
+      acpSessionId: 'acp-old',
+      state: 'idle',
+      lastDeliveredTs: null,
+      triggeredBy: 'ou_old',
+      updatedAt: 1
+    })
+    store.setDisplayName('oc_old', 'Old chat', 1)
+
+    ;(daemon as any).refreshObservedChannels()
+    expect(emit).not.toHaveBeenCalled()
+
+    store.upsertSession({
+      key: 'new-session',
+      agentId: 'bot-fs',
+      platform: 'feishu',
+      channel: 'oc_new',
+      thread: 'new-thread',
+      transportScope: (daemon as any).transportScopeForIntegration(newIntegration),
+      acpSessionId: 'acp-new',
+      state: 'idle',
+      lastDeliveredTs: null,
+      triggeredBy: 'ou_new',
+      updatedAt: 2
+    })
+    store.setDisplayName('oc_new', 'New chat', 2)
+
+    ;(daemon as any).refreshObservedChannels()
+    expect(emit).toHaveBeenCalledOnce()
+    expect(emit).toHaveBeenCalledWith({
+      integrationId: 'fs-new',
+      channels: [{ id: 'oc_new', name: 'New chat' }],
+      authoritative: false
+    })
     await daemon.stop()
   })
 
@@ -723,32 +797,47 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
     await daemon.stop()
   })
 
-  it('skips an agent with multiple Telegram bots (observed set is not per-bot)', async () => {
+  it("reports each Telegram bot's own observed chats when an agent has several", async () => {
     const root = root1()
     const { daemon } = makeStubDaemon(root)
     await daemon.start()
 
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    const telegramA = { id: 'tg-a', platform: 'telegram', telegram: { botToken: '100:a' } }
+    const telegramB = { id: 'tg-b', platform: 'telegram', telegram: { botToken: '200:b' } }
     ;(daemon as any).agents = new Map([
       [
         'bot-tg2',
         {
           id: 'bot-tg2',
-          integrations: [
-            { id: 'tg-a', platform: 'telegram', telegram: { botToken: 'tg-a' } },
-            { id: 'tg-b', platform: 'telegram', telegram: { botToken: 'tg-b' } }
-          ]
+          integrations: [telegramA, telegramB]
         }
       ]
     ])
-    const observed = vi.spyOn((daemon as any).store, 'observedChannels')
+    const scopeA = (daemon as any).transportScopeForIntegration(telegramA)
+    const scopeB = (daemon as any).transportScopeForIntegration(telegramB)
+    const observed = vi
+      .spyOn((daemon as any).store, 'observedChannels')
+      .mockImplementation((_agentId, _platform, scope) =>
+        scope === scopeA ? [{ id: '-100', name: 'Team A' }] : [{ id: '-200', name: 'Team B' }]
+      )
 
     ;(daemon as any).refreshObservedChannels()
 
-    // Ambiguous which bot saw which chat ⇒ report nothing rather than mis-attribute.
-    expect(observed).not.toHaveBeenCalled()
-    expect(emit).not.toHaveBeenCalled()
+    expect(observed).toHaveBeenCalledWith('bot-tg2', 'telegram', scopeA)
+    expect(observed).toHaveBeenCalledWith('bot-tg2', 'telegram', scopeB)
+    expect(emit).toHaveBeenCalledTimes(2)
+    expect(emit).toHaveBeenCalledWith({
+      integrationId: 'tg-a',
+      channels: [{ id: '-100', name: 'Team A' }],
+      authoritative: false
+    })
+    expect(emit).toHaveBeenCalledWith({
+      integrationId: 'tg-b',
+      channels: [{ id: '-200', name: 'Team B' }],
+      authoritative: false
+    })
     await daemon.stop()
   })
 
