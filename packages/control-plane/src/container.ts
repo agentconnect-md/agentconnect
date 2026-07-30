@@ -142,6 +142,7 @@ import { pingDb } from './persistence/prisma.js'
 import { verifySlackBot, verifySlackAppToken } from './http/slack-identity.js'
 import { resolveTelegramBotName } from './http/telegram-identity.js'
 import { verifyDiscordBot } from './http/discord-identity.js'
+import { createDiscordBotIconSyncer } from './http/discord-bot-profile.js'
 import { verifyFeishuBot } from './http/feishu-identity.js'
 import { FeishuAppRegistrationService } from './http/feishu-registration.js'
 
@@ -678,6 +679,7 @@ export function buildContainer(
     slackConfigApi,
     resolveTelegramBotName,
     verifyDiscordBot,
+    syncDiscordBotIcon: createDiscordBotIconSyncer(iconStore),
     verifyFeishuBot,
     feishuAppRegistration: new FeishuAppRegistrationService(repos.feishuAppRegistration),
     ...(github ? { github } : {}),

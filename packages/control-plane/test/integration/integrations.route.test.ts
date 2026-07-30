@@ -205,6 +205,11 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST discord registers a bot + secret with a NULL appToken, decodes the app id, pushes a discord-shaped upsert', async () => {
     const agentId = await placedAgent()
     const { app, spy } = withSpy()
+    let iconSync: { botToken: string; agentId: string } | undefined
+    app.deps.syncDiscordBotIcon = async (botToken, agent) => {
+      iconSync = { botToken, agentId: agent.id }
+      throw new Error('fixture rate limit')
+    }
 
     // A deliberately invalid credential whose first segment still base64url-decodes
     // to the application (client) id we persist for the "Add to Discord" invite.
@@ -235,6 +240,9 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       platform: 'discord',
       discord: { botToken: DISCORD_TOKEN }
     })
+    // Cosmetic profile updates are attempted after the durable install, but a
+    // Discord failure never rolls back or blocks the functional integration.
+    expect(iconSync).toEqual({ botToken: DISCORD_TOKEN, agentId })
   })
 
   it('POST rejects a discord bot token Discord refuses (400) and stores nothing', async () => {

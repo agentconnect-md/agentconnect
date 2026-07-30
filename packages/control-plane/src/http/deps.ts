@@ -67,6 +67,7 @@ import type { SlackPlatformAppConfig } from '../config/slack-platform.js'
 import type { SlackConfigApi } from './slack-config-api.js'
 import type { TelegramBotNameResolver } from './telegram-identity.js'
 import type { DiscordBotVerifier } from './discord-identity.js'
+import type { DiscordBotIconSyncer } from './discord-bot-profile.js'
 import type { FeishuBotVerifier } from './feishu-identity.js'
 import type { FeishuAppRegistrationService } from './feishu-registration.js'
 import type { Readiness } from './readiness.js'
@@ -260,6 +261,9 @@ export interface HttpDeps {
    *  name from it when the install omits one). Optional/injectable so tests stay offline
    *  (absent ⇒ no validation, route falls back to the agent name). */
   verifyDiscordBot?: DiscordBotVerifier
+  /** Applies a newly registered Discord bot's Agent icon to its bot-user avatar and
+   *  application icon. Cosmetic and best-effort: install survives a sync failure. */
+  syncDiscordBotIcon?: DiscordBotIconSyncer
   /** Validates a pasted Feishu appId + appSecret via the tenant-access-token exchange
    *  (and derives the bot name from `bot/v3/info` when the install omits one).
    *  Optional/injectable so tests stay offline (absent ⇒ no validation, route falls

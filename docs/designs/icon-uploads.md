@@ -17,7 +17,7 @@ public origin, and credentials are operator-supplied runtime configuration; the
 CP has no blob store of its own to fall back on. The contract here is:
 
 - **A neutral S3-compatible store.** The CP speaks the plain S3 REST subset
-  (`PutObject` / `DeleteObject`, SigV4 via `aws4fetch`), so any S3-compatible backend
+  (`PutObject` / `GetObject` / `DeleteObject`, SigV4 via `aws4fetch`), so any S3-compatible backend
   (a cloud object store in prod, a local one in dev/CI) works by pointing `S3_ENDPOINT` at
   it. Nothing is vendor-bound.
 - **Config-gated / opt-in.** The store is assembled only when the full `S3_*` group is
@@ -133,6 +133,9 @@ arbitrary bytes straight at the API, so the CP re-validates independently:
   busted by `?v=<lastModified>`); glyph/runtime → rasterized PNG via `@resvg/resvg-js`.
   For an `image` icon the resolved `iconUrl` is the store URL directly, so Slack/browsers
   normally fetch the store and never hit this endpoint; the redirect is the fallback.
+  Registering a new Discord bot also applies these same bytes to both the bot-user
+  avatar and application icon. That external profile sync is cosmetic and best-effort:
+  a Discord or object-store failure is logged without rolling back the integration.
 - **Org** — `GET /v1/orgs/:id/icon`, mirroring the agent endpoint (public, unauth,
   version-root + `/v1` alias — an `<img src>` can't send a bearer, and a logo isn't
   sensitive). `image` → store URL; glyph → rasterized; null → deterministic default glyph.
