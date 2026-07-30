@@ -25,9 +25,8 @@ import { Tag } from '../plugins/openapi.js'
 import { AgentIconDto, ErrorDto } from '../dto/index.js'
 import { agentIconKey, orgIconKey } from '../../icons/icon-store.js'
 import { validateIconUpload, MAX_ICON_BYTES } from '../../icons/icon-validate.js'
-import { randomGlyphIcon } from '../../agents/agent-icon.js'
-import { resolveAgentIconUrl, resolveOrgIconUrl } from '../../agents/agent-icon.js'
-import type { IconUrlBases } from '../../agents/agent-icon.js'
+import { randomGlyphIcon, resolveAgentIconUrl, resolveOrgIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
+import { syncAgentBotIcons } from '../agent-bot-icon-sync.js'
 
 const IconResultDto = z.object({
   icon: AgentIconDto,
@@ -112,6 +111,7 @@ export function iconUploadRoutes(deps: HttpDeps) {
           ...(req.principal?.userId ? { lastModifiedByUserId: req.principal.userId } : {})
         })
         void replicateAgent(agent.id)
+        void syncAgentBotIcons(deps, updated, app.log)
         return reply.send({
           icon: { kind: 'image' as const },
           iconUrl: resolveAgentIconUrl(agent.id, { kind: 'image' }, iconBases, updated.lastModifiedAt.getTime())
@@ -146,7 +146,7 @@ export function iconUploadRoutes(deps: HttpDeps) {
             .send({ error: 'Forbidden', statusCode: 403, message: 'built-in agent icon cannot be changed' })
         }
         const glyph = randomGlyphIcon()
-        await deps.repos.agent.update(AgentId(agent.id), {
+        const updated = await deps.repos.agent.update(AgentId(agent.id), {
           icon: glyph,
           ...(req.principal?.userId ? { lastModifiedByUserId: req.principal.userId } : {})
         })
@@ -154,6 +154,7 @@ export function iconUploadRoutes(deps: HttpDeps) {
           app.log.warn({ err, agentId: agent.id }, 'icon store delete failed (row already reset)')
         })
         void replicateAgent(agent.id)
+        void syncAgentBotIcons(deps, updated, app.log)
         return reply.send({ icon: glyph, iconUrl: null })
       }
     )

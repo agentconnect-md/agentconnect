@@ -17,9 +17,9 @@ async function telegramJpeg(agent: BotProfileIconAgent, iconStore?: IconStore): 
     .toBuffer()
 }
 
-/** Apply the Agent icon to a newly registered Telegram bot through Bot API 9.4's
- * `setMyProfilePhoto`. Telegram requires a fresh JPG multipart upload; the route
- * treats conversion or API failure as cosmetic and keeps the integration. */
+/** Apply the Agent icon to a Telegram bot through Bot API 9.4's
+ * `setMyProfilePhoto`. Telegram requires a fresh JPG multipart upload; callers
+ * treat conversion or API failure as cosmetic. */
 export function createTelegramBotIconSyncer(iconStore?: IconStore): TelegramBotIconSyncer {
   return async (botToken, agent) => {
     const jpeg = await telegramJpeg(agent, iconStore)

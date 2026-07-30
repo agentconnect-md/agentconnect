@@ -134,6 +134,7 @@ import { Tag } from '../plugins/openapi.js'
 import { GithubApiError } from '../../github/api.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import { UserAuthzDeniedError } from '../../github/user-authz.js'
+import { syncAgentBotIcons } from '../agent-bot-icon-sync.js'
 
 /** Public bases for resolving an agent's `image` icon URL (cp/store). */
 function iconBasesOf(deps: HttpDeps): IconUrlBases {
@@ -1462,6 +1463,7 @@ export function agentRoutes(deps: HttpDeps) {
           }
           await pushExternalMemoryBeforeAgent(agent)
           await replicateUpsert(agent)
+          if (req.body.icon !== undefined) void syncAgentBotIcons(deps, agent, app.log)
           await removeUnusedExternalMemoryAfterAgent(existing, agent)
           // Provision/drop MCP proxy defs for an enable-list change on a stably-placed
           // agent (a daemon move goes through AgentMoveService + reconcile, not here).
