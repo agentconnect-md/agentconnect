@@ -32,10 +32,13 @@ const byTarget = (account: MySocialAccountDto, target: string): MySocialIdentity
 const workspaceLabel = (workspace: NonNullable<MySocialIdentityDto['workspace']>): string =>
   workspace.name ?? (workspace.domain ? `${workspace.domain}.slack.com` : workspace.teamId)
 
+/** The same bare mark the sign-in page uses, at the same size. The box stays
+ *  fixed-width so three differently-shaped marks still line the names up; it
+ *  carries no plate, which was making one row of a list look like a tile. */
 function ProviderMark({ provider }: { provider: SocialLoginProvider }) {
   return (
-    <span className="flex h-7 w-7 items-center justify-center rounded-md bg-(--surface-active)">
-      <SocialLoginMark target={provider.target} size={19} />
+    <span className="flex h-7 w-7 items-center justify-center">
+      <SocialLoginMark target={provider.target} size={18} />
     </span>
   )
 }
