@@ -29,17 +29,89 @@ describe('InternalInvocationAuth', () => {
   it('creates an isolated AsyncLocalStorage<InvocationContextState> run boundary', async () => {
     const auth = new InternalInvocationAuth()
 
-    expect(auth.issue('GET', '/api/v1/me')).toBeNull()
+    expect(() => auth.issue('GET', '/api/v1/me')).toThrow(/active invocation context/)
     await auth.run(CONTEXT, async () => {
       expect(auth.issue('GET', '/api/v1/me')).toEqual(expect.any(String))
     })
-    expect(auth.issue('GET', '/api/v1/me')).toBeNull()
+    expect(() => auth.issue('GET', '/api/v1/me')).toThrow(/active invocation context/)
 
     const typeCheck: InvocationContextState = {
       context: CONTEXT,
-      pending: new Map()
+      pending: new Map(),
+      active: true
     }
     expect(typeCheck.context).toBe(CONTEXT)
+  })
+
+  it('closes inherited detached work before it can mint after run resolves', async () => {
+    const auth = new InternalInvocationAuth()
+    let detachedAttempt!: Promise<unknown>
+
+    await auth.run(CONTEXT, async () => {
+      detachedAttempt = new Promise((resolve) => {
+        setImmediate(() => {
+          try {
+            resolve(auth.issue('GET', '/api/v1/me'))
+          } catch (error) {
+            resolve(error)
+          }
+        })
+      })
+    })
+
+    await expect(detachedAttempt).resolves.toBeInstanceOf(Error)
+  })
+
+  it('rejects a nonce consumed by an inherited descendant after run resolves without projecting authority', async () => {
+    const auth = new InternalInvocationAuth()
+    let releaseDetached!: () => void
+    const detachedGate = new Promise<void>((resolve) => {
+      releaseDetached = resolve
+    })
+    let detachedAttempt!: Promise<{ authorized: boolean; req: FastifyRequest }>
+
+    await auth.run(CONTEXT, async () => {
+      const nonce = auth.issue('GET', '/api/v1/me')
+      detachedAttempt = (async () => {
+        await detachedGate
+        const req = request(nonce)
+        return { authorized: auth.authorizeInjectedRequest(req), req }
+      })()
+    })
+    releaseDetached()
+
+    const { authorized, req } = await detachedAttempt
+    expect(authorized).toBe(false)
+    expect(req.principal).toBeUndefined()
+    expect(req.apiKeyOrgId).toBeUndefined()
+    expect(req.apiKeyScopes).toBeUndefined()
+    expect(req.delegatedInvocation).toBeUndefined()
+  })
+
+  it('closes inherited descendants when the run callback rejects', async () => {
+    const auth = new InternalInvocationAuth()
+    let releaseDetached!: () => void
+    const detachedGate = new Promise<void>((resolve) => {
+      releaseDetached = resolve
+    })
+    let detachedAttempt!: Promise<unknown>
+
+    await expect(
+      auth.run(CONTEXT, async () => {
+        detachedAttempt = (async () => {
+          await detachedGate
+          try {
+            return auth.issue('GET', '/api/v1/me')
+          } catch (error) {
+            return error
+          }
+        })()
+        throw new Error('callback failed')
+      })
+    ).rejects.toThrow('callback failed')
+    releaseDetached()
+
+    await expect(detachedAttempt).resolves.toBeInstanceOf(Error)
   })
 
   it('issues cryptographically opaque independent nonces to parallel subrequests', async () => {

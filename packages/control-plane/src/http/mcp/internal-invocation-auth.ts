@@ -13,6 +13,7 @@ interface PendingNonce {
 export interface InvocationContextState {
   context: InvocationContext
   pending: Map<string, PendingNonce>
+  active: boolean
 }
 
 declare module 'fastify' {
@@ -30,21 +31,23 @@ export class InternalInvocationAuth {
   private readonly storage = new AsyncLocalStorage<InvocationContextState>()
 
   async run<T>(context: InvocationContext, fn: () => Promise<T>): Promise<T> {
-    const state: InvocationContextState = { context, pending: new Map() }
+    const state: InvocationContextState = { context, pending: new Map(), active: true }
     return this.storage.run(state, async () => {
       try {
         return await fn()
       } finally {
+        state.active = false
         state.pending.clear()
       }
     })
   }
 
-  issue(method: string, path: string): string | null {
+  issue(method: string, path: string): string {
     const state = this.storage.getStore()
+    if (!state?.active) throw new Error('Internal invocation nonce issuance requires an active invocation context')
     const normalizedMethod = normalizeMethod(method)
     const normalizedPath = normalizePath(path)
-    if (!state || !normalizedMethod || !normalizedPath) return null
+    if (!normalizedMethod || !normalizedPath) throw new Error('Invalid internal invocation method or path')
     const nonce = randomBytes(32).toString('base64url')
     state.pending.set(nonce, { method: normalizedMethod, path: normalizedPath })
     return nonce
@@ -54,7 +57,7 @@ export class InternalInvocationAuth {
     const rawHeader = req.headers[INTERNAL_INVOCATION_AUTH_HEADER]
     if (typeof rawHeader !== 'string' || rawHeader.length === 0) return false
     const state = this.storage.getStore()
-    if (!state) return false
+    if (!state?.active) return false
 
     // Delete before comparing or mutating the request. A guessed/misbound use
     // burns the nonce, and two parallel consumers cannot both observe it.
