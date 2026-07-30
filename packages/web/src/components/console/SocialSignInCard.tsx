@@ -13,6 +13,8 @@ import {
   createSocialState,
   createSocialVerification,
   fetchAccountProfile,
+  requestEmailVerification,
+  verifyEmailCode,
   socialIdentityDetails,
   writeSocialLinkFlow,
   type AccountNotice
@@ -98,6 +100,117 @@ function UnlinkDialog({
   )
 }
 
+/**
+ * Proves the caller still owns THIS account before its sign-in methods change.
+ * Logto requires that proof whenever the account has a security verification
+ * method, and it must be collected BEFORE the provider round trip — on return
+ * the identity is saved straight away, with no UI left to ask in.
+ */
+function VerifyAccountDialog({
+  provider,
+  email,
+  onVerified,
+  onClose
+}: {
+  provider: SocialLoginProvider
+  email?: string
+  onVerified: (currentVerificationRecordId: string) => Promise<void>
+  onClose: () => void
+}) {
+  const titleId = useId()
+  const [verificationId, setVerificationId] = useState<string>()
+  const [code, setCode] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !busy) onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [busy, onClose])
+
+  const submit = async () => {
+    setBusy(true)
+    setError(undefined)
+    try {
+      if (!email) {
+        throw new LogtoAccountError('This account needs a verified email before sign-in methods can change.', 0)
+      }
+      if (!verificationId) {
+        setVerificationId(await requestEmailVerification(email))
+        return
+      }
+      if (!code.trim()) {
+        setError('Enter the verification code from your email.')
+        return
+      }
+      await onVerified(await verifyEmailCode(email, verificationId, code.trim()))
+    } catch (caught) {
+      setError(accountErrorMessage(caught, { providerName: provider.name, linking: true }))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="scrim">
+      <div className="modal max-w-[480px]" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <div className="modalhead">
+          <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
+            <Icon name="shield-check" size={16} color="var(--brand)" />
+          </span>
+          <span id={titleId} className="flex-1 font-sans text-[16px] font-semibold leading-normal">
+            Link {provider.name}
+          </span>
+          <button type="button" className="iconbtn" aria-label="Close" disabled={busy} onClick={onClose}>
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+        <div className="modalbody">
+          <p className="font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)">
+            {verificationId
+              ? `Enter the code sent to ${email ?? 'your email'}, then continue to ${provider.name}.`
+              : `To protect your account, verify it's you with a code sent to ${email ?? 'your email'}.`}
+          </p>
+          {verificationId ? (
+            <label className="fld mt-4">
+              <span className="fldlbl">Verification code</span>
+              <input
+                className="inp"
+                value={code}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                autoFocus
+                placeholder="Enter code"
+                onChange={(event) => setCode(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') void submit()
+                }}
+              />
+            </label>
+          ) : null}
+          {error ? (
+            <div className="mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)" role="alert">
+              {error}
+            </div>
+          ) : null}
+        </div>
+        <div className="modalfoot">
+          <div className="flex-1" />
+          <Button variant="ghost" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" disabled={busy} onClick={() => void submit()}>
+            {busy ? 'Working…' : verificationId ? `Continue to ${provider.name}` : 'Send code'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function Notice({ notice }: { notice: AccountNotice }) {
   return (
     <div
@@ -138,13 +251,24 @@ export default function SocialSignInCard({
   const { data: slack } = useSWR('me-slack-identity', fetchMySlackIdentity, { shouldRetryOnError: false })
   const workspaceLine = slackWorkspaceLine(slack)
   const [pendingUnlink, setPendingUnlink] = useState<SocialLoginProvider>()
+  const [pendingVerify, setPendingVerify] = useState<SocialLoginProvider>()
   const [busyProvider, setBusyProvider] = useState<SocialLoginProvider['target']>()
   const currentAccount = error ? undefined : account
   const linkedProviderCount = currentAccount
     ? SOCIAL_LOGIN_PROVIDERS.filter((provider) => currentAccount.identities[provider.target]).length
     : 0
 
-  const startLink = async (provider: SocialLoginProvider) => {
+  // Logto refuses an identity change the caller has not re-proven, so accounts
+  // with a security verification method take the code detour first.
+  const beginLink = (provider: SocialLoginProvider) => {
+    if (currentAccount?.hasSecurityVerificationMethod) {
+      setPendingVerify(provider)
+      return
+    }
+    void startLink(provider)
+  }
+
+  const startLink = async (provider: SocialLoginProvider, currentVerificationRecordId?: string) => {
     setBusyProvider(provider.target)
     try {
       const state = createSocialState()
@@ -158,6 +282,7 @@ export default function SocialSignInCard({
         connectorId,
         verificationRecordId,
         redirectUri,
+        ...(currentVerificationRecordId ? { currentVerificationRecordId } : {}),
         providerName: provider.name,
         returnTo: `${window.location.pathname}${window.location.search}`,
         createdAt: Date.now()
@@ -283,7 +408,7 @@ export default function SocialSignInCard({
                         variant="secondary"
                         size="xs"
                         disabled={busyProvider !== undefined}
-                        onClick={() => void startLink(provider)}
+                        onClick={() => beginLink(provider)}
                       >
                         <Icon name="link" size={14} />
                         {busyProvider === provider.target ? 'Linking…' : 'Link'}
@@ -303,6 +428,19 @@ export default function SocialSignInCard({
           provider={pendingUnlink}
           onConfirm={() => unlink(pendingUnlink)}
           onClose={() => setPendingUnlink(undefined)}
+        />
+      ) : null}
+
+      {pendingVerify ? (
+        <VerifyAccountDialog
+          key={pendingVerify.target}
+          provider={pendingVerify}
+          email={currentAccount?.primaryEmail}
+          onVerified={async (currentVerificationRecordId) => {
+            setPendingVerify(undefined)
+            await startLink(pendingVerify, currentVerificationRecordId)
+          }}
+          onClose={() => setPendingVerify(undefined)}
         />
       ) : null}
     </>

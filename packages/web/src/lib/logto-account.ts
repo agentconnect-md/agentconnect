@@ -7,6 +7,11 @@ export interface SocialIdentity {
 
 export interface LogtoAccountProfile {
   identities: Record<string, SocialIdentity>
+  /** Set when the account can prove ownership a second way (a verified email).
+   *  Logto then REQUIRES that proof before identities may change, so the card
+   *  collects an email code first — see `requestEmailVerification`. */
+  hasSecurityVerificationMethod: boolean
+  primaryEmail?: string
 }
 
 export interface SocialIdentityDetails {
@@ -24,6 +29,10 @@ export interface SocialLinkFlow {
   /** Echoed back on verify: Logto exchanges the code against the SAME URI it
    *  authorized with, and the connectors that keep it in session need it too. */
   redirectUri: string
+  /** Proof that the caller owns this account, collected BEFORE leaving for the
+   *  provider — on return the identity is saved immediately, with no UI left to
+   *  ask. Absent when the account has no security verification method. */
+  currentVerificationRecordId?: string
   providerName: string
   returnTo: string
   createdAt: number
@@ -105,7 +114,33 @@ export async function fetchAccountProfile(): Promise<LogtoAccountProfile> {
       ]
     })
   )
-  return { identities }
+  const primaryEmail = stringValue(body.primaryEmail)
+  return {
+    identities,
+    hasSecurityVerificationMethod: body.hasSecurityVerificationMethod === true,
+    ...(primaryEmail ? { primaryEmail } : {})
+  }
+}
+
+/** Send an ownership-proof code to the account's own email. */
+export async function requestEmailVerification(email: string): Promise<string> {
+  const result = await accountRequest<{ verificationRecordId: string }>('/api/verifications/verification-code', {
+    method: 'POST',
+    body: JSON.stringify({
+      identifier: { type: 'email', value: email },
+      templateType: 'UserPermissionValidation'
+    })
+  })
+  return result.verificationRecordId
+}
+
+/** Redeem that code; the returned record is what `logto-verification-id` names. */
+export async function verifyEmailCode(email: string, verificationId: string, code: string): Promise<string> {
+  const result = await accountRequest<{ verificationRecordId: string }>('/api/verifications/verification-code/verify', {
+    method: 'POST',
+    body: JSON.stringify({ identifier: { type: 'email', value: email }, verificationId, code })
+  })
+  return result.verificationRecordId
 }
 
 /**
@@ -140,10 +175,21 @@ export async function verifySocialVerification(
   return result.verificationRecordId
 }
 
-/** Attach the verified identity to this account. */
-export async function saveSocialIdentity(verificationRecordId: string): Promise<void> {
+/**
+ * Attach the verified identity to this account.
+ *
+ * Two different proofs meet here: `verificationRecordId` proves the NEW social
+ * identity, while `currentVerificationRecordId` proves the caller still owns
+ * THIS account. Logto demands the second whenever the account has a security
+ * verification method, and rejects the write with 403 without it.
+ */
+export async function saveSocialIdentity(
+  verificationRecordId: string,
+  currentVerificationRecordId?: string
+): Promise<void> {
   await accountRequest('/api/my-account/identities', {
     method: 'POST',
+    ...(currentVerificationRecordId ? { headers: { 'logto-verification-id': currentVerificationRecordId } } : {}),
     body: JSON.stringify({ newIdentifierVerificationRecordId: verificationRecordId })
   })
 }
@@ -187,6 +233,7 @@ export function takeSocialLinkFlow(): SocialLinkFlow | undefined {
       typeof flow.connectorId !== 'string' ||
       typeof flow.verificationRecordId !== 'string' ||
       typeof flow.redirectUri !== 'string' ||
+      (flow.currentVerificationRecordId !== undefined && typeof flow.currentVerificationRecordId !== 'string') ||
       typeof flow.providerName !== 'string' ||
       typeof flow.returnTo !== 'string' ||
       !flow.returnTo.startsWith('/') ||
@@ -240,6 +287,11 @@ export function accountErrorMessage(error: unknown, context?: { providerName?: s
     return `The ${context.providerName ?? 'social'} authorization expired or could not be used. Try again.`
   }
   if (requestError.status === 400) return 'The social authorization response is invalid or expired. Try again.'
+  // 403 while linking is Logto refusing an unproven identity change, not a dead
+  // session — saying "sign in again" sent us chasing the wrong thing once.
+  if (requestError.status === 403 && context?.linking) {
+    return 'Verifying your account timed out. Return to Profile and start again.'
+  }
   if (requestError.status === 401 || requestError.status === 403) {
     return 'Your sign-in session expired. Sign in again and retry.'
   }

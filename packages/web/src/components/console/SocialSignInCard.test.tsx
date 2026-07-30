@@ -6,7 +6,8 @@ import { SWRConfig, useSWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  fetchAccountProfile: vi.fn()
+  fetchAccountProfile: vi.fn(),
+  requestEmailVerification: vi.fn()
 }))
 
 vi.mock('@/lib/api', () => ({
@@ -26,11 +27,16 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/logto-account', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/logto-account')>()
-  return { ...actual, fetchAccountProfile: mocks.fetchAccountProfile }
+  return {
+    ...actual,
+    fetchAccountProfile: mocks.fetchAccountProfile,
+    requestEmailVerification: mocks.requestEmailVerification
+  }
 })
 
 import SocialSignInCard from './SocialSignInCard'
 import { LogtoAccountError } from '@/lib/logto-account'
+import { resolveMySocialConnectorId } from '@/lib/api'
 
 const ACCOUNT_KEY = 'logto-account-sign-in-methods'
 let root: Root | undefined
@@ -85,6 +91,9 @@ function button(label: string): HTMLButtonElement | undefined {
 
 beforeEach(() => {
   mocks.fetchAccountProfile.mockReset()
+  mocks.requestEmailVerification.mockReset()
+  vi.mocked(resolveMySocialConnectorId).mockReset()
+  vi.mocked(resolveMySocialConnectorId).mockResolvedValue({ connectorId: 'connector' })
 })
 
 afterEach(async () => {
@@ -138,5 +147,39 @@ describe('SocialSignInCard account state', () => {
     expect(container?.textContent).not.toContain('Not linked')
     expect(button('Link')).toBeUndefined()
     expect(button('Unlink')).toBeUndefined()
+  })
+
+  // Logto rejects an identity change the caller has not re-proven (403), and the
+  // proof has to be collected BEFORE leaving for the provider — on return the
+  // identity is saved immediately, with no UI left to ask in.
+  it('proves account ownership before leaving for the provider', async () => {
+    mocks.fetchAccountProfile.mockResolvedValue({
+      identities: {},
+      hasSecurityVerificationMethod: true,
+      primaryEmail: 'phil@example.test'
+    })
+    mocks.requestEmailVerification.mockResolvedValue('current-verification')
+
+    await renderCard()
+    await waitUntil(() => container?.textContent?.includes('Not linked') === true)
+
+    await act(async () => button('Link')?.click())
+
+    expect(container?.textContent).toContain('phil@example.test')
+    expect(container?.querySelector('[role="dialog"]')).not.toBeNull()
+    // The provider round trip must not have started yet.
+    expect(resolveMySocialConnectorId).not.toHaveBeenCalled()
+  })
+
+  it('goes straight to the provider when the account has nothing to re-prove', async () => {
+    mocks.fetchAccountProfile.mockResolvedValue({ identities: {}, hasSecurityVerificationMethod: false })
+
+    await renderCard()
+    await waitUntil(() => container?.textContent?.includes('Not linked') === true)
+
+    await act(async () => button('Link')?.click())
+
+    expect(container?.querySelector('[role="dialog"]')).toBeNull()
+    expect(resolveMySocialConnectorId).toHaveBeenCalled()
   })
 })
