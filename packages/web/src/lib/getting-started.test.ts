@@ -85,31 +85,14 @@ describe('computeGettingStarted', () => {
     expect(gs.items.find((i) => i.key === 'invite')!.done).toBe(true)
   })
 
-  it('requires a COMPLETED conversation — running or failed sessions do not tick the item', () => {
+  it('marks the conversation done as soon as ANY session exists — no re-chat just to clear the step', () => {
     const convo = (sessions: Session[]) =>
       computeGettingStarted({ ...empty, sessions }).items.find((i) => i.key === 'conversation')!.done
-    expect(convo([{ id: 's1', statusLabel: 'running' } as Session])).toBe(false)
-    expect(convo([{ id: 's1', statusLabel: 'failed' } as Session])).toBe(false)
-    expect(convo([{ id: 's1', statusLabel: 'completed' } as Session])).toBe(true)
-  })
-
-  it("scopes the conversation to the CURRENT user — an org's pre-existing sessions don't tick it", () => {
-    const meIds = ['u_me', 'me@acme.dev']
-    const convo = (sessions: Session[]) =>
-      computeGettingStarted({ ...empty, sessions, meIds }).items.find((i) => i.key === 'conversation')!.done
-    // teammate's / bot's historical completed session: not yours
-    expect(convo([{ id: 's1', statusLabel: 'completed', triggeredBy: 'u_teammate' } as Session])).toBe(false)
-    expect(convo([{ id: 's1', statusLabel: 'completed' } as Session])).toBe(false) // no attribution
-    // your own completed webchat session (triggeredBy = userId or email)
-    expect(convo([{ id: 's1', statusLabel: 'completed', triggeredBy: 'u_me' } as Session])).toBe(true)
-    expect(convo([{ id: 's1', statusLabel: 'completed', triggeredBy: 'me@acme.dev' } as Session])).toBe(true)
-    // no-auth deployments (no meIds): fall back to any completed session
-    expect(
-      computeGettingStarted({
-        ...empty,
-        sessions: [{ id: 's1', statusLabel: 'completed', triggeredBy: 'whoever' } as Session]
-      }).items.find((i) => i.key === 'conversation')!.done
-    ).toBe(true)
+    expect(convo([])).toBe(false)
+    // running / channel-triggered / whoever ran it — a session existing at all means a
+    // conversation has been driven here (product decision; see getting-started.ts).
+    expect(convo([{ id: 's1', statusLabel: 'running' } as Session])).toBe(true)
+    expect(convo([{ id: 's1', statusLabel: 'completed', triggeredBy: 'u_teammate' } as Session])).toBe(true)
   })
 
   it('points agent-scoped CTAs at the built-in agent first, else the first agent', () => {

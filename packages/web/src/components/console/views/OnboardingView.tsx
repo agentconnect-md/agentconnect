@@ -6,7 +6,6 @@ import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
-import { useProfile } from '@/lib/profile'
 import { isAuthConfigured } from '@/lib/auth'
 import { daemonCompletesOnboarding, firstReconnectableDaemonId, skipOnboarding } from '@/lib/onboarding'
 import { daemonCommands } from '@/lib/daemon-commands'
@@ -55,10 +54,6 @@ export default function OnboardingView() {
   const { runAction } = useGsActions()
   const orgKey = typeof params.slug === 'string' ? params.slug : '-'
   const authOn = isAuthConfigured()
-  const { me } = useProfile()
-  // Scope "your first conversation" to sessions the current user ran (webchat records
-  // userId or email as triggeredBy) — see computeGettingStarted.
-  const meIds = [me?.userId, me?.email].filter((x): x is string => !!x)
 
   // A live daemon or a planned relaunch reveals the checklist. Only an unexpected offline
   // row is eligible for a replacement connect token — it may be a provisioned daemon whose
@@ -223,7 +218,7 @@ export default function OnboardingView() {
         />
       ) : (
         <RevealChecklist
-          gs={computeGettingStarted({ agents, daemons, integrations, sessions: allSessions, members, authOn, meIds })}
+          gs={computeGettingStarted({ agents, daemons, integrations, sessions: allSessions, members, authOn })}
           runAction={runAction}
           onFinish={goConsole}
         />
