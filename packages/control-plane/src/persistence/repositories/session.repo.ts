@@ -193,12 +193,13 @@ function integrationSql(q: SessionFilterQuery): Prisma.Sql | null {
 
 /**
  * The SQL mirror of `http/visibility.ts#canViewSession` (session-visibility.md
- * §5). Org owners keep the governance override (no arm at all); everyone else
- * sees `org` rows plus `private` rows they own. `= ANY(array)` tolerates an
- * empty identity set, unlike the `IN (…)` list form used for agent ids.
+ * §5). No role bypass — org owners included, every viewer sees `org` rows plus
+ * `private` rows they own; only the internal/daemon-facing callers that pass no
+ * viewer read unfiltered. `= ANY(array)` tolerates an empty identity set,
+ * unlike the `IN (…)` list form used for agent ids.
  */
 function sessionViewerSql(viewer: SessionFilterQuery['viewer']): Prisma.Sql | null {
-  if (!viewer || viewer.role === 'owner') return null
+  if (!viewer) return null
   return Prisma.sql`(
     s."visibility" = 'org'::"SessionVisibility"
     OR (s."ownerIdentity" IS NOT NULL AND s."ownerIdentity" = ANY(${viewer.identitySet}::text[]))
@@ -638,10 +639,9 @@ export class PgSessionRepo implements SessionRepo {
         parentSessionId,
         agentId: { in: agentIds },
         // The Prisma spelling of `sessionViewerSql` — the same predicate as the
-        // list, so a private child never leaks its title through the detail page.
-        ...(viewer && viewer.role !== 'owner'
-          ? { OR: [{ visibility: 'org' as const }, { ownerIdentity: { in: viewer.identitySet } }] }
-          : {})
+        // list (no org-owner bypass), so a private child never leaks its title
+        // through the detail page.
+        ...(viewer ? { OR: [{ visibility: 'org' as const }, { ownerIdentity: { in: viewer.identitySet } }] } : {})
       },
       orderBy: [{ startedAt: 'asc' }, { id: 'asc' }]
     })

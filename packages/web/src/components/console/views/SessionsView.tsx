@@ -562,10 +562,7 @@ export default function SessionsView() {
                 <span className="min-w-0 truncate font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
                   {s.title}
                 </span>
-                <RestrictedLock
-                  show={s.visibility === 'private'}
-                  title="Private session — visible only to its owner and org owners"
-                />
+                <RestrictedLock show={s.visibility === 'private'} title="Private session — visible only to its owner" />
                 {/* Status as a compact pill — the design's badge, driven by the real
                     status (soft bg + saturated text from STATUS_MAP). */}
                 <span
@@ -605,7 +602,7 @@ export default function SessionsView() {
                   </span>
                   <RestrictedLock
                     show={s.visibility === 'private'}
-                    title="Private session — visible only to its owner and org owners"
+                    title="Private session — visible only to its owner"
                   />
                 </div>
                 <div className="mono text-[11px] text-(--text-tertiary)">

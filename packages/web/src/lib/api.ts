@@ -236,7 +236,7 @@ export interface SessionUsageDto {
 }
 
 // Session-level visibility (docs/designs/session-visibility.md): 'private' rows are
-// visible only to the session owner + org owners; 'org' to every member who can view
+// visible only to the session owner (no role override, org owners included); 'org' to every member who can view
 // the owning agent. Deliberately NOT ResourceVisibility ('org' | 'restricted').
 export type SessionVisibility = 'private' | 'org'
 

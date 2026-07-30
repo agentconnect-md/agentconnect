@@ -126,15 +126,13 @@ describe('canViewSession (session-visibility.md §5)', () => {
     expect(canViewSession(s, ctx(CREATOR, 'viewer'), idsOf(ctx(CREATOR, 'viewer')))).toBe(true)
   })
 
-  it('private session hides from a non-matching non-owner', () => {
+  it('private session hides from every non-matching viewer — org owners included', () => {
+    // Deliberately NO governance override here (unlike `canView` on resources):
+    // a private session is a DM-grade transcript, and role grants no access.
     const s = owned('private', `user:${CREATOR}`)
     expect(canViewSession(s, ctx(OTHER, 'collaborator'), idsOf(ctx(OTHER, 'collaborator')))).toBe(false)
     expect(canViewSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(false)
-  })
-
-  it('private session is visible to any org owner — governance override', () => {
-    const s = owned('private', `user:${CREATOR}`)
-    expect(canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(true)
+    expect(canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(false)
   })
 
   it('matches a linked platform identity once the identity set carries it', () => {
@@ -147,11 +145,14 @@ describe('canViewSession (session-visibility.md §5)', () => {
     expect(canViewSession(s, c, linked)).toBe(true)
   })
 
-  it('an owner-orphan private session (ownerIdentity null) is owner-role-only — fail closed', () => {
+  it('an owner-orphan private session (ownerIdentity null) is visible to no one — fail closed', () => {
+    // Identity linking (§7) is what lights these up retroactively; until then
+    // no role, org owners included, can read a transcript whose owner could
+    // not be resolved.
     const s = owned('private', null)
     expect(canViewSession(s, ctx(CREATOR, 'collaborator'), idsOf(ctx(CREATOR, 'collaborator')))).toBe(false)
     expect(canViewSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(false)
-    expect(canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(true)
+    expect(canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(false)
   })
 })
 

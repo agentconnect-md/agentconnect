@@ -179,12 +179,13 @@ visibility grant.
 
 Every session carries its own visibility, composed with — never widening — the visibility
 of the agent that owns it. Platform direct messages, Playground and webchat conversations,
-and sessions launched through the Web API default to **private**: only their owner and org
-owners can see them. Channel sessions, group direct messages, and automation-originated
-sessions (cron, hook, dream, agent-to-agent) default to **org**, visible to every member
-who can already view the agent. A session's initiator is recorded regardless of tier, so
-the person who started a channel conversation may later pull it private, and an org owner
-may reclassify anything.
+and sessions launched through the Web API default to **private**: only their owner can see
+them — deliberately no role exception, org owners included. Channel sessions, group direct
+messages, and automation-originated sessions (cron, hook, dream, agent-to-agent) default
+to **org**, visible to every member who can already view the agent. A session's initiator
+is recorded regardless of tier, so the person who started a channel conversation may later
+pull it private, and an org owner may reclassify any session they can see — which excludes
+other people's private sessions.
 
 An agent-to-agent child inherits its parent's visibility, because a delegation copies the
 parent's prompt into the child's transcript. Tightening a session therefore cascades to its
