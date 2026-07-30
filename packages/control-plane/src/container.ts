@@ -144,7 +144,7 @@ import { verifySlackBot, verifySlackAppToken } from './http/slack-identity.js'
 import { verifyTelegramBot } from './http/telegram-identity.js'
 import { createTelegramBotIconSyncer } from './http/telegram-bot-profile.js'
 import { ensureDiscordMessageContentIntent, verifyDiscordBot } from './http/discord-identity.js'
-import { createDiscordBotIconSyncer } from './http/discord-bot-profile.js'
+import { createDiscordBotProfileSyncer } from './http/discord-bot-profile.js'
 import { verifyFeishuBot } from './http/feishu-identity.js'
 import { createFeishuAppIconSyncer } from './http/feishu-app-icon.js'
 import { FeishuAppRegistrationService } from './http/feishu-registration.js'
@@ -696,7 +696,7 @@ export function buildContainer(
     syncTelegramBotIcon: createTelegramBotIconSyncer(iconStore),
     verifyDiscordBot,
     ensureDiscordMessageContentIntent,
-    syncDiscordBotIcon: createDiscordBotIconSyncer(iconStore),
+    syncDiscordBotProfile: createDiscordBotProfileSyncer(iconStore),
     verifyFeishuBot,
     configureFeishuHttpApp,
     syncFeishuAppIcon: createFeishuAppIconSyncer(iconStore),

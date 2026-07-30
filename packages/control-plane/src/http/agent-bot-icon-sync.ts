@@ -7,7 +7,7 @@ import type {
   IntegrationRepo
 } from '../persistence/ports.js'
 import type { BotProfileIconAgent } from './bot-profile-icon.js'
-import type { DiscordBotIconSyncer } from './discord-bot-profile.js'
+import type { DiscordBotProfileSyncer } from './discord-bot-profile.js'
 import type { FeishuAppIconSyncer } from './feishu-app-icon.js'
 import type { TelegramBotIconSyncer } from './telegram-bot-profile.js'
 
@@ -19,7 +19,7 @@ interface AgentBotIconSyncDeps {
     botSecret: Pick<BotSecretStore, 'get'>
   }
   syncTelegramBotIcon?: TelegramBotIconSyncer
-  syncDiscordBotIcon?: DiscordBotIconSyncer
+  syncDiscordBotProfile?: DiscordBotProfileSyncer
   syncFeishuAppIcon?: FeishuAppIconSyncer
 }
 
@@ -56,7 +56,7 @@ async function currentBotIconState(
 
   const supported =
     (bot.platform === 'telegram' && deps.syncTelegramBotIcon) ||
-    (bot.platform === 'discord' && deps.syncDiscordBotIcon) ||
+    (bot.platform === 'discord' && deps.syncDiscordBotProfile) ||
     (bot.platform === 'feishu' && deps.syncFeishuAppIcon)
   if (!supported) return null
 
@@ -93,8 +93,8 @@ async function syncBotIconUntilCurrent(
     try {
       if (state.bot.platform === 'telegram' && deps.syncTelegramBotIcon) {
         await deps.syncTelegramBotIcon(secret.botToken, state.agent)
-      } else if (state.bot.platform === 'discord' && deps.syncDiscordBotIcon) {
-        await deps.syncDiscordBotIcon(secret.botToken, state.agent)
+      } else if (state.bot.platform === 'discord' && deps.syncDiscordBotProfile) {
+        await deps.syncDiscordBotProfile(secret.botToken, state.agent)
       } else if (state.bot.platform === 'feishu' && deps.syncFeishuAppIcon) {
         // The secret row keeps the credential pair together; public bot
         // metadata is only the fallback for older rows.

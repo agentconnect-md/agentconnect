@@ -519,11 +519,14 @@ export function integrationRoutes(deps: HttpDeps) {
               ...(req.principal ? { createdByUserId: req.principal.userId } : {})
             })
             await replicateUpsert(integration, daemonId)
-            if (deps.syncDiscordBotIcon && check?.status !== 'unreachable') {
+            if (deps.syncDiscordBotProfile && check?.status !== 'unreachable') {
               try {
-                await deps.syncDiscordBotIcon(discord.botToken, agent)
+                await deps.syncDiscordBotProfile(discord.botToken, agent)
               } catch (err) {
-                app.log.warn({ err, agentId: agent.id, botId }, 'discord icon sync failed; integration remains active')
+                app.log.warn(
+                  { err, agentId: agent.id, botId },
+                  'discord profile sync failed; integration remains active'
+                )
               }
             }
             return reply.code(201).send(toDto(integration))

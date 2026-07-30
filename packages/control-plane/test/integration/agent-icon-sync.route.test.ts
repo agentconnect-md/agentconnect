@@ -52,7 +52,7 @@ describe('Agent icon bot profile fan-out', () => {
     running = buildHttpApp(prisma, { S3_PUBLIC_BASE_URL: 'https://images.example.test' }, undefined, undefined, {
       iconStore: store,
       syncTelegramBotIcon: telegramSync,
-      syncDiscordBotIcon: discordSync,
+      syncDiscordBotProfile: discordSync,
       syncFeishuAppIcon: feishuSync
     })
 

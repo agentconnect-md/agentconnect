@@ -128,7 +128,7 @@ describe('syncAgentBotIcons', () => {
             }
           },
           syncTelegramBotIcon: telegramSync,
-          syncDiscordBotIcon: discordSync,
+          syncDiscordBotProfile: discordSync,
           syncFeishuAppIcon: feishuSync
         },
         agent,
@@ -188,7 +188,7 @@ describe('syncAgentBotIcons', () => {
           get: async () => ({ botToken: 'discord-token', appToken: null, signingSecret: null })
         }
       },
-      syncDiscordBotIcon: discordSync
+      syncDiscordBotProfile: discordSync
     }
     const warn = vi.fn()
 
@@ -243,7 +243,7 @@ describe('syncAgentBotIcons', () => {
           get: async () => ({ botToken: 'discord-token', appToken: null, signingSecret: null })
         }
       },
-      syncDiscordBotIcon: discordSync
+      syncDiscordBotProfile: discordSync
     }
     const warn = vi.fn()
 
