@@ -115,9 +115,11 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
 
 ### 4.3 Platform Adapters (`slack-adapter`, `telegram-adapter`, etc.)
 
-- Pure message schemas and Slack, Lark, Telegram, and Discord normalization live
-  in `@agentconnect.md/message`; direct daemon ingress and optional relay ingress
-  can share them without pulling in SDK clients, routing, or I/O.
+- Wire-level normalized message schemas live in `@agentconnect.md/protocol`.
+  Pure Slack, Lark, Telegram, and Discord normalization lives in
+  `@agentconnect.md/message` and depends on that contract; direct daemon ingress
+  and optional relay ingress can share it without pulling in SDK clients,
+  routing, or I/O.
 - Handle platform connections, authentication, message sending and receiving, rich-text and attachment normalization, and inbound/outbound mapping.
 - Hold platform credentials. See §9, Security.
 - Produce normalized internal messages and pass them through the daemon's local routing layer to the agent.

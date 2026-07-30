@@ -65,10 +65,9 @@ COPY . .
 
 RUN pnpm --filter "@agentconnect.md/control-plane" prisma:generate
 
-# message → protocol → control-plane (topological).
+# protocol → control-plane (topological).
 # Prisma was generated above; skip the control-plane package's prebuild hook.
 RUN pnpm --config.enable-pre-post-scripts=false \
-  --filter "@agentconnect.md/message" \
   --filter "@agentconnect.md/protocol" \
   --filter "@agentconnect.md/control-plane" \
   -r build
@@ -110,9 +109,9 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 
 COPY . .
 
-# message → protocol → connection → relay (topological).
-RUN pnpm --filter "@agentconnect.md/message" \
-  --filter "@agentconnect.md/protocol" \
+# protocol → message / connection → relay (topological).
+RUN pnpm --filter "@agentconnect.md/protocol" \
+  --filter "@agentconnect.md/message" \
   --filter "@agentconnect.md/connection" \
   --filter "@agentconnect.md/relay" \
   -r build
@@ -190,16 +189,15 @@ CMD ["node", "server.js"]
 # ───────────────── memory-plugin-mem0 (wrapper): build ───────────────────────
 # The centralized external-memory wrapper (packages/memory-plugin-mem0) served in
 # HTTP mode — an MCP server that forwards to a Mem0 backend. Depends only on
-# message + protocol + external libs (no Prisma, no daemon/connection).
+# protocol + external libs (no Prisma, no daemon/connection/message).
 FROM manifests AS mem0-builder
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   pnpm install --frozen-lockfile --filter "@agentconnect.md/memory-plugin-mem0..."
 
 COPY . .
 
-# message → protocol → memory-plugin-mem0 (topological).
-RUN pnpm --filter "@agentconnect.md/message" \
-  --filter "@agentconnect.md/protocol" \
+# protocol → memory-plugin-mem0 (topological).
+RUN pnpm --filter "@agentconnect.md/protocol" \
   --filter "@agentconnect.md/memory-plugin-mem0" \
   -r build
 

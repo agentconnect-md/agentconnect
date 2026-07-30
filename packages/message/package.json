@@ -1,7 +1,7 @@
 {
   "name": "@agentconnect.md/message",
   "version": "1.0.0-dev",
-  "description": "AgentConnect shared message model and pure platform normalization for daemon and relay ingress",
+  "description": "AgentConnect pure platform message normalization for daemon and relay ingress",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
@@ -30,7 +30,7 @@
   "sideEffects": false,
   "types": "dist/index.d.ts",
   "dependencies": {
-    "zod": "^4.4.3"
+    "@agentconnect.md/protocol": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^6.0.3",

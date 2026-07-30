@@ -64,8 +64,7 @@ export default {
     [
       // Publish the CLI (@agentconnect.md/cli) to npm the same way as the daemon:
       // a self-contained tsdown bundle stripped to zero runtime deps. Same
-      // build-then-strip ordering (its build inlines message + protocol +
-      // connection), and
+      // build-then-strip ordering (its build inlines protocol + connection), and
       // the same conditional skip — the CLI is the thin, stable bin and changes
       // far less often than the daemon, so most releases skip its publish. Its
       // change detector additionally tracks packages/connection (the login auth

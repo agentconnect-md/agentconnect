@@ -4,7 +4,7 @@ import {
   PlatformAttachmentSchema,
   type NormalizedPlatformMessage,
   type PlatformAttachment
-} from '@agentconnect.md/message'
+} from '../normalized-message.js'
 import { frameSchema } from '../envelope.js'
 import { ErrorFrame } from './error.js'
 import { WebchatDone, WebchatImageAttachment, WebchatOutput } from './webchat.js'

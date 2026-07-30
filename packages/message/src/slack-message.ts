@@ -1,4 +1,4 @@
-import type { NormalizedPlatformMessage, PlatformAttachment } from './normalized-message.js'
+import type { NormalizedPlatformMessage, PlatformAttachment } from '@agentconnect.md/protocol'
 import { extractSlackMessageText } from './slack-message-text.js'
 
 /** The subset of a Slack file element carried through normalization. */

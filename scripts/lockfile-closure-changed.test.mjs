@@ -6,6 +6,7 @@ import { stringify } from 'yaml'
 import { lockfileClosureChanged } from './lockfile-closure-changed.mjs'
 
 const DAEMON_IMPORTERS = ['packages/daemon', 'packages/message', 'packages/protocol', 'packages/connection']
+const CLI_IMPORTERS = ['packages/cli', 'packages/protocol', 'packages/connection']
 
 // A miniature v9 lockfile shaped like the real one: root + web importers that
 // the daemon check must ignore, workspace links, a peer-suffixed dep path,
@@ -18,7 +19,19 @@ const baseLock = () => ({
       devDependencies: { 'semantic-release': { specifier: '^25.0.5', version: '25.0.5' } }
     },
     'packages/connection': {
-      dependencies: { ws: { specifier: '^8.21.0', version: '8.21.0' } }
+      dependencies: {
+        '@agentconnect.md/protocol': { specifier: 'workspace:*', version: 'link:../protocol' },
+        ws: { specifier: '^8.21.0', version: '8.21.0' }
+      }
+    },
+    'packages/cli': {
+      dependencies: {
+        '@agentconnect.md/connection': { specifier: 'workspace:*', version: 'link:../connection' },
+        '@agentconnect.md/protocol': { specifier: 'workspace:*', version: 'link:../protocol' }
+      },
+      devDependencies: {
+        tsdown: { specifier: '^0.22.3', version: '0.22.3(typescript@6.0.3)' }
+      }
     },
     'packages/daemon': {
       dependencies: {
@@ -32,13 +45,15 @@ const baseLock = () => ({
       }
     },
     'packages/message': {
-      dependencies: { zod: { specifier: '^4.4.3', version: '4.4.3' } }
+      dependencies: {
+        '@agentconnect.md/protocol': { specifier: 'workspace:*', version: 'link:../protocol' }
+      },
+      devDependencies: {
+        typescript: { specifier: '^6.0.3', version: '6.0.3' }
+      }
     },
     'packages/protocol': {
-      dependencies: {
-        '@agentconnect.md/message': { specifier: 'workspace:*', version: 'link:../message' },
-        zod: { specifier: '^4.4.3', version: '4.4.3' }
-      }
+      dependencies: { zod: { specifier: '^4.4.3', version: '4.4.3' } }
     },
     'packages/web': {
       dependencies: {
@@ -66,10 +81,10 @@ const baseLock = () => ({
   }
 })
 
-const changed = (mutate) => {
+const changed = (mutate, importerDirs = DAEMON_IMPORTERS) => {
   const head = baseLock()
   mutate(head)
-  return lockfileClosureChanged(stringify(baseLock()), stringify(head), DAEMON_IMPORTERS)
+  return lockfileClosureChanged(stringify(baseLock()), stringify(head), importerDirs)
 }
 
 test('identical lockfiles are unchanged', () => {
@@ -99,6 +114,17 @@ test('root devDependency bump does not affect the daemon closure', () => {
       lock.packages['semantic-release@25.0.6'] = { resolution: { integrity: 'sha512-semrel2' } }
       lock.snapshots['semantic-release@25.0.6'] = {}
     }),
+    false
+  )
+})
+
+test('message-only dependency bump does not affect the CLI closure', () => {
+  assert.equal(
+    changed((lock) => {
+      lock.importers['packages/message'].devDependencies.typescript.version = '6.0.4'
+      lock.packages['typescript@6.0.4'] = { resolution: { integrity: 'sha512-message-ts2' } }
+      lock.snapshots['typescript@6.0.4'] = {}
+    }, CLI_IMPORTERS),
     false
   )
 })
