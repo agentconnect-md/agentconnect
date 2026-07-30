@@ -59,8 +59,14 @@ export function computeGettingStarted(input: {
   members: MemberDto[]
   /** Auth mode: no-auth deployments have a single implicit org and no member list. */
   authOn: boolean
+  /** The CURRENT user's identifiers (userId + email) — webchat sessions record either
+   *  as `triggeredBy`. Scopes "your first conversation" to sessions THIS user ran, so
+   *  an org's historical sessions (teammates, bots) don't pre-tick the step. Empty /
+   *  absent (no-auth deployments) falls back to any completed session in the org. */
+  meIds?: string[]
 }): GettingStarted {
   const { agents, daemons, integrations, sessions, members, authOn } = input
+  const meIds = (input.meIds ?? []).filter(Boolean)
   // Pick a chat-capable / bindable agent for the agent-scoped CTAs. Prefer the built-in
   // `agentconnect` preset — the canonical agent every org gets — else the first agent.
   const builtin = agents.find((a) => a.builtin)
@@ -108,9 +114,12 @@ export function computeGettingStarted(input: {
       key: 'conversation',
       label: 'Complete your first conversation',
       expl: 'Send one message and watch the agent work — in a connected channel or in the Playground.',
-      // COMPLETED, not merely minted: a running or failed session hasn't finished a
-      // conversation yet ('completed' is the daemon's terminal success status).
-      done: sessions.some((s) => s.statusLabel === 'completed'),
+      // COMPLETED ('completed' is the daemon's terminal success status), and — when we
+      // know who the caller is — triggered BY THEM: an org's pre-existing sessions
+      // (teammates, bots) must not tick "your first conversation".
+      done: sessions.some(
+        (s) => s.statusLabel === 'completed' && (meIds.length === 0 || meIds.includes(s.triggeredBy ?? ''))
+      ),
       ctaLabel: 'Start a conversation',
       action: { kind: 'chat' }
     }

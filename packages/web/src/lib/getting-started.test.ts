@@ -93,6 +93,25 @@ describe('computeGettingStarted', () => {
     expect(convo([{ id: 's1', statusLabel: 'completed' } as Session])).toBe(true)
   })
 
+  it("scopes the conversation to the CURRENT user — an org's pre-existing sessions don't tick it", () => {
+    const meIds = ['u_me', 'me@acme.dev']
+    const convo = (sessions: Session[]) =>
+      computeGettingStarted({ ...empty, sessions, meIds }).items.find((i) => i.key === 'conversation')!.done
+    // teammate's / bot's historical completed session: not yours
+    expect(convo([{ id: 's1', statusLabel: 'completed', triggeredBy: 'u_teammate' } as Session])).toBe(false)
+    expect(convo([{ id: 's1', statusLabel: 'completed' } as Session])).toBe(false) // no attribution
+    // your own completed webchat session (triggeredBy = userId or email)
+    expect(convo([{ id: 's1', statusLabel: 'completed', triggeredBy: 'u_me' } as Session])).toBe(true)
+    expect(convo([{ id: 's1', statusLabel: 'completed', triggeredBy: 'me@acme.dev' } as Session])).toBe(true)
+    // no-auth deployments (no meIds): fall back to any completed session
+    expect(
+      computeGettingStarted({
+        ...empty,
+        sessions: [{ id: 's1', statusLabel: 'completed', triggeredBy: 'whoever' } as Session]
+      }).items.find((i) => i.key === 'conversation')!.done
+    ).toBe(true)
+  })
+
   it('points agent-scoped CTAs at the built-in agent first, else the first agent', () => {
     const withBuiltin = computeGettingStarted({
       ...empty,
