@@ -180,9 +180,9 @@ describe('canChangeSessionVisibility', () => {
     ownerIdentity
   })
 
-  it('lets an organization owner reclassify only while a non-owned session remains org-visible', () => {
+  it('denies an organization owner reclassifying a session they do not own, org-visible or not', () => {
     const owner = ctx(OTHER, 'owner')
-    expect(canChangeSessionVisibility(session('org', `user:${CREATOR}`), owner, identitySetOf(owner))).toBe(true)
+    expect(canChangeSessionVisibility(session('org', `user:${CREATOR}`), owner, identitySetOf(owner))).toBe(false)
     expect(canChangeSessionVisibility(session('private', `user:${CREATOR}`), owner, identitySetOf(owner))).toBe(false)
   })
 
@@ -192,7 +192,16 @@ describe('canChangeSessionVisibility', () => {
       expect(
         canChangeSessionVisibility(session('private', `user:${CREATOR}`), principal, identitySetOf(principal))
       ).toBe(true)
+      expect(canChangeSessionVisibility(session('org', `user:${CREATOR}`), principal, identitySetOf(principal))).toBe(
+        true
+      )
     }
+  })
+
+  it('a null-owner session is re-classifiable by no one — fail closed', () => {
+    const owner = ctx(OTHER, 'owner')
+    expect(canChangeSessionVisibility(session('org', null), owner, identitySetOf(owner))).toBe(false)
+    expect(canChangeSessionVisibility(session('private', null), owner, identitySetOf(owner))).toBe(false)
   })
 })
 

@@ -11,8 +11,8 @@
  *
  * - Read-only viewers see a lock badge on private sessions and nothing on org
  *   sessions (org is the unmarked default).
- * - `canChange` (server-computed: org owner or the identity-matched session
- *   owner) renders the two-option control instead. Tightening (org → private)
+ * - `canChange` (server-computed: the identity-matched session owner only)
+ *   renders the two-option control instead. Tightening (org → private)
  *   confirms through a dialog carrying the memory caveat; widening is immediate.
  * - `state === 'pending'` renders the spinner pill (DaemonLifecycleBadge
  *   pattern) until every affected daemon acks the change.

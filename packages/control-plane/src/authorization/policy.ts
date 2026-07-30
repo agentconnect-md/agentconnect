@@ -87,11 +87,15 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
       return resourceIsEditable(request.resource, principal)
     case AuthorizationAction.SessionView:
       return request.resource.visibility === 'org' || identityOwnsSession(request.resource, request.identitySet)
+    // Re-classification (§4.3) is owner-only: identity match with the recorded
+    // owner, roles grant nothing in either direction — an org owner pulling
+    // someone's published session back to private is as much an intrusion on
+    // the owner's decision as reading their DM would be (mirroring
+    // `session.view`). A row with no recorded owner is re-classifiable by no
+    // one. Deliberately NOT the role-based edit guard: the grant follows
+    // OWNERSHIP, so a viewer-role member keeps control of their own DM.
     case AuthorizationAction.SessionChangeVisibility:
-      return (
-        (principal.role === 'owner' && request.resource.visibility === 'org') ||
-        identityOwnsSession(request.resource, request.identitySet)
-      )
+      return identityOwnsSession(request.resource, request.identitySet)
   }
 }
 

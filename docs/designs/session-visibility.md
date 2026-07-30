@@ -204,8 +204,8 @@ Notes:
   §4.3 reclassification rights, not an access gate.
 - `group_dm` defaults to `org`, like a channel: a multi-party conversation
   treated as `private` would hide it from its own participants, since the
-  predicate can match only one owner. The initiator (or an org owner) can
-  pull it `private` via §4.3.
+  predicate can match only one owner. The initiator can pull it `private`
+  via §4.3.
 - **Agent-to-agent children inherit.** A delegation from a private DM or
   Playground session copies the delegated prompt into the child transcript;
   classifying children `org` would expose that to every viewer of the target
@@ -216,14 +216,15 @@ Notes:
 ### 4.3 Changing visibility after the fact
 
 `PUT /orgs/:orgId/sessions/:id/visibility` with body
-`{ visibility: 'private' | 'org' }`. Allowed for the session owner (identity
-match) and org owners — but the route view-gates first and private sessions
-carry no role override, so the org-owner grant effectively reaches only
-org-visible sessions; collaborators/viewers cannot re-classify other people's
-sessions. This is the escape hatch for both directions: publishing a useful DM
-transcript to the org (owner only — no one else can see it to widen it), or
-pulling a channel/group-DM session private (its recorded initiator — once
-identity linking makes them matchable — or an org owner).
+`{ visibility: 'private' | 'org' }`. Allowed ONLY for the session's recorded
+owner (identity match) — roles grant no re-classification rights in either
+direction, mirroring the view predicate: an org owner pulling someone's
+published session back to `private` would override the owner's own decision,
+so the org-owner arm was removed deliberately. A row with no recorded owner is
+re-classifiable by no one. This is the escape hatch for both directions:
+publishing a useful DM transcript to the org, or pulling a channel/group-DM
+session private (its recorded initiator — once identity linking makes them
+matchable).
 
 An explicit change sets `visibilitySource = 'explicit'`, which pins the row
 against any later automatic reclassification (§4.5). **Tightening cascades to

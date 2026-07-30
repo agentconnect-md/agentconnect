@@ -333,7 +333,7 @@ export class PgSessionRepo implements SessionRepo {
    * own parent was still `inherited_pending` when it arrived is pending too, so
    * settling one level unblocks the next. Every level is the same CAS on
    * `visibilitySource`, which is what keeps it conditional and one-time — a
-   * descendant an org owner has meanwhile re-classified is `explicit` and left
+   * descendant its owner has meanwhile re-classified is `explicit` and left
    * alone: reconciliation never overwrites a human decision.
    */
   private async settlePendingChildren(tx: PrismaLike, parent: SessionMetaRecord): Promise<SessionMetaRecord[]> {

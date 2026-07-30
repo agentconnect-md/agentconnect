@@ -611,7 +611,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Set session visibility',
           description:
-            'Reclassifies a session as private or org-visible. Allowed for the session owner, and for org owners on sessions they can view (private sessions are visible only to their owner). Tightening cascades to descendant sessions and stops future agent-memory capture once the owning daemons acknowledge; memory already distilled is not retracted.',
+            "Reclassifies a session as private or org-visible. Allowed only for the session's recorded owner (identity match) — roles grant no re-classification rights. Tightening cascades to descendant sessions and stops future agent-memory capture once the owning daemons acknowledge; memory already distilled is not retracted.",
           operationId: 'setSessionVisibility',
           params: IdParam,
           body: SetSessionVisibilityBody,
@@ -631,9 +631,8 @@ export function sessionRoutes(deps: HttpDeps) {
         }
         // The check above read an unlocked row. Re-run it inside the write's
         // transaction: an ancestor cascade committing in between can re-own this
-        // session (the former owner must not still widen it), and a tighten
-        // committing in between flips it private (a queued org-owner widen must
-        // not reopen it — the org-owner arm requires the LOCKED row to be org).
+        // session, and the former owner's parked request must not still apply —
+        // ownership is judged against the LOCKED row.
         const { affected, forbidden } = await deps.repos.session.setVisibility(
           SessionId(req.params.id),
           req.body.visibility,

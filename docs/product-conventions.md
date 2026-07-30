@@ -187,9 +187,10 @@ and sessions launched through the Web API default to **private**: only their own
 them — deliberately no role exception, org owners included. Channel sessions, group direct
 messages, and automation-originated sessions (cron, hook, dream, agent-to-agent) default
 to **org**, visible to every member who can already view the agent. A session's initiator
-is recorded regardless of tier, so the person who started a channel conversation may later
-pull it private, and an org owner may reclassify any session they can see — which excludes
-other people's private sessions.
+is recorded regardless of tier, and re-classification belongs to that recorded initiator
+alone: the person who started a channel conversation may later pull it private, and only a
+private session's owner may publish it back. Roles grant no re-classification rights — an
+org owner cannot flip someone else's session in either direction.
 
 An agent-to-agent child inherits its parent's visibility, because a delegation copies the
 parent's prompt into the child's transcript. Tightening a session therefore cascades to its

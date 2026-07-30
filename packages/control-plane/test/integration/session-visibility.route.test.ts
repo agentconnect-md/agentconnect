@@ -217,6 +217,7 @@ describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
   it('403s a member who can see the session but does not own it, and 404s one who cannot', async () => {
     const initiator = await makeUser('sv-put-init', 'collaborator')
     const bystander = await makeUser('sv-put-bystander', 'collaborator')
+    const orgOwner = await makeUser('sv-put-role-admin', 'owner')
     const daemonId = await seedDaemon(prisma, randomUUID())
     const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
 
@@ -239,6 +240,15 @@ describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
         })
       ).statusCode
     ).toBe(403)
+    // The org-owner ROLE grants nothing either: pulling someone's published
+    // session back to private would override the owner's own decision.
+    const asOrgOwner = await appAs(orgOwner).app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${orgSession}/visibility`,
+      payload: { visibility: 'private' }
+    })
+    expect(asOrgOwner.statusCode).toBe(403)
+    expect((await prisma.sessionMeta.findUnique({ where: { id: orgSession } }))?.visibility).toBe('org')
     // Invisible ⇒ 404, never 403: no existence oracle.
     expect(
       (
@@ -251,19 +261,20 @@ describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
     ).toBe(404)
   })
 
-  it('refuses an org-owner widen queued behind a concurrent tighten (pre-read passed while org)', async () => {
+  it('refuses a former owner’s widen queued behind a concurrent re-owning tighten', async () => {
     const initiator = await makeUser('sv-queued-init', 'collaborator')
-    const orgOwner = await makeUser('sv-queued-admin', 'owner')
+    const newOwner = await makeUser('sv-queued-newowner', 'collaborator')
     const daemonId = await seedDaemon(prisma, randomUUID())
     const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
     const session = await seedSessionMeta(prisma, `s-queued-${randomUUID()}`, agentId, {
       ownerIdentity: `user:${initiator}`
     })
 
-    // The owner's tighten takes the row lock but does NOT commit yet, so the
-    // org owner's PUT pre-reads the still-committed `org` row, passes the view
-    // gate and the unlocked authorization, and queues on `setVisibility`'s
-    // FOR UPDATE — the exact TOCTOU window for the org-owner arm.
+    // A concurrent tighten (as an ancestor cascade would) re-owns the row but
+    // does NOT commit yet, so the former owner's PUT pre-reads the
+    // still-committed `org` row under their identity, passes the view gate and
+    // the unlocked authorization, and queues on `setVisibility`'s FOR UPDATE —
+    // the exact TOCTOU window the locked-row re-check exists for.
     let lockTaken!: () => void
     const lockHeld = new Promise<void>((resolve) => (lockTaken = resolve))
     let commitTighten!: () => void
@@ -273,7 +284,8 @@ describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
         await tx.$executeRaw`
           UPDATE "session_meta" SET
             "visibility" = 'private'::"SessionVisibility",
-            "visibilitySource" = 'explicit'::"VisibilitySource",
+            "ownerIdentity" = ${`user:${newOwner}`},
+            "visibilitySource" = 'inherited'::"VisibilitySource",
             "visibilityRev" = "visibilityRev" + 1
           WHERE "id" = ${session}`
         lockTaken()
@@ -283,7 +295,7 @@ describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
     )
     await lockHeld
 
-    const queuedWiden = appAs(orgOwner).app.inject({
+    const queuedWiden = appAs(initiator).app.inject({
       method: 'PUT',
       url: `${ORG}/sessions/${session}/visibility`,
       payload: { visibility: 'org' }
@@ -301,8 +313,9 @@ describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
     commitTighten()
     await tighten
 
-    // The lock-time re-check sees a private row: role grants nothing, 403, and
-    // the session stays private — the queued request cannot reopen it.
+    // The lock-time re-check sees a private row owned by someone else: the
+    // former owner no longer matches, 403, and the session stays private —
+    // the queued request cannot reopen it.
     expect((await queuedWiden).statusCode).toBe(403)
     expect((await prisma.sessionMeta.findUnique({ where: { id: session } }))?.visibility).toBe('private')
   })
@@ -310,7 +323,9 @@ describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
   it('reports `applied` when no daemon can ever ack the change', async () => {
     const owner = await makeUser('sv-state', 'owner')
     const agentId = await seedAgent(prisma, randomUUID()) // unplaced: no daemon
-    const session = await seedSessionMeta(prisma, `s-state-${randomUUID()}`, agentId, {})
+    const session = await seedSessionMeta(prisma, `s-state-${randomUUID()}`, agentId, {
+      ownerIdentity: `user:${owner}` // re-classification is owner-only, role grants nothing
+    })
 
     const res = await appAs(owner).app.inject({
       method: 'PUT',
@@ -539,7 +554,7 @@ describe('session visibility — §4.5 inheritance and cascade', () => {
     })
     expect(child.session).toMatchObject({ visibility: 'private', visibilitySource: 'inherited_pending' })
 
-    // A second pending child that an org owner re-classifies before settlement.
+    // A second pending child that its owner re-classifies before settlement.
     const pinned = await repo.recordMilestone({
       sessionId: SessionId(`s-pinned-child-${randomUUID()}`),
       parentSessionId: SessionId(parentId),
@@ -650,11 +665,13 @@ describe('session visibility — §4.5 inheritance and cascade', () => {
 
     for (const childFirst of [true, false]) {
       const rootId = `s-race-root-${randomUUID()}`
+      // The root's recorded owner is the acting user: the §4.3 PUT below is
+      // owner-only (roles grant nothing), and this test is about the cascade.
       await repo.recordMilestone({
         sessionId: SessionId(rootId),
         agentId,
         phase: 'start',
-        classification: { visibility: 'org', ownerIdentity: 'slack:T1:U9', source: 'default' },
+        classification: { visibility: 'org', ownerIdentity: `user:${owner}`, source: 'default' },
         at: new Date()
       })
       const childId = `s-race-child-${randomUUID()}`
