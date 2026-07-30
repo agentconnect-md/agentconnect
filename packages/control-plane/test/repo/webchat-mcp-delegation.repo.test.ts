@@ -187,6 +187,20 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
     })
   })
 
+  it('returns a delegation only when its generation is still current for the durable conversation', async () => {
+    await fixtures()
+    const repo = new PgWebchatMcpDelegationRepo(prisma)
+    const first = (await repo.establish(establishInput(DAEMON, at(120_000))))!
+    expect(await repo.getCurrent(first.id)).toMatchObject({ id: first.id, generation: 1 })
+
+    await repo.revoke(revokeInput(first))
+    const rotated = (await repo.establish(establishInput(DAEMON, at(90_000))))!
+
+    expect(await repo.get(first.id)).not.toBeNull()
+    expect(await repo.getCurrent(first.id)).toBeNull()
+    expect(await repo.getCurrent(rotated.id)).toMatchObject({ id: rotated.id, generation: 2 })
+  })
+
   it('waits for a winning revocation, then rotates from the committed row', async () => {
     await fixtures()
     const repo = new PgWebchatMcpDelegationRepo(prisma)

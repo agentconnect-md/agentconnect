@@ -144,6 +144,8 @@ import { buildHttpServer } from './http/server.js'
 import type { HttpDeps } from './http/deps.js'
 import { createReadiness, type Readiness } from './http/readiness.js'
 import { McpRateLimiter } from './http/mcp/rate-limit.js'
+import { InvocationAssertionAuthenticator } from './http/mcp/invocation-authenticator.js'
+import { InternalInvocationAuth } from './http/mcp/internal-invocation-auth.js'
 import { pingDb } from './persistence/prisma.js'
 import { verifySlackBot, verifySlackAppToken } from './http/slack-identity.js'
 import { verifyTelegramBot } from './http/telegram-identity.js'
@@ -172,6 +174,10 @@ export interface Container {
   /** Live webchat preset entitlement + one-time assertion minting. Transport
    *  handlers consume this seam without reconstructing authority checks. */
   readonly webchatMcpDelegation: WebchatMcpDelegationService
+  /** Route-only assertion claim seam for the standard MCP route. */
+  readonly invocationAssertions: InvocationAssertionAuthenticator
+  /** One-time async-local nonce seam for nested MCP REST requests. */
+  readonly internalInvocationAuth: InternalInvocationAuth
   /** Arm the Clock-driven background loops (the cron-run reaper). Prod calls this
    *  after `listen`; tests never do, so no live timer arms under a `FakeClock`. */
   startBackground(): void
@@ -383,9 +389,10 @@ export function buildContainer(
 
   // Built-in general-preset webchat entitlement. Assertions use a dedicated
   // prefix and hash domain even though the deployment pepper is shared.
+  const invocationAssertionCodec = new InvocationAssertionCodec(config.API_KEY_PEPPER)
   const webchatMcpDelegation = new WebchatMcpDelegationService({
     clock,
-    assertionCodec: new InvocationAssertionCodec(config.API_KEY_PEPPER),
+    assertionCodec: invocationAssertionCodec,
     conversations: repos.webchatConversation,
     orgs: repos.org,
     agents: repos.agent,
@@ -395,6 +402,19 @@ export function buildContainer(
     invocations: repos.mcpInvocation,
     isCuratedTool: (toolName) => findTool(toolName) !== undefined
   })
+  const invocationAssertions = new InvocationAssertionAuthenticator({
+    clock,
+    assertionCodec: invocationAssertionCodec,
+    conversations: repos.webchatConversation,
+    orgs: repos.org,
+    agents: repos.agent,
+    presets: repos.presetAgent,
+    daemons: connReg,
+    delegations: repos.webchatMcpDelegation,
+    invocations: repos.mcpInvocation,
+    isCuratedTool: (toolName) => findTool(toolName) !== undefined
+  })
+  const internalInvocationAuth = new InternalInvocationAuth()
 
   // The relay analogue — relayId → live relay socket, so the CP can push
   // rc/daemon-revoke to connected relays (§9). Roster still comes from the DB.
@@ -713,6 +733,8 @@ export function buildContainer(
     waitlist,
     events,
     mcpRateLimit: new McpRateLimiter(clock),
+    invocationAssertions,
+    internalInvocationAuth,
     readiness,
     verifySlackBot,
     verifySlackAppToken,
@@ -1204,6 +1226,8 @@ export function buildContainer(
     defaults: { orgId: DEFAULT_ORG_ID, ownerId: DEFAULT_OWNER_ID },
     readiness,
     webchatMcpDelegation,
+    invocationAssertions,
+    internalInvocationAuth,
     startBackground() {
       cronRunReaper.start()
       hookRunReaper.start()

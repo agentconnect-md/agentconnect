@@ -5,25 +5,21 @@
  * current membership/visibility, the preset relation, and live placement before
  * any invocation assertion is minted.
  */
-import {
-  DELEGATED_MCP_ASSERTION_FEATURE,
-  type McpInvocationMint,
-  type WebchatMcpDelegationReference
-} from '@agentconnect.md/protocol'
+import { type McpInvocationMint, type WebchatMcpDelegationReference } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, OrgId } from '../domain/ids.js'
 import type { Clock } from '../domain/clock.js'
-import { canView } from '../domain/visibility.js'
 import type {
-  AgentRepo,
   McpInvocationRecord,
   McpInvocationRepo,
   McpInvocationStatus,
-  OrgRepo,
-  PresetAgentStore,
-  WebchatConversationRepo,
   WebchatMcpDelegationRepo
 } from '../persistence/ports.js'
 import type { InvocationAssertionCodec } from './invocationAssertion.js'
+import {
+  resolveLiveWebchatMcpAuthority,
+  type LiveWebchatMcpAuthorityDeps,
+  type WebchatMcpAuthorityDenialReason
+} from './webchatMcpAuthority.js'
 
 export const MCP_INVOCATION_ASSERTION_TTL_MS = 30_000
 export const WEBCHAT_MCP_DELEGATION_DEFAULT_TTL_MS = 12 * 60 * 60_000
@@ -43,14 +39,8 @@ export const INVOCATION_CONFLICT = Object.freeze({
 })
 
 export type DelegationDenialReason =
-  | 'conversation_binding'
+  | WebchatMcpAuthorityDenialReason
   | 'session_expired'
-  | 'membership_missing'
-  | 'agent_not_visible'
-  | 'preset_mismatch'
-  | 'placement_mismatch'
-  | 'daemon_unavailable'
-  | 'daemon_feature_missing'
   | 'delegation_expiry'
   | 'delegation_inactive'
   | 'delegation_generation'
@@ -81,38 +71,14 @@ export type MintInvocationResult =
   | typeof INVOCATION_CONFLICT
   | typeof DELEGATION_DENIED
 
-interface EntitlementAgent {
-  id: string
-  orgId: string
-  daemonId: string | null
-  createdByUserId: string | null
-  visibility: 'org' | 'restricted'
-  sharedWith: string[]
-}
-
-interface LiveDaemon {
-  reachable: boolean
-  state: string
-  capabilities?: { features?: string[] }
-}
-
-export interface WebchatMcpDelegationServiceDeps {
+export interface WebchatMcpDelegationServiceDeps extends LiveWebchatMcpAuthorityDeps {
   clock: Pick<Clock, 'now'>
   assertionCodec: Pick<InvocationAssertionCodec, 'mint'>
-  conversations: Pick<WebchatConversationRepo, 'findOwner' | 'owns'>
-  orgs: Pick<OrgRepo, 'roleOf'>
-  agents: Pick<AgentRepo, 'get'>
-  presets: Pick<PresetAgentStore, 'get'>
-  daemons: { get(daemonId: string): LiveDaemon | undefined }
-  delegations: Pick<WebchatMcpDelegationRepo, 'establish' | 'get'>
+  delegations: Pick<WebchatMcpDelegationRepo, 'establish' | 'getCurrent'>
   invocations: Pick<McpInvocationRepo, 'get' | 'mint'>
   isCuratedTool(toolName: string): boolean
   /** Internal metric seam. Values are a closed, non-secret enum only. */
   onDenied?: (reason: DelegationDenialReason) => void
-}
-
-interface ResolvedAuthority {
-  userId: string
 }
 
 export class WebchatMcpDelegationService {
@@ -132,14 +98,14 @@ export class WebchatMcpDelegationService {
     const now = new Date(nowMs)
     const expiresAt = new Date(expiresAtMs)
 
-    const authority = await this.resolveAuthority({
+    const authority = await resolveLiveWebchatMcpAuthority(this.deps, {
       conversationId: input.conversationId,
       expectedUserId: input.verifiedUserId,
       orgId: input.orgId,
       agentId: input.agentId,
       daemonId: input.daemonId
     })
-    if (!authority) return null
+    if (!authority.ok) return this.denyNull(authority.reason)
 
     const delegation = await this.deps.delegations.establish({
       conversationId: input.conversationId,
@@ -182,7 +148,7 @@ export class WebchatMcpDelegationService {
 
     const checkedAt = this.deps.clock.now()
     if (!isValidTimestamp(checkedAt)) return this.deny('delegation_inactive')
-    const delegation = await this.deps.delegations.get(input.delegationId)
+    const delegation = await this.deps.delegations.getCurrent(input.delegationId)
     if (
       !delegation ||
       delegation.revokedAt ||
@@ -200,14 +166,14 @@ export class WebchatMcpDelegationService {
       return this.deny('delegation_binding')
     }
 
-    const authority = await this.resolveAuthority({
+    const authority = await resolveLiveWebchatMcpAuthority(this.deps, {
       conversationId: delegation.conversationId,
       expectedUserId: delegation.userId,
       orgId: delegation.orgId,
       agentId: delegation.agentId,
       daemonId: delegation.daemonId
     })
-    if (!authority) return DELEGATION_DENIED
+    if (!authority.ok) return this.deny(authority.reason)
 
     const current = await this.deps.invocations.get(input.invocationId)
     if (current) {
@@ -283,52 +249,6 @@ export class WebchatMcpDelegationService {
       return undefined
     }
     return input.toolName
-  }
-
-  private async resolveAuthority(input: {
-    conversationId: string
-    expectedUserId: string
-    orgId: string
-    agentId: string
-    daemonId: string
-  }): Promise<ResolvedAuthority | null> {
-    const owner = await this.deps.conversations.findOwner(input.conversationId, AgentId(input.agentId))
-    if (
-      owner === null ||
-      owner !== input.expectedUserId ||
-      !(await this.deps.conversations.owns({
-        conversationId: input.conversationId,
-        userId: owner,
-        orgId: OrgId(input.orgId),
-        agentId: AgentId(input.agentId)
-      }))
-    ) {
-      return this.denyNull('conversation_binding')
-    }
-
-    const role = await this.deps.orgs.roleOf(input.orgId, owner)
-    if (!role) return this.denyNull('membership_missing')
-
-    const agent = await this.deps.agents.get(AgentId(input.agentId))
-    if (
-      !agent ||
-      agent.id !== input.agentId ||
-      agent.orgId !== input.orgId ||
-      !canView(agent, { userId: owner, role })
-    ) {
-      return this.denyNull('agent_not_visible')
-    }
-
-    const preset = await this.deps.presets.get(OrgId(input.orgId), 'general')
-    if (preset?.agentId !== input.agentId) return this.denyNull('preset_mismatch')
-    if (!agent.daemonId || agent.daemonId !== input.daemonId) return this.denyNull('placement_mismatch')
-
-    const daemon = this.deps.daemons.get(input.daemonId)
-    if (!daemon?.reachable || daemon.state !== 'READY') return this.denyNull('daemon_unavailable')
-    if (!daemon.capabilities?.features?.includes(DELEGATED_MCP_ASSERTION_FEATURE)) {
-      return this.denyNull('daemon_feature_missing')
-    }
-    return { userId: owner }
   }
 
   private deny(reason: DelegationDenialReason): typeof DELEGATION_DENIED {

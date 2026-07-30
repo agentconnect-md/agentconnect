@@ -143,6 +143,18 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
     return row ? toRecord(row) : null
   }
 
+  async getCurrent(delegationId: string): Promise<WebchatMcpDelegationRecord | null> {
+    const [row] = await this.db.$queryRaw<WebchatMcpDelegation[]>(Prisma.sql`
+      SELECT delegation.*
+      FROM "webchat_mcp_delegation" delegation
+      JOIN "webchat_conversation" conversation
+        ON conversation."id" = delegation."conversationId"
+       AND conversation."delegationGeneration" = delegation."generation"
+      WHERE delegation."id" = ${delegationId}
+    `)
+    return row ? toRecord(row) : null
+  }
+
   async reapExpired(expiredBefore: Date): Promise<number> {
     return this.inTransaction(async (tx) => {
       // Delegation → Invocation is the shared mint/reap lock order. Locking

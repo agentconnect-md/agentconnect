@@ -1087,6 +1087,8 @@ export interface WebchatMcpDelegationRepo {
   /** Conditional, generation-fenced revocation. An already-revoked exact match is idempotently true. */
   revoke(input: RevokeWebchatMcpDelegationInput): Promise<boolean>
   get(delegationId: string): Promise<WebchatMcpDelegationRecord | null>
+  /** Return only a row whose generation still equals its durable conversation generation. */
+  getCurrent(delegationId: string): Promise<WebchatMcpDelegationRecord | null>
   /** Delete expired delegations only after their invocation ledger is empty. */
   reapExpired(expiredBefore: Date): Promise<number>
 }
@@ -1131,6 +1133,14 @@ export type MintMcpInvocationResult =
 export interface ClaimMcpInvocationInput {
   invocationId: string
   assertionHash: string
+  /** Exact live authority binding revalidated under the claim transaction's parent locks. */
+  delegationId: string
+  generation: number
+  conversationId: string
+  userId: string
+  orgId: OrgId
+  agentId: AgentId
+  daemonId: DaemonId
   now: Date
 }
 
@@ -1138,6 +1148,7 @@ export type ClaimMcpInvocationResult =
   | { kind: 'claimed'; invocation: McpInvocationRecord }
   | { kind: 'existing'; invocation: McpInvocationRecord }
   | { kind: 'expired' }
+  | { kind: 'denied' }
   | { kind: 'not_found' }
 
 export interface CompleteMcpInvocationInput {

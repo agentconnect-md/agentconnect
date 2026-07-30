@@ -19,6 +19,8 @@ import {
   PgSessionRepo,
   PgSessionUsageRepo,
   PgWebchatConversationRepo,
+  PgWebchatMcpDelegationRepo,
+  PgMcpInvocationRepo,
   PgDaemonRepo,
   PgDaemonLifecycleOpRepo,
   PgApiKeyRepo,
@@ -62,6 +64,7 @@ import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { ApiKeyService } from '../../src/registry/apiKeyService.js'
 import { OAuthService } from '../../src/registry/oauthService.js'
 import { WebchatTokenService } from '../../src/registry/webchatToken.js'
+import { InvocationAssertionCodec } from '../../src/registry/invocationAssertion.js'
 import { OrgInviteLinkCodec } from '../../src/registry/orgInviteLink.js'
 import { OrgInviteLinkService } from '../../src/registry/orgInviteLinkService.js'
 import { WaitlistService } from '../../src/registry/waitlistService.js'
@@ -80,6 +83,9 @@ import { buildHttpServer } from '../../src/http/server.js'
 import type { HttpDeps } from '../../src/http/deps.js'
 import { createReadiness } from '../../src/http/readiness.js'
 import { McpRateLimiter } from '../../src/http/mcp/rate-limit.js'
+import { InvocationAssertionAuthenticator } from '../../src/http/mcp/invocation-authenticator.js'
+import { InternalInvocationAuth } from '../../src/http/mcp/internal-invocation-auth.js'
+import { findTool } from '../../src/http/mcp/tools.js'
 import { pingDb } from '../../src/persistence/prisma.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import { systemClock } from '../../src/domain/clock.js'
@@ -149,6 +155,11 @@ export function buildHttpApp(
   const feishuAppRegistrationStore = new PgFeishuAppRegistrationStore(prisma, cipher)
   const integrationChannelRepo = new PgIntegrationChannelRepo(prisma)
   const agentRepo = new PgAgentRepo(prisma)
+  const orgRepo = new PgOrgRepo(prisma)
+  const webchatConversationRepo = new PgWebchatConversationRepo(prisma)
+  const webchatMcpDelegationRepo = new PgWebchatMcpDelegationRepo(prisma)
+  const mcpInvocationRepo = new PgMcpInvocationRepo(prisma)
+  const presetAgentRepo = new PgPresetAgentStore(prisma)
   const hookRepo = new PgHookRepo(prisma)
   const hookSecretStore = new PgHookSecretStore(prisma, cipher)
   const githubInstallationRepo = new PgGithubInstallationRepo(prisma)
@@ -156,6 +167,21 @@ export function buildHttpApp(
   // no-ops — exactly the prod graph with no relay dialed in, unless a test wires one up.
   const relayReg = new RelayRegistry()
   const relayControl = new RelayControlSender(relayReg)
+  const invocationAssertions =
+    depsOverrides?.invocationAssertions ??
+    new InvocationAssertionAuthenticator({
+      clock,
+      assertionCodec: new InvocationAssertionCodec(TEST_API_KEY_PEPPER),
+      conversations: webchatConversationRepo,
+      orgs: orgRepo,
+      agents: agentRepo,
+      presets: presetAgentRepo,
+      daemons: liveness,
+      delegations: webchatMcpDelegationRepo,
+      invocations: mcpInvocationRepo,
+      isCuratedTool: (toolName) => findTool(toolName) !== undefined
+    })
+  const internalInvocationAuth = depsOverrides?.internalInvocationAuth ?? new InternalInvocationAuth()
 
   const deps: HttpDeps = {
     repos: {
@@ -168,9 +194,9 @@ export function buildHttpApp(
       relay: new PgRelayRepo(prisma),
       session: new PgSessionRepo(prisma),
       sessionUsage: new PgSessionUsageRepo(prisma),
-      webchatConversation: new PgWebchatConversationRepo(prisma),
+      webchatConversation: webchatConversationRepo,
       user: new PgUserRepo(prisma, !waitlistMode),
-      org: new PgOrgRepo(prisma),
+      org: orgRepo,
       waitlist: waitlistRepo,
       githubInstallation: githubInstallationRepo,
       agentRepoAuth: new PgAgentRepoAuthorizationRepo(prisma),
@@ -192,7 +218,7 @@ export function buildHttpApp(
       slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
       feishuAppRegistration: feishuAppRegistrationStore,
       slackUserConfig: new PgSlackUserConfigStore(prisma, cipher),
-      presetAgent: new PgPresetAgentStore(prisma),
+      presetAgent: presetAgentRepo,
       integrationChannel: integrationChannelRepo,
       audit: auditRepo,
       oauth: oauthRepo
@@ -242,7 +268,9 @@ export function buildHttpApp(
     configureFeishuHttpApp: async () => {},
     feishuAppRegistration: new FeishuAppRegistrationService(feishuAppRegistrationStore),
     config: { DEFAULT_OWNER_ID, ...configOverrides },
-    ...depsOverrides
+    ...depsOverrides,
+    invocationAssertions,
+    internalInvocationAuth
   }
 
   const app = buildHttpServer(deps)

@@ -76,6 +76,8 @@ import type { FeishuAppRegistrationService } from './feishu-registration.js'
 import type { FeishuHttpAppConfigurator } from './feishu-app-config.js'
 import type { Readiness } from './readiness.js'
 import type { McpRateLimiter } from './mcp/rate-limit.js'
+import type { InvocationAssertionAuthenticator } from './mcp/invocation-authenticator.js'
+import type { InternalInvocationAuth } from './mcp/internal-invocation-auth.js'
 import type { SessionKey } from '../domain/sessionKey.js'
 import type { IconStore } from '../icons/icon-store.js'
 import type { ConnectorsClient } from '../connectors/client.js'
@@ -249,6 +251,10 @@ export interface HttpDeps {
    *  §6.5). ONE instance per composition root — the MCP plugin is mounted twice
    *  (`/api/v1/mcp` + `/v1` alias) and both mounts must share a budget. */
   mcpRateLimit: McpRateLimiter
+  /** Route-only one-time assertion verifier; mounted by the MCP route in Task 6. */
+  invocationAssertions: InvocationAssertionAuthenticator
+  /** In-process principal propagation for MCP's nested REST injections. */
+  internalInvocationAuth: InternalInvocationAuth
   /** Process readiness gate for `/readyz` (rolling-update drain, issue #240). */
   readiness: Readiness
   /** Validates a pasted Slack bot token against `auth.test` (and derives the bot name

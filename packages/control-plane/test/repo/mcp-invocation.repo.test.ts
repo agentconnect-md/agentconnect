@@ -3,6 +3,7 @@ import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { PgWebchatMcpDelegationRepo } from '../../src/persistence/repositories/webchat-mcp-delegation.repo.js'
+import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import {
   MCP_INVOCATION_EXECUTION_TIMEOUT_MS,
   MCP_INVOCATION_MAX_RESPONSE_BYTES,
@@ -14,6 +15,7 @@ import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 const CONVERSATION = 'c1111111-1111-4111-8111-111111111111'
 const AGENT = 'a1111111-1111-4111-8111-111111111111'
 const DAEMON = 'd1111111-1111-4111-8111-111111111111'
+const OTHER_DAEMON = 'd2222222-2222-4222-8222-222222222222'
 const INVOCATION = '11111111-1111-4111-8111-111111111111'
 const OTHER_INVOCATION = '22222222-2222-4222-8222-222222222222'
 const NOW = new Date('2026-07-30T00:00:00.000Z')
@@ -90,6 +92,22 @@ function revokeInput(delegation: { id: string; generation: number }) {
     daemonId: DaemonId(DAEMON),
     revokedAt: at(5_000),
     reason: 'session_closed'
+  }
+}
+
+function claimInput(delegation: { id: string; generation: number }, extra: Record<string, unknown> = {}) {
+  return {
+    invocationId: INVOCATION,
+    assertionHash: 'peppered:assertion-1',
+    delegationId: delegation.id,
+    generation: delegation.generation,
+    conversationId: CONVERSATION,
+    userId: DEFAULT_OWNER_ID,
+    orgId: OrgId(DEFAULT_ORG_ID),
+    agentId: AgentId(AGENT),
+    daemonId: DaemonId(DAEMON),
+    now: at(1_000),
+    ...extra
   }
 }
 
@@ -199,10 +217,7 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     const repo = new PgMcpInvocationRepo(prisma)
     await repo.mint(mintInput(delegation.id))
 
-    const claims = await Promise.all([
-      repo.claim({ invocationId: INVOCATION, assertionHash: 'peppered:assertion-1', now: at(1_000) }),
-      repo.claim({ invocationId: INVOCATION, assertionHash: 'peppered:assertion-1', now: at(1_000) })
-    ])
+    const claims = await Promise.all([repo.claim(claimInput(delegation)), repo.claim(claimInput(delegation))])
 
     expect(claims.filter((result) => result.kind === 'claimed')).toHaveLength(1)
     expect(claims.filter((result) => result.kind === 'existing')).toHaveLength(1)
@@ -213,7 +228,7 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     const delegation = await fixtures()
     const repo = new PgMcpInvocationRepo(prisma)
     await repo.mint(mintInput(delegation.id))
-    await repo.claim({ invocationId: INVOCATION, assertionHash: 'peppered:assertion-1', now: at(1_000) })
+    await repo.claim(claimInput(delegation))
 
     const retry = await repo.mint(
       mintInput(delegation.id, {
@@ -235,7 +250,7 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     const repo = new PgMcpInvocationRepo(prisma)
     const responseBytes = Buffer.from([0, 255, 13, 10, 123, 125])
     await repo.mint(mintInput(delegation.id))
-    await repo.claim({ invocationId: INVOCATION, assertionHash: 'peppered:assertion-1', now: at(1_000) })
+    await repo.claim(claimInput(delegation))
 
     expect(
       await repo.complete({
@@ -263,7 +278,7 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
       const repo = new PgMcpInvocationRepo(prisma)
       const responseBytes = Buffer.from(`cached-${status}`)
       await repo.mint(mintInput(delegation.id))
-      await repo.claim({ invocationId: INVOCATION, assertionHash: 'peppered:assertion-1', now: at(1_000) })
+      await repo.claim(claimInput(delegation))
       await repo.complete({
         invocationId: INVOCATION,
         status,
@@ -296,7 +311,7 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     const delegation = await fixtures()
     const repo = new PgMcpInvocationRepo(prisma)
     await repo.mint(mintInput(delegation.id))
-    await repo.claim({ invocationId: INVOCATION, assertionHash: 'peppered:assertion-1', now: at(1_000) })
+    await repo.claim(claimInput(delegation))
 
     await expect(
       repo.complete({
@@ -314,7 +329,7 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     const delegation = await fixtures()
     const repo = new PgMcpInvocationRepo(prisma)
     await repo.mint(mintInput(delegation.id))
-    await repo.claim({ invocationId: INVOCATION, assertionHash: 'peppered:assertion-1', now: at(1_000) })
+    await repo.claim(claimInput(delegation))
 
     expect(await repo.markAmbiguousBefore(at(121_000), at(122_000))).toBe(1)
     expect(
@@ -361,11 +376,7 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
         assertionExpires: at(41_000)
       })
     )
-    await repo.claim({
-      invocationId: OTHER_INVOCATION,
-      assertionHash: 'peppered:assertion-1',
-      now: at(12_000)
-    })
+    await repo.claim(claimInput(liveDelegation!, { invocationId: OTHER_INVOCATION, now: at(12_000) }))
     await repo.complete({
       invocationId: OTHER_INVOCATION,
       status: 'failed',
@@ -455,6 +466,115 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     expect((await minting).kind).toBe('issued')
     expect(await revoking).toBe(true)
     expect(await prisma.mcpInvocation.count()).toBe(1)
+  })
+
+  it('denies claim when revocation wins the parent lock', async () => {
+    const delegation = await fixtures()
+    const repo = new PgMcpInvocationRepo(prisma)
+    await repo.mint(mintInput(delegation.id))
+    const revoked = barrier()
+    const releaseRevoke = barrier()
+    const revoking = prisma.$transaction(
+      async (tx) => {
+        const result = await new PgWebchatMcpDelegationRepo(tx).revoke(revokeInput(delegation))
+        revoked.release()
+        await releaseRevoke.promise
+        return result
+      },
+      { timeout: 20_000 }
+    )
+    await revoked.promise
+
+    const claiming = repo.claim(claimInput(delegation))
+    await expectPending(claiming)
+    releaseRevoke.release()
+
+    expect(await revoking).toBe(true)
+    expect(await claiming).toEqual({ kind: 'denied' })
+    expect(await repo.get(INVOCATION)).toMatchObject({ status: 'issued', startedAt: null })
+  })
+
+  it('claims before a concurrent revoke only while holding the parent share lock', async () => {
+    const delegation = await fixtures()
+    const repo = new PgMcpInvocationRepo(prisma)
+    await repo.mint(mintInput(delegation.id))
+    const claimed = barrier()
+    const releaseClaim = barrier()
+    const claiming = prisma.$transaction(
+      async (tx) => {
+        const result = await new PgMcpInvocationRepo(tx).claim(claimInput(delegation))
+        claimed.release()
+        await releaseClaim.promise
+        return result
+      },
+      { timeout: 20_000 }
+    )
+    await claimed.promise
+
+    const revoking = new PgWebchatMcpDelegationRepo(prisma).revoke(revokeInput(delegation))
+    await expectPending(revoking)
+    releaseClaim.release()
+
+    expect((await claiming).kind).toBe('claimed')
+    expect(await revoking).toBe(true)
+  })
+
+  it('denies claim when expiry shortening wins the parent lock', async () => {
+    const delegation = await fixtures()
+    const repo = new PgMcpInvocationRepo(prisma)
+    await repo.mint(mintInput(delegation.id))
+    const shortened = barrier()
+    const releaseShortening = barrier()
+    const shortening = prisma.$transaction(
+      async (tx) => {
+        const result = await new PgWebchatMcpDelegationRepo(tx).establish({
+          conversationId: CONVERSATION,
+          userId: DEFAULT_OWNER_ID,
+          orgId: OrgId(DEFAULT_ORG_ID),
+          agentId: AgentId(AGENT),
+          daemonId: DaemonId(DAEMON),
+          now: at(500),
+          expiresAt: at(999)
+        })
+        shortened.release()
+        await releaseShortening.promise
+        return result
+      },
+      { timeout: 20_000 }
+    )
+    await shortened.promise
+
+    const claiming = repo.claim(claimInput(delegation))
+    await expectPending(claiming)
+    releaseShortening.release()
+
+    expect((await shortening)?.expiresAt).toEqual(at(999))
+    expect(await claiming).toEqual({ kind: 'denied' })
+  })
+
+  it('denies claim when placement change and delegation revocation win the agent lock', async () => {
+    const delegation = await fixtures()
+    await seedDaemon(prisma, OTHER_DAEMON)
+    const repo = new PgMcpInvocationRepo(prisma)
+    await repo.mint(mintInput(delegation.id))
+    const moved = barrier()
+    const releaseMove = barrier()
+    const moving = prisma.$transaction(
+      async (tx) => {
+        await new PgAgentRepo(tx).setPlacement(AgentId(AGENT), DaemonId(OTHER_DAEMON))
+        moved.release()
+        await releaseMove.promise
+      },
+      { timeout: 20_000 }
+    )
+    await moved.promise
+
+    const claiming = repo.claim(claimInput(delegation))
+    await expectPending(claiming)
+    releaseMove.release()
+
+    await moving
+    expect(await claiming).toEqual({ kind: 'denied' })
   })
 
   it('denies without persisting when expiry shortening wins against mint', async () => {
@@ -597,7 +717,7 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     const delegation = await fixtures()
     const repo = new PgMcpInvocationRepo(prisma)
     await repo.mint(mintInput(delegation.id))
-    await repo.claim({ invocationId: INVOCATION, assertionHash: 'peppered:assertion-1', now: at(1_000) })
+    await repo.claim(claimInput(delegation))
 
     expect(await repo.reap(at(1_000 + MCP_INVOCATION_EXECUTION_TIMEOUT_MS - 1))).toEqual({
       markedAmbiguous: 0,

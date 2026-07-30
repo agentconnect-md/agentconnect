@@ -183,7 +183,9 @@ function harness() {
         }
         return state.delegation
       }),
-      get: vi.fn(async (delegationId: string) => (state.delegation?.id === delegationId ? state.delegation : null))
+      getCurrent: vi.fn(async (delegationId: string) =>
+        state.delegation?.id === delegationId ? state.delegation : null
+      )
     },
     invocations: {
       get: vi.fn(async (invocationId: string) =>

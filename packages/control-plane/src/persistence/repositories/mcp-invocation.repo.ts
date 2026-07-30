@@ -116,9 +116,54 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
 
   async claim(input: ClaimMcpInvocationInput): Promise<ClaimMcpInvocationResult> {
     return this.inTransaction(async (tx) => {
+      // Claim is the final delegated-authority gate. Preserve the placement
+      // writer's Agent → Delegation lock order: a placement change takes the
+      // agent UPDATE lock and revokes the delegation before this can proceed.
+      const [agent] = await tx.$queryRaw<{ daemonId: string | null }[]>(
+        Prisma.sql`
+          SELECT "daemonId"
+          FROM "agent"
+          WHERE "id" = ${input.agentId}
+          FOR SHARE
+        `
+      )
+      if (!agent || agent.daemonId !== input.daemonId) return { kind: 'denied' }
+
+      const conversation = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+        SELECT "id"
+        FROM "webchat_conversation"
+        WHERE "id" = ${input.conversationId}
+          AND "userId" = ${input.userId}
+          AND "orgId" = ${input.orgId}
+          AND "agentId" = ${input.agentId}
+          AND "delegationGeneration" = ${input.generation}
+        FOR SHARE
+      `)
+      if (conversation.length === 0) return { kind: 'denied' }
+
+      // SHARE conflicts with direct revocation, expiry shortening, generation
+      // rotation, and cascade deletion. Check the complete immutable binding so
+      // caller-supplied ids can never transplant an assertion to another parent.
+      const parent = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+        SELECT "id"
+        FROM "webchat_mcp_delegation"
+        WHERE "id" = ${input.delegationId}
+          AND "generation" = ${input.generation}
+          AND "conversationId" = ${input.conversationId}
+          AND "userId" = ${input.userId}
+          AND "orgId" = ${input.orgId}
+          AND "agentId" = ${input.agentId}
+          AND "daemonId" = ${input.daemonId}
+          AND "revokedAt" IS NULL
+          AND "expiresAt" > ${input.now}
+        FOR SHARE
+      `)
+      if (parent.length === 0) return { kind: 'denied' }
+
       const claimed = await tx.mcpInvocation.updateMany({
         where: {
           id: input.invocationId,
+          delegationId: input.delegationId,
           assertionHash: input.assertionHash,
           status: 'issued',
           assertionExpires: { gt: input.now }
@@ -126,7 +171,11 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
         data: { status: 'running', startedAt: input.now }
       })
       const invocation = await tx.mcpInvocation.findFirst({
-        where: { id: input.invocationId, assertionHash: input.assertionHash }
+        where: {
+          id: input.invocationId,
+          delegationId: input.delegationId,
+          assertionHash: input.assertionHash
+        }
       })
       if (claimed.count === 1 && invocation) return { kind: 'claimed', invocation: toRecord(invocation) }
       if (!invocation) return { kind: 'not_found' }
