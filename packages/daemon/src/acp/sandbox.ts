@@ -26,9 +26,29 @@ import { resolveCommandPath } from '../runtimes/probe.js'
  */
 export type SandboxMechanism = 'bwrap' | 'sandbox-exec'
 
+export interface DelegatedCellMount {
+  maskedRoot: string
+  sourceDir: string
+  targetDir: string
+}
+
 /** Raised when a requested sandbox cannot be established safely (e.g. the cwd escapes
  *  the trusted agent dir). Distinct from the "no mechanism" fail-open path. */
 export class SandboxError extends Error {}
+
+/**
+ * Delegated MCP requires enforced Linux mount/PID isolation. A present but optional
+ * sandbox is insufficient because any unconfined ACP host could read another cell's
+ * broker socket source.
+ */
+export function supportsDelegatedMcpIsolation(input: {
+  platform: NodeJS.Platform
+  mechanism?: SandboxMechanism
+  requireSandbox: boolean
+  bwrapProbePassed: boolean
+}): boolean {
+  return input.platform === 'linux' && input.mechanism === 'bwrap' && input.requireSandbox && input.bwrapProbePassed
+}
 
 /** The sandbox launcher available on this host, or undefined (⇒ fail-open). */
 export function detectSandbox(env: NodeJS.ProcessEnv = process.env): SandboxMechanism | undefined {
@@ -141,10 +161,11 @@ function canonical(paths: string[]): string[] {
 export function sandboxWrap(
   cmd: string,
   args: string[],
-  opts: { mechanism: SandboxMechanism; writable: string[] }
+  opts: { mechanism: SandboxMechanism; writable: string[]; maskedReadRoots?: string[] }
 ): { cmd: string; args: string[] } {
   const writable = canonical(opts.writable)
   if (opts.mechanism === 'bwrap') {
+    const maskedReadRoots = canonical(opts.maskedReadRoots ?? [])
     const bwrap: string[] = [
       // A PID namespace is REQUIRED for the read-only root to hold: without it the
       // fresh /proc still lists the daemon (same UID), and a confined agent could
@@ -163,6 +184,7 @@ export function sandboxWrap(
       '--tmpfs',
       tmpdir(), // ...fresh writable tmp...
       ...writable.flatMap((w) => ['--bind', w, w]), // ...and these dirs writable (later binds win)
+      ...maskedReadRoots.flatMap((root) => ['--tmpfs', root]), // mask daemon-owned private socket sources
       '--'
     ]
     return { cmd: 'bwrap', args: [...bwrap, cmd, ...args] }
@@ -174,4 +196,33 @@ export function sandboxWrap(
     '(version 1)(allow default)(deny file-write*)' +
     seatbeltWritable.map((w) => `(allow file-write* (subpath "${w}"))`).join('')
   return { cmd: 'sandbox-exec', args: ['-p', profile, cmd, ...args] }
+}
+
+/**
+ * Wrap one entitled ACP host in bwrap, revealing exactly one cell-private source
+ * after the common broker source root has been hidden by a tmpfs mount.
+ */
+export function delegatedCellSandboxWrap(
+  cmd: string,
+  args: string[],
+  baseWritable: string[],
+  mount: DelegatedCellMount
+): { cmd: string; args: string[] } {
+  const maskedRoot = canonicalTarget(mount.maskedRoot)
+  const sourceDir = canonicalTarget(mount.sourceDir)
+  if (!strictlyInside(maskedRoot, sourceDir)) {
+    throw new SandboxError(`delegated cell source "${mount.sourceDir}" is not inside masked root "${maskedRoot}"`)
+  }
+
+  const wrapped = sandboxWrap(cmd, args, {
+    mechanism: 'bwrap',
+    writable: baseWritable,
+    maskedReadRoots: [maskedRoot]
+  })
+  const separator = wrapped.args.indexOf('--')
+  const cellBind = ['--bind', sourceDir, canonicalTarget(mount.targetDir)]
+  return {
+    cmd: wrapped.cmd,
+    args: [...wrapped.args.slice(0, separator), ...cellBind, ...wrapped.args.slice(separator)]
+  }
 }

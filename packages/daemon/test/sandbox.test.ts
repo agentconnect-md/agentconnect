@@ -42,6 +42,25 @@ describe('sandboxWrap', () => {
     expect(args).toContain('--tmpfs')
     expect(args).not.toContain('--bind')
   })
+
+  it('bwrap: masks trusted read roots without binding their host contents back', () => {
+    const maskedRoot = mkdtempSync(join(tmpdir(), 'ac-admin-sockets-'))
+    const canonicalMaskedRoot = realpathSync(maskedRoot)
+    const { args } = sandboxWrap('x', [], {
+      mechanism: 'bwrap',
+      writable: [],
+      maskedReadRoots: [maskedRoot]
+    })
+
+    const proc = args.indexOf('--proc')
+    expect(args[proc + 1]).toBe('/proc')
+    expect(args).toContain('--unshare-pid')
+
+    const maskedRootIndex = args.indexOf(canonicalMaskedRoot)
+    expect(maskedRootIndex).toBeGreaterThan(0)
+    expect(args[maskedRootIndex - 1]).toBe('--tmpfs')
+    expect(args).not.toContain('--bind')
+  })
 })
 
 // The escalation the reviewer found (#799): the writable set must never be derived
