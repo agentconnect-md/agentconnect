@@ -1,28 +1,5 @@
 import { getAccountToken, getLogtoPublicConfig } from '@/lib/auth'
 
-export interface SocialIdentity {
-  userId: string
-  details: Record<string, unknown>
-}
-
-export interface LogtoAccountProfile {
-  identities: Record<string, SocialIdentity>
-  /** Set when the account can prove ownership a second way (a verified email).
-   *  Logto then REQUIRES that proof before identities may change, so the card
-   *  collects an email code first — see `requestEmailVerification`. */
-  hasSecurityVerificationMethod: boolean
-  primaryEmail?: string
-}
-
-export interface SocialIdentityDetails {
-  name?: string
-  email?: string
-  avatar?: string
-  /** Where this account lives at the provider, when the provider has such a
-   *  place and the connector gave us enough to address it. */
-  profileUrl?: string
-}
-
 export interface SocialLinkFlow {
   state: string
   connectorId: string
@@ -102,29 +79,6 @@ async function accountRequest<T>(path: string, init: RequestInit = {}): Promise<
   return (await response.json()) as T
 }
 
-export async function fetchAccountProfile(): Promise<LogtoAccountProfile> {
-  const body = asRecord(await accountRequest<unknown>('/api/my-account'))
-  const rawIdentities = asRecord(body.identities)
-  const identities = Object.fromEntries(
-    Object.entries(rawIdentities).map(([target, value]) => {
-      const identity = asRecord(value)
-      return [
-        target,
-        {
-          userId: stringValue(identity.userId) ?? '',
-          details: asRecord(identity.details)
-        } satisfies SocialIdentity
-      ]
-    })
-  )
-  const primaryEmail = stringValue(body.primaryEmail)
-  return {
-    identities,
-    hasSecurityVerificationMethod: body.hasSecurityVerificationMethod === true,
-    ...(primaryEmail ? { primaryEmail } : {})
-  }
-}
-
 /** Send an ownership-proof code to the account's own email. */
 export async function requestEmailVerification(email: string): Promise<string> {
   const result = await accountRequest<{ verificationRecordId: string }>('/api/verifications/verification-code', {
@@ -195,47 +149,6 @@ export async function saveSocialIdentity(
     ...(currentVerificationRecordId ? { headers: { 'logto-verification-id': currentVerificationRecordId } } : {}),
     body: JSON.stringify({ newIdentifierVerificationRecordId: verificationRecordId })
   })
-}
-
-/**
- * Where a linked account lives at its provider, so the row can point at the
- * real thing instead of just naming it. Built from the connector's stored
- * `rawData`, which is a snapshot from sign-in — a workspace that has since been
- * renamed yields a stale link, which is why nothing depends on this resolving.
- *
- * Google has no per-person public profile, so it points at the account page the
- * signed-in user can actually act on. Undefined whenever the provider gives us
- * nothing addressable; callers then render plain text.
- */
-function providerProfileUrl(target: string, details: Record<string, unknown>): string | undefined {
-  const raw = details.rawData && typeof details.rawData === 'object' ? (details.rawData as Record<string, unknown>) : {}
-  const userInfo = raw.userInfo && typeof raw.userInfo === 'object' ? (raw.userInfo as Record<string, unknown>) : {}
-
-  if (target === 'github') {
-    const login = stringValue(userInfo.login, raw.login, details.login)
-    return login ? `https://github.com/${encodeURIComponent(login)}` : undefined
-  }
-  if (target === 'slack') {
-    const domain = stringValue(raw['https://slack.com/team_domain'])
-    const userId = stringValue(raw['https://slack.com/user_id'], details.id)
-    return domain && userId ? `https://${domain}.slack.com/team/${encodeURIComponent(userId)}` : undefined
-  }
-  if (target === 'google') return 'https://myaccount.google.com/profile'
-  return undefined
-}
-
-export function socialIdentityDetails(target: string, identity: SocialIdentity): SocialIdentityDetails {
-  const details = identity.details
-  const name = stringValue(details.name, details.displayName, details.login, details.username)
-  const email = stringValue(details.email)
-  const avatar = stringValue(details.avatar, details.picture, details.avatarUrl, details.avatar_url)
-  const profileUrl = providerProfileUrl(target, details)
-  return {
-    ...(name ? { name } : {}),
-    ...(email ? { email } : {}),
-    ...(avatar ? { avatar } : {}),
-    ...(profileUrl ? { profileUrl } : {})
-  }
 }
 
 export function createSocialState(): string {

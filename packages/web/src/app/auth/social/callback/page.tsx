@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui'
 import { Spinner } from '@/components/marks'
+import { refreshMySocialIdentities } from '@/lib/api'
 import {
   accountErrorMessage,
   saveSocialIdentity,
@@ -47,6 +48,9 @@ export default function SocialAccountCallback() {
     const connectorData = { ...Object.fromEntries(params.entries()), redirectUri: flow.redirectUri }
     verifySocialVerification(flow.verificationRecordId, connectorData)
       .then((verified) => saveSocialIdentity(verified, flow.currentVerificationRecordId))
+      // Best-effort: the link already succeeded, so a failure here must not be
+      // reported as one. It only costs a stale row until the cache expires.
+      .then(() => refreshMySocialIdentities().catch(() => undefined))
       .then(() => {
         writeAccountNotice({
           kind: 'success',
