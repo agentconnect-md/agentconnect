@@ -711,6 +711,13 @@ export const CreateIntegrationBody = z
     }
   })
 
+/** `POST /integrations/telegram/check` — preflight a pasted BotFather token
+ * without storing it. */
+export const TelegramBotCheckBody = z.object({ botToken: z.string().min(1) }).strict()
+export const TelegramBotCheckDto = z.object({
+  status: z.enum(['ready', 'privacy_enabled', 'invalid', 'unreachable'])
+})
+
 /** One conversation the integration's bot is in + how it activates there.
  *  `off` = conversation gating (resource-visibility.md §14): the agent does not
  *  activate there — the default for every conversation of a restricted agent.

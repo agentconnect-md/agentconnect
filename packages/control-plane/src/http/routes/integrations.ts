@@ -34,6 +34,8 @@ import { discordAppIdFromBotToken } from '../discord-identity.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
 import {
   CreateIntegrationBody,
+  TelegramBotCheckBody,
+  TelegramBotCheckDto,
   UpdateIntegrationChannelBody,
   IntegrationDto,
   IntegrationChannelDto,
@@ -148,6 +150,33 @@ export function integrationRoutes(deps: HttpDeps) {
         app.log.debug({ integrationId, daemonId }, 'integration/remove skipped: daemon offline')
       }
     }
+
+    r.post(
+      '/integrations/telegram/check',
+      {
+        schema: {
+          tags: [Tag.Integrations],
+          summary: 'Check a Telegram bot',
+          description:
+            'Validate a pasted Telegram bot token and report whether Group Privacy Mode is disabled, without storing the token.',
+          operationId: 'checkTelegramBot',
+          body: TelegramBotCheckBody,
+          response: { 200: TelegramBotCheckDto, 403: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const checked = await deps.verifyTelegramBot(req.body.botToken)
+        return {
+          status:
+            checked.status === 'ok'
+              ? checked.privacyModeDisabled
+                ? ('ready' as const)
+                : ('privacy_enabled' as const)
+              : checked.status
+        }
+      }
+    )
 
     r.post(
       '/integrations',
@@ -366,15 +395,39 @@ export function integrationRoutes(deps: HttpDeps) {
             })
           }
 
-          // Telegram: a single BotFather token — no app-level token and no OAuth /
-          // verification funnel. Register the bot + secret + integration inline and push
-          // it live. Name: operator-typed → getMe-derived (best-effort) → owning agent.
+          // Telegram: `getMe` validates the single BotFather token and confirms
+          // Group Privacy Mode is disabled before anything is stored. Telegram exposes
+          // that setting as read-only; the owner still changes it in @BotFather.
           if (req.body.platform === 'telegram') {
             const tg = req.body.telegram! // superRefine guarantees it when botId is absent
+            const checked = await deps.verifyTelegramBot(tg.botToken)
+            if (checked.status === 'invalid') {
+              return reply.code(400).send({
+                error: 'Bad Request',
+                statusCode: 400,
+                code: 'TELEGRAM_BOT_TOKEN_INVALID',
+                message: 'Telegram rejected the bot token — copy it again from @BotFather.'
+              })
+            }
+            if (checked.status === 'unreachable') {
+              return reply.code(503).send({
+                error: 'Service Unavailable',
+                statusCode: 503,
+                code: 'TELEGRAM_BOT_CHECK_UNAVAILABLE',
+                message: 'AgentConnect could not reach Telegram to check this bot. Try again in a moment.'
+              })
+            }
+            if (!checked.privacyModeDisabled) {
+              return reply.code(400).send({
+                error: 'Bad Request',
+                statusCode: 400,
+                code: 'TELEGRAM_PRIVACY_MODE_ENABLED',
+                message:
+                  'Privacy Mode is still on. In @BotFather, send /setprivacy, select this bot, choose Disable, then try again.'
+              })
+            }
             const provided = req.body.name?.trim()
-            const derived =
-              !provided && deps.resolveTelegramBotName ? await deps.resolveTelegramBotName(tg.botToken) : null
-            const name = provided || derived || agent.name
+            const name = provided || checked.name || agent.name
             const botId = BotId(randomUUID())
             await deps.repos.bot.create({
               id: botId,

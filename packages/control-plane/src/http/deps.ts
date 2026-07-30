@@ -65,7 +65,7 @@ import type { HumanAuthConfig } from './plugins/auth.js'
 import type { SlackBotVerifier, SlackAppTokenVerifier } from './slack-identity.js'
 import type { SlackPlatformAppConfig } from '../config/slack-platform.js'
 import type { SlackConfigApi } from './slack-config-api.js'
-import type { TelegramBotNameResolver } from './telegram-identity.js'
+import type { TelegramBotVerifier } from './telegram-identity.js'
 import type { TelegramBotIconSyncer } from './telegram-bot-profile.js'
 import type { DiscordBotVerifier, DiscordMessageContentIntentEnsurer } from './discord-identity.js'
 import type { DiscordBotIconSyncer } from './discord-bot-profile.js'
@@ -256,9 +256,9 @@ export interface HttpDeps {
    *  (§Tier B). Optional/injectable; absent (with PUBLIC_CP_URL) ⇒ the funnel routes
    *  404 and the console falls back to the manual manifest flow. */
   slackConfigApi?: SlackConfigApi
-  /** Derives a Telegram integration's name from `getMe` when the install omits one.
-   *  Optional/injectable so tests stay offline (absent ⇒ route falls back to the agent name). */
-  resolveTelegramBotName?: TelegramBotNameResolver
+  /** Validates a Telegram token, derives its bot name, and checks that Group Privacy
+   *  Mode is disabled before the integration is installed. */
+  verifyTelegramBot: TelegramBotVerifier
   /** Applies a newly registered Telegram bot's Agent icon to its profile.
    *  Cosmetic and best-effort: install survives a sync failure. */
   syncTelegramBotIcon?: TelegramBotIconSyncer
