@@ -1,0 +1,188 @@
+import { describe, expect, it, vi } from 'vitest'
+import { FakeClock } from '../../test/fakes/fake-clock.js'
+import {
+  MCP_INVOCATION_EXECUTION_TIMEOUT_MS,
+  MCP_INVOCATION_REAP_INTERVAL_MS,
+  McpInvocationReaper
+} from './mcpInvocationReaper.js'
+import { MCP_INVOCATION_RESPONSE_CACHE_TTL_MS } from '../persistence/ports.js'
+
+const NOW = Date.parse('2026-07-30T00:00:00.000Z')
+
+async function flush(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve))
+}
+
+function setup() {
+  const calls: string[] = []
+  const clock = new FakeClock(NOW)
+  const invocations = {
+    reap: vi.fn(async (now: Date) => {
+      calls.push(`invocations:${now.toISOString()}`)
+      return { markedAmbiguous: 1, deleted: 2 }
+    })
+  }
+  const delegations = {
+    reapExpired: vi.fn(async (now: Date) => {
+      calls.push(`delegations:${now.toISOString()}`)
+      return 3
+    })
+  }
+  const reaper = new McpInvocationReaper(invocations, delegations, clock)
+  return { calls, clock, invocations, delegations, reaper }
+}
+
+describe('McpInvocationReaper', () => {
+  it('shares the exact 120-second execution deadline constant with MCP dispatch', async () => {
+    const route = await import('../http/mcp/routes.js')
+    expect(MCP_INVOCATION_EXECUTION_TIMEOUT_MS).toBe(120_000)
+    expect(route.MCP_INVOCATION_EXECUTION_TIMEOUT_MS).toBe(MCP_INVOCATION_EXECUTION_TIMEOUT_MS)
+  })
+
+  it('reaps issued/running/terminal invocation state before deleting expired delegations', async () => {
+    const { calls, invocations, delegations, reaper } = setup()
+
+    await reaper.tick()
+
+    expect(invocations.reap).toHaveBeenCalledWith(new Date(NOW))
+    expect(delegations.reapExpired).toHaveBeenCalledWith(new Date(NOW))
+    expect(calls).toEqual(['invocations:2026-07-30T00:00:00.000Z', 'delegations:2026-07-30T00:00:00.000Z'])
+  })
+
+  it('applies issued, exact-running, terminal-cache, and dependent-delegation boundaries from a fake clock', async () => {
+    type Row = {
+      id: string
+      status: 'issued' | 'running' | 'succeeded' | 'ambiguous'
+      assertionExpires: number
+      startedAt: number | null
+      completedAt: number | null
+    }
+    const clock = new FakeClock(NOW)
+    const rows: Row[] = [
+      {
+        id: 'issued',
+        status: 'issued',
+        assertionExpires: NOW + 30_000,
+        startedAt: null,
+        completedAt: null
+      },
+      {
+        id: 'running',
+        status: 'running',
+        assertionExpires: NOW + 30_000,
+        startedAt: NOW,
+        completedAt: null
+      },
+      {
+        id: 'terminal',
+        status: 'succeeded',
+        assertionExpires: NOW,
+        startedAt: NOW,
+        completedAt: NOW
+      }
+    ]
+    let delegationPresent = true
+    const invocations = {
+      reap: vi.fn(async (now: Date) => {
+        let markedAmbiguous = 0
+        let deleted = 0
+        for (const row of rows) {
+          if (
+            row.status === 'running' &&
+            row.startedAt !== null &&
+            row.startedAt + MCP_INVOCATION_EXECUTION_TIMEOUT_MS <= now.getTime()
+          ) {
+            row.status = 'ambiguous'
+            row.completedAt = now.getTime()
+            markedAmbiguous += 1
+          }
+        }
+        for (let index = rows.length - 1; index >= 0; index -= 1) {
+          const row = rows[index]!
+          const expiredIssued = row.status === 'issued' && row.assertionExpires <= now.getTime()
+          const expiredTerminal =
+            (row.status === 'succeeded' || row.status === 'ambiguous') &&
+            row.completedAt !== null &&
+            row.completedAt + MCP_INVOCATION_RESPONSE_CACHE_TTL_MS <= now.getTime()
+          if (expiredIssued || expiredTerminal) {
+            rows.splice(index, 1)
+            deleted += 1
+          }
+        }
+        return { markedAmbiguous, deleted }
+      })
+    }
+    const delegations = {
+      reapExpired: vi.fn(async (now: Date) => {
+        if (delegationPresent && now.getTime() >= NOW + 30_000 && rows.length === 0) {
+          delegationPresent = false
+          return 1
+        }
+        return 0
+      })
+    }
+    const reaper = new McpInvocationReaper(invocations, delegations, clock)
+
+    clock.advance(29_999)
+    await reaper.tick()
+    expect(rows.map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: 'issued', status: 'issued' },
+      { id: 'running', status: 'running' },
+      { id: 'terminal', status: 'succeeded' }
+    ])
+
+    clock.advance(1)
+    await reaper.tick()
+    expect(rows.some(({ id }) => id === 'issued')).toBe(false)
+    expect(delegationPresent).toBe(true)
+
+    clock.advance(MCP_INVOCATION_EXECUTION_TIMEOUT_MS - 30_001)
+    await reaper.tick()
+    expect(rows.find(({ id }) => id === 'running')?.status).toBe('running')
+
+    clock.advance(1)
+    await reaper.tick()
+    expect(rows.find(({ id }) => id === 'running')).toMatchObject({
+      status: 'ambiguous',
+      completedAt: NOW + MCP_INVOCATION_EXECUTION_TIMEOUT_MS
+    })
+
+    clock.advance(MCP_INVOCATION_RESPONSE_CACHE_TTL_MS - MCP_INVOCATION_EXECUTION_TIMEOUT_MS)
+    await reaper.tick()
+    expect(rows.some(({ id }) => id === 'terminal')).toBe(false)
+    expect(rows.some(({ id }) => id === 'running')).toBe(true)
+    expect(delegationPresent).toBe(true)
+
+    clock.advance(MCP_INVOCATION_EXECUTION_TIMEOUT_MS)
+    await reaper.tick()
+    expect(rows).toEqual([])
+    expect(delegationPresent).toBe(false)
+  })
+
+  it('does not delete a delegation when invocation recovery fails', async () => {
+    const { invocations, delegations, reaper } = setup()
+    invocations.reap.mockRejectedValueOnce(new Error('db unavailable'))
+
+    await expect(reaper.tick()).resolves.toBeUndefined()
+
+    expect(delegations.reapExpired).not.toHaveBeenCalled()
+  })
+
+  it('starts and stops one Clock-owned periodic loop', async () => {
+    const { clock, invocations, reaper } = setup()
+    reaper.start()
+    reaper.start()
+    expect(clock.pendingTimers()).toBe(1)
+
+    clock.advance(MCP_INVOCATION_REAP_INTERVAL_MS)
+    await flush()
+    expect(invocations.reap).toHaveBeenCalledTimes(1)
+    expect(clock.pendingTimers()).toBe(1)
+
+    reaper.stop()
+    expect(clock.pendingTimers()).toBe(0)
+    clock.advance(MCP_INVOCATION_REAP_INTERVAL_MS)
+    await flush()
+    expect(invocations.reap).toHaveBeenCalledTimes(1)
+  })
+})

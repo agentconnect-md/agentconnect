@@ -19,9 +19,10 @@ import {
   type OrgMemberRole,
   type ReapMcpInvocationsResult
 } from '../ports.js'
+import { MCP_INVOCATION_EXECUTION_TIMEOUT_MS } from '../../domain/mcp-invocation.js'
 
 export { MCP_INVOCATION_MAX_RESPONSE_BYTES, MCP_INVOCATION_RESPONSE_CACHE_TTL_MS } from '../ports.js'
-export const MCP_INVOCATION_EXECUTION_TIMEOUT_MS = 120_000
+export { MCP_INVOCATION_EXECUTION_TIMEOUT_MS } from '../../domain/mcp-invocation.js'
 
 const isP2002 = (error: unknown): boolean => (error as { code?: string }).code === 'P2002'
 const isP2003 = (error: unknown): boolean => (error as { code?: string }).code === 'P2003'

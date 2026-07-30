@@ -35,11 +35,11 @@ import { MCP_TOOLS, findTool, toolDescriptor, type McpToolCtx, type RestResult }
 import { publicBaseUrl, mcpAuthenticateChallenge } from '../oauth/base.js'
 import { INTERNAL_INVOCATION_AUTH_HEADER } from './internal-invocation-auth.js'
 import type { InvocationContext, ParsedInvocationMetadata } from './invocation-authenticator.js'
-import {
-  MCP_INVOCATION_EXECUTION_TIMEOUT_MS,
-  MCP_INVOCATION_MAX_RESPONSE_BYTES
-} from '../../persistence/repositories/mcp-invocation.repo.js'
+import { MCP_INVOCATION_MAX_RESPONSE_BYTES } from '../../persistence/repositories/mcp-invocation.repo.js'
+import { MCP_INVOCATION_EXECUTION_TIMEOUT_MS } from '../../domain/mcp-invocation.js'
 import { INVOCATION_ASSERTION_PREFIX } from '../../registry/invocationAssertion.js'
+
+export { MCP_INVOCATION_EXECUTION_TIMEOUT_MS } from '../../domain/mcp-invocation.js'
 
 export const MCP_PATH = '/mcp'
 

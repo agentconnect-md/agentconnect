@@ -34,6 +34,8 @@ import { handleGitCredRequest } from './gitcred.js'
 import { handleHookStart } from './hook-start.js'
 import { handleGithubReviewAuthorize } from './github-review-authorize.js'
 import { handleGithubReviewResult } from './github-review-result.js'
+import { handleMcpInvocationMint } from './mcp-invocation-mint.js'
+import { handleWebchatMcpDelegationRevoke } from './webchat-mcp-delegation-revoke.js'
 
 export type Handler = (frame: AnyFrame, conn: DaemonConnection, deps: DaemonWsDeps) => Promise<void>
 
@@ -60,6 +62,8 @@ export class FrameRouter {
       'event/session': handleEventSession,
       'event/session-activity': handleSessionActivity,
       'gitcred/request': handleGitCredRequest,
+      'mcp/invocation/mint': handleMcpInvocationMint,
+      'webchat/mcp-delegation/revoke': handleWebchatMcpDelegationRevoke,
       ...overrides
     }
   }
@@ -88,5 +92,7 @@ export {
   handleChannelAgents,
   handleChildSessionStatus,
   handleEventSession,
-  handleSessionActivity
+  handleSessionActivity,
+  handleMcpInvocationMint,
+  handleWebchatMcpDelegationRevoke
 }

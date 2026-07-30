@@ -9,6 +9,7 @@ import {
   WebchatMcpDelegationRevoked,
   buildEnvelope,
   decodeEnvelope,
+  encode,
   isFrame
 } from '../index.js'
 
@@ -31,6 +32,28 @@ const mint = {
 }
 
 describe('delegated MCP contracts', () => {
+  it.each(['DELEGATION_DENIED', 'INVOCATION_CONFLICT'] as const)(
+    'round-trips the exact %s correlated error code',
+    (code) => {
+      const request = buildEnvelope('mcp/invocation/mint', mint)
+      const reply = buildEnvelope(
+        'error',
+        {
+          code,
+          message: code === 'DELEGATION_DENIED' ? 'Delegated MCP invocation is not authorized.' : 'conflict',
+          retryable: false
+        },
+        { corr: request.id }
+      )
+
+      const decoded = decodeEnvelope(encode(reply))
+      expect(decoded.ok).toBe(true)
+      if (!decoded.ok || !isFrame('error')(decoded.frame)) throw new Error('expected error frame')
+      expect(decoded.frame.payload.code).toBe(code)
+      expect(decoded.frame.corr).toBe(request.id)
+    }
+  )
+
   it('publishes the daemon capability feature name', () => {
     expect(DELEGATED_MCP_ASSERTION_FEATURE).toBe('delegated_mcp_assertion_v1')
   })

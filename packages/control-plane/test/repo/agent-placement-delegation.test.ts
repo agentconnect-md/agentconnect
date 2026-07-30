@@ -219,6 +219,33 @@ describe('agent placement and webchat MCP delegation serialization (real Postgre
     })
   })
 
+  it('revokes every active delegation for the agent in one movePlacement transaction', async () => {
+    const { input } = await fixtures()
+    await prisma.webchatConversation.create({
+      data: {
+        id: OTHER_CONVERSATION,
+        orgId: DEFAULT_ORG_ID,
+        agentId: AGENT,
+        userId: DEFAULT_OWNER_ID
+      }
+    })
+    const delegations = new PgWebchatMcpDelegationRepo(prisma)
+    const first = (await delegations.establish(input))!
+    const second = (await delegations.establish({
+      ...input,
+      conversationId: OTHER_CONVERSATION
+    }))!
+
+    expect(await new PgAgentRepo(prisma).movePlacement(AGENT, DAEMON, OTHER_DAEMON)).not.toBeNull()
+
+    for (const id of [first.id, second.id]) {
+      expect(await delegations.get(id)).toMatchObject({
+        revokedReason: 'agent_placement_changed',
+        revokedAt: expect.any(Date)
+      })
+    }
+  })
+
   it('rolls placement and delegation revocation back together on transaction failure', async () => {
     const { input } = await fixtures()
     const delegations = new PgWebchatMcpDelegationRepo(prisma)

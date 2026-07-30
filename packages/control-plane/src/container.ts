@@ -95,6 +95,7 @@ import { CronRunReaper } from './orchestrator/cronRunReaper.js'
 import { SlackInstallReaper } from './orchestrator/slackInstallReaper.js'
 import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
+import { McpInvocationReaper } from './orchestrator/mcpInvocationReaper.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
 import { SlackBotIdentityReconciler } from './orchestrator/slackBotIdentityReconciler.js'
 import { slackConfigApi } from './http/slack-config-api.js'
@@ -802,6 +803,11 @@ export function buildContainer(
     http.log
   )
 
+  // Durable one-time assertion recovery. Invocation rows are reaped before
+  // expired delegations so a parent is never removed while cached/recoverable
+  // invocation state still depends on it.
+  const mcpInvocationReaper = new McpInvocationReaper(repos.mcpInvocation, repos.webchatMcpDelegation, clock, http.log)
+
   // Redelivery reconciliation (webhook-triggers P2.5): recovers github events
   // lost to a relay-pool outage by asking GitHub to redeliver GUIDs that never
   // produced a HookRun. Only exists when the App is configured; same lifecycle
@@ -911,6 +917,8 @@ export function buildContainer(
     connReg,
     session: repos.session,
     webchatConversation: repos.webchatConversation,
+    webchatMcpDelegation,
+    webchatMcpDelegations: repos.webchatMcpDelegation,
     launch: repos.launch,
     visibilityPush,
     events,
@@ -1229,6 +1237,7 @@ export function buildContainer(
     startBackground() {
       cronRunReaper.start()
       hookRunReaper.start()
+      mcpInvocationReaper.start()
       githubRunReporter?.start()
       hookRedeliveryReconciler?.start()
       slackInstallReaper.start()
@@ -1243,6 +1252,7 @@ export function buildContainer(
     async shutdown() {
       cronRunReaper.stop()
       hookRunReaper.stop()
+      mcpInvocationReaper.stop()
       githubRunReporter?.stop()
       hookRedeliveryReconciler?.stop()
       installationDoorbell?.stop()
