@@ -15,7 +15,8 @@ export type DiscordBotVerification =
   | { status: 'unreachable' } // network / timeout / non-401 non-2xx — inconclusive, do not block
 
 export type DiscordBotVerifier = (botToken: string) => Promise<DiscordBotVerification>
-export type DiscordMessageContentIntentEnsurer = (botToken: string) => Promise<boolean>
+export type DiscordMessageContentIntentSetup = 'ready' | 'rejected' | 'unreachable'
+export type DiscordMessageContentIntentEnsurer = (botToken: string) => Promise<DiscordMessageContentIntentSetup>
 
 /** The application (client) id embedded in a bot token's first segment, or undefined
  *  when the shape is unexpected. A Discord bot token is `<base64url(appId)>.<ts>.<hmac>`
@@ -56,6 +57,10 @@ function hasMessageContentIntent(flags: number): boolean {
   return (flags & (GATEWAY_MESSAGE_CONTENT | GATEWAY_MESSAGE_CONTENT_LIMITED)) !== 0
 }
 
+function intentSetupFailure(status: number): DiscordMessageContentIntentSetup {
+  return status >= 400 && status < 500 && status !== 408 && status !== 429 ? 'rejected' : 'unreachable'
+}
+
 /** `GET /users/@me` with the bot token → validity + the derived name (`username`,
  *  with `#discriminator` for legacy bots, else `global_name`). */
 export const verifyDiscordBot: DiscordBotVerifier = async (botToken) => {
@@ -85,11 +90,11 @@ export const ensureDiscordMessageContentIntent: DiscordMessageContentIntentEnsur
       headers,
       signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS)
     })
-    if (!current.ok) return false
+    if (!current.ok) return intentSetupFailure(current.status)
 
     const currentFlags = applicationFlags(await current.json())
-    if (currentFlags === null) return false
-    if (hasMessageContentIntent(currentFlags)) return true
+    if (currentFlags === null) return 'unreachable'
+    if (hasMessageContentIntent(currentFlags)) return 'ready'
 
     const flags = (currentFlags & EDITABLE_LIMITED_INTENTS) | GATEWAY_MESSAGE_CONTENT_LIMITED
     const updated = await fetch(`${DISCORD_API}/applications/@me`, {
@@ -98,11 +103,12 @@ export const ensureDiscordMessageContentIntent: DiscordMessageContentIntentEnsur
       body: JSON.stringify({ flags }),
       signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS)
     })
-    if (!updated.ok) return false
+    if (!updated.ok) return intentSetupFailure(updated.status)
 
     const updatedFlags = applicationFlags(await updated.json())
-    return updatedFlags !== null && hasMessageContentIntent(updatedFlags)
+    if (updatedFlags === null) return 'unreachable'
+    return hasMessageContentIntent(updatedFlags) ? 'ready' : 'rejected'
   } catch {
-    return false
+    return 'unreachable'
   }
 }

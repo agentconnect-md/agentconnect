@@ -159,7 +159,7 @@ export function integrationRoutes(deps: HttpDeps) {
             'Install a platform integration on a placed agent, reusing a free bot or registering a new one from pasted tokens, then push it live to the owning daemon.',
           operationId: 'createIntegration',
           body: CreateIntegrationBody,
-          response: { 201: IntegrationDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+          response: { 201: IntegrationDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -403,14 +403,23 @@ export function integrationRoutes(deps: HttpDeps) {
                   'Discord rejected the bot token — check you pasted the Bot token from the Developer Portal (Bot → Reset Token).'
               })
             }
-            const intentReady = await deps.ensureDiscordMessageContentIntent(discord.botToken)
-            if (!intentReady) {
+            const intentSetup = await deps.ensureDiscordMessageContentIntent(discord.botToken)
+            if (intentSetup === 'rejected') {
               return reply.code(400).send({
                 error: 'Bad Request',
                 statusCode: 400,
                 code: 'DISCORD_MESSAGE_CONTENT_INTENT_SETUP_FAILED',
                 message:
                   'AgentConnect could not enable Message Content Intent automatically. Open the Discord Developer Portal → Bot → Privileged Gateway Intents, turn on Message Content Intent, save, then try again.'
+              })
+            }
+            if (intentSetup === 'unreachable') {
+              return reply.code(503).send({
+                error: 'Service Unavailable',
+                statusCode: 503,
+                code: 'DISCORD_MESSAGE_CONTENT_INTENT_CHECK_UNAVAILABLE',
+                message:
+                  'AgentConnect could not reach Discord to check or enable Message Content Intent. Try installing again in a moment.'
               })
             }
             // Name: operator-typed → users/@me-derived (best-effort) → owning agent. The

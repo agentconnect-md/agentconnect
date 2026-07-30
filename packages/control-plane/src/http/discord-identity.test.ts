@@ -16,7 +16,7 @@ describe('ensureDiscordMessageContentIntent', () => {
       const fetchMock = vi.fn(async () => new Response(JSON.stringify({ flags }), { status: 200 }))
       vi.stubGlobal('fetch', fetchMock)
 
-      await expect(ensureDiscordMessageContentIntent('discord-secret')).resolves.toBe(true)
+      await expect(ensureDiscordMessageContentIntent('discord-secret')).resolves.toBe('ready')
       expect(fetchMock).toHaveBeenCalledTimes(1)
     }
   )
@@ -32,7 +32,7 @@ describe('ensureDiscordMessageContentIntent', () => {
       )
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(ensureDiscordMessageContentIntent('discord-secret')).resolves.toBe(true)
+    await expect(ensureDiscordMessageContentIntent('discord-secret')).resolves.toBe('ready')
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
       DISCORD_APPLICATION,
@@ -56,6 +56,24 @@ describe('ensureDiscordMessageContentIntent', () => {
       .mockResolvedValueOnce(new Response('forbidden', { status: 403 }))
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(ensureDiscordMessageContentIntent('discord-secret')).resolves.toBe(false)
+    await expect(ensureDiscordMessageContentIntent('discord-secret')).resolves.toBe('rejected')
+  })
+
+  it.each([429, 500])('reports Discord as unreachable after a transient %i response', async (status) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('unavailable', { status }))
+    )
+
+    await expect(ensureDiscordMessageContentIntent('discord-secret')).resolves.toBe('unreachable')
+  })
+
+  it('reports Discord as unreachable when the request fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Promise.reject(new Error('network down')))
+    )
+
+    await expect(ensureDiscordMessageContentIntent('discord-secret')).resolves.toBe('unreachable')
   })
 })
