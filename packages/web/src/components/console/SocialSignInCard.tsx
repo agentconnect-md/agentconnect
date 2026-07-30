@@ -67,7 +67,7 @@ function UnlinkDialog({
             <Icon name="unlink" size={16} color="var(--brand)" />
           </span>
           <span id={titleId} className="flex-1 font-sans text-[16px] font-semibold leading-normal">
-            Remove {provider.name}
+            Unlink {provider.name}
           </span>
           <button type="button" className="iconbtn" aria-label="Close" disabled={busy} onClick={onClose}>
             <Icon name="x" size={16} />
@@ -89,7 +89,7 @@ function UnlinkDialog({
             Cancel
           </Button>
           <Button variant="danger" disabled={busy} onClick={() => void submit()}>
-            {busy ? 'Removing…' : `Remove ${provider.name}`}
+            {busy ? 'Unlinking…' : `Unlink ${provider.name}`}
           </Button>
         </div>
       </div>
@@ -122,15 +122,20 @@ export default function SocialSignInCard({
   const {
     data: account,
     error,
-    isLoading,
+    isValidating,
     mutate
   } = useSWR('logto-account-sign-in-methods', fetchAccountProfile, {
-    revalidateOnFocus: true
+    // Provider rows are static; linked identity details load once per mount
+    // and refresh only after an explicit retry or mutation.
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+    shouldRetryOnError: false
   })
   const [pendingUnlink, setPendingUnlink] = useState<SocialLoginProvider>()
   const [busyProvider, setBusyProvider] = useState<SocialLoginProvider['target']>()
-  const linkedProviderCount = account
-    ? SOCIAL_LOGIN_PROVIDERS.filter((provider) => account.identities[provider.target]).length
+  const currentAccount = error ? undefined : account
+  const linkedProviderCount = currentAccount
+    ? SOCIAL_LOGIN_PROVIDERS.filter((provider) => currentAccount.identities[provider.target]).length
     : 0
 
   const startLink = async (provider: SocialLoginProvider) => {
@@ -162,7 +167,7 @@ export default function SocialSignInCard({
     await unlinkMySocialIdentity(provider.target)
     await mutate()
     setPendingUnlink(undefined)
-    onNotice({ kind: 'success', message: `${provider.name} was disconnected.` })
+    onNotice({ kind: 'success', message: `${provider.name} was unlinked.` })
   }
 
   const shell = mobile
@@ -180,7 +185,7 @@ export default function SocialSignInCard({
             </div>
             {!mobile ? (
               <div className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                Connect more than one social account to the same AgentConnect profile.
+                Link more than one social account to the same AgentConnect profile.
               </div>
             ) : null}
           </div>
@@ -188,11 +193,7 @@ export default function SocialSignInCard({
 
         {notice ? <Notice notice={notice} /> : null}
 
-        {isLoading ? (
-          <div className="px-4 py-5 font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-            Loading sign-in methods…
-          </div>
-        ) : error || !account ? (
+        {!isValidating && (error || !account) ? (
           <div className="flex items-center justify-between gap-4 px-4 py-4">
             <span className="font-sans text-[13px] font-normal leading-normal text-(--status-error)">
               {accountErrorMessage(error)}
@@ -201,27 +202,27 @@ export default function SocialSignInCard({
               Retry
             </Button>
           </div>
-        ) : (
-          <div>
-            {SOCIAL_LOGIN_PROVIDERS.map((provider, index) => {
-              const identity = account.identities[provider.target]
-              const details = identity ? socialIdentityDetails(identity) : undefined
-              const canUnlink = linkedProviderCount > 1
-              return (
-                <div
-                  key={provider.target}
-                  className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-3.5 desktop:grid-cols-[170px_minmax(0,1fr)_auto] ${
-                    index > 0 ? 'border-t border-(--border-subtle)' : ''
-                  }`}
-                >
-                  <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-3">
-                    <ProviderMark provider={provider} />
-                    <span className="truncate font-sans text-[13.5px] font-semibold leading-normal">
-                      {provider.name}
-                    </span>
-                  </div>
-                  <div className="col-span-2 row-start-2 min-w-0 desktop:col-span-1 desktop:col-start-2 desktop:row-start-1">
-                    {identity ? (
+        ) : null}
+
+        <div aria-busy={isValidating}>
+          {SOCIAL_LOGIN_PROVIDERS.map((provider, index) => {
+            const identity = currentAccount?.identities[provider.target]
+            const details = identity ? socialIdentityDetails(identity) : undefined
+            const canUnlink = linkedProviderCount > 1
+            return (
+              <div
+                key={provider.target}
+                className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-3.5 desktop:grid-cols-[170px_minmax(0,1fr)_auto] ${
+                  index > 0 ? 'border-t border-(--border-subtle)' : ''
+                }`}
+              >
+                <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-3">
+                  <ProviderMark provider={provider} />
+                  <span className="truncate font-sans text-[13.5px] font-semibold leading-normal">{provider.name}</span>
+                </div>
+                <div className="col-span-2 row-start-2 min-w-0 desktop:col-span-1 desktop:col-start-2 desktop:row-start-1">
+                  {currentAccount ? (
+                    identity ? (
                       <div className="flex min-w-0 items-center gap-2.5">
                         <Avatar
                           src={details?.avatar}
@@ -231,7 +232,7 @@ export default function SocialSignInCard({
                         />
                         <div className="min-w-0">
                           <div className="truncate font-sans text-[13px] font-medium leading-normal">
-                            {details?.name ?? 'Connected'}
+                            {details?.name ?? 'Linked'}
                           </div>
                           {details?.email ? (
                             <div className="truncate font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
@@ -242,22 +243,24 @@ export default function SocialSignInCard({
                       </div>
                     ) : (
                       <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-                        Not connected
+                        Not linked
                       </span>
-                    )}
-                  </div>
-                  <div className="col-start-2 row-start-1 flex items-center justify-end gap-1 desktop:col-start-3">
-                    {identity ? (
-                      <span title={canUnlink ? undefined : 'Connect another sign-in method before removing this one.'}>
+                    )
+                  ) : null}
+                </div>
+                <div className="col-start-2 row-start-1 flex items-center justify-end gap-1 desktop:col-start-3">
+                  {currentAccount ? (
+                    identity ? (
+                      canUnlink ? (
                         <Button
                           variant="ghost"
                           size="xs"
-                          disabled={busyProvider !== undefined || !canUnlink}
+                          disabled={busyProvider !== undefined}
                           onClick={() => setPendingUnlink(provider)}
                         >
-                          <span className="text-(--status-error)">Remove</span>
+                          <span className="text-(--status-error)">Unlink</span>
                         </Button>
-                      </span>
+                      ) : null
                     ) : (
                       <Button
                         variant="secondary"
@@ -265,16 +268,16 @@ export default function SocialSignInCard({
                         disabled={busyProvider !== undefined}
                         onClick={() => void startLink(provider)}
                       >
-                        <Icon name="plus" size={13} />
-                        {busyProvider === provider.target ? 'Connecting…' : 'Connect'}
+                        <Icon name="link" size={14} />
+                        {busyProvider === provider.target ? 'Linking…' : 'Link'}
                       </Button>
-                    )}
-                  </div>
+                    )
+                  ) : null}
                 </div>
-              )
-            })}
-          </div>
-        )}
+              </div>
+            )
+          })}
+        </div>
       </section>
 
       {pendingUnlink ? (
