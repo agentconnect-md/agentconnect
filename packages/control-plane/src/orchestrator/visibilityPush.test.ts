@@ -285,6 +285,103 @@ describe('replayTo — register-time convergence', () => {
     }
   })
 
+  it('resumes after a retryable send failure — the daemon is still connected', async () => {
+    vi.useFakeTimers()
+    try {
+      // A correlator timeout surfaces as an ordinary rejection, NOT NoConnection:
+      // the daemon is still there, so no register is coming to converge the tail.
+      const sessionVisibilitySnapshot = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('INTERNAL: ack timeout'))
+        .mockResolvedValue({ ok: true })
+      const push = new SessionVisibilityPushService({
+        repos: {
+          session: {
+            recordVisibilityAck: vi.fn(async () => {}),
+            visibilitySnapshotForDaemon: vi.fn(async () => page(2)),
+            countUnackedVisibility: vi.fn(async () => 0),
+            get: vi.fn(async () => null)
+          } as never,
+          agent: { get: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+        },
+        control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot } as never,
+        connReg: connReg(),
+        log: { warn: vi.fn() }
+      })
+
+      await push.replayTo(DAEMON as never)
+      await vi.advanceTimersByTimeAsync(30_000)
+      await push.settle()
+      expect(sessionVisibilitySnapshot).toHaveBeenCalledTimes(2) // it came back
+      push.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('resumes when recording the acks fails, so the CP does not lose the tail', async () => {
+    vi.useFakeTimers()
+    try {
+      const recordVisibilityAck = vi.fn().mockRejectedValueOnce(new Error('db down')).mockResolvedValue(undefined)
+      const sessionVisibilitySnapshot = vi.fn(async () => ({ ok: true }))
+      const push = new SessionVisibilityPushService({
+        repos: {
+          session: {
+            recordVisibilityAck,
+            visibilitySnapshotForDaemon: vi.fn(async () => page(2)),
+            countUnackedVisibility: vi.fn(async () => 0),
+            get: vi.fn(async () => null)
+          } as never,
+          agent: { get: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+        },
+        control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot } as never,
+        connReg: connReg(),
+        log: { warn: vi.fn() }
+      })
+
+      await push.replayTo(DAEMON as never)
+      await vi.advanceTimersByTimeAsync(30_000)
+      await push.settle()
+      // Re-sent and recorded: the daemon answers `superseded`, nothing double-applies.
+      expect(sessionVisibilitySnapshot).toHaveBeenCalledTimes(2)
+      push.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does NOT arm a timer when the daemon simply disconnected — register converges', async () => {
+    vi.useFakeTimers()
+    try {
+      const sessionVisibilitySnapshot = vi.fn(async () => {
+        throw new NoConnection(DAEMON)
+      })
+      const visibilitySnapshotForDaemon = vi.fn(async () => page(500))
+      const push = new SessionVisibilityPushService({
+        repos: {
+          session: {
+            recordVisibilityAck: vi.fn(async () => {}),
+            visibilitySnapshotForDaemon,
+            countUnackedVisibility: vi.fn(async () => 10),
+            get: vi.fn(async () => null)
+          } as never,
+          agent: { get: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+        },
+        control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot } as never,
+        connReg: connReg(),
+        log: { warn: vi.fn() }
+      })
+
+      await push.replayTo(DAEMON as never)
+      await vi.advanceTimersByTimeAsync(60_000)
+      await push.settle()
+      expect(visibilitySnapshotForDaemon).toHaveBeenCalledTimes(1)
+      push.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('sends nothing to a daemon that does not advertise the feature', async () => {
     const d = deps({ snapshotPages: [page(3)], connReg: connReg({ feature: false }) as never })
     await d.push.replayTo(DAEMON as never)

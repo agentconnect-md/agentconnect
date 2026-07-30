@@ -29,7 +29,7 @@
 import { SESSION_VISIBILITY_FEATURE, type SessionVisibilityPush } from '@agentconnect.md/protocol'
 import type { AgentRepo, SessionMetaRecord, SessionRepo, SessionVisibilityState } from '../persistence/ports.js'
 import { SessionId, type DaemonId } from '../domain/ids.js'
-import type { ConnectionRegistry } from '../ws/registry.js'
+import { ConnectionClosed, type ConnectionRegistry } from '../ws/registry.js'
 import { NoConnection, type ControlSender } from './outbound.js'
 
 /** Entries per snapshot frame. The schema caps at 1000; stay well under the
@@ -153,7 +153,14 @@ export class SessionVisibilityPushService {
       if (this.stopped) return // shutdown: the next process converges on register
       const page = await this.deps.repos.session.visibilitySnapshotForDaemon(daemonId, SNAPSHOT_CHUNK)
       if (page.length === 0) return
-      if (!(await this.sendSnapshotChunk(daemonId, page))) return // offline / rejected: next register retries
+      const outcome = await this.sendSnapshotChunk(daemonId, page)
+      if (outcome === 'gone') return // disconnected: its next register replays
+      if (outcome === 'retry') {
+        // Still connected, but this page did not land. Nothing else is coming
+        // back for the tail on its own, so resume it ourselves.
+        this.scheduleRetry(daemonId, 'failed')
+        return
+      }
       if (page.length < SNAPSHOT_CHUNK) return // the page was not full: nothing behind it
       const unacked = await this.deps.repos.session.countUnackedVisibility(daemonId)
       if (unacked === 0) return
@@ -199,23 +206,37 @@ export class SessionVisibilityPushService {
     }
   }
 
-  /** One snapshot frame + its acks. False ⇒ stop replaying (the daemon is gone
-   *  or refused); the next register converges. */
-  private async sendSnapshotChunk(daemonId: DaemonId, chunk: SessionVisibilityState[]): Promise<boolean> {
+  /**
+   * One snapshot frame + its acks.
+   *
+   *  - `sent` — delivered and recorded; keep paging.
+   *  - `gone` — the daemon disconnected. Its next register replays from scratch,
+   *    so a timer here would be redundant.
+   *  - `retry` — anything else: a correlator timeout, a refused ack, or a
+   *    failure recording the acks. The daemon is still connected, so nothing
+   *    else will come back for the tail — the caller must schedule a resume.
+   *    Collapsing these into `gone` was how a known-stale tail got stranded.
+   */
+  private async sendSnapshotChunk(
+    daemonId: DaemonId,
+    chunk: SessionVisibilityState[]
+  ): Promise<'sent' | 'gone' | 'retry'> {
     try {
       const ack = await this.deps.control.sessionVisibilitySnapshot(daemonId, chunk)
       if (!ack.ok) {
         this.deps.log?.warn({ daemonId, reason: ack.reason }, 'session visibility snapshot rejected')
-        return false
+        return 'retry'
       }
+      // A failure here leaves the rows unacked, so the next page re-sends them;
+      // the daemon answers `superseded` and nothing is applied twice.
       for (const entry of chunk) {
         await this.deps.repos.session.recordVisibilityAck(entry.sessionId, entry.visibilityRev)
       }
-      return true
+      return 'sent'
     } catch (err) {
-      if (err instanceof NoConnection) return false
+      if (err instanceof NoConnection || err instanceof ConnectionClosed) return 'gone'
       this.deps.log?.warn({ daemonId, err: (err as Error).message }, 'session visibility snapshot failed')
-      return false
+      return 'retry'
     }
   }
 
