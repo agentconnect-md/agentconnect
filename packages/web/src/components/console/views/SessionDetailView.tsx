@@ -648,7 +648,7 @@ export default function SessionDetailView() {
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
   const [composerMenuOpen, setComposerMenuOpen] = useState<ComposerMenuKey | null>(null)
   const [runtimeSelections, setRuntimeSelections] = useState<
-    Record<string, { model?: string; effort?: string; permissionMode?: string }>
+    Record<string, { model?: string; effort?: string; permissionMode?: string; fast?: boolean }>
   >({})
   const imageInputRef = useRef<HTMLInputElement>(null)
   const liveCursorRef = useRef<string | null>(null)
@@ -1137,7 +1137,7 @@ export default function SessionDetailView() {
   const allowRuntimeChangesInChat = owner?.allowRuntimeChangesInChat === true
   const runtimeChangesEnabled = sessionRuntimeChangesEnabled(allowRuntimeChangesInChat, session)
   const runtimeSelection = runtimeSelections[session.id]
-  const setRuntimeSelection = (patch: { model?: string; effort?: string; permissionMode?: string }) =>
+  const setRuntimeSelection = (patch: { model?: string; effort?: string; permissionMode?: string; fast?: boolean }) =>
     setRuntimeSelections((current) => ({
       ...current,
       [session.id]: { ...current[session.id], ...patch }
@@ -1180,7 +1180,11 @@ export default function SessionDetailView() {
     !selectablePermissionModes.some((choice) => choice.v === pgPermissionMode)
       ? [{ v: pgPermissionMode, l: permissionModeLabel(agentRuntime, pgPermissionMode) }, ...selectablePermissionModes]
       : selectablePermissionModes
-  const pgFastMode = session.fastMode ?? owner?.fastMode ?? false
+  // Stage the fast selection locally like model/effort/permission: an adopted
+  // (persisted webchat) session has no synthetic provider entry for pgSetFast to
+  // mutate, and an idle daemon session emits no status frame — without this the
+  // switch would render stale and every click would re-send the same value.
+  const pgFastMode = runtimeSelection?.fast ?? session.fastMode ?? owner?.fastMode ?? false
   const pgFastModeAvailable =
     (pgModel === session.model ? session.fastModeAvailable : undefined) ??
     fastModeAvailableFor(agentRuntime, selectedModelCapability)
@@ -1274,7 +1278,14 @@ export default function SessionDetailView() {
           </span>
         )}
         {visibilityControl}
-        <div className="relative ml-[-3px] flex-none">
+        <div
+          className="relative ml-[-3px] flex-none"
+          onKeyDown={(event) => {
+            if (event.key !== 'Escape' || !detailOpen) return
+            event.stopPropagation()
+            setDetailOpen(false)
+          }}
+        >
           <button
             className="inline-flex h-[22px] cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent px-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
             onClick={() => setDetailOpen((o) => !o)}
@@ -1288,7 +1299,7 @@ export default function SessionDetailView() {
           {detailOpen && (
             <>
               <div className="fixed inset-0 z-40" aria-hidden="true" onClick={() => setDetailOpen(false)} />
-              <div className="fmenu z-50 min-w-[216px] px-0 py-[5px]">
+              <div role="dialog" aria-label="Run details" className="fmenu z-50 min-w-[216px] px-0 py-[5px]">
                 {headerFacts.map((f) => (
                   <div key={f.label} className="flex items-center gap-[9px] px-3 py-[5px]">
                     <Icon name={f.icon} size={13} color="var(--text-tertiary)" className="flex-none" />
@@ -1760,9 +1771,11 @@ export default function SessionDetailView() {
                                 className={`relative h-[15px] w-[26px] flex-none cursor-pointer rounded-full border-0 p-0 transition-colors ${
                                   pgFastMode ? 'bg-(--brand)' : 'bg-(--border-strong)'
                                 }`}
-                                onClick={() =>
-                                  pgSetFast(session.id, session.agentId ?? '', !pgFastMode, webchatConversationId)
-                                }
+                                onClick={() => {
+                                  const fast = !pgFastMode
+                                  setRuntimeSelection({ fast })
+                                  pgSetFast(session.id, session.agentId ?? '', fast, webchatConversationId)
+                                }}
                               >
                                 <span
                                   className={`absolute top-[1px] h-[13px] w-[13px] rounded-full bg-white transition-[left] ${
