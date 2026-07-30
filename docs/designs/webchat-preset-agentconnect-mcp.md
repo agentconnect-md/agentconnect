@@ -6,10 +6,10 @@
 
 **Related designs:**
 
-- [`docs/designs/preset-agents.md`](../../designs/preset-agents.md)
-- [`docs/designs/agent-assistant.md`](../../designs/agent-assistant.md)
-- [`docs/designs/session-visibility.md`](../../designs/session-visibility.md)
-- [`docs/designs/daemon-centric-architecture.md`](../../designs/daemon-centric-architecture.md)
+- [`preset-agents.md`](preset-agents.md)
+- [`agent-assistant.md`](agent-assistant.md)
+- [`session-visibility.md`](session-visibility.md)
+- [`daemon-centric-architecture.md`](daemon-centric-architecture.md)
 
 ## 1. Summary
 
@@ -92,7 +92,7 @@ This design deliberately separates:
 
 ### 2.3 External prerequisite
 
-[`session-visibility.md`](../../designs/session-visibility.md) is a separate,
+[`session-visibility.md`](session-visibility.md) is a separate,
 currently unimplemented design and a hard launch prerequisite. This feature does not
 absorb that design's protocol, persistence, authorization, memory-gating, or web
 work. Delegated MCP emission remains disabled until new webchat sessions are
