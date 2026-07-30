@@ -100,12 +100,23 @@ describe('Lark CardKit transport', () => {
       config: { streaming_mode: true },
       body: {
         elements: [
-          { element_id: FEISHU_STREAMING_ELEMENT_ID, content: 'Thinking…' },
           {
-            element_id: FEISHU_REPLY_ACTIONS_ELEMENT_ID,
-            options: [
-              { value: FEISHU_REPLY_CANCEL_OPTION },
-              { value: 'session', multi_url: { url: attribution.sessionUrl } }
+            tag: 'column_set',
+            columns: [
+              {
+                elements: [{ element_id: FEISHU_STREAMING_ELEMENT_ID, content: 'Thinking…' }]
+              },
+              {
+                elements: [
+                  {
+                    element_id: FEISHU_REPLY_ACTIONS_ELEMENT_ID,
+                    options: [
+                      { value: FEISHU_REPLY_CANCEL_OPTION },
+                      { value: 'session', multi_url: { url: attribution.sessionUrl } }
+                    ]
+                  }
+                ]
+              }
             ]
           }
         ]
@@ -124,14 +135,28 @@ describe('Lark CardKit transport', () => {
       body: {
         elements: [
           { tag: 'markdown', content: 'Hello world' },
+          { tag: 'hr' },
           {
-            tag: 'markdown',
-            content:
-              'sent by [Review Bot](https://agentconnect.example/agents/review-bot) (Codex · gpt-5.6) · [open in session](https://agentconnect.example/sessions/123)'
-          },
-          {
-            tag: 'overflow',
-            options: [{ value: 'session', multi_url: { url: attribution.sessionUrl } }]
+            tag: 'column_set',
+            columns: [
+              {
+                elements: [
+                  {
+                    tag: 'markdown',
+                    content:
+                      'sent by [Review Bot](https://agentconnect.example/agents/review-bot) (Codex · gpt-5.6) · [open in session](https://agentconnect.example/sessions/123)'
+                  }
+                ]
+              },
+              {
+                elements: [
+                  {
+                    tag: 'overflow',
+                    options: [{ value: 'session', multi_url: { url: attribution.sessionUrl } }]
+                  }
+                ]
+              }
+            ]
           }
         ]
       }

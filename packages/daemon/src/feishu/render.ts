@@ -60,10 +60,51 @@ export const FEISHU_REPLY_ACTIONS_ELEMENT_ID = 'agentconnect_actions'
 export const FEISHU_REPLY_ACTION_VALUE = 'agentconnect_reply'
 export const FEISHU_REPLY_CANCEL_OPTION = 'cancel'
 
+function cardInlineRow(
+  left: Record<string, unknown> | undefined,
+  right: Record<string, unknown> | undefined,
+  verticalAlign: 'top' | 'center'
+): Record<string, unknown> {
+  return {
+    tag: 'column_set',
+    flex_mode: 'none',
+    horizontal_spacing: '8px',
+    horizontal_align: 'right',
+    columns: [
+      ...(left
+        ? [
+            {
+              tag: 'column',
+              width: 'weighted',
+              weight: 1,
+              vertical_align: verticalAlign,
+              elements: [left]
+            }
+          ]
+        : []),
+      ...(right
+        ? [
+            {
+              tag: 'column',
+              width: 'auto',
+              vertical_align: verticalAlign,
+              elements: [right]
+            }
+          ]
+        : [])
+    ]
+  }
+}
+
 /** Initial CardKit 2.0 reply card. `streaming_mode` makes element updates render
  * incrementally in clients that support CardKit streaming. */
 export function buildStreamingReplyCard(sessionUrl?: string): Record<string, unknown> {
   const menu = cardSessionMenu(sessionUrl, true)
+  const content = {
+    tag: 'markdown',
+    element_id: FEISHU_STREAMING_ELEMENT_ID,
+    content: 'Thinking…'
+  }
   return {
     schema: '2.0',
     config: {
@@ -79,14 +120,7 @@ export function buildStreamingReplyCard(sessionUrl?: string): Record<string, unk
     body: {
       direction: 'vertical',
       padding: '12px 12px 12px 12px',
-      elements: [
-        {
-          tag: 'markdown',
-          element_id: FEISHU_STREAMING_ELEMENT_ID,
-          content: 'Thinking…'
-        },
-        ...(menu ? [menu] : [])
-      ]
+      elements: [menu ? cardInlineRow(content, menu, 'top') : content]
     }
   }
 }
@@ -147,8 +181,7 @@ function cardSessionMenu(sessionUrl: string | undefined, cancellable: boolean): 
     element_id: FEISHU_REPLY_ACTIONS_ELEMENT_ID,
     width: 'default',
     options,
-    value: { action: FEISHU_REPLY_ACTION_VALUE },
-    margin: '8px 0px 0px 0px'
+    value: { action: FEISHU_REPLY_ACTION_VALUE }
   }
 }
 
@@ -174,15 +207,18 @@ export function buildCompletedReplyCard(
   sessionUrl = attribution?.sessionUrl
 ): Record<string, unknown> {
   const elements: Record<string, unknown>[] = [{ tag: 'markdown', content: text }]
-  if (attribution) {
-    elements.push({
-      tag: 'markdown',
-      text_size: 'notation',
-      content: attributionFooter(attribution)
-    })
-  }
+  const footer = attribution
+    ? {
+        tag: 'markdown',
+        text_size: 'notation',
+        content: attributionFooter(attribution)
+      }
+    : undefined
   const menu = cardSessionMenu(sessionUrl, false)
-  if (menu) elements.push(menu)
+  if (footer || menu) {
+    elements.push({ tag: 'hr' })
+    elements.push(cardInlineRow(footer, menu, 'center'))
+  }
   return {
     schema: '2.0',
     config: {
