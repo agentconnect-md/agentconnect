@@ -187,9 +187,11 @@ export interface AgentDto {
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
   lastModifiedAt: string // ISO-8601
   lastModifiedBy: string | null // editor's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
-  visibility: ResourceVisibility // 'org' = all members; 'restricted' = creator + owners + sharedWith
+  visibility: ResourceVisibility // 'org' = all members; 'restricted' = ownerUserId + sharedWith
   sharedWith: string[] // app_user.id set (only meaningful when restricted)
-  canManageSharing: boolean // whether the caller may change this resource's sharing (= canEdit)
+  ownerUserId: string | null // current ownership arm; null for system/legacy ownerless rows
+  canEdit: boolean // whether the caller may change non-sharing agent settings
+  canManageSharing: boolean // whether the caller may change this resource's sharing
   callPolicy: AgentCallPolicy // which peer agents may call this agent as a sub-agent
   allowedCallerAgentIds: string[] // agent.id set, meaningful when callPolicy='selected'
   outboundPolicy: AgentCallPolicy // which peer agents this agent may discover/call
@@ -236,7 +238,7 @@ export interface SessionUsageDto {
 }
 
 // Session-level visibility (docs/designs/session-visibility.md): 'private' rows are
-// visible only to the session owner + org owners; 'org' to every member who can view
+// visible only to the session owner (no role override, org owners included); 'org' to every member who can view
 // the owning agent. Deliberately NOT ResourceVisibility ('org' | 'restricted').
 export type SessionVisibility = 'private' | 'org'
 
@@ -295,6 +297,9 @@ export interface SessionListPageDto {
   sessions: SessionDto[]
   total: number | null
   nextCursor: string | null
+  /** Org-level "any session exists" boolean (first page only) — a bare boolean so the
+   *  getting-started conversation step can be org-wide without exposing hidden rows. */
+  orgHasSessions?: boolean
 }
 
 export interface SessionListFilters {
@@ -323,6 +328,7 @@ export interface SessionListPage {
   sessions: Session[]
   total: number | null
   nextCursor: string | null
+  orgHasSessions?: boolean
 }
 
 export interface SessionRelationDto {
@@ -357,8 +363,9 @@ export interface SessionDetailDto {
   // Session visibility (docs/designs/session-visibility.md §5/§6). All three are
   // absent on a CP that predates the feature. `visibilityState` is the §5.1
   // tighten cutover: 'pending' until every affected daemon acked the change,
-  // then 'applied'. `canChangeVisibility` is server-computed (org owner or the
-  // identity-matched session owner) — the client never re-derives it.
+  // then 'applied'. `canChangeVisibility` is server-computed (the
+  // identity-matched session owner only — roles grant nothing) — the client
+  // never re-derives it.
   visibility?: SessionVisibility | null
   visibilityState?: 'pending' | 'applied' | null
   canChangeVisibility?: boolean | null
@@ -431,6 +438,8 @@ export interface CronDto {
   lastModifiedAt: string // ISO-8601
   visibility: ResourceVisibility
   sharedWith: string[]
+  ownerUserId: string | null
+  canEdit: boolean
   canManageSharing: boolean
 }
 
@@ -806,6 +815,8 @@ export interface DaemonViewDto {
   lastModifiedBy: string | null // editor's userId (resolved to a name / "You" in the UI); null for CLI/self-registered
   visibility: ResourceVisibility
   sharedWith: string[]
+  ownerUserId: string | null
+  canEdit: boolean
   canManageSharing: boolean
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
@@ -1456,6 +1467,8 @@ export function agentFromDto(d: AgentDto): Agent {
     lastModifiedAt: fmtDate(d.lastModifiedAt),
     visibility: d.visibility,
     sharedWith: d.sharedWith,
+    ownerUserId: d.ownerUserId,
+    canEdit: d.canEdit,
     canManageSharing: d.canManageSharing,
     callPolicy: d.callPolicy,
     allowedCallerAgentIds: d.allowedCallerAgentIds,
@@ -1682,6 +1695,8 @@ export function daemonFromDto(d: DaemonViewDto): DaemonRow {
     lastModifiedAt: fmtDate(d.lastModifiedAt),
     visibility: d.visibility,
     sharedWith: d.sharedWith,
+    ownerUserId: d.ownerUserId,
+    canEdit: d.canEdit,
     canManageSharing: d.canManageSharing
   }
 }
@@ -1711,7 +1726,8 @@ export async function fetchSessions(
   return {
     sessions: page.sessions.map(sessionFromDto),
     total: page.total,
-    nextCursor: page.nextCursor
+    nextCursor: page.nextCursor,
+    ...(page.orgHasSessions !== undefined ? { orgHasSessions: page.orgHasSessions } : {})
   }
 }
 
@@ -1763,9 +1779,9 @@ export interface SessionVisibilityResultDto {
   state: 'pending' | 'applied'
 }
 
-// Set a session's visibility (PUT /sessions/:id/visibility). Gated server-side:
-// org owners or the identity-matched session owner (`canChangeVisibility` in the
-// detail DTO); invisible sessions 404 — never 403 (no existence oracle).
+// Set a session's visibility (PUT /sessions/:id/visibility). Gated server-side to
+// the identity-matched session owner only (`canChangeVisibility` in the detail
+// DTO); invisible sessions 404 — never 403 (no existence oracle).
 export async function putSessionVisibility(
   sessionId: string,
   visibility: SessionVisibility
@@ -2477,13 +2493,13 @@ export async function moveAgent(agentId: string, daemonId: string): Promise<Agen
 }
 
 // Set an agent's visibility + share set (PUT /agents/:id/sharing). Separate from the
-// content PATCH; gated server-side by canManageSharing (=== canEdit).
+// content PATCH; gated server-side by canManageSharing.
 export async function updateAgentSharing(agentId: string, body: SharingInput): Promise<Agent> {
   return agentFromDto(await apiPut<AgentDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/sharing`, body))
 }
 
 // Set both directions of agent-to-agent visibility/call authorization. Uses the
-// same edit gate as agent sharing (`canManageSharing` in the DTO).
+// normal agent edit gate (`canEdit` in the DTO).
 export async function updateAgentCallPolicy(agentId: string, body: AgentCallPolicyInput): Promise<Agent> {
   return agentFromDto(await apiPut<AgentDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/call-policy`, body))
 }
@@ -2886,15 +2902,39 @@ export async function updateMe(patch: { name: string }): Promise<MeDto> {
   return apiPatch<MeDto>('/me', patch)
 }
 
-// The Slack workspace behind the signed-in account (GET /me/slack-identity),
-// resolved by the CP from the sign-in provider. `linked: false` covers both "not
-// signed in with Slack" and "this deployment can't look it up", so the console
-// renders the same nothing for either.
-export type MySlackIdentityDto =
-  { linked: false } | { linked: true; teamId: string; userId: string; teamName?: string; teamDomain?: string }
+// The account's linked sign-in methods (GET /me/social-identities). Served by the
+// CP rather than read from the identity provider in the browser: the CP caches the
+// upstream lookup and makes it from next to the provider, which is worth ~2s on a
+// cold profile load. Already narrowed for rendering — no connector `rawData` here.
+export interface MySocialIdentityDto {
+  target: string
+  userId: string
+  name?: string
+  email?: string
+  avatar?: string
+  /** Where this account lives at its provider, when that is addressable. */
+  profileUrl?: string
+  /** Slack only. `url` is absent when Slack sent no domain — the `T…` id alone
+   *  does not address a workspace, so the label renders as plain text. */
+  workspace?: { teamId: string; name?: string; domain?: string; url?: string }
+}
 
-export async function fetchMySlackIdentity(): Promise<MySlackIdentityDto> {
-  return apiGet<MySlackIdentityDto>('/me/social-identities/slack')
+export interface MySocialAccountDto {
+  identities: MySocialIdentityDto[]
+  /** Drives whether linking has to collect an ownership code first; Logto
+   *  answers 403 to an identity change the caller has not re-proven. */
+  hasSecurityVerificationMethod: boolean
+  primaryEmail?: string
+}
+
+export async function fetchMySocialAccount(): Promise<MySocialAccountDto> {
+  return apiGet<MySocialAccountDto>('/me/social-identities')
+}
+
+// Linking runs browser→provider, so the CP never sees that write and its cached
+// copy would hide the new identity. Say so once, right after a link lands.
+export async function refreshMySocialIdentities(): Promise<void> {
+  await apiPost('/me/social-identities/refresh', {})
 }
 
 async function putMyProfilePicture(blob: Blob): Promise<MeDto> {
@@ -3158,9 +3198,11 @@ export interface McpProviderDto {
   /** Open-connector service slug (e.g. "stripe") for kind='open_connector' — used to
    *  resolve the provider's catalog icon. Absent for custom providers. */
   service?: string
-  visibility: ResourceVisibility // 'org' = everyone; 'restricted' = creator + owners + sharedWith
+  visibility: ResourceVisibility // 'org' = everyone; 'restricted' = ownerUserId + sharedWith
   sharedWith: string[] // app_user.id set (only meaningful when restricted)
-  createdBy: string | null // creator userId (pins the non-removable share chip)
+  createdBy: string | null // immutable creator audit
+  ownerUserId: string | null // current ownership arm; null for ownerless rows
+  canEdit: boolean // whether THIS caller may change non-sharing provider settings
   canManageSharing: boolean // whether THIS caller may change the provider's sharing
   url: string
   /** Upstream auth header keys; values are secret and never returned. */
@@ -3223,7 +3265,7 @@ export async function deleteMcpProvider(id: string): Promise<void> {
 }
 
 // Set a provider's visibility + share set (PUT /mcp-providers/:id/sharing). Separate
-// from the content PATCH; gated server-side by canManageSharing (=== canEdit).
+// from the content PATCH; gated server-side by canManageSharing.
 export async function updateMcpProviderSharing(id: string, body: SharingInput): Promise<McpProviderDto> {
   return apiPut<McpProviderDto>(`${orgBase()}/mcp-providers/${encodeURIComponent(id)}/sharing`, body)
 }
@@ -3242,6 +3284,8 @@ export interface SkillSourceDto {
   visibility: ResourceVisibility
   sharedWith: string[]
   createdBy: string | null
+  ownerUserId: string | null
+  canEdit: boolean
   canManageSharing: boolean
   createdAt: string // ISO-8601
 }

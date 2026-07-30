@@ -32,7 +32,7 @@ import type {
   ConversationKind,
   ViewCtx
 } from '../ports.js'
-import { visibilityWhere } from '../ports.js'
+import { visibilityWhere } from '../../authorization/policy.js'
 import { toDbPlatform } from '../platform.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { AgentId, BotId, DaemonId, IntegrationId, OrgId } from '../../domain/ids.js'
@@ -354,10 +354,9 @@ export class PgIntegrationRepo implements IntegrationRepo {
   }
 
   async listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<IntegrationRecord[]> {
-    // Derived visibility: an integration inherits its parent agent's visibility, so
-    // filter through the `agent` relation (owner/undefined viewer ⇒ `agent: {}` ⇒
-    // every agent — unfiltered). A restricted agent's integrations then never appear
-    // for a non-viewer.
+    // Derived visibility: an integration inherits its parent agent's visibility.
+    // Every human principal filters through the `agent` relation; an undefined
+    // internal viewer produces `agent: {}` and stays unfiltered.
     const rows = await this.db.integration.findMany({
       where: { orgId, agent: { ...visibilityWhere(viewer) } },
       orderBy: { createdAt: 'asc' }

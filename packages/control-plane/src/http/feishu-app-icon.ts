@@ -8,13 +8,11 @@ const REGION_ORIGIN: Record<FeishuRegion, string> = {
 }
 const FEISHU_TIMEOUT_MS = 15_000
 const FEISHU_ICON_SIZE = 512
-const FEISHU_AUDITED_APP_VERSION_STATUS = 1
 
 interface FeishuApiResponse {
   code?: number
   data?: {
     url?: string
-    items?: Array<{ status?: number }>
   }
 }
 
@@ -45,42 +43,10 @@ async function iconPng(agent: BotProfileIconAgent, iconStore?: IconStore): Promi
   return sharp(source.bytes).resize(FEISHU_ICON_SIZE, FEISHU_ICON_SIZE, { fit: 'cover' }).png().toBuffer()
 }
 
-async function assertNoUnpublishedVersion(
-  fetcher: typeof fetch,
-  origin: string,
-  encodedAppId: string,
-  token: string
-): Promise<void> {
-  const versionsRes = await request(
-    fetcher,
-    `${origin}/open-apis/application/v6/applications/${encodedAppId}/app_versions?lang=en_us&page_size=1&order=0`,
-    {
-      method: 'GET',
-      headers: { authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(FEISHU_TIMEOUT_MS)
-    },
-    'version check'
-  )
-  const versionsBody = await responseBody(versionsRes)
-  if (!versionsRes.ok || versionsBody?.code !== 0) {
-    throw new Error(`Lark/Feishu version check returned ${versionsRes.status}`)
-  }
-
-  // v6 status 1 is audited/published. Every other latest-version state is
-  // ambiguous (unsubmitted, under review, rejected, or unknown), so publishing
-  // could submit unrelated developer changes along with the icon.
-  if (versionsBody.data?.items?.[0]?.status !== FEISHU_AUDITED_APP_VERSION_STATUS) {
-    throw new Error('Lark/Feishu icon sync skipped: application has unpublished changes')
-  }
-}
-
 /**
  * Update a self-built Feishu/Lark application's icon and submit the resulting
- * application version. The app must grant
- * `application:application.app_version:readonly` and
- * `application:application:patch`; provider review, when required by the
- * tenant, completes asynchronously. A pre-existing unpublished version makes
- * the sync stop before changing the app.
+ * application version. The app must grant `application:application:patch`;
+ * provider review, when required by the tenant, completes asynchronously.
  */
 export function createFeishuAppIconSyncer(iconStore?: IconStore, fetcher: typeof fetch = fetch): FeishuAppIconSyncer {
   return async (appId, appSecret, region, agent) => {
@@ -122,8 +88,6 @@ export function createFeishuAppIconSyncer(iconStore?: IconStore, fetcher: typeof
     if (!uploadRes.ok || uploadBody?.code !== 0 || !avatarUrl) {
       throw new Error(`Lark/Feishu icon upload returned ${uploadRes.status}`)
     }
-
-    await assertNoUnpublishedVersion(fetcher, origin, encodedAppId, token)
 
     const patchRes = await request(
       fetcher,

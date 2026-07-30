@@ -1,7 +1,7 @@
 import { createHash, createHmac } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { DELEGATED_MCP_ASSERTION_FEATURE } from '@agentconnect.md/protocol'
-import { canView } from '../../domain/visibility.js'
+import { canView } from '../../authorization/policy.js'
 import type {
   ClaimMcpInvocationInput,
   ClaimMcpInvocationResult,
@@ -83,14 +83,14 @@ function harness() {
       id: AGENT_ID,
       orgId: ORG_ID,
       daemonId: DAEMON_ID,
-      createdByUserId: USER_ID,
+      ownerUserId: USER_ID,
       visibility: 'org' as const,
       sharedWith: [] as string[]
     } as {
       id: string
       orgId: string
       daemonId: string | null
-      createdByUserId: string | null
+      ownerUserId: string | null
       visibility: 'org' | 'restricted'
       sharedWith: string[]
     } | null,
@@ -494,7 +494,7 @@ describe('InvocationAssertionAuthenticator', () => {
       (h: ReturnType<typeof harness>) =>
         (h.state.agent = {
           ...h.state.agent!,
-          createdByUserId: 'other-user',
+          ownerUserId: 'other-user',
           visibility: 'restricted',
           sharedWith: []
         })

@@ -22,8 +22,10 @@ platform DMs and other members' Playground conversations. `session_meta` has no
 
 This design gives every session its own visibility:
 
-- **`private`** — visible only to the session owner (and org owners, via the
-  governance exception). Default for platform **DM** sessions, **Playground /
+- **`private`** — visible only to the session owner (identity match).
+  Like restricted-resource visibility, there is **no org-owner governance
+  override**: a private session is a DM-grade transcript, and role grants no
+  access to it. Default for platform **DM** sessions, **Playground /
   webchat** sessions, and sessions launched through the **Web API**.
 - **`org`** — visible to every org member who can view the owning agent.
   Default for IM **channel** sessions and automation-originated sessions
@@ -81,8 +83,8 @@ user's linked platform identities — and a `private` session is visible when
 Consequences:
 
 - Before the identity mapping exists, a `private` IM DM session is an
-  **owner-orphan**: no console user matches `slack:U…`, so only org owners see
-  it. This is accepted — it errs toward hiding a DM rather than exposing it.
+  **owner-orphan**: no console user matches `slack:U…`, so no one sees it.
+  This is accepted — it errs toward hiding a DM rather than exposing it.
 - When identity linking ships, those sessions become visible to the mapped
   user **automatically**, with no backfill: the stored `ownerIdentity` is
   already correct; only the viewer's identity set grows.
@@ -186,8 +188,12 @@ Notes:
 - **Fail closed on missing ownership metadata.** A classification rule that
   defaults to `private` must never widen to `org` because a lookup failed —
   that would turn a metadata inconsistency into disclosure. An unresolvable
-  owner yields `private` + `ownerIdentity = null` (an owner-orphan, visible to
-  org owners only, recoverable via §4.3).
+  owner yields `private` + `ownerIdentity = null`, a row visible to no one.
+  Note the distinction from the §2 owner-orphan: a stored-but-unmatched
+  platform tuple (`slack:T…:U…`) lights up retroactively when identity
+  linking (§7) grows the viewer's identity set, whereas a `null` owner has
+  nothing to match and stays inaccessible unless a separate repair/backfill
+  populates it.
 - Webchat `triggeredBy` is the console user's **email** (set in
   `routes/webchat-token.ts`), which degrades under devAuth and is not a stable
   key — hence the `WebchatConversation` lookup rather than trusting the wire
@@ -198,8 +204,8 @@ Notes:
   §4.3 reclassification rights, not an access gate.
 - `group_dm` defaults to `org`, like a channel: a multi-party conversation
   treated as `private` would hide it from its own participants, since the
-  predicate can match only one owner. The initiator (or an org owner) can
-  pull it `private` via §4.3.
+  predicate can match only one owner. The initiator can pull it `private`
+  via §4.3.
 - **Agent-to-agent children inherit.** A delegation from a private DM or
   Playground session copies the delegated prompt into the child transcript;
   classifying children `org` would expose that to every viewer of the target
@@ -210,12 +216,15 @@ Notes:
 ### 4.3 Changing visibility after the fact
 
 `PUT /orgs/:orgId/sessions/:id/visibility` with body
-`{ visibility: 'private' | 'org' }`. Allowed for the session owner (identity
-match) and org owners; collaborators/viewers cannot re-classify other people's
-sessions. This is the escape hatch for both directions: publishing a useful DM
-transcript to the org, or pulling a channel/group-DM session private (its
-recorded initiator — once identity linking makes them matchable — or an org
-owner).
+`{ visibility: 'private' | 'org' }`. Allowed ONLY for the session's recorded
+owner (identity match) — roles grant no re-classification rights in either
+direction, mirroring the view predicate: an org owner pulling someone's
+published session back to `private` would override the owner's own decision,
+so the org-owner arm was removed deliberately. A row with no recorded owner is
+re-classifiable by no one. This is the escape hatch for both directions:
+publishing a useful DM transcript to the org, or pulling a channel/group-DM
+session private (its recorded initiator — once identity linking makes them
+matchable).
 
 An explicit change sets `visibilitySource = 'explicit'`, which pins the row
 against any later automatic reclassification (§4.5). **Tightening cascades to
@@ -255,7 +264,7 @@ state marker:
   the CP performs a **conditional one-time settlement**: copy the parent's
   `visibility` + `ownerIdentity` onto the child **iff** the child is still
   `inherited_pending` (compare-and-set on the source column), then mark it
-  `inherited`. A child that an org owner has meanwhile re-classified is
+  `inherited`. A child that a human has meanwhile re-classified is
   `explicit` and the settlement is a no-op — reconciliation never overwrites
   a human decision.
 - **Parent tightened later (`org` → `private`).** The child contains content
@@ -266,7 +275,8 @@ state marker:
   Cascaded rows get the parent's owner and `visibilitySource = 'inherited'`.
 - **Parent widened later (`private` → `org`).** Never cascades. Each
   descendant stays as classified; widening a child remains a per-session §4.3
-  decision by its owner or an org owner.
+  decision by its owner (a private child is invisible to everyone else,
+  org owners included).
 
 `explicit` is therefore protected against **settlement** (the automatic
 reconciliation above) but not against a **tightening cascade** — the §3 enum
@@ -300,9 +310,8 @@ The authoritative predicate, mirroring `canView`:
 
 ```ts
 canViewSession(s, ctx, identitySet) =
-  ctx.role === 'owner' || // governance exception
-  s.visibility === 'org' ||
-  (s.ownerIdentity != null && identitySet.has(s.ownerIdentity))
+  // deliberately NO role-based governance exception — private is owner-only
+  s.visibility === 'org' || (s.ownerIdentity != null && identitySet.has(s.ownerIdentity))
 ```
 
 All of these already gate on agent visibility; each additionally applies the
@@ -310,7 +319,7 @@ session predicate:
 
 | Surface                       | Where                                                                                     | Change                                                                                                                                                                                                                                                                                             |
 | ----------------------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| List + facets                 | `persistence/repositories/session.repo.ts` (`pageWhereSql` — raw SQL, not Prisma `where`) | `AND (visibility = 'org' OR owner_identity = ANY(:identitySet))`, skipped for org owners                                                                                                                                                                                                           |
+| List + facets                 | `persistence/repositories/session.repo.ts` (`pageWhereSql` — raw SQL, not Prisma `where`) | `AND (visibility = 'org' OR owner_identity = ANY(:identitySet))`, applied to every viewer (no org-owner bypass)                                                                                                                                                                                    |
 | Detail / messages / tool-body | `http/routes/sessions.ts` `getOrgViewableSession`                                         | apply `canViewSession` after the agent gate; fail as 404                                                                                                                                                                                                                                           |
 | Children                      | `session.repo.ts` `listChildren`                                                          | same predicate; invisible parent already renders `null`                                                                                                                                                                                                                                            |
 | SSE                           | `http/routes/stream.ts`                                                                   | today filters per **agent**; must apply the session predicate to **every session-scoped envelope variant** — both `event/session` milestones and `event/session-activity` invalidations (the latter still expose `sessionId`, revision, and live activity), plus any future session-bearing frames |
@@ -459,7 +468,8 @@ link ends public access without touching the session row.
   one-time and conditional (never overwrites `explicit`), tightening
   cascades transitively, widening never cascades.
 - **Integration (`test:int`):** list/detail/SSE visibility for a two-member
-  org (owner sees all; collaborator sees own private + org sessions only);
+  org (each member sees identity-owned private + org sessions; the owner role
+  does not widen private visibility);
   SSE assertion that **neither** `event/session` nor `event/session-activity`
   for a private session reaches an unauthorized subscriber; keyset pagination
   stability under the new predicate; migration backfill (`org` + `orgId`) on

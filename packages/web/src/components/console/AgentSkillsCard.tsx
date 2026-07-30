@@ -191,7 +191,7 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
                 // deliberately omits it (seeing an agent isn't seeing the source).
                 footer={
                   s.registry ? (
-                    <VisibilityValue visibility={s.visibility} sharedWith={s.sharedWith} createdBy={s.createdBy} />
+                    <VisibilityValue visibility={s.visibility} sharedWith={s.sharedWith} ownerUserId={s.ownerUserId} />
                   ) : undefined
                 }
                 action={

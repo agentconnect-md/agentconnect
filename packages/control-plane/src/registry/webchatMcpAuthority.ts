@@ -1,6 +1,6 @@
 import { DELEGATED_MCP_ASSERTION_FEATURE } from '@agentconnect.md/protocol'
 import { AgentId, OrgId } from '../domain/ids.js'
-import { canView } from '../domain/visibility.js'
+import { canView } from '../authorization/policy.js'
 import type { AgentRepo, OrgRepo, PresetAgentStore, WebchatConversationRepo } from '../persistence/ports.js'
 
 export type WebchatMcpAuthorityDenialReason =

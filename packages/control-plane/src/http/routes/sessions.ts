@@ -17,7 +17,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, HookId, OrgId, SessionId } from '../../domain/ids.js'
 import { orgOf, ctxOf } from '../rbac.js'
-import { canView, canViewSession, identitySetOf } from '../visibility.js'
+import { canChangeSessionVisibility, canView, canViewSession, identitySetOf } from '../../authorization/policy.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { visibilityStateOf } from '../../orchestrator/visibilityPush.js'
@@ -99,21 +99,6 @@ function hookIdForSession(s: HookSessionRow): string | null {
 
 function sessionRelation(s: { id: string; agentId: string; title: string | null }) {
   return { id: s.id, agentId: s.agentId, title: s.title }
-}
-
-/**
- * Who may re-classify a session (§4.3): its recorded owner (identity match) and
- * org owners. Collaborators and viewers cannot re-classify other people's
- * sessions — but note this is deliberately NOT the blanket `denyViewerWrite`
- * guard used elsewhere: the grant follows OWNERSHIP, so a viewer-role member who
- * owns a session keeps control of their own DM's visibility.
- */
-function canChangeSessionVisibility(
-  s: { ownerIdentity: string | null },
-  ctx: { role: string; userId: string },
-  identitySet: ReadonlySet<string>
-): boolean {
-  return ctx.role === 'owner' || (s.ownerIdentity != null && identitySet.has(s.ownerIdentity))
 }
 
 function hookMetadataForSession(metadata: Map<string, HookSessionMetadata>, session: HookSessionRow) {
@@ -376,9 +361,9 @@ export function sessionRoutes(deps: HttpDeps) {
           return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'invalid session cursor' })
         }
 
-        // The set of agents THIS caller may see (owner ⇒ all). Session metadata
-        // inherits visibility from the owning agent, so restricted-agent rows are
-        // hidden before any title/channel/usage metadata reaches the caller.
+        // The set of agents THIS caller may see under the resource policy. Roles
+        // never widen visibility, so restricted-agent rows are hidden before any
+        // title/channel/usage metadata reaches the caller.
         const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((agent) => agent.id)
         const visibleAgentIdSet = new Set<string>(visibleAgentIds)
         const selectedAgentIds = req.query.agentId
@@ -386,11 +371,17 @@ export function sessionRoutes(deps: HttpDeps) {
             ? [AgentId(req.query.agentId)]
             : []
           : visibleAgentIds
+        // Org-level "any session exists" boolean (first page only). Computed over the
+        // FULL org — including sessions the caller can't see — which is safe precisely
+        // because it is a bare boolean; the getting-started conversation step derives
+        // from it so a collaborator in an active org isn't asked to run a redundant chat.
+        const orgHasSessions = cursor ? undefined : await deps.repos.session.orgHasAny(orgOf(req))
         if (selectedAgentIds.length === 0) {
           return {
             sessions: [],
             total: cursor ? null : 0,
-            nextCursor: null
+            nextCursor: null,
+            ...(orgHasSessions !== undefined ? { orgHasSessions } : {})
           }
         }
 
@@ -416,7 +407,8 @@ export function sessionRoutes(deps: HttpDeps) {
         return {
           sessions: page.sessions.map((session) => sessionDto(session, hookMetadata)),
           total: page.total,
-          nextCursor
+          nextCursor,
+          ...(orgHasSessions !== undefined ? { orgHasSessions } : {})
         }
       }
     )
@@ -619,7 +611,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Set session visibility',
           description:
-            'Reclassifies a session as private or org-visible. Allowed for the session owner and org owners. Tightening cascades to descendant sessions and stops future agent-memory capture once the owning daemons acknowledge; memory already distilled is not retracted.',
+            "Reclassifies a session as private or org-visible. Allowed only for the session's recorded owner (identity match) — roles grant no re-classification rights. Tightening cascades to descendant sessions and stops future agent-memory capture once the owning daemons acknowledge; memory already distilled is not retracted.",
           operationId: 'setSessionVisibility',
           params: IdParam,
           body: SetSessionVisibilityBody,
@@ -639,7 +631,8 @@ export function sessionRoutes(deps: HttpDeps) {
         }
         // The check above read an unlocked row. Re-run it inside the write's
         // transaction: an ancestor cascade committing in between can re-own this
-        // session, and the former owner must not still be able to widen it.
+        // session, and the former owner's parked request must not still apply —
+        // ownership is judged against the LOCKED row.
         const { affected, forbidden } = await deps.repos.session.setVisibility(
           SessionId(req.params.id),
           req.body.visibility,

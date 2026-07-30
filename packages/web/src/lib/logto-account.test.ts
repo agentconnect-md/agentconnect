@@ -20,40 +20,6 @@ describe('Logto Account API', () => {
     vi.unstubAllGlobals()
   })
 
-  it('loads current identities without fetching the static provider list', async () => {
-    const fetchMock = vi.fn(async (_input: URL | RequestInfo, _init?: RequestInit) => {
-      return new Response(
-        JSON.stringify({
-          identities: {
-            github: {
-              userId: 'github-user',
-              details: { name: 'Octo Cat', email: 'octo@example.test' }
-            }
-          }
-        }),
-        { status: 200 }
-      )
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    const { fetchAccountProfile } = await import('./logto-account')
-    const { SOCIAL_LOGIN_PROVIDERS } = await import('./social-login-providers')
-    const account = await fetchAccountProfile()
-
-    expect(account.identities.github?.details).toEqual({
-      name: 'Octo Cat',
-      email: 'octo@example.test'
-    })
-    expect(SOCIAL_LOGIN_PROVIDERS).toEqual([
-      { target: 'github', name: 'GitHub' },
-      { target: 'google', name: 'Google' },
-      { target: 'slack', name: 'Slack' }
-    ])
-    expect(fetchMock).toHaveBeenCalledOnce()
-    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('https://login.example.test/api/my-account')
-    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('authorization')).toBe('Bearer opaque-account-token')
-  })
-
   it('keeps only the short-lived connector choice and CSRF state for the callback', async () => {
     const values = new Map<string, string>()
     vi.stubGlobal('sessionStorage', {
@@ -86,5 +52,19 @@ describe('Logto Account API', () => {
         linking: true
       })
     ).toBe('That Google account is already linked to another AgentConnect account.')
+  })
+
+  // Measured against a live tenant: a session opened before the deployment
+  // granted the identities scope keeps working everywhere else, so "expired"
+  // sends people to retry the same broken thing. Only a fresh sign-in helps.
+  it('tells a scope-stale session to sign out rather than calling it expired', async () => {
+    const { LogtoAccountError, accountErrorMessage } = await import('./logto-account')
+    const unauthorized = new LogtoAccountError('unauthorized', 401)
+
+    expect(accountErrorMessage(unauthorized, { providerName: 'Google', linking: true })).toBe(
+      'This sign-in session cannot change sign-in methods. Sign out, sign in again, and retry.'
+    )
+    // Outside linking a 401 really is a dead session.
+    expect(accountErrorMessage(unauthorized)).toBe('Your sign-in session expired. Sign in again and retry.')
   })
 })

@@ -1,25 +1,5 @@
 import { getAccountToken, getLogtoPublicConfig } from '@/lib/auth'
 
-export interface SocialIdentity {
-  userId: string
-  details: Record<string, unknown>
-}
-
-export interface LogtoAccountProfile {
-  identities: Record<string, SocialIdentity>
-  /** Set when the account can prove ownership a second way (a verified email).
-   *  Logto then REQUIRES that proof before identities may change, so the card
-   *  collects an email code first — see `requestEmailVerification`. */
-  hasSecurityVerificationMethod: boolean
-  primaryEmail?: string
-}
-
-export interface SocialIdentityDetails {
-  name?: string
-  email?: string
-  avatar?: string
-}
-
 export interface SocialLinkFlow {
   state: string
   connectorId: string
@@ -38,13 +18,13 @@ export interface SocialLinkFlow {
   createdAt: number
 }
 
+/** Something the user has to be told, which is only ever a failure: the card
+ *  renders the linked accounts, so a success needs no words. */
 export interface AccountNotice {
-  kind: 'success' | 'error'
   message: string
 }
 
 const SOCIAL_FLOW_KEY = 'ac.social-link.flow'
-const ACCOUNT_NOTICE_KEY = 'ac.social-link.notice'
 const SOCIAL_FLOW_TTL_MS = 10 * 60 * 1000
 
 export class LogtoAccountError extends Error {
@@ -97,29 +77,6 @@ async function accountRequest<T>(path: string, init: RequestInit = {}): Promise<
   if (!response.ok) throw await responseError(response)
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
-}
-
-export async function fetchAccountProfile(): Promise<LogtoAccountProfile> {
-  const body = asRecord(await accountRequest<unknown>('/api/my-account'))
-  const rawIdentities = asRecord(body.identities)
-  const identities = Object.fromEntries(
-    Object.entries(rawIdentities).map(([target, value]) => {
-      const identity = asRecord(value)
-      return [
-        target,
-        {
-          userId: stringValue(identity.userId) ?? '',
-          details: asRecord(identity.details)
-        } satisfies SocialIdentity
-      ]
-    })
-  )
-  const primaryEmail = stringValue(body.primaryEmail)
-  return {
-    identities,
-    hasSecurityVerificationMethod: body.hasSecurityVerificationMethod === true,
-    ...(primaryEmail ? { primaryEmail } : {})
-  }
 }
 
 /** Send an ownership-proof code to the account's own email. */
@@ -194,18 +151,6 @@ export async function saveSocialIdentity(
   })
 }
 
-export function socialIdentityDetails(identity: SocialIdentity): SocialIdentityDetails {
-  const details = identity.details
-  const name = stringValue(details.name, details.displayName, details.login, details.username)
-  const email = stringValue(details.email)
-  const avatar = stringValue(details.avatar, details.picture, details.avatarUrl, details.avatar_url)
-  return {
-    ...(name ? { name } : {}),
-    ...(email ? { email } : {}),
-    ...(avatar ? { avatar } : {})
-  }
-}
-
 export function createSocialState(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32))
   return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')
@@ -249,29 +194,6 @@ export function takeSocialLinkFlow(): SocialLinkFlow | undefined {
   }
 }
 
-export function writeAccountNotice(notice: AccountNotice): void {
-  try {
-    sessionStorage.setItem(ACCOUNT_NOTICE_KEY, JSON.stringify(notice))
-  } catch {
-    // The profile refresh still shows the new identity; the notice is optional.
-  }
-}
-
-export function takeAccountNotice(): AccountNotice | undefined {
-  try {
-    const value = sessionStorage.getItem(ACCOUNT_NOTICE_KEY)
-    sessionStorage.removeItem(ACCOUNT_NOTICE_KEY)
-    if (!value) return undefined
-    const notice = asRecord(JSON.parse(value))
-    if ((notice.kind !== 'success' && notice.kind !== 'error') || typeof notice.message !== 'string') {
-      return undefined
-    }
-    return notice as unknown as AccountNotice
-  } catch {
-    return undefined
-  }
-}
-
 export function accountErrorMessage(error: unknown, context?: { providerName?: string; linking?: boolean }): string {
   const requestError =
     error instanceof LogtoAccountError ||
@@ -291,6 +213,13 @@ export function accountErrorMessage(error: unknown, context?: { providerName?: s
   // session — saying "sign in again" sent us chasing the wrong thing once.
   if (requestError.status === 403 && context?.linking) {
     return 'Verifying your account timed out. Return to Profile and start again.'
+  }
+  // A 401 on the link path is usually not an expired session: the identity
+  // endpoints are scope-gated, and a session opened before the deployment
+  // granted that scope keeps working everywhere else while these calls refuse.
+  // Only a fresh sign-in re-issues the token, so say that rather than "expired".
+  if (requestError.status === 401 && context?.linking) {
+    return 'This sign-in session cannot change sign-in methods. Sign out, sign in again, and retry.'
   }
   if (requestError.status === 401 || requestError.status === 403) {
     return 'Your sign-in session expired. Sign in again and retry.'

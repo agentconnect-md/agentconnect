@@ -1,4 +1,4 @@
-import type { NormalizedPlatformMessage, PlatformAttachment } from './normalized-message.js'
+import type { NormalizedPlatformMessage, PlatformAttachment } from '@agentconnect.md/protocol'
 
 /**
  * Minimal plain-object Discord view accepted by pure normalization. The daemon

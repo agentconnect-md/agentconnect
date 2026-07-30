@@ -1,11 +1,17 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useConsoleData } from '@/lib/data-context'
+import { useProfile } from '@/lib/profile'
 import type { DaemonConnectDto } from '@/lib/api'
 import { daemonCommands } from '@/lib/daemon-commands'
 import { Button, Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
+import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
+
+/** What the CP already gave the provisioned row — skip the /sharing write when the
+ *  operator leaves it alone. */
+const DEFAULT_SHARING: SharingValue = { visibility: 'org', sharedWith: [] }
 
 interface CommandTab {
   key: string
@@ -77,12 +83,34 @@ function CommandBox({ tabs, placeholder }: { tabs: CommandTab[]; placeholder: Re
   )
 }
 
-export default function AddDaemonModal({ onClose }: { onClose: () => void }) {
-  const { provisionDaemon, daemons, refresh, deleteDaemon } = useConsoleData()
+// `onDone` (optional) replaces plain close on the connected path's Done button —
+// ModalProvider uses it to chain back into the Edit-agent dialog when this modal
+// was opened from an unplaced agent's "Add daemon" affordance. Cancel never chains.
+export default function AddDaemonModal({
+  onClose,
+  onDone,
+  registerDismiss
+}: {
+  onClose: () => void
+  onDone?: () => void
+  registerDismiss: (handler: () => void) => () => void
+}) {
+  const { provisionDaemon, daemons, refresh, deleteDaemon, renameDaemon, saveSharing } = useConsoleData()
+  const { me } = useProfile()
   const [connect, setConnect] = useState<DaemonConnectDto | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [cancelling, setCancelling] = useState(false)
+  // Optional overrides applied on Done: an empty name keeps the daemon's own
+  // reported one, and the default sharing skips the /sharing write entirely.
+  const [name, setName] = useState('')
+  const [sharing, setSharing] = useState<SharingValue>(DEFAULT_SHARING)
+  const [saving, setSaving] = useState(false)
+  const [saveErr, setSaveErr] = useState<string | null>(null)
   const provisioned = useRef(false)
+  const provisionPending = useRef<Promise<DaemonConnectDto> | null>(null)
+  // Set the moment a dismissal is honoured, so an in-flight save can't act on a
+  // dialog the operator has already left.
+  const dismissed = useRef(false)
 
   // Mint a daemon + its API key + start command once when the modal opens. The ref
   // guard dedupes StrictMode's double-invoke so only one key is minted; we
@@ -91,9 +119,9 @@ export default function AddDaemonModal({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (provisioned.current) return
     provisioned.current = true
-    provisionDaemon()
-      .then(setConnect)
-      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+    const pending = provisionDaemon()
+    provisionPending.current = pending
+    pending.then(setConnect).catch((e) => setErr(e instanceof Error ? e.message : String(e)))
   }, [provisionDaemon])
 
   // Onboarding writes the daemon row immediately (status `pending`), so presence
@@ -112,17 +140,50 @@ export default function AddDaemonModal({ onClose }: { onClose: () => void }) {
   // Bail out before the daemon connects: drop the provisioned-but-never-connected
   // row so it doesn't linger as an offline daemon in the fleet. Once it has
   // connected we keep it (that path shows Done instead of Cancel).
-  const cancel = async () => {
-    if (cancelling) return
+  const cancel = useCallback(async () => {
+    // Mid-save the write owns the dialog: dismissing now would strand the error
+    // banner a failure needs to render, and let a success chain into Edit agent
+    // after the operator asked to leave. The save settles in a moment and closes
+    // (or reports) on its own, so Escape is a no-op until then.
+    if (cancelling || saving) return
     setCancelling(true)
-    if (connect && !connected) {
+    dismissed.current = true
+    const pending = connect ?? (await provisionPending.current?.catch(() => null))
+    if (pending && !connected) {
       try {
-        await deleteDaemon(connect.daemonId)
+        await deleteDaemon(pending.daemonId)
       } catch {
         /* best-effort cleanup — an unclaimed provisioned row is harmless */
       }
     }
     onClose()
+  }, [cancelling, saving, connect, connected, deleteDaemon, onClose])
+
+  useEffect(() => registerDismiss(() => void cancel()), [cancel, registerDismiss])
+
+  // Finish: apply the optional name + visibility to the row the daemon just claimed,
+  // then close (or chain on). Both writes are skipped when untouched, so the plain
+  // "connect and go" path stays a single click. A failure keeps the dialog open —
+  // the daemon IS connected either way, so nothing here is worth rolling back.
+  const finish = async () => {
+    if (saving || !connect) return
+    setSaving(true)
+    setSaveErr(null)
+    try {
+      const next = name.trim()
+      if (next && next !== row?.name) await renameDaemon(connect.daemonId, next)
+      if (!sameSharing(sharing, DEFAULT_SHARING)) await saveSharing('daemons', connect.daemonId, sharing)
+      // A dialog dismissed while this was in flight must stay dismissed — closing
+      // again is harmless, but chaining into Edit agent would reopen a surface the
+      // operator already left. (`cancel` fences on `saving`, so this only catches a
+      // dismissal that raced the flag; the guard makes the ordering irrelevant.)
+      if (dismissed.current) return
+      ;(onDone ?? onClose)()
+    } catch (e) {
+      if (dismissed.current) return
+      setSaveErr(e instanceof Error ? e.message : String(e))
+      setSaving(false)
+    }
   }
 
   return (
@@ -175,6 +236,33 @@ export default function AddDaemonModal({ onClose }: { onClose: () => void }) {
             </>
           )}
         </div>
+        {/* Both are optional overrides on the row the daemon claims: leave the name
+            blank to keep the one it reports (the placeholder, once it has connected),
+            and the visibility on Everyone to keep the org-wide default. Written on
+            Done (see `finish`). */}
+        <div className="fld mt-[14px]">
+          <span className="fldlbl">
+            Name <span className="font-normal text-(--text-tertiary)">· optional</span>
+          </span>
+          <input
+            className="inp"
+            value={name}
+            maxLength={64}
+            spellCheck={false}
+            placeholder={(connected && row?.name) || 'edge-1'}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && connected) void finish()
+            }}
+          />
+        </div>
+        <VisibilityField value={sharing} onChange={setSharing} ownerUserId={me?.userId} />
+        {saveErr && (
+          <div className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
+            <Icon name="triangle-alert" size={15} />
+            {saveErr}
+          </div>
+        )}
       </div>
       <div className="modalfoot">
         <span className="mono text-[11px] text-(--text-tertiary)">
@@ -182,8 +270,12 @@ export default function AddDaemonModal({ onClose }: { onClose: () => void }) {
         </span>
         <div className="flex-1" />
         {connected ? (
-          <Button variant="primary" onClick={onClose}>
-            Done
+          <Button
+            variant="primary"
+            onClick={() => void finish()}
+            className={saving ? 'cursor-default opacity-60' : undefined}
+          >
+            {saving ? 'Saving…' : onDone ? 'Continue' : 'Done'}
           </Button>
         ) : (
           // Can't finish until the daemon connects — offer a Cancel that cleans up

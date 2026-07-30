@@ -111,6 +111,10 @@ interface ConsoleData {
   agents: Agent[]
   daemons: DaemonRow[]
   allSessions: Session[]
+  /** Org-level "any session exists" (bare boolean from GET /sessions page 1) — the
+   *  getting-started conversation step derives from it so restricted/private-only
+   *  orgs don't under-report. Undefined until loaded / on older CPs. */
+  orgHasSessions?: boolean
   sessionFacets: SessionFacets
   sessionsNextCursor: string | null
   /** Per-session body-free SSE invalidation counter for open transcript views. */
@@ -216,6 +220,13 @@ interface ConsoleData {
   /** Command a daemon to install `version` + relaunch onto it; returns the opened op. */
   upgradeDaemon: (daemonId: string, version: string) => Promise<DaemonLifecycleOpDto>
   refresh: () => void
+  /** Revalidate ONLY the session lists — for after an action known to mint a session
+   *  (e.g. a Playground send), without re-pulling every console read model. */
+  refreshSessions: () => void
+  /** Revalidate ONLY the daemon fleet and resolve once the fresh list is committed —
+   *  for flows that must observe the post-refresh fleet before acting (e.g. the
+   *  onboarding mint retry, which reconnects an ambiguously-provisioned row). */
+  refreshDaemons: () => Promise<void>
   /** True until the very first pull of ALL read models has settled (any org switch re-arms it). */
   loading: boolean
   /** Per-model first-load flags — each clears when ITS pull settles, so a slow
@@ -484,6 +495,8 @@ const MOCK_MCP_PROVIDERS: McpProviderDto[] = [
     visibility: 'org',
     sharedWith: [],
     createdBy: 'u_dana',
+    ownerUserId: 'u_dana',
+    canEdit: true,
     canManageSharing: true,
     url: 'https://mcp.example.test/grafana/sse',
     headerNames: ['Authorization'],
@@ -498,6 +511,8 @@ const MOCK_MCP_PROVIDERS: McpProviderDto[] = [
     visibility: 'org',
     sharedWith: [],
     createdBy: 'u_sam',
+    ownerUserId: 'u_sam',
+    canEdit: true,
     canManageSharing: true,
     url: 'https://connectors.example.test/mcp',
     headerNames: ['x-oomol-connector-id'],
@@ -512,6 +527,8 @@ const MOCK_MCP_PROVIDERS: McpProviderDto[] = [
     visibility: 'restricted',
     sharedWith: ['u_sam', 'u_ana'],
     createdBy: 'u_dana',
+    ownerUserId: 'u_dana',
+    canEdit: true,
     canManageSharing: true,
     url: 'https://connectors.example.test/mcp',
     headerNames: ['x-oomol-connector-id'],
@@ -525,6 +542,8 @@ const MOCK_MCP_PROVIDERS: McpProviderDto[] = [
     visibility: 'restricted',
     sharedWith: ['u_noah'],
     createdBy: 'u_leo',
+    ownerUserId: 'u_leo',
+    canEdit: true,
     canManageSharing: true,
     url: 'https://mcp.example.test/deepseek',
     headerNames: [],
@@ -547,6 +566,8 @@ const MOCK_SKILL_SOURCES: SkillSourceDto[] = [
     visibility: 'org',
     sharedWith: [],
     createdBy: 'u_dana',
+    ownerUserId: 'u_dana',
+    canEdit: true,
     canManageSharing: true,
     createdAt: '2026-07-24T00:00:00Z'
   },
@@ -561,6 +582,8 @@ const MOCK_SKILL_SOURCES: SkillSourceDto[] = [
     visibility: 'org',
     sharedWith: [],
     createdBy: 'u_sam',
+    ownerUserId: 'u_sam',
+    canEdit: true,
     canManageSharing: true,
     createdAt: '2026-06-30T00:00:00Z'
   },
@@ -575,6 +598,8 @@ const MOCK_SKILL_SOURCES: SkillSourceDto[] = [
     visibility: 'restricted',
     sharedWith: ['u_noah', 'u_priya'],
     createdBy: 'u_leo',
+    ownerUserId: 'u_leo',
+    canEdit: true,
     canManageSharing: true,
     createdAt: '2026-05-11T00:00:00Z'
   }
@@ -668,6 +693,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
 
   const {
     sessions: realSessions,
+    orgHasSessions,
     nextCursor: sessionsNextCursor,
     loadingMore: sessionsLoadingMore,
     loadMore: loadMoreSessions,
@@ -723,6 +749,10 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(() => {
     void revalidateConsole()
   }, [revalidateConsole])
+  const refreshSessions = useCallback(() => {
+    void revalidateSessionLists()
+  }, [revalidateSessionLists])
+  const refreshDaemons = useCallback(() => mutateDaemons().then(() => undefined), [mutateDaemons])
 
   const drainSessionRefreshes = useCallback(
     async (generation: number) => {
@@ -1225,6 +1255,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       agents,
       daemons,
       allSessions,
+      orgHasSessions,
       sessionFacets,
       sessionsNextCursor,
       sessionActivityVersionById,
@@ -1275,6 +1306,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       restartDaemon,
       upgradeDaemon,
       refresh,
+      refreshSessions,
+      refreshDaemons,
       loading,
       agentsLoading,
       sessionsLoading,
@@ -1288,6 +1321,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       agents,
       daemons,
       allSessions,
+      orgHasSessions,
       sessionFacets,
       sessionsNextCursor,
       sessionActivityVersionById,
@@ -1338,6 +1372,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       restartDaemon,
       upgradeDaemon,
       refresh,
+      refreshSessions,
+      refreshDaemons,
       loading,
       agentsLoading,
       sessionsLoading,

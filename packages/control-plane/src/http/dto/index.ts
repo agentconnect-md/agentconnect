@@ -28,8 +28,8 @@ import {
 import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
 
 // ── per-resource visibility / sharing (docs/designs/resource-visibility.md) ──
-/** 'org' = visible to every org member (default); 'restricted' = creator + org
- *  owners + the `sharedWith` set. */
+/** 'org' = visible to every org member (default); 'restricted' = the current
+ *  ownership arm + the `sharedWith` set. */
 export const ResourceVisibilityEnum = z.enum(['org', 'restricted'])
 /** Per-SESSION visibility (docs/designs/session-visibility.md §1) — a different
  *  tier vocabulary from `ResourceVisibilityEnum`: sessions have no share set,
@@ -196,12 +196,14 @@ export const DaemonViewDto = z.object({
   lastSeenAt: z.string().nullable(),
   createdAt: z.string(), // ISO-8601
   createdBy: z.string().nullable(), // creator's userId (web resolves to a name / "You"); null for CLI/self-registered
+  ownerUserId: z.string().nullable(), // current resource owner; null for genuinely ownerless/system rows
   lastModifiedAt: z.string(), // ISO-8601; last human edit, defaults to createdAt
   lastModifiedBy: z.string().nullable(), // editor's userId (web resolves to a name / "You"); null for system rows
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
   visibility: ResourceVisibilityEnum,
   sharedWith: z.array(z.string()), // app_user.id set (only meaningful when restricted)
-  canManageSharing: z.boolean(), // whether the CALLER can edit this daemon (= canEdit); gates the sharing control
+  canEdit: z.boolean(), // visible + non-viewer; gates non-sharing edits
+  canManageSharing: z.boolean(), // canEdit + owned row; gates the sharing control
   /** Whether the CALLER may command restart/upgrade on this daemon (org OWNER only, §7).
    *  Gates the console's lifecycle controls so non-owners never see an action they'd 403 on. */
   canManageLifecycle: z.boolean()
@@ -581,12 +583,14 @@ export const AgentDto = z.object({
   capabilities: z.array(z.string()),
   createdAt: z.string(), // ISO-8601
   createdBy: z.string().nullable(), // creator's userId (web resolves to a name / "You"); null for daemon/CLI-created
+  ownerUserId: z.string().nullable(), // current resource owner; separate from immutable creator audit
   lastModifiedAt: z.string(), // ISO-8601; last human edit, defaults to createdAt
   lastModifiedBy: z.string().nullable(), // editor's userId (web resolves to a name / "You"); null for daemon/CLI-created
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
   visibility: ResourceVisibilityEnum,
   sharedWith: z.array(z.string()), // app_user.id set (only meaningful when restricted)
-  canManageSharing: z.boolean(), // whether the CALLER can edit this agent (= canEdit); gates sharing and call-policy controls
+  canEdit: z.boolean(), // visible + non-viewer; gates non-sharing edits
+  canManageSharing: z.boolean(), // canEdit + owned row; gates sharing
   callPolicy: AgentCallPolicyEnum, // which peer agents may call this agent as a sub-agent
   allowedCallerAgentIds: z.array(z.string()), // agent.id set, meaningful when callPolicy='selected'
   outboundPolicy: AgentCallPolicyEnum, // which peer agents this agent may discover/call
@@ -830,7 +834,9 @@ export const McpProviderDto = z.object({
   service: z.string().optional(),
   visibility: z.string(), // 'org' | 'restricted'
   sharedWith: z.array(z.string()), // app_user.id set (only meaningful when restricted)
-  createdBy: z.string().nullable(), // creator userId (pins the non-removable share chip); null when unknown
+  createdBy: z.string().nullable(), // immutable creator audit; null when unknown
+  ownerUserId: z.string().nullable(), // current resource owner; pins the non-removable access chip
+  canEdit: z.boolean(), // visible + non-viewer; gates non-sharing edits
   canManageSharing: z.boolean(), // whether THIS caller may change the provider's sharing
   headerNames: z.array(z.string()), // upstream auth header keys; values are secret and never returned
   createdAt: z.string() // ISO-8601
@@ -915,6 +921,8 @@ export const SkillSourceDto = z.object({
   visibility: z.string(), // 'org' | 'restricted'
   sharedWith: z.array(z.string()),
   createdBy: z.string().nullable(),
+  ownerUserId: z.string().nullable(),
+  canEdit: z.boolean(),
   canManageSharing: z.boolean(),
   createdAt: z.string() // ISO-8601
 })
@@ -1760,13 +1768,15 @@ export const CronDto = z.object({
   enabled: z.boolean(),
   lastRunAt: z.string().nullable(),
   createdBy: z.string().nullable(), // creator's userId (web resolves to a name / "You"); null for CLI/legacy
+  ownerUserId: z.string().nullable(), // current resource owner; separate from immutable creator audit
   createdAt: z.string(),
   lastModifiedBy: z.string().nullable(), // editor's userId (web resolves to a name / "You"); null for CLI/legacy
   lastModifiedAt: z.string(),
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
   visibility: ResourceVisibilityEnum,
   sharedWith: z.array(z.string()), // app_user.id set (only meaningful when restricted)
-  canManageSharing: z.boolean() // whether the CALLER can edit this cron (= canEdit); gates the sharing control
+  canEdit: z.boolean(), // visible + non-viewer; gates non-sharing edits
+  canManageSharing: z.boolean() // canEdit + owned row; gates the sharing control
 })
 
 // One daemon-reported fire (console run history). `running` = fire report seen,
@@ -2020,7 +2030,11 @@ export const SessionListPageDto = z.object({
   sessions: SessionListDto,
   // Counting is skipped on cursor pages; the first page remains authoritative.
   total: z.number().int().nonnegative().nullable(),
-  nextCursor: z.string().nullable()
+  nextCursor: z.string().nullable(),
+  // Org-level "any session exists" boolean (first page only) — deliberately a bare
+  // boolean so the getting-started checklist can derive its conversation step
+  // org-wide without exposing metadata of sessions the caller cannot see.
+  orgHasSessions: z.boolean().optional()
 })
 
 /** `GET /sessions/:id` — the deep-link detail view, served from CP-stored

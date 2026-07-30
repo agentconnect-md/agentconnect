@@ -244,6 +244,13 @@ export class SessionVisibilityPushService {
    * Has every affected daemon applied this change (§5.1)? The memory boundary
    * takes effect at ACK, so the §4.3 endpoint reports `pending` until then.
    *
+   * A row still on its initial §4.2 classification (`visibilitySource ===
+   * 'default'`) has no cutover in flight: nothing was pushed at ingest (the
+   * daemon classified the turn locally — layer 1 — or fails closed), so its
+   * `-1` watermark is bookkeeping that converges at the next register replay,
+   * not a pending change. Reporting it `pending` would pin "Applying…" on
+   * every freshly ingested session until its daemon happens to reconnect.
+   *
    * Only an UNPLACED agent counts as vacuously applied: nothing is running it,
    * so nothing can capture. A placed daemon that is merely offline is still
    * `pending` — daemons keep serving established sessions while the CP is down
@@ -253,6 +260,7 @@ export class SessionVisibilityPushService {
    */
   async isApplied(sessions: SessionMetaRecord[]): Promise<boolean> {
     for (const s of sessions) {
+      if (s.visibilitySource === 'default') continue // initial classification — nothing staged, nothing to ack
       if (s.visibilityAckedRev >= s.visibilityRev) continue
       const agent = await this.deps.repos.agent.get(s.agentId)
       if (!agent?.daemonId) continue // unplaced: no daemon runs it, nothing to stop

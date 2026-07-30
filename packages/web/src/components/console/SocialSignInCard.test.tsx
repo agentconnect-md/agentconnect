@@ -6,17 +6,15 @@ import { SWRConfig, useSWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  fetchAccountProfile: vi.fn(),
   requestEmailVerification: vi.fn()
 }))
 
+// An explicit mock factory must export every name the module under test imports,
+// or the import itself throws before render.
 vi.mock('@/lib/api', () => ({
+  fetchMySocialAccount: vi.fn(),
   resolveMySocialConnectorId: vi.fn(),
-  unlinkMySocialIdentity: vi.fn(),
-  // The card reads the Slack workspace through this. An explicit mock factory
-  // must export every name the module under test imports, or the import itself
-  // throws before render. "Not linked" keeps these tests about the linking UI.
-  fetchMySlackIdentity: vi.fn(async () => ({ linked: false }))
+  unlinkMySocialIdentity: vi.fn()
 }))
 
 vi.mock('@/lib/auth', () => ({
@@ -27,16 +25,12 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/logto-account', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/logto-account')>()
-  return {
-    ...actual,
-    fetchAccountProfile: mocks.fetchAccountProfile,
-    requestEmailVerification: mocks.requestEmailVerification
-  }
+  return { ...actual, requestEmailVerification: mocks.requestEmailVerification }
 })
 
 import SocialSignInCard from './SocialSignInCard'
 import { LogtoAccountError } from '@/lib/logto-account'
-import { resolveMySocialConnectorId } from '@/lib/api'
+import { fetchMySocialAccount, resolveMySocialConnectorId } from '@/lib/api'
 
 const ACCOUNT_KEY = 'logto-account-sign-in-methods'
 let root: Root | undefined
@@ -90,7 +84,7 @@ function button(label: string): HTMLButtonElement | undefined {
 }
 
 beforeEach(() => {
-  mocks.fetchAccountProfile.mockReset()
+  vi.mocked(fetchMySocialAccount).mockReset()
   mocks.requestEmailVerification.mockReset()
   vi.mocked(resolveMySocialConnectorId).mockReset()
   vi.mocked(resolveMySocialConnectorId).mockResolvedValue({ connectorId: 'connector' })
@@ -105,7 +99,7 @@ afterEach(async () => {
 
 describe('SocialSignInCard account state', () => {
   it('keeps a failed request idle and marks an explicit Retry as busy', async () => {
-    mocks.fetchAccountProfile
+    vi.mocked(fetchMySocialAccount)
       .mockRejectedValueOnce(new LogtoAccountError('Unavailable', 500))
       .mockImplementationOnce(() => new Promise(() => {}))
 
@@ -115,22 +109,18 @@ describe('SocialSignInCard account state', () => {
       await new Promise((resolve) => setTimeout(resolve, 25))
     })
 
-    expect(mocks.fetchAccountProfile).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(fetchMySocialAccount)).toHaveBeenCalledTimes(1)
 
     await act(async () => button('Retry')?.click())
-    await waitUntil(() => mocks.fetchAccountProfile.mock.calls.length === 2)
+    await waitUntil(() => vi.mocked(fetchMySocialAccount).mock.calls.length === 2)
     expect(container?.querySelector('[aria-busy]')?.getAttribute('aria-busy')).toBe('true')
   })
 
   it('keeps static providers but hides cached identity details and actions after a refresh fails', async () => {
-    mocks.fetchAccountProfile
+    vi.mocked(fetchMySocialAccount)
       .mockResolvedValueOnce({
-        identities: {
-          github: {
-            userId: 'github-user',
-            details: { name: 'Phil Z', email: 'zfy0701@gmail.com' }
-          }
-        }
+        identities: [{ target: 'github', userId: 'github-user', name: 'Phil Z', email: 'zfy0701@gmail.com' }],
+        hasSecurityVerificationMethod: false
       })
       .mockRejectedValueOnce(new LogtoAccountError('Unavailable', 500))
 
@@ -153,8 +143,8 @@ describe('SocialSignInCard account state', () => {
   // proof has to be collected BEFORE leaving for the provider — on return the
   // identity is saved immediately, with no UI left to ask in.
   it('proves account ownership before leaving for the provider', async () => {
-    mocks.fetchAccountProfile.mockResolvedValue({
-      identities: {},
+    vi.mocked(fetchMySocialAccount).mockResolvedValue({
+      identities: [],
       hasSecurityVerificationMethod: true,
       primaryEmail: 'phil@example.test'
     })
@@ -172,7 +162,7 @@ describe('SocialSignInCard account state', () => {
   })
 
   it('goes straight to the provider when the account has nothing to re-prove', async () => {
-    mocks.fetchAccountProfile.mockResolvedValue({ identities: {}, hasSecurityVerificationMethod: false })
+    vi.mocked(fetchMySocialAccount).mockResolvedValue({ identities: [], hasSecurityVerificationMethod: false })
 
     await renderCard()
     await waitUntil(() => container?.textContent?.includes('Not linked') === true)

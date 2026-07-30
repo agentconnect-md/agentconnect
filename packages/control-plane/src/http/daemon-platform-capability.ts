@@ -8,7 +8,7 @@
 import { DaemonId, type OrgId } from '../domain/ids.js'
 import type { ViewCtx } from '../persistence/ports.js'
 import type { HttpDeps } from './deps.js'
-import { canView } from './visibility.js'
+import { canView } from '../authorization/policy.js'
 
 export type IntegrationPlatform = 'slack' | 'telegram' | 'discord' | 'feishu'
 export type DaemonPlatformAvailability = 'available' | 'not_found' | 'unsupported'

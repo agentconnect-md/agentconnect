@@ -195,6 +195,21 @@ export default function EditAgentModal({
     )
   }, [agent.id])
 
+  // An unplaced agent (the built-in `agentconnect` preset ships this way) defaults its
+  // daemon to the first placement-eligible one, so opening the editor to place it starts
+  // on that daemon instead of an empty picker when a daemon already exists. `initialDaemonId`
+  // stays '' so this reads as an initial placement (arms Save + requires runtime/model).
+  // One-shot: the user can still switch it back to "No daemon".
+  const autofilledDaemon = useRef(false)
+  useEffect(() => {
+    if (!loaded || autofilledDaemon.current || initialDaemonId.current || daemonId) return
+    const target = daemons.find((d) => d.status === 'online' && d.caps.features.includes('agent-move-v1'))
+    if (target) {
+      autofilledDaemon.current = true
+      setDaemonId(target.daemonId)
+    }
+  }, [loaded, daemons, daemonId])
+
   // Jump to the requested section once the form has rendered. Both `scrollIntoView`
   // and `scrollTo` resolve to a no-op inside the dialog's nested overflow
   // containers, so the pane's `scrollTop` is assigned outright (same technique the
@@ -358,7 +373,7 @@ export default function EditAgentModal({
   )
   const inboundEffectivePeerIds = reachability.incomingByAgentId.get(agent.id) ?? []
   const outboundEffectivePeerIds = reachability.outgoingByAgentId.get(agent.id) ?? []
-  const callVisibilityEditable = agent.canManageSharing
+  const callVisibilityEditable = agent.canEdit
 
   // Switching runtime invalidates the model and the effort level (both vocabularies
   // are per-runtime), so reset both to the runtime default. (MCP enablement is edited
@@ -468,8 +483,9 @@ export default function EditAgentModal({
       // — the guard above rejected one).
       if (hasSpecChanges && !soloPlacement) await updateAgent(agent.id, patch)
       if (placementRequested) await moveAgent(agent.id, daemonId)
-      // Sharing + agent-call visibility ride their own endpoints (canManageSharing
-      // gate) — only write when they actually changed, and never during a move.
+      // Sharing and agent-call visibility ride their own endpoints. Sharing uses
+      // canManageSharing; call policy is a normal agent edit and uses canEdit.
+      // Only write when they actually changed, and never during a move.
       if (!soloPlacement && hasSharingChanges) await saveSharing('agents', agent.id, sharing)
       if (!soloPlacement && hasCallPolicyChanges) {
         const body: AgentCallPolicyInput = {
@@ -774,7 +790,7 @@ export default function EditAgentModal({
                 <VisibilityField
                   value={sharing}
                   onChange={setSharing}
-                  creatorUserId={agent.createdBy || null}
+                  ownerUserId={agent.ownerUserId}
                   disabled={!agent.canManageSharing}
                   label="Team visibility"
                 />

@@ -1,9 +1,5 @@
-import {
-  attachmentMention,
-  type NormalizedPlatformMessage,
-  type PlatformAttachment,
-  type QuotedMessage
-} from './normalized-message.js'
+import type { NormalizedPlatformMessage, PlatformAttachment, QuotedMessage } from '@agentconnect.md/protocol'
+import { attachmentMention } from './attachment-mention.js'
 
 /**
  * Minimal plain-object Telegram Bot API views used by pure normalization. The

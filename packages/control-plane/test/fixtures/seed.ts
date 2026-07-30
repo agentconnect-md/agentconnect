@@ -28,8 +28,10 @@ export async function seedDaemon(
     visibility?: 'org' | 'restricted'
     sharedWith?: string[]
     createdByUserId?: string
+    ownerUserId?: string
   } = {}
 ): Promise<DaemonId> {
+  const ownerUserId = opts.ownerUserId ?? opts.createdByUserId
   await prisma.daemon.create({
     data: {
       id,
@@ -42,7 +44,8 @@ export async function seedDaemon(
       capabilities: opts.capabilities ?? DEFAULT_DAEMON_CAPABILITIES,
       ...(opts.visibility ? { visibility: opts.visibility } : {}),
       ...(opts.sharedWith ? { sharedWith: opts.sharedWith } : {}),
-      ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {})
+      ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {}),
+      ...(ownerUserId ? { ownerUserId } : {})
     }
   })
   return DaemonId(id)
@@ -58,6 +61,7 @@ export async function seedAgent(
     visibility?: 'org' | 'restricted'
     sharedWith?: string[]
     createdByUserId?: string
+    ownerUserId?: string
     /** Full cloneable address (storage invariant) ⇒ a github-mode workspace. */
     gitRepo?: string
     /** GithubInstallation row-id provenance hint ⇒ github-APP credential mode. */
@@ -65,6 +69,7 @@ export async function seedAgent(
     gitAccess?: 'read' | 'write'
   } = {}
 ): Promise<AgentId> {
+  const ownerUserId = opts.ownerUserId ?? opts.createdByUserId
   await prisma.agent.create({
     data: {
       id,
@@ -75,6 +80,7 @@ export async function seedAgent(
       ...(opts.visibility ? { visibility: opts.visibility } : {}),
       ...(opts.sharedWith ? { sharedWith: opts.sharedWith } : {}),
       ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {}),
+      ...(ownerUserId ? { ownerUserId } : {}),
       ...(opts.gitRepo ? { workspaceMode: 'github' as const, gitRepo: opts.gitRepo } : {}),
       ...(opts.installationId ? { installationId: opts.installationId } : {}),
       ...(opts.gitAccess ? { gitAccess: opts.gitAccess } : {})

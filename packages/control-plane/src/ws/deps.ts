@@ -55,7 +55,8 @@ export interface DaemonWsDeps {
   /** Persists session milestones from the `event/session` EVT (deep-link metadata sync). */
   session: SessionRepo
   /** Resolves a webchat conversation's owning user for session-visibility ingest
-   *  (session-visibility.md §4.2); absent ⇒ webchat sessions stay owner-orphans. */
+   *  (session-visibility.md §4.2); absent ⇒ webchat sessions record no owner
+   *  (null — visible to no one until a repair/backfill). */
   webchatConversation?: WebchatConversationRepo
   /** Live authority boundary for daemon-originated one-time MCP assertion minting. */
   webchatMcpDelegation?: Pick<WebchatMcpDelegationService, 'mintInvocation'>

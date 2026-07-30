@@ -143,7 +143,7 @@ export function AgentToolsCard({
             <VisibilityValue
               visibility={provider.visibility}
               sharedWith={provider.sharedWith}
-              createdBy={provider.createdBy}
+              ownerUserId={provider.ownerUserId}
             />
           ) : undefined
         }

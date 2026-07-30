@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { LogoMark, SocialLoginMark, Wordmark } from '@/components/marks'
 import { isAuthConfigured, login } from '@/lib/auth'
-import { SOCIAL_LOGIN_PROVIDERS, type SocialLoginTarget } from '@/lib/social-login-providers'
+import { socialLoginProviders, type SocialLoginTarget } from '@/lib/social-login-providers'
 
 function BrandPanel() {
   return (
@@ -48,7 +48,7 @@ export default function Auth() {
             <h1 className="atitle">Sign in</h1>
             <p className="asub">Welcome back. Continue to your workspace.</p>
             <div className="mt-[26px] flex flex-col gap-[10px]">
-              {SOCIAL_LOGIN_PROVIDERS.map((provider) => (
+              {socialLoginProviders().map((provider) => (
                 <button key={provider.target} className="sso" onClick={() => sso(provider.target)}>
                   <SocialLoginMark target={provider.target} />
                   Continue with {provider.name}

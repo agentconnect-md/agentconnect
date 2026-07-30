@@ -129,13 +129,21 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
         message: 'response does not match schema'
       })
     }
-    // Prisma "record to delete/update does not exist".
-    if ((err as { code?: string }).code === 'P2025') {
+    // Prisma "record to delete/update does not exist", or a membership-dependent
+    // mutation whose required membership disappeared while it was queued.
+    if ((err as { code?: string }).code === 'P2025' || (err as { code?: string }).code === 'ORG_MEMBERSHIP_MISSING') {
       return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'resource not found' })
     }
     // Prisma unique-constraint violation (e.g. duplicate agent slug in an org).
     if ((err as { code?: string }).code === 'P2002') {
       return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'resource already exists' })
+    }
+    if ((err as { code?: string }).code === 'RESOURCE_OWNER_MISSING') {
+      return reply.code(409).send({
+        error: 'Conflict',
+        statusCode: 409,
+        message: 'ownerless resource cannot be restricted'
+      })
     }
     const status = typeof err.statusCode === 'number' ? err.statusCode : 500
     if (status >= 500) req.log.error({ err }, 'unhandled error')

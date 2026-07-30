@@ -7,12 +7,14 @@
  * (stored when no email is known, upgraded later, never surfaced). Org context
  * is resolved per request via `resolveOrgContext`.
  */
-import { describe, it, expect } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import { describe, it, expect, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
 import { isSyntheticEmail } from '../../src/persistence/ports.js'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
+import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 
 const repo = () => new PgUserRepo(prisma)
 
@@ -82,6 +84,115 @@ describe('PgUserRepo.provisionOidcUser — signup creates the personal org', () 
 
     await repo().provisionOidcUser({ oidcSubject: 'sub-bare', email: 'later@acme.com', emailVerified: true })
     expect((await prisma.user.findUnique({ where: { id: userId } }))?.email).toBe('later@acme.com')
+  })
+
+  it('retries a synthetic-email upgrade when a concurrent invite creates the holder', async () => {
+    const subject = `sub-concurrent-invite-${randomUUID()}`
+    const email = `concurrent-invite-${randomUUID()}@acme.com`
+    const { userId: canonicalUserId } = await repo().provisionOidcUser({ oidcSubject: subject })
+    const findUnique = prisma.user.findUnique.bind(prisma.user)
+    let injected = false
+    let invitedUserId: string | undefined
+    const findSpy = vi.spyOn(prisma.user, 'findUnique').mockImplementation(
+      (args) =>
+        (async () => {
+          const found = await findUnique(args)
+          if (!injected && 'email' in args.where && args.where.email === email && found === null) {
+            injected = true
+            const invited = await repo().addMemberByEmail(DEFAULT_ORG_ID, email, 'collaborator')
+            invitedUserId = invited.userId
+          }
+          return found
+        })() as ReturnType<typeof prisma.user.findUnique>
+    )
+
+    try {
+      await repo().provisionOidcUser({ oidcSubject: subject, email, emailVerified: true })
+    } finally {
+      findSpy.mockRestore()
+    }
+
+    expect(injected).toBe(true)
+    expect(invitedUserId).toBeDefined()
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: canonicalUserId } })).email).toBe(email)
+    expect(await prisma.user.findUnique({ where: { id: invitedUserId! } })).toBeNull()
+    expect(
+      await prisma.membership.findUnique({
+        where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: canonicalUserId } }
+      })
+    ).not.toBeNull()
+  })
+
+  it('merges invited ownership and shares into the canonical synthetic-email user', async () => {
+    const subject = `sub-authority-merge-${randomUUID()}`
+    const email = `authority-merge-${randomUUID()}@acme.com`
+    const { userId: canonicalUserId } = await repo().provisionOidcUser({ oidcSubject: subject })
+    await repo().addMember(DEFAULT_ORG_ID, canonicalUserId, 'collaborator')
+    const invited = await repo().addMemberByEmail(DEFAULT_ORG_ID, email, 'owner')
+
+    const daemonId = randomUUID()
+    const agentId = randomUUID()
+    const cronId = randomUUID()
+    const providerId = randomUUID()
+    const sourceId = randomUUID()
+    const authority = {
+      visibility: 'restricted' as const,
+      sharedWith: [invited.userId, canonicalUserId, DEFAULT_OWNER_ID],
+      createdByUserId: DEFAULT_OWNER_ID,
+      ownerUserId: invited.userId
+    }
+    await seedDaemon(prisma, daemonId, authority)
+    await seedAgent(prisma, agentId, { ...authority, daemonId })
+    await prisma.cronDef.create({
+      data: {
+        id: cronId,
+        orgId: DEFAULT_ORG_ID,
+        agentId,
+        schedule: '0 * * * *',
+        timezone: 'UTC',
+        trigger: 'verify identity authority merge',
+        ...authority
+      }
+    })
+    await prisma.mcpProvider.create({
+      data: {
+        id: providerId,
+        orgId: DEFAULT_ORG_ID,
+        name: `authority-merge-${providerId.slice(0, 8)}`,
+        url: 'https://mcp.example.com/sse',
+        ...authority
+      }
+    })
+    await prisma.skillSource.create({
+      data: {
+        id: sourceId,
+        orgId: DEFAULT_ORG_ID,
+        name: `authority-merge-${sourceId.slice(0, 8)}`,
+        source: 'example-org/example-kit',
+        ...authority
+      }
+    })
+
+    const upgraded = await repo().provisionOidcUser({ oidcSubject: subject, email, emailVerified: true })
+    expect(upgraded.userId).toBe(canonicalUserId)
+    expect(await prisma.user.findUnique({ where: { id: invited.userId } })).toBeNull()
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: canonicalUserId } })).email).toBe(email)
+
+    const select = { ownerUserId: true, sharedWith: true, createdByUserId: true } as const
+    const resources = await Promise.all([
+      prisma.agent.findUniqueOrThrow({ where: { id: agentId }, select }),
+      prisma.daemon.findUniqueOrThrow({ where: { id: daemonId }, select }),
+      prisma.cronDef.findUniqueOrThrow({ where: { id: cronId }, select }),
+      prisma.mcpProvider.findUniqueOrThrow({ where: { id: providerId }, select }),
+      prisma.skillSource.findUniqueOrThrow({ where: { id: sourceId }, select })
+    ])
+    for (const resource of resources) {
+      expect(resource).toEqual({
+        ownerUserId: canonicalUserId,
+        sharedWith: [canonicalUserId, DEFAULT_OWNER_ID],
+        createdByUserId: DEFAULT_OWNER_ID
+      })
+    }
   })
 
   it('IGNORES an unverified email everywhere: no claim, no storage, no upgrade', async () => {

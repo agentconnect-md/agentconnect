@@ -526,8 +526,10 @@ Both messages are inbound to agent A. Session 1 is a root, so it has no
 ### 7.2 Case 2a: post to a channel without mentioning another agent
 
 Agent A calls `sendMessage` with only `channel`, no `toUser` or `toAgent`.
-This is a plain channel post. It wakes a new session owned by A, because the
-outbound platform post returns as system input in A's future context.
+This is a plain channel post. It initializes a new idle session owned by A,
+keyed by the returned platform message id, but does **not** run a model turn.
+The post is A's own output rather than a new request, so activating on it would
+allow `sendMessage` to recursively create more roots.
 
 ```text
 --- session 1 ---                    (owner: agentA)
@@ -536,13 +538,21 @@ outbound platform post returns as system input in A's future context.
                                        to={channel: "#channel"},
                                        msg="Please review this.")
 
---- session 2 created ---            (owner: agentA; origin: session 1)
-{type: system, from: agentA}:        Please review this.
+--- session 2 initialized ---        (owner: agentA; origin: session 1; idle)
+{type: agent, from: agentA}:         Please review this.  (recorded, not prompted)
+
+  ... a human replies in the new thread ...
+
+--- session 2 first turn ---
+{type: context, from: agentA}:       Please review this.
+{type: human, from: humanA}:         Here are the details.
 ```
 
-Session 1 records A's outbound tool, while session 2 records inbound system
-input from A. Session 2 can later reply to session 1 through SessionTarget,
-forming a same-agent loop.
+Session 1 records A's outbound tool, while session 2 records the root for
+transcript display and replays it as context with the first real reply. Session
+initialization performs no prompt, tools, memory recall/capture, evaluation turn,
+or usage accounting. Session 2 can later reply to session 1 through SessionTarget
+after a real activation.
 
 ### 7.3 Case 2b: post to a channel and mention another agent
 
@@ -619,13 +629,13 @@ A's session lives on Telegram, but `sendMessage` targets Slack:
                                        to={platform: slack, channel: "#channel"},
                                        msg="Please review this.")
 
---- session 2 created ---            (platform: slack, owner: agentA; origin: session 1)
-{type: system, from: agentA}:        Please review this.
+--- session 2 initialized ---        (platform: slack, owner: agentA; origin: session 1; idle)
+{type: agent, from: agentA}:         Please review this.  (recorded, not prompted)
 ```
 
 The session platform, Telegram, is where it lives; `to.platform`, Slack, is the
 platform this tool invocation operates. Cross-platform sending does not change
-the caller session's platform. Reply behavior matches case 2a.
+the caller session's platform. Initialization and first-reply replay match case 2a.
 
 ### 7.5 Case 3b: send from Telegram to Slack and mention another agent
 

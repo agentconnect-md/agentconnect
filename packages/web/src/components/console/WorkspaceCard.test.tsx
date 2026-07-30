@@ -11,6 +11,11 @@ vi.mock('@/lib/api', () => ({
   deleteAgentRepo: vi.fn(),
   fetchAgentRepos: vi.fn()
 }))
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ replace: vi.fn() }),
+  usePathname: () => '/acme/agents/a1',
+  useSearchParams: () => new URLSearchParams()
+}))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-1' } }) }))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
 vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ refresh: vi.fn() }) }))
@@ -21,11 +26,16 @@ vi.mock('@/components/console/modals/EditWorkspaceModal', () => ({ default: () =
 import { WorkspaceCard } from './WorkspaceCard'
 import type { Agent } from '@/lib/data'
 
-const agent = (workspace: Record<string, unknown>) =>
+const agent = (
+  workspace: Record<string, unknown>,
+  capabilities: { canEdit?: boolean; canManageSharing?: boolean } = {}
+) =>
   ({
     id: 'agent-a',
     name: 'deploy-bot',
-    canManageSharing: true,
+    ownerUserId: 'u-owner',
+    canEdit: capabilities.canEdit ?? true,
+    canManageSharing: capabilities.canManageSharing ?? true,
     workspace
   }) as unknown as Agent
 
@@ -66,5 +76,14 @@ describe('workspace repository authority', () => {
     const html = renderToStaticMarkup(<WorkspaceCard agent={agent({ mode: 'scratch' })} />)
     expect(html).not.toContain('authorized implicitly')
     expect(html).toContain('None explicitly authorized')
+  })
+
+  it('keeps workspace edits available when sharing is locked for an ownerless agent', () => {
+    repos.rows = []
+    const html = renderToStaticMarkup(
+      <WorkspaceCard agent={agent({ mode: 'scratch' }, { canEdit: true, canManageSharing: false })} />
+    )
+    expect(html).toContain('Authorize repository')
+    expect(html).toContain('Edit workspace')
   })
 })

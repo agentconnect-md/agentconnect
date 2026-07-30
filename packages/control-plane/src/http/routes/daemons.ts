@@ -18,7 +18,7 @@ import type { DaemonView, DaemonLiveness, DaemonRegistry } from '../../ports.js'
 import { isSyntheticEmail } from '../../persistence/ports.js'
 import { DaemonId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
-import { canView, canEdit, canManageSharing, type ViewCtx } from '../visibility.js'
+import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import {
   DaemonListDto,
@@ -157,15 +157,16 @@ function toDto(
     // The creator's userId — the web resolves it to a display name (or "You"). A
     // synthesized placeholder email (`<sub>@oidc.local`) means a non-human creator → null.
     createdBy: view.createdBy && !isSyntheticEmail(view.createdBy.email) ? view.createdBy.userId : null,
+    ownerUserId: view.ownerUserId,
     lastModifiedAt: view.lastModifiedAt.toISOString(),
     lastModifiedBy:
       view.lastModifiedBy && !isSyntheticEmail(view.lastModifiedBy.email) ? view.lastModifiedBy.userId : null,
     visibility: view.visibility,
     sharedWith: view.sharedWith,
+    canEdit: canEdit(view, ctx),
     canManageSharing: canManageSharing(view, ctx),
-    // Restart/upgrade are operational edits on the daemon — available to anyone who can
-    // EDIT it (its creator + collaborators + owners; viewers excluded), NOT org-owner-only.
-    // Mirrors canManageSharing/canEdit so the console shows the controls to the daemon's owner.
+    // Restart/upgrade are operational edits on the daemon. They follow the same
+    // visibility + non-viewer gate as content edits and sharing management.
     canManageLifecycle: canEdit(view, ctx)
   }
 }
@@ -267,7 +268,7 @@ export function daemonRoutes(deps: HttpDeps) {
           description:
             'Provision a new daemon (a provisioned row plus its first API key) and return a ready-to-run connect command for onboarding.',
           operationId: 'createDaemonToken',
-          response: { 201: DaemonConnectDto, 403: ErrorDto }
+          response: { 201: DaemonConnectDto, 403: ErrorDto, 404: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -333,8 +334,9 @@ export function daemonRoutes(deps: HttpDeps) {
     )
 
     // Set who can see this daemon (visibility + share set). Gated exactly like a
-    // content edit (canManageSharing === canEdit, §13.3). Independent of any agent's
-    // visibility — a daemon can be restricted-away while its agents stay org-visible.
+    // content edit on owned rows (§13.3); ownerless rows stay org-visible.
+    // Independent of any agent's visibility — a daemon can be restricted-away
+    // while its agents stay org-visible.
     r.put(
       '/daemons/:id/sharing',
       {
@@ -342,11 +344,11 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'Set daemon sharing',
           description:
-            'Set the daemon’s visibility (org-wide vs restricted) and share set. Requires edit rights on the daemon; sharedWith is intersected with current org members.',
+            'Set an owned daemon’s visibility (org-wide vs restricted) and share set. Requires edit rights on the daemon; ownerless daemons stay org-visible, and sharedWith is intersected with current org members.',
           operationId: 'setDaemonSharing',
           params: IdParam,
           body: SetSharingBody,
-          response: { 200: DaemonViewDto, 403: ErrorDto, 404: ErrorDto }
+          response: { 200: DaemonViewDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -386,8 +388,8 @@ export function daemonRoutes(deps: HttpDeps) {
       if (!existing) {
         return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
       }
-      // Restart/upgrade are edits on the daemon — its creator/collaborators/owners may run
-      // them; a viewer (or someone who can't edit a restricted daemon) may not.
+      // Restart/upgrade use the ordinary daemon edit policy: the resource must
+      // be visible and the caller must not be a viewer.
       if (!canEdit(existing, ctxOf(req))) {
         return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot manage this daemon' })
       }

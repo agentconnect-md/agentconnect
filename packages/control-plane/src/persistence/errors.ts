@@ -82,3 +82,31 @@ export class AgentWorkspaceIntegrationConflict extends Error {
     this.name = 'AgentWorkspaceIntegrationConflict'
   }
 }
+
+/**
+ * A membership-dependent transaction reached persistence after one of its
+ * required organization memberships disappeared. HTTP maps this to the same
+ * not-found shape as the org-scope guard; non-HTTP callers can match the code.
+ */
+export class OrgMembershipMissing extends Error {
+  readonly code = 'ORG_MEMBERSHIP_MISSING' as const
+
+  constructor() {
+    super('required organization membership no longer exists')
+    this.name = 'OrgMembershipMissing'
+  }
+}
+
+/**
+ * Restricted visibility requires a durable owner. Ownerless org-visible rows
+ * remain editable, but cannot be made restricted until an explicit,
+ * provenance-aware ownership workflow assigns one.
+ */
+export class ResourceOwnerMissing extends Error {
+  readonly code = 'RESOURCE_OWNER_MISSING' as const
+
+  constructor() {
+    super('ownerless resource cannot be restricted')
+    this.name = 'ResourceOwnerMissing'
+  }
+}

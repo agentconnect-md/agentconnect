@@ -19,7 +19,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
-import { canView, canManageSharing } from '../visibility.js'
+import { canView, canEdit, canManageSharing } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import { makeMcpPush } from '../mcp-push.js'
 import { serializeByProvider } from './mcp-providers.js'
@@ -175,6 +175,8 @@ export function connectorRoutes(deps: HttpDeps) {
             visibility: provider.visibility,
             sharedWith: provider.sharedWith,
             createdBy: provider.createdByUserId,
+            ownerUserId: provider.ownerUserId,
+            canEdit: canEdit(provider, ctxOf(req)),
             canManageSharing: canManageSharing(provider, ctxOf(req)),
             headerNames: headers.map((h) => h.name),
             createdAt: provider.createdAt.toISOString(),

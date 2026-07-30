@@ -1,8 +1,7 @@
 /**
- * `@agentconnect.md/protocol` — the shared wire contract for the daemon ↔ CP
- * WebSocket protocol (daemon-cp-ws-protocol.md). Single source of truth for all
- * frames and the `sessionEpoch`/`seq`/`launchId` fencing fields, imported by
- * both the control-plane and the daemon.
+ * `@agentconnect.md/protocol` — shared daemon, relay, and Control Plane wire
+ * contracts. Single source of truth for normalized message schemas, frames,
+ * and the `sessionEpoch`/`seq`/`launchId` fencing fields.
  *
  * This barrel re-exports the zod schemas, their inferred types, and the
  * `isFrameType` guard.
@@ -17,6 +16,9 @@ export {
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_VISIBILITY_FEATURE
 } from './consts.js'
+
+// ── normalized platform-message wire contract ──
+export * from './normalized-message.js'
 
 // ── envelope + control extension ──
 export { Envelope, ControlExt, NIL_UUID } from './envelope.js'

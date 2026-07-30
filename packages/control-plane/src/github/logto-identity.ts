@@ -78,17 +78,51 @@ interface CachedLogin {
   expiresAt: number
 }
 
-interface CachedSlack {
-  identity: SlackIdentity | null
+interface CachedUser {
+  user: LogtoUser | null
   expiresAt: number
 }
 
-/** The Slack workspace identity behind a console account. Both ids are required —
- *  a `U…` without its `T…` is not addressable, so a partial read is no read. */
+/** One linked sign-in method, narrowed to what the Profile card renders. The
+ *  connector's `rawData` is deliberately NOT part of this: it is a whole OIDC
+ *  payload, and none of it needs to reach a browser. */
+export interface SocialIdentitySummary {
+  target: string
+  userId: string
+  name?: string
+  email?: string
+  avatar?: string
+  /** Where this account lives at its provider, when that is addressable. */
+  profileUrl?: string
+  /** Slack only — the workspace it belongs to. */
+  workspace?: { teamId: string; name?: string; domain?: string; url?: string }
+}
+
+/** Everything the Profile card needs about an account's sign-in methods. */
+export interface SocialAccount {
+  identities: SocialIdentitySummary[]
+  /** Logto refuses an identity change the caller has not re-proven whenever
+   *  this holds, so the console has to collect a code first. Mirrors Logto's own
+   *  rule: a password, an email, or a phone. */
+  hasSecurityVerificationMethod: boolean
+  primaryEmail?: string
+}
+
+/**
+ * The Slack workspace identity behind a console account. Both ids are required —
+ * a `U…` without its `T…` is not addressable, so a partial read is no read.
+ *
+ * IDENTIFY A SLACK HUMAN BY THE PAIR, NOT BY `userId` ALONE. Slack's Web API
+ * documents the user id as workspace-scoped and says to store it together with
+ * the team id, and Enterprise Grid can give one person more than one id. Taking
+ * just `userId` off this type compiles, reads naturally, and drops the qualifier
+ * Slack asks you to keep. See docs/designs/slack-identity.md for what this does
+ * and does NOT claim about the OIDC `sub`.
+ */
 export interface SlackIdentity {
   /** Slack workspace id (`T…`). */
   teamId: string
-  /** Slack user id (`U…`) — scoped to that workspace. */
+  /** Slack user id (`U…`) — scoped to that workspace, NOT globally unique. */
   userId: string
   teamName?: string
   teamDomain?: string
@@ -104,13 +138,20 @@ const SLACK_CLAIM = {
   teamDomain: 'https://slack.com/team_domain'
 } as const
 
-/** The Logto user shape we read — identities metadata only. */
+/** The Logto user shape we read — identity metadata plus the three fields
+ *  Logto's own `hasSecurityVerificationMethod` is computed from. */
 interface LogtoUser {
+  primaryEmail?: unknown
+  primaryPhone?: unknown
+  hasPassword?: unknown
   identities?: Record<
     string,
     {
       userId?: string
       details?: {
+        name?: unknown
+        email?: unknown
+        avatar?: unknown
         // The connector's raw profile. Logto's github connector stores the
         // GitHub /user response under `rawData` (login at `userInfo.login` on
         // current connectors; older ones kept the flat `login`); the slack
@@ -126,11 +167,12 @@ export class LogtoIdentityService {
   private tokenInFlight?: Promise<string>
   private readonly logins = new Map<string, CachedLogin>()
   private readonly loginInFlight = new Map<string, Promise<string | null>>()
-  // Kept separate from the login cache on purpose: githubLoginFor sits on a live
-  // authorization gate, and a display-only Slack read must not be able to shift
-  // what that gate sees (or when it re-asks).
-  private readonly slacks = new Map<string, CachedSlack>()
-  private readonly slackInFlight = new Map<string, Promise<SlackIdentity | null>>()
+  // One cache for every display-only read, so a Profile load costs ONE upstream
+  // fetch rather than one per projection. Kept separate from the login cache on
+  // purpose: githubLoginFor sits on a live authorization gate, and display reads
+  // must not be able to shift what that gate sees (or when it re-asks).
+  private readonly users = new Map<string, CachedUser>()
+  private readonly userInFlight = new Map<string, Promise<LogtoUser | null>>()
 
   constructor(
     private readonly cfg: LogtoMgmtConfig,
@@ -161,12 +203,49 @@ export class LogtoIdentityService {
    * metadata — no caller may treat this as an authorization decision.
    */
   async slackIdentityFor(sub: string): Promise<SlackIdentity | null> {
-    const cached = this.slacks.get(sub)
-    if (cached && cached.expiresAt > this.clock.now()) return cached.identity
-    let pending = this.slackInFlight.get(sub)
+    return slackIdentityOf(await this.logtoUser(sub))
+  }
+
+  /**
+   * The account's sign-in methods, narrowed for display. Serving this from here
+   * rather than letting the browser call Logto directly is the point: the
+   * upstream read is cached and made from a process that sits next to Logto,
+   * instead of once per page load from wherever the user happens to be.
+   */
+  async socialAccountFor(sub: string): Promise<SocialAccount> {
+    const user = await this.logtoUser(sub)
+    if (!user) return { identities: [], hasSecurityVerificationMethod: false }
+    const slack = slackIdentityOf(user)
+    const identities = Object.entries(user.identities ?? {}).map(([target, identity]) =>
+      summarize(target, identity, target === 'slack' ? slack : null)
+    )
+    const primaryEmail = firstString(user.primaryEmail)
+    return {
+      identities,
+      // Logto's own rule (core/routes/account): a password, an email, or a phone.
+      hasSecurityVerificationMethod: Boolean(user.hasPassword) || Boolean(primaryEmail) || Boolean(user.primaryPhone),
+      ...(primaryEmail ? { primaryEmail } : {})
+    }
+  }
+
+  /**
+   * Drop the cached user because it was changed somewhere this service cannot
+   * see. Linking runs browser→Logto — the Account API is the only side with a
+   * connector session — so the write never passes through here, and without
+   * this the positive cache would hide a just-linked identity for its full TTL.
+   */
+  forgetUser(sub: string): void {
+    this.users.delete(sub)
+  }
+
+  /** The cached upstream user every display read projects from. */
+  private async logtoUser(sub: string): Promise<LogtoUser | null> {
+    const cached = this.users.get(sub)
+    if (cached && cached.expiresAt > this.clock.now()) return cached.user
+    let pending = this.userInFlight.get(sub)
     if (!pending) {
-      pending = this.lookupSlack(sub).finally(() => this.slackInFlight.delete(sub))
-      this.slackInFlight.set(sub, pending)
+      pending = this.lookupUser(sub).finally(() => this.userInFlight.delete(sub))
+      this.userInFlight.set(sub, pending)
     }
     return pending
   }
@@ -228,25 +307,22 @@ export class LogtoIdentityService {
    *  Profile does not keep showing a method the user just changed. */
   private invalidate(sub: string): void {
     this.logins.delete(sub)
-    this.slacks.delete(sub)
+    this.users.delete(sub)
   }
 
-  private async lookupSlack(sub: string): Promise<SlackIdentity | null> {
+  private async lookupUser(sub: string): Promise<LogtoUser | null> {
     const res = await this.request(`/api/users/${encodeURIComponent(sub)}`)
     if (res.status === 404) {
-      this.slacks.set(sub, { identity: null, expiresAt: this.clock.now() + NEGATIVE_TTL_MS })
+      // Deleted at the provider — cache the miss briefly.
+      this.users.set(sub, { user: null, expiresAt: this.clock.now() + NEGATIVE_TTL_MS })
       return null
     }
     if (!res.ok) {
       throw new LogtoApiError(`logto user lookup failed: ${res.status}`, res.status, res.status >= 500)
     }
     const user = (await res.json()) as LogtoUser
-    const identity = slackIdentityOf(user)
-    this.slacks.set(sub, {
-      identity,
-      expiresAt: this.clock.now() + (identity ? LOGIN_TTL_MS : NEGATIVE_TTL_MS)
-    })
-    return identity
+    this.users.set(sub, { user, expiresAt: this.clock.now() + LOGIN_TTL_MS })
+    return user
   }
 
   private async lookupLogin(sub: string): Promise<string | null> {
@@ -345,10 +421,63 @@ function firstString(...candidates: unknown[]): string | null {
   return null
 }
 
+/**
+ * Where a linked account lives at its provider. Built from the connector's
+ * stored `rawData`, a snapshot from sign-in — a renamed workspace yields a
+ * stale link, so nothing may depend on one resolving. Google has no per-person
+ * public profile, so it points at the page its owner can actually act on.
+ */
+function providerProfileUrl(target: string, raw: Record<string, unknown>, slack: SlackIdentity | null): string | null {
+  if (target === 'github') {
+    const userInfo = (raw.userInfo ?? {}) as { login?: unknown }
+    const login = firstString(userInfo.login, raw.login)
+    return login ? `https://github.com/${encodeURIComponent(login)}` : null
+  }
+  if (target === 'slack') {
+    return slack?.teamDomain ? `https://${slack.teamDomain}.slack.com/team/${encodeURIComponent(slack.userId)}` : null
+  }
+  if (target === 'google') return 'https://myaccount.google.com/profile'
+  return null
+}
+
+/** Narrow one linked identity to what a Profile row renders. */
+function summarize(
+  target: string,
+  identity: NonNullable<LogtoUser['identities']>[string],
+  slack: SlackIdentity | null
+): SocialIdentitySummary {
+  const details = identity.details ?? {}
+  const raw = (details.rawData ?? {}) as Record<string, unknown>
+  const name = firstString(details.name)
+  const email = firstString(details.email)
+  // Not every connector fills the normalized `avatar`: Logto stores it for
+  // github and google but not for slack, whose picture survives only as the
+  // `picture` claim inside the raw payload. Falling back to it costs nothing
+  // and is what any OIDC connector carries.
+  const avatar = firstString(details.avatar, raw.picture)
+  const profileUrl = providerProfileUrl(target, raw, slack)
+  const workspace = slack
+    ? {
+        teamId: slack.teamId,
+        ...(slack.teamName ? { name: slack.teamName } : {}),
+        ...(slack.teamDomain ? { domain: slack.teamDomain, url: `https://${slack.teamDomain}.slack.com` } : {})
+      }
+    : undefined
+  return {
+    target,
+    userId: identity.userId ?? '',
+    ...(name ? { name } : {}),
+    ...(email ? { email } : {}),
+    ...(avatar ? { avatar } : {}),
+    ...(profileUrl ? { profileUrl } : {}),
+    ...(workspace ? { workspace } : {})
+  }
+}
+
 /** Read the Slack workspace identity out of a Logto user, or null when the
  *  account has no usable one. */
-function slackIdentityOf(user: LogtoUser): SlackIdentity | null {
-  const identity = user.identities?.slack
+function slackIdentityOf(user: LogtoUser | null): SlackIdentity | null {
+  const identity = user?.identities?.slack
   const raw = identity?.details?.rawData
   if (!raw) return null
   const teamId = firstString(raw[SLACK_CLAIM.teamId])

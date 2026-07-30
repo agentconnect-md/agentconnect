@@ -1,4 +1,4 @@
-import type { NormalizedPlatformMessage, PlatformAttachment } from '@agentconnect.md/message'
+import type { NormalizedPlatformMessage, PlatformAttachment } from '@agentconnect.md/protocol'
 
 /**
  * A file shared alongside a message. Platform ingresses carry metadata + a

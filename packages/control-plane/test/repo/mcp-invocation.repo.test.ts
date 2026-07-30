@@ -479,10 +479,16 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     'linearizes %s against membership removal in both lock orders',
     async (observation) => {
       const delegation = await fixtures()
+      const transferOwner = await prisma.user.create({
+        data: { id: 'mcp-invocation-transfer-owner', email: 'mcp-invocation-transfer-owner@example.com' }
+      })
+      await prisma.membership.create({
+        data: { orgId: DEFAULT_ORG_ID, userId: transferOwner.id, role: 'owner' }
+      })
 
       await exerciseAuthorityRace(delegation, observation, {
         async write(db) {
-          await new PgUserRepo(db).removeMember(DEFAULT_ORG_ID, DEFAULT_OWNER_ID)
+          await new PgUserRepo(db).removeMember(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, transferOwner.id)
         },
         async restore() {
           await prisma.membership.create({
@@ -494,29 +500,19 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
   )
 
   it.each(['issued claim', 'terminal replay'] as const)(
-    'linearizes %s against an authority-removing role demotion in both lock orders',
-    async (observation) => {
-      const delegation = await fixtures()
-      await new PgAgentRepo(prisma).setSharing(AgentId(AGENT), {
-        visibility: 'restricted',
-        sharedWith: []
-      })
-
-      await exerciseAuthorityRace(delegation, observation, {
-        async write(db) {
-          await new PgUserRepo(db).setMemberRole(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, 'viewer')
-        },
-        async restore() {
-          await new PgUserRepo(prisma).setMemberRole(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, 'owner')
-        }
-      })
-    }
-  )
-
-  it.each(['issued claim', 'terminal replay'] as const)(
     'linearizes %s against visibility tightening and sharedWith pruning in both lock orders',
     async (observation) => {
       const delegation = await fixtures()
+      const resourceOwner = await prisma.user.create({
+        data: { id: 'mcp-invocation-resource-owner', email: 'mcp-invocation-resource-owner@example.com' }
+      })
+      await prisma.membership.create({
+        data: { orgId: DEFAULT_ORG_ID, userId: resourceOwner.id, role: 'collaborator' }
+      })
+      await prisma.agent.update({
+        where: { id: AGENT },
+        data: { ownerUserId: resourceOwner.id }
+      })
       await new PgUserRepo(prisma).setMemberRole(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, 'collaborator')
       await new PgAgentRepo(prisma).setSharing(AgentId(AGENT), {
         visibility: 'restricted',

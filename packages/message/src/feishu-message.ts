@@ -1,4 +1,4 @@
-import type { NormalizedPlatformMessage, PlatformAttachment } from './normalized-message.js'
+import type { NormalizedPlatformMessage, PlatformAttachment } from '@agentconnect.md/protocol'
 
 /**
  * Minimal plain-object view of a Lark `im.message.receive_v1` event. Both the

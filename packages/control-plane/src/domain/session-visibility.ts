@@ -11,9 +11,11 @@
  *
  *  - **Fail closed.** A rule that defaults to `private` never widens to `org`
  *    because a lookup failed; an unresolvable owner yields `private` +
- *    `ownerIdentity: null` (an owner-orphan, visible to org owners only and
- *    recoverable via the §4.3 endpoint). A metadata inconsistency must never
- *    become a disclosure.
+ *    `ownerIdentity: null` — a row visible to no one. Distinct from a
+ *    stored-but-unmatched platform tuple (a §2 owner-orphan), which identity
+ *    linking (§7) lights up retroactively; a null owner has nothing to match
+ *    and needs a repair/backfill. A metadata inconsistency must never become
+ *    a disclosure.
  *  - **`ownerIdentity` is provenance, not the gate.** It is recorded for every
  *    human-triggered session regardless of tier — for `org` rows it is what
  *    grants its initiator the §4.3 right to pull the session private later.

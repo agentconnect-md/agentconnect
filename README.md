@@ -5,7 +5,38 @@
 <h1 align="center">AgentConnect</h1>
 
 <p align="center">
-  <strong>Run AI coding agents where your code and credentials live, then connect them everywhere your team works.</strong>
+  <strong>Tag any agent, wherever work happens.</strong>
+</p>
+
+<p align="center">
+  <sub><strong>FROM</strong>&nbsp;&nbsp;
+  <a href="https://slack.com"><img src="https://api.iconify.design/logos/slack-icon.svg" width="16" height="16" alt="Slack" title="Slack" /></a>&nbsp;&nbsp;
+  <a href="https://telegram.org"><img src="https://cdn.simpleicons.org/telegram" width="16" height="16" alt="Telegram" title="Telegram" /></a>&nbsp;&nbsp;
+  <a href="https://discord.com"><img src="https://cdn.simpleicons.org/discord" width="16" height="16" alt="Discord" title="Discord" /></a>&nbsp;&nbsp;
+  <a href="https://www.larksuite.com"><img src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/lark.svg" width="16" height="16" alt="Lark and Feishu" title="Lark / Feishu" /></a>&nbsp;&nbsp;
+  <a href="https://github.com"><img src="https://cdn.simpleicons.org/github/181717/e6edf3" width="16" height="16" alt="GitHub" title="GitHub" /></a>&nbsp;&nbsp;
+  <a href="https://en.wikipedia.org/wiki/Webhook"><img src="https://api.iconify.design/logos/webhooks.svg" width="16" height="16" alt="Webhook" title="Webhook" /></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <strong>WITH</strong>&nbsp;&nbsp;
+  <a href="https://claude.com"><img src="https://cdn.simpleicons.org/claude" width="16" height="16" alt="Claude" title="Claude" /></a>&nbsp;&nbsp;
+  <a href="https://openai.com"><img src="https://api.iconify.design/tabler/brand-openai.svg?color=%23808896" width="16" height="16" alt="OpenAI" title="OpenAI" /></a>&nbsp;&nbsp;
+  <a href="https://gemini.google.com"><img src="https://cdn.simpleicons.org/googlegemini" width="16" height="16" alt="Gemini" title="Gemini" /></a>&nbsp;&nbsp;
+  <a href="https://www.deepseek.com"><img src="https://cdn.simpleicons.org/deepseek" width="16" height="16" alt="DeepSeek" title="DeepSeek" /></a>&nbsp;&nbsp;
+  <a href="https://opencode.ai"><img src="https://cdn.simpleicons.org/opencode/000000/e6edf3" width="16" height="16" alt="OpenCode" title="OpenCode" /></a>&nbsp;&nbsp;
+  <a href="https://pi.dev"><img src="https://cdn.simpleicons.org/pi/000000/e6edf3" width="16" height="16" alt="Pi" title="Pi" /></a>&nbsp;&nbsp;
+  <strong>ANY ACP AGENT</strong></sub>
+</p>
+
+<p align="center">
+  <strong><a href="https://docs.agentconnect.md">Documentation</a></strong> ·
+  <strong><a href="https://agentconnect.md">Website</a></strong> ·
+  <strong><a href="https://agentconnect.md/blog">Blog</a></strong> ·
+  <strong><a href="https://app.agentconnect.md/waitlist">Join Cloud waitlist</a></strong>
+</p>
+
+<p align="center">
+  <a href="https://slack.agentconnect.md"><img src="https://custom-icon-badges.demolab.com/badge/Slack-4A154B?logo=slack&logoColor=fff" alt="Join AgentConnect on Slack" /></a>
+  <a href="https://x.com/getAgentConnect"><img src="https://img.shields.io/twitter/follow/getAgentConnect?style=social" height="28" alt="Follow @getAgentConnect on X" /></a>
 </p>
 
 <p align="center">
@@ -18,37 +49,43 @@
 <p align="center">
   <a href="#why-agentconnect">Why AgentConnect?</a> ·
   <a href="#get-started">Get started</a> ·
+  <a href="#build-your-stack">Build your stack</a> ·
   <a href="#architecture">Architecture</a> ·
+  <a href="#development">Development</a> ·
   <a href="#explore">Explore</a>
 </p>
 
-AgentConnect is an open-source, daemon-centric platform for operating AI coding
-agents across your own infrastructure. Claude, Codex, and other ACP-compatible
-runtimes can participate in Slack, Telegram, Discord, Lark / Feishu, webchat, GitHub
-events, webhooks, and scheduled tasks.
+AgentConnect is an open-source platform where teams and AI agents work together
+across the tools they already use, including Slack, Telegram, Discord, and
+GitHub. Connect Claude Code, Codex, Gemini CLI, or any ACP-compatible runtime,
+then start work from a conversation, pull request, issue, webhook, or schedule.
 
-The execution daemon stays beside the agent and its workspace. The Control Plane
-coordinates the fleet but never handles the live message path, so established
-sessions keep running when it is temporarily unavailable.
+Give each agent a role, then choose the runtime, model, workspace, memory,
+tools, skills, permissions, and machine it needs. Agents can call one another
+while your team follows the work in shared channels and from one console.
+
+A small daemon runs the agents in the environment you operate. One console lets
+your team configure the fleet, connect channels and triggers, control access,
+and follow the work they are allowed to see.
 
 ## Why AgentConnect?
 
-Built for teams that want a shared agent platform without moving execution or
-workspace access into a hosted runtime:
+AI agents are taking on work across the team, but most still live in individual
+terminals. AgentConnect brings them into the team's shared workflows:
 
-- **Keep execution local.** Workspaces, agent processes, direct platform
-  connections, and model-provider traffic stay on daemon hosts you control.
-  Public callback ingress terminates on the optional relay you operate.
-- **Operate agents as a fleet.** Configure runtimes, workspaces, integrations,
-  secrets, schedules, and sessions from one Web console.
-- **Preserve data boundaries.** The Control Plane stores orchestration metadata,
-  not message bodies, attachment bytes, or ACP session streams.
-- **Connect the tools you already use.** Bring agents into chat, webchat, GitHub
-  events, generic webhooks, and scheduled workflows.
-- **Choose the right memory model.** Use managed, native, external, or disabled
-  persistent memory per agent.
-- **Let agents collaborate safely.** Directional discovery and call policies
-  control which agents can delegate work to one another.
+- **Work as one team.** Create agents with different roles and let them call on
+  one another, while people follow along in the conversations where the work
+  happens.
+- **Keep work where it happens.** Link agents to bots in Slack, Telegram, and
+  Discord, or to repositories and workflows on GitHub.
+- **Choose the right agent for every job.** Configure each agent's runtime,
+  model, workspace, tools, and machine independently.
+- **Carry context forward.** Give each agent the memory and reusable skills it
+  needs to build on earlier work.
+- **Set clear boundaries.** Decide who can see each agent and session, which
+  repositories and tools it may use, and which other agents it may call.
+- **Stay in control.** Self-host the Apache-2.0 stack, run agents in your
+  environment, and change runtimes without locking the team to one vendor.
 
 ## Get started
 
@@ -65,32 +102,68 @@ docker compose up -d --pull always
 ```
 
 Open `http://localhost:3000`. The default stack listens only on `127.0.0.1`,
-uses no-auth mode, and adds no sample agents or sessions.
+uses local no-auth mode, and is intended for local evaluation.
 
-The daemon is intentionally not part of the Compose stack: it runs on each agent
-host beside that host's workspaces and credentials. Use the Web console to
-provision a daemon after the stack is ready.
+The Compose stack does not run agent daemons. Add a daemon from the Web console,
+then run its generated command on each machine that should host agents,
+workspaces, and runtime credentials.
 
-To override the image version, ports, secrets, public URLs, or optional Logto
-and GitHub App configuration, load the provided environment file explicitly:
+For image pinning, production networking, sign-in, secrets, GitHub App setup,
+and optional Mem0 configuration, see the
+[AgentConnect OSS guide](https://docs.agentconnect.md/docs/get-started).
 
-```bash
-cp compose.env.example compose.env
-docker compose --env-file compose.env up -d --pull always
-```
+### AgentConnect Cloud
 
-### Develop from source
+AgentConnect Cloud provides a hosted management console while agents continue
+running in your environment.
+[Join the Cloud waitlist](https://app.agentconnect.md/waitlist).
 
-Development requires Node >= 24 and pnpm 11. Docker is also required for the
-Control Plane integration tests.
+## Build your stack
+
+| Layer                    | Options                                                                                                     |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| **Agent runtimes**       | Claude Code, Codex, Gemini CLI, and other ACP-compatible runtimes                                           |
+| **Channels**             | Slack, Telegram, Discord, Lark / Feishu, and webchat                                                        |
+| **Triggers**             | GitHub events, generic webhooks, and schedules                                                              |
+| **Memory**               | AgentConnect-managed memory, supported runtime-native memory, external providers, or Off                    |
+| **Tools and apps**       | Custom MCP providers and OpenConnector-backed services                                                      |
+| **Skills**               | Shared Git-based skill sources with per-agent enablement                                                    |
+| **Team controls**        | Organization roles, resource and session visibility, repository access, and directional agent call policies |
+| **Agent infrastructure** | Independent runtime, model, workspace, credentials, and daemon placement per agent                          |
+
+## Architecture
+
+![AgentConnect daemon-centric message paths](docs/designs/daemon-centric-architecture.svg)
+
+| Component                  | Responsibility                                                                                                                                                                         |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Daemon**                 | Runs placed agents over local ACP, owns workspaces and session state, maintains direct platform connections and schedules, and sends model-provider traffic directly                   |
+| **Relay** (optional)       | Accepts callback-based ingress and webchat, proxies centrally managed MCP and OpenConnector access, and forwards message ingress directly to the owning daemon without durable storage |
+| **Control Plane + Web UI** | Manages authentication, configuration, placement, permissions, metadata, and observability; proxies bounded, authorized daemon reads on demand without persisting their content        |
+
+Live platform messages and ACP update streams stay on the daemon/relay data
+plane. The Control Plane stores coordination metadata, not message bodies,
+attachment bytes, or ACP session streams. If it is temporarily unavailable,
+established sessions and daemon-local schedules continue; new assignments and
+configuration changes resume after reconnection.
+
+See the
+[daemon-centric architecture](docs/designs/daemon-centric-architecture.md) for
+the complete message paths, trust boundaries, and failure model.
+
+## Development
+
+Development requires Node >= 24 and pnpm 11. Docker is required for the Control
+Plane integration tests.
 
 ```bash
 pnpm install
-pnpm dev       # run all packages in parallel
-pnpm build     # build all packages
-pnpm typecheck # type-check all packages
-pnpm lint      # lint the workspace
-pnpm test      # test all packages
+pnpm dev          # run all packages in parallel
+pnpm build        # build all packages
+pnpm typecheck    # type-check all packages
+pnpm lint         # lint the workspace
+pnpm format:check # check formatting
+pnpm test         # test all packages
 
 # single package
 pnpm --filter @agentconnect.md/daemon dev
@@ -98,50 +171,12 @@ pnpm --filter @agentconnect.md/control-plane dev
 pnpm --filter @agentconnect.md/web dev
 ```
 
-For a complete local Control Plane and Postgres development setup, follow the
+For a complete local Control Plane and PostgreSQL development setup, follow the
 [Control Plane quickstart](packages/control-plane/README.md#local-dev-quickstart).
-
-## Connect your stack
-
-AgentConnect uses ACP at the runtime boundary and connects agents to the systems
-where work already happens.
-
-| Surface           | Supported options                                                                   |
-| ----------------- | ----------------------------------------------------------------------------------- |
-| Agent runtimes    | Claude, Codex, and other ACP-compatible runtimes                                    |
-| Team channels     | Slack, Telegram, Discord, Lark / Feishu, and webchat                                |
-| Event sources     | GitHub events, generic webhooks, and scheduled tasks                                |
-| Persistent memory | Managed AgentConnect memory, runtime-native memory, external providers, or disabled |
-| Collaboration     | Directional agent discovery and policy-controlled delegation                        |
-
-## Architecture
-
-![AgentConnect daemon-centric message paths](docs/designs/daemon-centric-architecture.svg)
-
-| Component                  | Responsibility                                                                                                                                 |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Daemon**                 | Runs agents, owns local ACP sessions and workspaces, connects direct platform bots, and sends provider API traffic                             |
-| **Relay** (optional)       | Accepts Slack and Lark / Feishu HTTP callbacks, GitHub and generic webhooks, and webchat traffic, then routes it directly to the owning daemon |
-| **Control Plane + Web UI** | Manages authentication, configuration, placement, metadata, and observability                                                                  |
-
-The Control Plane does not persist message bodies, ACP update streams, or
-attachment bytes. Authorized console reads are proxied from the owning daemon on
-demand. See the
-[daemon-centric architecture](docs/designs/daemon-centric-architecture.md) for
-the complete trust boundaries and failure model.
-
-## Explore
-
-- [Product conventions](docs/product-conventions.md)
-- [Architecture and detailed designs](docs/designs/)
-- [CLI and daemon lifecycle](docs/designs/cli-daemon-split.md)
-- [Daemon configuration](docs/designs/daemon-detailed-design.md)
-- [Config-file secrets](docs/config-file-secrets.md)
-- [Add-on evaluation harness](evals/README.md)
 
 ## Monorepo layout
 
-This repository is a pnpm workspace with nine packages:
+This repository is a pnpm workspace. Product packages live under `packages/`:
 
 | Package                               | Path                                                         | Role                                                              |
 | ------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------- |
@@ -150,69 +185,21 @@ This repository is a pnpm workspace with nine packages:
 | `@agentconnect.md/control-plane`      | [`packages/control-plane`](packages/control-plane)           | Orchestration, registry, authentication, and Web UI BFF           |
 | `@agentconnect.md/daemon`             | [`packages/daemon`](packages/daemon)                         | Edge message processing and agent execution unit                  |
 | `@agentconnect.md/memory-plugin-mem0` | [`packages/memory-plugin-mem0`](packages/memory-plugin-mem0) | Mem0 Cloud and OSS memory-plugin profiles                         |
-| `@agentconnect.md/message`            | [`packages/message`](packages/message)                       | Shared message model and pure platform normalization              |
+| `@agentconnect.md/message`            | [`packages/message`](packages/message)                       | Pure platform message normalization                               |
 | `@agentconnect.md/protocol`           | [`packages/protocol`](packages/protocol)                     | Shared daemon, relay, and Control Plane wire contracts            |
-| `@agentconnect.md/relay`              | [`packages/relay`](packages/relay)                           | HTTP bot, webhook, GitHub, and webchat ingress                    |
+| `@agentconnect.md/relay`              | [`packages/relay`](packages/relay)                           | Callback ingress, webchat, and centralized MCP proxy              |
 | `@agentconnect.md/web`                | [`packages/web`](packages/web)                               | Next.js configuration and monitoring console                      |
 
-## Evaluate AgentConnect add-ons
+## Explore
 
-Credential-free contracts and the configured Promptfoo memory/collaboration treatment matrix live in [`evals/`](evals/README.md). The suite measures paired add-on effects and raw-ACP harness neutrality; it does not combine underlying harness capability into an AgentConnect score.
-
-## Native ACP runtimes outside the registry
-
-The daemon includes a reviewed fallback catalog for ACP harnesses that ship a
-native ACP command but may be absent from the public registry:
-
-| Runtime          | Command           | Initialized-state signal                                       | Memory modes      |
-| ---------------- | ----------------- | -------------------------------------------------------------- | ----------------- |
-| Hermes Agent     | `hermes acp`      | `$HERMES_HOME` or `~/.hermes`                                  | `managed`, `none` |
-| Open Interpreter | `interpreter acp` | `$INTERPRETER_HOME` or `~/.openinterpreter`                    | `managed`, `none` |
-| Kiro CLI         | `kiro-cli acp`    | `$KIRO_HOME` or `~/.kiro`                                      | `managed`, `none` |
-| Maki             | `maki acp`        | XDG `maki` config/data/state directories or `~/.maki`          | `managed` only    |
-| ZeroClaw         | `zeroclaw acp`    | `$ZEROCLAW_CONFIG_DIR`, `$ZEROCLAW_DATA_DIR`, or `~/.zeroclaw` | `managed`, `none` |
-| Oh My Pi         | `omp acp`         | `$PI_CODING_AGENT_DIR` or `~/.omp/agent`                       | `managed`, `none` |
-
-Runtime definitions resolve in `curated < usable registry/cache < explicit user`
-order. A curated winner is not advertised or launched merely because its binary
-exists: the daemon also requires initialized local state and runs a disposable
-`initialize + session/new` ACP probe with a private HOME, no MCP servers, and
-permission/elicitation requests denied. Registry-backed and explicit user
-definitions retain their existing behavior.
-
-The probe copies only reviewed credential/config files into its disposable
-home; sessions, history, memory, logs, caches, extensions, and MCP configuration
-stay behind. Probe failures are local and sanitized. Maki is intentionally
-`managed`-only because its bundled persistent-memory plugin has no reliable,
-non-overridable per-process off switch; selecting `none`, `native`, or an
-external sole-store provider fails closed.
-
-## Docker & Kubernetes credentials
-
-Agents can receive whole tool config files through write-only `*_DATA`
-secrets: `DOCKER_CONFIG_DATA` (a Docker `config.json`) and `KUBECONFIG_DATA`
-(a kubeconfig). At agent start the daemon materializes each value as a private
-mode-0600 file and points the tool's standard env var (`DOCKER_CONFIG`,
-`KUBECONFIG`) at it, so `docker`, `kubectl`, `helm`, `helmfile` and anything
-else that honors those variables works unchanged — the raw value never enters
-the agent's environment. See
-[`docs/config-file-secrets.md`](docs/config-file-secrets.md) for setup and
-security details.
-
-## In-conversation commands
-
-While talking to an agent in a thread you can control its run with short commands.
-They are handled by the daemon and never sent to the agent itself.
-
-| Command            | Alias on Slack | Effect                                                               |
-| ------------------ | -------------- | -------------------------------------------------------------------- |
-| `/stop`, `/cancel` | `!stop`        | Interrupt the agent's current turn.                                  |
-| `/queue <message>` | `!queue …`     | Hold `<message>` and send it automatically once the agent goes idle. |
-
-On Slack use the `!` alias — Slack reserves `/…` for its own slash commands, so the
-bot never receives `/stop`. Commands respect the same routing and `allowedUserIds`
-rules as normal messages, and work even when the Control Plane is offline. See
-[`docs/designs/daemon-detailed-design.md`](docs/designs/daemon-detailed-design.md) §8.8.
+- [Public documentation](https://docs.agentconnect.md)
+- [Self-host AgentConnect OSS](https://docs.agentconnect.md/docs/get-started)
+- [Architecture and detailed designs](docs/designs/)
+- [CLI and daemon lifecycle](docs/designs/cli-daemon-split.md)
+- [Daemon configuration](docs/designs/daemon-detailed-design.md)
+- [Config-file secrets](docs/config-file-secrets.md)
+- [Product conventions](docs/product-conventions.md)
+- [Add-on evaluation harness](evals/README.md)
 
 ## License
 

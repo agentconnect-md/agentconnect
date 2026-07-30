@@ -13,6 +13,10 @@ empty states, toasts, or error messages. Rewrite the copy around what the user c
 needs to know; if an implementation detail does not change either, omit it. Technical
 component names belong in logs, developer tooling, and architecture documentation.
 
+Visibility controls use audience language: show **Everyone** for the internal `org`
+value, never **Org** or "org-visible". Keep **Organization** only when the copy is
+actually about organization management, membership, or ownership.
+
 ## Planned daemon lifecycle status
 
 A pending daemon upgrade or restart is a planned transition, not an unexpected outage.
@@ -77,6 +81,18 @@ disallows the caller), so a rejected hand-off leaves no misleading post. One acc
 best-effort edge: a target on another daemon whose call policy terminally rejects the
 caller can still leave a visible post, because that policy verdict is only known on the
 target's daemon after the post is made.
+
+## Self-authored channel roots
+
+When an agent uses `sendMessage` to publish a new channel-root message without waking
+another agent, the returned platform message creates the agent's session for that new
+thread but does not run a model turn. The root is already the agent's own output, not a
+new request: treating it as an activation can make the agent post it again recursively.
+
+The session starts idle, retains its parent-session lineage, and records the root for
+transcript display. The first real reply in that thread receives the root as preceding
+context before the new message. Session initialization itself produces no agent output,
+tool calls, memory recall or capture, turn evaluation, or token usage.
 
 ## Shared-bot channel ownership
 
@@ -179,12 +195,14 @@ visibility grant.
 
 Every session carries its own visibility, composed with — never widening — the visibility
 of the agent that owns it. Platform direct messages, Playground and webchat conversations,
-and sessions launched through the Web API default to **private**: only their owner and org
-owners can see them. Channel sessions, group direct messages, and automation-originated
-sessions (cron, hook, dream, agent-to-agent) default to **org**, visible to every member
-who can already view the agent. A session's initiator is recorded regardless of tier, so
-the person who started a channel conversation may later pull it private, and an org owner
-may reclassify anything.
+and sessions launched through the Web API default to **private**: only their owner can see
+them — deliberately no role exception, org owners included. Channel sessions, group direct
+messages, and automation-originated sessions (cron, hook, dream, agent-to-agent) default
+to **org**, visible to every member who can already view the agent. A session's initiator
+is recorded regardless of tier, and re-classification belongs to that recorded initiator
+alone: the person who started a channel conversation may later pull it private, and only a
+private session's owner may publish it back. Roles grant no re-classification rights — an
+org owner cannot flip someone else's session in either direction.
 
 An agent-to-agent child inherits its parent's visibility, because a delegation copies the
 parent's prompt into the child's transcript. Tightening a session therefore cascades to its

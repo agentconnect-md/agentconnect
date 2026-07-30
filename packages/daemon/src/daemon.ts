@@ -593,10 +593,11 @@ const MAX_BG_TASK_WAKE_REARMS = 15
 const MAX_BG_TASK_WAKES_PER_SESSION = 20
 
 /**
- * DAEMON-PRIVATE trusted metadata for an agent→agent (`messageAgent`) turn. Authoritative
+ * DAEMON-PRIVATE trusted metadata for an agent-originated delivery. Authoritative
  * (never derived from model output or platform text): the caller identity the target can
  * trust, the correlationId to bounce back, and the hop/origin chain for loop protection.
- * A nested `messageAgent` within the turn reads this to auto-increment hopCount (§2.4).
+ * Most deliveries run a turn whose nested `messageAgent` reads this to auto-increment
+ * hopCount (§2.4); a self-authored channel root instead carries `initializeOnly`.
  */
 interface CallMeta {
   /** Trusted caller agentId (the agent that invoked `messageAgent`). */
@@ -607,6 +608,9 @@ interface CallMeta {
   hopCount: number
   /** Stable id of the delivery that started this turn (== the msgId's ts segment). */
   deliveryId: string
+  /** A self-authored channel-root post initializes its new session but is not a model turn.
+   *  Persisted with the inbox row so crash replay cannot accidentally activate the model. */
+  initializeOnly?: boolean
   /** session-concept §5.3: the WAKING (parent/origin) session's stable acpSessionId. This
    *  is the value surfaced to the child as its `Parent session` (§2.3) and the SessionTarget
    *  the child replies into via `sendMessage`. Absent on root turns (human-initiated) and the
@@ -5809,11 +5813,11 @@ export class Daemon {
 
   /**
    * session-concept case 2a: an agent's channel-ROOT post seeds a NEW session owned by the same
-   * agent. The post already happened (ops.ts); here the daemon dispatches a fresh turn into the
-   * new-thread session (keyed by the post's ts) so the top-level message starts its own context,
-   * with `Parent session` = the origin session. Delivered HEADLESS so the agent records it
-   * silently and does NOT auto-reply into the channel (a self-post must not become chatter), and
-   * hop-count-guarded so a self-post chain can't run away.
+   * agent. The post already happened (ops.ts); here the daemon initializes the new-thread session
+   * (keyed by the post's ts) so the top-level message starts its own context,
+   * with `Parent session` = the origin session. This is initialization only: the root is recorded
+   * for replay with the first real reply, but no model turn runs. `headless` remains a transport
+   * backstop, and the hop count remains a defense for replay from an older durable inbox row.
    */
   private spawnChannelRootSession(req: {
     agentId: string
@@ -5853,6 +5857,7 @@ export class Daemon {
       callFrom: req.agentId,
       hopCount,
       deliveryId,
+      initializeOnly: true,
       ...(originSessionId ? { originSessionId } : {}),
       originCoords: {
         platform: originCoordPlatform,
@@ -5882,8 +5887,7 @@ export class Daemon {
       text: req.text,
       mentionedBots: [],
       isDm: false,
-      // Headless: the seed is recorded into the new session, but the turn produces no channel
-      // output — an agent must not visibly answer its own top-level post.
+      // No model turn runs for this seed; headless is retained as a transport backstop.
       headless: true
     }
     const targetSession = sessionKey(platform, req.channel, req.thread, req.agentId, transportScope)
@@ -5891,7 +5895,7 @@ export class Daemon {
       this.log.error(`channel-root session spawn failed for agent "${req.agentId}": ${formatErr(err)}`)
     )
     this.log.info(
-      `channel-root session: "${req.agentId}" seeded new session ${targetSession} (origin ${originSessionId ?? 'none'}, hop ${hopCount})`
+      `channel-root session: "${req.agentId}" initialized new session ${targetSession} (origin ${originSessionId ?? 'none'}, hop ${hopCount})`
     )
   }
 
@@ -8134,7 +8138,7 @@ export class Daemon {
       const settleAdmission = (result: { accepted: boolean; reason?: string; duplicate?: boolean }): void => {
         if (admissionSettled) return
         admissionSettled = true
-        if (result.accepted && !result.duplicate) {
+        if (result.accepted && !result.duplicate && callMeta?.initializeOnly !== true) {
           this.emitEvaluation({
             type: 'turn.accepted',
             agentId,
@@ -8575,10 +8579,11 @@ export class Daemon {
 
   // The whole single-turn body (design §6.9 #377): sessions.handle() is only step one;
   // host.prompt, render/apply, usage/report and finalize all run here before the sessionId
-  // is returned. runLoop awaits this so a queued entry's promise settles only when THAT
-  // message's model turn is actually done — never before.
+  // is returned. The initialization-only channel-root path returns after session metadata,
+  // before Pending/prompt. runLoop awaits either path so queued work cannot overtake it.
   private async dispatchOne(entry: QueueEntry, key: string): Promise<string | null> {
     const { agentId, msg, integrationId, webchat, callMeta, githubReply, hookContext, onSessionReady } = entry
+    const initializeOnly = callMeta?.initializeOnly === true
     const evaluationTurnId = this.evaluationTurnIdFor(agentId, msg)
     let evaluationSessionId: string | undefined = undefined
     let evaluationTerminal = false
@@ -8586,6 +8591,7 @@ export class Daemon {
       type: 'turn.completed' | 'turn.failed' | 'turn.cancelled' | 'turn.timed_out',
       data: Record<string, unknown> = {}
     ): void => {
+      if (initializeOnly) return
       if (evaluationTerminal) return
       evaluationTerminal = true
       this.emitEvaluation({
@@ -8723,6 +8729,7 @@ export class Daemon {
       skipped?: boolean
       captureInput?: string
       turnId?: string
+      initializedOnly?: boolean
     }
     try {
       // A prior provider post-turn operation is serialized. Managed needs this
@@ -8739,7 +8746,8 @@ export class Daemon {
         agent.allowRuntimeChangesInChat ? webchat?.runtime?.effort : undefined,
         // §5.3: the parent asked to be told how this session ends — prompt assembly turns it into
         // a standing directive naming the origin as the reply target.
-        callMeta?.needsReply
+        callMeta?.needsReply,
+        { initializeOnly }
       )
     } catch (err) {
       this.finishSessionInitialization(agentId)
@@ -8882,6 +8890,12 @@ export class Daemon {
       onSessionReady?.(sessionId)
     } catch (err) {
       this.log.warn(`dispatch: session-ready notification failed (${formatErr(err)})`)
+    }
+    if (handled.initializedOnly) {
+      this.showActivity(replyConn, msg.channel, statusThread, '')
+      releaseReplyConn()
+      this.log.info(`dispatch: initialized session ${key} from self-authored channel root without a model turn`)
+      return sessionId
     }
     let resolveDone!: () => void
     const done = new Promise<void>((r) => (resolveDone = r))

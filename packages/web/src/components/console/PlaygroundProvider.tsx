@@ -10,6 +10,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { agentLabel, type Agent, type Session, type SessionImage, type SessionStep } from '@/lib/data'
+import { useConsoleData } from '@/lib/data-context'
 import { webchatWsUrl, fmtCountCompact, fmtCost, ApiError, type SessionMessageDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { sessionAfterModelSelection } from '@/lib/session-runtime-controls'
@@ -158,6 +159,7 @@ type WebchatRuntimeConfig = {
 }
 
 export function PlaygroundProvider({ children }: { children: ReactNode }) {
+  const { refreshSessions } = useConsoleData()
   const [pgSessions, setPgSessions] = useState<Record<string, Session>>({})
   // Live tail for adopted webchat sessions (real CP ids). Kept apart from `pgSessions`
   // so an adopted session still renders from its authoritative CP row + fetched history,
@@ -606,9 +608,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       streamCursors.current.set(id, createWebchatCursor<WebchatOutput, WebchatDone>(requestedTurnId))
       if (conversationId) conversationIds.current.set(id, conversationId)
       reconnectAttempts.current.delete(id)
+      // First send of a fresh conversation mints a real session on the daemon. The SSE
+      // start-milestone is the immediate signal, but it can be delayed/buffered in some
+      // setups (leaving the getting-started "first conversation" tick to the 60s poll) —
+      // so nudge the session lists shortly after the send lands.
+      const isNewConversation = !conversationId && !conversationIds.current.get(id)
       const conn = connect(id, agentForId, conversationId)
       conn.ready
-        .then((ws) =>
+        .then((ws) => {
           ws.send(
             JSON.stringify({
               text,
@@ -617,7 +624,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               ...(stagedRuntime.current.get(id) ? { runtime: stagedRuntime.current.get(id) } : {})
             })
           )
-        )
+          if (isNewConversation) setTimeout(refreshSessions, 2500)
+        })
         .catch((err) => {
           // A 503 from the token mint means the CP has no relay pool configured — the
           // agent may be perfectly healthy, so name the real cause instead of "unreachable".
@@ -632,7 +640,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           setBusy(id, false)
         })
     },
-    [pgBusyBy, pgImageBy, pgInputBy, connect, pushStep, setPgImage, setPgInput, setBusy]
+    [pgBusyBy, pgImageBy, pgInputBy, connect, pushStep, setPgImage, setPgInput, setBusy, refreshSessions]
   )
 
   /** Switch the session's model (fire-and-forget over the conversation socket). Updates

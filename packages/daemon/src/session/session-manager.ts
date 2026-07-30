@@ -322,12 +322,16 @@ export class SessionManager {
     /** session-concept §5.3: the parent woke this session with `toAgent.needsReply`, so it must
      *  be told to report back into `originSessionId` when it finishes or fails. Persisted on the
      *  session (sticky) so the directive survives resume and later turns. */
-    needsParentReply?: boolean
+    needsParentReply?: boolean,
+    /** A self-authored channel-root post only establishes the new logical/runtime session.
+     *  It is already recorded in the transcript and must not become a model activation. */
+    options: { initializeOnly?: boolean } = {}
   ): Promise<{
     sessionId: string
     blocks: ContentBlock[]
     created: boolean
     skipped?: boolean
+    initializedOnly?: boolean
     /** Bounded normalized text actually delivered this activation, before memory. */
     captureInput?: string
     /** Stable provider-neutral post-turn identity. */
@@ -741,6 +745,17 @@ export class SessionManager {
       }
     }
 
+    // A channel-root message posted by this same agent creates the thread's session cursor
+    // without running the model. Keep lastDeliveredTs at null: the first real reply must replay
+    // this root as context before advancing the cursor. Returning here also avoids thread-history
+    // reads, memory recall, prompt assembly, and the transient `prompting` state for a non-turn.
+    if (options.initializeOnly) {
+      rec.state = 'idle'
+      rec.updatedAt = Date.now()
+      this.deps.store.upsertSession(rec)
+      return { sessionId: rec.acpSessionId!, blocks: [], created, initializedOnly: true }
+    }
+
     // Older anchored cron/hook turns persisted their synthetic UUID as the Slack
     // read cursor. Start one bounded catch-up from scratch instead of passing that
     // non-timestamp through the Slack ordering/dedup path; this turn replaces it
@@ -749,6 +764,7 @@ export class SessionManager {
       msg.platform === 'slack' && rec.lastDeliveredTs !== null && slackTsMicros(rec.lastDeliveredTs) === null
         ? null
         : rec.lastDeliveredTs
+    const firstPromptAfterOwnRootInitialization = markerBefore === null && rec.triggeredBy === agentId
     // §8.4/§8.5 authoritative warm-thread snapshot (#649): Socket Mode is the
     // low-latency trigger, not an ordered/complete unread source. Slack may deliver a
     // minutes-old event only after the current agent turn has ended, while newer plain
@@ -809,7 +825,29 @@ export class SessionManager {
       // SQLite's text order puts UUID-like legacy coordinates after decimal Slack
       // timestamps. Keep those old rows as context, but before the real timeline.
       if (msg.platform === 'slack') gap.sort((a, b) => compareSlackTs(a.ts, b.ts))
-      const participantGap = gap.filter((e) => e.sender !== agentId)
+      // A session initialized from this agent's own channel-root post has never run a model
+      // turn. Replay that one root exactly once, alongside the first real reply, so the new ACP
+      // session understands what the thread is about. Ordinary own-authored rows stay filtered:
+      // after this activation advances the cursor, the root cannot re-enter a later prompt.
+      const participantGap = gap.filter(
+        (e) => e.sender !== agentId || (firstPromptAfterOwnRootInitialization && e.ts === thread)
+      )
+      // The initialized root is the only own-authored row admitted above, and it is the
+      // founding context for a runtime session that has never seen a prompt. Keep it outside
+      // the ordinary bounded suffix so a busy thread cannot evict it before first activation.
+      const initializedRoot = firstPromptAfterOwnRootInitialization
+        ? participantGap.find((e) => e.sender === agentId && e.ts === thread)
+        : undefined
+      const boundedReplay = (entries: typeof participantGap) => {
+        const includesInitializedRoot =
+          initializedRoot !== undefined && entries.some((e) => e.ts === initializedRoot.ts)
+        const remainder = includesInitializedRoot ? entries.filter((e) => e.ts !== initializedRoot.ts) : entries
+        const suffix = remainder.slice(-MAX_REPLAY_ENTRIES)
+        return {
+          context: includesInitializedRoot ? [initializedRoot, ...suffix] : suffix,
+          elided: remainder.length - suffix.length
+        }
+      }
       // Own authored rows are not repeated to the model, but they ARE first-class events
       // in the shared log and therefore may advance this agent's read cursor once the
       // surrounding stable window is consumed.
@@ -829,7 +867,7 @@ export class SessionManager {
       const hasMessageAfterTrigger =
         msg.platform === 'slack' && participantGap.some((e) => compareSlackTs(e.ts, ts) > 0)
       if (hasMessageAfterTrigger || triggerWasAlreadyDelivered) {
-        const context = participantGap.slice(-MAX_REPLAY_ENTRIES)
+        const { context, elided } = boundedReplay(participantGap)
         if (context.length === 0) {
           rec.lastDeliveredTs = deliveredThrough
           rec.state = 'idle'
@@ -840,7 +878,6 @@ export class SessionManager {
           this.deps.store.upsertSession(rec)
           return { sessionId: rec.acpSessionId!, blocks: [], created, skipped: true }
         }
-        const elided = participantGap.length - context.length
         const head =
           elided > 0
             ? `(unread thread messages, oldest to newest — ${elided} earlier message(s) elided)`
@@ -850,9 +887,8 @@ export class SessionManager {
         // Normal in-order activation: preserve the established context-prefix + current
         // prompt shape, while never replaying this agent's own recorded messages.
         const allContext = participantGap.filter((e) => e.ts !== ts)
-        const context = allContext.slice(-MAX_REPLAY_ENTRIES)
+        const { context, elided } = boundedReplay(allContext)
         if (context.length > 0) {
-          const elided = allContext.length - context.length
           const head =
             elided > 0
               ? `(thread context you may have missed — ${elided} earlier message(s) elided)`
@@ -976,17 +1012,20 @@ export class SessionManager {
       }
     }
 
-    // System-side context for a newly-created session: the agent meta object (identity +
+    // System-side context for a newly-created session or the first real prompt after an
+    // initialization-only root: the agent meta object (identity +
     // description + source/channel) and the memory INDEX, both in `sessionContext`. All
     // STANDING context, not a user turn — so they never sit as a leading user block (which
     // a runtime auto-titles from — #398). Claude carries them via `_meta.systemPrompt` (see
     // newSession/claudeSessionMeta), so it adds NOTHING here. Other runtimes have no such
-    // channel: inline sessionContext as one combined first block. Gated on `created`: a
-    // resumed session already carries it from its first turn.
+    // channel: inline sessionContext as one combined first block. A resumed session normally
+    // carries it from its first turn; an initialization-only root deliberately had no such turn.
     const promptPrelude: ContentBlock[] = []
-    if (created) {
+    if (created || firstPromptAfterOwnRootInitialization) {
       // Establish the reminder epoch without redundantly restating the rule that this
-      // new session just received (inline or via `_meta.systemPrompt`).
+      // new session just received (inline or via `_meta.systemPrompt`). A non-Claude
+      // initialization-only session had no first prompt, so defer its inline standing
+      // context to this first real activation.
       this.turnsSinceReminder.set(key, 0)
       if (!usesMeta && sessionContext) promptPrelude.push({ type: 'text', text: sessionContext })
     } else if (restateParentReply) {

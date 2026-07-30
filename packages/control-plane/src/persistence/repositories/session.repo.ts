@@ -192,13 +192,14 @@ function integrationSql(q: SessionFilterQuery): Prisma.Sql | null {
 }
 
 /**
- * The SQL mirror of `http/visibility.ts#canViewSession` (session-visibility.md
- * §5). Org owners keep the governance override (no arm at all); everyone else
- * sees `org` rows plus `private` rows they own. `= ANY(array)` tolerates an
- * empty identity set, unlike the `IN (…)` list form used for agent ids.
+ * The SQL mirror of `authorization/policy.ts#canViewSession` (session-visibility.md
+ * §5). No role bypass — org owners included, every viewer sees `org` rows plus
+ * `private` rows they own; only the internal/daemon-facing callers that pass no
+ * viewer read unfiltered. `= ANY(array)` tolerates an empty identity set,
+ * unlike the `IN (…)` list form used for agent ids.
  */
 function sessionViewerSql(viewer: SessionFilterQuery['viewer']): Prisma.Sql | null {
-  if (!viewer || viewer.role === 'owner') return null
+  if (!viewer) return null
   return Prisma.sql`(
     s."visibility" = 'org'::"SessionVisibility"
     OR (s."ownerIdentity" IS NOT NULL AND s."ownerIdentity" = ANY(${viewer.identitySet}::text[]))
@@ -332,7 +333,7 @@ export class PgSessionRepo implements SessionRepo {
    * own parent was still `inherited_pending` when it arrived is pending too, so
    * settling one level unblocks the next. Every level is the same CAS on
    * `visibilitySource`, which is what keeps it conditional and one-time — a
-   * descendant an org owner has meanwhile re-classified is `explicit` and left
+   * descendant its owner has meanwhile re-classified is `explicit` and left
    * alone: reconciliation never overwrites a human decision.
    */
   private async settlePendingChildren(tx: PrismaLike, parent: SessionMetaRecord): Promise<SessionMetaRecord[]> {
@@ -525,6 +526,11 @@ export class PgSessionRepo implements SessionRepo {
     }
   }
 
+  async orgHasAny(orgId: OrgId): Promise<boolean> {
+    const row = await this.db.sessionMeta.findFirst({ where: { orgId }, select: { id: true } })
+    return row !== null
+  }
+
   async listFacets(q: SessionFacetQuery): Promise<SessionFacetIndex> {
     if (queryAgentIds(q).length === 0) return { agents: [], integrations: [], channels: [], triggers: [] }
 
@@ -633,10 +639,9 @@ export class PgSessionRepo implements SessionRepo {
         parentSessionId,
         agentId: { in: agentIds },
         // The Prisma spelling of `sessionViewerSql` — the same predicate as the
-        // list, so a private child never leaks its title through the detail page.
-        ...(viewer && viewer.role !== 'owner'
-          ? { OR: [{ visibility: 'org' as const }, { ownerIdentity: { in: viewer.identitySet } }] }
-          : {})
+        // list (no org-owner bypass), so a private child never leaks its title
+        // through the detail page.
+        ...(viewer ? { OR: [{ visibility: 'org' as const }, { ownerIdentity: { in: viewer.identitySet } }] } : {})
       },
       orderBy: [{ startedAt: 'asc' }, { id: 'asc' }]
     })

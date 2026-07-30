@@ -47,7 +47,7 @@ class SkillEnableDenied extends Error {}
 import { parseSkillRef, redactSourceCredentials } from '../../orchestrator/skillSource.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from '../../orchestrator/memoryConnection.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
-import { canView, canEdit, canManageSharing, type ViewCtx } from '../visibility.js'
+import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
@@ -217,10 +217,12 @@ function toDto(
     // placeholder email (`<sub>@oidc.local`, when no real user is known) means a non-human
     // creator, so surface null → the console shows "—" instead.
     createdBy: a.createdBy && !isSyntheticEmail(a.createdBy.email) ? a.createdBy.userId : null,
+    ownerUserId: a.ownerUserId,
     lastModifiedAt: a.lastModifiedAt.toISOString(),
     lastModifiedBy: a.lastModifiedBy && !isSyntheticEmail(a.lastModifiedBy.email) ? a.lastModifiedBy.userId : null,
     visibility: a.visibility,
     sharedWith: a.sharedWith,
+    canEdit: canEdit(a, ctx),
     canManageSharing: canManageSharing(a, ctx),
     callPolicy: a.callPolicy,
     allowedCallerAgentIds: a.allowedCallerAgentIds,
@@ -1300,9 +1302,8 @@ export function agentRoutes(deps: HttpDeps) {
         if (denyViewerWrite(req, reply)) return
         const existing = await getOrgAgent(req, req.params.id)
         if (!existing) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-        // A collaborator who can VIEW a restricted agent may still not EDIT it unless
-        // they're the creator / a grantee / an owner — the per-resource narrowing on
-        // top of the role-only denyViewerWrite gate.
+        // getOrgAgent already enforces visibility; the edit action then keeps
+        // viewers read-only while collaborators and owners may edit.
         if (!canEdit(existing, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
@@ -1885,8 +1886,8 @@ export function agentRoutes(deps: HttpDeps) {
     )
 
     // Set who can see this agent (visibility + share set). Gated exactly like a
-    // content edit (canManageSharing === canEdit, §13.3): viewers can't, and a
-    // collaborator who can't even view a restricted agent 404s. Identities never
+    // content edit on owned rows (§13.3): viewers can't, ownerless rows stay
+    // org-visible, and a collaborator who can't view a restricted agent 404s. Identities never
     // ride the wire, but the DERIVED conversation-gating flag does (§14/§9): a
     // visibility flip re-converges every integration of the agent — direct installs
     // get a fresh spec push, HTTP bots a route recompile — best-effort, with the
@@ -1898,7 +1899,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Set agent sharing',
           description:
-            'Set the agent’s visibility (org-wide vs restricted) and share set. Requires edit rights on the agent; sharedWith is intersected with current org members.',
+            'Set an owned agent’s visibility (org-wide vs restricted) and share set. Requires edit rights on the agent; ownerless agents stay org-visible, and sharedWith is intersected with current org members.',
           operationId: 'setAgentSharing',
           params: IdParam,
           body: SetSharingBody,

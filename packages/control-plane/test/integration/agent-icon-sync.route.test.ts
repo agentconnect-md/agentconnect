@@ -33,6 +33,22 @@ describe('Agent icon bot profile fan-out', () => {
     const feishuSync = vi.fn(
       async (_appId: string, _appSecret: string, _region: 'feishu' | 'lark', _agent: BotProfileIconAgent) => {}
     )
+    const waitForSyncedIcon = async (icon: unknown) => {
+      let previousCallCounts: number[] | undefined
+      await vi.waitFor(() => {
+        const callCounts = [telegramSync.mock.calls.length, discordSync.mock.calls.length, feishuSync.mock.calls.length]
+        const lastCallCounts = previousCallCounts
+        previousCallCounts = callCounts
+        expect(telegramSync.mock.calls.at(-1)?.[1].icon).toEqual(icon)
+        expect(discordSync.mock.calls.at(-1)?.[1].icon).toEqual(icon)
+        expect(feishuSync.mock.calls.at(-1)?.[3].icon).toEqual(icon)
+
+        // Each route starts a detached latest-wins sync. A preceding sync may
+        // observe the newer icon and retry, so wait for a quiet window instead
+        // of treating those valid repair calls as duplicates.
+        expect(callCounts).toEqual(lastCallCounts)
+      })
+    }
     running = buildHttpApp(prisma, { S3_PUBLIC_BASE_URL: 'https://images.example.test' }, undefined, undefined, {
       iconStore: store,
       syncTelegramBotIcon: telegramSync,
@@ -93,10 +109,10 @@ describe('Agent icon bot profile fan-out', () => {
       payload: { icon: { kind: 'glyph', glyph: 'bot', color: '#2563eb' } }
     })
     expect(glyphEdit.statusCode).toBe(200)
-    await vi.waitFor(() => {
-      expect(telegramSync).toHaveBeenCalledTimes(1)
-      expect(discordSync).toHaveBeenCalledTimes(1)
-      expect(feishuSync).toHaveBeenCalledTimes(1)
+    await waitForSyncedIcon({
+      kind: 'glyph',
+      glyph: 'bot',
+      color: '#2563eb'
     })
 
     const upload = await running.app.inject({
@@ -106,20 +122,7 @@ describe('Agent icon bot profile fan-out', () => {
       payload: PNG
     })
     expect(upload.statusCode).toBe(200)
-    await vi.waitFor(() => {
-      expect(telegramSync).toHaveBeenCalledTimes(2)
-      expect(discordSync).toHaveBeenCalledTimes(2)
-      expect(feishuSync).toHaveBeenCalledTimes(2)
-    })
-    expect(telegramSync.mock.calls[1]?.[1].icon).toEqual({
-      kind: 'image',
-      generation: expect.any(String)
-    })
-    expect(discordSync.mock.calls[1]?.[1].icon).toEqual({
-      kind: 'image',
-      generation: expect.any(String)
-    })
-    expect(feishuSync.mock.calls[1]?.[3].icon).toEqual({
+    await waitForSyncedIcon({
       kind: 'image',
       generation: expect.any(String)
     })
@@ -129,14 +132,11 @@ describe('Agent icon bot profile fan-out', () => {
       url: `${ORG}/agents/${agentId}/icon`
     })
     expect(remove.statusCode).toBe(200)
-    await vi.waitFor(() => {
-      expect(telegramSync).toHaveBeenCalledTimes(3)
-      expect(discordSync).toHaveBeenCalledTimes(3)
-      expect(feishuSync).toHaveBeenCalledTimes(3)
+    await waitForSyncedIcon({
+      kind: 'glyph',
+      glyph: expect.any(String),
+      color: expect.any(String)
     })
-    expect(telegramSync.mock.calls[2]?.[1].icon?.kind).toBe('glyph')
-    expect(discordSync.mock.calls[2]?.[1].icon?.kind).toBe('glyph')
-    expect(feishuSync.mock.calls[2]?.[3].icon?.kind).toBe('glyph')
     expect(feishuSync).toHaveBeenCalledWith('cli_feishu', 'feishu-secret', 'lark', expect.any(Object))
   })
 })

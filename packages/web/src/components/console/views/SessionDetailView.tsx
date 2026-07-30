@@ -44,10 +44,10 @@ import {
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
-import { AgentIconView, AgentMark, LoadingState, PlatformMark, Spinner } from '@/components/marks'
+import { AgentIconView, LoadingState, ModelMark, PlatformMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { NotFound } from '@/components/console/NotFound'
-import { Avatar, Icon } from '@/components/ui'
+import { Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { formatTranscriptTime, parseTranscriptTime } from '@/lib/transcript-time'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
@@ -68,7 +68,28 @@ import {
   sessionRuntimeChangesEnabled
 } from '@/lib/session-runtime-controls'
 
-type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'fast'
+type ComposerMenuKey = 'permission' | 'model' | 'effort'
+
+// Design composer selectors (session composer, mirrors HomeView): the model is a
+// "pill" with a leading mark, effort/permission are plain chips. Full literal
+// strings so Tailwind's scanner sees them (STYLE.md §8).
+const COMPOSER_CHIP =
+  'inline-flex h-7 items-center gap-[6px] rounded-md px-[9px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
+const COMPOSER_CHIP_STATIC =
+  'inline-flex h-7 items-center gap-[6px] rounded-md px-[9px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)'
+const COMPOSER_PILL =
+  'inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] font-mono text-[11.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)'
+const COMPOSER_PILL_STATIC =
+  'inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] font-mono text-[11.5px] font-medium leading-normal text-(--text-primary)'
+
+// The "fast" tag shown inside the model pill when fast mode is on.
+function FastBadge() {
+  return (
+    <span className="rounded-sm bg-(--brand-soft) px-[5px] py-px font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-(--brand-soft-text)">
+      fast
+    </span>
+  )
+}
 
 // One agent-turn step rendered from a real transcript message. Maps the daemon
 // transcript kind (text | tool | reasoning) onto the existing lane styling.
@@ -603,8 +624,10 @@ export default function SessionDetailView() {
     pgSetFast,
     pgCancel
   } = usePlayground()
-  const { user, me } = useProfile()
+  const { me } = useProfile()
   const [copied, setCopied] = useState(false)
+  // Desktop header "Details" popover (run facts: status, duration, tokens, …).
+  const [detailOpen, setDetailOpen] = useState(false)
   const [msgs, setMsgs] = useState<SessionMessageDto[] | null>(null)
   const [msgLoading, setMsgLoading] = useState(false)
   const [msgPaging, setMsgPaging] = useState(false)
@@ -625,7 +648,7 @@ export default function SessionDetailView() {
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
   const [composerMenuOpen, setComposerMenuOpen] = useState<ComposerMenuKey | null>(null)
   const [runtimeSelections, setRuntimeSelections] = useState<
-    Record<string, { model?: string; effort?: string; permissionMode?: string }>
+    Record<string, { model?: string; effort?: string; permissionMode?: string; fast?: boolean }>
   >({})
   const imageInputRef = useRef<HTMLInputElement>(null)
   const liveCursorRef = useRef<string | null>(null)
@@ -1114,7 +1137,7 @@ export default function SessionDetailView() {
   const allowRuntimeChangesInChat = owner?.allowRuntimeChangesInChat === true
   const runtimeChangesEnabled = sessionRuntimeChangesEnabled(allowRuntimeChangesInChat, session)
   const runtimeSelection = runtimeSelections[session.id]
-  const setRuntimeSelection = (patch: { model?: string; effort?: string; permissionMode?: string }) =>
+  const setRuntimeSelection = (patch: { model?: string; effort?: string; permissionMode?: string; fast?: boolean }) =>
     setRuntimeSelections((current) => ({
       ...current,
       [session.id]: { ...current[session.id], ...patch }
@@ -1157,119 +1180,27 @@ export default function SessionDetailView() {
     !selectablePermissionModes.some((choice) => choice.v === pgPermissionMode)
       ? [{ v: pgPermissionMode, l: permissionModeLabel(agentRuntime, pgPermissionMode) }, ...selectablePermissionModes]
       : selectablePermissionModes
-  const pgFastMode = session.fastMode ?? owner?.fastMode ?? false
+  // Stage the fast selection locally like model/effort/permission: an adopted
+  // (persisted webchat) session has no synthetic provider entry for pgSetFast to
+  // mutate, and an idle daemon session emits no status frame — without this the
+  // switch would render stale and every click would re-send the same value.
+  const pgFastMode = runtimeSelection?.fast ?? session.fastMode ?? owner?.fastMode ?? false
   const pgFastModeAvailable =
     (pgModel === session.model ? session.fastModeAvailable : undefined) ??
     fastModeAvailableFor(agentRuntime, selectedModelCapability)
-  const pgStatusBar = (
-    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)">
-      {runtimeChangesEnabled && pgPermissionModes.length > 0 ? (
-        <ComposerMenu
-          title="Permission"
-          value={pgPermissionMode}
-          options={pgPermissionModes.map((mode) => ({
-            value: mode.v,
-            label: mode.l,
-            description: mode.description
-          }))}
-          open={composerMenuOpen === 'permission'}
-          align="left"
-          onOpenChange={(open) => {
-            setAttachMenuOpen(false)
-            setComposerMenuOpen(open ? 'permission' : null)
-          }}
-          onChange={(permissionMode) => {
-            setRuntimeSelection({ permissionMode })
-            pgSetPermissionMode(session.id, session.agentId ?? '', permissionMode, webchatConversationId)
-          }}
-        />
-      ) : (
-        pgPermissionMode && (
-          <span title="Permission">{agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionMode)}</span>
-        )
-      )}
-      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
-        <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
-        <span>
-          <span className="font-mono text-[11.5px] font-medium leading-normal">{session.tokens}</span>&nbsp;tok
-        </span>
-        <span className="font-mono text-[11.5px] font-medium leading-normal">{session.cost}</span>
-        <span className="inline-flex items-center gap-[6px] text-(--text-secondary)">
-          <span className="inline-flex h-4 w-4 flex-none items-center justify-center">
-            <AgentMark model={agentRuntime} />
-          </span>
-          {runtimeChangesEnabled && pgModelOptions.length > 0 ? (
-            <ComposerMenu
-              title="Model"
-              value={pgModel}
-              options={pgModelOptions.map((model) => ({ value: model, label: modelLabel(model) }))}
-              open={composerMenuOpen === 'model'}
-              onOpenChange={(open) => {
-                setAttachMenuOpen(false)
-                setComposerMenuOpen(open ? 'model' : null)
-              }}
-              onChange={(model) => {
-                const currentEffort = runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''
-                const effort = sessionEffortAfterModelChange(agentRuntime, owningDaemon, model, currentEffort)
-                setRuntimeSelection(effort === currentEffort ? { model } : { model, effort })
-                pgSetModel(session.id, session.agentId ?? '', model, webchatConversationId)
-                if (effort !== currentEffort) {
-                  pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
-                }
-              }}
-            />
-          ) : (
-            <span title="Model">{modelLabel(pgModel)}</span>
-          )}
-        </span>
-        {runtimeChangesEnabled && pgEffortOptions.length > 0 && (
-          <ComposerMenu
-            title="Effort"
-            value={pgEffort}
-            options={pgEffortOptions.map((effort) => ({
-              value: effort.value,
-              label: effort.label,
-              description: effort.description
-            }))}
-            open={composerMenuOpen === 'effort'}
-            onOpenChange={(open) => {
-              setAttachMenuOpen(false)
-              setComposerMenuOpen(open ? 'effort' : null)
-            }}
-            onChange={(effort) => {
-              setRuntimeSelection({ effort })
-              pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
-            }}
-          />
-        )}
-        {!runtimeChangesEnabled && pgEffort && (
-          <span title="Effort">
-            effort:{' '}
-            {pgEffortChoices.find((choice) => choice.value === pgEffort)?.label ?? effortLabel(agentRuntime, pgEffort)}
-          </span>
-        )}
-        {runtimeChangesEnabled && pgFastModeAvailable && (
-          <ComposerMenu
-            title="Fast mode"
-            value={pgFastMode ? 'on' : 'off'}
-            options={[
-              { value: 'on', label: 'fast: on' },
-              { value: 'off', label: 'fast: off' }
-            ]}
-            open={composerMenuOpen === 'fast'}
-            onOpenChange={(open) => {
-              setAttachMenuOpen(false)
-              setComposerMenuOpen(open ? 'fast' : null)
-            }}
-            onChange={(fast) => pgSetFast(session.id, session.agentId ?? '', fast === 'on', webchatConversationId)}
-          />
-        )}
-        {!runtimeChangesEnabled && pgFastModeAvailable && (
-          <span title="Fast mode">fast: {pgFastMode ? 'on' : 'off'}</span>
-        )}
-      </div>
-    </div>
-  )
+  // Run facts for the desktop header's "Details" popover — the stats that used to
+  // live in the header cards (status, duration, usage) plus the run's identity rows.
+  const headerFacts: { icon: string; label: string; value: string }[] = [
+    { icon: 'activity', label: 'Status', value: session.statusLabel || ss.label },
+    { icon: 'clock', label: 'Duration', value: displayDuration },
+    { icon: 'coins', label: 'Tokens', value: session.tokens },
+    { icon: 'circle-dollar-sign', label: 'Cost', value: session.cost },
+    { icon: 'wrench', label: 'Tool calls', value: String(displayToolCount) }
+  ]
+  if (daemonName) headerFacts.push({ icon: 'server', label: 'Daemon', value: daemonName })
+  if (session.runtime)
+    headerFacts.push({ icon: 'cpu', label: 'Runtime', value: runtimeLabel(session.runtime, runtimeMeta?.name) })
+  if (session.model) headerFacts.push({ icon: 'box', label: 'Model', value: modelLabel(session.model) })
 
   // Mobile header-region derivations (≤768px meta strip + agent config row).
   const metaCells: { label: string; value: string }[] = [
@@ -1293,108 +1224,123 @@ export default function SessionDetailView() {
   // cards → transcript. Breakpoint differences are CSS-gated (desktop: /
   // max-desktop:), never JS-forked.
   return (
-    <div className="wrap max-w-[880px] max-desktop:pb-6">
-      {/* DESKTOP HEADER — h1 · status badge · meta chips · copy-link. The mobile
-          title/status live in Shell's app bar, so this whole region is desktop-only. */}
-      <div className="mb-[14px] hidden items-start gap-[14px] desktop:flex">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-[10px]">
-            <h1 className="ptitle text-[21px]">{session.title}</h1>
-            <span className="badge" style={{ background: ss.bg, color: ss.text }}>
-              <span className="dot h-[6px] w-[6px]" style={{ background: ss.dot }} />
-              {session.statusLabel || ss.label}
+    <div className="wrap flex min-h-full max-w-[880px] flex-col max-desktop:pb-6">
+      {/* DESKTOP HEADER — slim single row (design): agent · channel · participants ·
+          visibility · Details popover · copy-link. The title lives in the top-bar
+          crumb, and the old stat/usage cards moved into the Details popover. The
+          mobile title/status live in Shell's app bar, so this region is desktop-only. */}
+      <div className="mt-[-9px] mb-[10px] hidden items-center gap-2 border-b border-(--border-subtle) pb-[7px] desktop:flex">
+        {agentHref ? (
+          <Link className="lnk min-w-0 flex-[0_1_auto] text-[12.5px] text-(--text-secondary)" href={orgPath(agentHref)}>
+            <span className="av h-[18px] w-[18px] flex-none rounded-[5px]">
+              <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={18} />
             </span>
-            {visibilityControl}
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-x-[14px] gap-y-2">
-            {agentHref ? (
-              <Link className="lnk text-[12.5px] text-(--text-secondary)" href={agentHref}>
-                <span className="av h-[18px] w-[18px] rounded-[5px]">
-                  <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={18} />
-                </span>
-                {session.agentName}
-              </Link>
-            ) : (
-              <span className="lnk cursor-default text-[12.5px] text-(--text-secondary)">
-                <span className="av h-[18px] w-[18px] rounded-[5px]">
-                  <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={18} />
-                </span>
-                {session.agentName}
-              </span>
-            )}
-            <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-              <span className="imark h-4 w-4 rounded-xs">
-                <PlatformMark platform={sessionIntegration} fillPct={100} />
-              </span>
-              {session.threadUrl ? (
-                <a
-                  className="lnk font-mono text-[12px] font-medium leading-normal text-(--text-link)"
-                  href={session.threadUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={`Open the ${platName(sessionIntegration)} thread`}
-                >
-                  {session.channel}
-                </a>
-              ) : (
-                <span className="mono text-[12px]">{session.channel}</span>
-              )}
+            <span className="truncate">{session.agentName}</span>
+          </Link>
+        ) : (
+          <span className="lnk min-w-0 flex-[0_1_auto] cursor-default text-[12.5px] text-(--text-secondary)">
+            <span className="av h-[18px] w-[18px] flex-none rounded-[5px]">
+              <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={18} />
             </span>
-            {daemonName && (
-              <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                <Icon name="server" size={13} color="var(--text-tertiary)" />
-                <span className="mono text-[12px]">{daemonName}</span>
-              </span>
-            )}
-            <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-              <Icon name="cpu" size={13} color="var(--text-tertiary)" />
-              {session.runtime ? `${runtimeLabel(session.runtime, runtimeMeta?.name)} · ` : ''}
-              <span className="mono text-[12px]">{modelLabel(session.model ?? '')}</span>
-            </span>
-            {headerCron ? (
-              <Link
-                className="lnk font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)"
-                href={orgPath(`/crons/${headerCron.id}`)}
-              >
-                <Icon name="calendar-clock" size={13} />
-                {headerCron.name || 'Schedule'}
-              </Link>
-            ) : (
-              <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
-                <Icon name="users" size={13} />
-                {participantsLabel}
-              </span>
-            )}
-          </div>
+            <span className="truncate">{session.agentName}</span>
+          </span>
+        )}
+        <span className="inline-flex min-w-0 flex-[0_1_auto] items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+          <span className="imark h-4 w-4 flex-none rounded-xs">
+            <PlatformMark platform={sessionIntegration} fillPct={100} />
+          </span>
+          {session.threadUrl ? (
+            <a
+              className="lnk truncate font-mono text-[12px] font-medium leading-normal text-(--text-link)"
+              href={session.threadUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Open the ${platName(sessionIntegration)} thread`}
+            >
+              {session.channel}
+            </a>
+          ) : (
+            <span className="mono truncate text-[12px]">{session.channel}</span>
+          )}
+        </span>
+        {headerCron ? (
+          <Link
+            className="lnk min-w-0 flex-[0_1_auto] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)"
+            href={orgPath(`/crons/${headerCron.id}`)}
+          >
+            <Icon name="calendar-clock" size={13} className="flex-none" />
+            <span className="truncate">{headerCron.name || 'Schedule'}</span>
+          </Link>
+        ) : (
+          <span className="inline-flex min-w-0 flex-[0_1_auto] items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
+            <Icon name="users" size={13} className="flex-none" />
+            <span className="truncate">{participantsLabel}</span>
+          </span>
+        )}
+        {visibilityControl}
+        <div
+          className="relative ml-[-3px] flex-none"
+          onKeyDown={(event) => {
+            if (event.key !== 'Escape' || !detailOpen) return
+            event.stopPropagation()
+            setDetailOpen(false)
+          }}
+        >
+          <button
+            className="inline-flex h-[22px] cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent px-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+            onClick={() => setDetailOpen((o) => !o)}
+            aria-haspopup="dialog"
+            aria-expanded={detailOpen}
+            title="Run details"
+          >
+            <Icon name="info" size={14} />
+            Details
+          </button>
+          {detailOpen && (
+            <>
+              <div className="fixed inset-0 z-40" aria-hidden="true" onClick={() => setDetailOpen(false)} />
+              <div role="dialog" aria-label="Run details" className="fmenu z-50 min-w-[216px] px-0 py-[5px]">
+                {headerFacts.map((f) => (
+                  <div key={f.label} className="flex items-center gap-[9px] px-3 py-[5px]">
+                    <Icon name={f.icon} size={13} color="var(--text-tertiary)" className="flex-none" />
+                    <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
+                      {f.label}
+                    </span>
+                    <span className="mono whitespace-nowrap text-[12px] font-semibold text-(--text-primary)">
+                      {f.value}
+                    </span>
+                  </div>
+                ))}
+                {usageEntries.length > 0 && (
+                  <>
+                    <div className="my-1 border-t border-(--border-subtle)" />
+                    <div className="px-3 pt-1 pb-[2px] font-mono text-[10px] font-semibold uppercase tracking-[.06em] text-(--text-tertiary)">
+                      Token usage
+                    </div>
+                    {usageEntries.map((e) => (
+                      <div key={e.label} className="flex items-center gap-[9px] py-1 pr-3 pl-[34px]">
+                        <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
+                          {e.label}
+                        </span>
+                        <span className="mono whitespace-nowrap text-[12px] font-semibold text-(--text-primary)">
+                          {e.value}
+                        </span>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            </>
+          )}
         </div>
         <button
-          className="iconbtn w-auto shrink-0 gap-[7px] px-3 py-0 font-sans text-[12.5px] font-semibold leading-normal"
+          className="ml-auto flex h-[19px] w-[19px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
           onClick={onCopyLink}
+          title={copied ? 'Copied' : 'Copy a link to this session'}
+          aria-label="Copy a link to this session"
         >
-          <Icon name="link" size={14} />
-          {copied ? 'Copied' : 'Copy link'}
+          <Icon name={copied ? 'check' : 'link'} size={12} />
         </button>
-      </div>
-      {/* DESKTOP STAT CARD (full labels; the mobile meta strip below is its ≤768px twin). */}
-      <div className="card mb-4 hidden desktop:block">
-        <div className="grid grid-cols-[repeat(4,1fr)]">
-          <div className="border-r border-(--border-subtle) px-4 py-[11px]">
-            <div className="statlbl text-[11px]">Duration</div>
-            <div className="mono mt-[2px] text-[14px] font-semibold">{displayDuration}</div>
-          </div>
-          <div className="border-r border-(--border-subtle) px-4 py-[11px]">
-            <div className="statlbl text-[11px]">Tokens</div>
-            <div className="mono mt-[2px] text-[14px] font-semibold">{session.tokens}</div>
-          </div>
-          <div className="border-r border-(--border-subtle) px-4 py-[11px]">
-            <div className="statlbl text-[11px]">Cost</div>
-            <div className="mono mt-[2px] text-[14px] font-semibold">{session.cost}</div>
-          </div>
-          <div className="px-4 py-[11px]">
-            <div className="statlbl text-[11px]">Tool calls</div>
-            <div className="mono mt-[2px] text-[14px] font-semibold">{displayToolCount}</div>
-          </div>
-        </div>
       </div>
 
       {/* MOBILE META STRIP — single-row 4-up, abbreviated labels tuned for 390px. */}
@@ -1464,21 +1410,7 @@ export default function SessionDetailView() {
         />
       )}
 
-      {/* Token-usage breakdown — desktop-only detail card. */}
-      {usageEntries.length > 0 && (
-        <div className="card mb-4 hidden flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-[9px] desktop:flex">
-          <span className="font-sans text-[12.5px] font-semibold leading-normal">Token usage</span>
-          <span className="mono mr-1 text-[10.5px] text-(--text-tertiary)">cumulative</span>
-          {usageEntries.map((e) => (
-            <span key={e.label} className="inline-flex items-baseline gap-[5px]">
-              <span className="font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">{e.label}</span>
-              <span className="mono text-[12px] font-semibold">{e.value}</span>
-            </span>
-          ))}
-        </div>
-      )}
-
-      {owner?.canManageSharing && !owner.name.startsWith(MOCK_PREFIX) && session.agentId && (
+      {owner?.canEdit && !owner.name.startsWith(MOCK_PREFIX) && session.agentId && (
         <ApprovalRequestsCard
           agentId={session.agentId}
           sessionId={session.realSessionId ?? session.id}
@@ -1517,9 +1449,10 @@ export default function SessionDetailView() {
         </div>
       )}
       {/* TRANSCRIPT — one shared tree. Mobile adds the 16px gutter column around
-          turns + live tail; on desktop the gutter div is a plain block so turns and
-          the composer sit in the page flow exactly as before. */}
-      <div className="flex flex-col gap-4 p-4 desktop:block desktop:p-0">
+          turns + live tail. The column grows to fill the page (flex-1 inside the
+          min-h-full wrap) so the flex-1 spacer below can pin the composer to the
+          bottom even when the transcript is short. */}
+      <div className="flex flex-1 flex-col gap-4 p-4 desktop:gap-0 desktop:p-0">
         {turns.length > 0 && (
           <div className="flex flex-col gap-4 desktop:gap-[15px]">
             {turns.map((turn, ti) =>
@@ -1677,141 +1610,283 @@ export default function SessionDetailView() {
               </div>
             )}
             {pgEmpty && (
-              <div className="flex flex-wrap gap-2 desktop:mt-[6px]">
-                {prompts.map((p) => (
-                  <button key={p} className="chip" onClick={() => onPgSend(p)}>
-                    {p}
-                  </button>
-                ))}
+              <div className="desktop:mt-[6px]">
+                <div className="mb-2 font-mono text-[10.5px] font-semibold uppercase tracking-[.08em] text-(--text-tertiary)">
+                  Start with
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {prompts.map((p) => (
+                    <button key={p} className="chip whitespace-nowrap" onClick={() => onPgSend(p)}>
+                      {p}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
             {imageError && (
               <div className="font-sans text-[11.5px] font-medium leading-normal text-(--red-600)">{imageError}</div>
             )}
+            {/* Flexible spacer (design): pushes the composer to the bottom of the page
+                when the transcript is short; collapses once content overflows. -mt-4
+                cancels the mobile gutter's gap so a collapsed spacer adds no height. */}
+            <div aria-hidden="true" className="-mt-4 flex-1 desktop:mt-0 desktop:min-h-[18px]" />
             {/* Sticky-to-bottom composer: pinned to the bottom of the scroll area so it's
                 always reachable while scrolling the transcript. Its opaque page-colour
                 background covers earlier turns scrolling behind it; the negative `bottom`
                 + matching bottom padding pull it flush past `.content`'s bottom padding
                 (else turns would show through that strip). A top gradient softens the
                 seam where the transcript slides underneath. */}
-            <div className="sticky z-10 bg-(--surface-app) bottom-[calc(-24px-env(safe-area-inset-bottom,0px))] pb-[calc(24px+env(safe-area-inset-bottom,0px))] pt-2 desktop:mt-4 desktop:bottom-[-26px] desktop:pb-[26px] desktop:pt-3">
+            <div className="sticky z-10 bg-(--surface-app) bottom-[calc(-24px-env(safe-area-inset-bottom,0px))] pb-[calc(24px+env(safe-area-inset-bottom,0px))] pt-2 desktop:bottom-[-26px] desktop:pb-[26px] desktop:pt-3">
               <div
                 aria-hidden="true"
                 className="pointer-events-none absolute inset-x-0 -top-5 h-5 bg-gradient-to-b from-transparent to-(--surface-app)"
               />
-              <div className="flex items-start gap-[10px] desktop:gap-[11px]">
-                <Avatar src={user.picture} initials={user.initials} size={30} fontSize={11} />
-                <div
-                  className="pgcomposer relative min-w-0 flex-1 flex-col items-stretch gap-2 rounded-[11px] border border-(--border-default)"
-                  onKeyDown={(event) => {
-                    if (event.key !== 'Escape') return
-                    setAttachMenuOpen(false)
-                    setComposerMenuOpen(null)
-                  }}
-                >
-                  <input
-                    ref={imageInputRef}
-                    type="file"
-                    accept="image/*"
-                    hidden
-                    onChange={(event) => void onImageFile(event.target.files?.[0])}
-                  />
-                  <div className="flex min-w-0 flex-col">
-                    {pgImage && (
-                      <div className="relative mb-2 w-fit">
-                        <img
-                          src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
-                          alt={pgImage.name}
-                          title={pgImage.name}
-                          className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
-                        />
-                        <button
-                          type="button"
-                          className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
-                          title="Remove image"
-                          aria-label="Remove image"
-                          onClick={() => setPgImage(session.id)}
-                        >
-                          <Icon name="x" size={14} />
-                        </button>
-                      </div>
-                    )}
-                    <textarea
-                      className="pgin w-full border-0 px-1 py-2 focus:shadow-none"
-                      placeholder={`Message ${session.agentName}…`}
-                      value={pgInput}
-                      onChange={(e) => setPgInput(e.target.value)}
-                      onPaste={(event) => {
-                        const image = clipboardImageFile(event.clipboardData)
-                        if (!image) return
-                        event.preventDefault()
-                        void onImageFile(image)
-                      }}
-                      onKeyDown={(e) => {
-                        // Enter sends — but NOT while an IME is composing (that Enter
-                        // just confirms the candidate), and Shift+Enter is a newline.
-                        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                          e.preventDefault()
-                          onPgSend()
-                        }
-                      }}
+              {/* Composer card (design "achero"): textarea on top, a toolbar row below
+                  the divider — attach · model pill (fast toggle in its menu) · effort ·
+                  permission · context ring · send. Tokens/cost live in the header's
+                  Details popover, not here. */}
+              <div
+                className="relative min-w-0 rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]"
+                onKeyDown={(event) => {
+                  if (event.key !== 'Escape') return
+                  setAttachMenuOpen(false)
+                  setComposerMenuOpen(null)
+                }}
+              >
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/*"
+                  hidden
+                  onChange={(event) => void onImageFile(event.target.files?.[0])}
+                />
+                {pgImage && (
+                  <div className="relative mx-[15px] mt-3 w-fit">
+                    <img
+                      src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
+                      alt={pgImage.name}
+                      title={pgImage.name}
+                      className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
                     />
-                  </div>
-                  <div className="flex min-w-0 items-center gap-2">
-                    <div className="relative flex-none">
-                      <button
-                        type="button"
-                        className="iconbtn h-7 w-7 rounded-sm"
-                        aria-label="Add"
-                        aria-haspopup="menu"
-                        aria-expanded={attachMenuOpen}
-                        disabled={imagePreparing}
-                        onClick={() => {
-                          setComposerMenuOpen(null)
-                          setAttachMenuOpen((open) => !open)
-                        }}
-                      >
-                        {imagePreparing ? <Spinner size={14} /> : <Icon name="plus" size={17} />}
-                      </button>
-                      {attachMenuOpen && (
-                        <>
-                          <div
-                            aria-hidden="true"
-                            className="fixed inset-0 z-40"
-                            onClick={() => setAttachMenuOpen(false)}
-                          ></div>
-                          <div
-                            role="menu"
-                            className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
-                          >
-                            <button
-                              type="button"
-                              role="menuitem"
-                              className="fopt"
-                              onClick={() => {
-                                setAttachMenuOpen(false)
-                                imageInputRef.current?.click()
-                              }}
-                            >
-                              <Icon name="image" size={16} color="var(--text-secondary)" />
-                              Add photos
-                            </button>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                    {pgStatusBar}
                     <button
-                      className="sendbtn h-7 w-7 rounded-sm"
-                      aria-label={pgBusy ? 'Stop response' : 'Send message'}
-                      onClick={() =>
-                        pgBusy ? pgCancel(session.id, session.agentId ?? '', webchatConversationId) : onPgSend()
-                      }
-                      disabled={!pgBusy && (imagePreparing || (!pgInput.trim() && !pgImage))}
+                      type="button"
+                      className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
+                      title="Remove image"
+                      aria-label="Remove image"
+                      onClick={() => setPgImage(session.id)}
                     >
-                      <Icon name={pgBusy ? 'square' : 'arrow-up'} size={pgBusy ? 10 : 14} />
+                      <Icon name="x" size={14} />
                     </button>
                   </div>
+                )}
+                <textarea
+                  className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
+                  placeholder={`Message ${session.agentName}…`}
+                  value={pgInput}
+                  onChange={(e) => setPgInput(e.target.value)}
+                  onPaste={(event) => {
+                    const image = clipboardImageFile(event.clipboardData)
+                    if (!image) return
+                    event.preventDefault()
+                    void onImageFile(image)
+                  }}
+                  onKeyDown={(e) => {
+                    // Enter sends — but NOT while an IME is composing (that Enter
+                    // just confirms the candidate), and Shift+Enter is a newline.
+                    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      e.preventDefault()
+                      onPgSend()
+                    }
+                  }}
+                />
+                <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
+                  <div className="relative flex-none">
+                    <button
+                      type="button"
+                      className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+                      aria-label="Attach a file"
+                      aria-haspopup="menu"
+                      aria-expanded={attachMenuOpen}
+                      title="Attach a file"
+                      disabled={imagePreparing}
+                      onClick={() => {
+                        setComposerMenuOpen(null)
+                        setAttachMenuOpen((open) => !open)
+                      }}
+                    >
+                      {imagePreparing ? <Spinner size={14} /> : <Icon name="paperclip" size={15} />}
+                    </button>
+                    {attachMenuOpen && (
+                      <>
+                        <div
+                          aria-hidden="true"
+                          className="fixed inset-0 z-40"
+                          onClick={() => setAttachMenuOpen(false)}
+                        ></div>
+                        <div
+                          role="menu"
+                          className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
+                        >
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="fopt"
+                            onClick={() => {
+                              setAttachMenuOpen(false)
+                              imageInputRef.current?.click()
+                            }}
+                          >
+                            <Icon name="image" size={16} color="var(--text-secondary)" />
+                            Add photos
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                    {runtimeChangesEnabled && pgModelOptions.length > 0 ? (
+                      <ComposerMenu
+                        title="Model"
+                        value={pgModel}
+                        options={pgModelOptions.map((model) => ({ value: model, label: modelLabel(model) }))}
+                        open={composerMenuOpen === 'model'}
+                        align="left"
+                        triggerClassName={COMPOSER_PILL}
+                        tooltips={false}
+                        leading={
+                          <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
+                            <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
+                          </span>
+                        }
+                        trailing={pgFastModeAvailable && pgFastMode ? <FastBadge /> : undefined}
+                        footer={
+                          pgFastModeAvailable ? (
+                            <div className="flex items-center gap-[10px] px-[7px] pt-2 pb-[3px]">
+                              <button
+                                type="button"
+                                role="switch"
+                                aria-checked={pgFastMode}
+                                aria-label="Fast mode"
+                                title="Fast mode trades depth for latency"
+                                className={`relative h-[15px] w-[26px] flex-none cursor-pointer rounded-full border-0 p-0 transition-colors ${
+                                  pgFastMode ? 'bg-(--brand)' : 'bg-(--border-strong)'
+                                }`}
+                                onClick={() => {
+                                  const fast = !pgFastMode
+                                  setRuntimeSelection({ fast })
+                                  pgSetFast(session.id, session.agentId ?? '', fast, webchatConversationId)
+                                }}
+                              >
+                                <span
+                                  className={`absolute top-[1px] h-[13px] w-[13px] rounded-full bg-white transition-[left] ${
+                                    pgFastMode ? 'left-3' : 'left-[1px]'
+                                  }`}
+                                />
+                              </button>
+                              <span className="flex-1 font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
+                                Fast mode
+                              </span>
+                              <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                                lower latency
+                              </span>
+                            </div>
+                          ) : undefined
+                        }
+                        onOpenChange={(open) => {
+                          setAttachMenuOpen(false)
+                          setComposerMenuOpen(open ? 'model' : null)
+                        }}
+                        onChange={(model) => {
+                          const currentEffort = runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''
+                          const effort = sessionEffortAfterModelChange(agentRuntime, owningDaemon, model, currentEffort)
+                          setRuntimeSelection(effort === currentEffort ? { model } : { model, effort })
+                          pgSetModel(session.id, session.agentId ?? '', model, webchatConversationId)
+                          if (effort !== currentEffort) {
+                            pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
+                          }
+                        }}
+                      />
+                    ) : (
+                      pgModel && (
+                        <span className={COMPOSER_PILL_STATIC} title="Model">
+                          <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
+                            <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
+                          </span>
+                          {modelLabel(pgModel)}
+                          {pgFastModeAvailable && pgFastMode && <FastBadge />}
+                        </span>
+                      )
+                    )}
+                    {runtimeChangesEnabled && pgEffortOptions.length > 0 ? (
+                      <ComposerMenu
+                        title="Effort"
+                        value={pgEffort}
+                        options={pgEffortOptions.map((effort) => ({
+                          value: effort.value,
+                          label: effort.label,
+                          description: effort.description
+                        }))}
+                        open={composerMenuOpen === 'effort'}
+                        align="left"
+                        triggerClassName={COMPOSER_CHIP}
+                        tooltips={false}
+                        onOpenChange={(open) => {
+                          setAttachMenuOpen(false)
+                          setComposerMenuOpen(open ? 'effort' : null)
+                        }}
+                        onChange={(effort) => {
+                          setRuntimeSelection({ effort })
+                          pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
+                        }}
+                      />
+                    ) : (
+                      pgEffort && (
+                        <span className={COMPOSER_CHIP_STATIC} title="Effort">
+                          {pgEffortChoices.find((choice) => choice.value === pgEffort)?.label ??
+                            effortLabel(agentRuntime, pgEffort)}
+                        </span>
+                      )
+                    )}
+                    {runtimeChangesEnabled && pgPermissionModes.length > 0 ? (
+                      <ComposerMenu
+                        title="Permission"
+                        value={pgPermissionMode}
+                        options={pgPermissionModes.map((mode) => ({
+                          value: mode.v,
+                          label: mode.l,
+                          description: mode.description
+                        }))}
+                        open={composerMenuOpen === 'permission'}
+                        align="left"
+                        triggerClassName={COMPOSER_CHIP}
+                        onOpenChange={(open) => {
+                          setAttachMenuOpen(false)
+                          setComposerMenuOpen(open ? 'permission' : null)
+                        }}
+                        onChange={(permissionMode) => {
+                          setRuntimeSelection({ permissionMode })
+                          pgSetPermissionMode(session.id, session.agentId ?? '', permissionMode, webchatConversationId)
+                        }}
+                      />
+                    ) : (
+                      pgPermissionMode && (
+                        <span className={COMPOSER_CHIP_STATIC} title="Permission">
+                          {agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionMode)}
+                        </span>
+                      )
+                    )}
+                  </div>
+                  <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
+                  <button
+                    className="sendbtn ml-1 h-[26px] w-[26px] flex-none rounded-[7px]"
+                    aria-label={pgBusy ? 'Stop response' : 'Send message'}
+                    onClick={() =>
+                      pgBusy ? pgCancel(session.id, session.agentId ?? '', webchatConversationId) : onPgSend()
+                    }
+                    disabled={!pgBusy && (imagePreparing || (!pgInput.trim() && !pgImage))}
+                  >
+                    <Icon name={pgBusy ? 'square' : 'arrow-up'} size={pgBusy ? 10 : 14} />
+                  </button>
                 </div>
               </div>
             </div>

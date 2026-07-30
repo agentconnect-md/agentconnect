@@ -11,7 +11,7 @@ import type { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
 import type { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { OrgId } from '../../src/domain/ids.js'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const SOURCE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -365,7 +365,10 @@ describe('PUT /agents/:id/daemon', () => {
   it('returns 409 for agent, integration, and cron writes while that agent is moving', async () => {
     await seedMoveDaemons()
     const agentId = randomUUID()
-    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    await seedAgent(prisma, agentId, {
+      daemonId: SOURCE,
+      createdByUserId: DEFAULT_OWNER_ID
+    })
     const botId = randomUUID()
     const sharedBotId = randomUUID()
     await prisma.bot.create({

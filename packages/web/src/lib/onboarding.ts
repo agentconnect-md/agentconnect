@@ -19,13 +19,16 @@ export function firstReconnectableDaemonId(daemons: readonly OnboardingDaemon[])
   return daemons.find((daemon) => !daemonCompletesOnboarding(daemon))?.daemonId
 }
 
+// Every org now ships the built-in `agentconnect` preset UNPLACED, so "no agents" no
+// longer marks a fresh org. Initialized = a serving daemon OR a placed/configured agent
+// (agentIsPlaced) exists; otherwise the org is fresh and gets the full-screen wizard.
 export function needsOnboarding(
   agentsLoading: boolean,
   daemonsLoading: boolean,
-  agentCount: number,
+  hasPlacedAgent: boolean,
   hasOnlineDaemon: boolean
 ): boolean {
-  return !agentsLoading && !daemonsLoading && agentCount === 0 && !hasOnlineDaemon
+  return !agentsLoading && !daemonsLoading && !hasPlacedAgent && !hasOnlineDaemon
 }
 
 export function isOnboardingSkipped(org: string): boolean {

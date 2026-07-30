@@ -1,28 +1,32 @@
 import { describe, it, expect } from 'vitest'
 import {
+  AuthorizationAction,
+  can,
   canView,
   canEdit,
   canManageSharing,
+  canChangeSessionVisibility,
   canViewSession,
   identitySetOf,
   visibilityWhere,
   type SessionViewable,
   type Shareable,
   type ViewCtx
-} from './visibility.js'
+} from './policy.js'
 import type { OrgMemberRole } from '../persistence/ports.js'
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 const CREATOR = 'user_creator'
+const RESOURCE_OWNER = 'user_resource_owner'
 const GRANTEE = 'user_grantee'
 const OTHER = 'user_other'
 
 const ctx = (userId: string, role: OrgMemberRole): ViewCtx => ({ userId, role })
 
-const orgVisible: Shareable = { createdByUserId: CREATOR, visibility: 'org', sharedWith: [] }
-const restricted: Shareable = { createdByUserId: CREATOR, visibility: 'restricted', sharedWith: [GRANTEE] }
-// A restricted resource whose creator's user row was SetNull-deleted (createdByUserId null).
-const orphaned: Shareable = { createdByUserId: null, visibility: 'restricted', sharedWith: [] }
+const orgVisible: Shareable = { ownerUserId: RESOURCE_OWNER, visibility: 'org', sharedWith: [] }
+const ownerlessOrg: Shareable = { ownerUserId: null, visibility: 'org', sharedWith: [] }
+const restricted: Shareable = { ownerUserId: RESOURCE_OWNER, visibility: 'restricted', sharedWith: [GRANTEE] }
+const orphaned: Shareable = { ownerUserId: null, visibility: 'restricted', sharedWith: [] }
 
 describe('canView', () => {
   it('org-visible resource is visible to every role, granted or not', () => {
@@ -31,13 +35,16 @@ describe('canView', () => {
     expect(canView(orgVisible, ctx(OTHER, 'owner'))).toBe(true)
   })
 
-  it('restricted resource hides from a non-creator, non-grantee, non-owner', () => {
+  it('restricted resource hides from every non-owner and non-grantee, regardless of role', () => {
     expect(canView(restricted, ctx(OTHER, 'collaborator'))).toBe(false)
     expect(canView(restricted, ctx(OTHER, 'viewer'))).toBe(false)
+    expect(canView(restricted, ctx(OTHER, 'owner'))).toBe(false)
   })
 
-  it('restricted resource is visible to the creator (creator forever)', () => {
-    expect(canView(restricted, ctx(CREATOR, 'collaborator'))).toBe(true)
+  it('restricted resource is visible to the current ownership arm in every role', () => {
+    expect(canView(restricted, ctx(RESOURCE_OWNER, 'collaborator'))).toBe(true)
+    expect(canView(restricted, ctx(RESOURCE_OWNER, 'viewer'))).toBe(true)
+    expect(canView(restricted, ctx(RESOURCE_OWNER, 'owner'))).toBe(true)
   })
 
   it('restricted resource is visible to a shared member (any role)', () => {
@@ -45,14 +52,10 @@ describe('canView', () => {
     expect(canView(restricted, ctx(GRANTEE, 'viewer'))).toBe(true)
   })
 
-  it('restricted resource is visible to any owner — governance override', () => {
-    expect(canView(restricted, ctx(OTHER, 'owner'))).toBe(true)
-    expect(canView(orphaned, ctx(OTHER, 'owner'))).toBe(true)
-  })
-
-  it('an orphaned restricted resource is invisible to every non-owner', () => {
+  it('an orphaned restricted resource is invisible to every role', () => {
     expect(canView(orphaned, ctx(OTHER, 'collaborator'))).toBe(false)
     expect(canView(orphaned, ctx(GRANTEE, 'collaborator'))).toBe(false)
+    expect(canView(orphaned, ctx(OTHER, 'owner'))).toBe(false)
   })
 })
 
@@ -62,23 +65,25 @@ describe('canEdit', () => {
     expect(canEdit(restricted, ctx(GRANTEE, 'viewer'))).toBe(false) // visible but read-only
   })
 
-  it('owner edits anything, including a restricted resource never granted to them', () => {
-    expect(canEdit(restricted, ctx(OTHER, 'owner'))).toBe(true)
+  it('owner edit rights never widen resource visibility', () => {
+    expect(canEdit(orgVisible, ctx(OTHER, 'owner'))).toBe(true)
+    expect(canEdit(restricted, ctx(GRANTEE, 'owner'))).toBe(true)
+    expect(canEdit(restricted, ctx(OTHER, 'owner'))).toBe(false)
   })
 
   it('collaborator edits iff they can view', () => {
     expect(canEdit(orgVisible, ctx(OTHER, 'collaborator'))).toBe(true)
     expect(canEdit(restricted, ctx(GRANTEE, 'collaborator'))).toBe(true)
-    expect(canEdit(restricted, ctx(CREATOR, 'collaborator'))).toBe(true)
+    expect(canEdit(restricted, ctx(RESOURCE_OWNER, 'collaborator'))).toBe(true)
     expect(canEdit(restricted, ctx(OTHER, 'collaborator'))).toBe(false) // can't even see it
   })
 })
 
-describe('canManageSharing (relaxed to === canEdit, §13.3)', () => {
-  it('is identical to canEdit across the whole matrix', () => {
-    const resources = [orgVisible, restricted, orphaned]
+describe('canManageSharing (§13.3)', () => {
+  it('is identical to canEdit for resources with a current owner', () => {
+    const resources = [orgVisible, restricted]
     const roles: OrgMemberRole[] = ['owner', 'collaborator', 'viewer']
-    const users = [CREATOR, GRANTEE, OTHER]
+    const users = [RESOURCE_OWNER, GRANTEE, OTHER]
     for (const r of resources) {
       for (const role of roles) {
         for (const u of users) {
@@ -94,11 +99,31 @@ describe('canManageSharing (relaxed to === canEdit, §13.3)', () => {
     expect(canManageSharing(restricted, ctx(GRANTEE, 'viewer'))).toBe(false)
     expect(canManageSharing(orgVisible, ctx(OTHER, 'collaborator'))).toBe(true)
   })
+
+  it('keeps ownerless org-visible resources public while preserving content edits', () => {
+    const collaborator = ctx(OTHER, 'collaborator')
+    expect(canEdit(ownerlessOrg, collaborator)).toBe(true)
+    expect(canManageSharing(ownerlessOrg, collaborator)).toBe(false)
+  })
 })
 
 describe('identitySetOf', () => {
   it('is exactly the console identity today (identity linking grows it later)', () => {
     expect(identitySetOf(ctx(OTHER, 'collaborator'))).toEqual(new Set([`user:${OTHER}`]))
+  })
+})
+
+describe('can — organization role actions', () => {
+  it('keeps ordinary writes available to collaborators and owners but not viewers', () => {
+    expect(can(ctx(OTHER, 'viewer'), { action: AuthorizationAction.OrganizationWrite })).toBe(false)
+    expect(can(ctx(OTHER, 'collaborator'), { action: AuthorizationAction.OrganizationWrite })).toBe(true)
+    expect(can(ctx(OTHER, 'owner'), { action: AuthorizationAction.OrganizationWrite })).toBe(true)
+  })
+
+  it('keeps organization governance owner-only', () => {
+    expect(can(ctx(OTHER, 'viewer'), { action: AuthorizationAction.OrganizationManage })).toBe(false)
+    expect(can(ctx(OTHER, 'collaborator'), { action: AuthorizationAction.OrganizationManage })).toBe(false)
+    expect(can(ctx(OTHER, 'owner'), { action: AuthorizationAction.OrganizationManage })).toBe(true)
   })
 })
 
@@ -126,15 +151,12 @@ describe('canViewSession (session-visibility.md §5)', () => {
     expect(canViewSession(s, ctx(CREATOR, 'viewer'), idsOf(ctx(CREATOR, 'viewer')))).toBe(true)
   })
 
-  it('private session hides from a non-matching non-owner', () => {
+  it('private session hides from every non-matching viewer — org owners included', () => {
+    // A private session is a DM-grade transcript, and role grants no access.
     const s = owned('private', `user:${CREATOR}`)
     expect(canViewSession(s, ctx(OTHER, 'collaborator'), idsOf(ctx(OTHER, 'collaborator')))).toBe(false)
     expect(canViewSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(false)
-  })
-
-  it('private session is visible to any org owner — governance override', () => {
-    const s = owned('private', `user:${CREATOR}`)
-    expect(canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(true)
+    expect(canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(false)
   })
 
   it('matches a linked platform identity once the identity set carries it', () => {
@@ -147,30 +169,67 @@ describe('canViewSession (session-visibility.md §5)', () => {
     expect(canViewSession(s, c, linked)).toBe(true)
   })
 
-  it('an owner-orphan private session (ownerIdentity null) is owner-role-only — fail closed', () => {
+  it('a null-owner private session is visible to no one — fail closed', () => {
+    // Unlike a §2 owner-orphan (a stored-but-unmatched platform tuple, which
+    // identity linking §7 lights up retroactively), a null owner has nothing
+    // to match — no role, org owners included, can read it without a
+    // repair/backfill first.
     const s = owned('private', null)
     expect(canViewSession(s, ctx(CREATOR, 'collaborator'), idsOf(ctx(CREATOR, 'collaborator')))).toBe(false)
     expect(canViewSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(false)
-    expect(canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(true)
+    expect(canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(false)
+  })
+})
+
+describe('canChangeSessionVisibility', () => {
+  const session = (visibility: SessionViewable['visibility'], ownerIdentity: string | null): SessionViewable => ({
+    visibility,
+    ownerIdentity
+  })
+
+  it('denies an organization owner reclassifying a session they do not own, org-visible or not', () => {
+    const owner = ctx(OTHER, 'owner')
+    expect(canChangeSessionVisibility(session('org', `user:${CREATOR}`), owner, identitySetOf(owner))).toBe(false)
+    expect(canChangeSessionVisibility(session('private', `user:${CREATOR}`), owner, identitySetOf(owner))).toBe(false)
+  })
+
+  it('follows identity ownership for every role', () => {
+    for (const role of ['owner', 'collaborator', 'viewer'] as const) {
+      const principal = ctx(CREATOR, role)
+      expect(
+        canChangeSessionVisibility(session('private', `user:${CREATOR}`), principal, identitySetOf(principal))
+      ).toBe(true)
+      expect(canChangeSessionVisibility(session('org', `user:${CREATOR}`), principal, identitySetOf(principal))).toBe(
+        true
+      )
+    }
+  })
+
+  it('a null-owner session is re-classifiable by no one — fail closed', () => {
+    const owner = ctx(OTHER, 'owner')
+    expect(canChangeSessionVisibility(session('org', null), owner, identitySetOf(owner))).toBe(false)
+    expect(canChangeSessionVisibility(session('private', null), owner, identitySetOf(owner))).toBe(false)
   })
 })
 
 describe('visibilityWhere', () => {
-  it('is empty (unfiltered) for an owner — governance override', () => {
-    expect(visibilityWhere(ctx(OTHER, 'owner'))).toEqual({})
+  it('filters owners through the same resource-visibility projection as every human role', () => {
+    expect(visibilityWhere(ctx(OTHER, 'owner'))).toEqual({
+      OR: [{ visibility: 'org' }, { ownerUserId: OTHER }, { sharedWith: { has: OTHER } }]
+    })
   })
 
   it('is empty (unfiltered) for an undefined viewer — internal / daemon-facing callers', () => {
     expect(visibilityWhere(undefined)).toEqual({})
   })
 
-  it('is the canView disjunction for a non-owner', () => {
+  it('is the canView disjunction for collaborators and viewers', () => {
     expect(visibilityWhere(ctx(GRANTEE, 'collaborator'))).toEqual({
-      OR: [{ visibility: 'org' }, { createdByUserId: GRANTEE }, { sharedWith: { has: GRANTEE } }]
+      OR: [{ visibility: 'org' }, { ownerUserId: GRANTEE }, { sharedWith: { has: GRANTEE } }]
     })
     // viewers filter identically to collaborators — the row filter is view-based
     expect(visibilityWhere(ctx(GRANTEE, 'viewer'))).toEqual({
-      OR: [{ visibility: 'org' }, { createdByUserId: GRANTEE }, { sharedWith: { has: GRANTEE } }]
+      OR: [{ visibility: 'org' }, { ownerUserId: GRANTEE }, { sharedWith: { has: GRANTEE } }]
     })
   })
 })

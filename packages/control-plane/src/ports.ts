@@ -207,9 +207,10 @@ export interface DaemonView {
   lastModifiedAt: Date
   /** WebUI user who last edited the daemon; null ⇒ never edited by a human. */
   lastModifiedBy: { userId: string; displayName: string | null; email: string } | null
-  /** Raw creator FK scalar — the visibility creator-arm reads this (not `createdBy`,
-   *  which nulls once the user row is SetNull-deleted). null ⇒ CLI/self-registered. */
+  /** Raw immutable creator FK scalar, independent of joined `createdBy`. */
   createdByUserId: string | null
+  /** Current resource owner used by restricted visibility. */
+  ownerUserId: string | null
   /** Per-resource visibility (docs/designs/resource-visibility.md). */
   visibility: ResourceVisibility
   /** app_user.id set granted view when `visibility === 'restricted'`. */
@@ -265,8 +266,8 @@ export interface DaemonRegistry {
   ): Promise<DaemonView>
   /** Hard-delete a daemon from the fleet (DELETE /daemons/:id). Throws if absent. */
   remove(daemonId: DaemonId): Promise<void>
-  /** The org's fleet (console read model). A `viewer` filters out restricted daemons
-   *  they can't see (owner/undefined ⇒ unfiltered — governance override). */
+  /** The org's fleet (console read model). Every supplied human principal filters
+   *  out restricted daemons they cannot see; undefined keeps internal reads unfiltered. */
   list(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonView[]>
   /** One daemon (org checks on rename/delete/keys); null when absent. */
   get(daemonId: DaemonId): Promise<DaemonView | null>

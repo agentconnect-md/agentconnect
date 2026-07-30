@@ -1,9 +1,9 @@
 import { z } from 'zod'
 
 /**
- * Provider-backed attachment metadata shared by direct daemon ingress and
- * relay HTTP ingress. The relay never downloads or forwards the bytes; the
- * daemon fetches them directly from the provider using its assigned token.
+ * Provider-backed attachment metadata shared by direct daemon ingress and relay
+ * HTTP ingress. The relay never downloads or forwards the bytes; the daemon
+ * fetches them directly from the provider using its assigned token.
  */
 export const PlatformAttachmentSchema = z.object({
   id: z.string(),
@@ -13,15 +13,6 @@ export const PlatformAttachmentSchema = z.object({
   sourceUrl: z.string()
 })
 export type PlatformAttachment = z.infer<typeof PlatformAttachmentSchema>
-
-type AttachmentSummary = Pick<PlatformAttachment, 'name' | 'mimeType'>
-
-/** One-line human summary used when a platform reply quotes attached media. */
-export function attachmentMention(attachments: readonly AttachmentSummary[] | undefined): string {
-  if (!attachments?.length) return ''
-  const list = attachments.map((attachment) => `${attachment.name} (${attachment.mimeType})`).join(', ')
-  return `[attached: ${list}]`
-}
 
 export const QuotedMessageSchema = z.object({
   messageId: z.string().optional(),
@@ -33,11 +24,11 @@ export const QuotedMessageSchema = z.object({
 export type QuotedMessage = z.infer<typeof QuotedMessageSchema>
 
 /**
- * The transport-neutral platform message produced by pure normalizers.
+ * The transport-neutral platform message contract used by pure normalizers.
  *
  * This is deliberately narrower than the daemon's runtime message: daemon-only
  * transcript, session, and inline-content fields are added after ingress. It is
- * also the exact payload carried by relay `rd/msg` IM frames.
+ * the exact payload carried by relay `rd/msg` IM frames.
  */
 export const NormalizedPlatformMessageSchema = z.object({
   msgId: z.string(),

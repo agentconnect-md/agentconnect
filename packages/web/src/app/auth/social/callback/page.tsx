@@ -3,12 +3,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui'
 import { Spinner } from '@/components/marks'
+import { refreshMySocialIdentities } from '@/lib/api'
 import {
   accountErrorMessage,
   saveSocialIdentity,
   takeSocialLinkFlow,
-  verifySocialVerification,
-  writeAccountNotice
+  verifySocialVerification
 } from '@/lib/logto-account'
 
 export default function SocialAccountCallback() {
@@ -47,13 +47,12 @@ export default function SocialAccountCallback() {
     const connectorData = { ...Object.fromEntries(params.entries()), redirectUri: flow.redirectUri }
     verifySocialVerification(flow.verificationRecordId, connectorData)
       .then((verified) => saveSocialIdentity(verified, flow.currentVerificationRecordId))
-      .then(() => {
-        writeAccountNotice({
-          kind: 'success',
-          message: `${flow.providerName} was linked.`
-        })
-        window.location.replace(flow.returnTo)
-      })
+      // Best-effort: the link already succeeded, so a failure here must not be
+      // reported as one. It only costs a stale row until the cache expires.
+      .then(() => refreshMySocialIdentities().catch(() => undefined))
+      // Straight back to Profile: the row now shows the linked account, which
+      // says it better than a banner that outlives the action.
+      .then(() => window.location.replace(flow.returnTo))
       .catch((caught) => {
         setError(accountErrorMessage(caught, { providerName: flow.providerName, linking: true }))
       })

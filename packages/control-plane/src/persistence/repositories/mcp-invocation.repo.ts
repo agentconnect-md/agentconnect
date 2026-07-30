@@ -4,7 +4,7 @@
  */
 import { Prisma, type McpInvocation } from '../../generated/prisma/client.js'
 import { systemClock, type Clock } from '../../domain/clock.js'
-import { canView } from '../../domain/visibility.js'
+import { canView } from '../../authorization/policy.js'
 import type { PrismaLike } from '../prisma.js'
 import {
   MCP_INVOCATION_MAX_RESPONSE_BYTES,
@@ -144,12 +144,12 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
           id: string
           orgId: string
           daemonId: string | null
-          createdByUserId: string | null
+          ownerUserId: string | null
           visibility: 'org' | 'restricted'
           sharedWith: string[]
         }[]
       >(Prisma.sql`
-        SELECT "id", "orgId", "daemonId", "createdByUserId", "visibility", "sharedWith"
+        SELECT "id", "orgId", "daemonId", "ownerUserId", "visibility", "sharedWith"
         FROM "agent"
         WHERE "id" = ${input.agentId}
         FOR SHARE
