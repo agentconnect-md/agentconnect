@@ -923,6 +923,7 @@ model WebchatMcpDelegation {
 
   @@unique([conversationId, generation])
   @@index([conversationId, revokedAt])
+  @@index([agentId, revokedAt])
   @@index([expiresAt])
   @@map("webchat_mcp_delegation")
 }

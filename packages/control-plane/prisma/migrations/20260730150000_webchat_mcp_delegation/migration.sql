@@ -50,6 +50,8 @@ CREATE UNIQUE INDEX "webchat_mcp_delegation_conversationId_generation_key"
   ON "webchat_mcp_delegation"("conversationId", "generation");
 CREATE INDEX "webchat_mcp_delegation_conversationId_revokedAt_idx"
   ON "webchat_mcp_delegation"("conversationId", "revokedAt");
+CREATE INDEX "webchat_mcp_delegation_agentId_revokedAt_idx"
+  ON "webchat_mcp_delegation"("agentId", "revokedAt");
 CREATE INDEX "webchat_mcp_delegation_expiresAt_idx"
   ON "webchat_mcp_delegation"("expiresAt");
 

@@ -108,9 +108,9 @@ async function settlePresetPlacement(tx: Prisma.TransactionClient, agentId: stri
 /**
  * Placement/delegation lock order:
  *   Agent FOR UPDATE → active WebchatMcpDelegation rows.
- * Establishment takes Conversation FOR UPDATE before joining this order
- * (Conversation → Agent → Delegation). Placement never locks Conversation, so
- * the two paths cannot form an inverse wait cycle.
+ * Establishment joins the same order with a compatible Agent FOR SHARE, then
+ * locks its Conversation FOR UPDATE before touching Delegation. Agent is
+ * always first, so placement and agent deletion cannot form an inverse cycle.
  */
 async function lockAgentPlacement(
   tx: Prisma.TransactionClient,

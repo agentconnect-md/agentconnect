@@ -59,6 +59,16 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
     ).toEqual({ delegationGeneration: 1 })
   })
 
+  it('migrates the agent/revocation lookup index used by placement invalidation', async () => {
+    const indexes = await prisma.$queryRaw<{ indexname: string }[]>`
+      SELECT indexname
+      FROM pg_indexes
+      WHERE schemaname = current_schema()
+        AND tablename = 'webchat_mcp_delegation'
+    `
+    expect(indexes.map(({ indexname }) => indexname)).toContain('webchat_mcp_delegation_agentId_revokedAt_idx')
+  })
+
   it('rotates placement by revoking the active row and incrementing the durable generation', async () => {
     await fixtures()
     const repo = new PgWebchatMcpDelegationRepo(prisma)
@@ -166,5 +176,38 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
       revokedAt: at(500),
       revokedReason: 'session_closed'
     })
+  })
+
+  it('reaps at most 500 deterministic expired candidates and drains the remainder next', async () => {
+    await fixtures()
+    const repo = new PgWebchatMcpDelegationRepo(prisma)
+    const rows = Array.from({ length: 502 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      conversationId: CONVERSATION,
+      generation: index + 1,
+      userId: DEFAULT_OWNER_ID,
+      orgId: DEFAULT_ORG_ID,
+      agentId: AGENT,
+      daemonId: DAEMON,
+      createdAt: at(index),
+      expiresAt: at(1_000)
+    }))
+    await prisma.webchatMcpDelegation.createMany({ data: rows })
+    await prisma.mcpInvocation.create({
+      data: {
+        id: '99999999-9999-4999-8999-999999999999',
+        delegationId: rows[501]!.id,
+        assertionHash: 'peppered:retained',
+        requestHash: 'retained-request',
+        method: 'tools/call',
+        assertionExpires: at(2_000)
+      }
+    })
+
+    expect(await repo.reapExpired(at(1_000))).toBe(500)
+    expect(await repo.reapExpired(at(1_000))).toBe(1)
+    expect(await prisma.webchatMcpDelegation.findMany({ orderBy: { id: 'asc' }, select: { id: true } })).toEqual([
+      { id: rows[501]!.id }
+    ])
   })
 })

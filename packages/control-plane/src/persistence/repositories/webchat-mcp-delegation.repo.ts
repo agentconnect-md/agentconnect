@@ -12,6 +12,7 @@ import type {
 } from '../ports.js'
 
 const toRecord = (row: WebchatMcpDelegation): WebchatMcpDelegationRecord => ({ ...row })
+const WEBCHAT_MCP_DELEGATION_REAP_BATCH_SIZE = 500
 
 export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
   constructor(private readonly db: PrismaLike) {}
@@ -23,28 +24,30 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
 
   async establish(input: EstablishWebchatMcpDelegationInput): Promise<WebchatMcpDelegationRecord | null> {
     return this.inTransaction(async (tx) => {
-      // This durable owner row is the allocation lock for every generation.
-      await tx.$queryRaw(
-        Prisma.sql`SELECT "id" FROM "webchat_conversation" WHERE "id" = ${input.conversationId} FOR UPDATE`
-      )
-      const conversation = await tx.webchatConversation.findFirst({
-        where: {
-          id: input.conversationId,
-          userId: input.userId,
-          orgId: input.orgId,
-          agentId: input.agentId
-        },
-        select: { id: true }
-      })
-      if (!conversation) return null
-
-      // Lock order is Conversation → Agent → Delegation. This FOR UPDATE
-      // conflicts with both placement writers, so daemon validation and the
-      // delegation mutation below observe one serialized placement.
+      // Global lock order is Agent → Conversation → Delegation. FOR SHARE
+      // conflicts with placement UPDATE and agent DELETE while allowing two
+      // independent conversations on this agent to establish concurrently.
       const [agent] = await tx.$queryRaw<{ daemonId: string | null }[]>(
-        Prisma.sql`SELECT "daemonId" FROM "agent" WHERE "id" = ${input.agentId} FOR UPDATE`
+        Prisma.sql`SELECT "daemonId" FROM "agent" WHERE "id" = ${input.agentId} FOR SHARE`
       )
-      if (!agent || agent.daemonId !== input.daemonId) return null
+      const [conversation] = await tx.$queryRaw<
+        { id: string; userId: string; orgId: string; agentId: string }[]
+      >(Prisma.sql`
+        SELECT "id", "userId", "orgId", "agentId"
+        FROM "webchat_conversation"
+        WHERE "id" = ${input.conversationId}
+        FOR UPDATE
+      `)
+      if (
+        !agent ||
+        !conversation ||
+        conversation.userId !== input.userId ||
+        conversation.orgId !== input.orgId ||
+        conversation.agentId !== input.agentId ||
+        agent.daemonId !== input.daemonId
+      ) {
+        return null
+      }
 
       const latest = await tx.webchatMcpDelegation.findFirst({
         where: { conversationId: input.conversationId },
@@ -123,11 +126,14 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
       // Delegation → Invocation is the shared mint/reap lock order. Locking
       // candidates first makes the following `none` check a fresh, post-wait
       // statement instead of a stale snapshot that could erase a winning mint.
+      // Retained candidates consume a slot in this deterministic batch and are
+      // revisited on the next call; work is bounded without skipping newer IDs.
       const candidates = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
         SELECT "id"
         FROM "webchat_mcp_delegation"
         WHERE "expiresAt" <= ${expiredBefore}
-        ORDER BY "id"
+        ORDER BY "expiresAt", "id"
+        LIMIT ${WEBCHAT_MCP_DELEGATION_REAP_BATCH_SIZE}
         FOR UPDATE
       `)
       if (candidates.length === 0) return 0
