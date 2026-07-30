@@ -34,9 +34,9 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
           orgId: input.orgId,
           agentId: input.agentId
         },
-        select: { id: true }
+        select: { id: true, agent: { select: { daemonId: true } } }
       })
-      if (!conversation) return null
+      if (!conversation || conversation.agent.daemonId !== input.daemonId) return null
 
       const latest = await tx.webchatMcpDelegation.findFirst({
         where: { conversationId: input.conversationId },

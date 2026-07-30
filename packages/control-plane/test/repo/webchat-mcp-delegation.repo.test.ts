@@ -64,6 +64,7 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
     const repo = new PgWebchatMcpDelegationRepo(prisma)
     const first = await repo.establish(establishInput())
 
+    await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: OTHER_DAEMON } })
     const moved = await repo.establish(establishInput(OTHER_DAEMON))
 
     expect(moved).toMatchObject({ generation: 2, daemonId: OTHER_DAEMON, revokedAt: null })
@@ -73,6 +74,49 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
       revokedAt: NOW,
       revokedReason: 'placement_changed'
     })
+  })
+
+  it('rejects a caller-supplied daemon that is not the durable agent placement without mutating authority', async () => {
+    await fixtures()
+    const repo = new PgWebchatMcpDelegationRepo(prisma)
+    const first = (await repo.establish(establishInput()))!
+
+    expect(await repo.establish(establishInput(OTHER_DAEMON))).toBeNull()
+    expect(await repo.get(first.id)).toMatchObject({
+      generation: 1,
+      daemonId: DAEMON,
+      revokedAt: null,
+      revokedReason: null
+    })
+    expect(await prisma.webchatMcpDelegation.count({ where: { conversationId: CONVERSATION } })).toBe(1)
+    expect(
+      await prisma.webchatConversation.findUnique({
+        where: { id: CONVERSATION },
+        select: { delegationGeneration: true }
+      })
+    ).toEqual({ delegationGeneration: 1 })
+  })
+
+  it('rejects an unplaced agent without revoking or advancing its active delegation', async () => {
+    await fixtures()
+    const repo = new PgWebchatMcpDelegationRepo(prisma)
+    const first = (await repo.establish(establishInput()))!
+    await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: null } })
+
+    expect(await repo.establish(establishInput())).toBeNull()
+    expect(await repo.get(first.id)).toMatchObject({
+      generation: 1,
+      daemonId: DAEMON,
+      revokedAt: null,
+      revokedReason: null
+    })
+    expect(await prisma.webchatMcpDelegation.count({ where: { conversationId: CONVERSATION } })).toBe(1)
+    expect(
+      await prisma.webchatConversation.findUnique({
+        where: { id: CONVERSATION },
+        select: { delegationGeneration: true }
+      })
+    ).toEqual({ delegationGeneration: 1 })
   })
 
   it('rotates an expired active row even when placement is unchanged', async () => {

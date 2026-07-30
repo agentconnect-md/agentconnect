@@ -1088,7 +1088,8 @@ export interface WebchatMcpDelegationRepo {
   /**
    * Serialize on the durable conversation owner. Reconnects reuse matching,
    * unexpired authority; expiry or placement changes rotate its generation.
-   * A foreign/unknown conversation binding returns null.
+   * A foreign/unknown conversation binding, wrong daemon, or unplaced agent
+   * returns null without mutating the current generation.
    */
   establish(input: EstablishWebchatMcpDelegationInput): Promise<WebchatMcpDelegationRecord | null>
   /** Conditional, generation-fenced revocation. An already-revoked exact match is idempotently true. */
