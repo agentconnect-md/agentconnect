@@ -186,21 +186,24 @@ function VerifyAccountDialog({
               : `To protect your account, verify it's you with a code sent to ${email ?? 'your email'}.`}
           </p>
           {verificationId ? (
-            <label className="fld mt-4">
-              <span className="fldlbl">Verification code</span>
+            // A short code, not prose: centred, spaced and monospaced so the
+            // digits read as a group. `.inp` is the wrong shape here — it spans
+            // the dialog for a handful of characters, and it defines no focus
+            // style, so it falls back to the browser's own ring.
+            <div className="mt-4 flex justify-center">
               <input
-                className="inp"
+                aria-label="Verification code"
+                className="w-[190px] rounded-lg border border-(--border-default) bg-(--surface-card) px-3 py-2.5 text-center indent-[0.32em] font-mono text-[19px] font-medium tracking-[0.32em] text-(--text-primary) outline-none transition-[border-color,box-shadow] focus:border-(--brand) focus:shadow-[0_0_0_3px_var(--brand-soft)]"
                 value={code}
                 inputMode="numeric"
                 autoComplete="one-time-code"
                 autoFocus
-                placeholder="Enter code"
                 onChange={(event) => setCode(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') void submit()
                 }}
               />
-            </label>
+            </div>
           ) : null}
           {error ? (
             <div className="mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)" role="alert">
