@@ -1,20 +1,21 @@
 /**
  * PgSlackPlatformInstallStore (preset-agents.md §5.3) — pending installs of the
  * platform-published (distributed) Slack app. No secret material: the app's
- * credentials are deployment env config; a row only binds the OAuth `state` to
- * {org, target agent, user}. No FKs (mirrors slack_install): a dangling row
- * after an org/agent delete is harmless and TTL-reaped.
+ * credentials are deployment env config; a row binds the OAuth `state` to
+ * either {org, target agent, user} or {org, expected bot, user}. No FKs
+ * (mirrors slack_install): a dangling row after an org/agent/bot delete is
+ * harmless and TTL-reaped.
  */
 import type { SlackPlatformInstall } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
 import type { SlackPlatformInstallRecord, SlackPlatformInstallStore } from '../ports.js'
-import { OrgId, AgentId } from '../../domain/ids.js'
+import { OrgId, AgentId, BotId } from '../../domain/ids.js'
 
 function toRecord(r: SlackPlatformInstall): SlackPlatformInstallRecord {
   return {
     id: r.id,
     orgId: OrgId(r.orgId),
-    agentId: AgentId(r.agentId),
+    agentId: r.agentId ? AgentId(r.agentId) : null,
     status: r.status,
     failureReason: r.failureReason,
     botId: r.botId,
@@ -30,14 +31,16 @@ export class PgSlackPlatformInstallStore implements SlackPlatformInstallStore {
   async create(input: {
     id: string
     orgId: OrgId
-    agentId: AgentId
+    agentId?: AgentId
+    botId?: BotId
     createdByUserId?: string
   }): Promise<SlackPlatformInstallRecord> {
     const row = await this.prisma.slackPlatformInstall.create({
       data: {
         id: input.id,
         orgId: input.orgId,
-        agentId: input.agentId,
+        ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
+        ...(input.botId !== undefined ? { botId: input.botId } : {}),
         ...(input.createdByUserId !== undefined ? { createdByUserId: input.createdByUserId } : {})
       }
     })

@@ -6,14 +6,17 @@
  * always **http + NON-shareable** — Events-API-only because a distributed app has
  * no per-workspace xapp token, and one-agent because a workspace install keeps the
  * classic 1-install cap — and auto-binds to the org's `agentconnect` preset agent
- * (or an explicitly chosen one). Serving several agents from one Slack identity
- * remains the quick-install upgrade (a dedicated app per agent).
+ * (or an explicitly chosen one). A Settings reauthorization instead binds the
+ * OAuth state to an existing Bot/workspace and preserves its memberships.
+ * Serving several agents from one Slack identity remains the quick-install
+ * upgrade (a dedicated app per agent).
  *
  * TWO plugins, mirroring the quick-install funnel's split:
  *  - `slackPlatformInstallRoutes` mounts inside `/orgs/:orgId` (humanAuth +
  *    org-scope): mint a pending-install row whose id doubles as the OAuth
- *    `state` — binding {org, target agent, user} — and return the authorize URL.
- *    A bare share URL cannot carry tenancy, so installs always start here.
+ *    `state` — binding either {org, target agent, user} or {org, expected bot,
+ *    user} — and return the authorize URL. A bare share URL cannot carry
+ *    tenancy, so installs always start here.
  *  - `slackPlatformCallbackRoutes` mounts at the version root, UNAUTHENTICATED
  *    (Slack redirects the installer's browser). The exchange runs server-side
  *    with the env credentials; the browser gets only a self-closing page.
@@ -60,7 +63,7 @@ export function slackPlatformInstallRoutes(deps: HttpDeps) {
           tags: [Tag.Integrations],
           summary: 'Start platform Slack app install',
           description:
-            'Mint a pending install of the platform-published Slack app — the OAuth `state` binds {org, target agent, user} — and return the slack.com authorize URL to open. The target defaults to the org’s `agentconnect` preset agent. Requires the relay pool (the distributed app is Events-API-only).',
+            'Mint a pending install of the platform-published Slack app and return the slack.com authorize URL. A generic install binds the OAuth state to an org, target agent, and user; a Settings reauthorization binds it to an existing bot/workspace and preserves that bot’s current agent memberships. Requires the relay pool (the distributed app is Events-API-only).',
           operationId: 'startSlackPlatformInstall',
           body: SlackPlatformInstallStartBody,
           response: { 201: SlackPlatformInstallStartDto, 401: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
@@ -80,32 +83,54 @@ export function slackPlatformInstallRoutes(deps: HttpDeps) {
             message: 'HTTP-mode Slack requires a connected relay (PUBLIC_RELAY_URL + a running relay)'
           })
         }
-        // Explicit target, else the org's general preset (the design's default
-        // bind target). No placement requirement — http delivery converges later.
-        let agentId = req.body.agentId
-        if (!agentId) {
-          const preset = await deps.repos.presetAgent.get(orgId, 'general')
-          agentId = preset?.agentId ?? undefined
-        }
-        if (!agentId) {
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'no target agent: pass agentId (the agentconnect preset is absent in this org)'
-          })
-        }
-        const agent = await deps.repos.agent.get(AgentId(agentId))
-        if (!agent || agent.orgId !== orgId || !canView(agent, ctxOf(req))) {
-          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-        }
-        if (!canEdit(agent, ctxOf(req))) {
-          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        let agentId: AgentId | undefined
+        let expectedBotId: BotId | undefined
+        if (req.body.botId) {
+          // Settings reauthorization: fence the callback to this exact
+          // platform-app workspace. No target agent is stored, so a freed bot
+          // remains free and an active bot keeps its existing memberships.
+          const bot = await deps.repos.bot.get(BotId(req.body.botId))
+          if (!bot || bot.orgId !== orgId) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
+          }
+          if (bot.platform !== 'slack' || !bot.prebuilt || bot.slackAppId !== platform.appId || !bot.teamId) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: 'only an installed built-in Slack workspace can be reauthorized'
+            })
+          }
+          expectedBotId = bot.id
+        } else {
+          // Explicit target, else the org's general preset (the design's default
+          // bind target). No placement requirement — http delivery converges later.
+          let requestedAgentId = req.body.agentId
+          if (!requestedAgentId) {
+            const preset = await deps.repos.presetAgent.get(orgId, 'general')
+            requestedAgentId = preset?.agentId ?? undefined
+          }
+          if (!requestedAgentId) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: 'no target agent: pass agentId (the agentconnect preset is absent in this org)'
+            })
+          }
+          const agent = await deps.repos.agent.get(AgentId(requestedAgentId))
+          if (!agent || agent.orgId !== orgId || !canView(agent, ctxOf(req))) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+          }
+          if (!canEdit(agent, ctxOf(req))) {
+            return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+          }
+          agentId = agent.id
         }
 
         const install = await deps.repos.slackPlatformInstall.create({
           id: randomUUID(),
           orgId,
-          agentId: agent.id,
+          ...(agentId ? { agentId } : {}),
+          ...(expectedBotId ? { botId: expectedBotId } : {}),
           createdByUserId: req.principal.userId
         })
         const url = new URL(SLACK_AUTHORIZE_URL)
@@ -225,13 +250,45 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
           return fail('error')
         }
 
-        const agent = await deps.repos.agent.get(row.agentId)
-        if (!agent || agent.orgId !== row.orgId) {
+        // A Settings refresh puts its expected Bot id in the pending state. Its
+        // durable platform-app teamId is the workspace fence: authorizing any
+        // other workspace must fail before credentials or memberships change.
+        const expectedBot = row.botId ? await deps.repos.bot.get(BotId(row.botId)) : null
+        if (
+          row.botId &&
+          (!expectedBot ||
+            expectedBot.orgId !== row.orgId ||
+            expectedBot.platform !== 'slack' ||
+            !expectedBot.prebuilt ||
+            expectedBot.slackAppId !== platform.appId ||
+            !expectedBot.teamId)
+        ) {
+          req.log.warn({ installId: row.id, botId: row.botId }, 'slack platform reauthorization: invalid bot fence')
+          return fail('error')
+        }
+        if (expectedBot && result.teamId !== expectedBot.teamId) {
+          req.log.warn(
+            { installId: row.id, botId: expectedBot.id, expectedTeamId: expectedBot.teamId },
+            'slack platform reauthorization: different workspace authorized'
+          )
+          return fail('workspace_mismatch')
+        }
+
+        const agent = row.agentId ? await deps.repos.agent.get(row.agentId) : null
+        if (row.agentId && (!agent || agent.orgId !== row.orgId)) {
           // Target deleted while the tab was open — nothing sane to bind to.
           return fail('error')
         }
+        if (!expectedBot && !agent) return fail('error')
 
         const existing = await deps.repos.bot.getBySlackAppTeam(platform.appId, result.teamId)
+        if (expectedBot && existing?.id !== expectedBot.id) {
+          req.log.warn(
+            { installId: row.id, botId: expectedBot.id },
+            'slack platform reauthorization: workspace bot changed'
+          )
+          return fail('workspace_mismatch')
+        }
         if (existing && existing.orgId !== row.orgId) {
           // A workspace binds to exactly one org (the demux key is global).
           // Don't leak WHICH org holds it.
@@ -258,53 +315,46 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps) {
             new Date()
           )
           req.log.info({ botId: existing.id, revision }, 'slack platform re-install: credential generation advanced')
-          // Membership admission is ATOMIC with the bot row (addBotMembership
-          // locks it): `shareable` and the active membership set are re-read in
-          // the same transaction as the insert, so a concurrent sharing toggle
-          // or a duplicate concurrent callback serializes there instead of
-          // racing this handler's earlier `existing` snapshot. One (bot, agent)
-          // can gain at most one active install ('exists' = idempotent success).
-          const admission = await deps.repos.integration.addBotMembership({
-            id: IntegrationId(randomUUID()),
-            orgId: OrgId(row.orgId),
-            agentId: agent.id,
-            botId: existing.id,
-            platform: 'slack',
-            name: existing.name,
-            ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {})
-          })
-          if (admission.outcome === 'revoked') {
-            // Exotic: the workspace uninstalled again between this callback's
-            // fresh credential install and the admission — the revoke won the
-            // row lock and flipped every install, so admitting now would mint a
-            // live membership on the dead credential. Settle as a plain error;
-            // the next "Add to Slack" round trip re-installs cleanly.
-            req.log.warn(
-              { installId: row.id, botId: existing.id, targetAgentId: agent.id },
-              'slack platform re-install: bot revoked mid-callback'
-            )
-            await deps.httpBot.syncBot(existing.id)
-            return fail('error')
-          }
-          if (admission.outcome === 'not_shareable') {
-            // The platform bot installs NON-shareable: one workspace install
-            // serves exactly one agent, so a re-install aimed at a DIFFERENT
-            // agent cannot just add a second row (that is the cap the classic
-            // reuse path enforces with a 409). The credential above still
-            // rotated — the workspace's existing binding keeps working, it just
-            // did not move. Moving it is a deliberate console action, not a
-            // side effect of clicking "Add to Slack" with another agent
-            // selected. If the user flips the bot SHAREABLE (Settings → Bots),
-            // the admission simply adds the agent instead.
-            req.log.warn(
-              { installId: row.id, botId: existing.id, targetAgentId: agent.id },
-              'slack platform re-install: workspace already bound to another agent'
-            )
-            await deps.httpBot.syncBot(existing.id)
-            return fail('agent_taken')
+          if (agent) {
+            // Generic install/re-install only: membership admission is ATOMIC
+            // with the bot row. A bot-bound Settings reauthorization has no
+            // agent target and deliberately preserves the current set instead.
+            const admission = await deps.repos.integration.addBotMembership({
+              id: IntegrationId(randomUUID()),
+              orgId: OrgId(row.orgId),
+              agentId: agent.id,
+              botId: existing.id,
+              platform: 'slack',
+              name: existing.name,
+              ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {})
+            })
+            if (admission.outcome === 'revoked') {
+              // Exotic: the workspace uninstalled again between this callback's
+              // fresh credential install and the admission — the revoke won the
+              // row lock and flipped every install, so admitting now would mint a
+              // live membership on the dead credential.
+              req.log.warn(
+                { installId: row.id, botId: existing.id, targetAgentId: agent.id },
+                'slack platform re-install: bot revoked mid-callback'
+              )
+              await deps.httpBot.syncBot(existing.id)
+              return fail('error')
+            }
+            if (admission.outcome === 'not_shareable') {
+              // A generic re-install aimed at a different agent must not widen a
+              // non-shareable workspace bot. The credential still rotated, so
+              // its existing binding keeps working.
+              req.log.warn(
+                { installId: row.id, botId: existing.id, targetAgentId: agent.id },
+                'slack platform re-install: workspace already bound to another agent'
+              )
+              await deps.httpBot.syncBot(existing.id)
+              return fail('agent_taken')
+            }
           }
           await deps.httpBot.syncBot(existing.id)
         } else {
+          if (!agent || expectedBot) return fail('error')
           const created = await installNewSlackBot(deps, req.log, {
             orgId: OrgId(row.orgId),
             agent,

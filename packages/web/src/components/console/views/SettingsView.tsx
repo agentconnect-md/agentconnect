@@ -739,7 +739,7 @@ function BotsCard({
       return { ...current, [b.id]: result ? { result } : {} }
     })
     try {
-      const started = await startSlackPlatformInstall(b.agentIds[0])
+      const started = await startSlackPlatformInstall({ botId: b.id })
       setSlackReinstall({ botId: b.id, installId: started.id })
       window.open(started.installUrl, '_blank', 'noopener,width=680,height=760')
     } catch (e) {
@@ -776,8 +776,14 @@ function BotsCard({
           fail(
             status.failureReason === 'denied'
               ? 'The reinstall was cancelled in Slack.'
-              : 'Slack could not complete the reinstall. Please try again.'
+              : status.failureReason === 'workspace_mismatch'
+                ? 'Slack authorized a different workspace. Try again and choose this bot’s workspace.'
+                : 'Slack could not complete the reinstall. Please try again.'
           )
+          return
+        }
+        if (status.botId !== botId) {
+          fail('Slack reauthorized a different bot. Please try again.')
           return
         }
 

@@ -2199,12 +2199,15 @@ export type SlackPlatformInstallStatus = 'pending' | 'completed' | 'failed'
 export interface SlackPlatformInstallRecord {
   id: string // == OAuth state (random uuid)
   orgId: OrgId
-  agentId: AgentId // bind target (defaults to the org's `agentconnect` preset)
+  /** Generic-install bind target. Null for bot-bound Settings reauthorization,
+   *  which preserves the bot's current (possibly empty) membership set. */
+  agentId: AgentId | null
   /** Terminal state of the OAuth round trip — the console's completion signal. */
   status: SlackPlatformInstallStatus
   /** Short code (same note the callback's close page shows) when `failed`. */
   failureReason: string | null
-  /** The workspace's Bot once `completed`. */
+  /** Expected Bot fence for Settings reauthorization, or the resulting Bot once
+   *  a generic install completes. */
   botId: string | null
   createdByUserId: string | null
   createdAt: Date
@@ -2215,7 +2218,9 @@ export interface SlackPlatformInstallStore {
   create(input: {
     id: string
     orgId: OrgId
-    agentId: AgentId
+    agentId?: AgentId
+    /** Bind OAuth to an existing platform Bot/workspace without changing membership. */
+    botId?: BotId
     createdByUserId?: string
   }): Promise<SlackPlatformInstallRecord>
   get(id: string): Promise<SlackPlatformInstallRecord | null>

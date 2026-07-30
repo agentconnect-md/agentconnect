@@ -6,6 +6,12 @@ ALTER TABLE "bot"
   ADD COLUMN "workspaceId" TEXT,
   ADD COLUMN "workspaceName" TEXT;
 
+-- A Settings reauthorization is bound to an existing bot rather than a target
+-- agent. Keeping agentId nullable lets a freed bot rotate its workspace
+-- credential without silently reattaching it to the default preset agent.
+ALTER TABLE "slack_platform_install"
+  ALTER COLUMN "agentId" DROP NOT NULL;
+
 -- Existing platform-app rows already have the stable workspace id, and their
 -- generated name carries the OAuth team name. This makes current installations
 -- groupable immediately; custom legacy apps converge through the existing Slack

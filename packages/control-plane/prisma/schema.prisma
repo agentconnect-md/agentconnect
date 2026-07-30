@@ -1607,14 +1607,17 @@ model SlackInstall {
 // Pending install of the PLATFORM-published (distributed) Slack app
 // (preset-agents.md §5.3). Unlike SlackInstall, no per-app credentials live here —
 // the app id / client secret / signing secret are deployment env config
-// (SLACK_PLATFORM_*). The row only binds the OAuth `state` to tenancy:
-// {org, target agent, initiating user}. The `id` doubles as the unforgeable
-// OAuth `state`; rows are TTL-reaped alongside slack_install. No FKs (mirrors
-// slack_install): a dangling row after an org/agent delete is harmless.
+// (SLACK_PLATFORM_*). The row binds the OAuth `state` to either {org, target
+// agent, initiating user} or {org, expected bot, initiating user}. The `id`
+// doubles as the unforgeable OAuth `state`; rows are TTL-reaped alongside
+// slack_install. No FKs (mirrors slack_install): a dangling row after an
+// org/agent/bot delete is harmless.
 model SlackPlatformInstall {
   id              String                     @id @db.Uuid // == OAuth state
   orgId           String
-  agentId         String                     @db.Uuid // bind target (defaults to the org's `agentconnect` preset)
+  // Generic installs bind a target agent. A bot-bound Settings reauthorization
+  // leaves this null so a freed bot stays free.
+  agentId         String?                    @db.Uuid
   // Terminal state of the OAuth round trip — the row IS the console's completion
   // signal. It must survive the callback (not be deleted) because a successful
   // RE-authorization of a workspace this agent already has need not create any
@@ -1623,7 +1626,10 @@ model SlackPlatformInstall {
   // callback's close page shows, so the console can report WHY it failed.
   status          SlackPlatformInstallStatus @default(pending)
   failureReason   String?
-  botId           String?                    @db.Uuid // the workspace's Bot once completed (console deep-link)
+  // For a Settings reauthorization this is populated while pending and fences
+  // the OAuth callback to that exact Bot/workspace. Generic installs fill it on
+  // completion for the console deep-link.
+  botId           String?                    @db.Uuid
   createdByUserId String?
   createdAt       DateTime                   @default(now()) @db.Timestamptz(6)
   settledAt       DateTime?                  @db.Timestamptz(6)

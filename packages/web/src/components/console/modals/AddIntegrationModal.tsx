@@ -107,6 +107,7 @@ const PLATFORM_INSTALL_FAILURES: Record<string, string> = {
   denied: 'The install was cancelled in Slack.',
   expired: 'This install link expired — start again.',
   workspace_taken: 'That Slack workspace is already connected to another organization.',
+  workspace_mismatch: 'Slack authorized a different workspace. Start again and choose the expected workspace.',
   agent_taken: 'That Slack workspace is already connected to another agent here. Remove that integration first.',
   error: 'Slack could not complete the install. Please try again.'
 }
@@ -1960,7 +1961,7 @@ export default function AddIntegrationModal({
     if (busyRef.current) return
     setPlatformErr(null)
     try {
-      const r = await startSlackPlatformInstall(agent.id)
+      const r = await startSlackPlatformInstall({ agentId: agent.id })
       setPlatformInstallId(r.id)
       window.open(r.installUrl, '_blank', 'noopener,width=680,height=760')
       setPlatformPhase('authorizing')
