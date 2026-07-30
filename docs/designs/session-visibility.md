@@ -188,8 +188,12 @@ Notes:
 - **Fail closed on missing ownership metadata.** A classification rule that
   defaults to `private` must never widen to `org` because a lookup failed —
   that would turn a metadata inconsistency into disclosure. An unresolvable
-  owner yields `private` + `ownerIdentity = null` (an owner-orphan, visible to
-  no one; identity linking (§7) is what lights it up retroactively).
+  owner yields `private` + `ownerIdentity = null`, a row visible to no one.
+  Note the distinction from the §2 owner-orphan: a stored-but-unmatched
+  platform tuple (`slack:T…:U…`) lights up retroactively when identity
+  linking (§7) grows the viewer's identity set, whereas a `null` owner has
+  nothing to match and stays inaccessible unless a separate repair/backfill
+  populates it.
 - Webchat `triggeredBy` is the console user's **email** (set in
   `routes/webchat-token.ts`), which degrades under devAuth and is not a stable
   key — hence the `WebchatConversation` lookup rather than trusting the wire

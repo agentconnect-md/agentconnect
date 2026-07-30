@@ -145,10 +145,11 @@ describe('canViewSession (session-visibility.md §5)', () => {
     expect(canViewSession(s, c, linked)).toBe(true)
   })
 
-  it('an owner-orphan private session (ownerIdentity null) is visible to no one — fail closed', () => {
-    // Identity linking (§7) is what lights these up retroactively; until then
-    // no role, org owners included, can read a transcript whose owner could
-    // not be resolved.
+  it('a null-owner private session is visible to no one — fail closed', () => {
+    // Unlike a §2 owner-orphan (a stored-but-unmatched platform tuple, which
+    // identity linking §7 lights up retroactively), a null owner has nothing
+    // to match — no role, org owners included, can read it without a
+    // repair/backfill first.
     const s = owned('private', null)
     expect(canViewSession(s, ctx(CREATOR, 'collaborator'), idsOf(ctx(CREATOR, 'collaborator')))).toBe(false)
     expect(canViewSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(false)
