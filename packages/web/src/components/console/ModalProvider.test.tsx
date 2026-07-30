@@ -99,16 +99,18 @@ describe('ModalProvider dismissal', () => {
   // must not dismiss out from under that write: the dialog owes the operator either
   // its error banner or the chained follow-up, and a dismissed dialog can deliver
   // neither.
-  it('ignores Escape while the connected daemon’s name is being saved', async () => {
+  it('ignores Escape while the connected daemon’s name and visibility are being saved', async () => {
     mocks.provisionDaemon.mockResolvedValue({
       daemonId: 'dmn_live',
       command: 'npx -y @agentconnect.md/daemon run --api-url https://example.test --api-key test'
     })
     mocks.daemons = [{ daemonId: 'dmn_live', name: 'edge-1', status: 'online' }]
-    let settleRename!: () => void
-    mocks.renameDaemon.mockReturnValue(
+    // Defer the SECOND write, so the dialog is mid-save with one request already
+    // settled — the state a dismissal used to tear down.
+    let settleSharing!: () => void
+    mocks.saveSharing.mockReturnValue(
       new Promise<void>((resolve) => {
-        settleRename = () => resolve()
+        settleSharing = () => resolve()
       })
     )
 
@@ -122,16 +124,19 @@ describe('ModalProvider dismissal', () => {
     await act(async () => host.querySelector<HTMLButtonElement>('button')?.click())
     expect(host.textContent).toContain('Daemon connected')
 
-    // Rename it, then commit — React tracks the input's value, so set it through the
-    // native setter and let the synthetic onChange see the new value.
+    // Rename it — React tracks the input's value, so set it through the native
+    // setter and let the synthetic onChange see the new value.
     const nameInput = host.querySelector('input')!
     await act(async () => {
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(nameInput, 'edge-2')
       nameInput.dispatchEvent(new Event('input', { bubbles: true }))
     })
+    // …and restrict it, so Done issues both writes.
+    await act(async () => host.querySelectorAll<HTMLElement>('.ptile')[1]?.click())
     const done = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Done')!
     await act(async () => done.click())
     expect(mocks.renameDaemon).toHaveBeenCalledWith('dmn_live', 'edge-2')
+    expect(mocks.saveSharing).toHaveBeenCalledWith('daemons', 'dmn_live', { visibility: 'restricted', sharedWith: [] })
 
     await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
     expect(host.textContent).toContain('Saving…')
@@ -139,7 +144,7 @@ describe('ModalProvider dismissal', () => {
 
     // Settling the write is what closes the dialog (the Harness trigger stays).
     await act(async () => {
-      settleRename()
+      settleSharing()
       await Promise.resolve()
     })
     expect(host.textContent).not.toContain('Daemon connected')
