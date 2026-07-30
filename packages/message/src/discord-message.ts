@@ -1,0 +1,87 @@
+import type { NormalizedPlatformMessage, PlatformAttachment } from './normalized-message.js'
+
+/**
+ * Minimal plain-object Discord view accepted by pure normalization. The daemon
+ * adapts discord.js gateway messages and slash commands into this shape.
+ */
+export interface DiscordAttachmentLike {
+  id: string
+  name?: string | null
+  contentType?: string | null
+  size?: number
+  url: string
+}
+
+export interface DiscordMessageLike {
+  id: string
+  channelId: string
+  content: string
+  authorId: string
+  authorIsBot: boolean
+  /** False when the message is a DM with no guild. */
+  inGuild: boolean
+  /** True when `channelId` is itself a Discord thread channel. */
+  isThread: boolean
+  mentionUserIds: string[]
+  mentionUserNames?: Record<string, string>
+  /** Enclosing channel id when `channelId` is a thread. */
+  parentChannelId?: string | null
+  attachments: DiscordAttachmentLike[]
+}
+
+/** Map public Discord CDN metadata into the shared attachment contract. */
+export function toDiscordAttachment(attachment: DiscordAttachmentLike | null | undefined): PlatformAttachment | null {
+  if (!attachment || typeof attachment !== 'object' || !attachment.id || !attachment.url) return null
+  return {
+    id: attachment.id,
+    name: attachment.name ?? attachment.id,
+    mimeType: attachment.contentType ?? 'application/octet-stream',
+    ...(typeof attachment.size === 'number' ? { size: attachment.size } : {}),
+    sourceUrl: attachment.url
+  }
+}
+
+/**
+ * Humanize Discord inline entities without depending on discord.js:
+ * user/role/channel mentions become readable labels, custom emoji become
+ * `:name:`, and Discord timestamps become ISO-8601.
+ */
+export function humanizeDiscordText(text: string, userNames?: Record<string, string>): string {
+  return text
+    .replace(/<a?:(\w+):\d+>/g, ':$1:')
+    .replace(/<t:(\d+)(?::[a-zA-Z])?>/g, (token, unix: string) => {
+      const timestamp = new Date(Number(unix) * 1000)
+      return Number.isFinite(timestamp.getTime()) ? timestamp.toISOString() : token
+    })
+    .replace(/<@!?(\d+)>/g, (_token, id: string) => `@${userNames?.[id] ?? id}`)
+    .replace(/<@&(\d+)>/g, '@&$1')
+    .replace(/<#(\d+)>/g, '#$1')
+}
+
+export function normalizeDiscordMessage(
+  message: DiscordMessageLike,
+  context: { traceId: string }
+): NormalizedPlatformMessage {
+  const attachments = message.attachments
+    .map(toDiscordAttachment)
+    .filter((attachment): attachment is PlatformAttachment => attachment !== null)
+  const isDm = !message.inGuild
+
+  return {
+    msgId: `discord:${message.channelId}:${message.id}`,
+    traceId: context.traceId,
+    source: 'user',
+    platform: 'discord',
+    channel: message.channelId,
+    // Discord thread channels are conversations, so the channel itself is the
+    // stable session/thread coordinate.
+    thread: message.channelId,
+    sender: { id: message.authorId, isBot: message.authorIsBot },
+    text: humanizeDiscordText(message.content, message.mentionUserNames),
+    mentionedBots: message.mentionUserIds,
+    ...(attachments.length ? { attachments } : {}),
+    isDm,
+    ...(message.isThread && message.parentChannelId ? { parentChannel: message.parentChannelId } : {}),
+    ...(!isDm && !message.isThread ? { discordTopLevel: true } : {})
+  }
+}

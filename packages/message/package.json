@@ -38,10 +38,12 @@
   },
   "keywords": [
     "agentconnect",
+    "discord",
     "lark",
     "message",
     "normalization",
-    "slack"
+    "slack",
+    "telegram"
   ],
   "engines": {
     "node": ">=24"
