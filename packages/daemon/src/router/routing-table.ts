@@ -86,12 +86,13 @@ export function routeRules(
   // removed by the daemon before this pure routing boundary.
   if (mention && (!msg.sender.isBot || msg.platform === 'slack')) return pickRule(mention, 'mention')
   if (msg.sender.isBot) return null
-  // A mention that names no bot known to THIS daemon belongs to another bot (or a
-  // human). Do not let local thread affinity claim it: dedicated Slack apps each see
-  // the channel event, and every daemon otherwise believes its own agent is the sole
-  // local thread owner. The addressed bot's daemon will resolve its own mention rule;
-  // this daemon records the message as unrouted for later transcript catch-up.
-  if (msg.mentionedBots.length > 0) return null
+  // An unmatched mention in a channel belongs to another bot (or a human). Do not let
+  // local thread affinity claim it: dedicated Slack apps each see the channel event,
+  // and every daemon otherwise believes its own agent is the sole local thread owner.
+  // A one-to-one DM is already addressed to this bot, though, so mentioning the bot (or
+  // another participant) must not suppress its dm rule. Group DMs are channel-like and
+  // normalize with isDm=false, so they remain mention-gated here.
+  if (!msg.isDm && msg.mentionedBots.length > 0) return null
 
   // 2. thread affinity (§8.2 step 2 — highest after explicit @; bypasses kind filter).
   if (msg.thread) {
