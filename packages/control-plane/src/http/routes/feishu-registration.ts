@@ -109,6 +109,7 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
             fallbackRegion: req.body.region,
             appName,
             ...(avatarUrl ? { avatarUrl } : {}),
+            description: agent.description,
             ...(providedName ? { requestedName: providedName } : {}),
             createdByUserId
           })

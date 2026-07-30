@@ -15,6 +15,7 @@
  * change them here, change them in packages/web/src/lib/slack-manifest.ts too.
  */
 import { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
+import { platformAppDescription, SLACK_APP_DESCRIPTION_MAX_LENGTH } from './platform-app-description.js'
 
 /**
  * Bot token scopes the Slack app requests. Widening this list later forces every
@@ -99,23 +100,32 @@ export function slackInteractionsRequestUrl(relayHttpBase: string): string {
  *  adds the current CP callback only when one is configured, while create always
  *  supplies it through `buildInstallManifest` below.
  *
- *  `httpRelayBase` set ⇒ HTTP-mode (slack-http-mode): `socket_mode_enabled:false`
+ *  `options.httpRelayBase` set ⇒ HTTP-mode (slack-http-mode): `socket_mode_enabled:false`
  *  and the Events API / interactivity `request_url`s point at the relay pool. Absent
  *  ⇒ classic Socket Mode.
  *
- *  `backgroundColor` (a `#rrggbb`, from the owning agent's icon) sets the app's
+ *  `options.backgroundColor` (a `#rrggbb`, from the owning agent's icon) sets the app's
  *  `display_information.background_color` — Slack has no API to set the app's image
  *  itself, so this is the closest we get to "give the app the agent's icon". */
-function buildManagedManifest(name: string, httpRelayBase?: string, backgroundColor?: string): ManifestRecord {
+export interface SlackManifestOptions {
+  httpRelayBase?: string
+  backgroundColor?: string
+  description?: string | null
+}
+
+function buildManagedManifest(name: string, options: SlackManifestOptions = {}): ManifestRecord {
   const displayName = name.trim() || DEFAULT_SLACK_APP_NAME
-  const http = !!httpRelayBase
+  const http = !!options.httpRelayBase
   return {
-    display_information: { name: displayName, ...(backgroundColor ? { background_color: backgroundColor } : {}) },
+    display_information: {
+      name: displayName,
+      ...(options.backgroundColor ? { background_color: options.backgroundColor } : {})
+    },
     features: {
       bot_user: { display_name: displayName, always_online: true },
       app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
       agent_view: {
-        agent_description: `${displayName} is an AgentConnect agent that responds to Slack conversations and works in threads.`,
+        agent_description: platformAppDescription(options.description, SLACK_APP_DESCRIPTION_MAX_LENGTH),
         suggested_prompts: []
       },
       shortcuts: [
@@ -133,14 +143,14 @@ function buildManagedManifest(name: string, httpRelayBase?: string, backgroundCo
     settings: {
       event_subscriptions: {
         bot_events: [...SLACK_BOT_EVENTS],
-        ...(http ? { request_url: slackEventsRequestUrl(httpRelayBase!) } : {})
+        ...(http ? { request_url: slackEventsRequestUrl(options.httpRelayBase!) } : {})
       },
       interactivity: {
         is_enabled: true,
         ...(http
           ? {
-              request_url: slackInteractionsRequestUrl(httpRelayBase!),
-              message_menu_options_url: slackInteractionsRequestUrl(httpRelayBase!)
+              request_url: slackInteractionsRequestUrl(options.httpRelayBase!),
+              message_menu_options_url: slackInteractionsRequestUrl(options.httpRelayBase!)
             }
           : {})
       },
@@ -156,16 +166,16 @@ function buildManagedManifest(name: string, httpRelayBase?: string, backgroundCo
  * Build the app manifest object for `apps.manifest.create`. `redirectUrl` is the
  * CP's OAuth callback (`<PUBLIC_CP_URL>/api/v1/integrations/slack/oauth/callback`)
  * and is declared as the app's sole redirect URL so the ensuing OAuth install
- * lands back on us. `name` falls back to the default when blank. `httpRelayBase` set
- * ⇒ HTTP-mode (Events API request_urls + Socket Mode off); absent ⇒ Socket Mode.
+ * lands back on us. `name` falls back to the default when blank.
+ * `options.httpRelayBase` set ⇒ HTTP-mode (Events API request_urls + Socket Mode
+ * off); absent ⇒ Socket Mode.
  */
 export function buildInstallManifest(
   name: string,
   redirectUrl: string,
-  httpRelayBase?: string,
-  backgroundColor?: string
+  options: SlackManifestOptions = {}
 ): Record<string, unknown> {
-  const managed = buildManagedManifest(name, httpRelayBase, backgroundColor)
+  const managed = buildManagedManifest(name, options)
   return {
     ...managed,
     oauth_config: {
@@ -189,7 +199,7 @@ export function mergeManagedSlackManifest(
 ): Record<string, unknown> {
   const http = !!httpRelayBase
   const current = asRecord(exported)
-  const managed = buildManagedManifest(name, httpRelayBase)
+  const managed = buildManagedManifest(name, { ...(httpRelayBase ? { httpRelayBase } : {}) })
 
   const currentDisplay = asRecord(current.display_information)
   const managedDisplay = asRecord(managed.display_information)

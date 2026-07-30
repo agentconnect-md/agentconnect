@@ -7,7 +7,11 @@
  * the encrypted persistence store can resume it after load balancing/restart.
  */
 import type { FeishuRegion } from '@agentconnect.md/protocol'
-import { AGENTCONNECT_FEISHU_APP_TEMPLATE, buildFeishuAuthorizationUrl } from './feishu-app-template.js'
+import {
+  AGENTCONNECT_FEISHU_APP_TEMPLATE,
+  buildFeishuAuthorizationUrl,
+  type FeishuAppPreset
+} from './feishu-app-template.js'
 
 export const FEISHU_REGISTRATION_DOMAIN = 'accounts.feishu.cn'
 export const LARK_REGISTRATION_DOMAIN = 'accounts.larksuite.com'
@@ -45,7 +49,7 @@ export type PollFeishuRegistration =
   | { outcome: 'failed' }
 
 export interface FeishuRegistrationProvider {
-  begin(appName: string, region: FeishuRegion, avatarUrl?: string): Promise<BeginFeishuRegistration>
+  begin(appName: string, region: FeishuRegion, preset?: FeishuAppPreset): Promise<BeginFeishuRegistration>
   poll(providerDomain: string, deviceCode: string): Promise<PollFeishuRegistration>
 }
 
@@ -54,7 +58,7 @@ type RegistrationFetch = typeof fetch
 export class OfficialFeishuRegistrationProvider implements FeishuRegistrationProvider {
   constructor(private readonly fetcher: RegistrationFetch = fetch) {}
 
-  async begin(appName: string, region: FeishuRegion, avatarUrl?: string): Promise<BeginFeishuRegistration> {
+  async begin(appName: string, region: FeishuRegion, preset?: FeishuAppPreset): Promise<BeginFeishuRegistration> {
     const response = await this.request(FEISHU_REGISTRATION_DOMAIN, {
       action: 'begin',
       archetype: AGENTCONNECT_FEISHU_APP_TEMPLATE.archetype,
@@ -67,7 +71,7 @@ export class OfficialFeishuRegistrationProvider implements FeishuRegistrationPro
     const verificationUri = new URL(response.verification_uri_complete)
     if (region === 'lark') verificationUri.hostname = LARK_LAUNCHER_DOMAIN
     return {
-      authorizationUrl: buildFeishuAuthorizationUrl(verificationUri.toString(), appName, avatarUrl),
+      authorizationUrl: buildFeishuAuthorizationUrl(verificationUri.toString(), appName, preset),
       deviceCode: response.device_code,
       providerDomain: FEISHU_REGISTRATION_DOMAIN,
       intervalMs: Math.max(1, response.interval ?? 5) * 1000,

@@ -1350,6 +1350,7 @@ export default function AddIntegrationModal({
   // at the relay's public base (omitted ⇒ buildSlackManifest falls back to socket).
   const manifestOpts = {
     mode: effTransport,
+    description: agent.description ?? null,
     // Brand the created app with the agent's icon color (matches the CP auto-install
     // funnel) — Slack has no API to set the app image itself.
     backgroundColor: agentIconBackgroundColor(agent.icon),

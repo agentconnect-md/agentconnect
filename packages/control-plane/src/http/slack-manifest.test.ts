@@ -8,6 +8,7 @@ import {
   DEFAULT_SLACK_APP_NAME
 } from './slack-manifest.js'
 import { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
+import { DEFAULT_PLATFORM_APP_DESCRIPTION, SLACK_APP_DESCRIPTION_MAX_LENGTH } from './platform-app-description.js'
 
 // The PUBLIC form — `/v1`, not the internal `/api/v1` (see SLACK_OAUTH_CALLBACK_PATH).
 const REDIRECT = 'https://cp.example/v1/integrations/slack/oauth/callback'
@@ -38,7 +39,7 @@ describe('buildInstallManifest', () => {
   })
 
   it('http mode: disables Socket Mode and points the Events API request_urls at the relay', () => {
-    const m = buildInstallManifest('acme-bot', REDIRECT, 'https://relay.example') as {
+    const m = buildInstallManifest('acme-bot', REDIRECT, { httpRelayBase: 'https://relay.example' }) as {
       settings: {
         socket_mode_enabled: boolean
         event_subscriptions: { request_url: string; bot_events: string[] }
@@ -63,10 +64,24 @@ describe('buildInstallManifest', () => {
       display_information: Record<string, unknown>
     }
     expect(plain.display_information.background_color).toBeUndefined()
-    const branded = buildInstallManifest('acme-bot', REDIRECT, undefined, '#c62a78') as {
+    const branded = buildInstallManifest('acme-bot', REDIRECT, { backgroundColor: '#c62a78' }) as {
       display_information: { background_color: string }
     }
     expect(branded.display_information.background_color).toBe('#c62a78')
+  })
+
+  it('uses the agent description with a fallback and a Unicode-safe platform limit', () => {
+    const description = `${'a'.repeat(297)}😀tail`
+    const custom = buildInstallManifest('acme-bot', REDIRECT, { description }) as {
+      features: { agent_view: { agent_description: string } }
+    }
+    const fallback = buildInstallManifest('acme-bot', REDIRECT, { description: '   ' }) as {
+      features: { agent_view: { agent_description: string } }
+    }
+
+    expect(custom.features.agent_view.agent_description).toBe(`${'a'.repeat(297)}😀…`)
+    expect(custom.features.agent_view.agent_description.length).toBe(SLACK_APP_DESCRIPTION_MAX_LENGTH)
+    expect(fallback.features.agent_view.agent_description).toBe(DEFAULT_PLATFORM_APP_DESCRIPTION)
   })
 
   // Drift guard: these scopes/events MUST stay in lock-step with the manual manifest
@@ -119,6 +134,7 @@ describe('mergeManagedSlackManifest', () => {
       features: {
         bot_user: { display_name: 'Custom bot', always_online: false },
         app_home: { home_tab_enabled: true },
+        agent_view: { agent_description: 'Keep this agent description' },
         slash_commands: [{ command: '/custom', description: 'Keep me' }],
         shortcuts: [
           { name: 'Keep shortcut', type: 'message', callback_id: 'custom_shortcut' },
@@ -178,7 +194,7 @@ describe('mergeManagedSlackManifest', () => {
     expect(merged.features.app_home.home_tab_enabled).toBe(true)
     expect(merged.features.app_home.messages_tab_enabled).toBe(true)
     expect(merged.features.app_home.messages_tab_read_only_enabled).toBe(false)
-    expect(merged.features.agent_view.agent_description).toContain('AgentConnect agent')
+    expect(merged.features.agent_view.agent_description).toBe('Keep this agent description')
     expect(merged.oauth_config.redirect_urls).toEqual(['https://custom.example/slack/callback', REDIRECT])
     expect(merged.oauth_config.scopes.bot).toEqual(expect.arrayContaining(['bookmarks:read', ...SLACK_BOT_SCOPES]))
     expect(merged.oauth_config.scopes.user).toEqual(['users.profile:read'])
