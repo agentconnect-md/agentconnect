@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { fileURLToPath } from 'node:url'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import net from 'node:net'
 import { Client } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { McpControlServer } from '../src/mcp/control-server.js'
 import { buildMcpServers } from '../src/mcp/inject.js'
+import { decodeFrames, encodeFrame, type IpcRequest, type IpcResponse } from '../src/mcp/ipc.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
 import type { SlackGateway } from '../src/mcp/ops.js'
 
@@ -20,16 +22,27 @@ const tools = toolsForIntegrations(
 )
 
 let server: McpControlServer | undefined
+let privateServer: net.Server | undefined
+const privateSockets = new Set<net.Socket>()
+const tempRoots: string[] = []
 let client: Client | undefined
 afterEach(async () => {
   await client?.close().catch(() => {})
   await server?.stop()
-  server = client = undefined
+  for (const socket of privateSockets) socket.destroy()
+  privateSockets.clear()
+  if (privateServer?.listening) {
+    await new Promise<void>((resolve) => privateServer!.close(() => resolve()))
+  }
+  for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true })
+  server = privateServer = client = undefined
 })
 
 describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
   it('lists daemon tools and routes a sendMessage call back to the gateway', async () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'ac-e2e-')), 'mcp.sock')
+    const root = mkdtempSync(join(tmpdir(), 'ac-e2e-'))
+    tempRoots.push(root)
+    const path = join(root, 'mcp.sock')
     const gw: SlackGateway = {
       postMessage: vi.fn(async () => 'ts-42'),
       getChannelInfo: vi.fn(async (id) => ({ id })),
@@ -96,5 +109,77 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
     // No `thread` ⇒ post to the channel ROOT (undefined), not the current thread.
     expect(gw.postMessage).toHaveBeenCalledWith('C9', 'e2e hi', undefined)
     expect(recorded).toEqual([{ channel: 'C9', text: 'e2e hi', ts: 'ts-42' }])
+  }, 20_000)
+
+  it('keeps a private lazy bridge alive across first-list failure and preserves native MCP errors', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-private-bridge-e2e-'))
+    tempRoots.push(root)
+    const path = join(root, 'mcp.sock')
+    let listAttempts = 0
+    const errorContent = new Map([
+      ['forbidden', [{ type: 'text', text: 'Request failed (HTTP 403): forbidden' }]],
+      ['precondition', [{ type: 'text', text: 'confirmation mismatch' }]],
+      ['invalid', [{ type: 'text', text: 'invalid arguments' }]],
+      ['rate-limit', [{ type: 'text', text: 'rate limit exceeded' }]]
+    ])
+    const tools = [...errorContent.keys()].map((name) => ({
+      name,
+      description: name,
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+    }))
+    privateServer = net.createServer((socket) => {
+      privateSockets.add(socket)
+      socket.setEncoding('utf8')
+      let buffer = ''
+      socket.on('close', () => privateSockets.delete(socket))
+      socket.on('data', (chunk: string) => {
+        buffer += chunk
+        const decoded = decodeFrames<IpcRequest>(buffer)
+        buffer = decoded.rest
+        for (const request of decoded.messages) {
+          let response: IpcResponse
+          if (request.op === 'listTools' && listAttempts++ === 0) {
+            response = { id: request.id, ok: false, error: 'control plane offline' }
+          } else if (request.op === 'listTools') {
+            response = { id: request.id, ok: true, result: { tools } }
+          } else {
+            response = {
+              id: request.id,
+              ok: true,
+              result: { mcpContent: errorContent.get(request.name), mcpIsError: true }
+            }
+          }
+          socket.write(encodeFrame(response))
+        }
+      })
+    })
+    await new Promise<void>((resolve, reject) => {
+      privateServer!.once('error', reject)
+      privateServer!.listen(path, resolve)
+    })
+
+    const [spec] = buildMcpServers({
+      socketPath: path,
+      token: 'private-token',
+      cliEntry,
+      lazyTools: true
+    })
+    client = new Client({ name: 'private-test-harness', version: '0.0.0' })
+    await client.connect(
+      new StdioClientTransport({
+        command: spec!.command,
+        args: ['--conditions', 'development', '--import', 'tsx', cliEntry, 'mcp-bridge', '--lazy-tools'],
+        env: Object.fromEntries(spec!.env.map((entry) => [entry.name, entry.value]))
+      })
+    )
+
+    await expect(client.listTools()).rejects.toThrow(/control plane offline/)
+    await expect(client.listTools()).resolves.toMatchObject({ tools })
+    for (const [name, content] of errorContent) {
+      await expect(client.callTool({ name, arguments: {} })).resolves.toEqual({
+        content,
+        isError: true
+      })
+    }
   }, 20_000)
 })

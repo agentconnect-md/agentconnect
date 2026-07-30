@@ -12,7 +12,10 @@ import type {
 } from '@agentconnect.md/protocol'
 import { WireError } from '@agentconnect.md/connection'
 import {
+  PRIVATE_MCP_MAX_FRAME_BYTES,
+  PRIVATE_MCP_MAX_PIPELINED_REQUESTS,
   SessionMcpBroker,
+  WEBCHAT_MCP_AMBIGUOUS_ERROR,
   WEBCHAT_MCP_RECONNECT_ERROR,
   type SessionMcpBrokerDeps
 } from '../src/mcp/session-mcp-broker.js'
@@ -33,6 +36,7 @@ const roots: string[] = []
 const brokers: SessionMcpBroker[] = []
 
 afterEach(async () => {
+  vi.useRealTimers()
   await Promise.all(brokers.splice(0).map((broker) => broker.stop()))
   await Promise.all(
     roots.splice(0).map((root) => import('node:fs/promises').then((fs) => fs.rm(root, { recursive: true })))
@@ -141,6 +145,15 @@ async function ipc(endpoint: string, request: IpcRequest): Promise<IpcResponse> 
   })
 }
 
+async function writeUntilClose(endpoint: string, body: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const socket = net.connect(endpoint)
+    socket.once('error', reject)
+    socket.once('close', () => resolve())
+    socket.once('connect', () => socket.write(body))
+  })
+}
+
 describe('SessionMcpBroker immutable registration', () => {
   it('registers only webchat and never exposes CP authority in the descriptor', async () => {
     const h = await harness()
@@ -152,6 +165,7 @@ describe('SessionMcpBroker immutable registration', () => {
       AC_MCP_ENDPOINT: '/run/agentconnect-admin/mcp.sock',
       AC_MCP_TOKEN: 'private-local-token'
     })
+    expect(server!.args).toContain('--lazy-tools')
     expect(JSON.stringify(server)).not.toContain(DELEGATION_ID)
     expect(JSON.stringify(server)).not.toContain('ac_inv_')
     expect(JSON.stringify(server)).not.toContain('cp.example')
@@ -216,6 +230,34 @@ describe('SessionMcpBroker immutable registration', () => {
       )
     ).rejects.toThrow(/unique private MCP token/i)
     await expect((await import('node:fs/promises')).readdir(h.root).then((entries) => entries.length)).resolves.toBe(1)
+  })
+
+  it('bounds expired history and retired-cell tombstones', async () => {
+    const h = await harness()
+    const count = 150
+    for (let index = 0; index < count; index += 1) {
+      const suffix = String(index).padStart(12, '0')
+      const cell = `expired-${index}`
+      const row = binding({
+        isolationCellId: cell,
+        conversationId: `22222222-2222-4222-8222-${suffix}`,
+        delegationId: `44444444-4444-4444-8444-${suffix}`,
+        expiresAt: '2026-07-31T00:00:01.000Z'
+      })
+      await h.broker.registerCell(row)
+      await h.broker.releaseCell(row)
+    }
+    expect(h.broker.debugStats()).toMatchObject({ activeCells: 0, historyEntries: count, retiredCellIds: count })
+
+    h.setNow(Date.parse('2026-07-31T00:00:02.000Z'))
+    await h.broker.registerCell(
+      binding({
+        isolationCellId: 'fresh-cell',
+        conversationId: OTHER_CONVERSATION_ID,
+        delegationId: NEXT_DELEGATION_ID
+      })
+    )
+    expect(h.broker.debugStats()).toMatchObject({ activeCells: 1, historyEntries: 1, retiredCellIds: 0 })
   })
 
   it('enforces monotonic generations, same-generation identity, and generation-fenced release', async () => {
@@ -364,7 +406,9 @@ describe('SessionMcpBroker forwarding', () => {
         )
       }
       const { id } = JSON.parse(init.body.toString('utf8'))
-      return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: { tools: [] } }))
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: { tools: [] } }), {
+        headers: { 'content-type': 'application/json' }
+      })
     })
     const h = await harness({
       fetch: post
@@ -381,6 +425,132 @@ describe('SessionMcpBroker forwarding', () => {
     expect(h.mintMcpInvocation).toHaveBeenCalledTimes(2)
     expect(h.mintMcpInvocation.mock.calls[0]![0]).toEqual(h.mintMcpInvocation.mock.calls[1]![0])
     expect(post.mock.calls[0]![1].body).toEqual(post.mock.calls[1]![1].body)
+  })
+
+  it('retrieves a committed result with the same assertion, invocation id, and bytes after a response transport failure', async () => {
+    let executions = 0
+    const post = vi.fn(async (_url: string, init: { body: Buffer; headers: Record<string, string> }) => {
+      if (post.mock.calls.length === 1) {
+        executions += 1
+        throw new Error('socket reset after commit')
+      }
+      const { id } = JSON.parse(init.body.toString('utf8'))
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: { tools: [] } }), {
+        headers: { 'content-type': 'application/json' }
+      })
+    })
+    const h = await harness({ fetch: post })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+    const response = await ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+      id: 10,
+      token: env.AC_MCP_TOKEN!,
+      op: 'listTools'
+    })
+
+    expect(response).toEqual({ id: 10, ok: true, result: { tools: [] } })
+    expect(executions).toBe(1)
+    expect(h.mintMcpInvocation).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledTimes(2)
+    expect(post.mock.calls[1]![1].body).toEqual(post.mock.calls[0]![1].body)
+    expect(post.mock.calls[1]![1].headers.authorization).toBe(post.mock.calls[0]![1].headers.authorization)
+    expect(post.mock.calls[1]![1].headers['x-agentconnect-invocation-id']).toBe(INVOCATION_ID)
+  })
+
+  it('bounds a never-resolving POST, aborts it, clears timers, and returns ambiguous', async () => {
+    const timers = new Set<ReturnType<typeof globalThis.setTimeout>>()
+    const setTimeoutTracked = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      const timer = globalThis.setTimeout(() => {
+        timers.delete(timer)
+        if (typeof handler === 'function') handler(...args)
+      }, timeout)
+      timers.add(timer)
+      return timer
+    }) as typeof globalThis.setTimeout
+    const clearTimeoutTracked = ((timer: ReturnType<typeof globalThis.setTimeout>) => {
+      timers.delete(timer)
+      globalThis.clearTimeout(timer)
+    }) as typeof globalThis.clearTimeout
+    let signal: AbortSignal | undefined
+    const post = vi.fn(
+      async (_url: string, init: { signal: AbortSignal }) =>
+        new Promise<Response>(() => {
+          signal = init.signal
+          // Deliberately ignores AbortSignal to prove the broker's own hard race.
+        })
+    )
+    const h = await harness({
+      fetch: post,
+      postDeadlineMs: 20,
+      setTimeout: setTimeoutTracked,
+      clearTimeout: clearTimeoutTracked
+    })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+    const pending = ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+      id: 11,
+      token: env.AC_MCP_TOKEN!,
+      op: 'callTool',
+      name: 'updateAgent',
+      args: {}
+    })
+
+    await expect(pending).resolves.toEqual({ id: 11, ok: false, error: WEBCHAT_MCP_AMBIGUOUS_ERROR })
+    expect(h.mintMcpInvocation).toHaveBeenCalledTimes(1)
+    expect(signal?.aborted).toBe(true)
+    expect(timers.size).toBe(0)
+  })
+
+  it('keeps a mint failure retryable because no HTTP request could have been sent', async () => {
+    const h = await harness({
+      cpClient: {
+        mintMcpInvocation: vi.fn(async () => {
+          throw new WireError('INTERNAL', 'control plane disconnected', true)
+        }),
+        revokeWebchatMcpDelegation: vi.fn()
+      }
+    })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+    await expect(
+      ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+        id: 12,
+        token: env.AC_MCP_TOKEN!,
+        op: 'listTools'
+      })
+    ).resolves.toEqual({
+      id: 12,
+      ok: false,
+      error: 'AgentConnect admin tools are temporarily unavailable. Retry shortly.'
+    })
+    expect(h.fetch).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['403', [{ type: 'text', text: 'Request failed (HTTP 403): forbidden' }]],
+    ['412', [{ type: 'text', text: 'confirmation mismatch' }]],
+    ['invalid', [{ type: 'text', text: 'invalid arguments' }]],
+    ['rate-limit', [{ type: 'text', text: 'rate limit exceeded' }]]
+  ])('preserves CP MCP isError content for %s results', async (_label, content) => {
+    const h = await harness({
+      fetch: vi.fn(async (_url, init) => {
+        const { id } = JSON.parse((init.body as Buffer).toString('utf8'))
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: { isError: true, content } }), {
+          headers: { 'content-type': 'application/json' }
+        })
+      })
+    })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+    await expect(
+      ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+        id: 13,
+        token: env.AC_MCP_TOKEN!,
+        op: 'callTool',
+        name: 'updateAgent',
+        args: {}
+      })
+    ).resolves.toEqual({ id: 13, ok: true, result: { mcpContent: content, mcpIsError: true } })
   })
 
   it('maps a durable delegation denial to the reconnect error', async () => {
@@ -429,7 +599,9 @@ describe('SessionMcpBroker forwarding', () => {
         if (fail) throw new Error('control plane offline')
         const body = init.body as Buffer
         const { id } = JSON.parse(body.toString('utf8'))
-        return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: { tools: [] } }))
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: { tools: [] } }), {
+          headers: { 'content-type': 'application/json' }
+        })
       })
     })
     const server = await h.broker.registerCell(binding())
@@ -443,7 +615,7 @@ describe('SessionMcpBroker forwarding', () => {
     ).resolves.toEqual({
       id: 1,
       ok: false,
-      error: 'AgentConnect admin tools are temporarily unavailable. Retry shortly.'
+      error: WEBCHAT_MCP_AMBIGUOUS_ERROR
     })
     fail = false
     await expect(
@@ -499,5 +671,134 @@ describe('SessionMcpBroker forwarding', () => {
     )
     await h.broker.stop()
     expect(h.broker.getCellMount(OTHER_CELL_ID)).toBeNull()
+  })
+})
+
+describe('SessionMcpBroker private IPC containment', () => {
+  it('destroys oversized residual and framed requests before auth or mint, then still serves a legal connection', async () => {
+    const h = await harness()
+    const server = await h.broker.registerCell(binding())
+    const endpoint = h.broker.getCellMount(CELL_ID)!.sourceSocketPath
+    const env = descriptorEnv(server!)
+
+    await writeUntilClose(endpoint, 'x'.repeat(PRIVATE_MCP_MAX_FRAME_BYTES + 1))
+    await writeUntilClose(
+      endpoint,
+      JSON.stringify({
+        id: 1,
+        token: env.AC_MCP_TOKEN,
+        op: 'callTool',
+        name: 'x',
+        args: { body: 'x'.repeat(PRIVATE_MCP_MAX_FRAME_BYTES) }
+      }) + '\n'
+    )
+    expect(h.mintMcpInvocation).not.toHaveBeenCalled()
+    expect(h.broker.debugStats().connections).toBe(0)
+
+    await expect(ipc(endpoint, { id: 2, token: env.AC_MCP_TOKEN!, op: 'listTools' })).resolves.toMatchObject({
+      id: 2,
+      ok: true
+    })
+  })
+
+  it('rejects excessive pipelining atomically with zero mint and no leaked connection', async () => {
+    const h = await harness()
+    const server = await h.broker.registerCell(binding())
+    const endpoint = h.broker.getCellMount(CELL_ID)!.sourceSocketPath
+    const env = descriptorEnv(server!)
+    const pipeline = Array.from({ length: PRIVATE_MCP_MAX_PIPELINED_REQUESTS + 1 }, (_, index) =>
+      encodeFrame({ id: index + 1, token: env.AC_MCP_TOKEN!, op: 'listTools' })
+    ).join('')
+
+    await writeUntilClose(endpoint, pipeline)
+    expect(h.mintMcpInvocation).not.toHaveBeenCalled()
+    expect(h.broker.debugStats().connections).toBe(0)
+    await expect(ipc(endpoint, { id: 99, token: env.AC_MCP_TOKEN!, op: 'listTools' })).resolves.toMatchObject({
+      id: 99,
+      ok: true
+    })
+  })
+
+  it('rejects non-narrow request objects before mint', async () => {
+    const h = await harness()
+    const server = await h.broker.registerCell(binding())
+    const endpoint = h.broker.getCellMount(CELL_ID)!.sourceSocketPath
+    const env = descriptorEnv(server!)
+    const response = await ipc(endpoint, {
+      id: 1,
+      token: env.AC_MCP_TOKEN!,
+      op: 'listTools',
+      injected: true
+    } as IpcRequest)
+    expect(response).toMatchObject({ id: 1, ok: false })
+    expect(h.mintMcpInvocation).not.toHaveBeenCalled()
+  })
+})
+
+describe('SessionMcpBroker strict MCP response parsing', () => {
+  it.each([
+    ['wrong content type', new Response('{}', { headers: { 'content-type': 'text/plain' } })],
+    [
+      'wrong JSON-RPC version',
+      new Response(JSON.stringify({ jsonrpc: '1.0', id: INVOCATION_ID, result: { tools: [] } }), {
+        headers: { 'content-type': 'application/json' }
+      })
+    ],
+    [
+      'wrong response id',
+      new Response(JSON.stringify({ jsonrpc: '2.0', id: 'other', result: { tools: [] } }), {
+        headers: { 'content-type': 'application/json' }
+      })
+    ],
+    [
+      'result and error together',
+      new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: INVOCATION_ID,
+          result: { tools: [] },
+          error: { code: -1, message: 'bad' }
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      )
+    ],
+    [
+      'multiple SSE responses',
+      new Response(
+        `event: message\ndata: {"jsonrpc":"2.0","id":"${INVOCATION_ID}","result":{"tools":[]}}\n\n` +
+          `event: message\ndata: {"jsonrpc":"2.0","id":"${INVOCATION_ID}","result":{"tools":[]}}\n\n`,
+        { headers: { 'content-type': 'text/event-stream' } }
+      )
+    ],
+    ['empty SSE', new Response(': keepalive\n\n', { headers: { 'content-type': 'text/event-stream' } })],
+    ['malformed SSE', new Response('data: {\n\n', { headers: { 'content-type': 'text/event-stream' } })]
+  ])('rejects %s', async (_label, response) => {
+    const h = await harness({ fetch: vi.fn(async () => response.clone()) })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+    await expect(
+      ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+        id: 21,
+        token: env.AC_MCP_TOKEN!,
+        op: 'listTools'
+      })
+    ).resolves.toMatchObject({ id: 21, ok: false })
+  })
+
+  it('accepts exactly one SSE response with standard multi-line data', async () => {
+    const response = new Response(
+      `event: message\ndata: {"jsonrpc":"2.0",\ndata: "id":"${INVOCATION_ID}","result":{"tools":[]}}\n\n`,
+      { headers: { 'content-type': 'text/event-stream; charset=utf-8' } }
+    )
+    const h = await harness({ fetch: vi.fn(async () => response) })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+    await expect(
+      ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+        id: 22,
+        token: env.AC_MCP_TOKEN!,
+        op: 'listTools'
+      })
+    ).resolves.toEqual({ id: 22, ok: true, result: { tools: [] } })
   })
 })

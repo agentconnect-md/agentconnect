@@ -104,9 +104,10 @@ program
 program
   .command('mcp-bridge', { hidden: true })
   .description('internal: stdio MCP bridge to the running daemon')
-  .action(async () => {
+  .option('--lazy-tools', 'resolve tools/list dynamically for a private delegated broker')
+  .action(async (opts: { lazyTools?: boolean }) => {
     const { runBridge } = await import('./mcp/bridge.js')
-    await runBridge()
+    await runBridge({ lazyTools: opts.lazyTools === true })
   })
 
 // Service lifecycle (up/down/restart/status/install-service/uninstall-service)

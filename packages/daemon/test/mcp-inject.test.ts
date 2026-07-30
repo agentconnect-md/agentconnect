@@ -20,4 +20,21 @@ describe('buildMcpServers', () => {
     ])
     expect(s!.args).not.toContain('secret')
   })
+
+  it('enables lazy tool discovery only when explicitly requested', () => {
+    const [shared] = buildMcpServers({ socketPath: '/shared', token: 'shared-token', cliEntry: '/e.js' })
+    const [privateServer] = buildMcpServers({
+      socketPath: '/private',
+      token: 'private-token',
+      cliEntry: '/e.js',
+      lazyTools: true
+    })
+
+    expect(shared!.args).not.toContain('--lazy-tools')
+    expect(privateServer!.args).toContain('--lazy-tools')
+    expect(privateServer!.env).toEqual([
+      { name: 'AC_MCP_ENDPOINT', value: '/private' },
+      { name: 'AC_MCP_TOKEN', value: 'private-token' }
+    ])
+  })
 })

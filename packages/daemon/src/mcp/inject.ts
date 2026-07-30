@@ -22,12 +22,14 @@ export function buildMcpServers(opts: {
   token: string
   cliEntry: string
   name?: string
+  /** Private delegated brokers fetch tools dynamically so a CP outage does not kill the bridge. */
+  lazyTools?: boolean
 }): McpStdioServer[] {
   return [
     {
       name: opts.name ?? RESERVED_MCP_SERVER_NAME,
       command: process.execPath,
-      args: [...process.execArgv, opts.cliEntry, 'mcp-bridge'],
+      args: [...process.execArgv, opts.cliEntry, 'mcp-bridge', ...(opts.lazyTools ? ['--lazy-tools'] : [])],
       env: [
         { name: 'AC_MCP_ENDPOINT', value: opts.socketPath },
         { name: 'AC_MCP_TOKEN', value: opts.token }

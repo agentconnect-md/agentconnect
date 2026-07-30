@@ -16,9 +16,17 @@ const PRIVATE_SOCKET_NAME = 'mcp.sock'
 const ADMIN_SERVER_NAME = 'agentconnect-admin'
 const ADMIN_UNAVAILABLE_ERROR = 'AgentConnect admin tools are temporarily unavailable. Retry shortly.'
 const UNKNOWN_TOKEN_ERROR = 'unknown or expired session token'
+const DEFAULT_POST_DEADLINE_MS = 125_000
+const DEFAULT_RECOVERY_ATTEMPTS = 3
+const DEFAULT_RECOVERY_POLL_MS = 250
+
+export const PRIVATE_MCP_MAX_FRAME_BYTES = 256 * 1024
+export const PRIVATE_MCP_MAX_PIPELINED_REQUESTS = 8
+export const PRIVATE_MCP_MAX_PENDING_REQUESTS = 8
 
 export const WEBCHAT_MCP_RECONNECT_ERROR =
   'Your AgentConnect session authorization expired. Reconnect this conversation and retry.'
+export const WEBCHAT_MCP_AMBIGUOUS_ERROR = 'The operation may have taken effect. Inspect current state before retrying.'
 
 export interface DelegatedMcpCpClient {
   mintMcpInvocation(input: McpInvocationMint): Promise<McpInvocationMinted>
@@ -34,6 +42,7 @@ export interface DelegatedMcpFetchInit {
     'content-type': string
   }
   body: Buffer
+  signal: AbortSignal
 }
 
 export interface SessionMcpBrokerDeps {
@@ -48,6 +57,12 @@ export interface SessionMcpBrokerDeps {
   now?: () => number
   randomUUID?: () => string
   randomToken?: () => string
+  /** Slightly exceeds the CP's 120-second execution boundary. Test-injectable. */
+  postDeadlineMs?: number
+  recoveryAttempts?: number
+  recoveryPollMs?: number
+  setTimeout?: typeof globalThis.setTimeout
+  clearTimeout?: typeof globalThis.clearTimeout
 }
 
 export interface RegisterSessionMcpCell {
@@ -78,6 +93,7 @@ interface DelegationHistory {
   generation: number
   delegationId: string
   expiresAt: string
+  expiresAtMs: number
 }
 
 interface CellBinding extends RegisterSessionMcpCell {
@@ -92,10 +108,16 @@ interface CellBinding extends RegisterSessionMcpCell {
 }
 
 type RpcResponse = {
-  jsonrpc?: unknown
-  id?: unknown
+  jsonrpc: '2.0'
+  id: string
   result?: unknown
-  error?: { message?: unknown }
+  error?: { code: number; message: string }
+}
+
+class AmbiguousInvocationError extends Error {
+  constructor() {
+    super(WEBCHAT_MCP_AMBIGUOUS_ERROR)
+  }
 }
 
 function logicalKey(input: Pick<RegisterSessionMcpCell, 'agentId' | 'conversationId'>): string {
@@ -131,15 +153,96 @@ function tokenMatches(expected: string, received: unknown): boolean {
   return left.byteLength === right.byteLength && timingSafeEqual(left, right)
 }
 
-function rpcFromResponse(bytes: Buffer): RpcResponse {
-  const text = bytes.toString('utf8')
-  const dataLines = text
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith('data:'))
-    .map((line) => line.slice(line.indexOf(':') + 1).trim())
-    .filter((line) => line.length > 0 && line !== '[DONE]')
-  const serialized = dataLines.at(-1) ?? text
-  return JSON.parse(serialized) as RpcResponse
+function mediaType(response: Response): string {
+  return (response.headers.get('content-type') ?? '').split(';', 1)[0]!.trim().toLowerCase()
+}
+
+function parseSingleSseData(text: string): string {
+  const events: string[] = []
+  let data: string[] = []
+  const flush = () => {
+    if (data.length === 0) return
+    events.push(data.join('\n'))
+    data = []
+  }
+  for (const line of text.split(/\r?\n/)) {
+    if (line === '') {
+      flush()
+      continue
+    }
+    if (line.startsWith(':')) continue
+    const separator = line.indexOf(':')
+    const field = separator < 0 ? line : line.slice(0, separator)
+    let value = separator < 0 ? '' : line.slice(separator + 1)
+    if (value.startsWith(' ')) value = value.slice(1)
+    if (field === 'data') data.push(value)
+  }
+  flush()
+  if (events.length !== 1 || events[0] === '[DONE]') {
+    throw new Error('AgentConnect MCP returned an invalid SSE response count')
+  }
+  return events[0]!
+}
+
+function rpcFromResponse(response: Response, bytes: Buffer, invocationId: string): RpcResponse {
+  const type = mediaType(response)
+  let serialized: string
+  if (type === 'application/json') {
+    serialized = bytes.toString('utf8')
+  } else if (type === 'text/event-stream') {
+    serialized = parseSingleSseData(bytes.toString('utf8'))
+  } else {
+    throw new Error('AgentConnect MCP returned an unsupported content type')
+  }
+  const parsed = JSON.parse(serialized) as Record<string, unknown>
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('AgentConnect MCP returned an invalid JSON-RPC response')
+  }
+  if (parsed.jsonrpc !== '2.0' || parsed.id !== invocationId) {
+    throw new Error('AgentConnect MCP returned a mismatched JSON-RPC response')
+  }
+  const hasResult = Object.hasOwn(parsed, 'result')
+  const hasError = Object.hasOwn(parsed, 'error')
+  if (hasResult === hasError) {
+    throw new Error('AgentConnect MCP response must contain exactly one of result or error')
+  }
+  if (hasError) {
+    const error = parsed.error
+    if (
+      !error ||
+      typeof error !== 'object' ||
+      Array.isArray(error) ||
+      typeof (error as { code?: unknown }).code !== 'number' ||
+      typeof (error as { message?: unknown }).message !== 'string'
+    ) {
+      throw new Error('AgentConnect MCP returned an invalid JSON-RPC error')
+    }
+  }
+  return parsed as RpcResponse
+}
+
+function exactKeys(value: Record<string, unknown>, expected: string[]): boolean {
+  const keys = Object.keys(value).sort()
+  return keys.length === expected.length && keys.every((key, index) => key === expected[index])
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isNarrowIpcRequest(value: unknown): value is IpcRequest {
+  if (!isPlainRecord(value)) return false
+  if (!Number.isSafeInteger(value.id) || (value.id as number) < 0) return false
+  if (typeof value.token !== 'string' || value.token.length < 1 || value.token.length > 256) return false
+  if (value.op === 'listTools') return exactKeys(value, ['id', 'op', 'token'])
+  if (value.op !== 'callTool') return false
+  return (
+    exactKeys(value, ['args', 'id', 'name', 'op', 'token']) &&
+    typeof value.name === 'string' &&
+    value.name.length >= 1 &&
+    value.name.length <= 256 &&
+    isPlainRecord(value.args)
+  )
 }
 
 /**
@@ -151,7 +254,7 @@ export class SessionMcpBroker {
   private readonly cells = new Map<string, CellBinding>()
   private readonly conversations = new Map<string, CellBinding>()
   private readonly history = new Map<string, DelegationHistory>()
-  private readonly retiredCellIds = new Set<string>()
+  private readonly retiredCellIds = new Map<string, number>()
   private readonly activeTokens = new Set<string>()
   private mutationTail: Promise<void> = Promise.resolve()
   private stopped = false
@@ -162,8 +265,10 @@ export class SessionMcpBroker {
     return this.serialized(async () => {
       if (this.stopped) throw new Error('private MCP broker is stopped')
       if (input.platform !== 'webchat') return null
+      const now = this.now()
+      this.pruneExpiredState(now)
       const expiresAtMs = Date.parse(input.expiresAt)
-      if (!Number.isFinite(expiresAtMs) || expiresAtMs <= this.now()) return null
+      if (!Number.isFinite(expiresAtMs) || expiresAtMs <= now) return null
       if (!Number.isSafeInteger(input.generation) || input.generation <= 0) {
         throw new Error('delegation generation must be a positive safe integer')
       }
@@ -201,7 +306,8 @@ export class SessionMcpBroker {
       this.history.set(key, {
         generation: input.generation,
         delegationId: input.delegationId,
-        expiresAt: input.expiresAt
+        expiresAt: input.expiresAt,
+        expiresAtMs
       })
       return binding.descriptor
     })
@@ -214,6 +320,24 @@ export class SessionMcpBroker {
       sourceDirectory: binding.sourceDirectory,
       sourceSocketPath: binding.sourceSocketPath,
       targetDirectory: this.deps.inCellSocketDirectory
+    }
+  }
+
+  /** Non-secret lifecycle counters used by health checks and resource-bound tests. */
+  debugStats(): {
+    activeCells: number
+    historyEntries: number
+    retiredCellIds: number
+    connections: number
+  } {
+    this.pruneExpiredState(this.now())
+    let connections = 0
+    for (const binding of this.cells.values()) connections += binding.connections.size
+    return {
+      activeCells: this.cells.size,
+      historyEntries: this.history.size,
+      retiredCellIds: this.retiredCellIds.size,
+      connections
     }
   }
 
@@ -234,6 +358,8 @@ export class SessionMcpBroker {
       const bindings = [...this.cells.values()]
       for (const binding of bindings) this.detachBinding(binding)
       await Promise.all(bindings.map((binding) => this.destroyBinding(binding)))
+      this.history.clear()
+      this.retiredCellIds.clear()
     })
   }
 
@@ -251,7 +377,8 @@ export class SessionMcpBroker {
         socketPath: inCellSocketPath,
         token,
         cliEntry: this.deps.cliEntry,
-        name: ADMIN_SERVER_NAME
+        name: ADMIN_SERVER_NAME,
+        lazyTools: true
       })[0]!
       const connections = new Set<net.Socket>()
       server = net.createServer()
@@ -307,12 +434,27 @@ export class SessionMcpBroker {
     binding.connections.add(socket)
     socket.setEncoding('utf8')
     let buffer = ''
+    let pending = 0
     socket.on('data', (chunk: string) => {
       buffer += chunk
-      const decoded = decodeFrames<IpcRequest>(buffer)
+      if (Buffer.byteLength(buffer) > PRIVATE_MCP_MAX_FRAME_BYTES) {
+        socket.destroy()
+        return
+      }
+      const decoded = decodeFrames<unknown>(buffer)
       buffer = decoded.rest
+      if (
+        decoded.messages.length > PRIVATE_MCP_MAX_PIPELINED_REQUESTS ||
+        pending + decoded.messages.length > PRIVATE_MCP_MAX_PENDING_REQUESTS
+      ) {
+        socket.destroy()
+        return
+      }
       for (const request of decoded.messages) {
-        void this.handle(binding, request, socket)
+        pending += 1
+        void this.handle(binding, request, socket).finally(() => {
+          pending -= 1
+        })
       }
     })
     socket.on('error', () => {
@@ -321,11 +463,15 @@ export class SessionMcpBroker {
     socket.on('close', () => binding.connections.delete(socket))
   }
 
-  private async handle(binding: CellBinding, request: IpcRequest, socket: net.Socket): Promise<void> {
+  private async handle(binding: CellBinding, request: unknown, socket: net.Socket): Promise<void> {
     const reply = (response: IpcResponse) => {
       if (!socket.destroyed) socket.write(encodeFrame(response))
     }
-    if (!request || typeof request !== 'object' || typeof request.id !== 'number') return
+    if (!isNarrowIpcRequest(request)) {
+      const id = isPlainRecord(request) && Number.isSafeInteger(request.id) ? (request.id as number) : 0
+      reply({ id, ok: false, error: 'invalid private MCP request' })
+      return
+    }
     if (!binding.accepting || !tokenMatches(binding.token, request.token)) {
       reply({ id: request.id, ok: false, error: UNKNOWN_TOKEN_ERROR })
       return
@@ -367,21 +513,16 @@ export class SessionMcpBroker {
       method: request.op === 'listTools' ? 'tools/list' : 'tools/call',
       ...(request.op === 'callTool' ? { toolName: request.name } : {})
     }
-    let minted = await this.mintUsableAssertion(mintInput)
-    let response = await this.post(body, invocationId, minted.assertion)
-    // A 401 can mean the assertion crossed its short claim deadline before the
-    // CP could consume it. Rotating the assertion for this same unstarted
-    // invocation is the only automatic retry allowed.
-    if (response.status === 401) {
-      minted = await this.mintUsableAssertion(mintInput)
-      response = await this.post(body, invocationId, minted.assertion)
-    }
-    const responseBytes = Buffer.from(await response.arrayBuffer())
+    const minted = await this.mintUsableAssertion(mintInput)
+    const { response, responseBytes } = await this.withPostDeadline(async (signal) => {
+      const response = await this.dispatchWithRecovery(body, invocationId, mintInput, minted, signal)
+      return { response, responseBytes: Buffer.from(await response.arrayBuffer()) }
+    })
     if (!response.ok) {
       const message = this.httpError(response.status, responseBytes)
       throw new Error(message)
     }
-    const parsed = rpcFromResponse(responseBytes)
+    const parsed = rpcFromResponse(response, responseBytes, invocationId)
     if (parsed.error) {
       throw new Error(
         typeof parsed.error.message === 'string' ? parsed.error.message : 'AgentConnect MCP request failed'
@@ -396,18 +537,7 @@ export class SessionMcpBroker {
     const result = parsed.result as { content?: unknown; isError?: unknown } | undefined
     if (!result || !Array.isArray(result.content))
       throw new Error('AgentConnect MCP returned an invalid tools/call result')
-    if (result.isError === true) {
-      const text = result.content
-        .map((item) =>
-          item && typeof item === 'object' && typeof (item as { text?: unknown }).text === 'string'
-            ? (item as { text: string }).text
-            : ''
-        )
-        .filter(Boolean)
-        .join('\n')
-      throw new Error(text || 'AgentConnect MCP tool call failed')
-    }
-    return { mcpContent: result.content }
+    return { mcpContent: result.content, ...(result.isError === true ? { mcpIsError: true } : {}) }
   }
 
   private async mintUsableAssertion(input: McpInvocationMint): Promise<McpInvocationMinted> {
@@ -420,7 +550,7 @@ export class SessionMcpBroker {
     throw new Error('invocation assertion expired before use')
   }
 
-  private post(body: Buffer, invocationId: string, assertion: string): Promise<Response> {
+  private post(body: Buffer, invocationId: string, assertion: string, signal: AbortSignal): Promise<Response> {
     const fetchImpl =
       this.deps.fetch ?? ((url: string, init: DelegatedMcpFetchInit) => fetch(url, init as unknown as RequestInit))
     return fetchImpl(this.deps.mcpEndpoint, {
@@ -431,7 +561,105 @@ export class SessionMcpBroker {
         accept: 'application/json, text/event-stream',
         'content-type': 'application/json'
       },
-      body
+      body,
+      signal
+    })
+  }
+
+  private async dispatchWithRecovery(
+    body: Buffer,
+    invocationId: string,
+    mintInput: McpInvocationMint,
+    initialMint: McpInvocationMinted,
+    signal: AbortSignal
+  ): Promise<Response> {
+    let minted = initialMint
+    let response: Response
+    try {
+      response = await this.post(body, invocationId, minted.assertion, signal)
+    } catch {
+      return this.recoverSameInvocation(body, invocationId, minted.assertion, signal)
+    }
+
+    // A definite 401 proves this assertion did not claim execution. Rotating it
+    // for the same unstarted ledger row remains safe.
+    if (response.status === 401) {
+      minted = await this.mintUsableAssertion(mintInput)
+      try {
+        response = await this.post(body, invocationId, minted.assertion, signal)
+      } catch {
+        return this.recoverSameInvocation(body, invocationId, minted.assertion, signal)
+      }
+    }
+    if (this.isInProgress(response)) {
+      return this.recoverSameInvocation(body, invocationId, minted.assertion, signal)
+    }
+    return response
+  }
+
+  private async recoverSameInvocation(
+    body: Buffer,
+    invocationId: string,
+    assertion: string,
+    signal: AbortSignal
+  ): Promise<Response> {
+    const attempts = this.deps.recoveryAttempts ?? DEFAULT_RECOVERY_ATTEMPTS
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (signal.aborted) throw new AmbiguousInvocationError()
+      try {
+        const response = await this.post(body, invocationId, assertion, signal)
+        if (!this.isInProgress(response)) {
+          if (response.status === 401) throw new AmbiguousInvocationError()
+          return response
+        }
+      } catch (error) {
+        if (error instanceof AmbiguousInvocationError) throw error
+      }
+      if (attempt + 1 < attempts) await this.pollDelay(signal)
+    }
+    throw new AmbiguousInvocationError()
+  }
+
+  private isInProgress(response: Response): boolean {
+    return response.status === 409 && response.headers.get('retry-after') !== null
+  }
+
+  private async withPostDeadline<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController()
+    const setTimer = this.deps.setTimeout ?? globalThis.setTimeout
+    const clearTimer = this.deps.clearTimeout ?? globalThis.clearTimeout
+    const deadlineMs = this.deps.postDeadlineMs ?? DEFAULT_POST_DEADLINE_MS
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimer(() => {
+        controller.abort()
+        reject(new AmbiguousInvocationError())
+      }, deadlineMs)
+    })
+    try {
+      return await Promise.race([operation(controller.signal), deadline])
+    } finally {
+      if (timer !== undefined) clearTimer(timer)
+    }
+  }
+
+  private async pollDelay(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) throw new AmbiguousInvocationError()
+    const setTimer = this.deps.setTimeout ?? globalThis.setTimeout
+    const clearTimer = this.deps.clearTimeout ?? globalThis.clearTimeout
+    const delayMs = this.deps.recoveryPollMs ?? DEFAULT_RECOVERY_POLL_MS
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimer(() => {
+        signal.removeEventListener('abort', abort)
+        resolve()
+      }, delayMs)
+      const abort = () => {
+        clearTimer(timer)
+        signal.removeEventListener('abort', abort)
+        reject(new AmbiguousInvocationError())
+      }
+      signal.addEventListener('abort', abort, { once: true })
+      if (signal.aborted) abort()
     })
   }
 
@@ -450,6 +678,7 @@ export class SessionMcpBroker {
     if (error instanceof WireError && error.code === 'DELEGATION_DENIED') {
       return WEBCHAT_MCP_RECONNECT_ERROR
     }
+    if (error instanceof AmbiguousInvocationError) return WEBCHAT_MCP_AMBIGUOUS_ERROR
     const message = error instanceof Error ? error.message : ''
     if (
       message === WEBCHAT_MCP_RECONNECT_ERROR ||
@@ -469,7 +698,7 @@ export class SessionMcpBroker {
     if (this.conversations.get(logicalKey(binding)) === binding) {
       this.conversations.delete(logicalKey(binding))
     }
-    this.retiredCellIds.add(binding.isolationCellId)
+    this.retiredCellIds.set(binding.isolationCellId, binding.expiresAtMs)
     this.activeTokens.delete(binding.token)
   }
 
@@ -492,6 +721,15 @@ export class SessionMcpBroker {
       return token
     }
     throw new Error('could not allocate a unique private MCP token')
+  }
+
+  private pruneExpiredState(now: number): void {
+    for (const [key, value] of this.history) {
+      if (value.expiresAtMs <= now) this.history.delete(key)
+    }
+    for (const [cellId, expiresAtMs] of this.retiredCellIds) {
+      if (expiresAtMs <= now) this.retiredCellIds.delete(cellId)
+    }
   }
 
   private async serialized<T>(fn: () => Promise<T>): Promise<T> {

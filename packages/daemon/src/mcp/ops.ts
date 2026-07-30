@@ -49,6 +49,8 @@ export interface MessageGateway {
  */
 export interface McpContentResult {
   mcpContent: ({ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string })[]
+  /** Preserve a remote MCP tool's semantic error without converting its content. */
+  mcpIsError?: boolean
 }
 
 /** Per-session binding captured at `session/new`, keyed by the IPC token. */
