@@ -13,17 +13,17 @@
   <img src="https://api.iconify.design/logos/slack-icon.svg" width="16" height="16" alt="Slack" title="Slack" />&nbsp;&nbsp;
   <img src="https://cdn.simpleicons.org/telegram" width="16" height="16" alt="Telegram" title="Telegram" />&nbsp;&nbsp;
   <img src="https://cdn.simpleicons.org/discord" width="16" height="16" alt="Discord" title="Discord" />&nbsp;&nbsp;
-  <img src="https://api.iconify.design/icon-park/new-lark.svg" width="16" height="16" alt="Lark and Feishu" title="Lark / Feishu" />&nbsp;&nbsp;
+  <img src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/lark.svg" width="16" height="16" alt="Lark and Feishu" title="Lark / Feishu" />&nbsp;&nbsp;
   <img src="https://cdn.simpleicons.org/github/181717/e6edf3" width="16" height="16" alt="GitHub" title="GitHub" />&nbsp;&nbsp;
-  <img src="https://api.iconify.design/tabler/webhook.svg?color=%23808896" width="16" height="16" alt="Webhook" title="Webhook" />
+  <img src="https://api.iconify.design/logos/webhooks.svg" width="16" height="16" alt="Webhook" title="Webhook" />
   &nbsp;&nbsp;&nbsp;&nbsp;
   <strong>WITH</strong>&nbsp;&nbsp;
-  <img src="https://cdn.simpleicons.org/claude" width="16" height="16" alt="Claude Code" title="Claude Code" />&nbsp;&nbsp;
-  <img src="https://api.iconify.design/tabler/brand-openai.svg?color=%23808896" width="16" height="16" alt="Codex" title="Codex" />&nbsp;&nbsp;
-  <img src="https://cdn.simpleicons.org/googlegemini" width="16" height="16" alt="Gemini CLI" title="Gemini CLI" />&nbsp;&nbsp;
-  <img src="https://cdn.simpleicons.org/cursor/000000/e6edf3" width="16" height="16" alt="Cursor" title="Cursor" />&nbsp;&nbsp;
-  <img src="https://cdn.simpleicons.org/cline/18181B/e6edf3" width="16" height="16" alt="Cline" title="Cline" />&nbsp;&nbsp;
-  <img src="https://cdn.simpleicons.org/kimi/000000/e6edf3" width="16" height="16" alt="Kimi" title="Kimi" />&nbsp;&nbsp;
+  <img src="https://cdn.simpleicons.org/claude" width="16" height="16" alt="Claude" title="Claude" />&nbsp;&nbsp;
+  <img src="https://api.iconify.design/tabler/brand-openai.svg?color=%23808896" width="16" height="16" alt="OpenAI" title="OpenAI" />&nbsp;&nbsp;
+  <img src="https://cdn.simpleicons.org/googlegemini" width="16" height="16" alt="Gemini" title="Gemini" />&nbsp;&nbsp;
+  <img src="https://cdn.simpleicons.org/deepseek" width="16" height="16" alt="DeepSeek" title="DeepSeek" />&nbsp;&nbsp;
+  <img src="https://cdn.simpleicons.org/opencode/000000/e6edf3" width="16" height="16" alt="OpenCode" title="OpenCode" />&nbsp;&nbsp;
+  <img src="https://cdn.simpleicons.org/pi/000000/e6edf3" width="16" height="16" alt="Pi" title="Pi" />&nbsp;&nbsp;
   <strong>ANY ACP AGENT</strong></sub>
 </p>
 
