@@ -17,8 +17,8 @@ const KEYS = [
   'LOGTO_APP_ID',
   'LOGTO_API_RESOURCE',
   // Which social sign-in methods this deployment offers (comma-separated Logto
-  // connector targets; unset/`*` ⇒ all). The CP reads the same variable, so one
-  // deployment entry configures both sides. See lib/social-login-providers.
+  // connector targets; unset/`*` ⇒ all). The console is the only side that reads
+  // it — see lib/social-login-providers.
   'SOCIAL_PROVIDERS',
   'CP_URL',
   'RELAY_URL',

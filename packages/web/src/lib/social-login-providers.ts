@@ -6,9 +6,10 @@
 //    (via <SocialLoginMark>) a brand mark for every target we know how to draw.
 //  - WHICH of them a deployment offers is config, because it is a property of
 //    the Logto tenant, not of this repo. `SOCIAL_PROVIDERS` names the enabled
-//    targets, and the CP reads the same variable to decide what it will link, so
-//    one deployment entry configures both sides — instead of two hardcoded lists
-//    that have to be kept in step by hand.
+//    targets, and this module is the ONLY place that decides. The CP deliberately
+//    does not re-derive the set: a second implementation of these rules is how the
+//    buttons and the server came to disagree, so it validates shape only and lets
+//    the tenant's connector list be the real gate.
 //
 // Deliberately NOT read from Logto's API: the value reaches the browser inlined
 // in `window.__AC_ENV` (see lib/public-env), so it costs no request and cannot

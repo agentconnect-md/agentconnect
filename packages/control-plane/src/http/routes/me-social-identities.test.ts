@@ -56,8 +56,8 @@ describe('my social identities routes', () => {
   })
 
   it('accepts slack as a linkable target, matching the console provider list', async () => {
-    // The console offers Slack; a server-side allowlist that omitted it would
-    // turn that Link button into a 400.
+    // The console offers Slack, so this route must resolve it. It gates on shape
+    // and on the tenant having the connector — never on its own provider list.
     const identity = { socialConnectorIdFor: vi.fn(async () => 'slack-connector') }
     const app = await slackApp({ logtoIdentity: identity } as unknown as HttpDeps)
     try {
