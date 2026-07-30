@@ -32,6 +32,14 @@ const byTarget = (account: MySocialAccountDto, target: string): MySocialIdentity
 const workspaceLabel = (workspace: NonNullable<MySocialIdentityDto['workspace']>): string =>
   workspace.name ?? (workspace.domain ? `${workspace.domain}.slack.com` : workspace.teamId)
 
+/**
+ * Height a row's identity cell reserves, so the row is the same height whether it
+ * is still loading, unlinked, or linked — the card used to grow as the first fetch
+ * landed. Two text lines fit inside the avatar; only Slack adds a third, since the
+ * CP populates `workspace` for that target alone.
+ */
+const detailReserve = (provider: SocialLoginProvider): string => (provider.target === 'slack' ? 'min-h-12' : 'min-h-8')
+
 /** The same bare mark the sign-in page uses, at the same size. The box stays
  *  fixed-width so three differently-shaped marks still line the names up; it
  *  carries no plate, which was making one row of a list look like a tile. */
@@ -387,7 +395,9 @@ export default function SocialSignInCard({
                   <ProviderMark provider={provider} />
                   <span className="truncate font-sans text-[13.5px] font-semibold leading-normal">{provider.name}</span>
                 </div>
-                <div className="col-span-2 row-start-2 min-w-0 desktop:col-span-1 desktop:col-start-2 desktop:row-start-1">
+                <div
+                  className={`col-span-2 row-start-2 flex ${detailReserve(provider)} min-w-0 items-center desktop:col-span-1 desktop:col-start-2 desktop:row-start-1`}
+                >
                   {currentAccount ? (
                     details ? (
                       <div className="flex min-w-0 items-center gap-2.5">
@@ -416,6 +426,18 @@ export default function SocialSignInCard({
                         Not linked
                       </span>
                     )
+                  ) : !error ? (
+                    // First-load placeholder shaped like the identity that replaces it.
+                    <div className="flex min-w-0 items-center gap-2.5" aria-hidden="true">
+                      <span className="h-8 w-8 flex-none animate-pulse rounded-full bg-(--surface-active)" />
+                      <span className="min-w-0">
+                        <span className="block h-[11px] w-24 animate-pulse rounded-full bg-(--surface-active)" />
+                        <span className="mt-[7px] block h-[9px] w-40 animate-pulse rounded-full bg-(--surface-active)" />
+                        {provider.target === 'slack' ? (
+                          <span className="mt-[7px] block h-[9px] w-20 animate-pulse rounded-full bg-(--surface-active)" />
+                        ) : null}
+                      </span>
+                    </div>
                   ) : null}
                 </div>
                 <div className="col-start-2 row-start-1 flex items-center justify-end gap-1 desktop:col-start-3">
