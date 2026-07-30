@@ -106,12 +106,13 @@ export function computeGettingStarted(input: {
     },
     {
       key: 'conversation',
-      label: 'Complete your first conversation',
+      label: 'Start your first conversation',
       expl: 'Send one message and watch the agent work — in a connected channel or in the Playground.',
-      // Product decision: ANY session in the org ticks this — a session existing at all
-      // means someone here has already driven a conversation (Playground or a channel),
-      // which is exactly what this step teaches. Requiring a terminal status (or "your
-      // own" session) made orgs with live sessions re-run a chat just to clear the step.
+      // Product decision (2026-07-30, mirrored in preset-agents.md §6.2): ANY session in
+      // the org ticks this — a session existing at all means a conversation has been
+      // driven here (Playground or a channel), which is exactly what this step teaches.
+      // Requiring a terminal status (or "your own" session) made orgs with live
+      // sessions re-run a chat just to clear the step.
       done: sessions.length > 0,
       ctaLabel: 'Start a conversation',
       action: { kind: 'chat' }

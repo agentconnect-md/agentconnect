@@ -345,16 +345,16 @@ view — non-blocking, dismissible, reopenable from Help.
 Every item derives from live resources; nothing stores "step done". The only persisted
 bit is a per-user dismissal.
 
-| Item                           | Derivation                                                                                                                                                                               |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Daemon connected               | daemon status `ready`                                                                                                                                                                    |
-| Runtime signed in              | at least one **ready** runtime (§3.2, latest stored probe status) — non-empty profiles are not enough: they include installed-but-logged-out (`auth_required`) and failed-probe runtimes |
-| Meet your agent                | the preset is placement-settled — `placementSettledAt` stamped, `skipped`, or the preset deleted (§3.2; legacy — deletion predating the §2 not-deletable rule)                           |
-| Connect Slack                  | a Slack integration exists                                                                                                                                                               |
-| Connect GitHub                 | a GitHub App installation exists                                                                                                                                                         |
-| Give your agent a repository   | general agent's workspace ≠ scratch                                                                                                                                                      |
-| Finish your first conversation | a completed session exists                                                                                                                                                               |
-| Invite teammates               | org member count > 1                                                                                                                                                                     |
+| Item                          | Derivation                                                                                                                                                                                                                  |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Daemon connected              | daemon status `ready`                                                                                                                                                                                                       |
+| Runtime signed in             | at least one **ready** runtime (§3.2, latest stored probe status) — non-empty profiles are not enough: they include installed-but-logged-out (`auth_required`) and failed-probe runtimes                                    |
+| Meet your agent               | the preset is placement-settled — `placementSettledAt` stamped, `skipped`, or the preset deleted (§3.2; legacy — deletion predating the §2 not-deletable rule)                                                              |
+| Connect Slack                 | a Slack integration exists                                                                                                                                                                                                  |
+| Connect GitHub                | a GitHub App installation exists                                                                                                                                                                                            |
+| Give your agent a repository  | general agent's workspace ≠ scratch                                                                                                                                                                                         |
+| Start your first conversation | any session exists (2026-07-30: a session existing at all means a conversation has been driven here — Playground or channel; requiring a terminal status made orgs with live sessions re-run a chat just to clear the step) |
+| Invite teammates              | org member count > 1                                                                                                                                                                                                        |
 
 ### 6.3 One state, two consumers
 
