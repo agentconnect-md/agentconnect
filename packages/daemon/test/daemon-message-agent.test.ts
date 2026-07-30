@@ -951,12 +951,12 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
 
 /**
  * Case 2a spawn (session-concept §7.2): an agent's channel-ROOT post seeds a NEW session owned
- * by the same agent, keyed by the post's ts, delivered headless with origin lineage — and,
- * critically, with the post's real ts as `transcriptTs` so the new session's delivered-marker is
- * a real Slack ts (a later real reply in that thread must NOT be mis-skipped as already-delivered).
+ * by the same agent, keyed by the post's ts, initialized without a model turn and with origin
+ * lineage. The post's real ts is retained as `transcriptTs` so the transcript row is canonical;
+ * the session cursor deliberately remains null until the first real reply consumes the root.
  */
 describe('spawnChannelRootSession — case 2a new-session seed', () => {
-  it('dispatches a headless, origin-tagged turn keyed by the post ts, with transcriptTs = post ts', async () => {
+  it('dispatches an initialization-only, origin-tagged seed keyed by the post ts', async () => {
     const root = scaffold([{ id: 'bot-a' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
     // Seed the origin (current) session so its acpSessionId becomes the child's originSessionId.
@@ -992,12 +992,44 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     expect(msg.transcriptTs).toBe('1784297789.871789')
     expect(msg.headless).toBe(true)
     expect(msg.source).toBe('agent')
+    expect(msg.text).toBe('root spawn 🌿')
     expect(callMeta).toMatchObject({
       callFrom: 'bot-a',
       hopCount: 1,
+      initializeOnly: true,
       originSessionId: 'acp-origin-1',
       originCoords: { platform: 'slack', channel: 'C1', thread: '100.1' }
     })
+    await daemon.stop()
+  })
+
+  it('creates an idle session without prompting the model', async () => {
+    const root = scaffold([{ id: 'bot-a' }])
+    const host = fakeHost()
+    const daemon = new Daemon({ root, hostFactory: () => host as any })
+    await daemon.start()
+    const targetKey = sessionKey('slack', 'C1', '1784297789.871789', 'bot-a')
+
+    ;(daemon as any).spawnChannelRootSession({
+      agentId: 'bot-a',
+      platform: 'slack',
+      integrationId: 'int-a',
+      channel: 'C1',
+      thread: '1784297789.871789',
+      text: 'root spawn 🌿',
+      originChannel: 'C1',
+      originThread: '100.1'
+    })
+
+    await vi.waitFor(() => {
+      expect((daemon as any).store.getSession(targetKey)).toMatchObject({
+        acpSessionId: 'acp-1',
+        state: 'idle',
+        lastDeliveredTs: null
+      })
+    })
+    expect(host.newSession).toHaveBeenCalledOnce()
+    expect(host.prompt).not.toHaveBeenCalled()
     await daemon.stop()
   })
 

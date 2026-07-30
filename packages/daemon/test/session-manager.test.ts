@@ -71,6 +71,56 @@ describe('SessionManager', () => {
     store.close()
   })
 
+  it('initializes a self-authored root session without a turn and replays the root on the first real reply', async () => {
+    const store = newStore()
+    const host = fakeHost()
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const seed = msg({
+      ts: '200.1',
+      thread: '200.1',
+      source: 'agent',
+      sender: { id: 'bot-a', isBot: true },
+      text: 'Please investigate the deployment failure.'
+    })
+
+    const initialized = await sm.handle('bot-a', seed, undefined, undefined, 'acp-parent-1', undefined, undefined, {
+      initializeOnly: true
+    })
+
+    expect(initialized).toMatchObject({
+      sessionId: 'acp-1',
+      created: true,
+      initializedOnly: true,
+      blocks: []
+    })
+    expect(store.getSession(sessionKey('slack', 'C1', '200.1', 'bot-a'))).toMatchObject({
+      state: 'idle',
+      lastDeliveredTs: null,
+      triggeredBy: 'bot-a',
+      originSessionId: 'acp-parent-1'
+    })
+
+    const firstReply = await sm.handle(
+      'bot-a',
+      msg({
+        ts: '200.2',
+        thread: '200.1',
+        text: 'The failing deployment is production; can you check it now?'
+      })
+    )
+    const prompt = firstReply.blocks.map((block: any) => block.text ?? '').join('\n')
+    expect(prompt).toContain('# Agent')
+    expect(prompt).toContain('Parent session: acp-parent-1')
+    expect(prompt).toContain('Please investigate the deployment failure.')
+    expect(prompt).toContain('The failing deployment is production; can you check it now?')
+    expect(firstReply.blocks.at(-1)).toEqual({
+      type: 'text',
+      text: 'The failing deployment is production; can you check it now?'
+    })
+    expect(host.newSession).toHaveBeenCalledOnce()
+    store.close()
+  })
+
   it('does not replay transcript context from another physical bot with the same channel coordinates', async () => {
     const store = newStore()
     const agentB = { ...agent, id: 'bot-b', name: 'bot-b' }

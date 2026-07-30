@@ -82,6 +82,18 @@ best-effort edge: a target on another daemon whose call policy terminally reject
 caller can still leave a visible post, because that policy verdict is only known on the
 target's daemon after the post is made.
 
+## Self-authored channel roots
+
+When an agent uses `sendMessage` to publish a new channel-root message without waking
+another agent, the returned platform message creates the agent's session for that new
+thread but does not run a model turn. The root is already the agent's own output, not a
+new request: treating it as an activation can make the agent post it again recursively.
+
+The session starts idle, retains its parent-session lineage, and records the root for
+transcript display. The first real reply in that thread receives the root as preceding
+context before the new message. Session initialization itself produces no agent output,
+tool calls, memory recall or capture, turn evaluation, or token usage.
+
 ## Shared-bot channel ownership
 
 Every active channel served by a shared bot has exactly one default agent. A newly
