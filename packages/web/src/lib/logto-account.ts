@@ -187,7 +187,7 @@ export function accountErrorMessage(error: unknown, context?: { providerName?: s
   if ((requestError.status === 409 || requestError.status === 422) && context?.linking) {
     const reason = `${requestError.code ?? ''} ${requestError.message}`.toLowerCase()
     if (reason.includes('already') && (reason.includes('use') || reason.includes('link'))) {
-      return `That ${context.providerName ?? 'social'} account is already connected to another AgentConnect account.`
+      return `That ${context.providerName ?? 'social'} account is already linked to another AgentConnect account.`
     }
     return `The ${context.providerName ?? 'social'} authorization expired or could not be used. Try again.`
   }

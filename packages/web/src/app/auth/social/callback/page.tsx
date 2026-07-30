@@ -42,7 +42,7 @@ export default function SocialAccountCallback() {
       .then(() => {
         writeAccountNotice({
           kind: 'success',
-          message: `${flow.providerName} was connected.`
+          message: `${flow.providerName} was linked.`
         })
         window.location.replace(flow.returnTo)
       })
@@ -55,7 +55,7 @@ export default function SocialAccountCallback() {
     <div className="authpage">
       <div className="m-auto flex max-w-[420px] flex-col items-center gap-[18px] px-6 text-center font-sans text-[14px] font-normal leading-[1.6] text-(--text-secondary)">
         {!error ? <Spinner size={48} /> : null}
-        <div>{error ?? 'Connecting your sign-in account…'}</div>
+        <div>{error ?? 'Linking your sign-in account…'}</div>
         {error ? (
           <Button variant="secondary" onClick={() => window.location.replace(returnTo)}>
             Back to Profile

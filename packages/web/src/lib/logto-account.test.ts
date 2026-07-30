@@ -82,6 +82,6 @@ describe('Logto Account API', () => {
         providerName: 'Google',
         linking: true
       })
-    ).toBe('That Google account is already connected to another AgentConnect account.')
+    ).toBe('That Google account is already linked to another AgentConnect account.')
   })
 })
