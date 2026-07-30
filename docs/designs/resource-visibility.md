@@ -567,9 +567,10 @@ separate from the schema compatibility contract.
 If future per-grant levels or authorization audit are needed, add
 `resource_share(resourceType, resourceId, userId, level, grantedBy, grantedAt)`,
 backfill it with `INSERT ... SELECT unnest(sharedWith)`, change
-`visibility.ts` to receive the resolved set, then drop the three arrays. Because
-all member reads converge in `visibility.ts` and the repository WHERE builder,
-this changes roughly four files and no route handler.
+`authorization/policy.ts` to receive the resolved set, then drop the three
+arrays. Because all member reads converge in that policy and its
+`visibilityWhere` projection, this changes roughly four files and no route
+handler.
 
 ## 11. Web Console
 

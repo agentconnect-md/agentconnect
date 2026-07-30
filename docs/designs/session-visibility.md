@@ -467,7 +467,8 @@ link ends public access without touching the session row.
   one-time and conditional (never overwrites `explicit`), tightening
   cascades transitively, widening never cascades.
 - **Integration (`test:int`):** list/detail/SSE visibility for a two-member
-  org (owner sees all; collaborator sees own private + org sessions only);
+  org (each member sees identity-owned private + org sessions; the owner role
+  does not widen private visibility);
   SSE assertion that **neither** `event/session` nor `event/session-activity`
   for a private session reaches an unauthorized subscriber; keyset pagination
   stability under the new predicate; migration backfill (`org` + `orgId`) on

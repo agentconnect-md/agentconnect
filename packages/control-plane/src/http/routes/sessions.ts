@@ -361,9 +361,9 @@ export function sessionRoutes(deps: HttpDeps) {
           return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'invalid session cursor' })
         }
 
-        // The set of agents THIS caller may see (owner ⇒ all). Session metadata
-        // inherits visibility from the owning agent, so restricted-agent rows are
-        // hidden before any title/channel/usage metadata reaches the caller.
+        // The set of agents THIS caller may see under the resource policy. Roles
+        // never widen visibility, so restricted-agent rows are hidden before any
+        // title/channel/usage metadata reaches the caller.
         const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((agent) => agent.id)
         const visibleAgentIdSet = new Set<string>(visibleAgentIds)
         const selectedAgentIds = req.query.agentId
