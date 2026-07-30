@@ -14,7 +14,7 @@ import type {
   StatusKey,
   Workspace
 } from '@/lib/data'
-import { isSelfSender, MOCK_MODE } from '@/lib/data'
+import { isSelfSender, lifecycleAwareDaemonStatus, MOCK_MODE } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
 import { getToken, getIdTokenRaw, getUser, signOutDeletedAccount } from '@/lib/auth'
@@ -1209,6 +1209,7 @@ const PLACEHOLDER = '—'
 
 function toStatusKey(raw: string): StatusKey {
   const s = (raw || '').toLowerCase()
+  if (s === 'upgrading' || s === 'restarting') return s
   if (['online', 'running', 'active', 'ready', 'live', 'working', 'connected', 'idle', 'completed'].includes(s))
     return 'online'
   if (['paused', 'draining', 'awaiting', 'blocked', 'prompting', 'resuming', 'cancelling'].includes(s)) return 'paused'
@@ -1620,7 +1621,10 @@ export function daemonFromDto(d: DaemonViewDto): DaemonRow {
     canManageLifecycle: d.canManageLifecycle ?? false,
     // Flag an available upgrade only when both versions parse and latest > running.
     upgradeAvailable: isUpgradeAvailable(d.agentVersion, d.latestVersion),
-    status: toStatusKey(d.status),
+    // The durable lifecycle op spans the expected disconnect/reconnect window.
+    // Prefer its explicit transition over the live socket status so the daemon and
+    // its agents do not flash offline while a planned relaunch is still in progress.
+    status: lifecycleAwareDaemonStatus(toStatusKey(d.status), d.lifecycleOp),
     host: d.host ?? PLACEHOLDER,
     // `load.{cpu,mem}` are 0..1 fractions; surface them as percentages.
     cpu: d.load ? Math.round(d.load.cpu * 100) : 0,

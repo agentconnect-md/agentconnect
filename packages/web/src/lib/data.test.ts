@@ -5,9 +5,12 @@ import {
   agentPermissionDisplay,
   displayedEffort,
   enrichSessionWithAgent,
+  effectiveAgentStatus,
   effortChoicesFor,
   effortField,
   fastModeAvailableFor,
+  lifecycleAwareDaemonStatus,
+  lifecycleStatus,
   modelCapability,
   modelLabel,
   permissionModeChoicesFor,
@@ -21,6 +24,21 @@ import {
   type RuntimeModelCatalog,
   type Session
 } from './data'
+
+describe('planned daemon lifecycle status', () => {
+  it('keeps online agents in the explicit restart or upgrade transition', () => {
+    expect(lifecycleStatus({ op: 'upgrade', status: 'pending' })).toBe('upgrading')
+    expect(lifecycleStatus({ op: 'restart', status: 'pending' })).toBe('restarting')
+    expect(lifecycleStatus({ op: 'upgrade', status: 'succeeded' })).toBeUndefined()
+    expect(lifecycleAwareDaemonStatus('offline', { op: 'upgrade', status: 'pending' })).toBe('upgrading')
+    expect(lifecycleAwareDaemonStatus('offline', { op: 'upgrade', status: 'failed' })).toBe('offline')
+
+    expect(effectiveAgentStatus('online', 'upgrading')).toBe('upgrading')
+    expect(effectiveAgentStatus('online', 'restarting')).toBe('restarting')
+    expect(effectiveAgentStatus('online', 'offline')).toBe('offline')
+    expect(effectiveAgentStatus('paused', 'upgrading')).toBe('paused')
+  })
+})
 
 describe('sessionChannelFilterValue', () => {
   it('groups live and persisted Playground conversations under one filter value', () => {

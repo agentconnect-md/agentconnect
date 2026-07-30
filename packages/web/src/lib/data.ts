@@ -4,7 +4,8 @@
 import type { AgentIcon } from '@/lib/agent-icon'
 import type { MemoryDreamingConfig } from '@/lib/api'
 
-export type StatusKey = 'online' | 'paused' | 'offline'
+export type LifecycleStatusKey = 'upgrading' | 'restarting'
+export type StatusKey = 'online' | 'paused' | 'offline' | LifecycleStatusKey
 
 export interface StatusInfo {
   dot: string
@@ -16,21 +17,53 @@ export interface StatusInfo {
 const STATUS_MAP: Record<StatusKey, StatusInfo> = {
   online: { dot: 'var(--status-online)', label: 'online', bg: 'var(--status-online-soft)', text: '#0f7a48' },
   paused: { dot: 'var(--status-paused)', label: 'paused', bg: 'var(--status-paused-soft)', text: '#9a6500' },
-  offline: { dot: 'var(--status-error)', label: 'offline', bg: 'var(--status-error-soft)', text: 'var(--status-error)' }
+  offline: {
+    dot: 'var(--status-error)',
+    label: 'offline',
+    bg: 'var(--status-error-soft)',
+    text: 'var(--status-error)'
+  },
+  upgrading: {
+    dot: 'var(--status-paused)',
+    label: 'upgrading',
+    bg: 'var(--status-paused-soft)',
+    text: '#9a6500'
+  },
+  restarting: {
+    dot: 'var(--status-paused)',
+    label: 'restarting',
+    bg: 'var(--status-paused-soft)',
+    text: '#9a6500'
+  }
 }
 
 export function status(s: string): StatusInfo {
   return STATUS_MAP[s as StatusKey] ?? STATUS_MAP.offline
 }
 
+export function lifecycleStatus(
+  op: Pick<DaemonLifecycleOp, 'op' | 'status'> | null | undefined
+): LifecycleStatusKey | undefined {
+  if (op?.status !== 'pending') return undefined
+  return op.op === 'upgrade' ? 'upgrading' : 'restarting'
+}
+
+export function lifecycleAwareDaemonStatus(
+  connectionStatus: StatusKey,
+  op: Pick<DaemonLifecycleOp, 'op' | 'status'> | null | undefined
+): StatusKey {
+  return lifecycleStatus(op) ?? connectionStatus
+}
+
 // An agent runs *inside* its owning daemon, so it can't really be online when that
-// daemon is offline. The stored agent status ('active' once placed) never tracks
-// daemon liveness — the CP has no reaper that flips it — so the console gates
-// "online" on the owning daemon being connected. When the owning daemon isn't in the
-// fleet (e.g. the demo agents' placeholder daemons), we trust the stored status.
+// daemon is offline. A planned restart/upgrade is different: placement and sessions
+// remain intact while the daemon drains and relaunches, so carry that explicit amber
+// transition onto the agent instead of flashing it red. When the owning daemon isn't
+// in the fleet (e.g. the demo agents' placeholder daemons), trust the stored status.
 export function effectiveAgentStatus(agentStatus: StatusKey, owningDaemonStatus: StatusKey | undefined): StatusKey {
-  if (agentStatus === 'online' && owningDaemonStatus !== undefined && owningDaemonStatus !== 'online') {
-    return 'offline'
+  if (agentStatus === 'online' && owningDaemonStatus !== undefined) {
+    if (owningDaemonStatus === 'upgrading' || owningDaemonStatus === 'restarting') return owningDaemonStatus
+    if (owningDaemonStatus !== 'online') return 'offline'
   }
   return agentStatus
 }

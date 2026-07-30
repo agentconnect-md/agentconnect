@@ -33,8 +33,9 @@ function initialsOf(label: string): string {
 // with no natural order).
 type SortKey = 'agent' | 'status' | 'daemon' | 'creator' | 'repo' | 'sessions' | 'tokens' | 'cost'
 const NUMERIC_KEYS: SortKey[] = ['sessions', 'tokens', 'cost']
-// Status column sort order: live agents first, then paused, then offline.
-const STATUS_RANK: Record<string, number> = { online: 0, paused: 1, offline: 2 }
+// Status column sort order: live agents first, planned transitions next, then
+// deliberately paused agents and finally unexpected outages.
+const STATUS_RANK: Record<string, number> = { online: 0, upgrading: 1, restarting: 1, paused: 2, offline: 3 }
 
 // Parse a compact/formatted figure ("1.2M", "128K", "$3.40") back to a number so the
 // Tokens/Cost columns can sort by the mock/demo strings when live usage is absent.
@@ -152,7 +153,9 @@ export default function AgentsView() {
     if (scope === 'mine' && (!me?.userId || a.createdBy !== me.userId)) return false
     if (seg === 'all') return true
     const eff = effectiveAgentStatus(a.status, daemons.find((d) => d.daemonId === a.daemon)?.status)
-    return eff === seg
+    // A lifecycle transition is a temporary processing pause, not an outage.
+    // Keep it discoverable under Paused while its row names the exact operation.
+    return (eff === 'upgrading' || eff === 'restarting' ? 'paused' : eff) === seg
   })
   // Desktop sort applied on top of the scope/status filter. Mobile has no sort headers,
   // so it keeps `filtered` (natural order). A stable comparator on a copy — never mutate
