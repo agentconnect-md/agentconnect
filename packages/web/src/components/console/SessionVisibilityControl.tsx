@@ -111,7 +111,7 @@ export function SessionVisibilityControl({
   return (
     <span className="inline-flex items-center gap-[6px]">
       <span className="inline-flex overflow-hidden rounded-full border border-(--border-default)">
-        {segment('org', 'globe', 'Org', 'Visible to every member who can view the agent')}
+        {segment('org', 'globe', 'Everyone', 'Visible to everyone who can view the agent')}
         {segment('private', 'lock', 'Private', SESSION_PRIVATE_TITLE)}
       </span>
       {state === 'pending' && (
@@ -154,7 +154,8 @@ export function SessionVisibilityControl({
           ) : (
             <>
               Making this session private stops it from feeding shared agent memory once the daemon confirms, and hides
-              the transcript immediately. Anything the agent already learned while it was org-visible is not removed.
+              the transcript immediately. Anything the agent already learned while it was visible to everyone is not
+              removed.
             </>
           )}
         </ConfirmationDialog>
