@@ -20,6 +20,7 @@ export const MCP_INVOCATION_EXECUTION_TIMEOUT_MS = 120_000
 export const MCP_INVOCATION_RESPONSE_CACHE_TTL_MS = 15 * 60_000
 
 const isP2002 = (error: unknown): boolean => (error as { code?: string }).code === 'P2002'
+const isP2003 = (error: unknown): boolean => (error as { code?: string }).code === 'P2003'
 const toRecord = (row: McpInvocation): McpInvocationRecord => ({ ...row })
 
 export class PgMcpInvocationRepo implements McpInvocationRepo {
@@ -33,6 +34,13 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
   async mint(input: MintMcpInvocationInput): Promise<MintMcpInvocationResult> {
     try {
       return await this.inTransaction(async (tx) => {
+        // Delegation → Invocation is the shared mint/reap lock order. KEY SHARE
+        // permits sibling mints but conflicts with delegation/cascade deletion.
+        const parent = await tx.$queryRaw<{ id: string }[]>(
+          Prisma.sql`SELECT "id" FROM "webchat_mcp_delegation" WHERE "id" = ${input.delegationId} FOR KEY SHARE`
+        )
+        if (parent.length === 0) return { kind: 'denied' }
+
         // Conflict-tolerant allocation keeps a concurrent duplicate from
         // aborting the transaction before we can inspect the winning row.
         const inserted = await tx.mcpInvocation.createMany({
@@ -90,6 +98,9 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
       // A caller-supplied digest that collides with another public invocation
       // is a conflict, never a reason to expose database details.
       if (isP2002(error)) return { kind: 'conflict' }
+      // A parent/cascade delete that wins before the parent lock is an ordinary
+      // loss of authority, not an internal persistence failure.
+      if (isP2003(error)) return { kind: 'denied' }
       throw error
     }
   }

@@ -34,9 +34,17 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
           orgId: input.orgId,
           agentId: input.agentId
         },
-        select: { id: true, agent: { select: { daemonId: true } } }
+        select: { id: true }
       })
-      if (!conversation || conversation.agent.daemonId !== input.daemonId) return null
+      if (!conversation) return null
+
+      // Lock order is Conversation → Agent → Delegation. This FOR UPDATE
+      // conflicts with both placement writers, so daemon validation and the
+      // delegation mutation below observe one serialized placement.
+      const [agent] = await tx.$queryRaw<{ daemonId: string | null }[]>(
+        Prisma.sql`SELECT "daemonId" FROM "agent" WHERE "id" = ${input.agentId} FOR UPDATE`
+      )
+      if (!agent || agent.daemonId !== input.daemonId) return null
 
       const latest = await tx.webchatMcpDelegation.findFirst({
         where: { conversationId: input.conversationId },
@@ -111,12 +119,26 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
   }
 
   async reapExpired(expiredBefore: Date): Promise<number> {
-    const deleted = await this.db.webchatMcpDelegation.deleteMany({
-      where: {
-        expiresAt: { lte: expiredBefore },
-        invocations: { none: {} }
-      }
+    return this.inTransaction(async (tx) => {
+      // Delegation → Invocation is the shared mint/reap lock order. Locking
+      // candidates first makes the following `none` check a fresh, post-wait
+      // statement instead of a stale snapshot that could erase a winning mint.
+      const candidates = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+        SELECT "id"
+        FROM "webchat_mcp_delegation"
+        WHERE "expiresAt" <= ${expiredBefore}
+        ORDER BY "id"
+        FOR UPDATE
+      `)
+      if (candidates.length === 0) return 0
+      const deleted = await tx.webchatMcpDelegation.deleteMany({
+        where: {
+          id: { in: candidates.map(({ id }) => id) },
+          expiresAt: { lte: expiredBefore },
+          invocations: { none: {} }
+        }
+      })
+      return deleted.count
     })
-    return deleted.count
   }
 }

@@ -20,6 +20,28 @@ const NOW = new Date('2026-07-30T00:00:00.000Z')
 
 const at = (milliseconds: number): Date => new Date(NOW.getTime() + milliseconds)
 
+function barrier() {
+  let release!: () => void
+  const promise = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  return { promise, release }
+}
+
+async function expectPending(promise: Promise<unknown>): Promise<void> {
+  let settled = false
+  void promise.then(
+    () => {
+      settled = true
+    },
+    () => {
+      settled = true
+    }
+  )
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  expect(settled).toBe(false)
+}
+
 async function fixtures(delegationExpiresAt = at(60 * 60_000)) {
   await seedDaemon(prisma, DAEMON)
   await seedAgent(prisma, AGENT, { daemonId: DAEMON })
@@ -102,6 +124,53 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     })
   })
 
+  it('converges concurrent same-id, same-binding mints on one issued row', async () => {
+    const delegation = await fixtures()
+    const repo = new PgMcpInvocationRepo(prisma)
+
+    const results = await Promise.all([
+      repo.mint(mintInput(delegation.id)),
+      repo.mint(mintInput(delegation.id, { assertionHash: 'peppered:assertion-2' }))
+    ])
+
+    expect(results.every((result) => result.kind === 'issued')).toBe(true)
+    expect(await prisma.mcpInvocation.count()).toBe(1)
+    expect(['peppered:assertion-1', 'peppered:assertion-2']).toContain((await repo.get(INVOCATION))?.assertionHash)
+  })
+
+  it('allows one concurrent same-id, different-binding mint and conflicts the other', async () => {
+    const delegation = await fixtures()
+    const repo = new PgMcpInvocationRepo(prisma)
+
+    const results = await Promise.all([
+      repo.mint(mintInput(delegation.id)),
+      repo.mint(
+        mintInput(delegation.id, {
+          assertionHash: 'peppered:assertion-2',
+          requestHash: 'different-request'
+        })
+      )
+    ])
+
+    expect(results.filter((result) => result.kind === 'issued')).toHaveLength(1)
+    expect(results.filter((result) => result.kind === 'conflict')).toHaveLength(1)
+    expect(await prisma.mcpInvocation.count()).toBe(1)
+  })
+
+  it('allows one concurrent different-id mint for the same assertion hash and conflicts the other', async () => {
+    const delegation = await fixtures()
+    const repo = new PgMcpInvocationRepo(prisma)
+
+    const results = await Promise.all([
+      repo.mint(mintInput(delegation.id)),
+      repo.mint(mintInput(delegation.id, { invocationId: OTHER_INVOCATION }))
+    ])
+
+    expect(results.filter((result) => result.kind === 'issued')).toHaveLength(1)
+    expect(results.filter((result) => result.kind === 'conflict')).toHaveLength(1)
+    expect(await prisma.mcpInvocation.count()).toBe(1)
+  })
+
   it('allows exactly one issued-to-running claim winner', async () => {
     const delegation = await fixtures()
     const repo = new PgMcpInvocationRepo(prisma)
@@ -163,6 +232,42 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     })
     expect(Buffer.from(replay!.responseBytes!)).toEqual(responseBytes)
   })
+
+  it.each(['succeeded', 'failed'] as const)(
+    'never rotates assertion or cached body when an identical %s invocation is minted again',
+    async (status) => {
+      const delegation = await fixtures()
+      const repo = new PgMcpInvocationRepo(prisma)
+      const responseBytes = Buffer.from(`cached-${status}`)
+      await repo.mint(mintInput(delegation.id))
+      await repo.claim({ invocationId: INVOCATION, assertionHash: 'peppered:assertion-1', now: at(1_000) })
+      await repo.complete({
+        invocationId: INVOCATION,
+        status,
+        responseStatus: status === 'succeeded' ? 200 : 400,
+        responseBytes,
+        completedAt: at(2_000)
+      })
+
+      const retry = await repo.mint(
+        mintInput(delegation.id, {
+          assertionHash: 'peppered:rotated',
+          assertionExpires: at(60_000),
+          now: at(3_000)
+        })
+      )
+
+      expect(retry.kind).toBe('existing')
+      const stored = await repo.get(INVOCATION)
+      expect(stored).toMatchObject({
+        status,
+        assertionHash: 'peppered:assertion-1',
+        assertionExpires: at(30_000),
+        completedAt: at(2_000)
+      })
+      expect(Buffer.from(stored!.responseBytes!)).toEqual(responseBytes)
+    }
+  )
 
   it('rejects an oversized terminal response before it reaches persistence', async () => {
     const delegation = await fixtures()
@@ -226,29 +331,131 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
       now: at(10_001),
       expiresAt: at(60 * 60_000)
     })
-    await repo.mint(mintInput(liveDelegation!.id, { invocationId: OTHER_INVOCATION }))
+    await repo.mint(
+      mintInput(liveDelegation!.id, {
+        invocationId: OTHER_INVOCATION,
+        now: at(11_000),
+        assertionExpires: at(41_000)
+      })
+    )
     await repo.claim({
       invocationId: OTHER_INVOCATION,
       assertionHash: 'peppered:assertion-1',
-      now: at(1_000)
+      now: at(12_000)
     })
     await repo.complete({
       invocationId: OTHER_INVOCATION,
       status: 'failed',
       responseStatus: 400,
       responseBytes: Buffer.from('cached'),
-      completedAt: at(2_000)
+      completedAt: at(13_000)
     })
 
-    expect(await repo.reap(at(2_000 + MCP_INVOCATION_RESPONSE_CACHE_TTL_MS - 1))).toEqual({
+    expect(await repo.reap(at(13_000 + MCP_INVOCATION_RESPONSE_CACHE_TTL_MS - 1))).toEqual({
       markedAmbiguous: 0,
       deleted: 0
     })
     expect(await repo.get(OTHER_INVOCATION)).not.toBeNull()
-    expect(await repo.reap(at(2_000 + MCP_INVOCATION_RESPONSE_CACHE_TTL_MS))).toEqual({
+    expect(await repo.reap(at(13_000 + MCP_INVOCATION_RESPONSE_CACHE_TTL_MS))).toEqual({
       markedAmbiguous: 0,
       deleted: 1
     })
+  })
+
+  it('denies mint after an expired-delegation reaper wins the parent lock', async () => {
+    const delegation = await fixtures(at(1_000))
+    const reaped = barrier()
+    const releaseReaper = barrier()
+    const reaping = prisma.$transaction(
+      async (tx) => {
+        const count = await new PgWebchatMcpDelegationRepo(tx).reapExpired(at(1_000))
+        reaped.release()
+        await releaseReaper.promise
+        return count
+      },
+      { timeout: 20_000 }
+    )
+    await reaped.promise
+
+    const minting = new PgMcpInvocationRepo(prisma).mint(mintInput(delegation.id))
+    await expectPending(minting)
+    releaseReaper.release()
+
+    expect(await reaping).toBe(1)
+    expect(await minting).toEqual({ kind: 'denied' })
+    expect(await prisma.mcpInvocation.count()).toBe(0)
+  })
+
+  it('keeps an expired delegation when mint wins its parent lock first', async () => {
+    const delegation = await fixtures(at(1_000))
+    const minted = barrier()
+    const releaseMint = barrier()
+    const minting = prisma.$transaction(
+      async (tx) => {
+        const result = await new PgMcpInvocationRepo(tx).mint(mintInput(delegation.id))
+        minted.release()
+        await releaseMint.promise
+        return result
+      },
+      { timeout: 20_000 }
+    )
+    await minted.promise
+
+    const reaping = new PgWebchatMcpDelegationRepo(prisma).reapExpired(at(1_000))
+    await expectPending(reaping)
+    releaseMint.release()
+
+    expect((await minting).kind).toBe('issued')
+    expect(await reaping).toBe(0)
+    expect(await prisma.webchatMcpDelegation.findUnique({ where: { id: delegation.id } })).not.toBeNull()
+    expect(await prisma.mcpInvocation.findUnique({ where: { id: INVOCATION } })).not.toBeNull()
+  })
+
+  it('denies mint cleanly when owner cascade deletion wins first', async () => {
+    const delegation = await fixtures()
+    const deleted = barrier()
+    const releaseDelete = barrier()
+    const deleting = prisma.$transaction(
+      async (tx) => {
+        await tx.user.delete({ where: { id: DEFAULT_OWNER_ID } })
+        deleted.release()
+        await releaseDelete.promise
+      },
+      { timeout: 20_000 }
+    )
+    await deleted.promise
+
+    const minting = new PgMcpInvocationRepo(prisma).mint(mintInput(delegation.id))
+    await expectPending(minting)
+    releaseDelete.release()
+
+    await deleting
+    expect(await minting).toEqual({ kind: 'denied' })
+  })
+
+  it('may issue before daemon cascade deletion, then fails closed by losing authority and ledger', async () => {
+    const delegation = await fixtures()
+    const minted = barrier()
+    const releaseMint = barrier()
+    const minting = prisma.$transaction(
+      async (tx) => {
+        const result = await new PgMcpInvocationRepo(tx).mint(mintInput(delegation.id))
+        minted.release()
+        await releaseMint.promise
+        return result
+      },
+      { timeout: 20_000 }
+    )
+    await minted.promise
+
+    const deleting = prisma.daemon.delete({ where: { id: DAEMON } })
+    await expectPending(deleting)
+    releaseMint.release()
+
+    expect((await minting).kind).toBe('issued')
+    await deleting
+    expect(await prisma.webchatMcpDelegation.findUnique({ where: { id: delegation.id } })).toBeNull()
+    expect(await prisma.mcpInvocation.findUnique({ where: { id: INVOCATION } })).toBeNull()
   })
 
   it('marks running invocations ambiguous only after the fixed execution window', async () => {

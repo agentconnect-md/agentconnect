@@ -105,6 +105,34 @@ async function settlePresetPlacement(tx: Prisma.TransactionClient, agentId: stri
   })
 }
 
+/**
+ * Placement/delegation lock order:
+ *   Agent FOR UPDATE → active WebchatMcpDelegation rows.
+ * Establishment takes Conversation FOR UPDATE before joining this order
+ * (Conversation → Agent → Delegation). Placement never locks Conversation, so
+ * the two paths cannot form an inverse wait cycle.
+ */
+async function lockAgentPlacement(
+  tx: Prisma.TransactionClient,
+  agentId: string
+): Promise<{ daemonId: string | null } | null> {
+  const [row] = await tx.$queryRaw<{ daemonId: string | null }[]>(
+    Prisma.sql`SELECT "daemonId" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
+  )
+  return row ?? null
+}
+
+async function revokeActiveWebchatMcpDelegations(
+  tx: Prisma.TransactionClient,
+  agentId: string,
+  revokedAt: Date
+): Promise<void> {
+  await tx.webchatMcpDelegation.updateMany({
+    where: { agentId, revokedAt: null },
+    data: { revokedAt, revokedReason: 'agent_placement_changed' }
+  })
+}
+
 function workspaceOf(a: Agent): AgentWorkspace {
   if (a.workspaceMode === 'github') {
     return {
@@ -560,7 +588,7 @@ export class PgAgentRepo implements AgentRepo {
 
   async setPlacement(agentId: AgentId, daemonId: DaemonId | null): Promise<void> {
     await this.transaction(async (tx) => {
-      const current = await tx.agent.findUnique({ where: { id: agentId }, select: { daemonId: true } })
+      const current = await lockAgentPlacement(tx, agentId)
       if (!current) return
       await tx.agent.update({
         where: { id: agentId },
@@ -568,6 +596,7 @@ export class PgAgentRepo implements AgentRepo {
       })
       if (daemonId) await settlePresetPlacement(tx, agentId)
       if (current.daemonId !== daemonId) {
+        await revokeActiveWebchatMcpDelegations(tx, agentId, new Date())
         await tx.hookDef.updateMany({
           where: { agentId },
           data: { dispatchRevision: { increment: 1 } }
@@ -582,11 +611,13 @@ export class PgAgentRepo implements AgentRepo {
     daemonId: DaemonId | null,
     byUserId?: string
   ): Promise<AgentRecord | null> {
-    // `id` keeps this an update-by-unique while `daemonId` is the compare-and-set
-    // guard. A concurrent move changes daemonId, so Prisma reports P2025 and the
-    // loser returns null instead of overwriting the winner's placement.
+    // The explicit Agent lock serializes the compare-and-set read with all
+    // placement writers. Keep daemonId on the update as a defensive guard; a
+    // missing/deleted row still resolves to null rather than overwriting state.
     try {
       return await this.transaction(async (tx) => {
+        const current = await lockAgentPlacement(tx, agentId)
+        if (!current || current.daemonId !== expectedDaemonId) return null
         const a = await tx.agent.update({
           where: { id: agentId, daemonId: expectedDaemonId },
           data: {
@@ -599,6 +630,7 @@ export class PgAgentRepo implements AgentRepo {
         })
         if (daemonId) await settlePresetPlacement(tx, agentId)
         if (expectedDaemonId !== daemonId) {
+          await revokeActiveWebchatMcpDelegations(tx, agentId, new Date())
           await tx.hookDef.updateMany({
             where: { agentId },
             data: { dispatchRevision: { increment: 1 } }

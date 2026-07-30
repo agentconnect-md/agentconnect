@@ -718,11 +718,14 @@ export interface AgentRepo {
     },
     byUserId?: string
   ): Promise<AgentRecord>
+  /** Serialize on the Agent row. A real placement change atomically revokes all
+   *  active webchat MCP delegations; a same-placement write does not. */
   setPlacement(agentId: AgentId, daemonId: DaemonId | null): Promise<void>
   /**
    * Atomically move an agent only when its current owner still matches
    * `expectedDaemonId`. Returns the updated row, or null when another move won
-   * the compare-and-set race. This is the persistence fence for the explicit
+   * the compare-and-set race. A real move revokes active webchat MCP authority
+   * in the same transaction. This is the persistence fence for the explicit
    * cold daemon-switch action.
    */
   movePlacement(
@@ -1132,6 +1135,7 @@ export interface MintMcpInvocationInput {
 export type MintMcpInvocationResult =
   | { kind: 'issued'; invocation: McpInvocationRecord }
   | { kind: 'existing'; invocation: McpInvocationRecord }
+  | { kind: 'denied' }
   | { kind: 'conflict' }
 
 export interface ClaimMcpInvocationInput {
@@ -1163,6 +1167,7 @@ export interface McpInvocationRepo {
   /**
    * Create or rotate an issued assertion. Only an identical immutable binding
    * may retry; running/terminal rows are returned without reissuing authority.
+   * `denied` means the parent delegation disappeared before its row lock.
    */
   mint(input: MintMcpInvocationInput): Promise<MintMcpInvocationResult>
   /** Exactly one caller can win the issued → running compare-and-set. */
