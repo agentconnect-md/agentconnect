@@ -13,7 +13,12 @@
  * daemon has no live rd/* socket on THIS relay the op fails with an error frame.
  */
 import { randomUUID } from 'node:crypto'
-import { RelayWebchatOp, type RdChat, type RdMsgWebchat } from '@agentconnect.md/protocol'
+import {
+  RelayWebchatOp,
+  type RdChat,
+  type RdMsgWebchat,
+  type WebchatMcpDelegationReference
+} from '@agentconnect.md/protocol'
 import type { ServerTransport } from '@agentconnect.md/connection'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { ChatSink } from './webchat-router.js'
@@ -25,6 +30,8 @@ export interface RelayBrowserConnDeps {
   agentId: string
   /** Display handle for the transcript author line (from the verified token). */
   user: string
+  /** Opaque MCP authority reference from the verified CP result, never browser input. */
+  delegation?: WebchatMcpDelegationReference
   /** Resolve a live rd/* connection to the target daemon (may be absent if it dropped). */
   daemonConn: () => RelayDaemonConnection | undefined
   register: (chatId: string, sink: ChatSink) => void
@@ -81,11 +88,22 @@ export function parseBrowserFrame(msg: unknown, user: string): RelayWebchatOp | 
 
 export class RelayBrowserConnection implements ChatSink {
   private closed = false
+  private readonly delegation?: Readonly<WebchatMcpDelegationReference>
 
   constructor(
     private readonly transport: ServerTransport,
     private readonly deps: RelayBrowserConnDeps
-  ) {}
+  ) {
+    // Snapshot the verified server-side verdict once. Its fields are primitives, so a
+    // frozen shallow copy is a complete immutable binding for this browser transport.
+    this.delegation = deps.delegation
+      ? Object.freeze({
+          id: deps.delegation.id,
+          generation: deps.delegation.generation,
+          expiresAt: deps.delegation.expiresAt
+        })
+      : undefined
+  }
 
   start(): void {
     this.deps.register(this.deps.chatId, this)
@@ -129,6 +147,7 @@ export class RelayBrowserConnection implements ChatSink {
       sessionKey: this.deps.chatId,
       msgId: randomUUID(),
       chatId: this.deps.chatId,
+      ...(this.delegation ? { delegation: this.delegation } : {}),
       payload: op
     }
     try {
@@ -143,8 +162,10 @@ export class RelayBrowserConnection implements ChatSink {
       } else if (op.op === 'resume') {
         this.send({ type: 'resumed', ack: browserAck })
       }
-    } catch (err) {
-      this.deps.log.warn(`relay: webchat op delivery failed: ${(err as Error).message}`)
+    } catch {
+      // Lower layers may include the outbound frame in an error. Do not let the opaque
+      // delegation reference become log content.
+      this.deps.log.warn('relay: webchat op delivery failed')
       this.send({ type: 'error', message: 'delivery failed' })
     }
   }
@@ -170,6 +191,7 @@ export class RelayBrowserConnection implements ChatSink {
         sessionKey: this.deps.chatId,
         msgId: randomUUID(),
         chatId: this.deps.chatId,
+        ...(this.delegation ? { delegation: this.delegation } : {}),
         payload: { op: 'close' }
       })
     } catch {

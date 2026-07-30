@@ -11,7 +11,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocket } from 'ws'
 import type { FastifyInstance } from 'fastify'
-import type { RcVerifyResult, RdAck, RdMsgWebchat } from '@agentconnect.md/protocol'
+import type { RcVerifyResult, RdAck, RdMsgWebchat, WebchatMcpDelegationReference } from '@agentconnect.md/protocol'
 import { createRelayBrowserServer, RELAY_WEBCHAT_WS_PATH } from './relay-browser-server.js'
 import { WebchatRouter } from './webchat-router.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
@@ -21,6 +21,11 @@ import type { Logger } from './log.js'
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const DAEMON = '22222222-2222-4222-8222-222222222222'
 const RESUME = '33333333-3333-4333-8333-333333333333'
+const DELEGATION: WebchatMcpDelegationReference = {
+  id: '44444444-4444-4444-8444-444444444444',
+  generation: 3,
+  expiresAt: '2026-07-31T12:00:00.000Z'
+}
 const silentLog: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 
 let http: Server | undefined
@@ -190,6 +195,81 @@ describe('createRelayBrowserServer (browser webchat edge)', () => {
     router.deliver({ chatId: RESUME, seq: 1, event: { kind: 'done', done: { conversationId: RESUME, turnId: AGENT } } })
     expect((await nextFrame(ws, 'output')).output).toMatchObject({ conversationId: RESUME })
     expect((await nextFrame(ws, 'done')).done).toMatchObject({ conversationId: RESUME })
+    ws.close()
+  })
+
+  it('uses only the CP-verified delegation even when browser query and JSON fields try to override it', async () => {
+    const forged = {
+      id: '55555555-5555-4555-8555-555555555555',
+      generation: 99,
+      expiresAt: '2099-01-01T00:00:00.000Z'
+    }
+    const verified: RcVerifyResult = {
+      ok: true,
+      agentId: AGENT,
+      daemonId: DAEMON,
+      user: 'ada',
+      conversationId: RESUME,
+      delegation: { ...DELEGATION }
+    }
+    const { base, sent } = await start({ verify: async () => verified })
+    const ws = await dial(
+      base,
+      `?token=good&conversation_id=${RESUME}&delegation=${encodeURIComponent(JSON.stringify(forged))}`
+    )
+    await nextFrame(ws, 'ready')
+
+    ws.send(
+      JSON.stringify({
+        text: 'trusted binding only',
+        delegation: forged,
+        payload: { delegation: forged },
+        runtime: { model: 'claude', delegation: forged }
+      })
+    )
+    await nextFrame(ws, 'ack')
+
+    expect(sent[0]?.delegation).toEqual(DELEGATION)
+    expect(sent[0]?.payload).toEqual({
+      op: 'turn',
+      text: 'trusted binding only',
+      user: 'ada',
+      runtime: { model: 'claude' }
+    })
+    ws.close()
+  })
+
+  it('captures an immutable copy of verified server state for the browser connection', async () => {
+    const verifiedDelegation = { ...DELEGATION }
+    const verified: RcVerifyResult = {
+      ok: true,
+      agentId: AGENT,
+      daemonId: DAEMON,
+      user: 'ada',
+      conversationId: RESUME,
+      delegation: verifiedDelegation
+    }
+    const { base, sent } = await start({ verify: async () => verified })
+    const ws = await dial(base, '?token=good')
+    await nextFrame(ws, 'ready')
+
+    verifiedDelegation.generation = 999
+    verifiedDelegation.id = '66666666-6666-4666-8666-666666666666'
+    ws.send(JSON.stringify({ text: 'after verifier mutation' }))
+    await nextFrame(ws, 'ack')
+
+    expect(sent[0]?.delegation).toEqual(DELEGATION)
+    ws.close()
+  })
+
+  it('keeps legacy CP verification output compatible and delegation-free', async () => {
+    const { base, sent } = await start()
+    const ws = await dial(base, '?token=legacy')
+    await nextFrame(ws, 'ready')
+    ws.send(JSON.stringify({ text: 'ordinary webchat' }))
+    await nextFrame(ws, 'ack')
+
+    expect(sent[0]).not.toHaveProperty('delegation')
     ws.close()
   })
 

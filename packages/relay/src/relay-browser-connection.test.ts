@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import type { RdAck, RdMsgWebchat } from '@agentconnect.md/protocol'
+import type { RdAck, RdMsgWebchat, WebchatMcpDelegationReference } from '@agentconnect.md/protocol'
 import type { ServerTransport } from '@agentconnect.md/connection'
 import { RelayBrowserConnection, parseBrowserFrame } from './relay-browser-connection.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
@@ -8,6 +8,11 @@ import type { Logger } from './log.js'
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const USER = 'ada@example.com'
+const DELEGATION: WebchatMcpDelegationReference = {
+  id: '33333333-3333-4333-8333-333333333333',
+  generation: 7,
+  expiresAt: '2026-07-31T12:00:00.000Z'
+}
 const silentLog: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 
 class FakeBrowserTransport implements ServerTransport {
@@ -37,7 +42,14 @@ class FakeBrowserTransport implements ServerTransport {
   }
 }
 
-function build(over: { daemon?: RelayDaemonConnection | undefined; ack?: RdAck } = {}) {
+function build(
+  over: {
+    daemon?: RelayDaemonConnection | undefined
+    ack?: RdAck
+    delegation?: WebchatMcpDelegationReference
+    log?: Logger
+  } = {}
+) {
   const sent: RdMsgWebchat[] = []
   const sendMsg = vi.fn(async (m: RdMsgWebchat): Promise<RdAck> => {
     sent.push(m)
@@ -51,10 +63,11 @@ function build(over: { daemon?: RelayDaemonConnection | undefined; ack?: RdAck }
     chatId: CHAT,
     agentId: AGENT,
     user: USER,
+    ...(over.delegation ? { delegation: over.delegation } : {}),
     daemonConn: () => daemon,
     register,
     unregister,
-    log: silentLog
+    log: over.log ?? silentLog
   })
   conn.start()
   return { conn, transport, sendMsg, sent, register, unregister }
@@ -153,6 +166,62 @@ describe('RelayBrowserConnection', () => {
     expect(transport.last('ack')).toEqual({ type: 'ack', ack: { accepted: true } })
   })
 
+  it('copies the verified delegation reference to every webchat operation', async () => {
+    const { transport, sent } = build({ delegation: DELEGATION })
+    const operations = [
+      { text: 'hello there' },
+      { type: 'resume', turnId: AGENT, generation: 4, afterIndex: 7 },
+      { type: 'set_model', model: 'claude' },
+      { type: 'set_effort', effort: 'high' },
+      { type: 'set_permission_mode', permissionMode: 'plan' },
+      { type: 'set_fast', fastMode: true },
+      { type: 'cancel' }
+    ]
+
+    for (const operation of operations) transport.feed(operation)
+    transport.fireClose()
+    await tick()
+
+    expect(sent).toHaveLength(operations.length + 1)
+    expect(sent.map(({ delegation }) => delegation)).toEqual(
+      Array.from({ length: operations.length + 1 }, () => DELEGATION)
+    )
+    expect(sent.at(-1)?.payload).toEqual({ op: 'close' })
+  })
+
+  it('keeps legacy browser connections delegation-free', async () => {
+    const { transport, sent } = build()
+    transport.feed({ text: 'ordinary webchat' })
+    transport.fireClose()
+    await tick()
+
+    expect(sent).toHaveLength(2)
+    expect(sent.every((message) => message.delegation === undefined)).toBe(true)
+  })
+
+  it('does not parse browser delegation fields at any nesting depth', () => {
+    const forged = {
+      id: '44444444-4444-4444-8444-444444444444',
+      generation: 999,
+      expiresAt: '2099-01-01T00:00:00.000Z'
+    }
+    const parsed = parseBrowserFrame(
+      {
+        type: 'message',
+        text: 'try to escape',
+        delegation: forged,
+        payload: { delegation: forged },
+        runtime: { model: 'claude', delegation: forged }
+      },
+      USER
+    )
+
+    expect(parsed).toEqual({ op: 'turn', text: 'try to escape', user: USER, runtime: { model: 'claude' } })
+    expect(parsed).not.toHaveProperty('delegation')
+    expect(parsed).not.toHaveProperty('payload')
+    expect(parsed).not.toHaveProperty('runtime.delegation')
+  })
+
   it('bridges an image-only turn without putting the bytes on any control-plane path', async () => {
     const { transport, sent } = build()
     const attachment = {
@@ -239,6 +308,59 @@ describe('RelayBrowserConnection', () => {
     transport.feed({ text: 'hi' })
     await tick()
     expect(transport.last('error')).toEqual({ type: 'error', message: 'delivery failed' })
+  })
+
+  it('does not disclose a delegation reference through delivery logs or browser errors', async () => {
+    const warnings: string[] = []
+    const log: Logger = {
+      debug: () => {},
+      info: () => {},
+      warn: (message) => warnings.push(message),
+      error: () => {}
+    }
+    const sendMsg = vi.fn(async () => {
+      throw new Error(`failed frame ${JSON.stringify(DELEGATION)}`)
+    })
+    const { transport } = build({
+      daemon: { sendMsg } as unknown as RelayDaemonConnection,
+      delegation: DELEGATION,
+      log
+    })
+
+    transport.feed({ text: 'hi' })
+    await tick()
+
+    expect(warnings.join('\n')).not.toContain(DELEGATION.id)
+    expect(JSON.stringify(transport.last('error'))).not.toContain(DELEGATION.id)
+  })
+
+  it('treats browser close as transport observability while an accepted turn keeps completing', async () => {
+    let completeTurn!: (value: RdAck) => void
+    const delivered: RdMsgWebchat[] = []
+    const sendMsg = vi.fn((message: RdMsgWebchat) => {
+      delivered.push(message)
+      return message.payload.op === 'turn'
+        ? new Promise<RdAck>((resolve) => {
+            completeTurn = resolve
+          })
+        : Promise.resolve({ msgId: message.msgId, accepted: true })
+    })
+    const { transport } = build({
+      daemon: { sendMsg } as unknown as RelayDaemonConnection,
+      delegation: DELEGATION
+    })
+
+    transport.feed({ text: 'long turn' })
+    await tick()
+    transport.fireClose()
+    await tick()
+    completeTurn({ msgId: delivered[0]!.msgId, accepted: true })
+    await tick()
+
+    expect(delivered.map(({ payload }) => payload.op)).toEqual(['turn', 'close'])
+    expect(delivered[0]?.delegation).toEqual(DELEGATION)
+    expect(delivered[1]?.delegation).toEqual(DELEGATION)
+    expect(transport.last('ack')).toBeUndefined()
   })
 
   it('on close: unregisters and forwards a best-effort {op:close} to the daemon', async () => {
