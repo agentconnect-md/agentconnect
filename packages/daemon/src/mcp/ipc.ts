@@ -23,6 +23,17 @@ export interface IpcCallToolReq {
 
 export type IpcRequest = IpcListToolsReq | IpcCallToolReq
 
+/** Private-broker-only startup authentication. Shared MCP control sockets never
+ * send this operation; it binds one persistent bridge connection to one cell
+ * before that bridge exposes its stdio MCP server. */
+export interface IpcAttachReq {
+  id: number
+  token: string
+  op: 'attach'
+}
+
+export type IpcPrivateRequest = IpcAttachReq | IpcRequest
+
 export interface IpcListToolsResult {
   tools: Tool[]
 }
@@ -36,7 +47,7 @@ export interface IpcResponse {
 }
 
 /** Frame a message for the wire: compact JSON + a single trailing newline. */
-export function encodeFrame(msg: IpcRequest | IpcResponse): string {
+export function encodeFrame(msg: IpcPrivateRequest | IpcResponse): string {
   return JSON.stringify(msg) + '\n'
 }
 

@@ -10,7 +10,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import { WireError } from '@agentconnect.md/connection'
 import { buildMcpServers, type McpStdioServer } from './inject.js'
-import { decodeFrames, encodeFrame, type IpcRequest, type IpcResponse } from './ipc.js'
+import { decodeFrames, encodeFrame, type IpcAttachReq, type IpcRequest, type IpcResponse } from './ipc.js'
 
 const PRIVATE_SOCKET_NAME = 'mcp.sock'
 const ADMIN_SERVER_NAME = 'agentconnect-admin'
@@ -301,6 +301,19 @@ function isNarrowIpcRequest(value: unknown): value is IpcRequest {
   )
 }
 
+function isNarrowAttachRequest(value: unknown): value is IpcAttachReq {
+  return (
+    isPlainRecord(value) &&
+    Number.isSafeInteger(value.id) &&
+    (value.id as number) >= 0 &&
+    typeof value.token === 'string' &&
+    value.token.length >= 1 &&
+    value.token.length <= 256 &&
+    value.op === 'attach' &&
+    exactKeys(value, ['id', 'op', 'token'])
+  )
+}
+
 /**
  * Conversation-private adapter between the cell-local mcp-bridge IPC and the
  * CP's standard MCP HTTP endpoint. It stores no user credential and never
@@ -567,16 +580,22 @@ export class SessionMcpBroker {
         return
       }
       for (const request of decoded.messages) {
-        if (
-          !authenticated &&
-          isNarrowIpcRequest(request) &&
-          binding.accepting &&
-          tokenMatches(binding.token, request.token)
-        ) {
-          authenticated = true
+        if (isNarrowAttachRequest(request)) {
+          const reply = (response: IpcResponse) => {
+            if (!socket.destroyed) socket.write(encodeFrame(response))
+          }
+          if (!binding.accepting || !tokenMatches(binding.token, request.token)) {
+            reply({ id: request.id, ok: false, error: UNKNOWN_TOKEN_ERROR })
+          } else if (this.now() >= binding.expiresAtMs) {
+            reply({ id: request.id, ok: false, error: WEBCHAT_MCP_RECONNECT_ERROR })
+          } else if (!socket.destroyed) {
+            reply({ id: request.id, ok: true, result: { attached: true } })
+            authenticated = true
+          }
+          continue
         }
         pending += 1
-        void this.handle(binding, request, socket).finally(() => {
+        void this.handle(binding, request, socket, authenticated).finally(() => {
           pending -= 1
         })
       }
@@ -608,13 +627,22 @@ export class SessionMcpBroker {
     })
   }
 
-  private async handle(binding: CellBinding, request: unknown, socket: net.Socket): Promise<void> {
+  private async handle(
+    binding: CellBinding,
+    request: unknown,
+    socket: net.Socket,
+    authenticated: boolean
+  ): Promise<void> {
     const reply = (response: IpcResponse) => {
       if (!socket.destroyed) socket.write(encodeFrame(response))
     }
     if (!isNarrowIpcRequest(request)) {
       const id = isPlainRecord(request) && Number.isSafeInteger(request.id) ? (request.id as number) : 0
       reply({ id, ok: false, error: 'invalid private MCP request' })
+      return
+    }
+    if (!authenticated) {
+      reply({ id: request.id, ok: false, error: 'private MCP bridge is not attached' })
       return
     }
     if (!binding.accepting || !tokenMatches(binding.token, request.token)) {

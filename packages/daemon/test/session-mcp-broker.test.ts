@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
-import { lstat, mkdtemp, readFile, stat, symlink } from 'node:fs/promises'
+import { lstat, mkdtemp, readFile, realpath, stat, symlink } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import net from 'node:net'
-import { join } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   McpInvocationMint,
@@ -34,6 +35,7 @@ const NEXT_DELEGATION_ID = '55555555-5555-4555-8555-555555555555'
 const INVOCATION_ID = '66666666-6666-4666-8666-666666666666'
 const NOW = Date.parse('2026-07-31T00:00:00.000Z')
 const EXPIRY = '2026-07-31T12:00:00.000Z'
+const repoRoot = await realpath(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
 
 const roots: string[] = []
 const brokers: SessionMcpBroker[] = []
@@ -68,6 +70,9 @@ function binding(over: Partial<Parameters<SessionMcpBroker['registerCell']>[0]> 
 
 async function harness(over: Partial<SessionMcpBrokerDeps> = {}) {
   const root = await mkdtemp(join(tmpdir(), 'ac-private-broker-test-'))
+  const resolvedRoot = await realpath(root)
+  expect(resolvedRoot).not.toBe(repoRoot)
+  expect(resolvedRoot.startsWith(repoRoot + sep)).toBe(false)
   roots.push(root)
   let now = NOW
   let tokenCount = 0
@@ -140,6 +145,7 @@ async function ipc(endpoint: string, request: IpcRequest): Promise<IpcResponse> 
   return new Promise((resolve, reject) => {
     const socket = net.connect(endpoint)
     let buffer = ''
+    let attached = false
     socket.setEncoding('utf8')
     socket.once('error', reject)
     socket.on('data', (chunk: string) => {
@@ -148,10 +154,15 @@ async function ipc(endpoint: string, request: IpcRequest): Promise<IpcResponse> 
       buffer = decoded.rest
       const response = decoded.messages[0]
       if (!response) return
+      if (!attached && response.ok) {
+        attached = true
+        socket.write(encodeFrame(request))
+        return
+      }
       socket.destroy()
       resolve(response)
     })
-    socket.once('connect', () => socket.write(encodeFrame(request)))
+    socket.once('connect', () => socket.write(encodeFrame({ id: request.id, token: request.token, op: 'attach' })))
   })
 }
 
@@ -164,7 +175,7 @@ async function writeUntilClose(endpoint: string, body: string): Promise<void> {
   })
 }
 
-async function authenticatedSocket(endpoint: string, request: IpcRequest): Promise<net.Socket> {
+async function authenticatedSocket(endpoint: string, token: string): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
     const socket = net.connect(endpoint)
     let buffer = ''
@@ -176,7 +187,7 @@ async function authenticatedSocket(endpoint: string, request: IpcRequest): Promi
       buffer = decoded.rest
       if (decoded.messages[0]) resolve(socket)
     })
-    socket.once('connect', () => socket.write(encodeFrame(request)))
+    socket.once('connect', () => socket.write(encodeFrame({ id: 1, token, op: 'attach' })))
   })
 }
 
@@ -547,17 +558,18 @@ describe('SessionMcpBroker immutable registration', () => {
 })
 
 describe('SessionMcpBroker authenticated bridge lifecycle', () => {
-  it('emits one immutable fenced disconnect after a valid-token bridge closes', async () => {
+  it('ACKs attach without CP work and emits one immutable fence when the bridge closes before its first tool request', async () => {
     const h = await harness()
     const server = await h.broker.registerCell(binding())
     const events: unknown[] = []
     h.broker.subscribeBridgeDisconnect((event) => events.push(event))
-    const socket = await authenticatedSocket(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
-      id: 1,
-      token: descriptorEnv(server!).AC_MCP_TOKEN!,
-      op: 'listTools'
-    })
+    const socket = await authenticatedSocket(
+      h.broker.getCellMount(CELL_ID)!.sourceSocketPath,
+      descriptorEnv(server!).AC_MCP_TOKEN!
+    )
 
+    expect(h.mintMcpInvocation).not.toHaveBeenCalled()
+    expect(h.fetch).not.toHaveBeenCalled()
     socket.destroy()
     await vi.waitFor(() => expect(events).toHaveLength(1))
     expect(events).toEqual([
@@ -571,7 +583,39 @@ describe('SessionMcpBroker authenticated bridge lifecycle', () => {
     ])
   })
 
-  it('does not emit for unauthenticated, wrong-token, oversized, or actively released sockets', async () => {
+  it('binds authentication to the attached socket and does not let another socket borrow the token', async () => {
+    const h = await harness()
+    const server = await h.broker.registerCell(binding())
+    const endpoint = h.broker.getCellMount(CELL_ID)!.sourceSocketPath
+    const token = descriptorEnv(server!).AC_MCP_TOKEN!
+    const events: unknown[] = []
+    h.broker.subscribeBridgeDisconnect((event) => events.push(event))
+    const attached = await authenticatedSocket(endpoint, token)
+
+    const borrowed = await new Promise<IpcResponse>((resolveResponse, reject) => {
+      const socket = net.connect(endpoint)
+      let buffer = ''
+      socket.setEncoding('utf8')
+      socket.once('error', reject)
+      socket.once('connect', () => socket.write(encodeFrame({ id: 2, token, op: 'listTools' })))
+      socket.on('data', (chunk: string) => {
+        buffer += chunk
+        const decoded = decodeFrames<IpcResponse>(buffer)
+        buffer = decoded.rest
+        if (!decoded.messages[0]) return
+        socket.destroy()
+        resolveResponse(decoded.messages[0])
+      })
+    })
+    expect(borrowed).toMatchObject({ id: 2, ok: false, error: expect.stringMatching(/not attached/i) })
+    expect(events).toEqual([])
+    expect(h.mintMcpInvocation).not.toHaveBeenCalled()
+
+    attached.destroy()
+    await vi.waitFor(() => expect(events).toHaveLength(1))
+  })
+
+  it('does not emit for unattached, wrong-token, invalid, oversized, or actively released sockets', async () => {
     const h = await harness()
     const server = await h.broker.registerCell(binding())
     const endpoint = h.broker.getCellMount(CELL_ID)!.sourceSocketPath
@@ -584,21 +628,50 @@ describe('SessionMcpBroker authenticated bridge lifecycle', () => {
       socket.once('connect', () => socket.destroy())
       socket.once('close', resolve)
     })
-    await expect(ipc(endpoint, { id: 1, token: 'wrong-token', op: 'listTools' })).resolves.toMatchObject({
-      ok: false
+    await new Promise<void>((resolve, reject) => {
+      const socket = net.connect(endpoint)
+      socket.setEncoding('utf8')
+      socket.once('error', reject)
+      socket.once('connect', () =>
+        socket.write(
+          encodeFrame({
+            id: 1,
+            token: descriptorEnv(server!).AC_MCP_TOKEN!,
+            op: 'listTools'
+          })
+        )
+      )
+      socket.once('data', () => socket.destroy())
+      socket.once('close', resolve)
+    })
+    await expect(ipc(endpoint, { id: 1, token: 'wrong-token', op: 'listTools' })).resolves.toMatchObject({ ok: false })
+    await new Promise<void>((resolve, reject) => {
+      const socket = net.connect(endpoint)
+      socket.setEncoding('utf8')
+      socket.once('error', reject)
+      socket.once('connect', () =>
+        socket.write(
+          encodeFrame({
+            id: 1,
+            token: descriptorEnv(server!).AC_MCP_TOKEN!,
+            op: 'attach',
+            extra: true
+          } as never)
+        )
+      )
+      socket.once('data', () => socket.destroy())
+      socket.once('close', resolve)
     })
     await writeUntilClose(endpoint, 'x'.repeat(PRIVATE_MCP_MAX_FRAME_BYTES + 1))
 
-    const authenticated = await authenticatedSocket(endpoint, {
-      id: 2,
-      token: descriptorEnv(server!).AC_MCP_TOKEN!,
-      op: 'listTools'
-    })
+    const authenticated = await authenticatedSocket(endpoint, descriptorEnv(server!).AC_MCP_TOKEN!)
     const closed = new Promise<void>((resolve) => authenticated.once('close', resolve))
     await h.broker.releaseCell(binding())
     await closed
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(events).toEqual([])
+    expect(h.mintMcpInvocation).not.toHaveBeenCalled()
+    expect(h.fetch).not.toHaveBeenCalled()
   })
 })
 

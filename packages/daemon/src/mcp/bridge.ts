@@ -5,7 +5,7 @@ import { decodeFrames, encodeFrame, type IpcListToolsResult, type IpcResponse } 
 import type { McpContentResult } from './ops.js'
 import { DAEMON_VERSION } from '../version.js'
 
-type IpcCall = { op: 'listTools' } | { op: 'callTool'; name: string; args: Record<string, unknown> }
+type IpcCall = { op: 'attach' } | { op: 'listTools' } | { op: 'callTool'; name: string; args: Record<string, unknown> }
 
 /**
  * IPC client half of the bridge: a persistent UDS connection to the daemon's
@@ -55,6 +55,10 @@ class IpcClient {
       this.socket.write(encodeFrame({ id, token: this.token, ...call }))
     })
   }
+
+  async attach(): Promise<void> {
+    await this.request({ op: 'attach' })
+  }
 }
 
 /**
@@ -72,7 +76,17 @@ export async function runBridge(opts: { lazyTools?: boolean } = {}): Promise<voi
 
   const ipc = new IpcClient(endpoint, token)
   let tools: IpcListToolsResult['tools'] | undefined
-  if (!opts.lazyTools) {
+  if (opts.lazyTools) {
+    try {
+      // A private bridge is not an MCP server until this exact persistent UDS
+      // connection is bound to its active cell. The attach operation performs
+      // no CP request and does not discover tools.
+      await ipc.attach()
+    } catch (err) {
+      process.stderr.write(`mcp-bridge: private attach failed: ${(err as Error).message}\n`)
+      process.exit(1)
+    }
+  } else {
     try {
       const res = (await ipc.request({ op: 'listTools' })) as IpcListToolsResult
       tools = res.tools

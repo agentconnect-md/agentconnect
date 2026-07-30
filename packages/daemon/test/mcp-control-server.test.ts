@@ -1,15 +1,24 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import net from 'node:net'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { McpControlServer } from '../src/mcp/control-server.js'
-import { encodeFrame, decodeFrames, type IpcRequest, type IpcResponse } from '../src/mcp/ipc.js'
+import { encodeFrame, decodeFrames, type IpcPrivateRequest, type IpcResponse } from '../src/mcp/ipc.js'
 import type { SlackGateway, SessionContext } from '../src/mcp/ops.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
 
+const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
+const tempRoots: string[] = []
+
 function socketPath() {
-  return join(mkdtempSync(join(tmpdir(), 'ac-mcp-')), 'mcp.sock')
+  const root = mkdtempSync(join(tmpdir(), 'ac-mcp-'))
+  const resolved = realpathSync(root)
+  expect(resolved).not.toBe(repoRoot)
+  expect(resolved.startsWith(repoRoot + sep)).toBe(false)
+  tempRoots.push(root)
+  return join(root, 'mcp.sock')
 }
 
 function gateway(): SlackGateway {
@@ -38,12 +47,12 @@ const ctx = (over: Partial<SessionContext> = {}): SessionContext => ({
 })
 
 /** Open a client socket and run one request/response exchange. */
-function rpc(path: string, req: Omit<IpcRequest, 'id'>): Promise<IpcResponse> {
+function rpc(path: string, req: Omit<IpcPrivateRequest, 'id'>): Promise<IpcResponse> {
   return new Promise((resolve, reject) => {
     const sock = net.connect(path)
     let buf = ''
     sock.setEncoding('utf8')
-    sock.on('connect', () => sock.write(encodeFrame({ id: 1, ...req } as IpcRequest)))
+    sock.on('connect', () => sock.write(encodeFrame({ id: 1, ...req } as IpcPrivateRequest)))
     sock.on('data', (chunk: string) => {
       buf += chunk
       const { messages } = decodeFrames<IpcResponse>(buf)
@@ -60,6 +69,7 @@ let server: McpControlServer | undefined
 afterEach(async () => {
   await server?.stop()
   server = undefined
+  for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
 describe('McpControlServer IPC', () => {
@@ -109,6 +119,16 @@ describe('McpControlServer IPC', () => {
     const res = await rpc(path, { token: 'bogus', op: 'listTools' })
     expect(res.ok).toBe(false)
     expect(res.error).toMatch(/token/)
+  })
+
+  it('rejects the private attach op without affecting ordinary shared bridge requests', async () => {
+    const path = socketPath()
+    server = new McpControlServer({ socketPath: path, gatewayFor: gateway, recordOutbound: () => {}, now: () => 0 })
+    await server.start()
+    const token = server.register(ctx())
+
+    await expect(rpc(path, { token, op: 'attach' })).resolves.toMatchObject({ ok: false })
+    await expect(rpc(path, { token, op: 'listTools' })).resolves.toMatchObject({ ok: true })
   })
 
   it('stop() resolves promptly even with a live client connection open', async () => {

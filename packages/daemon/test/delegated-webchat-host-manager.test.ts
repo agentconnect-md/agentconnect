@@ -1,4 +1,5 @@
 import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs'
+import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,13 +15,17 @@ import type {
   SessionMcpBridgeDisconnected,
   SessionMcpCellMount
 } from '../src/mcp/session-mcp-broker.js'
+import { SessionMcpBroker } from '../src/mcp/session-mcp-broker.js'
+import { decodeFrames, encodeFrame, type IpcResponse } from '../src/mcp/ipc.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = realpathSync(resolve(here, '../../..'))
 const tempRoots: string[] = []
+const realBrokers: SessionMcpBroker[] = []
 const expiresAt = new Date(Date.now() + 60_000).toISOString()
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(realBrokers.splice(0).map((broker) => broker.stop()))
   for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -340,6 +345,71 @@ describe('DelegatedWebchatHostManager', () => {
         generation: 1
       }
     ])
+  })
+
+  it('fully removes the host, home, mount, cell, and token when a real attached bridge disconnects before tools', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-mgr-'))
+    tempRoots.push(root)
+    expect(realpathSync(root).startsWith(repoRoot + sep)).toBe(false)
+    const brokerSourceRoot = join(root, 'b')
+    const runtimeHomeRoot = join(root, 'h')
+    const mintMcpInvocation = vi.fn(async () => {
+      throw new Error('attach must not mint')
+    })
+    const broker = new SessionMcpBroker({
+      socketRoot: brokerSourceRoot,
+      inCellSocketDirectory: '/run/agentconnect-admin',
+      cliEntry: '/opt/agentconnect/current/index.js',
+      mcpEndpoint: 'https://cp.invalid/api/v1/mcp',
+      cpClient: {
+        mintMcpInvocation,
+        revokeWebchatMcpDelegation: vi.fn()
+      },
+      randomToken: () => 'real-private-token'
+    })
+    realBrokers.push(broker)
+    const hostStop = vi.fn(async () => {})
+    const manager = new DelegatedWebchatHostManager({
+      broker,
+      brokerSourceRoot,
+      runtimeHomeRoot,
+      isolationHealthy: () => true,
+      randomCellId: () => 'real-cell',
+      hostFactory: () =>
+        ({
+          start: async () => {},
+          stop: hostStop
+        }) as unknown as AcpHost
+    })
+    const live = await manager.startHost(cellInput('real-conversation'))
+    const token = Object.fromEntries(live.adminMcpServer.env.map(({ name, value }) => [name, value])).AC_MCP_TOKEN!
+
+    const socket = net.connect(live.mount.sourceSocketPath)
+    socket.setEncoding('utf8')
+    const attached = new Promise<void>((resolveAttached, reject) => {
+      let buffer = ''
+      socket.once('error', reject)
+      socket.on('data', (chunk: string) => {
+        buffer += chunk
+        const decoded = decodeFrames<IpcResponse>(buffer)
+        buffer = decoded.rest
+        if (decoded.messages.some((response) => response.ok)) resolveAttached()
+      })
+    })
+    await new Promise<void>((resolveConnected) => socket.once('connect', resolveConnected))
+    socket.write(encodeFrame({ id: 1, token, op: 'attach' }))
+    await attached
+    expect(mintMcpInvocation).not.toHaveBeenCalled()
+    socket.destroy()
+
+    await vi.waitFor(() => {
+      expect(hostStop).toHaveBeenCalledOnce()
+      expect(manager.debugStats().activeHosts).toBe(0)
+      expect(existsSync(live.runtimeHome)).toBe(false)
+      expect(broker.getCellMount(live.isolationCellId)).toBeNull()
+      expect(readdirSync(brokerSourceRoot)).toEqual([])
+    })
+    expect(broker.debugStats()).toMatchObject({ activeCells: 0, connections: 0 })
   })
 
   it('fences host terminal cleanup and never uses daemon-level broker stop per host', async () => {
