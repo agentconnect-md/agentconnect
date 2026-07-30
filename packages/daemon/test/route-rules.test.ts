@@ -79,6 +79,32 @@ describe('routeRules ladder', () => {
     expect(routeRules(msg({ isDm: true, text: 'hello' }), rules, noOwner)?.agentId).toBe('dm')
   })
 
+  it('routes a gated Lark DM through its dm rule when the user also @-mentions the bot', () => {
+    const rules = [
+      rule({
+        agentId: 'private-bot',
+        integrationId: 'lark-private',
+        botUserId: 'ou_bot',
+        match: { kind: 'dm' },
+        platform: 'feishu'
+      })
+    ]
+
+    expect(
+      routeRules(
+        msg({
+          platform: 'feishu',
+          channel: 'oc_dm',
+          isDm: true,
+          mentionedBots: ['ou_bot'],
+          text: '@private-bot 中文名是啥?'
+        }),
+        rules,
+        noOwner
+      )
+    ).toEqual({ agentId: 'private-bot', integrationId: 'lark-private', via: 'dm' })
+  })
+
   it('allowedUserIds gate rejects a non-listed sender', () => {
     const rules = [rule({ match: { kind: 'auto' }, allowedUserIds: ['U2'] })]
     expect(routeRules(msg({ sender: { id: 'U1', isBot: false } }), rules, noOwner)).toBeNull()
