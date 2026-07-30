@@ -59,6 +59,7 @@ model Org {
   memoryPluginInstallations MemoryPluginInstallation[]
   externalMemoryConnections ExternalMemoryConnection[]
   webchatConversations      WebchatConversation[]
+  webchatMcpDelegations     WebchatMcpDelegation[]
   presetAgents              PresetAgent[]
 
   @@map("org")
@@ -103,6 +104,7 @@ model User {
   createdInviteLinks               OrgInviteLink[]            @relation("OrgInviteLinkCreatedBy")
   inviteRedemptions                OrgInviteRedemption[]
   webchatConversations             WebchatConversation[]
+  webchatMcpDelegations            WebchatMcpDelegation[]
 
   @@map("app_user")
 }
@@ -324,17 +326,18 @@ model Daemon {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
-  org             Org                 @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  createdBy       User?               @relation("DaemonCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  lastModifiedBy  User?               @relation("DaemonModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
-  agents          Agent[]
-  assignments     Assignment[]
-  leases          SecretLease[]
-  launches        AgentLaunch[]
-  runtimeProfiles RuntimeProfile[]
-  apiKeys         ApiKey[]
-  sessions        SessionMeta[]
-  lifecycleOps    DaemonLifecycleOp[]
+  org                   Org                    @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdBy             User?                  @relation("DaemonCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  lastModifiedBy        User?                  @relation("DaemonModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
+  agents                Agent[]
+  assignments           Assignment[]
+  leases                SecretLease[]
+  launches              AgentLaunch[]
+  runtimeProfiles       RuntimeProfile[]
+  apiKeys               ApiKey[]
+  sessions              SessionMeta[]
+  lifecycleOps          DaemonLifecycleOp[]
+  webchatMcpDelegations WebchatMcpDelegation[]
 
   @@index([orgId])
   @@index([status])
@@ -613,22 +616,23 @@ model Agent {
   createdAt             DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt             DateTime           @updatedAt @db.Timestamptz(6)
 
-  org                  Org                      @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  daemon               Daemon?                  @relation(fields: [daemonId], references: [id], onDelete: SetNull)
-  createdBy            User?                    @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  lastModifiedBy       User?                    @relation("AgentModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
-  assignments          Assignment[]
-  launches             AgentLaunch[]
-  sessions             SessionMeta[]
-  sessionUsage         SessionUsage[]
-  sessionSpend         SessionSpend[]
-  crons                CronDef[]
-  hooks                HookDef[]
-  integrations         Integration[]
-  repoAuths            AgentRepoAuthorization[]
-  secrets              AgentSecret[]
-  webchatConversations WebchatConversation[]
-  presetRecords        PresetAgent[]
+  org                   Org                      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  daemon                Daemon?                  @relation(fields: [daemonId], references: [id], onDelete: SetNull)
+  createdBy             User?                    @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  lastModifiedBy        User?                    @relation("AgentModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
+  assignments           Assignment[]
+  launches              AgentLaunch[]
+  sessions              SessionMeta[]
+  sessionUsage          SessionUsage[]
+  sessionSpend          SessionSpend[]
+  crons                 CronDef[]
+  hooks                 HookDef[]
+  integrations          Integration[]
+  repoAuths             AgentRepoAuthorization[]
+  secrets               AgentSecret[]
+  webchatConversations  WebchatConversation[]
+  webchatMcpDelegations WebchatMcpDelegation[]
+  presetRecords         PresetAgent[]
 
   @@unique([orgId, name]) // slug is unique within an org
   @@index([orgId])
@@ -877,20 +881,82 @@ model SessionMeta {
 // stream and transcript remain daemon-local; this row only lets the CP prove
 // that a requested resume belongs to the authenticated human, agent, and org.
 model WebchatConversation {
-  id        String   @id @db.Uuid
-  orgId     String
-  agentId   String   @db.Uuid
-  userId    String
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  id                   String   @id @db.Uuid
+  orgId                String
+  agentId              String   @db.Uuid
+  userId               String
+  delegationGeneration Int      @default(0)
+  createdAt            DateTime @default(now()) @db.Timestamptz(6)
 
-  org   Org   @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org         Org                    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent       Agent                  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  user        User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  delegations WebchatMcpDelegation[]
 
   @@index([orgId])
   @@index([agentId])
   @@index([userId])
   @@map("webchat_conversation")
+}
+
+// Durable, generation-fenced authority for one browser conversation to invoke
+// curated AgentConnect MCP tools through its currently placed daemon.
+model WebchatMcpDelegation {
+  id             String    @id @default(uuid()) @db.Uuid
+  conversationId String    @db.Uuid
+  generation     Int
+  userId         String
+  orgId          String
+  agentId        String    @db.Uuid
+  daemonId       String    @db.Uuid
+  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
+  expiresAt      DateTime  @db.Timestamptz(6)
+  revokedAt      DateTime? @db.Timestamptz(6)
+  revokedReason  String?
+
+  conversation WebchatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org          Org                 @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent        Agent               @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  daemon       Daemon              @relation(fields: [daemonId], references: [id], onDelete: Cascade)
+  invocations  McpInvocation[]
+
+  @@unique([conversationId, generation])
+  @@index([conversationId, revokedAt])
+  @@index([expiresAt])
+  @@map("webchat_mcp_delegation")
+}
+
+enum McpInvocationStatus {
+  issued
+  running
+  succeeded
+  failed
+  ambiguous
+}
+
+// Idempotency ledger for one-time MCP invocation assertions. assertionHash is
+// peppered by the caller; plaintext assertion material never enters Postgres.
+model McpInvocation {
+  id               String              @id @db.Uuid
+  delegationId     String              @db.Uuid
+  assertionHash    String              @unique
+  requestHash      String
+  method           String
+  toolName         String?
+  status           McpInvocationStatus @default(issued)
+  assertionExpires DateTime            @db.Timestamptz(6)
+  startedAt        DateTime?           @db.Timestamptz(6)
+  completedAt      DateTime?           @db.Timestamptz(6)
+  responseStatus   Int?
+  responseBytes    Bytes?
+  createdAt        DateTime            @default(now()) @db.Timestamptz(6)
+
+  delegation WebchatMcpDelegation @relation(fields: [delegationId], references: [id], onDelete: Cascade)
+
+  @@index([delegationId, createdAt])
+  @@index([status, assertionExpires])
+  @@map("mcp_invocation")
 }
 
 // ───────────────────────────────────────────────────────────────────────────

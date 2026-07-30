@@ -1045,6 +1045,138 @@ export interface WebchatConversationRepo {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// Webchat MCP authority — durable delegation + invocation idempotency
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface EstablishWebchatMcpDelegationInput {
+  conversationId: string
+  userId: string
+  orgId: OrgId
+  agentId: AgentId
+  daemonId: DaemonId
+  now: Date
+  expiresAt: Date
+}
+
+export interface WebchatMcpDelegationRecord {
+  id: string
+  conversationId: string
+  generation: number
+  userId: string
+  orgId: string
+  agentId: string
+  daemonId: string
+  createdAt: Date
+  expiresAt: Date
+  revokedAt: Date | null
+  revokedReason: string | null
+}
+
+export interface RevokeWebchatMcpDelegationInput {
+  delegationId: string
+  conversationId: string
+  generation: number
+  userId: string
+  orgId: OrgId
+  agentId: AgentId
+  daemonId: DaemonId
+  revokedAt: Date
+  reason: string
+}
+
+export interface WebchatMcpDelegationRepo {
+  /**
+   * Serialize on the durable conversation owner. Reconnects reuse matching,
+   * unexpired authority; expiry or placement changes rotate its generation.
+   * A foreign/unknown conversation binding returns null.
+   */
+  establish(input: EstablishWebchatMcpDelegationInput): Promise<WebchatMcpDelegationRecord | null>
+  /** Conditional, generation-fenced revocation. An already-revoked exact match is idempotently true. */
+  revoke(input: RevokeWebchatMcpDelegationInput): Promise<boolean>
+  get(delegationId: string): Promise<WebchatMcpDelegationRecord | null>
+  /** Delete expired delegations only after their invocation ledger is empty. */
+  reapExpired(expiredBefore: Date): Promise<number>
+}
+
+export type McpInvocationStatus = 'issued' | 'running' | 'succeeded' | 'failed' | 'ambiguous'
+
+export interface McpInvocationRecord {
+  id: string
+  delegationId: string
+  assertionHash: string
+  requestHash: string
+  method: string
+  toolName: string | null
+  status: McpInvocationStatus
+  assertionExpires: Date
+  startedAt: Date | null
+  completedAt: Date | null
+  responseStatus: number | null
+  responseBytes: Uint8Array | null
+  createdAt: Date
+}
+
+export interface MintMcpInvocationInput {
+  invocationId: string
+  delegationId: string
+  /** A peppered, domain-separated digest. Plaintext assertions are never accepted here. */
+  assertionHash: string
+  requestHash: string
+  method: string
+  toolName?: string | null
+  assertionExpires: Date
+  now: Date
+}
+
+export type MintMcpInvocationResult =
+  | { kind: 'issued'; invocation: McpInvocationRecord }
+  | { kind: 'existing'; invocation: McpInvocationRecord }
+  | { kind: 'conflict' }
+
+export interface ClaimMcpInvocationInput {
+  invocationId: string
+  assertionHash: string
+  now: Date
+}
+
+export type ClaimMcpInvocationResult =
+  | { kind: 'claimed'; invocation: McpInvocationRecord }
+  | { kind: 'existing'; invocation: McpInvocationRecord }
+  | { kind: 'expired' }
+  | { kind: 'not_found' }
+
+export interface CompleteMcpInvocationInput {
+  invocationId: string
+  status: 'succeeded' | 'failed'
+  responseStatus: number
+  responseBytes: Uint8Array
+  completedAt: Date
+}
+
+export interface ReapMcpInvocationsResult {
+  markedAmbiguous: number
+  deleted: number
+}
+
+export interface McpInvocationRepo {
+  /**
+   * Create or rotate an issued assertion. Only an identical immutable binding
+   * may retry; running/terminal rows are returned without reissuing authority.
+   */
+  mint(input: MintMcpInvocationInput): Promise<MintMcpInvocationResult>
+  /** Exactly one caller can win the issued → running compare-and-set. */
+  claim(input: ClaimMcpInvocationInput): Promise<ClaimMcpInvocationResult>
+  /** running → succeeded/failed; false means a terminal/ambiguous state won first. */
+  complete(input: CompleteMcpInvocationInput): Promise<boolean>
+  /** Recover executions at or before the deadline as conservatively ambiguous. */
+  markAmbiguousBefore(executionDeadline: Date, completedAt: Date): Promise<number>
+  get(invocationId: string): Promise<McpInvocationRecord | null>
+  getByAssertionHash(assertionHash: string): Promise<McpInvocationRecord | null>
+  /** Apply the fixed execution, assertion, and response-cache retention windows at `now`. */
+  reap(now: Date): Promise<ReapMcpInvocationsResult>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // SessionUsageRepo (C6) — per-session token accounting for the usage dashboard
 // ───────────────────────────────────────────────────────────────────────────
 
