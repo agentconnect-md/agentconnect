@@ -8,45 +8,65 @@ const mocks = vi.hoisted(() => ({
   agents: [] as Array<Record<string, unknown>>,
   daemons: [] as Array<Record<string, unknown>>,
   integrations: [] as Array<Record<string, unknown>>,
+  allSessions: [] as Array<Record<string, unknown>>,
+  members: [] as Array<Record<string, unknown>>,
   agentsLoading: false,
   daemonsLoading: false,
   provisionDaemon: vi.fn(),
   reconnectDaemon: vi.fn(),
   deleteDaemon: vi.fn(),
-  refresh: vi.fn()
+  updateAgent: vi.fn(),
+  moveAgent: vi.fn(),
+  refresh: vi.fn(),
+  refreshDaemons: vi.fn(),
+  push: vi.fn(),
+  skipOnboarding: vi.fn()
 }))
 
 vi.mock('next/navigation', () => ({
   useParams: () => ({ slug: 'acme' }),
-  useRouter: () => ({ push: vi.fn() })
+  useRouter: () => ({ push: mocks.push })
 }))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     agents: mocks.agents,
     daemons: mocks.daemons,
     integrations: mocks.integrations,
+    allSessions: mocks.allSessions,
+    members: mocks.members,
     agentsLoading: mocks.agentsLoading,
     daemonsLoading: mocks.daemonsLoading,
     provisionDaemon: mocks.provisionDaemon,
     reconnectDaemon: mocks.reconnectDaemon,
     deleteDaemon: mocks.deleteDaemon,
-    refresh: mocks.refresh
+    updateAgent: mocks.updateAgent,
+    moveAgent: mocks.moveAgent,
+    refresh: mocks.refresh,
+    refreshDaemons: mocks.refreshDaemons
   })
 }))
-vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: vi.fn() }) }))
+// RuntimeSelect pulls the ACP registry context + AgentMark; stub it to the picked value.
+vi.mock('@/components/console/RuntimeSelect', () => ({
+  RuntimeSelect: ({ value }: { value: string }) => `runtime-${value}`
+}))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => `/acme${path}` }) }))
+vi.mock('@/lib/profile', () => ({ useProfile: () => ({ user: { email: 'dana@acme.dev', initials: 'DR' } }) }))
+vi.mock('@/lib/auth', () => ({ isAuthConfigured: () => true }))
 vi.mock('@/lib/onboarding', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/onboarding')>()
-  return { ...actual, skipOnboarding: vi.fn() }
+  return { ...actual, skipOnboarding: mocks.skipOnboarding }
 })
 vi.mock('@/lib/daemon-commands', () => ({ daemonCommands: (command: string) => ({ run: command, login: command }) }))
-vi.mock('@/lib/data', () => ({ agentLabel: () => 'Agent' }))
+vi.mock('@/components/console/GettingStartedChecklist', () => ({
+  useGsActions: () => ({ runAction: vi.fn(), firstAgent: mocks.agents[0] }),
+  GsRows: () => <div>rows</div>
+}))
 vi.mock('@/components/marks', () => ({
   LogoMark: () => <span>logo</span>,
-  Spinner: () => <span>loading</span>,
   LoadingState: () => <span>loading data</span>
 }))
 vi.mock('@/components/ui', () => ({
+  Avatar: () => <span>avatar</span>,
   Button: ({
     variant: _variant,
     size: _size,
@@ -67,28 +87,37 @@ const button = (label: string) => {
   if (!match) throw new Error(`Missing button: ${label}`)
   return match
 }
-
 const click = async (label: string) => {
   await act(async () => {
     button(label).click()
     await new Promise((resolve) => setTimeout(resolve, 0))
   })
 }
+const render = async () => {
+  await act(async () => root.render(<OnboardingView />))
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)))
+}
 
-beforeEach(async () => {
+beforeEach(() => {
   mocks.agents = []
   mocks.daemons = []
   mocks.integrations = []
+  mocks.allSessions = []
+  mocks.members = []
   mocks.agentsLoading = false
   mocks.daemonsLoading = false
   mocks.provisionDaemon.mockReset()
   mocks.reconnectDaemon.mockReset()
   mocks.deleteDaemon.mockReset().mockResolvedValue(undefined)
   mocks.refresh.mockReset()
+  mocks.refreshDaemons.mockReset().mockResolvedValue(undefined)
+  mocks.updateAgent.mockReset().mockResolvedValue(undefined)
+  mocks.moveAgent.mockReset().mockResolvedValue(undefined)
+  mocks.push.mockReset()
+  mocks.skipOnboarding.mockReset()
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
-  await act(async () => root.render(<OnboardingView />))
 })
 
 afterEach(() => {
@@ -96,86 +125,144 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-describe('daemon onboarding lifecycle', () => {
-  it('deletes an unclaimed row and provisions a fresh command after Back', async () => {
-    mocks.provisionDaemon.mockImplementation(async () => ({
-      daemonId: `new-${mocks.provisionDaemon.mock.calls.length}`,
-      apiKey: 'secret',
-      displayTail: 'tail',
-      command: 'agentconnect run'
-    }))
-
-    await click('Add a Daemon')
+describe('onboarding — connect step', () => {
+  it('mints a join command on mount when no daemon is online', async () => {
+    mocks.provisionDaemon.mockResolvedValue({ daemonId: 'dmn_new', command: 'agentconnect run' })
+    await render()
     expect(mocks.provisionDaemon).toHaveBeenCalledTimes(1)
-
-    await click('Back')
-    expect(mocks.deleteDaemon).toHaveBeenCalledWith('new-1')
-
-    await click('Add a Daemon')
-    expect(mocks.provisionDaemon).toHaveBeenCalledTimes(2)
+    expect(host.textContent).toContain('Connect your daemon')
+    expect(host.textContent).toContain('agentconnect run')
+    expect(host.textContent).toContain('Listening for dmn_new')
   })
 
-  it('keeps an offline daemon on step 1 and mints a recoverable reconnect command', async () => {
-    mocks.daemons = [{ daemonId: 'offline-1', status: 'offline', name: 'edge-1', host: 'edge-1', version: '1.0.0' }]
-    mocks.reconnectDaemon.mockResolvedValue({
-      apiKeyId: 'key-1',
-      apiKey: 'secret',
-      displayTail: 'tail',
-      command: 'agentconnect run'
-    })
-    await act(async () => root.render(<OnboardingView />))
-
-    await click('Add a Daemon')
+  it('reconnects an existing offline daemon instead of provisioning a new one', async () => {
+    mocks.daemons = [{ daemonId: 'offline-1', status: 'offline' }]
+    mocks.reconnectDaemon.mockResolvedValue({ command: 'agentconnect run --resume' })
+    await render()
     expect(mocks.reconnectDaemon).toHaveBeenCalledWith('offline-1')
     expect(mocks.provisionDaemon).not.toHaveBeenCalled()
-    expect(button('Create an agent').disabled).toBe(true)
-
-    await click('Back')
-    expect(mocks.deleteDaemon).not.toHaveBeenCalled()
-    await click('Add a Daemon')
-    expect(mocks.reconnectDaemon).toHaveBeenCalledTimes(2)
   })
 
-  it('resumes at the live step when daemons resolve before agents/integrations', async () => {
-    act(() => root.unmount())
-    // First load: daemons resolve for a fully-live org while agents are still loading.
-    mocks.daemons = [{ daemonId: 'new-1', status: 'online', name: 'edge-1', host: 'edge-1', version: '1.0.0' }]
-    mocks.agents = []
-    mocks.integrations = []
-    mocks.agentsLoading = true
-    mocks.daemonsLoading = false
-    root = createRoot(host)
-    await act(async () => root.render(<OnboardingView />))
-    // Must not seed a mid-wizard step from the partial data — still on the welcome screen.
-    expect(host.textContent).toContain('Welcome to AgentConnect')
-
-    // Agents/integrations finish loading — the wizard now resumes at the final step.
-    mocks.agents = [{ id: 'agent-1', daemon: 'new-1', hookKinds: [] }]
-    mocks.integrations = [{ id: 'int-1' }]
-    mocks.agentsLoading = false
-    await act(async () => root.render(<OnboardingView />))
-    expect(host.textContent).toContain('You’re live')
+  it('deletes an unclaimed provisioned daemon when exploring the console instead', async () => {
+    mocks.provisionDaemon.mockResolvedValue({ daemonId: 'dmn_new', command: 'agentconnect run' })
+    await render()
+    await click('Explore the console first')
+    expect(mocks.deleteDaemon).toHaveBeenCalledWith('dmn_new')
+    expect(mocks.skipOnboarding).toHaveBeenCalledWith('acme')
+    expect(mocks.push).toHaveBeenCalledWith('/acme/home')
   })
 
-  it('never deletes a claimed daemon that disconnects before Finish', async () => {
-    mocks.provisionDaemon.mockResolvedValue({
-      daemonId: 'new-1',
-      apiKey: 'secret',
-      displayTail: 'tail',
-      command: 'agentconnect run'
+  // Partial-load regression: agents resolving first (every org ships the builtin
+  // preset) must NOT trigger a mint while the fleet list is still loading — the
+  // pending response may already contain a connected daemon.
+  it('does not mint while the daemon list is still loading, even with agents loaded', async () => {
+    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
+    mocks.daemonsLoading = true
+    await render()
+    expect(mocks.provisionDaemon).not.toHaveBeenCalled()
+    expect(mocks.reconnectDaemon).not.toHaveBeenCalled()
+  })
+
+  it('offers Retry after a mint failure and re-drives the request', async () => {
+    mocks.provisionDaemon
+      .mockRejectedValueOnce(new Error('cp unreachable'))
+      .mockResolvedValue({ daemonId: 'dmn_new', command: 'agentconnect run' })
+    await render()
+    expect(host.textContent).toContain('cp unreachable')
+    await click('Retry')
+    expect(mocks.refreshDaemons).toHaveBeenCalled()
+    expect(mocks.provisionDaemon).toHaveBeenCalledTimes(2)
+    expect(host.textContent).toContain('agentconnect run')
+  })
+
+  // A failed refresh leaves the stale snapshot — re-arming against it could duplicate
+  // an ambiguously-successful provision. Stay latched, show the error, keep Retry.
+  it('does not re-arm provisioning when the fleet refresh itself fails', async () => {
+    mocks.provisionDaemon.mockRejectedValueOnce(new Error('cp unreachable'))
+    mocks.refreshDaemons.mockRejectedValue(new Error('network down'))
+    await render()
+    await click('Retry')
+    expect(mocks.provisionDaemon).toHaveBeenCalledTimes(1) // no second mint
+    expect(host.textContent).toContain('Could not refresh the daemon list')
+  })
+
+  // Ambiguous success: the failed provision actually landed server-side. Retry must
+  // observe the refreshed fleet (the new offline row) and reconnect it — never mint
+  // a second daemon against the stale empty list.
+  it('retries via reconnect when the failed provision succeeded server-side', async () => {
+    mocks.provisionDaemon.mockRejectedValueOnce(new Error('response lost'))
+    mocks.refreshDaemons.mockImplementation(async () => {
+      mocks.daemons = [{ daemonId: 'dmn_ghost', status: 'offline' }]
     })
-    await click('Add a Daemon')
+    mocks.reconnectDaemon.mockResolvedValue({ command: 'agentconnect run --resume' })
+    await render()
+    expect(host.textContent).toContain('response lost')
+    await click('Retry')
+    expect(mocks.reconnectDaemon).toHaveBeenCalledWith('dmn_ghost')
+    expect(mocks.provisionDaemon).toHaveBeenCalledTimes(1)
+  })
+})
 
-    mocks.daemons = [{ daemonId: 'new-1', status: 'online', name: 'edge-1', host: 'edge-1', version: '1.0.0' }]
-    await act(async () => root.render(<OnboardingView />))
-    await click('Create an agent')
+describe('onboarding — daemon online reveal', () => {
+  beforeEach(() => {
+    mocks.daemons = [{ daemonId: 'dmn_new', status: 'online', name: 'edge-1' }]
+  })
 
-    mocks.agents = [{ id: 'agent-1', daemon: 'new-1', hookKinds: [] }]
-    mocks.daemons = [{ daemonId: 'new-1', status: 'offline', name: 'edge-1', host: 'edge-1', version: '1.0.0' }]
-    await act(async () => root.render(<OnboardingView />))
-    await click('Set up integration')
-    await click('Finish')
+  it('reveals the checklist and never provisions a daemon', async () => {
+    await render()
+    expect(mocks.provisionDaemon).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Your daemon is online')
+    expect(host.textContent).toContain('Getting started')
+    expect(host.textContent).toContain('rows') // <GsRows/> stub
+  })
 
+  it('finish stays disabled until every step is done; skip always exits to the console', async () => {
+    await render() // only the daemon step is done → finish disabled
+    expect(button('Finish onboarding').disabled).toBe(true)
+    await click('Skip for now')
+    expect(mocks.push).toHaveBeenCalledWith('/acme/home')
+    // an online daemon that has connected is never deleted on the way out
     expect(mocks.deleteDaemon).not.toHaveBeenCalled()
+  })
+})
+
+describe('onboarding — configure the built-in agent', () => {
+  beforeEach(() => {
+    mocks.daemons = [
+      {
+        daemonId: 'dmn_new',
+        status: 'online',
+        name: 'edge-1',
+        runtimeModels: [{ runtime: 'claude', models: ['claude-sonnet-4-5'] }]
+      }
+    ]
+    // The org's unplaced built-in preset: no daemon, deferred runtime.
+    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
+  })
+
+  it('shows the configure step for an unplaced built-in agent instead of the reveal', async () => {
+    await render()
+    expect(host.textContent).toContain('Configure')
+    expect(host.textContent).toContain('runtime-claude') // RuntimeSelect stub, seeded from the daemon
+    expect(host.textContent).not.toContain('Your daemon is online')
+  })
+
+  it('sets the runtime BEFORE moving the agent onto the connected daemon, then reveals', async () => {
+    await render()
+    await click('Save and continue')
+    expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: 'claude', model: 'claude-sonnet-4-5' })
+    expect(mocks.moveAgent).toHaveBeenCalledWith('ag_ac', 'dmn_new')
+    // Order matters: the CP rejects a move on a runtime-less agent.
+    const updateOrder = mocks.updateAgent.mock.invocationCallOrder[0] ?? 0
+    const moveOrder = mocks.moveAgent.mock.invocationCallOrder[0] ?? Infinity
+    expect(updateOrder).toBeLessThan(moveOrder)
+    expect(mocks.refresh).toHaveBeenCalled()
+  })
+
+  it('lets the user skip to the reveal without configuring', async () => {
+    await render()
+    await click('Skip for now')
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Your daemon is online')
   })
 })

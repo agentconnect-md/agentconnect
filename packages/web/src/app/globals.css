@@ -2941,3 +2941,38 @@
     opacity: 0;
   }
 }
+
+/* Onboarding reveal (design: "AgentConnect Onboarding") — the checklist rises in and
+   the "daemon online" check pops when the daemon connects. Honors reduced-motion. */
+.ac-rise {
+  animation: acRise 0.34s var(--ease-out, cubic-bezier(0.2, 0.8, 0.3, 1)) both;
+}
+.ac-pop {
+  animation: acPop 0.34s var(--ease-out, cubic-bezier(0.2, 0.8, 0.3, 1)) both;
+}
+@keyframes acRise {
+  from {
+    opacity: 0;
+    transform: translateY(9px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes acPop {
+  from {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ac-rise,
+  .ac-pop {
+    animation-duration: 0.01ms;
+  }
+}

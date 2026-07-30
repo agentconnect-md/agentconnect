@@ -10,7 +10,7 @@
 // default org, so the page is fully editable with no picker.
 
 import { Fragment, useCallback, useEffect, useState } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import { Avatar, Button, Icon, Toggle } from '@/components/ui'
 import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
@@ -487,6 +487,20 @@ export default function SettingsView() {
   const [editing, setEditing] = useState<MemberTarget | null>(null)
   const [inviting, setInviting] = useState(false)
   const [deletingBot, setDeletingBot] = useState<BotDto | null>(null)
+
+  // `?invite=1` auto-opens the invite-members dialog (the getting-started "Invite
+  // teammates" CTA lands here with it). One-shot: the param is stripped immediately
+  // so back/refresh doesn't reopen the modal.
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+  useEffect(() => {
+    if (!searchParams.get('invite')) return
+    setInviting(true)
+    const sp = new URLSearchParams(searchParams)
+    sp.delete('invite')
+    router.replace(`${pathname}${sp.size ? `?${sp}` : ''}`, { scroll: false })
+  }, [searchParams, pathname, router])
 
   // A member change can affect ME (self-demote/-remove) — re-pull the org list
   // too so myRole / the active org stay honest instead of 403-ing controls.

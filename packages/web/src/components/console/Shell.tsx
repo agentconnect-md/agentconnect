@@ -17,6 +17,7 @@ import { agentLabel } from '@/lib/data'
 import { PlaygroundProvider } from './PlaygroundProvider'
 import { ModalProvider, useModal } from './ModalProvider'
 import ConnectAiModal from './ConnectAiModal'
+import GettingStarted from './GettingStarted'
 import { GlobalSearch } from './GlobalSearch'
 import { TooltipLayer } from './Tooltip'
 import { SearchOpenContext } from './search-open'
@@ -268,7 +269,6 @@ function ShellChrome({ children }: { children: ReactNode }) {
   // (`/acme/agents` → `/agents`); hrefs go the other way via orgPath().
   const barePath = subPath(pathname, typeof params.slug === 'string' ? decodeURIComponent(params.slug) : '-')
   const router = useRouter()
-  const [userMenu, setUserMenu] = useState(false)
   // Rail-footer help popover + the shortcuts modal it can open.
   const [helpMenu, setHelpMenu] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
@@ -377,7 +377,6 @@ function ShellChrome({ children }: { children: ReactNode }) {
   }, [])
 
   const signOut = useCallback(() => {
-    setUserMenu(false)
     if (isAuthConfigured()) void logout()
     else router.push('/login')
   }, [router])
@@ -404,6 +403,34 @@ function ShellChrome({ children }: { children: ReactNode }) {
     return (
       <div className="loadgate">
         <LoadingState fill />
+      </div>
+    )
+
+  // Onboarding is a full-screen takeover (design: "AgentConnect Onboarding") — no rail,
+  // but it keeps a slim top bar consistent with the rest of the console (theme toggle +
+  // user menu), rendered here so it reuses the shell's own theme/sign-out state.
+  // OnboardingView renders just the centered content. Providers (org, data, modal,
+  // playground) live ABOVE ShellChrome, so the checklist CTAs' modals still work.
+  if (barePath === '/onboarding')
+    return (
+      <div className="fixed inset-0 flex flex-col overflow-hidden bg-(--surface-app)">
+        <header className="flex h-14 flex-none items-center gap-[14px] border-b border-(--border-subtle) bg-(--surface-card) px-5 desktop:px-[22px]">
+          <Link
+            href={orgPath('/agents')}
+            className="flex items-center gap-[10px] no-underline"
+            aria-label="AgentConnect"
+          >
+            <LogoMark size={24} />
+            <span className="font-sans text-[16px] font-semibold leading-none tracking-[-.02em] text-(--text-primary)">
+              Agent<span className="text-(--brand)">Connect</span>
+            </span>
+          </Link>
+          <div className="flex-1" />
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
+          {isAuthConfigured() && <UserMenu display={display} orgPath={orgPath} onSignOut={signOut} />}
+        </header>
+        <div className="flex-1 overflow-auto">{children}</div>
+        <TooltipLayer />
       </div>
     )
 
@@ -617,62 +644,8 @@ function ShellChrome({ children }: { children: ReactNode }) {
             </div>
             <div className="topspacer flex-1" />
             <GlobalSearch />
-            <button
-              type="button"
-              className="iconbtn"
-              onClick={toggleTheme}
-              title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-              aria-label="Toggle theme"
-            >
-              <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
-            </button>
-            {authOn && (
-              <div className="relative">
-                <button
-                  onClick={() => setUserMenu((v) => !v)}
-                  className="cursor-pointer border-0 bg-transparent p-0 leading-[0]"
-                  title="Your profile"
-                >
-                  <Avatar src={display.picture} initials={display.initials} size={30} fontSize={11} />
-                </button>
-                {userMenu && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setUserMenu(false)} />
-                    <div className="usermenu">
-                      <div className="usermenu-head">
-                        <Avatar src={display.picture} initials={display.initials} size={34} fontSize={12} />
-                        <div className="min-w-0">
-                          <div className="font-sans text-[13px] font-semibold leading-normal">{display.name}</div>
-                          {display.email && (
-                            <div className="mono text-[11px] text-(--text-tertiary)">{display.email}</div>
-                          )}
-                        </div>
-                      </div>
-                      <Link
-                        href={orgPath('/profile')}
-                        className="usermenu-item no-underline"
-                        onClick={() => setUserMenu(false)}
-                      >
-                        <Icon name="user" size={15} color="var(--text-tertiary)" />
-                        Your profile
-                      </Link>
-                      <Link
-                        href={orgPath('/settings')}
-                        className="usermenu-item no-underline"
-                        onClick={() => setUserMenu(false)}
-                      >
-                        <Icon name="settings" size={15} color="var(--text-tertiary)" />
-                        Settings
-                      </Link>
-                      <button className="usermenu-item" onClick={signOut}>
-                        <Icon name="log-out" size={15} color="var(--text-tertiary)" />
-                        Sign out
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
+            <ThemeToggle theme={theme} onToggle={toggleTheme} />
+            {authOn && <UserMenu display={display} orgPath={orgPath} onSignOut={signOut} />}
           </header>
 
           {/* ===== MOBILE APP BAR (hidden ≥ tablet) — list-tab vs push variant ===== */}
@@ -786,11 +759,81 @@ function ShellChrome({ children }: { children: ReactNode }) {
         {mobileSearch && <GlobalSearch mobile autoFocus onClose={() => setMobileSearch(false)} />}
         {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
         {connectAiOpen && <ConnectAiModal onClose={() => setConnectAiOpen(false)} moreUrl={help.mcp} />}
+        {/* Getting-started pill + drawer (design 1a/1b): a corner checklist derived from
+          live state, self-gated (desktop, setup-started, incomplete). */}
+        <GettingStarted />
         {/* Renders every `title` in the console on the design system's timing
           instead of the browser's ~1s native tooltip. Portals to <body>. */}
         <TooltipLayer />
       </div>
     </MobileFilterContext.Provider>
+  )
+}
+
+// Top-bar theme toggle (light ↔ dark). Shared by the console top bar and the onboarding
+// header so both flip the same shell-owned theme state.
+function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      className="iconbtn"
+      onClick={onToggle}
+      title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+      aria-label="Toggle theme"
+    >
+      <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
+    </button>
+  )
+}
+
+// Avatar button + dropdown (profile / settings / sign out). Self-manages its open state;
+// shared by the console top bar and the onboarding header.
+function UserMenu({
+  display,
+  orgPath,
+  onSignOut
+}: {
+  display: { picture?: string | null; initials: string; name: string; email?: string }
+  orgPath: (path: string) => string
+  onSignOut: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="cursor-pointer border-0 bg-transparent p-0 leading-[0]"
+        title="Your profile"
+      >
+        <Avatar src={display.picture} initials={display.initials} size={30} fontSize={11} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="usermenu">
+            <div className="usermenu-head">
+              <Avatar src={display.picture} initials={display.initials} size={34} fontSize={12} />
+              <div className="min-w-0">
+                <div className="font-sans text-[13px] font-semibold leading-normal">{display.name}</div>
+                {display.email && <div className="mono text-[11px] text-(--text-tertiary)">{display.email}</div>}
+              </div>
+            </div>
+            <Link href={orgPath('/profile')} className="usermenu-item no-underline" onClick={() => setOpen(false)}>
+              <Icon name="user" size={15} color="var(--text-tertiary)" />
+              Your profile
+            </Link>
+            <Link href={orgPath('/settings')} className="usermenu-item no-underline" onClick={() => setOpen(false)}>
+              <Icon name="settings" size={15} color="var(--text-tertiary)" />
+              Settings
+            </Link>
+            <button className="usermenu-item" onClick={onSignOut}>
+              <Icon name="log-out" size={15} color="var(--text-tertiary)" />
+              Sign out
+            </button>
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 

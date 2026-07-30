@@ -11,6 +11,11 @@ vi.mock('@/lib/api', () => ({
   deleteAgentRepo: vi.fn(),
   fetchAgentRepos: vi.fn()
 }))
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ replace: vi.fn() }),
+  usePathname: () => '/acme/agents/a1',
+  useSearchParams: () => new URLSearchParams()
+}))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-1' } }) }))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
 vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ refresh: vi.fn() }) }))
