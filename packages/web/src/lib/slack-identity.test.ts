@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { slackWorkspaceLine } from '@/lib/slack-identity'
+import { slackWorkspaceLine, slackWorkspaceUrl } from '@/lib/slack-identity'
 
 // Synthetic Slack ids throughout — never a real workspace.
 const LINKED = { linked: true as const, teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
@@ -27,5 +27,24 @@ describe('slackWorkspaceLine', () => {
     // SWR leaves `data` undefined on both — the row must degrade to today's look
     // rather than showing a half-resolved workspace.
     expect(slackWorkspaceLine(undefined)).toBeUndefined()
+  })
+})
+
+describe('slackWorkspaceUrl', () => {
+  it('addresses the workspace by its domain', () => {
+    expect(slackWorkspaceUrl({ ...LINKED, teamDomain: 'example-workspace' })).toBe(
+      'https://example-workspace.slack.com'
+    )
+  })
+
+  it('stays undefined without a domain, since the team id does not address one', () => {
+    // The label still renders — it just renders as plain text rather than a
+    // link that would 404.
+    expect(slackWorkspaceUrl({ ...LINKED, teamName: 'Example Workspace' })).toBeUndefined()
+  })
+
+  it('stays undefined when there is no Slack identity at all', () => {
+    expect(slackWorkspaceUrl({ linked: false })).toBeUndefined()
+    expect(slackWorkspaceUrl(undefined)).toBeUndefined()
   })
 })
