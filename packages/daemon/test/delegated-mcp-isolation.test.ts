@@ -1,8 +1,9 @@
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { dirname, join, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   delegatedCellSandboxWrap,
   detectSandbox,
@@ -10,6 +11,23 @@ import {
   SandboxError,
   supportsDelegatedMcpIsolation
 } from '../src/acp/sandbox.js'
+
+const privateHomeRoots: string[] = []
+const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
+afterEach(() => {
+  for (const root of privateHomeRoots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
+function privateHomeMount() {
+  const maskedRoot = mkdtempSync(join(tmpdir(), 'ac-private-homes-'))
+  const canonicalRoot = realpathSync(maskedRoot)
+  expect(canonicalRoot).not.toBe(repoRoot)
+  expect(canonicalRoot.startsWith(repoRoot + sep)).toBe(false)
+  privateHomeRoots.push(maskedRoot)
+  const sourceDir = join(maskedRoot, 'cell-home')
+  mkdirSync(sourceDir)
+  return { maskedRoot, sourceDir, targetDir: sourceDir }
+}
 
 describe('supportsDelegatedMcpIsolation', () => {
   it.each([
@@ -78,7 +96,7 @@ describe('delegated bwrap mount isolation', () => {
     expect(args).not.toContain('--bind')
   })
 
-  it('adds exactly one cell-private bind after masking the common source root', () => {
+  it('binds back exactly the entitled broker cell and runtime HOME after masking both private roots', () => {
     const maskedRoot = mkdtempSync(join(tmpdir(), 'ac-admin-sockets-'))
     const sourceDir = join(maskedRoot, 'cell-a')
     const targetDir = join(maskedRoot, 'private')
@@ -89,31 +107,45 @@ describe('delegated bwrap mount isolation', () => {
     const canonicalTargetDir = join(canonicalMaskedRoot, 'private')
     const canonicalBaseWritable = realpathSync(baseWritable)
 
-    const { cmd, args } = delegatedCellSandboxWrap('codex', ['--acp'], [baseWritable], {
-      maskedRoot,
-      sourceDir,
-      targetDir
-    })
+    const homeMount = privateHomeMount()
+    const { cmd, args } = delegatedCellSandboxWrap(
+      'codex',
+      ['--acp'],
+      [baseWritable],
+      {
+        maskedRoot,
+        sourceDir,
+        targetDir
+      },
+      homeMount
+    )
 
     expect(cmd).toBe('bwrap')
     expect(args).toContain('--unshare-pid')
     expect(args.slice(args.indexOf('--proc'), args.indexOf('--proc') + 2)).toEqual(['--proc', '/proc'])
 
     const maskIndex = args.indexOf(canonicalMaskedRoot)
+    const canonicalHomeRoot = realpathSync(homeMount.maskedRoot)
+    const canonicalHome = realpathSync(homeMount.sourceDir)
+    const homeMaskIndex = args.indexOf(canonicalHomeRoot)
     const bindIndexes = args.flatMap((arg, index) => (arg === '--bind' ? [index] : []))
     const targetCreationIndex = args.indexOf(canonicalTargetDir)
     expect(args[maskIndex - 1]).toBe('--tmpfs')
+    expect(args[homeMaskIndex - 1]).toBe('--tmpfs')
     expect(args[targetCreationIndex - 1]).toBe('--dir')
     expect(targetCreationIndex).toBeGreaterThan(maskIndex)
     expect(
       bindIndexes.map((index) => args.slice(index, index + 3)).filter(([, source]) => source === canonicalSourceDir)
     ).toEqual([['--bind', canonicalSourceDir, canonicalTargetDir]])
+    expect(
+      bindIndexes.map((index) => args.slice(index, index + 3)).filter(([, source]) => source === canonicalHome)
+    ).toEqual([['--bind', canonicalHome, canonicalHome]])
     expect(args.slice(bindIndexes[0], bindIndexes[0]! + 3)).toEqual([
       '--bind',
       canonicalBaseWritable,
       canonicalBaseWritable
     ])
-    expect(bindIndexes.at(-1)).toBeGreaterThan(maskIndex)
+    expect(bindIndexes.at(-1)).toBeGreaterThan(homeMaskIndex)
   })
 
   it('rejects a mount source outside the masked root', () => {
@@ -121,11 +153,17 @@ describe('delegated bwrap mount isolation', () => {
     const sourceDir = mkdtempSync(join(tmpdir(), 'ac-outside-cell-'))
 
     expect(() => {
-      delegatedCellSandboxWrap('codex', ['--acp'], [], {
-        maskedRoot,
-        sourceDir,
-        targetDir: join(maskedRoot, 'private')
-      })
+      delegatedCellSandboxWrap(
+        'codex',
+        ['--acp'],
+        [],
+        {
+          maskedRoot,
+          sourceDir,
+          targetDir: join(maskedRoot, 'private')
+        },
+        privateHomeMount()
+      )
     }).toThrow(new SandboxError('invalid delegated cell mount'))
   })
 
@@ -138,11 +176,17 @@ describe('delegated bwrap mount isolation', () => {
     symlinkSync(outside, join(maskedRoot, 'cell-a'))
 
     expect(() => {
-      delegatedCellSandboxWrap('codex', ['--acp'], [], {
-        maskedRoot,
-        sourceDir: join(maskedRoot, 'cell-a'),
-        targetDir: join(maskedRoot, 'private')
-      })
+      delegatedCellSandboxWrap(
+        'codex',
+        ['--acp'],
+        [],
+        {
+          maskedRoot,
+          sourceDir: join(maskedRoot, 'cell-a'),
+          targetDir: join(maskedRoot, 'private')
+        },
+        privateHomeMount()
+      )
     }).toThrow(new SandboxError('invalid delegated cell mount'))
   })
 
@@ -155,11 +199,17 @@ describe('delegated bwrap mount isolation', () => {
       const missingPath = join(maskedRoot, 'private-daemon-path-do-not-leak')
 
       expect(() => {
-        delegatedCellSandboxWrap('codex', ['--acp'], [], {
-          maskedRoot: missing === 'masked root' ? missingPath : maskedRoot,
-          sourceDir: missing === 'source directory' ? missingPath : sourceDir,
-          targetDir: join(maskedRoot, 'private')
-        })
+        delegatedCellSandboxWrap(
+          'codex',
+          ['--acp'],
+          [],
+          {
+            maskedRoot: missing === 'masked root' ? missingPath : maskedRoot,
+            sourceDir: missing === 'source directory' ? missingPath : sourceDir,
+            targetDir: join(maskedRoot, 'private')
+          },
+          privateHomeMount()
+        )
       }).toThrow(new SandboxError('invalid delegated cell mount'))
     }
   )
@@ -174,11 +224,17 @@ describe('delegated bwrap mount isolation', () => {
       writeFileSync(filePath, 'not a directory')
 
       expect(() => {
-        delegatedCellSandboxWrap('codex', ['--acp'], [], {
-          maskedRoot: nonDirectory === 'masked root' ? filePath : maskedRoot,
-          sourceDir: nonDirectory === 'source directory' ? filePath : sourceDir,
-          targetDir: join(maskedRoot, 'private')
-        })
+        delegatedCellSandboxWrap(
+          'codex',
+          ['--acp'],
+          [],
+          {
+            maskedRoot: nonDirectory === 'masked root' ? filePath : maskedRoot,
+            sourceDir: nonDirectory === 'source directory' ? filePath : sourceDir,
+            targetDir: join(maskedRoot, 'private')
+          },
+          privateHomeMount()
+        )
       }).toThrow(new SandboxError('invalid delegated cell mount'))
     }
   )
@@ -189,11 +245,17 @@ describe('delegated bwrap mount isolation', () => {
     symlinkSync(loopPath, loopPath)
 
     expect(() => {
-      delegatedCellSandboxWrap('codex', ['--acp'], [], {
-        maskedRoot,
-        sourceDir: loopPath,
-        targetDir: join(maskedRoot, 'private')
-      })
+      delegatedCellSandboxWrap(
+        'codex',
+        ['--acp'],
+        [],
+        {
+          maskedRoot,
+          sourceDir: loopPath,
+          targetDir: join(maskedRoot, 'private')
+        },
+        privateHomeMount()
+      )
     }).toThrow(new SandboxError('invalid delegated cell mount'))
   })
 
@@ -205,11 +267,17 @@ describe('delegated bwrap mount isolation', () => {
 
     try {
       expect(() => {
-        delegatedCellSandboxWrap('codex', ['--acp'], [], {
-          maskedRoot,
-          sourceDir,
-          targetDir: join(maskedRoot, 'private')
-        })
+        delegatedCellSandboxWrap(
+          'codex',
+          ['--acp'],
+          [],
+          {
+            maskedRoot,
+            sourceDir,
+            targetDir: join(maskedRoot, 'private')
+          },
+          privateHomeMount()
+        )
       }).toThrow(new SandboxError('invalid delegated cell mount'))
     } finally {
       chmodSync(maskedRoot, 0o700)
@@ -259,7 +327,8 @@ describe('bwrap delegated mount behavior', () => {
           maskedRoot,
           sourceDir: sourceA,
           targetDir: targetA
-        }
+        },
+        privateHomeMount()
       )
       execFileSync(entitled.cmd, entitled.args)
     }

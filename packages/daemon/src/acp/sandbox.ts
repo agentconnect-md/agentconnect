@@ -32,6 +32,8 @@ export interface DelegatedCellMount {
   targetDir: string
 }
 
+export type DelegatedRuntimeHomeMount = DelegatedCellMount
+
 /** Raised when a requested sandbox cannot be established safely (e.g. the cwd escapes
  *  the trusted agent dir). Distinct from the "no mechanism" fail-open path. */
 export class SandboxError extends Error {}
@@ -114,7 +116,10 @@ function canonicalTarget(path: string): string {
 function existingDelegatedMountDirectory(path: string): string {
   try {
     const real = realpathSync(path)
-    if (!statSync(real).isDirectory()) throw new Error('not a directory')
+    const info = statSync(real)
+    if (!info.isDirectory()) throw new Error('not a directory')
+    const uid = process.getuid?.()
+    if (uid !== undefined && info.uid !== uid) throw new Error('not owned by daemon uid')
     return real
   } catch {
     throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
@@ -224,7 +229,8 @@ export function delegatedCellSandboxWrap(
   args: string[],
   baseWritable: string[],
   mount: DelegatedCellMount,
-  maskedReadRoots: string[] = [mount.maskedRoot]
+  runtimeHomeMount: DelegatedRuntimeHomeMount,
+  maskedReadRoots: string[] = [mount.maskedRoot, runtimeHomeMount.maskedRoot]
 ): { cmd: string; args: string[] } {
   const maskedRoot = existingDelegatedMountDirectory(mount.maskedRoot)
   const sourceDir = existingDelegatedMountDirectory(mount.sourceDir)
@@ -235,17 +241,47 @@ export function delegatedCellSandboxWrap(
   if (!validatedMaskedRoots.includes(maskedRoot)) {
     throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
   }
+  const runtimeHomeRoot = existingDelegatedMountDirectory(runtimeHomeMount.maskedRoot)
+  const runtimeHomeSource = existingDelegatedMountDirectory(runtimeHomeMount.sourceDir)
+  const runtimeHomeTarget = existingDelegatedMountDirectory(runtimeHomeMount.targetDir)
+  if (
+    !validatedMaskedRoots.includes(runtimeHomeRoot) ||
+    !strictlyInside(runtimeHomeRoot, runtimeHomeSource) ||
+    !strictlyInside(runtimeHomeRoot, runtimeHomeTarget) ||
+    runtimeHomeSource !== runtimeHomeTarget
+  ) {
+    throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
+  }
+  const privateRoots = new Set([maskedRoot, runtimeHomeRoot])
+  const safeBaseWritable = baseWritable.filter((path) => {
+    const canonicalPath = canonicalTarget(path)
+    return ![...privateRoots].some((root) => canonicalPath === root || strictlyInside(root, canonicalPath))
+  })
 
   const wrapped = sandboxWrap(cmd, args, {
     mechanism: 'bwrap',
-    writable: baseWritable,
+    writable: safeBaseWritable,
     maskedReadRoots: validatedMaskedRoots
   })
   const separator = wrapped.args.indexOf('--')
   const targetDir = canonicalTarget(mount.targetDir)
-  const cellBind = ['--dir', targetDir, '--bind', sourceDir, targetDir]
+  if (!isAbsolute(targetDir) || targetDir === sep) {
+    throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
+  }
+  const privateBinds = [
+    '--dir',
+    targetDir,
+    '--bind',
+    sourceDir,
+    targetDir,
+    '--dir',
+    runtimeHomeTarget,
+    '--bind',
+    runtimeHomeSource,
+    runtimeHomeTarget
+  ]
   return {
     cmd: wrapped.cmd,
-    args: [...wrapped.args.slice(0, separator), ...cellBind, ...wrapped.args.slice(separator)]
+    args: [...wrapped.args.slice(0, separator), ...privateBinds, ...wrapped.args.slice(separator)]
   }
 }

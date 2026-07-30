@@ -134,6 +134,8 @@ interface CellBinding extends RegisterSessionMcpCell {
   server: net.Server
   connections: Set<net.Socket>
   accepting: boolean
+  serverClosed: boolean
+  sourceRemoved: boolean
 }
 
 type RpcResponse = {
@@ -472,8 +474,20 @@ export class SessionMcpBroker {
     return this.serialized(async () => {
       const binding = this.cells.get(input.isolationCellId)
       if (!binding || !sameRelease(binding, input)) return false
-      this.detachBinding(binding)
+      this.beginDrainBinding(binding)
       await this.destroyBinding(binding)
+      this.detachBinding(binding)
+      return true
+    })
+  }
+
+  /** Disable one exact cell before slow host/filesystem cleanup while retaining
+   * its binding so releaseCell can retry destruction. */
+  async beginDrainCell(input: ReleaseSessionMcpCell): Promise<boolean> {
+    return this.serialized(async () => {
+      const binding = this.cells.get(input.isolationCellId)
+      if (!binding || !sameRelease(binding, input)) return false
+      this.beginDrainBinding(binding)
       return true
     })
   }
@@ -483,8 +497,13 @@ export class SessionMcpBroker {
     return this.serialized(async () => {
       this.stopped = true
       const bindings = [...this.cells.values()]
-      for (const binding of bindings) this.detachBinding(binding)
-      await Promise.all(bindings.map((binding) => this.destroyBinding(binding)))
+      for (const binding of bindings) this.beginDrainBinding(binding)
+      await Promise.all(
+        bindings.map(async (binding) => {
+          await this.destroyBinding(binding)
+          this.detachBinding(binding)
+        })
+      )
       this.history.clear()
       this.seenCellIds.clear()
     })
@@ -518,7 +537,9 @@ export class SessionMcpBroker {
         descriptor,
         server,
         connections,
-        accepting: true
+        accepting: true,
+        serverClosed: false,
+        sourceRemoved: false
       }
       server.on('connection', (socket) => this.onConnection(binding, socket))
       await new Promise<void>((resolve, reject) => {
@@ -904,7 +925,6 @@ export class SessionMcpBroker {
   }
 
   private detachBinding(binding: CellBinding): void {
-    binding.accepting = false
     this.cells.delete(binding.isolationCellId)
     if (this.conversations.get(logicalKey(binding)) === binding) {
       this.conversations.delete(logicalKey(binding))
@@ -912,11 +932,23 @@ export class SessionMcpBroker {
     this.activeTokens.delete(binding.token)
   }
 
+  private beginDrainBinding(binding: CellBinding): void {
+    binding.accepting = false
+    for (const connection of binding.connections) connection.destroy()
+  }
+
   private async destroyBinding(binding: CellBinding): Promise<void> {
     for (const connection of binding.connections) connection.destroy()
-    binding.connections.clear()
-    await new Promise<void>((resolve) => binding.server.close(() => resolve()))
-    await rm(binding.sourceDirectory, { recursive: true, force: true })
+    if (!binding.serverClosed) {
+      if (binding.server.listening) {
+        await new Promise<void>((resolve) => binding.server.close(() => resolve()))
+      }
+      binding.serverClosed = true
+    }
+    if (!binding.sourceRemoved) {
+      await rm(binding.sourceDirectory, { recursive: true, force: true })
+      binding.sourceRemoved = true
+    }
   }
 
   private now(): number {

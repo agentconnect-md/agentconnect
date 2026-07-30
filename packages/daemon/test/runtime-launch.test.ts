@@ -37,9 +37,9 @@ describe('prepareRuntimeLaunch', () => {
     expect(resolvedRoot.startsWith(repoRoot + sep)).toBe(false)
     const scopeDir = join(testRoot, 'agent')
     const cwd = join(scopeDir, 'workspace')
-    const maskedRoot = join(testRoot, 'broker')
+    const maskedRoots = [join(testRoot, 'broker'), join(testRoot, 'webchat-hosts')]
     mkdirSync(cwd, { recursive: true })
-    mkdirSync(maskedRoot)
+    for (const maskedRoot of maskedRoots) mkdirSync(maskedRoot)
     try {
       const launch = prepareRuntimeLaunch({
         runtimeId: 'claude-acp',
@@ -47,9 +47,9 @@ describe('prepareRuntimeLaunch', () => {
         cwd,
         runInSandbox: true,
         sandboxMechanism: 'bwrap',
-        maskedReadRoots: [maskedRoot]
+        maskedReadRoots: maskedRoots
       })
-      expect(launch.sandbox?.maskedReadRoots).toEqual([maskedRoot])
+      expect(launch.sandbox?.maskedReadRoots).toEqual(maskedRoots)
 
       expect(() =>
         prepareRuntimeLaunch({
@@ -58,7 +58,7 @@ describe('prepareRuntimeLaunch', () => {
           cwd,
           runInSandbox: true,
           sandboxMechanism: 'sandbox-exec',
-          maskedReadRoots: [maskedRoot]
+          maskedReadRoots: maskedRoots
         })
       ).toThrow(/mask.*bwrap/i)
     } finally {

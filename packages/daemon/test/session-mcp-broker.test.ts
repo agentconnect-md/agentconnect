@@ -558,6 +558,31 @@ describe('SessionMcpBroker immutable registration', () => {
 })
 
 describe('SessionMcpBroker authenticated bridge lifecycle', () => {
+  it('generation-fenced beginDrain disables serving immediately while retaining the cell for release retry', async () => {
+    const h = await harness()
+    const server = await h.broker.registerCell(binding())
+    const endpoint = h.broker.getCellMount(CELL_ID)!.sourceSocketPath
+    const token = descriptorEnv(server!).AC_MCP_TOKEN!
+    const attached = await authenticatedSocket(endpoint, token)
+    const closed = new Promise<void>((resolve) => attached.once('close', resolve))
+
+    await expect(h.broker.beginDrainCell(binding())).resolves.toBe(true)
+    await closed
+    expect(h.broker.getCellMount(CELL_ID)).not.toBeNull()
+    expect(h.broker.debugStats()).toMatchObject({ activeCells: 1, connections: 0 })
+    await new Promise<void>((resolveClosed) => {
+      const socket = net.connect(endpoint)
+      socket.once('connect', () => socket.write(encodeFrame({ id: 7, token, op: 'attach' })))
+      socket.once('error', () => {})
+      socket.once('close', resolveClosed)
+    })
+    expect(h.mintMcpInvocation).not.toHaveBeenCalled()
+    expect(h.fetch).not.toHaveBeenCalled()
+
+    await expect(h.broker.releaseCell(binding())).resolves.toBe(true)
+    expect(h.broker.getCellMount(CELL_ID)).toBeNull()
+  })
+
   it('ACKs attach without CP work and emits one immutable fence when the bridge closes before its first tool request', async () => {
     const h = await harness()
     const server = await h.broker.registerCell(binding())

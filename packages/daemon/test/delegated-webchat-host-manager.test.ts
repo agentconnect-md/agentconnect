@@ -42,6 +42,7 @@ function cellInput(conversationId: string, overrides: Partial<RegisterSessionMcp
 
 class FakeBroker {
   readonly registrations: RegisterSessionMcpCell[] = []
+  readonly drains: ReleaseSessionMcpCell[] = []
   readonly releases: ReleaseSessionMcpCell[] = []
   readonly mounts = new Map<string, SessionMcpCellMount>()
   readonly stop = vi.fn(async () => {})
@@ -79,6 +80,11 @@ class FakeBroker {
     this.releases.push(input)
     this.mounts.delete(input.isolationCellId)
     return true
+  }
+
+  async beginDrainCell(input: ReleaseSessionMcpCell) {
+    this.drains.push(input)
+    return this.mounts.has(input.isolationCellId)
   }
 
   disconnect(event: SessionMcpBridgeDisconnected) {
@@ -177,11 +183,16 @@ describe('DelegatedWebchatHostManager', () => {
         sandbox: {
           mechanism: 'bwrap',
           writable: [a.runtimeHome],
-          maskedReadRoots: ['/trusted/broker'],
+          maskedReadRoots: ['/trusted/broker', h.runtimeHomeRoot],
           delegatedCellMount: {
             maskedRoot: '/trusted/broker',
             sourceDir: a.mount.sourceDirectory,
             targetDir: a.mount.targetDirectory
+          },
+          delegatedRuntimeHomeMount: {
+            maskedRoot: h.runtimeHomeRoot,
+            sourceDir: a.runtimeHome,
+            targetDir: a.runtimeHome
           }
         }
       })
@@ -258,20 +269,62 @@ describe('DelegatedWebchatHostManager', () => {
     const register = broker.registerCell.bind(broker)
     let releaseRegistration!: () => void
     const registrationGate = new Promise<void>((resolve) => (releaseRegistration = resolve))
+    let registrationEntered!: () => void
+    const entered = new Promise<void>((resolve) => (registrationEntered = resolve))
     broker.registerCell = async (input) => {
+      registrationEntered()
       await registrationGate
       return register(input)
     }
     const h = harness({ broker })
     const starting = h.manager.startHost(cellInput('stopping'))
-    await vi.waitFor(() => expect(h.manager.debugStats().pendingStarts).toBe(1))
+    await entered
     const stopping = h.manager.stop()
     releaseRegistration()
-    await expect(starting).rejects.toThrow(/stopped|unavailable/i)
+    await expect(starting).rejects.toThrow(/stopped|unavailable|cancel/i)
     await stopping
     expect(h.factoryInputs).toHaveLength(0)
+    await vi.waitFor(() => expect(h.broker.releases).toHaveLength(1))
+    expect(h.manager.debugStats()).toEqual({
+      activeHosts: 0,
+      pendingStarts: 0,
+      drainingHosts: 0,
+      stopped: true
+    })
+  })
+
+  it('cancels a never-resolving host start and completes stop with every allocated resource removed', async () => {
+    let startEntered!: () => void
+    const entered = new Promise<void>((resolveEntered) => (startEntered = resolveEntered))
+    const h = harness({
+      hostFactory: () =>
+        ({
+          start: () => {
+            startEntered()
+            return new Promise<void>(() => {})
+          },
+          stop: vi.fn(async () => {})
+        }) as unknown as AcpHost
+    })
+    const starting = h.manager.startHost(cellInput('hung-start'))
+    await entered
+
+    await expect(
+      Promise.race([
+        h.manager.stop(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('manager stop hung')), 500))
+      ])
+    ).resolves.toBeUndefined()
+    await expect(starting).rejects.toThrow(/stopped|cancel/i)
+    expect(h.broker.drains).toHaveLength(1)
     expect(h.broker.releases).toHaveLength(1)
-    expect(h.manager.debugStats()).toEqual({ activeHosts: 0, pendingStarts: 0, stopped: true })
+    expect(readdirSync(h.runtimeHomeRoot)).toEqual([])
+    expect(h.manager.debugStats()).toEqual({
+      activeHosts: 0,
+      pendingStarts: 0,
+      drainingHosts: 0,
+      stopped: true
+    })
   })
 
   it('fails closed when the isolation probe becomes unhealthy during allocation', async () => {
@@ -412,6 +465,70 @@ describe('DelegatedWebchatHostManager', () => {
     expect(broker.debugStats()).toMatchObject({ activeCells: 0, connections: 0 })
   })
 
+  it('revokes the real broker before a slow host stop so another bridge cannot mint', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-mgr-slow-'))
+    tempRoots.push(root)
+    expect(realpathSync(root).startsWith(repoRoot + sep)).toBe(false)
+    const brokerSourceRoot = join(root, 'b')
+    const runtimeHomeRoot = join(root, 'h')
+    const mintMcpInvocation = vi.fn(async () => {
+      throw new Error('draining cell must not mint')
+    })
+    const broker = new SessionMcpBroker({
+      socketRoot: brokerSourceRoot,
+      inCellSocketDirectory: '/run/agentconnect-admin',
+      cliEntry: '/opt/agentconnect/current/index.js',
+      mcpEndpoint: 'https://cp.invalid/api/v1/mcp',
+      cpClient: { mintMcpInvocation, revokeWebchatMcpDelegation: vi.fn() },
+      randomToken: () => 'slow-private-token'
+    })
+    realBrokers.push(broker)
+    let releaseHostStop!: () => void
+    const hostStopGate = new Promise<void>((resolveStop) => (releaseHostStop = resolveStop))
+    const manager = new DelegatedWebchatHostManager({
+      broker,
+      brokerSourceRoot,
+      runtimeHomeRoot,
+      isolationHealthy: () => true,
+      randomCellId: () => 'slow-cell',
+      hostFactory: () =>
+        ({
+          start: async () => {},
+          stop: () => hostStopGate
+        }) as unknown as AcpHost
+    })
+    const live = await manager.startHost(cellInput('slow-stop'))
+    const token = Object.fromEntries(live.adminMcpServer.env.map(({ name, value }) => [name, value])).AC_MCP_TOKEN!
+    const attached = net.connect(live.mount.sourceSocketPath)
+    attached.setEncoding('utf8')
+    await new Promise<void>((resolveConnected) => attached.once('connect', resolveConnected))
+    attached.write(encodeFrame({ id: 1, token, op: 'attach' }))
+    await new Promise<void>((resolveAttached) => attached.once('data', () => resolveAttached()))
+    const attachedClosed = new Promise<void>((resolveClosed) => attached.once('close', resolveClosed))
+
+    let stopped = false
+    const stopping = manager
+      .stopHost({
+        isolationCellId: live.isolationCellId,
+        agentId: 'agent-1',
+        conversationId: 'slow-stop'
+      })
+      .then(() => {
+        stopped = true
+      })
+    await attachedClosed
+    const rejected = net.connect(live.mount.sourceSocketPath)
+    rejected.once('error', () => {})
+    await new Promise<void>((resolveClosed) => rejected.once('close', resolveClosed))
+    expect(stopped).toBe(false)
+    expect(mintMcpInvocation).not.toHaveBeenCalled()
+
+    releaseHostStop()
+    await stopping
+    expect(broker.getCellMount(live.isolationCellId)).toBeNull()
+    expect(existsSync(live.runtimeHome)).toBe(false)
+  })
+
   it('fences host terminal cleanup and never uses daemon-level broker stop per host', async () => {
     let terminal!: () => void
     const stops: string[] = []
@@ -427,5 +544,98 @@ describe('DelegatedWebchatHostManager', () => {
     await vi.waitFor(() => expect(h.broker.releases).toHaveLength(1))
     expect(existsSync(live.runtimeHome)).toBe(false)
     expect(h.broker.stop).not.toHaveBeenCalled()
+  })
+
+  it('retains failed teardown steps and retries only those steps on the next stop', async () => {
+    const broker = new FakeBroker()
+    const release = broker.releaseCell.bind(broker)
+    let releaseAttempts = 0
+    broker.releaseCell = async (input) => {
+      releaseAttempts += 1
+      if (releaseAttempts === 1) throw new Error('transient release')
+      return release(input)
+    }
+    let hostStopAttempts = 0
+    let removeAttempts = 0
+    const cleanupEvents: unknown[] = []
+    const runtimeHomeRoot = mkdtempSync(join(tmpdir(), 'ac-delegated-retry-'))
+    tempRoots.push(runtimeHomeRoot)
+    const manager = new DelegatedWebchatHostManager({
+      broker,
+      brokerSourceRoot: '/trusted/broker',
+      runtimeHomeRoot,
+      isolationHealthy: () => true,
+      removeRuntimeHome: async (path) => {
+        removeAttempts += 1
+        if (removeAttempts === 1) throw new Error('transient rm')
+        rmSync(path, { recursive: true, force: true })
+      },
+      onCleanupError: (event) => cleanupEvents.push(event),
+      hostFactory: () =>
+        ({
+          start: async () => {},
+          stop: async () => {
+            hostStopAttempts += 1
+            if (hostStopAttempts === 1) throw new Error('transient stop')
+          }
+        }) as unknown as AcpHost
+    })
+    const live = await manager.startHost(cellInput('retry'))
+
+    await expect(
+      manager.stopHost({
+        isolationCellId: live.isolationCellId,
+        agentId: 'agent-1',
+        conversationId: 'retry'
+      })
+    ).rejects.toBeInstanceOf(AggregateError)
+    expect(manager.debugStats().drainingHosts).toBe(1)
+    expect(cleanupEvents).toEqual([
+      { source: 'explicit_stop', step: 'host_stop', retryable: true },
+      { source: 'explicit_stop', step: 'broker_release', retryable: true },
+      { source: 'explicit_stop', step: 'home_remove', retryable: true }
+    ])
+    expect(JSON.stringify(cleanupEvents)).not.toMatch(/delegation-retry|trusted|transient/i)
+
+    await expect(manager.stop()).resolves.toBeUndefined()
+    expect(hostStopAttempts).toBe(2)
+    expect(releaseAttempts).toBe(2)
+    expect(removeAttempts).toBe(2)
+    expect(existsSync(live.runtimeHome)).toBe(false)
+    expect(manager.debugStats().drainingHosts).toBe(0)
+  })
+
+  it('contains disconnect cleanup rejection without an unhandled promise', async () => {
+    const cleanupEvents: unknown[] = []
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => unhandled.push(reason)
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const h = harness({
+        hostFactory: () =>
+          ({
+            start: async () => {},
+            stop: async () => {
+              throw new Error('secret cleanup failure')
+            }
+          }) as unknown as AcpHost
+      })
+      ;(h.manager as any).deps.onCleanupError = (event: unknown) => cleanupEvents.push(event)
+      const live = await h.manager.startHost(cellInput('disconnect-failure'))
+      h.broker.disconnect({
+        isolationCellId: live.isolationCellId,
+        agentId: 'agent-1',
+        conversationId: 'disconnect-failure',
+        delegationId: 'delegation-disconnect-failure',
+        generation: 1
+      })
+      await vi.waitFor(() => expect(cleanupEvents).toHaveLength(1))
+      await new Promise((resolveTick) => setTimeout(resolveTick, 0))
+      expect(unhandled).toEqual([])
+      expect(cleanupEvents).toEqual([{ source: 'bridge_disconnect', step: 'host_stop', retryable: true }])
+      expect(JSON.stringify(cleanupEvents)).not.toMatch(/disconnect-failure|secret cleanup|agent-1/i)
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
   })
 })

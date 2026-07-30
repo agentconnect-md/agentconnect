@@ -210,9 +210,9 @@ describe('probeRuntime', () => {
   it('passes the daemon broker mask into a curated bwrap probe host', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-probe-mask-'))
     const cwd = join(root, 'workspace')
-    const maskedRoot = join(root, 'broker')
+    const maskedRoots = [join(root, 'broker'), join(root, 'webchat-hosts')]
     mkdirSync(cwd)
-    mkdirSync(maskedRoot)
+    for (const maskedRoot of maskedRoots) mkdirSync(maskedRoot)
     try {
       let policy: ProbeHostPolicy | undefined
       const result = await probeRuntime('safe', rt, cwd, {
@@ -220,14 +220,14 @@ describe('probeRuntime', () => {
         hostEnv: { PATH: '/usr/bin' },
         runInSandbox: true,
         sandboxMechanism: 'bwrap',
-        maskedReadRoots: [maskedRoot],
+        maskedReadRoots: maskedRoots,
         hostFactory: (_runtime, _id, _cwd, supplied) => {
           policy = supplied
           return successfulHost()
         }
       })
       expect(result.ok).toBe(true)
-      expect(policy?.sandbox?.maskedReadRoots).toEqual([maskedRoot])
+      expect(policy?.sandbox?.maskedReadRoots).toEqual(maskedRoots)
     } finally {
       const resolvedRoot = realpathSync(root)
       const repoRoot = realpathSync(join(dirname(fileURLToPath(import.meta.url)), '../../..'))

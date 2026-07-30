@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Daemon } from '../src/daemon.js'
-import { delegatedMcpBrokerRoot } from '../src/paths.js'
+import { delegatedMcpBrokerRoot, delegatedMcpRuntimeHomeRoot } from '../src/paths.js'
 
 function scaffold(displayName?: string, memoryProvider?: 'none' | 'managed', iconUrl?: string): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-daemon-'))
@@ -59,7 +59,8 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       await daemon.start()
       const host = (daemon as any).ensureHost('bot-a', (daemon as any).cfg)
       const privateRoot = delegatedMcpBrokerRoot(root)
-      expect((host as any).opts.sandbox.maskedReadRoots).toEqual([privateRoot])
+      const privateHomes = delegatedMcpRuntimeHomeRoot(root)
+      expect((host as any).opts.sandbox.maskedReadRoots).toEqual([privateRoot, privateHomes])
       expect(statSync(privateRoot).mode & 0o777).toBe(0o700)
     } finally {
       await daemon.stop().catch(() => undefined)

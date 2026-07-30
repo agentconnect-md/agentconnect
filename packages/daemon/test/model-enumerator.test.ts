@@ -10,16 +10,16 @@ import type { ProbeHostPolicy } from '../src/runtimes/runtime-prober.js'
 
 const runtime: RuntimeDef = { command: 'runtime', args: [], env: [] }
 
-describe('makeModelEnumerator delegated broker mask', () => {
-  it('passes the daemon broker mask into the disposable bwrap host', async () => {
+describe('makeModelEnumerator delegated private-root masks', () => {
+  it('passes both daemon-private masks into the disposable bwrap host', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-enumerator-mask-'))
-    const maskedRoot = join(root, 'broker')
-    mkdirSync(maskedRoot)
+    const maskedRoots = [join(root, 'broker'), join(root, 'webchat-hosts')]
+    for (const maskedRoot of maskedRoots) mkdirSync(maskedRoot)
     let policy: ProbeHostPolicy | undefined
     try {
       const enumerate = makeModelEnumerator({
         sandboxMechanism: 'bwrap',
-        maskedReadRoots: [maskedRoot],
+        maskedReadRoots: maskedRoots,
         hostFactory: (_runtime, _id, _cwd, supplied) => {
           policy = supplied
           return {
@@ -31,7 +31,7 @@ describe('makeModelEnumerator delegated broker mask', () => {
         }
       })
       await enumerate('runtime', runtime, [], { totalMs: 5_000, perModelMs: 1_000 })
-      expect(policy?.sandbox?.maskedReadRoots).toEqual([maskedRoot])
+      expect(policy?.sandbox?.maskedReadRoots).toEqual(maskedRoots)
     } finally {
       const resolvedRoot = realpathSync(root)
       const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))

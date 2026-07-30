@@ -24,7 +24,14 @@ import {
 import type { RuntimeDef } from '../config/config-schema.js'
 import { resolveCommandPath } from '../runtimes/probe.js'
 import { augmentClaudeEfforts, isClaudeRuntimeDef, ULTRACODE_EFFORT } from './claude-runtime.js'
-import { delegatedCellSandboxWrap, sandboxWrap, type DelegatedCellMount, type SandboxMechanism } from './sandbox.js'
+import {
+  delegatedCellSandboxWrap,
+  sandboxWrap,
+  SandboxError,
+  type DelegatedCellMount,
+  type DelegatedRuntimeHomeMount,
+  type SandboxMechanism
+} from './sandbox.js'
 import type { Logger } from '../log.js'
 import { accountAppIsolation } from './account-apps.js'
 
@@ -141,6 +148,8 @@ export interface AcpSandboxLaunch {
   maskedReadRoots?: string[]
   /** Present only for an entitled host and already tied to its broker cell. */
   delegatedCellMount?: DelegatedCellMount
+  /** Present only with delegatedCellMount; binds back this host's own private HOME. */
+  delegatedRuntimeHomeMount?: DelegatedRuntimeHomeMount
 }
 
 /** The `session/set_config_option` call that applies a desired value, or the reason none is needed. */
@@ -579,13 +588,19 @@ export class AcpHost {
     // OS sandbox (issue #642): wrap the launcher so the agent process can only write
     // inside its agent dir + tmp. Fail-open — ensureHost only sets opts.sandbox when a
     // mechanism exists, so no mechanism ⇒ this is a no-op and the agent runs unconfined.
+    const delegatedCell = this.opts.sandbox?.delegatedCellMount
+    const delegatedHome = this.opts.sandbox?.delegatedRuntimeHomeMount
+    if ((delegatedCell && !delegatedHome) || (!delegatedCell && delegatedHome)) {
+      throw new SandboxError('invalid delegated cell mount')
+    }
     const launch = this.opts.sandbox
-      ? this.opts.sandbox.delegatedCellMount
+      ? delegatedCell && delegatedHome
         ? delegatedCellSandboxWrap(
             resolved,
             spawnArgs,
             this.opts.sandbox.writable,
-            this.opts.sandbox.delegatedCellMount,
+            delegatedCell,
+            delegatedHome,
             this.opts.sandbox.maskedReadRoots
           )
         : sandboxWrap(resolved, spawnArgs, this.opts.sandbox)

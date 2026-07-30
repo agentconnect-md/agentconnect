@@ -11,7 +11,10 @@ import type {
 } from '../mcp/session-mcp-broker.js'
 import type { AcpHost, AcpSandboxLaunch } from './acp-host.js'
 
-type BrokerPort = Pick<SessionMcpBroker, 'registerCell' | 'getCellMount' | 'releaseCell' | 'subscribeBridgeDisconnect'>
+type BrokerPort = Pick<
+  SessionMcpBroker,
+  'registerCell' | 'getCellMount' | 'beginDrainCell' | 'releaseCell' | 'subscribeBridgeDisconnect'
+>
 
 export type StartDelegatedWebchatHost = Omit<RegisterSessionMcpCell, 'isolationCellId' | 'platform'>
 
@@ -32,14 +35,39 @@ export interface DelegatedWebchatHost {
   mount: SessionMcpCellMount
 }
 
-interface CellRecord extends DelegatedWebchatHost, ReleaseSessionMcpCell {
+type CleanupSource = 'startup' | 'manager_stop' | 'explicit_stop' | 'bridge_disconnect' | 'host_terminal'
+type CleanupStep = 'broker_drain' | 'host_stop' | 'broker_release' | 'home_remove'
+
+export interface DelegatedHostCleanupError {
+  source: CleanupSource
+  step: CleanupStep
+  retryable: true
+}
+
+interface CellRecord extends ReleaseSessionMcpCell {
   key: string
   expiresAt: string
+  runtimeHome: string
+  host?: AcpHost
+  adminMcpServer?: McpStdioServer
+  mount?: SessionMcpCellMount
+  registered: boolean
+  registrationSettled: boolean
+  hostCreationSettled: boolean
+  allocationSettled: boolean
+  drained: boolean
+  hostStopped: boolean
+  released: boolean
+  homeRemoved: boolean
   teardown?: Promise<void>
 }
 
 interface PendingStart {
   authority: StartDelegatedWebchatHost
+  cancelled: boolean
+  cancelSignal: Promise<void>
+  cancel: () => void
+  record?: CellRecord
   promise: Promise<DelegatedWebchatHost>
 }
 
@@ -53,6 +81,9 @@ export interface DelegatedWebchatHostManagerDeps {
   isolationHealthy: () => boolean
   hostFactory: (input: DelegatedWebchatHostFactoryInput) => AcpHost
   randomCellId?: () => string
+  removeRuntimeHome?: (path: string) => Promise<void>
+  onCleanupError?: (event: DelegatedHostCleanupError) => void
+  log?: { warn(message: string): void }
 }
 
 function logicalKey(input: { agentId: string; conversationId: string }): string {
@@ -90,6 +121,7 @@ function strictlyInside(root: string, child: string): boolean {
  */
 export class DelegatedWebchatHostManager {
   private readonly active = new Map<string, CellRecord>()
+  private readonly draining = new Map<string, CellRecord>()
   private readonly pending = new Map<string, PendingStart>()
   private readonly unsubscribeBridgeDisconnect: () => void
   private stopped = false
@@ -100,19 +132,22 @@ export class DelegatedWebchatHostManager {
     }
     // Subscribe before any host can start and open its cell-local bridge.
     this.unsubscribeBridgeDisconnect = deps.broker.subscribeBridgeDisconnect((event) => {
-      void this.onBridgeDisconnect(event)
+      void this.onBridgeDisconnect(event).catch(() => {
+        // onBridgeDisconnect reports classified failures itself. This terminal
+        // catch prevents an observer rejection from becoming process-global.
+      })
     })
   }
 
   async startHost(input: StartDelegatedWebchatHost): Promise<DelegatedWebchatHost> {
     this.assertCanStart()
     const key = logicalKey(input)
-    const pending = this.pending.get(key)
-    if (pending) {
-      if (!sameAuthority(pending.authority, input)) {
+    const currentPending = this.pending.get(key)
+    if (currentPending) {
+      if (!sameAuthority(currentPending.authority, input)) {
         throw new Error(`conversation ${input.conversationId} is already starting with different authority`)
       }
-      return pending.promise
+      return currentPending.promise
     }
     const active = this.active.get(key)
     if (active) {
@@ -121,66 +156,131 @@ export class DelegatedWebchatHostManager {
       }
       return this.publicHost(active)
     }
-
-    const promise = this.allocateAndStart(input, key)
-    this.pending.set(key, { authority: input, promise })
-    try {
-      return await promise
-    } finally {
-      const current = this.pending.get(key)
-      if (current?.promise === promise) this.pending.delete(key)
+    if (this.draining.has(key)) {
+      throw new Error(`conversation ${input.conversationId} is still draining`)
     }
+
+    let cancel!: () => void
+    const pending: PendingStart = {
+      authority: input,
+      cancelled: false,
+      cancelSignal: new Promise<void>((resolveCancel) => {
+        cancel = resolveCancel
+      }),
+      cancel: () => {
+        if (pending.cancelled) return
+        pending.cancelled = true
+        cancel()
+      },
+      promise: undefined as unknown as Promise<DelegatedWebchatHost>
+    }
+    const allocation = this.allocateAndStart(input, key, pending)
+    pending.promise = allocation
+    this.pending.set(key, pending)
+    void allocation
+      .finally(() => {
+        const current = this.pending.get(key)
+        if (current === pending) this.pending.delete(key)
+      })
+      .catch(() => undefined)
+    return allocation
   }
 
   async stopHost(input: { agentId: string; conversationId: string; isolationCellId: string }): Promise<boolean> {
-    const record = this.active.get(logicalKey(input))
+    const key = logicalKey(input)
+    const record = this.active.get(key) ?? this.draining.get(key)
     if (!record || record.isolationCellId !== input.isolationCellId) return false
-    await this.teardown(record)
+    await this.teardown(record, 'explicit_stop')
     return true
   }
 
   /** Manager shutdown is local cell teardown only. The owning daemon calls
    * SessionMcpBroker.stop() exactly once at its own terminal boundary. */
   async stop(): Promise<void> {
-    if (this.stopped) return
-    this.stopped = true
-    this.unsubscribeBridgeDisconnect()
-    await Promise.allSettled([...this.pending.values()].map(({ promise }) => promise))
-    await Promise.all([...this.active.values()].map((record) => this.teardown(record)))
+    if (!this.stopped) {
+      this.stopped = true
+      this.unsubscribeBridgeDisconnect()
+    }
+    const pending = [...this.pending.values()]
+    for (const start of pending) start.cancel()
+    const records = new Set<CellRecord>([
+      ...this.active.values(),
+      ...this.draining.values(),
+      ...pending.flatMap((start) => (start.record ? [start.record] : []))
+    ])
+    const attempts = await Promise.allSettled([...records].map((record) => this.teardown(record, 'manager_stop')))
+    const failures = attempts.flatMap((attempt) => (attempt.status === 'rejected' ? [attempt.reason] : []))
+    if (failures.length) throw new AggregateError(failures, 'delegated webchat cleanup incomplete')
   }
 
-  debugStats(): { activeHosts: number; pendingStarts: number; stopped: boolean } {
-    return { activeHosts: this.active.size, pendingStarts: this.pending.size, stopped: this.stopped }
+  debugStats(): { activeHosts: number; pendingStarts: number; drainingHosts: number; stopped: boolean } {
+    return {
+      activeHosts: this.active.size,
+      pendingStarts: this.pending.size,
+      drainingHosts: this.draining.size,
+      stopped: this.stopped
+    }
   }
 
-  private async allocateAndStart(input: StartDelegatedWebchatHost, key: string): Promise<DelegatedWebchatHost> {
+  private async allocateAndStart(
+    input: StartDelegatedWebchatHost,
+    key: string,
+    pending: PendingStart
+  ): Promise<DelegatedWebchatHost> {
     const isolationCellId = this.deps.randomCellId?.() ?? randomUUID()
     const runtimeHome = await this.createRuntimeHome()
-    let record: CellRecord | undefined
-    let registeredFence: ReleaseSessionMcpCell | undefined
+    const record: CellRecord = {
+      key,
+      isolationCellId,
+      agentId: input.agentId,
+      conversationId: input.conversationId,
+      delegationId: input.delegationId,
+      generation: input.generation,
+      expiresAt: input.expiresAt,
+      runtimeHome,
+      registered: false,
+      registrationSettled: false,
+      hostCreationSettled: false,
+      allocationSettled: false,
+      drained: false,
+      hostStopped: false,
+      released: false,
+      homeRemoved: false
+    }
+    pending.record = record
     try {
+      this.assertPendingCanStart(pending)
       const registration: RegisterSessionMcpCell = {
         isolationCellId,
         platform: 'webchat',
         ...input
       }
-      const adminMcpServer = await this.deps.broker.registerCell(registration)
+      const registrationTask = this.deps.broker.registerCell(registration).then(
+        (adminMcpServer) => {
+          record.registrationSettled = true
+          if (adminMcpServer) {
+            record.registered = true
+            record.adminMcpServer = adminMcpServer
+          }
+          if (pending.cancelled) void this.teardown(record, 'startup').catch(() => undefined)
+          return adminMcpServer
+        },
+        (error) => {
+          record.registrationSettled = true
+          if (pending.cancelled) void this.teardown(record, 'startup').catch(() => undefined)
+          throw error
+        }
+      )
+      const adminMcpServer = await this.raceCancellation(registrationTask, pending)
       if (!adminMcpServer) throw new Error('delegated webchat broker refused the isolation cell')
-      registeredFence = {
-        isolationCellId,
-        agentId: input.agentId,
-        conversationId: input.conversationId,
-        delegationId: input.delegationId,
-        generation: input.generation
-      }
-      this.assertCanStart()
+      this.assertPendingCanStart(pending)
       const mount = this.deps.broker.getCellMount(isolationCellId)
       if (!mount || !strictlyInside(this.deps.brokerSourceRoot, mount.sourceDirectory)) {
         throw new Error('delegated webchat broker returned an invalid cell mount')
       }
 
       const onTerminal = () => {
-        if (record) void this.teardown(record).catch(() => undefined)
+        void this.teardown(record, 'host_terminal').catch(() => undefined)
       }
       const host = this.deps.hostFactory({
         agentId: input.agentId,
@@ -190,40 +290,46 @@ export class DelegatedWebchatHostManager {
         sandbox: {
           mechanism: 'bwrap',
           writable: [runtimeHome],
-          maskedReadRoots: [this.deps.brokerSourceRoot],
+          maskedReadRoots: [this.deps.brokerSourceRoot, this.deps.runtimeHomeRoot],
           delegatedCellMount: {
             maskedRoot: this.deps.brokerSourceRoot,
             sourceDir: mount.sourceDirectory,
             targetDir: mount.targetDirectory
+          },
+          delegatedRuntimeHomeMount: {
+            maskedRoot: this.deps.runtimeHomeRoot,
+            sourceDir: runtimeHome,
+            targetDir: runtimeHome
           }
         },
         onTerminal
       })
-      record = {
-        key,
-        ...registeredFence,
-        expiresAt: input.expiresAt,
-        host,
-        runtimeHome,
-        adminMcpServer,
-        mount
-      }
+      record.host = host
+      record.mount = mount
+      record.hostCreationSettled = true
+      this.assertPendingCanStart(pending)
       this.active.set(key, record)
-      await host.start()
-      if (this.stopped || !this.deps.isolationHealthy() || this.active.get(key) !== record || record.teardown) {
+      const hostStart = Promise.resolve().then(() => host.start())
+      await this.raceCancellation(hostStart, pending)
+      if (
+        this.stopped ||
+        pending.cancelled ||
+        !this.deps.isolationHealthy() ||
+        this.active.get(key) !== record ||
+        record.teardown
+      ) {
         throw new Error('delegated webchat host terminated during startup')
       }
       return this.publicHost(record)
     } catch (error) {
-      if (record) {
-        await this.teardown(record).catch(() => undefined)
-      } else {
-        if (registeredFence) {
-          await this.deps.broker.releaseCell(registeredFence).catch(() => undefined)
-        }
-        await rm(runtimeHome, { recursive: true, force: true }).catch(() => undefined)
-      }
+      record.hostCreationSettled = true
+      await this.teardown(record, 'startup').catch(() => undefined)
       throw error
+    } finally {
+      record.allocationSettled = true
+      if (pending.cancelled || this.draining.get(key) === record) {
+        await this.teardown(record, 'startup').catch(() => undefined)
+      }
     }
   }
 
@@ -232,6 +338,10 @@ export class DelegatedWebchatHostManager {
     const root = await lstat(this.deps.runtimeHomeRoot)
     if (!root.isDirectory() || root.isSymbolicLink()) {
       throw new Error('delegated runtime home root must be a real directory')
+    }
+    const uid = process.getuid?.()
+    if (uid !== undefined && root.uid !== uid) {
+      throw new Error('delegated runtime home root must be owned by the daemon user')
     }
     await chmod(this.deps.runtimeHomeRoot, 0o700)
     const runtimeHome = await mkdtemp(join(this.deps.runtimeHomeRoot, 'cell-'))
@@ -246,44 +356,148 @@ export class DelegatedWebchatHostManager {
     }
   }
 
-  private async onBridgeDisconnect(event: SessionMcpBridgeDisconnected): Promise<void> {
-    const record = this.active.get(logicalKey(event))
-    if (!record || !sameFence(record, event)) return
-    await this.teardown(record)
+  private assertPendingCanStart(pending: PendingStart): void {
+    this.assertCanStart()
+    if (pending.cancelled) throw new Error('delegated webchat host start was cancelled')
   }
 
-  private teardown(record: CellRecord): Promise<void> {
+  private async raceCancellation<T>(operation: Promise<T>, pending: PendingStart): Promise<T> {
+    return Promise.race([
+      operation,
+      pending.cancelSignal.then(() => {
+        throw new Error('delegated webchat host start was cancelled')
+      })
+    ])
+  }
+
+  private async onBridgeDisconnect(event: SessionMcpBridgeDisconnected): Promise<void> {
+    const key = logicalKey(event)
+    const record = this.active.get(key) ?? this.draining.get(key)
+    if (!record || !sameFence(record, event)) return
+    try {
+      await this.teardown(record, 'bridge_disconnect')
+    } catch {
+      // teardown already emitted identifier-free classified errors and retained
+      // the record for retry.
+    }
+  }
+
+  private teardown(record: CellRecord, source: CleanupSource): Promise<void> {
     if (record.teardown) return record.teardown
-    record.teardown = (async () => {
-      if (this.active.get(record.key) === record) this.active.delete(record.key)
-      let firstError: unknown
-      try {
-        await record.host.stop()
-      } catch (error) {
-        firstError = error
+    if (this.active.get(record.key) === record) this.active.delete(record.key)
+    this.draining.set(record.key, record)
+    record.teardown = this.runTeardown(record, source).finally(() => {
+      record.teardown = undefined
+      if (this.teardownComplete(record) && this.draining.get(record.key) === record) {
+        this.draining.delete(record.key)
       }
-      try {
-        await this.deps.broker.releaseCell({
-          isolationCellId: record.isolationCellId,
-          agentId: record.agentId,
-          conversationId: record.conversationId,
-          delegationId: record.delegationId,
-          generation: record.generation
-        })
-      } catch (error) {
-        firstError ??= error
-      }
-      try {
-        await rm(record.runtimeHome, { recursive: true, force: true })
-      } catch (error) {
-        firstError ??= error
-      }
-      if (firstError) throw firstError
-    })()
+    })
     return record.teardown
   }
 
+  private async runTeardown(record: CellRecord, source: CleanupSource): Promise<void> {
+    const failures: Error[] = []
+    const step = async (name: CleanupStep, done: () => boolean, run: () => Promise<void>) => {
+      if (done()) return
+      try {
+        await run()
+      } catch {
+        failures.push(new Error(`delegated cleanup step failed: ${name}`))
+        this.reportCleanupError({ source, step: name, retryable: true })
+      }
+    }
+    const fence: ReleaseSessionMcpCell = {
+      isolationCellId: record.isolationCellId,
+      agentId: record.agentId,
+      conversationId: record.conversationId,
+      delegationId: record.delegationId,
+      generation: record.generation
+    }
+
+    if (record.registered) {
+      await step(
+        'broker_drain',
+        () => record.drained,
+        async () => {
+          if (!(await this.deps.broker.beginDrainCell(fence))) throw new Error('broker drain fence mismatch')
+          record.drained = true
+        }
+      )
+    } else if (record.registrationSettled) {
+      record.drained = true
+      record.released = true
+    }
+    if (record.registered && !record.drained) {
+      throw new AggregateError(failures, 'delegated webchat cleanup incomplete')
+    }
+
+    if (record.host) {
+      await step(
+        'host_stop',
+        () => record.hostStopped,
+        async () => {
+          await record.host!.stop()
+          record.hostStopped = true
+        }
+      )
+    } else if (record.hostCreationSettled) {
+      record.hostStopped = true
+    }
+
+    if (record.registered && record.drained) {
+      await step(
+        'broker_release',
+        () => record.released,
+        async () => {
+          if (!(await this.deps.broker.releaseCell(fence))) throw new Error('broker release fence mismatch')
+          record.released = true
+        }
+      )
+    }
+
+    await step(
+      'home_remove',
+      () => record.homeRemoved,
+      async () => {
+        await (this.deps.removeRuntimeHome ?? this.defaultRemoveRuntimeHome)(record.runtimeHome)
+        record.homeRemoved = true
+      }
+    )
+
+    if (failures.length) throw new AggregateError(failures, 'delegated webchat cleanup incomplete')
+  }
+
+  private readonly defaultRemoveRuntimeHome = (path: string) => rm(path, { recursive: true, force: true })
+
+  private teardownComplete(record: CellRecord): boolean {
+    return (
+      record.allocationSettled &&
+      record.registrationSettled &&
+      record.hostCreationSettled &&
+      record.drained &&
+      record.hostStopped &&
+      record.released &&
+      record.homeRemoved
+    )
+  }
+
+  private reportCleanupError(event: DelegatedHostCleanupError): void {
+    try {
+      this.deps.log?.warn(`delegated webchat cleanup failed at ${event.step}; retry retained`)
+    } catch {
+      // Logging is never part of cleanup correctness.
+    }
+    try {
+      this.deps.onCleanupError?.({ ...event })
+    } catch {
+      // Observability callbacks are containment boundaries.
+    }
+  }
+
   private publicHost(record: CellRecord): DelegatedWebchatHost {
+    if (!record.host || !record.adminMcpServer || !record.mount) {
+      throw new Error('delegated webchat host is not fully initialized')
+    }
     return {
       isolationCellId: record.isolationCellId,
       host: record.host,

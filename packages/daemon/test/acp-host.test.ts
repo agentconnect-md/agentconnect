@@ -1,7 +1,16 @@
 import { afterEach, describe, it, expect, vi } from 'vitest'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve, sep } from 'node:path'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import {
   AcpHost,
@@ -538,20 +547,21 @@ describe('AcpHost delegated sandbox launch', () => {
     const argsFile = join(root, 'args')
     const maskedRoot = join(root, 'broker')
     const sourceDir = join(maskedRoot, 'cell-private')
-    const runtimeHome = join(root, 'home')
+    const runtimeHomeRoot = join(root, 'homes')
+    const runtimeHome = join(runtimeHomeRoot, 'cell-private')
     mkdirSync(bin)
     mkdirSync(sourceDir, { recursive: true })
-    mkdirSync(runtimeHome)
+    mkdirSync(runtimeHome, { recursive: true })
     const bwrap = join(bin, 'bwrap')
     writeFileSync(
       bwrap,
       '#!/bin/sh\nprintf "%s\\n" "$@" > "$AC_BWRAP_ARGS"\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n'
     )
     chmodSync(bwrap, 0o755)
-    return { bin, argsFile, maskedRoot, sourceDir, runtimeHome, root }
+    return { bin, argsFile, maskedRoot, sourceDir, runtimeHomeRoot, runtimeHome, root }
   }
 
-  it('masks the broker root for an ordinary untrusted ACP host without binding a cell back', async () => {
+  it('masks both daemon-private roots for an ordinary untrusted ACP host without binding either back', async () => {
     const fixture = fakeBwrap()
     const host = new AcpHost(
       { command: process.execPath, args: [fakeAgent], env: [] },
@@ -562,7 +572,7 @@ describe('AcpHost delegated sandbox launch', () => {
         sandbox: {
           mechanism: 'bwrap',
           writable: [fixture.runtimeHome],
-          maskedReadRoots: [fixture.maskedRoot]
+          maskedReadRoots: [fixture.maskedRoot, fixture.runtimeHomeRoot]
         }
       }
     )
@@ -573,7 +583,15 @@ describe('AcpHost delegated sandbox launch', () => {
     expect(args).toContain('/proc')
     const maskedRoot = realpathSync(fixture.maskedRoot)
     expect(args.findIndex((arg, index) => arg === maskedRoot && args[index - 1] === '--tmpfs')).toBeGreaterThan(0)
+    const runtimeHomeRoot = realpathSync(fixture.runtimeHomeRoot)
+    const runtimeHomeMask = args.findIndex((arg, index) => arg === runtimeHomeRoot && args[index - 1] === '--tmpfs')
+    expect(runtimeHomeMask).toBeGreaterThan(0)
     expect(args).not.toContain(realpathSync(fixture.sourceDir))
+    const runtimeHomeBind = args.findIndex(
+      (arg, index) => arg === realpathSync(fixture.runtimeHome) && args[index - 1] === '--bind'
+    )
+    expect(runtimeHomeBind).toBeGreaterThan(0)
+    expect(runtimeHomeBind).toBeLessThan(runtimeHomeMask)
   }, 15_000)
 
   it('reveals exactly its validated private cell bind after masking the common broker root', async () => {
@@ -588,11 +606,16 @@ describe('AcpHost delegated sandbox launch', () => {
         sandbox: {
           mechanism: 'bwrap',
           writable: [fixture.runtimeHome],
-          maskedReadRoots: [fixture.maskedRoot],
+          maskedReadRoots: [fixture.maskedRoot, fixture.runtimeHomeRoot],
           delegatedCellMount: {
             maskedRoot: fixture.maskedRoot,
             sourceDir: fixture.sourceDir,
             targetDir
+          },
+          delegatedRuntimeHomeMount: {
+            maskedRoot: fixture.runtimeHomeRoot,
+            sourceDir: fixture.runtimeHome,
+            targetDir: fixture.runtimeHome
           }
         }
       }
@@ -607,6 +630,15 @@ describe('AcpHost delegated sandbox launch', () => {
     expect(mask).toBeGreaterThan(0)
     expect(bind).toBeGreaterThan(mask)
     expect(args[bind + 1]).toBe(join(realpathSync(fixture.root), 'private-endpoint'))
+    const homeMask = args.findIndex(
+      (arg, index) => arg === realpathSync(fixture.runtimeHomeRoot) && args[index - 1] === '--tmpfs'
+    )
+    const homeBind = args.findIndex(
+      (arg, index) => arg === realpathSync(fixture.runtimeHome) && args[index - 1] === '--bind'
+    )
+    expect(homeMask).toBeGreaterThan(mask)
+    expect(homeBind).toBeGreaterThan(homeMask)
+    expect(args[homeBind + 1]).toBe(realpathSync(fixture.runtimeHome))
   }, 15_000)
 
   it('rejects an entitled bind unless its broker source root is in the daemon-wide mask set', async () => {
@@ -632,6 +664,39 @@ describe('AcpHost delegated sandbox launch', () => {
       }
     )
     await expect(host.start()).rejects.toThrow(/delegated cell mount/i)
+    expect(existsSync(fixture.argsFile)).toBe(false)
+  })
+
+  it('rejects an entitled runtime HOME outside its private root before spawning', async () => {
+    const fixture = fakeBwrap()
+    const outsideHome = join(fixture.root, 'outside-home')
+    mkdirSync(outsideHome)
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      {
+        onUpdate: () => {},
+        env: { PATH: fixture.bin, AC_BWRAP_ARGS: fixture.argsFile },
+        inheritProcessEnv: false,
+        sandbox: {
+          mechanism: 'bwrap',
+          writable: [outsideHome],
+          maskedReadRoots: [fixture.maskedRoot, fixture.runtimeHomeRoot],
+          delegatedCellMount: {
+            maskedRoot: fixture.maskedRoot,
+            sourceDir: fixture.sourceDir,
+            targetDir: join(fixture.root, 'private-endpoint')
+          },
+          delegatedRuntimeHomeMount: {
+            maskedRoot: fixture.runtimeHomeRoot,
+            sourceDir: outsideHome,
+            targetDir: outsideHome
+          }
+        }
+      }
+    )
+
+    await expect(host.start()).rejects.toThrow(/delegated cell mount/i)
+    expect(existsSync(fixture.argsFile)).toBe(false)
   })
 
   it('reports child terminal exactly once after an unexpected host crash', async () => {

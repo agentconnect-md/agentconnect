@@ -14,6 +14,7 @@ import {
   statePath,
   mcpSocketPath,
   delegatedMcpBrokerRoot,
+  delegatedMcpRuntimeHomeRoot,
   daemonEntryForShims,
   cliEntryPointer
 } from './paths.js'
@@ -1705,13 +1706,14 @@ export class Daemon {
       throw new Error('daemon startup refused: security.requireSandbox is true but this host has no bwrap/sandbox-exec')
     }
     if (this.sandboxMechanism === 'bwrap') {
-      const privateBrokerRoot = delegatedMcpBrokerRoot(root)
-      mkdirSync(privateBrokerRoot, { recursive: true, mode: 0o700 })
-      const info = lstatSync(privateBrokerRoot)
-      if (!info.isDirectory() || info.isSymbolicLink()) {
-        throw new Error('daemon startup refused: delegated MCP broker root must be a real directory')
+      for (const privateRoot of [delegatedMcpBrokerRoot(root), delegatedMcpRuntimeHomeRoot(root)]) {
+        mkdirSync(privateRoot, { recursive: true, mode: 0o700 })
+        const info = lstatSync(privateRoot)
+        if (!info.isDirectory() || info.isSymbolicLink()) {
+          throw new Error('daemon startup refused: delegated private root must be a real directory')
+        }
+        chmodSync(privateRoot, 0o700)
       }
-      chmodSync(privateBrokerRoot, 0o700)
     }
     // Mint a stable local daemonId only when we are NOT onboarding via a CP
     // token: with a `controlPlane.key` and no explicit id, the CP assigns the
@@ -1877,7 +1879,10 @@ export class Daemon {
         isolateAccountApps: this.cfg.security.isolateAccountApps,
         sandboxMechanism: this.sandboxMechanism,
         mcpSocketPath: mcpSocketPath(root),
-        maskedReadRoots: this.sandboxMechanism === 'bwrap' ? [delegatedMcpBrokerRoot(root)] : undefined
+        maskedReadRoots:
+          this.sandboxMechanism === 'bwrap'
+            ? [delegatedMcpBrokerRoot(root), delegatedMcpRuntimeHomeRoot(root)]
+            : undefined
       }),
       onUpdated: (runtimeId) => {
         this.rebuildRuntimeCatalog(runtimeId)
@@ -3483,7 +3488,9 @@ export class Daemon {
           sandboxMechanism: this.sandboxMechanism,
           mcpSocketPath: mcpSocketPath(this.root),
           maskedReadRoots:
-            runInSandbox && this.sandboxMechanism === 'bwrap' ? [delegatedMcpBrokerRoot(this.root)] : undefined
+            runInSandbox && this.sandboxMechanism === 'bwrap'
+              ? [delegatedMcpBrokerRoot(this.root), delegatedMcpRuntimeHomeRoot(this.root)]
+              : undefined
         })
         launch = composed.launch
         launchRuntime = composed.runtime
@@ -14561,7 +14568,10 @@ export class Daemon {
                 runInSandbox: this.sandboxMechanism !== undefined,
                 explicitEnv: Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value])),
                 sandboxMechanism: this.sandboxMechanism,
-                maskedReadRoots: this.sandboxMechanism === 'bwrap' ? [delegatedMcpBrokerRoot(this.root)] : undefined
+                maskedReadRoots:
+                  this.sandboxMechanism === 'bwrap'
+                    ? [delegatedMcpBrokerRoot(this.root), delegatedMcpRuntimeHomeRoot(this.root)]
+                    : undefined
               })
           })
         )
@@ -14575,7 +14585,10 @@ export class Daemon {
             runInSandbox: this.sandboxMechanism !== undefined,
             sandboxMechanism: this.sandboxMechanism,
             mcpSocketPath: mcpSocketPath(this.root),
-            maskedReadRoots: this.sandboxMechanism === 'bwrap' ? [delegatedMcpBrokerRoot(this.root)] : undefined,
+            maskedReadRoots:
+              this.sandboxMechanism === 'bwrap'
+                ? [delegatedMcpBrokerRoot(this.root), delegatedMcpRuntimeHomeRoot(this.root)]
+                : undefined,
             hostEnv: process.env
           })
         )
