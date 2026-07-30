@@ -30,6 +30,7 @@ import {
   permissionModeChoicesFor,
   resolvedPermissionMode,
   supportsModes,
+  sessionPlatform,
   type Agent
 } from '@/lib/data'
 import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
@@ -432,8 +433,8 @@ export default function HomeView() {
                       <span className="truncate font-sans text-[11.5px] leading-normal">{s.agentName || '—'}</span>
                       {s.channel && (
                         <>
-                          <span className="imark h-[13px] w-[13px] rounded-xs">
-                            <PlatformMark platform={s.platform} />
+                          <span className="imark h-[18px] w-[18px] rounded-xs">
+                            <PlatformMark platform={sessionPlatform(s)} />
                           </span>
                           <span className="mono truncate text-[11px]">{s.channel}</span>
                         </>
