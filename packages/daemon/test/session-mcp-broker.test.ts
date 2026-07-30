@@ -1480,6 +1480,84 @@ describe('SessionMcpBroker forwarding', () => {
 })
 
 describe('SessionMcpBroker private IPC containment', () => {
+  it('caps concurrent connections for one binding', async () => {
+    const h = await harness({
+      testCapacityLimits: {
+        maxConnectionsPerBinding: 2
+      } as NonNullable<SessionMcpBrokerDeps['testCapacityLimits']>
+    })
+    await h.broker.registerCell(binding())
+    const endpoint = h.broker.getCellMount(CELL_ID)!.sourceSocketPath
+    const sockets = [net.connect(endpoint), net.connect(endpoint)]
+    for (const socket of sockets) {
+      socket.on('error', () => {})
+      await new Promise<void>((resolve) => socket.once('connect', resolve))
+    }
+    await vi.waitFor(() => expect(h.broker.debugStats().connections).toBe(2))
+
+    const excess = net.connect(endpoint)
+    excess.on('error', () => {})
+    const excessClosed = new Promise<boolean>((resolve) => {
+      excess.once('close', () => resolve(true))
+      setTimeout(() => resolve(false), 50)
+    })
+    await new Promise<void>((resolve) => excess.once('connect', resolve))
+    await expect(excessClosed).resolves.toBe(true)
+    expect(h.broker.debugStats().connections).toBe(2)
+
+    for (const socket of sockets) socket.destroy()
+  })
+
+  it('caps aggregate pending work across every connection for one binding', async () => {
+    const releases: Array<() => void> = []
+    const fetch = vi.fn(
+      async (_url: string, init: { body: Buffer }) =>
+        new Promise<Response>((resolve) => {
+          const { id } = JSON.parse(init.body.toString('utf8')) as { id: string }
+          releases.push(() =>
+            resolve(
+              new Response(JSON.stringify({ jsonrpc: '2.0', id, result: { tools: [] } }), {
+                headers: { 'content-type': 'application/json' }
+              })
+            )
+          )
+        })
+    )
+    const h = await harness({
+      fetch,
+      testCapacityLimits: {
+        maxConnectionsPerBinding: 3,
+        maxPendingRequestsPerBinding: 2
+      } as NonNullable<SessionMcpBrokerDeps['testCapacityLimits']>
+    })
+    const descriptor = await h.broker.registerCell(binding())
+    const endpoint = h.broker.getCellMount(CELL_ID)!.sourceSocketPath
+    const token = descriptorEnv(descriptor!).AC_MCP_TOKEN!
+    const sockets = await Promise.all([
+      authenticatedSocket(endpoint, token),
+      authenticatedSocket(endpoint, token),
+      authenticatedSocket(endpoint, token)
+    ])
+    const excessClosed = new Promise<void>((resolve) => sockets[2]!.once('close', resolve))
+
+    sockets[0]!.write(encodeFrame({ id: 10, token, op: 'listTools' }))
+    sockets[1]!.write(encodeFrame({ id: 11, token, op: 'listTools' }))
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
+    sockets[2]!.write(encodeFrame({ id: 12, token, op: 'listTools' }))
+    await expect(
+      Promise.race([
+        excessClosed.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 50))
+      ])
+    ).resolves.toBe(true)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    expect(h.mintMcpInvocation).toHaveBeenCalledTimes(2)
+    expect(fetch).toHaveBeenCalledTimes(2)
+    for (const release of releases) release()
+    for (const socket of sockets.slice(0, 2)) socket.destroy()
+  })
+
   it('destroys oversized residual and framed requests before auth or mint, then still serves a legal connection', async () => {
     const h = await harness()
     const server = await h.broker.registerCell(binding())

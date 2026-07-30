@@ -546,6 +546,76 @@ describe('DelegatedWebchatHostManager', () => {
     expect(h.broker.stop).not.toHaveBeenCalled()
   })
 
+  it('ignores a stale terminal callback instead of replacing a newer draining record', async () => {
+    const terminals: Array<() => void> = []
+    let hostIndex = 0
+    let secondStopEntered!: () => void
+    const secondStopStarted = new Promise<void>((resolve) => {
+      secondStopEntered = resolve
+    })
+    let releaseSecondStop!: () => void
+    const secondStopGate = new Promise<void>((resolve) => {
+      releaseSecondStop = resolve
+    })
+    let cellIndex = 0
+    const h = harness({
+      randomCellId: () => `cell-${++cellIndex}`,
+      hostFactory: (input) => {
+        terminals.push(input.onTerminal)
+        const currentHost = ++hostIndex
+        return {
+          start: async () => {},
+          stop: async () => {
+            if (currentHost !== 2) return
+            secondStopEntered()
+            await secondStopGate
+          }
+        } as unknown as AcpHost
+      }
+    })
+
+    const first = await h.manager.startHost(cellInput('record-cas'))
+    await expect(
+      h.manager.stopHost({
+        isolationCellId: first.isolationCellId,
+        agentId: 'agent-1',
+        conversationId: 'record-cas'
+      })
+    ).resolves.toBe(true)
+    const second = await h.manager.startHost(
+      cellInput('record-cas', {
+        delegationId: 'delegation-record-cas-next',
+        generation: 2
+      })
+    )
+    const stopping = h.manager.stopHost({
+      isolationCellId: second.isolationCellId,
+      agentId: 'agent-1',
+      conversationId: 'record-cas'
+    })
+    await secondStopStarted
+
+    terminals[0]!()
+    let retrySettled = false
+    const retry = h.manager
+      .stopHost({
+        isolationCellId: second.isolationCellId,
+        agentId: 'agent-1',
+        conversationId: 'record-cas'
+      })
+      .then((result) => {
+        retrySettled = true
+        return result
+      })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(retrySettled).toBe(false)
+
+    releaseSecondStop()
+    await expect(stopping).resolves.toBe(true)
+    await expect(retry).resolves.toBe(true)
+    expect(h.manager.debugStats().drainingHosts).toBe(0)
+  })
+
   it('retains failed teardown steps and retries only those steps on the next stop', async () => {
     const broker = new FakeBroker()
     const release = broker.releaseCell.bind(broker)

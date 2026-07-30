@@ -23,6 +23,8 @@ const DEFAULT_RECOVERY_POLL_MS = 250
 export const PRIVATE_MCP_MAX_FRAME_BYTES = 256 * 1024
 export const PRIVATE_MCP_MAX_PIPELINED_REQUESTS = 8
 export const PRIVATE_MCP_MAX_PENDING_REQUESTS = 8
+export const PRIVATE_MCP_MAX_CONNECTIONS_PER_BINDING = 8
+export const PRIVATE_MCP_MAX_PENDING_REQUESTS_PER_BINDING = 32
 export const MAX_CONVERSATION_FENCES = 32_768
 export const MAX_SEEN_CELL_IDS = 262_144
 const MAX_BINDING_IDENTIFIER_BYTES = 256
@@ -88,6 +90,8 @@ export interface SessionMcpBrokerDeps {
   testCapacityLimits?: {
     maxConversationFences?: number
     maxSeenCellIds?: number
+    maxConnectionsPerBinding?: number
+    maxPendingRequestsPerBinding?: number
   }
 }
 
@@ -133,6 +137,7 @@ interface CellBinding extends RegisterSessionMcpCell {
   descriptor: McpStdioServer
   server: net.Server
   connections: Set<net.Socket>
+  pendingRequests: number
   accepting: boolean
   serverClosed: boolean
   sourceRemoved: boolean
@@ -330,6 +335,8 @@ export class SessionMcpBroker {
   private readonly bridgeDisconnectListeners = new Set<(event: SessionMcpBridgeDisconnected) => void>()
   private readonly maxConversationFences: number
   private readonly maxSeenCellIds: number
+  private readonly maxConnectionsPerBinding: number
+  private readonly maxPendingRequestsPerBinding: number
   private mutationTail: Promise<void> = Promise.resolve()
   private stopped = false
 
@@ -340,6 +347,16 @@ export class SessionMcpBroker {
       'conversation fence'
     )
     this.maxSeenCellIds = capacityLimit(deps.testCapacityLimits?.maxSeenCellIds, MAX_SEEN_CELL_IDS, 'seen cell id')
+    this.maxConnectionsPerBinding = capacityLimit(
+      deps.testCapacityLimits?.maxConnectionsPerBinding,
+      PRIVATE_MCP_MAX_CONNECTIONS_PER_BINDING,
+      'connections per binding'
+    )
+    this.maxPendingRequestsPerBinding = capacityLimit(
+      deps.testCapacityLimits?.maxPendingRequestsPerBinding,
+      PRIVATE_MCP_MAX_PENDING_REQUESTS_PER_BINDING,
+      'pending requests per binding'
+    )
   }
 
   async registerCell(input: RegisterSessionMcpCell): Promise<McpStdioServer | null> {
@@ -537,6 +554,7 @@ export class SessionMcpBroker {
         descriptor,
         server,
         connections,
+        pendingRequests: 0,
         accepting: true,
         serverClosed: false,
         sourceRemoved: false
@@ -575,7 +593,7 @@ export class SessionMcpBroker {
   }
 
   private onConnection(binding: CellBinding, socket: net.Socket): void {
-    if (!binding.accepting) {
+    if (!binding.accepting || binding.connections.size >= this.maxConnectionsPerBinding) {
       socket.destroy()
       return
     }
@@ -593,9 +611,14 @@ export class SessionMcpBroker {
       }
       const decoded = decodeFrames<unknown>(buffer)
       buffer = decoded.rest
+      const workRequests = decoded.messages.reduce<number>(
+        (count, request) => count + (isNarrowAttachRequest(request) ? 0 : 1),
+        0
+      )
       if (
         decoded.messages.length > PRIVATE_MCP_MAX_PIPELINED_REQUESTS ||
-        pending + decoded.messages.length > PRIVATE_MCP_MAX_PENDING_REQUESTS
+        pending + workRequests > PRIVATE_MCP_MAX_PENDING_REQUESTS ||
+        binding.pendingRequests + workRequests > this.maxPendingRequestsPerBinding
       ) {
         socket.destroy()
         return
@@ -616,8 +639,10 @@ export class SessionMcpBroker {
           continue
         }
         pending += 1
+        binding.pendingRequests += 1
         void this.handle(binding, request, socket, authenticated).finally(() => {
           pending -= 1
+          binding.pendingRequests -= 1
         })
       }
     })

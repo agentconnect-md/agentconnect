@@ -384,7 +384,16 @@ export class DelegatedWebchatHostManager {
 
   private teardown(record: CellRecord, source: CleanupSource): Promise<void> {
     if (record.teardown) return record.teardown
-    if (this.active.get(record.key) === record) this.active.delete(record.key)
+    const active = this.active.get(record.key)
+    const draining = this.draining.get(record.key)
+    const pending = this.pending.get(record.key)?.record
+    if (active !== record && draining !== record && pending !== record) {
+      return Promise.resolve()
+    }
+    if (draining && draining !== record) {
+      return Promise.resolve()
+    }
+    if (active === record) this.active.delete(record.key)
     this.draining.set(record.key, record)
     record.teardown = this.runTeardown(record, source).finally(() => {
       record.teardown = undefined
