@@ -5,7 +5,7 @@ import { stringify } from 'yaml'
 
 import { lockfileClosureChanged } from './lockfile-closure-changed.mjs'
 
-const DAEMON_IMPORTERS = ['packages/daemon', 'packages/protocol', 'packages/connection']
+const DAEMON_IMPORTERS = ['packages/daemon', 'packages/message', 'packages/protocol', 'packages/connection']
 
 // A miniature v9 lockfile shaped like the real one: root + web importers that
 // the daemon check must ignore, workspace links, a peer-suffixed dep path,
@@ -23,6 +23,7 @@ const baseLock = () => ({
     'packages/daemon': {
       dependencies: {
         '@agentconnect.md/connection': { specifier: 'workspace:*', version: 'link:../connection' },
+        '@agentconnect.md/message': { specifier: 'workspace:*', version: 'link:../message' },
         '@agentconnect.md/protocol': { specifier: 'workspace:*', version: 'link:../protocol' },
         zod: { specifier: '^4.4.3', version: '4.4.3' }
       },
@@ -30,8 +31,14 @@ const baseLock = () => ({
         tsdown: { specifier: '^0.22.3', version: '0.22.3(typescript@6.0.3)' }
       }
     },
-    'packages/protocol': {
+    'packages/message': {
       dependencies: { zod: { specifier: '^4.4.3', version: '4.4.3' } }
+    },
+    'packages/protocol': {
+      dependencies: {
+        '@agentconnect.md/message': { specifier: 'workspace:*', version: 'link:../message' },
+        zod: { specifier: '^4.4.3', version: '4.4.3' }
+      }
     },
     'packages/web': {
       dependencies: {

@@ -49,8 +49,8 @@ esac
 # republished the daemon whenever ANY package touched a dependency (a web
 # icons bump, say). It is checked separately below, scoped to the daemon's
 # importers.
-DAEMON_PATHS="packages/daemon packages/protocol packages/connection tsconfig.base.json"
-DAEMON_IMPORTERS="packages/daemon packages/protocol packages/connection"
+DAEMON_PATHS="packages/daemon packages/message packages/protocol packages/connection tsconfig.base.json"
+DAEMON_IMPORTERS="packages/daemon packages/message packages/protocol packages/connection"
 
 if [ -n "$LAST_TAG" ] && git rev-parse -q --verify "${LAST_TAG}^{commit}" > /dev/null; then
   # Word-splitting DAEMON_PATHS is deliberate: it is a list of pathspecs.

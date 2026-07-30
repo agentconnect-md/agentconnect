@@ -210,7 +210,7 @@ import type {
   RequestPermissionResponse
 } from '@agentclientprotocol/sdk'
 import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
-import { stableMessageId, stableTurnId, type NormalizedMessage } from './messages/normalized.js'
+import { fromPlatformMessage, stableMessageId, stableTurnId, type NormalizedMessage } from './messages/normalized.js'
 import type {
   RegisterReq,
   RegisterOk,
@@ -4790,9 +4790,7 @@ export class Daemon {
       this.log.warn(`relay: rd/msg(im) for unknown agent ${msg.agentId} — dropping`)
       return { msgId: msg.msgId, accepted: false, reason: 'no_agent' }
     }
-    // The wire payload is structurally the daemon's NormalizedMessage.
-    const normalized = msg.payload as NormalizedMessage
-    normalized.transportScope ??= this.transportScopeForIntegrationIds([msg.integrationId])
+    const normalized = fromPlatformMessage(msg.payload, this.transportScopeForIntegrationIds([msg.integrationId]))
     // Direct ingress resolves provider ids before onInbound(); HTTP ingress
     // bypasses that callback, but its send-only connection exposes the same API.
     // Mirror the lookup here so session metadata/history can label the sender.

@@ -44,6 +44,7 @@ RUN printf 'fetch-retries=5\nfetch-retry-maxtimeout=600000\nfetch-retry-mintimeo
 FROM base AS manifests
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .pnpmfile.mjs ./
 COPY scripts/ scripts/
+COPY packages/message/package.json packages/message/
 COPY packages/protocol/package.json packages/protocol/
 COPY packages/connection/package.json packages/connection/
 COPY packages/control-plane/package.json packages/control-plane/
@@ -64,9 +65,10 @@ COPY . .
 
 RUN pnpm --filter "@agentconnect.md/control-plane" prisma:generate
 
-# protocol → control-plane (topological).
+# message → protocol → control-plane (topological).
 # Prisma was generated above; skip the control-plane package's prebuild hook.
 RUN pnpm --config.enable-pre-post-scripts=false \
+  --filter "@agentconnect.md/message" \
   --filter "@agentconnect.md/protocol" \
   --filter "@agentconnect.md/control-plane" \
   -r build
@@ -100,15 +102,17 @@ CMD ["node", "dist/index.js"]
 
 # ───────────────────────────── relay: build ─────────────────────────────────
 # The unified ingress plane (packages/relay). No Prisma — the relay holds no
-# database. Pulls only protocol + connection + relay (skips CP/daemon/web).
+# database. Pulls only message + protocol + connection + relay (skips
+# CP/daemon/web).
 FROM manifests AS relay-builder
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   pnpm install --frozen-lockfile --filter "@agentconnect.md/relay..."
 
 COPY . .
 
-# protocol → connection → relay (topological).
-RUN pnpm --filter "@agentconnect.md/protocol" \
+# message → protocol → connection → relay (topological).
+RUN pnpm --filter "@agentconnect.md/message" \
+  --filter "@agentconnect.md/protocol" \
   --filter "@agentconnect.md/connection" \
   --filter "@agentconnect.md/relay" \
   -r build
@@ -186,15 +190,16 @@ CMD ["node", "server.js"]
 # ───────────────── memory-plugin-mem0 (wrapper): build ───────────────────────
 # The centralized external-memory wrapper (packages/memory-plugin-mem0) served in
 # HTTP mode — an MCP server that forwards to a Mem0 backend. Depends only on
-# protocol + external libs (no Prisma, no daemon/connection).
+# message + protocol + external libs (no Prisma, no daemon/connection).
 FROM manifests AS mem0-builder
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   pnpm install --frozen-lockfile --filter "@agentconnect.md/memory-plugin-mem0..."
 
 COPY . .
 
-# protocol → memory-plugin-mem0 (topological).
-RUN pnpm --filter "@agentconnect.md/protocol" \
+# message → protocol → memory-plugin-mem0 (topological).
+RUN pnpm --filter "@agentconnect.md/message" \
+  --filter "@agentconnect.md/protocol" \
   --filter "@agentconnect.md/memory-plugin-mem0" \
   -r build
 

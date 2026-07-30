@@ -86,13 +86,5 @@ export {
   workspaceGitOriginOf
 } from './git-url.js'
 
-// ── Slack message visible-text extraction (shared by daemon + relay) ──
-export { extractSlackMessageText } from './slack-message-text.js'
-export type { SlackTextBearingMessage } from './slack-message-text.js'
-export { isSlackSystemMessage } from './slack-system-message.js'
-
-// ── Feishu event adaptation + normalization (shared by daemon + relay) ──
-export * from './feishu-message.js'
-
 // ── repository-relative agent working-directory helpers ──
 export { MAX_REPO_SUBDIR_LENGTH, RepoSubdirError, normalizeRepoSubdir } from './repo-subdir.js'

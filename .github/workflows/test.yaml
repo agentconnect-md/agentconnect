@@ -140,6 +140,7 @@ jobs:
         run: |
           GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" node scripts/merge-vitest-summaries.mjs \
             'Unit test report' \
+            'message=@agentconnect.md/message' \
             'protocol=@agentconnect.md/protocol' \
             'connection=@agentconnect.md/connection' \
             'control-plane=@agentconnect.md/control-plane' \

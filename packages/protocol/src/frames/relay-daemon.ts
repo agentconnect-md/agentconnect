@@ -1,4 +1,10 @@
 import { z } from 'zod'
+import {
+  NormalizedPlatformMessageSchema,
+  PlatformAttachmentSchema,
+  type NormalizedPlatformMessage,
+  type PlatformAttachment
+} from '@agentconnect.md/message'
 import { frameSchema } from '../envelope.js'
 import { ErrorFrame } from './error.js'
 import { WebchatDone, WebchatImageAttachment, WebchatOutput } from './webchat.js'
@@ -119,45 +125,15 @@ export type RdMsgWebchat = z.infer<typeof RdMsgWebchat>
 
 // ── shared-bot inbound (`im`) ────────────────────────────────────────────────
 
-// One shared attachment — metadata + an auth-gated fetch URL. The bytes NEVER
-// cross this wire (or the relay): the daemon fetches them locally with its xoxb
-// (§7.2). Mirrors the daemon's `messages/normalized.ts#Attachment`.
-export const WireAttachment = z.object({
-  id: z.string(),
-  name: z.string(),
-  mimeType: z.string(),
-  size: z.number().optional(),
-  sourceUrl: z.string()
-})
-export type WireAttachment = z.infer<typeof WireAttachment>
+// Provider attachment metadata. The bytes NEVER cross this wire (or the relay):
+// the daemon fetches them directly with its assigned provider token.
+export const WireAttachment = PlatformAttachmentSchema
+export type WireAttachment = PlatformAttachment
 
-// A normalized platform message, produced by the relay's ingest and dispatched
-// pre-addressed to the daemon. This MUST stay structurally identical to the
-// daemon's `messages/normalized.ts#NormalizedMessage` (the daemon spreads it
-// straight into dispatch); keep the two in sync.
-export const WireNormalizedMessage = z.object({
-  msgId: z.string(),
-  traceId: z.string(),
-  source: z.enum(['user', 'cron', 'agent']),
-  platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu']),
-  channel: z.string(),
-  thread: z.string().optional(),
-  sender: z.object({ id: z.string(), isBot: z.boolean(), appId: z.string().optional() }),
-  text: z.string(),
-  mentionedBots: z.array(z.string()),
-  attachments: z.array(WireAttachment).optional(),
-  isDm: z.boolean(),
-  // Slack `mpim` — several humans and the bot in a direct conversation with no channel
-  // identity. Classification only: a group DM stays mention-gated like a channel.
-  isGroupDm: z.boolean().optional(),
-  replyTo: z.string().optional(),
-  telegramTopicId: z.string().optional(),
-  telegramThreadRoot: z.string().optional(),
-  discordTopLevel: z.boolean().optional(),
-  trigger: z.enum(['mention', 'dm', 'keyword', 'auto', 'cron']).optional(),
-  headless: z.boolean().optional()
-})
-export type WireNormalizedMessage = z.infer<typeof WireNormalizedMessage>
+// The relay and direct daemon adapters share this pure normalized message model.
+// The daemon explicitly enriches it with local-only runtime fields after receipt.
+export const WireNormalizedMessage = NormalizedPlatformMessageSchema
+export type WireNormalizedMessage = NormalizedPlatformMessage
 
 // R→D REQ → rd/ack. One shared-bot inbound the relay already arbitrated: it names
 // the target `agentId` + the `integrationId` the daemon replies through, so the

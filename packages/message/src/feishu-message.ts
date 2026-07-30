@@ -1,7 +1,7 @@
-import type { WireAttachment, WireNormalizedMessage } from './frames/relay-daemon.js'
+import type { NormalizedPlatformMessage, PlatformAttachment } from './normalized-message.js'
 
 /**
- * Minimal plain-object view of a Feishu `im.message.receive_v1` event. Both the
+ * Minimal plain-object view of a Lark `im.message.receive_v1` event. Both the
  * daemon-owned long connection and relay-owned HTTP callback adapt into this
  * shape before normalizing, so the two ingress transports stay identical.
  */
@@ -53,7 +53,7 @@ const DOWNLOAD_KEY_SEP = ':'
 export function toFeishuAttachment(
   attachment: FeishuAttachmentLike | null | undefined,
   messageId: string
-): WireAttachment | null {
+): PlatformAttachment | null {
   if (!attachment || typeof attachment !== 'object' || !attachment.fileKey || !messageId) return null
   if (attachment.type !== 'image' && attachment.type !== 'file') return null
   return {
@@ -170,10 +170,10 @@ export function feishuEventToMessageLike(event: FeishuRawEvent): FeishuMessageLi
 export function normalizeFeishuMessage(
   message: FeishuMessageLike,
   context: { traceId: string }
-): WireNormalizedMessage {
+): NormalizedPlatformMessage {
   const attachments = (message.attachments ?? [])
     .map((attachment) => toFeishuAttachment(attachment, message.messageId))
-    .filter((attachment): attachment is WireAttachment => attachment !== null)
+    .filter((attachment): attachment is PlatformAttachment => attachment !== null)
   const isDm = message.chatType === 'p2p'
   return {
     msgId: `feishu:${message.chatId}:${message.messageId}`,

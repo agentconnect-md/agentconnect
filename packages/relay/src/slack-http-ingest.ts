@@ -17,6 +17,7 @@
  */
 import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
 import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'
+import { isSlackSystemMessage, normalizeSlackMessage, type SlackMessageLike } from '@agentconnect.md/message'
 import {
   ELICIT_ACTION_PREFIX,
   ELICIT_DISMISS_ACTION,
@@ -28,13 +29,14 @@ import {
   decodePermValue,
   decodeSlackStatusOverflowValue,
   decodeSharedSlackStatusTarget,
-  extractSlackMessageText,
-  isSlackSystemMessage,
   type RdSlackAction,
   type SharedSlackStatusTarget,
   type WireNormalizedMessage
 } from '@agentconnect.md/protocol'
 import type { Logger } from './log.js'
+
+export { normalizeSlackMessage } from '@agentconnect.md/message'
+export type SlackMessageEvent = SlackMessageLike
 
 /** block_id / action_id of the modal's agent selector (local to this file). */
 const CONFIG_BLOCK = 'agent_block'
@@ -292,84 +294,6 @@ function isDeadCredentialError(err: unknown): boolean {
   // @slack/web-api puts the API's `error` string on `err.data.error`.
   const code = (err as { data?: { error?: unknown } })?.data?.error
   return typeof code === 'string' && DEAD_CREDENTIAL_ERRORS.has(code)
-}
-
-/** The subset of a Slack file element carried through as attachment metadata. */
-interface SlackFile {
-  id?: string
-  name?: string | null
-  title?: string | null
-  mimetype?: string
-  size?: number
-  url_private?: string
-  url_private_download?: string
-}
-
-/** The Slack Events API fields used by relay-managed HTTP ingest. Message events use the
- *  chat fields; membership events use type/user/channel to trigger a full refresh. */
-export interface SlackMessageEvent {
-  type: string
-  subtype?: string
-  channel?: string
-  channel_type?: string
-  thread_ts?: string
-  ts?: string
-  user?: string
-  bot_id?: string
-  app_id?: string
-  bot_profile?: { app_id?: string }
-  hidden?: boolean
-  message?: unknown
-  text?: string
-  files?: SlackFile[]
-  blocks?: unknown[]
-  attachments?: unknown[]
-}
-
-const MENTION_RE = /<@([A-Z0-9]+)>/g
-
-/** Map a Slack message event to the wire NormalizedMessage (bytes stay on Slack —
- *  the daemon fetches attachments with its own xoxb). Mirrors the daemon's
- *  slack/normalize.ts so the two stay behaviourally identical. */
-export function normalizeSlackMessage(e: SlackMessageEvent): WireNormalizedMessage | null {
-  if (!e.channel || !e.ts) return null
-  const text = extractSlackMessageText(e)
-  const mentionedBots = [...text.matchAll(MENTION_RE)].map((m) => m[1]!)
-  const appId = e.app_id ?? e.bot_profile?.app_id
-  const attachments = (e.files ?? [])
-    .map((f) => {
-      const sourceUrl = f.url_private_download ?? f.url_private
-      if (!f?.id || !sourceUrl) return null
-      return {
-        id: f.id,
-        name: f.name ?? f.title ?? f.id,
-        mimeType: f.mimetype ?? 'application/octet-stream',
-        ...(typeof f.size === 'number' ? { size: f.size } : {}),
-        sourceUrl
-      }
-    })
-    .filter((a): a is NonNullable<typeof a> => a !== null)
-  return {
-    msgId: `slack:${e.channel}:${e.ts}`,
-    traceId: `slack:${e.channel}:${e.ts}`,
-    source: 'user',
-    platform: 'slack',
-    channel: e.channel,
-    thread: e.thread_ts ?? e.ts,
-    sender: {
-      id: e.user ?? e.bot_id ?? 'unknown',
-      isBot: Boolean(e.bot_id || appId),
-      ...(appId ? { appId } : {})
-    },
-    text,
-    mentionedBots,
-    ...(attachments.length ? { attachments } : {}),
-    isDm: e.channel_type === 'im',
-    // Classification only — a group DM stays mention-gated like a channel. `app_mention`
-    // payloads omit channel_type; the daemon classifies those from the conversation
-    // lookup rather than guessing from the id.
-    ...(e.channel_type === 'mpim' ? { isGroupDm: true } : {})
-  }
 }
 
 /** Top-level chat subtypes. Structural/system records stay out of routing. */
