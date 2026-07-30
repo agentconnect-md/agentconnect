@@ -20,6 +20,7 @@ import {
   createOrg as apiCreateOrg,
   updateOrg as apiUpdateOrg,
   deleteOrg as apiDeleteOrg,
+  removeMember as apiRemoveMember,
   type MemberRole,
   type OrgDto
 } from '@/lib/api'
@@ -92,6 +93,9 @@ interface OrgContextValue {
   /** Delete an org (owner-only; 409 while it has daemons). The console then
    *  moves to a remaining org — or the self-healed personal one. */
   deleteOrg: (orgId: string) => Promise<void>
+  /** Leave the active org, immediately dropping its stale local scope before
+   *  re-listing and moving to a remaining or self-healed personal org. */
+  leaveOrg: (userId: string) => Promise<void>
 }
 
 const Ctx = createContext<OrgContextValue | null>(null)
@@ -204,6 +208,20 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     [refreshOrgs]
   )
 
+  const leaveOrg = useCallback(
+    async (userId: string) => {
+      if (!activeOrg) throw new Error('no active organization')
+      const departedOrgId = activeOrg.id
+      await apiRemoveMember(userId)
+      // Authorization is gone once DELETE commits. Drop the stale local row
+      // before the network refresh so a transient list failure cannot keep
+      // issuing requests under an organization the caller no longer belongs to.
+      setOrgs((prev) => prev.filter((org) => org.id !== departedOrgId))
+      await refreshOrgs()
+    },
+    [activeOrg, refreshOrgs]
+  )
+
   const value = useMemo<OrgContextValue>(
     () => ({
       orgs,
@@ -216,9 +234,10 @@ export function OrgProvider({ children }: { children: ReactNode }) {
       refreshOrgs,
       createOrg,
       renameOrg,
-      deleteOrg
+      deleteOrg,
+      leaveOrg
     }),
-    [orgs, activeOrg, loading, error, orgPath, setActiveOrg, refreshOrgs, createOrg, renameOrg, deleteOrg]
+    [orgs, activeOrg, loading, error, orgPath, setActiveOrg, refreshOrgs, createOrg, renameOrg, deleteOrg, leaveOrg]
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

@@ -2973,9 +2973,10 @@ export interface UserRepo {
   addMemberByEmail(orgId: string, email: string, role: OrgMemberRole): Promise<OrgMemberRecord>
 
   /**
-   * Remove a member, choose the transfer recipient, transfer all resource
-   * ownership, and prune share grants atomically. Rechecks the acting owner and
-   * refuses to remove the final owner before committing.
+   * Let a member leave, or let an owner remove another member. Chooses the
+   * transfer recipient, transfers all resource ownership, and prunes share
+   * grants atomically. Rechecks membership and, when removing another member,
+   * the acting owner's role. Refuses to remove the final owner before committing.
    */
   removeMember(orgId: string, userId: string, actingUserId: string): Promise<void>
 

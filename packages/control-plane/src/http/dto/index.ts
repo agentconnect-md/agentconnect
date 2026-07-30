@@ -1570,6 +1570,7 @@ export const MemberDto = z.object({
   name: z.string().nullable(), // displayName
   picture: z.string().nullable(), // OIDC `picture` avatar URL; null until they've signed in with one
   role: MemberRole,
+  isCurrentUser: z.boolean(),
   joinedAt: z.string() // ISO-8601 (user createdAt — memberships carry no timestamps)
 })
 export const MemberListDto = z.array(MemberDto)

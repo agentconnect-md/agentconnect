@@ -19,6 +19,7 @@ export type { Shareable, ViewCtx } from '../persistence/ports.js'
 export const AuthorizationAction = {
   OrganizationWrite: 'organization.write',
   OrganizationManage: 'organization.manage',
+  OrganizationMembershipRemove: 'organization.membership.remove',
   ResourceView: 'resource.view',
   ResourceEdit: 'resource.edit',
   ResourceManageSharing: 'resource.sharing.manage',
@@ -37,6 +38,10 @@ export interface SessionViewable {
 export type AuthorizationRequest =
   | {
       action: typeof AuthorizationAction.OrganizationWrite | typeof AuthorizationAction.OrganizationManage
+    }
+  | {
+      action: typeof AuthorizationAction.OrganizationMembershipRemove
+      targetUserId: string
     }
   | {
       action:
@@ -80,6 +85,8 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
       return principal.role !== 'viewer'
     case AuthorizationAction.OrganizationManage:
       return principal.role === 'owner'
+    case AuthorizationAction.OrganizationMembershipRemove:
+      return principal.userId === request.targetUserId || principal.role === 'owner'
     case AuthorizationAction.ResourceView:
       return resourceIsVisible(request.resource, principal)
     case AuthorizationAction.ResourceEdit:

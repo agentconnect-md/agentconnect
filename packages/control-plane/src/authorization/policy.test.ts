@@ -125,6 +125,29 @@ describe('can — organization role actions', () => {
     expect(can(ctx(OTHER, 'collaborator'), { action: AuthorizationAction.OrganizationManage })).toBe(false)
     expect(can(ctx(OTHER, 'owner'), { action: AuthorizationAction.OrganizationManage })).toBe(true)
   })
+
+  it('lets every role leave while keeping removal of another member owner-only', () => {
+    for (const role of ['viewer', 'collaborator', 'owner'] as const) {
+      expect(
+        can(ctx(OTHER, role), {
+          action: AuthorizationAction.OrganizationMembershipRemove,
+          targetUserId: OTHER
+        })
+      ).toBe(true)
+    }
+    expect(
+      can(ctx(OTHER, 'viewer'), {
+        action: AuthorizationAction.OrganizationMembershipRemove,
+        targetUserId: CREATOR
+      })
+    ).toBe(false)
+    expect(
+      can(ctx(OTHER, 'owner'), {
+        action: AuthorizationAction.OrganizationMembershipRemove,
+        targetUserId: CREATOR
+      })
+    ).toBe(true)
+  })
 })
 
 describe('canViewSession (session-visibility.md §5)', () => {

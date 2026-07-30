@@ -459,16 +459,18 @@ CronDef, McpProvider, and SkillSource, the transaction:
 Owner demotion, removal, and invited-identity role merge first lock the
 organization `FOR NO KEY UPDATE`. That lock serializes owner transitions and
 conflicts with organization deletion, while remaining compatible with the
-parent `FOR KEY SHARE` held by ordinary resource writes. Removal then rechecks
-the acting owner, chooses the transfer recipient from an authoritative
-membership snapshot, and locks the departing and recipient rows inside the same
-transaction. Every ownership-bearing resource create and dedicated sharing
-write uses the matching persistence seam: in the same transaction as the
-resource mutation it first protects the parent organization `FOR KEY SHARE`,
-then locks the current actor, initial owner, and requested share targets `FOR
-SHARE`, rechecks membership, and intersects `sharedWith` again. The parent-first
-order remains compatible with organization deletion; the shared/exclusive
-membership lock pair establishes a commit order:
+parent `FOR KEY SHARE` held by ordinary resource writes. Any member may remove
+their own membership; removing someone else remains owner-only. Removal then
+rechecks the actor's membership and any required owner role, chooses the
+transfer recipient from an authoritative membership snapshot, and locks the
+departing and recipient rows inside the same transaction. Every
+ownership-bearing resource create and dedicated sharing write uses the matching
+persistence seam: in the same transaction as the resource mutation it first
+protects the parent organization `FOR KEY SHARE`, then locks the current actor,
+initial owner, and requested share targets `FOR SHARE`, rechecks membership, and
+intersects `sharedWith` again. The parent-first order remains compatible with
+organization deletion; the shared/exclusive membership lock pair establishes a
+commit order:
 
 - if the resource write commits first, removal waits and then transfers or
   prunes that row;

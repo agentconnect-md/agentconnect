@@ -1,10 +1,8 @@
 // No 'use client' here: rendered only inside SettingsView (a client component).
 
-// Edit-member dialog (design: `isEditModal`). REAL: Save PATCHes the role
-// (owner grantable — an org can have several owners) and Remove DELETEs the
-// membership; both owner-only server-side (the Settings page only offers the
-// pencil to owners). The CP refuses to demote/remove the LAST owner (409) —
-// the dialog pre-disables those paths via `member.lastOwner`.
+// Edit-member dialog (design: `isEditModal`). Owners can re-role/remove any
+// member; every member can open their own row and leave. The CP refuses to
+// demote/remove the LAST owner (409), and the dialog pre-disables those paths.
 
 import { useState } from 'react'
 import { Avatar, Button, Icon } from '@/components/ui'
@@ -20,6 +18,7 @@ export interface MemberTarget {
   avBg: string
   avText: string
   role: MemberRole
+  isCurrentUser: boolean
   /** True when this member is the org's only owner (demote/remove disabled). */
   lastOwner: boolean
 }
@@ -46,10 +45,14 @@ const dotOff =
 
 export default function EditMemberModal({
   member,
+  canEditRole,
+  onLeave,
   onClose,
   onChanged
 }: {
   member: MemberTarget
+  canEditRole: boolean
+  onLeave?: () => Promise<void>
   onClose: () => void
   onChanged: () => void
 }) {
@@ -66,6 +69,7 @@ export default function EditMemberModal({
 
   const save = async () => {
     if (busy) return
+    if (!canEditRole) return onClose()
     if (role === member.role) return onClose()
     setBusy(true)
     setErr(null)
@@ -84,8 +88,11 @@ export default function EditMemberModal({
     setBusy(true)
     setErr(null)
     try {
-      await removeMember(member.userId)
-      onChanged()
+      if (onLeave) await onLeave()
+      else {
+        await removeMember(member.userId)
+        onChanged()
+      }
       onClose()
     } catch (e) {
       fail(e)
@@ -117,14 +124,20 @@ export default function EditMemberModal({
           {ROLE_TILES.map((t) => {
             const on = role === t.role
             // The last owner can't leave the owner role — the org would orphan.
-            const locked = member.lastOwner && t.role !== 'owner'
+            const locked = !canEditRole || (member.lastOwner && t.role !== 'owner')
             return (
               <div
                 key={t.role}
                 className={`${on ? 'ptile on' : 'ptile'} items-start ${
                   locked ? 'cursor-not-allowed opacity-55' : 'cursor-pointer'
                 }`}
-                title={locked ? 'An organization needs at least one owner' : undefined}
+                title={
+                  !canEditRole
+                    ? 'Only organization owners can change roles'
+                    : locked
+                      ? 'An organization needs at least one owner'
+                      : undefined
+                }
                 onClick={() => !locked && setRole(t.role)}
               >
                 <span
@@ -149,10 +162,12 @@ export default function EditMemberModal({
           <Icon name="user-minus" size={16} color="var(--status-error)" className="flex-none" />
           <div className="flex-1">
             <div className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-              Remove from organization
+              {onLeave ? 'Leave organization' : 'Remove from organization'}
             </div>
             <div className="font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-              Revokes access immediately. Their sessions stay in history.
+              {onLeave
+                ? 'Resources you own stay with the organization and transfer to an owner.'
+                : 'Removes their membership. Their sessions stay in history.'}
             </div>
           </div>
           <button
@@ -163,12 +178,12 @@ export default function EditMemberModal({
               removeArmed ? 'bg-(--status-error) text-white' : 'bg-(--surface-card) text-(--status-error)'
             } ${member.lastOwner ? 'cursor-not-allowed opacity-55' : 'cursor-pointer'}`}
           >
-            {removeArmed ? 'Confirm remove' : 'Remove'}
+            {removeArmed ? (onLeave ? 'Confirm leave' : 'Confirm remove') : onLeave ? 'Leave' : 'Remove'}
           </button>
         </div>
         {err && (
           <div className="mt-3 font-sans text-[12px] font-normal leading-normal text-(--status-error)">
-            Could not save — {err}
+            Could not complete this change — {err}
           </div>
         )}
       </div>
@@ -177,7 +192,7 @@ export default function EditMemberModal({
         <Button variant="ghost" onClick={onClose}>
           Cancel
         </Button>
-        <Button onClick={() => void save()}>{busy ? 'Saving…' : 'Save changes'}</Button>
+        {canEditRole && <Button onClick={() => void save()}>{busy ? 'Saving…' : 'Save changes'}</Button>}
       </div>
     </>
   )

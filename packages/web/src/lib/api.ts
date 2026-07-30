@@ -896,6 +896,7 @@ export interface MemberDto {
   name: string | null // displayName
   picture: string | null // custom uploaded profile photo, or the OIDC `picture` fallback
   role: MemberRole
+  isCurrentUser: boolean
   joinedAt: string // ISO-8601
 }
 
@@ -2849,8 +2850,8 @@ export async function addMember(email: string, role: MemberRole): Promise<Member
   return member
 }
 
-// Remove a member (DELETE /members/:id, owner-only). Removing the last owner is
-// refused (409). Removal sticks — sign-in does not re-add them.
+// Remove a membership. Any member can remove themselves; only owners can remove
+// another member. Removing the last owner is refused (409).
 export async function removeMember(userId: string): Promise<void> {
   await apiDelete<void>(`${orgBase()}/members/${encodeURIComponent(userId)}`)
   track('member_removed', { org_id: apiOrgId, removed_user_id: userId })

@@ -308,6 +308,7 @@ const MOCK_MEMBERS: MemberDto[] = [
     email: 'dana@acme.dev',
     picture: null,
     role: 'owner',
+    isCurrentUser: true,
     joinedAt: '2026-01-01T00:00:00Z'
   },
   {
@@ -316,6 +317,7 @@ const MOCK_MEMBERS: MemberDto[] = [
     email: 'sam@acme.dev',
     picture: null,
     role: 'collaborator',
+    isCurrentUser: false,
     joinedAt: '2026-01-02T00:00:00Z'
   },
   {
@@ -324,6 +326,7 @@ const MOCK_MEMBERS: MemberDto[] = [
     email: 'ana@acme.dev',
     picture: null,
     role: 'viewer',
+    isCurrentUser: false,
     joinedAt: '2026-01-03T00:00:00Z'
   },
   {
@@ -332,6 +335,7 @@ const MOCK_MEMBERS: MemberDto[] = [
     email: 'noah@acme.dev',
     picture: null,
     role: 'collaborator',
+    isCurrentUser: false,
     joinedAt: '2026-01-04T00:00:00Z'
   },
   {
@@ -340,6 +344,7 @@ const MOCK_MEMBERS: MemberDto[] = [
     email: 'priya@acme.dev',
     picture: null,
     role: 'viewer',
+    isCurrentUser: false,
     joinedAt: '2026-01-05T00:00:00Z'
   },
   {
@@ -348,6 +353,7 @@ const MOCK_MEMBERS: MemberDto[] = [
     email: 'leo@acme.dev',
     picture: null,
     role: 'collaborator',
+    isCurrentUser: false,
     joinedAt: '2026-01-06T00:00:00Z'
   }
 ]

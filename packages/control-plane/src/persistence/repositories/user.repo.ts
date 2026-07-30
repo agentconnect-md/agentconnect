@@ -605,12 +605,12 @@ export class PgUserRepo implements UserRepo {
       })
       const actor = membershipSnapshot.find((membership) => membership.userId === actingUserId)
       const departing = membershipSnapshot.find((membership) => membership.userId === userId)
-      if (actor?.role !== 'owner' || !departing) throw new OrgMembershipMissing()
+      const leaving = userId === actingUserId
+      if (!departing || (!leaving && actor?.role !== 'owner')) throw new OrgMembershipMissing()
 
-      const transferToUserId =
-        userId === actingUserId
-          ? membershipSnapshot.find((membership) => membership.role === 'owner' && membership.userId !== userId)?.userId
-          : actingUserId
+      const transferToUserId = leaving
+        ? membershipSnapshot.find((membership) => membership.role === 'owner' && membership.userId !== userId)?.userId
+        : actingUserId
       if (!transferToUserId) throw new OrgOwnerRequired()
 
       // Fence ownership-bearing resource writes on both ends, then recheck the
