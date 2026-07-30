@@ -41,6 +41,7 @@ import {
 } from '@/lib/api'
 import { REPO_ACCESS_BADGE } from '@/components/console/WorkspaceCard'
 import AddAgentRepoModal from './AddAgentRepoModal'
+import { useTelegramPrivacyAutoRefresh } from './telegram-privacy-auto-refresh'
 import {
   GH_DEFAULT_FAMILIES,
   GH_DEFAULT_TRIGGER_MODE,
@@ -193,7 +194,6 @@ const GUIDE: Record<
 
 type TelegramCheckState = 'idle' | 'checking' | TelegramBotCheckDto['status']
 const TELEGRAM_CHECK_DEBOUNCE_MS = 350
-const TELEGRAM_PRIVACY_RECHECK_MS = 5_000
 
 function TelegramPrivacyStatus({
   status,
@@ -1349,8 +1349,6 @@ export default function AddIntegrationModal({
     isValidating: telegramCheckRefreshing,
     mutate: refreshTelegramCheck
   } = useSWR<TelegramBotCheckDto>(telegramCheckKey, () => checkTelegramBot(telegramCheckRequest!.token), {
-    refreshInterval: (result) => (result?.status === 'privacy_enabled' ? TELEGRAM_PRIVACY_RECHECK_MS : 0),
-    refreshWhenHidden: false,
     revalidateOnFocus: false,
     shouldRetryOnError: false
   })
@@ -1363,14 +1361,7 @@ export default function AddIntegrationModal({
         : telegramCheckError
           ? 'unreachable'
           : (telegramCheckData?.status ?? 'checking')
-  useEffect(() => {
-    if (telegramCheck !== 'privacy_enabled') return
-    const recheckWhenVisible = () => {
-      if (document.visibilityState === 'visible') void refreshTelegramCheck()
-    }
-    document.addEventListener('visibilitychange', recheckWhenVisible)
-    return () => document.removeEventListener('visibilitychange', recheckWhenVisible)
-  }, [refreshTelegramCheck, telegramCheck])
+  useTelegramPrivacyAutoRefresh(telegramCheck === 'privacy_enabled', refreshTelegramCheck)
   const discordOk = tokenTrim.length >= 24
   // The application (client) id is base64-encoded in the bot token's first segment, so
   // once a token is pasted we can offer a ready-made "Add to Discord" invite link with
@@ -3417,7 +3408,7 @@ export default function AddIntegrationModal({
                   <TelegramPrivacyStatus
                     status={telegramCheck}
                     refreshing={telegramCheck !== 'checking' && telegramCheckRefreshing}
-                    onRetry={() => void refreshTelegramCheck()}
+                    onRetry={() => void refreshTelegramCheck().catch(() => undefined)}
                   />
                 )}
                 {/* Discord: the invite is the fiddly part (right scopes + permissions), so once
