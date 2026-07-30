@@ -29,8 +29,24 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 const ConnectorId = z.string().trim().min(1).max(128)
 // Must stay in step with the console's SOCIAL_LOGIN_PROVIDERS: a target the UI
 // offers but this rejects is a Connect button that 400s.
-const SocialTarget = z.enum(['github', 'google', 'slack'])
-const TargetParamStrict = z.object({ target: SocialTarget })
+// Every target the console can render. Which of them a deployment actually
+// offers comes from SOCIAL_PROVIDERS — the same variable the console reads, so
+// the two sides cannot drift into a button this route would refuse.
+const SOCIAL_TARGET_CATALOG = ['github', 'google', 'slack'] as const
+
+/** Targets this deployment will link. Unset / `*` ⇒ the whole catalog, matching
+ *  connectors/filter.ts#parseWhitelist. */
+export function enabledSocialTargets(raw: string | undefined): Set<string> {
+  const trimmed = raw?.trim()
+  if (!trimmed || trimmed === '*') return new Set(SOCIAL_TARGET_CATALOG)
+  const entries = trimmed
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => (SOCIAL_TARGET_CATALOG as readonly string[]).includes(entry))
+  // A value naming only targets we cannot render would make every provider
+  // unlinkable; read a broken setting as the full catalog instead.
+  return entries.length > 0 ? new Set(entries) : new Set(SOCIAL_TARGET_CATALOG)
+}
 const ConnectorDto = z.object({ connectorId: ConnectorId })
 const TargetParam = z.object({ target: z.string().trim().min(1).max(128) })
 
@@ -134,6 +150,11 @@ function logtoFailure(reply: FastifyReply, error: unknown, operation: Operation)
 export function meSocialIdentityRoutes(deps: HttpDeps) {
   return async function meSocialIdentityRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+    const enabled = enabledSocialTargets(deps.config?.SOCIAL_PROVIDERS)
+    const SocialTarget = z.enum(SOCIAL_TARGET_CATALOG).refine((target) => enabled.has(target), {
+      message: 'this deployment does not offer that sign-in method'
+    })
+    const TargetParamStrict = z.object({ target: SocialTarget })
     const unavailable = {
       error: 'Service Unavailable',
       statusCode: 503,

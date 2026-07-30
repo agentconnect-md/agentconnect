@@ -3,7 +3,23 @@ import { describe, expect, it, vi } from 'vitest'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import type { HttpDeps } from '../deps.js'
 import { installZod } from '../plugins/zod.js'
-import { meSocialIdentityRoutes } from './me-social-identities.js'
+import { enabledSocialTargets, meSocialIdentityRoutes } from './me-social-identities.js'
+
+describe('enabledSocialTargets', () => {
+  it('treats unset and `*` as the whole catalog', () => {
+    expect(enabledSocialTargets(undefined)).toEqual(new Set(['github', 'google', 'slack']))
+    expect(enabledSocialTargets('*')).toEqual(new Set(['github', 'google', 'slack']))
+  })
+
+  it('narrows to the configured targets and drops unknown ones', () => {
+    expect(enabledSocialTargets('github, slack')).toEqual(new Set(['github', 'slack']))
+    expect(enabledSocialTargets('github,facebook')).toEqual(new Set(['github']))
+  })
+
+  it('reads a setting naming nothing usable as the whole catalog', () => {
+    expect(enabledSocialTargets('facebook')).toEqual(new Set(['github', 'google', 'slack']))
+  })
+})
 
 describe('my social identities routes', () => {
   it('resolves a connector id and unlinks under the OIDC subject', async () => {
@@ -84,6 +100,23 @@ describe('my social identities routes', () => {
     }
   })
 
+  it('refuses a target this deployment does not offer', async () => {
+    // The console reads the same variable, so its buttons and this allowlist
+    // move together; a narrowed deployment must not still link the rest.
+    const identity = { socialConnectorIdFor: vi.fn(async () => 'github-connector') }
+    const app = await slackApp({ logtoIdentity: identity } as unknown as HttpDeps, {
+      SOCIAL_PROVIDERS: 'github'
+    })
+    try {
+      expect((await app.inject({ method: 'GET', url: '/me/social-identities/connectors/github' })).statusCode).toBe(200)
+      const refused = await app.inject({ method: 'GET', url: '/me/social-identities/connectors/slack' })
+      expect(refused.statusCode).toBe(400)
+      expect(identity.socialConnectorIdFor).toHaveBeenCalledTimes(1)
+    } finally {
+      await app.close()
+    }
+  })
+
   it('rejects a target the console does not offer', async () => {
     const identity = { socialConnectorIdFor: vi.fn(async () => 'nope') }
     const app = await slackApp({ logtoIdentity: identity } as unknown as HttpDeps)
@@ -98,8 +131,11 @@ describe('my social identities routes', () => {
 })
 
 /** A routes-only app whose oidcAuth stamps a fixed subject. */
-async function slackApp(partial: Partial<HttpDeps>) {
-  const deps = { ...partial, config: { PUBLIC_WEB_URL: 'https://app.example.test' } } as unknown as HttpDeps
+async function slackApp(partial: Partial<HttpDeps>, config: Record<string, unknown> = {}) {
+  const deps = {
+    ...partial,
+    config: { PUBLIC_WEB_URL: 'https://app.example.test', ...config }
+  } as unknown as HttpDeps
   const app = Fastify()
   installZod(app)
   app.decorate('oidcAuth', async (req) => {

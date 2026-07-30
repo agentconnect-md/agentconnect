@@ -126,6 +126,11 @@ export const AppConfigSchema = z.object({
   // there), then to PUBLIC_CP_URL (single-origin deploys); all unset ⇒ no link is sent.
   // See resolveWebAppUrl.
   PUBLIC_WEB_URL: z.string().url().optional(),
+  // Social sign-in methods this deployment offers, as comma-separated Logto
+  // connector targets. The console reads the SAME variable to decide which
+  // buttons to render, so one entry configures both sides. Unset / `*` ⇒ every
+  // target the console knows (see web lib/social-login-providers).
+  SOCIAL_PROVIDERS: z.string().optional(),
   // npm dist-tag (or exact version) the onboarding command pins, so `npx` pulls
   // a specific daemon build — e.g. `rc` on the test CP renders
   // `npx @agentconnect.md/daemon@rc …`. Unset ⇒ npm's default (`@latest`).
