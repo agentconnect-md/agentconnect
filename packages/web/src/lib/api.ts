@@ -484,6 +484,10 @@ export type CreateIntegrationInput =
       }
     })
 
+export interface TelegramBotCheckDto {
+  status: 'ready' | 'privacy_enabled' | 'invalid' | 'unreachable'
+}
+
 // ── Slack config-token auto-install funnel (docs/designs/slack-install-smoothing.md §Tier B) ──
 // The CP creates the Slack app from a manifest (using the operator's App
 // Configuration Token), the user approves an OAuth install in the browser, and
@@ -2543,6 +2547,11 @@ export async function fetchIntegrations(orgId?: string): Promise<IntegrationDto[
 // (never the tokens); the CP delivers the tokens to the owning agent's daemon.
 export async function createIntegration(input: CreateIntegrationInput): Promise<IntegrationDto> {
   return apiPost<IntegrationDto>(`${orgBase()}/integrations`, input)
+}
+
+/** Validate a pasted Telegram token and its Group Privacy Mode without storing it. */
+export async function checkTelegramBot(botToken: string): Promise<TelegramBotCheckDto> {
+  return apiPost<TelegramBotCheckDto>(`${orgBase()}/integrations/telegram/check`, { botToken })
 }
 
 // ── Feishu/Lark one-click app registration ──

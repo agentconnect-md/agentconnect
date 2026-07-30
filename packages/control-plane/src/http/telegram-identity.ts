@@ -1,27 +1,45 @@
 /**
- * Best-effort Telegram bot-name lookup for the install flow — the Telegram analog
- * of slack-identity.ts.
+ * Telegram bot-token verification for the install flow.
  *
- * When `POST /integrations` omits a name, the CP calls Telegram `getMe` with the
- * BotFather token to derive the bot's @username, so the operator doesn't re-type a
- * name the bot already has. One install-time HTTPS call, short-timeout,
- * best-effort: returns null on ANY failure and the route falls back to the owning
- * agent's name. This is the only spot the CP touches the token to reach Telegram;
- * it NEVER logs it.
+ * `getMe` validates the BotFather token, derives the bot name, and exposes
+ * `can_read_all_group_messages`. The latter is Telegram's read-only signal that
+ * Group Privacy Mode was disabled in @BotFather; the Bot API has no setter for it.
+ * This is the only spot the CP puts the token in a Telegram URL, and it NEVER logs it.
  */
-export type TelegramBotNameResolver = (botToken: string) => Promise<string | null>
+export type TelegramBotVerification =
+  | { status: 'ok'; name: string | null; privacyModeDisabled: boolean }
+  | { status: 'invalid' }
+  | { status: 'unreachable' }
 
-/** The live resolver: `getMe` → the bot's @username, else its first name. */
-export const resolveTelegramBotName: TelegramBotNameResolver = async (botToken) => {
+export type TelegramBotVerifier = (botToken: string) => Promise<TelegramBotVerification>
+
+const TELEGRAM_TIMEOUT_MS = 5000
+
+export const verifyTelegramBot: TelegramBotVerifier = async (botToken) => {
   try {
     const res = await fetch(`https://api.telegram.org/bot${botToken}/getMe`, {
-      signal: AbortSignal.timeout(5000)
+      signal: AbortSignal.timeout(TELEGRAM_TIMEOUT_MS)
     })
-    if (!res.ok) return null
-    const body = (await res.json()) as { ok?: boolean; result?: { username?: string; first_name?: string } }
-    if (!body.ok || !body.result) return null
-    return body.result.username ?? body.result.first_name ?? null
+    if (res.status === 401 || res.status === 404) return { status: 'invalid' }
+    if (!res.ok) return { status: 'unreachable' }
+    const body = (await res.json()) as {
+      ok?: boolean
+      error_code?: number
+      result?: {
+        username?: string
+        first_name?: string
+        can_read_all_group_messages?: boolean
+      }
+    }
+    if (!body.ok || !body.result) {
+      return body.error_code === 401 || body.error_code === 404 ? { status: 'invalid' } : { status: 'unreachable' }
+    }
+    return {
+      status: 'ok',
+      name: body.result.username ?? body.result.first_name ?? null,
+      privacyModeDisabled: body.result.can_read_all_group_messages === true
+    }
   } catch {
-    return null
+    return { status: 'unreachable' }
   }
 }

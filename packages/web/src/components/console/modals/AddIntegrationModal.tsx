@@ -31,11 +31,13 @@ import {
   invalidateGithubRepoRosterCache,
   syncGithubInstallations,
   updateAgentRepo,
+  checkTelegramBot,
   type CreateIntegrationInput,
   type CreatedHookDto,
   type GithubInstallationDto,
   type GithubRepoDto,
-  type RepoAccess
+  type RepoAccess,
+  type TelegramBotCheckDto
 } from '@/lib/api'
 import { REPO_ACCESS_BADGE } from '@/components/console/WorkspaceCard'
 import AddAgentRepoModal from './AddAgentRepoModal'
@@ -178,7 +180,7 @@ const GUIDE: Record<
     step1:
       'Open @BotFather → New bot (or send /newbot), give it a display name and a username ending in “bot” — it hands back the token.',
     step1Warning:
-      'disable privacy mode in @BotFather (/setprivacy → Disable) after creation, so it reads every message.',
+      'In @BotFather, send /setprivacy, select this bot and choose Disable. AgentConnect checks it after you paste the token.',
     tokenPlaceholder: '123456789:AAE…'
   },
   discord: {
@@ -187,6 +189,55 @@ const GUIDE: Record<
     step1: 'Name and create the application. In Bot, reset and copy the token.',
     tokenPlaceholder: 'Bot token from the Developer Portal'
   }
+}
+
+type TelegramCheckState = 'idle' | 'checking' | TelegramBotCheckDto['status']
+
+function TelegramPrivacyStatus({ status, onRetry }: { status: TelegramCheckState; onRetry: () => void }) {
+  if (status === 'idle') return null
+  const checking = status === 'checking'
+  const ready = status === 'ready'
+  const message =
+    status === 'checking'
+      ? 'Checking the token and Privacy Mode…'
+      : status === 'ready'
+        ? 'Privacy Mode is off. This bot can receive ordinary group messages.'
+        : status === 'privacy_enabled'
+          ? 'Privacy Mode is still on. In @BotFather, send /setprivacy, select this bot and choose Disable.'
+          : status === 'invalid'
+            ? 'Telegram rejected this token. Copy it again from @BotFather.'
+            : 'AgentConnect could not reach Telegram. Try the check again.'
+  const retryable = status === 'privacy_enabled' || status === 'unreachable'
+
+  return (
+    <div
+      className={`mt-2 flex items-start gap-2 rounded-md border px-[10px] py-2 font-sans text-[11.5px] font-normal leading-[1.5] ${
+        ready
+          ? 'border-(--status-online) bg-(--status-online-soft) text-(--text-secondary)'
+          : checking
+            ? 'border-(--border-default) bg-(--status-info-soft) text-(--text-secondary)'
+            : 'border-(--status-error) bg-(--status-error-soft) text-(--status-error)'
+      }`}
+    >
+      <Icon
+        name={checking ? 'loader' : ready ? 'circle-check' : 'triangle-alert'}
+        size={14}
+        color={ready ? 'var(--status-online)' : checking ? 'var(--status-info)' : 'var(--status-error)'}
+        className={`mt-[1px] flex-none ${checking ? 'animate-spin' : ''}`}
+      />
+      <span className="min-w-0 flex-1">{message}</span>
+      {retryable && (
+        <button
+          type="button"
+          className="inline-flex flex-none cursor-pointer items-center gap-[5px] border-0 bg-transparent p-0 font-sans text-[11.5px] font-semibold leading-[1.5] text-(--text-secondary) hover:text-(--text-primary)"
+          onClick={onRetry}
+        >
+          <Icon name="refresh-cw" size={12} />
+          Check again
+        </button>
+      )}
+    </div>
+  )
 }
 
 // Feishu needs a few app-level settings beyond the credentials that aren't obvious
@@ -937,6 +988,11 @@ export default function AddIntegrationModal({
   const [appName, setAppName] = useState(agent.name)
   const [botToken, setBotToken] = useState('')
   const [appToken, setAppToken] = useState('')
+  const [telegramCheckResult, setTelegramCheckResult] = useState<{
+    token: string
+    status: TelegramCheckState
+  }>({ token: '', status: 'idle' })
+  const [telegramCheckRevision, setTelegramCheckRevision] = useState(0)
   // Lark/Feishu gateway: new installs default to international Lark.
   const [feishuRegion, setFeishuRegion] = useState<'feishu' | 'lark'>('lark')
   const [feishuVerificationToken, setFeishuVerificationToken] = useState('')
@@ -1258,6 +1314,34 @@ export default function AddIntegrationModal({
   const botOk = slackBotOk
   const appOk = slackAppOk
   const telegramOk = /^\d+:[A-Za-z0-9_-]{20,}$/.test(tokenTrim)
+  const telegramCheck: TelegramCheckState =
+    mode === 'create' && platform === 'telegram' && telegramOk
+      ? telegramCheckResult.token === tokenTrim
+        ? telegramCheckResult.status
+        : 'checking'
+      : 'idle'
+  useEffect(() => {
+    if (mode !== 'create' || platform !== 'telegram' || !telegramOk) return
+    if (MOCK_MODE) {
+      setTelegramCheckResult({ token: tokenTrim, status: 'ready' })
+      return
+    }
+    let alive = true
+    setTelegramCheckResult({ token: tokenTrim, status: 'checking' })
+    const timer = window.setTimeout(() => {
+      void checkTelegramBot(tokenTrim)
+        .then((result) => {
+          if (alive) setTelegramCheckResult({ token: tokenTrim, status: result.status })
+        })
+        .catch(() => {
+          if (alive) setTelegramCheckResult({ token: tokenTrim, status: 'unreachable' })
+        })
+    }, 350)
+    return () => {
+      alive = false
+      window.clearTimeout(timer)
+    }
+  }, [mode, platform, telegramCheckRevision, telegramOk, tokenTrim])
   const discordOk = tokenTrim.length >= 24
   // The application (client) id is base64-encoded in the bot token's first segment, so
   // once a token is pasted we can offer a ready-made "Add to Discord" invite link with
@@ -1272,7 +1356,14 @@ export default function AddIntegrationModal({
   const feishuCallbackUrl = relayPublicUrl ? `${relayPublicUrl.replace(/\/+$/, '')}/feishu/events` : null
   // Slack: http needs bot + signing secret; socket needs bot + app-level token.
   const slackCreateOk = effTransport === 'http' ? slackBotOk && slackSigningOk : slackBotOk && slackAppOk
-  const createValid = platform === 'slack' ? slackCreateOk : platform === 'feishu' ? feishuOk : singleTokenOk
+  const createValid =
+    platform === 'slack'
+      ? slackCreateOk
+      : platform === 'telegram'
+        ? telegramOk && telegramCheck === 'ready'
+        : platform === 'feishu'
+          ? feishuOk
+          : singleTokenOk
   const valid = mode === 'existing' ? selectedBotId !== null : createValid
   // The app-level token embeds the app id (xapp-1-{APP_ID}-…); once it's pasted we can
   // deep-link straight to THIS app's Slack pages (Slack funnel only) — chiefly the OAuth
@@ -3260,7 +3351,7 @@ export default function AddIntegrationModal({
                       label={platform === 'telegram' ? 'Telegram bot setup steps' : 'Discord bot setup steps'}
                     />
                   </div>
-                  {GUIDE[platform].step1Warning && (
+                  {GUIDE[platform].step1Warning && !(platform === 'telegram' && telegramCheck === 'ready') && (
                     <div className="mt-2 font-sans text-[12px] font-medium leading-[1.5] text-(--status-error)">
                       {GUIDE[platform].step1Warning}
                     </div>
@@ -3279,12 +3370,29 @@ export default function AddIntegrationModal({
                 <div className="fld">
                   <span className="fldlbl">Bot token</span>
                   <input
-                    className={`inp mn ${showErrors && !singleTokenOk ? 'border-(--status-error)' : ''}`}
+                    className={`inp mn ${
+                      (showErrors && !singleTokenOk) ||
+                      (platform === 'telegram' &&
+                        (telegramCheck === 'privacy_enabled' ||
+                          telegramCheck === 'invalid' ||
+                          telegramCheck === 'unreachable'))
+                        ? 'border-(--status-error)'
+                        : ''
+                    }`}
                     placeholder={GUIDE[platform].tokenPlaceholder}
                     value={botToken}
                     onChange={(e) => setBotToken(e.target.value)}
                   />
                 </div>
+                {platform === 'telegram' && (
+                  <TelegramPrivacyStatus
+                    status={telegramCheck}
+                    onRetry={() => {
+                      setTelegramCheckResult({ token: tokenTrim, status: 'checking' })
+                      setTelegramCheckRevision((revision) => revision + 1)
+                    }}
+                  />
+                )}
                 {/* Discord: the invite is the fiddly part (right scopes + permissions), so once
                   the token decodes to an app id we hand the user a ready-made invite link. */}
                 {platform === 'discord' &&

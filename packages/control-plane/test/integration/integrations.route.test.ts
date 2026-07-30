@@ -176,6 +176,58 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     })
   })
 
+  it('POST telegram check reports Group Privacy Mode without storing the token', async () => {
+    const { app } = withSpy()
+    app.deps.verifyTelegramBot = async (botToken) => ({
+      status: 'ok',
+      name: 'acme-tg',
+      privacyModeDisabled: botToken.endsWith('ready')
+    })
+
+    const enabled = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/telegram/check`,
+      payload: { botToken: '123456:privacy-on' }
+    })
+    const ready = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/telegram/check`,
+      payload: { botToken: '123456:ready' }
+    })
+
+    expect(enabled.statusCode).toBe(200)
+    expect(enabled.json()).toEqual({ status: 'privacy_enabled' })
+    expect(ready.statusCode).toBe(200)
+    expect(ready.json()).toEqual({ status: 'ready' })
+    expect(await prisma.botSecret.count()).toBe(0)
+  })
+
+  it('POST telegram refuses an enabled Group Privacy Mode before storing credentials', async () => {
+    const agentId = await placedAgent()
+    const { app, spy } = withSpy()
+    app.deps.verifyTelegramBot = async () => ({
+      status: 'ok',
+      name: 'acme-tg',
+      privacyModeDisabled: false
+    })
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'telegram', agentId, telegram: { botToken: '123456:AAE-xyz' } }
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(res.json()).toMatchObject({
+      code: 'TELEGRAM_PRIVACY_MODE_ENABLED',
+      message: expect.stringContaining('/setprivacy')
+    })
+    expect(await prisma.integration.count()).toBe(0)
+    expect(await prisma.bot.count()).toBe(0)
+    expect(await prisma.botSecret.count()).toBe(0)
+    expect(spy.upserts).toHaveLength(0)
+  })
+
   it('POST telegram registers a bot + secret with a NULL appToken, pushes a telegram-shaped upsert', async () => {
     const agentId = await placedAgent()
     const { app, spy } = withSpy()

@@ -237,6 +237,7 @@ export function buildHttpApp(
     events,
     mcpRateLimit: new McpRateLimiter(clock),
     readiness: createReadiness(() => pingDb(prisma)),
+    verifyTelegramBot: async () => ({ status: 'ok', name: null, privacyModeDisabled: true }),
     ensureDiscordMessageContentIntent: async () => 'ready',
     configureFeishuHttpApp: async () => {},
     feishuAppRegistration: new FeishuAppRegistrationService(feishuAppRegistrationStore),
