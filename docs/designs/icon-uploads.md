@@ -108,7 +108,7 @@ the fallback. (Org icons are console-only and need no daemon push.)
 
 **Client UX** (`AgentIconPicker`, reused for org): an _Upload_ button → file input
 (`accept="image/png,image/jpeg,image/webp"`) → **client-side square crop + resize to
-≤256×256** on a `<canvas>` → `canvas.toBlob('image/webp')` → `fetch(url, {method:'PUT',
+≤256×256** on a `<canvas>` → `canvas.toBlob('image/png')` → `fetch(url, {method:'PUT',
 body: blob})`. Resizing client-side means the server never needs `sharp`.
 
 **Server validation / security (client resizing is untrusted).** A caller can POST
@@ -153,5 +153,7 @@ arbitrary bytes straight at the API, so the CP re-validates independently:
 - A stored `image` variant that still carries `url` degrades gracefully to the
   runtime/glyph fallback. `Org.icon` is additive; existing orgs read null → the
   deterministic default.
+- Existing stored WebP agent icons remain displayable but Discord profile sync logs a
+  best-effort compatibility warning. Re-uploading normalizes the image to PNG.
 - The `AGENT_ICON_GLYPHS` / `AGENT_ICON_COLORS` vocab stays hand-mirrored across
   `protocol`, CP `agent-icon.ts`, and web `lib/agent-icon.ts` (unchanged here).
