@@ -2,8 +2,8 @@
  * Server-side SVG composition for the public agent-icon endpoint
  * (`GET /v1/agents/:id/icon`). The composed square SVG is rasterized to PNG by
  * the route so Slack can use it as a per-message `icon_url` (Slack does not render
- * SVG avatars). The console renders the same descriptor client-side, so this is
- * the Slack-facing path only.
+ * SVG avatars), and reused when platform profile APIs require raster bytes. The
+ * console renders the same descriptor client-side.
  *
  * Glyph inner-SVGs are derived at load from the framework-agnostic `lucide` core
  * package — the same icon data (and version) the web console renders via
@@ -107,7 +107,7 @@ export function buildAgentIconSvg(icon: AgentIcon | null, runtime: string | null
 }
 
 /** Rasterize the console descriptor for consumers that require uploaded image
- * bytes rather than an SVG or public URL (the icon endpoint and Discord bot setup).
+ * bytes rather than an SVG or public URL (the icon endpoint and bot profile setup).
  * Keep the native module lazy so a load failure degrades only the calling feature,
  * never Control Plane boot. */
 export async function renderAgentIconPng(icon: AgentIcon | null, runtime: string | null, width = 128): Promise<Buffer> {

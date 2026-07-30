@@ -386,6 +386,13 @@ export function integrationRoutes(deps: HttpDeps) {
               ...(req.principal ? { createdByUserId: req.principal.userId } : {})
             })
             await replicateUpsert(integration, daemonId)
+            if (deps.syncTelegramBotIcon) {
+              try {
+                await deps.syncTelegramBotIcon(tg.botToken, agent)
+              } catch (err) {
+                app.log.warn({ err, agentId: agent.id, botId }, 'telegram icon sync failed; integration remains active')
+              }
+            }
             return reply.code(201).send(toDto(integration))
           }
 
