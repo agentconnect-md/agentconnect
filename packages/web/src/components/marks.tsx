@@ -243,7 +243,7 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
 
 /**
  * Brand mark for a social sign-in method — shared by the login page and the
- * Profile "Sign-in methods" card so a provider added to SOCIAL_LOGIN_PROVIDERS
+ * Profile "Sign-in methods" card so a provider added to the catalog
  * cannot render correctly in one place and wrong in the other.
  *
  * `size` is left unset on the login page, where `.sso svg` sizes the mark.

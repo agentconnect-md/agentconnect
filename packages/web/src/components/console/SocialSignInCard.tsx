@@ -22,7 +22,7 @@ import {
   writeSocialLinkFlow,
   type AccountNotice
 } from '@/lib/logto-account'
-import { SOCIAL_LOGIN_PROVIDERS, type SocialLoginProvider } from '@/lib/social-login-providers'
+import { socialLoginProviders, type SocialLoginProvider } from '@/lib/social-login-providers'
 
 const byTarget = (account: MySocialAccountDto, target: string): MySocialIdentityDto | undefined =>
   account.identities.find((identity) => identity.target === target)
@@ -283,7 +283,7 @@ export default function SocialSignInCard({
   const [busyProvider, setBusyProvider] = useState<SocialLoginProvider['target']>()
   const currentAccount = error ? undefined : account
   const linkedProviderCount = currentAccount
-    ? SOCIAL_LOGIN_PROVIDERS.filter((provider) => byTarget(currentAccount, provider.target)).length
+    ? socialLoginProviders().filter((provider) => byTarget(currentAccount, provider.target)).length
     : 0
 
   // Logto refuses an identity change the caller has not re-proven, so accounts
@@ -370,7 +370,7 @@ export default function SocialSignInCard({
         ) : null}
 
         <div aria-busy={isValidating}>
-          {SOCIAL_LOGIN_PROVIDERS.map((provider, index) => {
+          {socialLoginProviders().map((provider, index) => {
             const details = currentAccount ? byTarget(currentAccount, provider.target) : undefined
             const workspace = details?.workspace
             const canUnlink = linkedProviderCount > 1
