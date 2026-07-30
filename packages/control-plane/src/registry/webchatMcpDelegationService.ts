@@ -5,11 +5,14 @@
  * current membership/visibility, the preset relation, and live placement before
  * any invocation assertion is minted.
  */
-import { DELEGATED_MCP_ASSERTION_FEATURE } from '@agentconnect.md/protocol'
+import {
+  DELEGATED_MCP_ASSERTION_FEATURE,
+  type McpInvocationMint,
+  type WebchatMcpDelegationReference
+} from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, OrgId } from '../domain/ids.js'
 import type { Clock } from '../domain/clock.js'
-import { canView } from '../http/visibility.js'
-import { findTool } from '../http/mcp/tools.js'
+import { canView } from '../domain/visibility.js'
 import type {
   AgentRepo,
   McpInvocationRecord,
@@ -56,11 +59,7 @@ export type DelegationDenialReason =
   | 'tool_not_allowed'
   | 'invocation_parent_missing'
 
-export interface DelegationReference {
-  id: string
-  generation: number
-  expiresAt: string
-}
+export type DelegationReference = WebchatMcpDelegationReference
 
 export interface EstablishDelegationInput {
   conversationId: string
@@ -72,16 +71,8 @@ export interface EstablishDelegationInput {
   sessionExpiresAt?: Date
 }
 
-export interface MintInvocationInput {
+export type MintInvocationInput = McpInvocationMint & {
   authenticatedDaemonId: string
-  delegationId: string
-  generation: number
-  agentId: string
-  conversationId: string
-  invocationId: string
-  requestHash: string
-  method: string
-  toolName?: string
 }
 
 export type MintInvocationResult =
@@ -115,6 +106,7 @@ export interface WebchatMcpDelegationServiceDeps {
   daemons: { get(daemonId: string): LiveDaemon | undefined }
   delegations: Pick<WebchatMcpDelegationRepo, 'establish' | 'get'>
   invocations: Pick<McpInvocationRepo, 'get' | 'mint'>
+  isCuratedTool(toolName: string): boolean
   /** Internal metric seam. Values are a closed, non-secret enum only. */
   onDenied?: (reason: DelegationDenialReason) => void
 }
@@ -127,13 +119,18 @@ export class WebchatMcpDelegationService {
   constructor(private readonly deps: WebchatMcpDelegationServiceDeps) {}
 
   async establish(input: EstablishDelegationInput): Promise<DelegationReference | null> {
-    const now = new Date(this.deps.clock.now())
-    const defaultExpiry = new Date(now.getTime() + WEBCHAT_MCP_DELEGATION_DEFAULT_TTL_MS)
-    const expiresAt =
-      input.sessionExpiresAt && input.sessionExpiresAt.getTime() < defaultExpiry.getTime()
-        ? new Date(input.sessionExpiresAt)
-        : defaultExpiry
-    if (expiresAt.getTime() <= now.getTime()) return this.denyNull('session_expired')
+    const nowMs = this.deps.clock.now()
+    const defaultExpiryMs = safeAddTimestamp(nowMs, WEBCHAT_MCP_DELEGATION_DEFAULT_TTL_MS)
+    if (defaultExpiryMs === null) return this.denyNull('session_expired')
+    const sessionExpiryMs = input.sessionExpiresAt?.getTime()
+    if (sessionExpiryMs !== undefined && !isValidTimestamp(sessionExpiryMs)) {
+      return this.denyNull('session_expired')
+    }
+    const expiresAtMs =
+      sessionExpiryMs !== undefined && sessionExpiryMs < defaultExpiryMs ? sessionExpiryMs : defaultExpiryMs
+    if (expiresAtMs <= nowMs) return this.denyNull('session_expired')
+    const now = new Date(nowMs)
+    const expiresAt = new Date(expiresAtMs)
 
     const authority = await this.resolveAuthority({
       conversationId: input.conversationId,
@@ -154,7 +151,24 @@ export class WebchatMcpDelegationService {
       expiresAt
     })
     if (!delegation) return this.denyNull('conversation_binding')
-    if (delegation.expiresAt.getTime() > expiresAt.getTime()) return this.denyNull('delegation_expiry')
+    const checkedAt = this.deps.clock.now()
+    const returnedExpiry = delegation.expiresAt.getTime()
+    if (
+      !isValidTimestamp(checkedAt) ||
+      !isValidTimestamp(returnedExpiry) ||
+      delegation.revokedAt !== null ||
+      returnedExpiry <= checkedAt ||
+      returnedExpiry > expiresAtMs ||
+      !Number.isInteger(delegation.generation) ||
+      delegation.generation <= 0 ||
+      delegation.conversationId !== input.conversationId ||
+      delegation.userId !== authority.userId ||
+      delegation.orgId !== input.orgId ||
+      delegation.agentId !== input.agentId ||
+      delegation.daemonId !== input.daemonId
+    ) {
+      return this.denyNull('delegation_expiry')
+    }
     return {
       id: delegation.id,
       generation: delegation.generation,
@@ -166,9 +180,15 @@ export class WebchatMcpDelegationService {
     const normalizedToolName = this.validateCatalog(input)
     if (normalizedToolName === undefined) return DELEGATION_DENIED
 
-    const now = new Date(this.deps.clock.now())
+    const checkedAt = this.deps.clock.now()
+    if (!isValidTimestamp(checkedAt)) return this.deny('delegation_inactive')
     const delegation = await this.deps.delegations.get(input.delegationId)
-    if (!delegation || delegation.revokedAt || delegation.expiresAt.getTime() <= now.getTime()) {
+    if (
+      !delegation ||
+      delegation.revokedAt ||
+      !isValidTimestamp(delegation.expiresAt.getTime()) ||
+      delegation.expiresAt.getTime() <= checkedAt
+    ) {
       return this.deny('delegation_inactive')
     }
     if (delegation.generation !== input.generation) return this.deny('delegation_generation')
@@ -191,14 +211,16 @@ export class WebchatMcpDelegationService {
 
     const current = await this.deps.invocations.get(input.invocationId)
     if (current) {
-      if (!sameInvocationBinding(current, input, normalizedToolName)) return INVOCATION_CONFLICT
-      if (current.status !== 'issued') {
-        return { kind: 'existing', invocationId: current.id, status: current.status }
-      }
+      const classified = this.classifyExisting(current, input, normalizedToolName)
+      if (classified) return classified
     }
 
+    const mintedAtMs = this.deps.clock.now()
+    const assertionExpiresMs = safeAddTimestamp(mintedAtMs, MCP_INVOCATION_ASSERTION_TTL_MS)
+    if (assertionExpiresMs === null) return this.deny('delegation_inactive')
+    const mintedAt = new Date(mintedAtMs)
+    const assertionExpires = new Date(assertionExpiresMs)
     const minted = this.deps.assertionCodec.mint()
-    const assertionExpires = new Date(now.getTime() + MCP_INVOCATION_ASSERTION_TTL_MS)
     const result = await this.deps.invocations.mint({
       invocationId: input.invocationId,
       delegationId: input.delegationId,
@@ -207,11 +229,23 @@ export class WebchatMcpDelegationService {
       method: input.method,
       toolName: normalizedToolName,
       assertionExpires,
-      now
+      mintedAt
     })
 
     switch (result.kind) {
       case 'issued':
+        if (
+          result.invocation.id !== input.invocationId ||
+          result.invocation.delegationId !== input.delegationId ||
+          result.invocation.requestHash !== input.requestHash ||
+          result.invocation.method !== input.method ||
+          result.invocation.toolName !== normalizedToolName ||
+          result.invocation.assertionHash !== minted.persistence.assertionHash ||
+          result.invocation.status !== 'issued' ||
+          result.invocation.assertionExpires.getTime() !== assertionExpiresMs
+        ) {
+          return this.deny('invocation_parent_missing')
+        }
         return {
           kind: 'minted',
           invocationId: input.invocationId,
@@ -219,13 +253,14 @@ export class WebchatMcpDelegationService {
           expiresAt: assertionExpires.toISOString()
         }
       case 'existing':
-        return {
-          kind: 'existing',
-          invocationId: result.invocation.id,
-          status: result.invocation.status
-        }
-      case 'conflict':
-        return INVOCATION_CONFLICT
+        return (
+          this.classifyExisting(result.invocation, input, normalizedToolName) ?? this.deny('invocation_parent_missing')
+        )
+      case 'conflict': {
+        const winner = await this.deps.invocations.get(input.invocationId)
+        if (!winner) return this.deny('invocation_parent_missing')
+        return this.classifyExisting(winner, input, normalizedToolName) ?? INVOCATION_CONFLICT
+      }
       case 'denied':
         return this.deny('invocation_parent_missing')
     }
@@ -234,17 +269,17 @@ export class WebchatMcpDelegationService {
   private validateCatalog(input: MintInvocationInput): string | null | undefined {
     if (input.method === 'tools/list') {
       if (input.toolName !== undefined) {
-        this.deps.onDenied?.('tool_not_allowed')
+        this.reportDenied('tool_not_allowed')
         return undefined
       }
       return null
     }
     if (input.method !== 'tools/call') {
-      this.deps.onDenied?.('method_not_allowed')
+      this.reportDenied('method_not_allowed')
       return undefined
     }
-    if (!input.toolName || !findTool(input.toolName)) {
-      this.deps.onDenied?.('tool_not_allowed')
+    if (!input.toolName || !this.deps.isCuratedTool(input.toolName)) {
+      this.reportDenied('tool_not_allowed')
       return undefined
     }
     return input.toolName
@@ -297,14 +332,45 @@ export class WebchatMcpDelegationService {
   }
 
   private deny(reason: DelegationDenialReason): typeof DELEGATION_DENIED {
-    this.deps.onDenied?.(reason)
+    this.reportDenied(reason)
     return DELEGATION_DENIED
   }
 
   private denyNull(reason: DelegationDenialReason): null {
-    this.deps.onDenied?.(reason)
+    this.reportDenied(reason)
     return null
   }
+
+  private classifyExisting(
+    current: McpInvocationRecord,
+    input: MintInvocationInput,
+    toolName: string | null
+  ): MintInvocationResult | null {
+    if (current.delegationId !== input.delegationId) return this.deny('delegation_binding')
+    if (!sameInvocationBinding(current, input, toolName)) return INVOCATION_CONFLICT
+    if (current.status === 'issued') return null
+    return { kind: 'existing', invocationId: current.id, status: current.status }
+  }
+
+  private reportDenied(reason: DelegationDenialReason): void {
+    try {
+      this.deps.onDenied?.(reason)
+    } catch {
+      // Observability must never change the public authorization result.
+    }
+  }
+}
+
+const MAX_DATE_TIMESTAMP = 8.64e15
+
+function isValidTimestamp(value: number): boolean {
+  return Number.isFinite(value) && Math.abs(value) <= MAX_DATE_TIMESTAMP
+}
+
+function safeAddTimestamp(value: number, delta: number): number | null {
+  if (!isValidTimestamp(value)) return null
+  const result = value + delta
+  return isValidTimestamp(result) ? result : null
 }
 
 function sameInvocationBinding(

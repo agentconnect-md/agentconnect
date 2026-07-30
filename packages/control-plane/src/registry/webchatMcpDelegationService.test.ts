@@ -1,6 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
-import { DELEGATED_MCP_ASSERTION_FEATURE } from '@agentconnect.md/protocol'
-import { MCP_TOOLS } from '../http/mcp/tools.js'
+import { describe, expect, expectTypeOf, it, vi } from 'vitest'
+import {
+  DELEGATED_MCP_ASSERTION_FEATURE,
+  type McpInvocationMint,
+  type WebchatMcpDelegationReference
+} from '@agentconnect.md/protocol'
 import type {
   EstablishWebchatMcpDelegationInput,
   McpInvocationRecord,
@@ -14,7 +17,9 @@ import {
   WEBCHAT_MCP_DELEGATION_DEFAULT_TTL_MS,
   WebchatMcpDelegationService,
   type DelegationDenialReason,
-  type MintInvocationInput
+  type DelegationReference,
+  type MintInvocationInput,
+  type WebchatMcpDelegationServiceDeps
 } from './webchatMcpDelegationService.js'
 
 const NOW = Date.parse('2026-07-30T04:00:00.000Z')
@@ -29,6 +34,7 @@ const CONVERSATION_ID = '33333333-3333-4333-8333-333333333333'
 const DELEGATION_ID = '11111111-1111-4111-8111-111111111111'
 const INVOCATION_ID = '44444444-4444-4444-8444-444444444444'
 const REQUEST_HASH = 'a'.repeat(64)
+const CURATED_TOOL = 'listAgents'
 
 const activeDelegation = (): WebchatMcpDelegationRecord => ({
   id: DELEGATION_ID,
@@ -65,8 +71,27 @@ function invocation(
   }
 }
 
+function invocationFromMint(input: MintMcpInvocationInput): McpInvocationRecord {
+  return {
+    id: input.invocationId,
+    delegationId: input.delegationId,
+    assertionHash: input.assertionHash,
+    requestHash: input.requestHash,
+    method: input.method,
+    toolName: input.toolName ?? null,
+    status: 'issued',
+    assertionExpires: input.assertionExpires,
+    startedAt: null,
+    completedAt: null,
+    responseStatus: null,
+    responseBytes: null,
+    createdAt: input.mintedAt
+  }
+}
+
 function harness() {
   const state = {
+    now: NOW,
     conversation: {
       conversationId: CONVERSATION_ID,
       userId: USER_ID,
@@ -110,8 +135,9 @@ function harness() {
   const codec = new InvocationAssertionCodec('test-pepper-that-is-at-least-thirty-two-characters')
   const codecMint = vi.spyOn(codec, 'mint')
   const deps = {
-    clock: { now: () => NOW },
+    clock: { now: () => state.now },
     assertionCodec: codec,
+    isCuratedTool: (name: string) => name === CURATED_TOOL,
     conversations: {
       findOwner: vi.fn(async (conversationId: string, agentId: string) => {
         const row = state.conversation
@@ -128,11 +154,15 @@ function harness() {
         )
       })
     },
-    orgs: { roleOf: vi.fn(async () => state.role) },
-    agents: { get: vi.fn(async () => state.agent) },
+    orgs: {
+      roleOf: vi.fn(async (orgId: string, userId: string) =>
+        orgId === ORG_ID && userId === USER_ID ? state.role : null
+      )
+    },
+    agents: { get: vi.fn(async (agentId: string) => (agentId === AGENT_ID ? state.agent : null)) },
     presets: {
-      get: vi.fn(async () =>
-        state.presetAgentId === null
+      get: vi.fn(async (orgId: string, preset: 'general') =>
+        orgId !== ORG_ID || preset !== 'general' || state.presetAgentId === null
           ? null
           : {
               orgId: ORG_ID,
@@ -144,7 +174,7 @@ function harness() {
             }
       )
     },
-    daemons: { get: vi.fn(() => state.live) },
+    daemons: { get: vi.fn((daemonId: string) => (daemonId === DAEMON_ID ? state.live : undefined)) },
     delegations: {
       establish: vi.fn(async (input: EstablishWebchatMcpDelegationInput) => {
         established.push(input)
@@ -153,17 +183,19 @@ function harness() {
         }
         return state.delegation
       }),
-      get: vi.fn(async () => state.delegation)
+      get: vi.fn(async (delegationId: string) => (state.delegation?.id === delegationId ? state.delegation : null))
     },
     invocations: {
-      get: vi.fn(async () => state.existingInvocation),
+      get: vi.fn(async (invocationId: string) =>
+        state.existingInvocation?.id === invocationId ? state.existingInvocation : null
+      ),
       mint: vi.fn(async (input: MintMcpInvocationInput) => {
         minted.push(input)
-        return { kind: 'issued' as const, invocation: invocation({ assertionHash: input.assertionHash }) }
+        return { kind: 'issued' as const, invocation: invocationFromMint(input) }
       })
     },
     onDenied: (reason: DelegationDenialReason) => reasons.push(reason)
-  }
+  } satisfies WebchatMcpDelegationServiceDeps
   return {
     state,
     reasons,
@@ -194,6 +226,9 @@ const mintInput = (): MintInvocationInput => ({
   requestHash: REQUEST_HASH,
   method: 'tools/list'
 })
+
+expectTypeOf<DelegationReference>().toEqualTypeOf<WebchatMcpDelegationReference>()
+expectTypeOf<Omit<MintInvocationInput, 'authenticatedDaemonId'>>().toEqualTypeOf<McpInvocationMint>()
 
 describe('WebchatMcpDelegationService.establish', () => {
   it('derives the actor from the durable conversation and caps the default delegation at twelve hours', async () => {
@@ -260,6 +295,43 @@ describe('WebchatMcpDelegationService.establish', () => {
     h.deps.delegations.establish.mockResolvedValueOnce(activeDelegation())
 
     expect(await h.service.establish({ ...establishInput(), sessionExpiresAt })).toBeNull()
+  })
+
+  it.each([
+    ['a NaN clock', Number.NaN, undefined],
+    ['an infinite clock', Number.POSITIVE_INFINITY, undefined],
+    ['a timestamp whose default expiry overflows Date', 8.64e15 - 1_000, undefined],
+    ['an invalid session expiry', NOW, new Date(Number.NaN)]
+  ])('fails closed for %s', async (_name, clockNow, sessionExpiresAt) => {
+    const h = harness()
+    h.state.now = clockNow
+
+    expect(await h.service.establish({ ...establishInput(), sessionExpiresAt })).toBeNull()
+    expect(h.established).toEqual([])
+  })
+
+  it.each([
+    ['a revoked row', (row: WebchatMcpDelegationRecord) => ({ ...row, revokedAt: new Date(NOW) })],
+    [
+      'a wrong authority binding',
+      (row: WebchatMcpDelegationRecord) => ({ ...row, conversationId: 'wrong-conversation' })
+    ],
+    ['an invalid generation', (row: WebchatMcpDelegationRecord) => ({ ...row, generation: 0 })]
+  ])('rejects %s returned by persistence', async (_name, mutate) => {
+    const h = harness()
+    h.deps.delegations.establish.mockResolvedValueOnce(mutate(activeDelegation()))
+
+    expect(await h.service.establish(establishInput())).toBeNull()
+  })
+
+  it('checks returned delegation expiry against a fresh post-persistence clock', async () => {
+    const h = harness()
+    h.deps.delegations.establish.mockImplementationOnce(async () => {
+      h.state.now = NOW + 61_000
+      return activeDelegation()
+    })
+
+    expect(await h.service.establish(establishInput())).toBeNull()
   })
 
   it.each([
@@ -427,11 +499,12 @@ describe('WebchatMcpDelegationService.mintInvocation', () => {
     ],
     [
       'unknown method',
-      (_h: ReturnType<typeof harness>, input: MintInvocationInput) => ({ ...input, method: 'resources/list' })
+      (_h: ReturnType<typeof harness>, input: MintInvocationInput) =>
+        ({ ...input, method: 'resources/list' }) as unknown as MintInvocationInput
     ],
     [
       'tools/list with a tool name',
-      (_h: ReturnType<typeof harness>, input: MintInvocationInput) => ({ ...input, toolName: MCP_TOOLS[0]!.name })
+      (_h: ReturnType<typeof harness>, input: MintInvocationInput) => ({ ...input, toolName: CURATED_TOOL })
     ],
     [
       'tools/call without a tool name',
@@ -464,7 +537,7 @@ describe('WebchatMcpDelegationService.mintInvocation', () => {
     const result = await h.service.mintInvocation({
       ...mintInput(),
       method: 'tools/call',
-      toolName: MCP_TOOLS[0]!.name
+      toolName: CURATED_TOOL
     })
 
     expect(result).toMatchObject({
@@ -480,11 +553,58 @@ describe('WebchatMcpDelegationService.mintInvocation', () => {
       assertionHash: h.codec.hash(result.assertion),
       requestHash: REQUEST_HASH,
       method: 'tools/call',
-      toolName: MCP_TOOLS[0]!.name,
+      toolName: CURATED_TOOL,
       assertionExpires: new Date(NOW + 30_000),
-      now: new Date(NOW)
+      mintedAt: new Date(NOW)
     })
     expect(JSON.stringify(h.minted[0])).not.toContain(result.assertion)
+  })
+
+  it('takes a fresh issuance timestamp after asynchronous entitlement checks', async () => {
+    const h = harness()
+    h.deps.invocations.get.mockImplementationOnce(async () => {
+      h.state.now = NOW + 5_000
+      return null
+    })
+
+    const result = await h.service.mintInvocation(mintInput())
+
+    expect(result).toMatchObject({
+      kind: 'minted',
+      expiresAt: new Date(NOW + 35_000).toISOString()
+    })
+    expect(h.minted[0]).toMatchObject({
+      mintedAt: new Date(NOW + 5_000),
+      assertionExpires: new Date(NOW + 35_000)
+    })
+  })
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, 8.64e15 - 1_000])(
+    'fails closed when the issuance clock is %s',
+    async (invalidNow) => {
+      const h = harness()
+      h.deps.invocations.get.mockImplementationOnce(async () => {
+        h.state.now = invalidNow
+        return null
+      })
+
+      expect(await h.service.mintInvocation(mintInput())).toEqual(DELEGATION_DENIED)
+      expect(h.codecMint).not.toHaveBeenCalled()
+      expect(h.minted).toEqual([])
+    }
+  )
+
+  it('preserves the public denial shape when the denial observer throws', async () => {
+    const h = harness()
+    const service = new WebchatMcpDelegationService({
+      ...h.deps,
+      onDenied: () => {
+        throw new Error('metrics unavailable')
+      }
+    })
+    h.state.delegation = null
+
+    await expect(service.mintInvocation(mintInput())).resolves.toEqual(DELEGATION_DENIED)
   })
 
   it('rotates the assertion for an identical issued retry', async () => {
@@ -514,6 +634,65 @@ describe('WebchatMcpDelegationService.mintInvocation', () => {
     expect(h.minted).toEqual([])
   })
 
+  it('does not reveal an invocation id owned by another delegation', async () => {
+    const h = harness()
+    h.state.existingInvocation = invocation({
+      status: 'issued',
+      delegationId: '99999999-9999-4999-8999-999999999999'
+    })
+
+    expect(await h.service.mintInvocation(mintInput())).toEqual(DELEGATION_DENIED)
+    expect(h.codecMint).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [
+      'another delegation',
+      invocation({
+        status: 'issued',
+        delegationId: '99999999-9999-4999-8999-999999999999'
+      }),
+      DELEGATION_DENIED
+    ],
+    [
+      'a changed request in this delegation',
+      invocation({ status: 'issued', requestHash: 'b'.repeat(64) }),
+      {
+        kind: 'conflict',
+        code: 'INVOCATION_CONFLICT',
+        message: 'Invocation id is already bound to a different request.',
+        status: 409
+      }
+    ]
+  ])('re-reads and safely classifies a concurrent conflict for %s', async (_name, winner, expected) => {
+    const h = harness()
+    h.deps.invocations.get.mockResolvedValueOnce(null).mockResolvedValueOnce(winner)
+    h.deps.invocations.mint.mockResolvedValueOnce({ kind: 'conflict' })
+
+    expect(await h.service.mintInvocation(mintInput())).toEqual(expected)
+  })
+
+  it.each([
+    ['id', { id: 'wrong' }],
+    ['delegation', { delegationId: '99999999-9999-4999-8999-999999999999' }],
+    ['request', { requestHash: 'b'.repeat(64) }],
+    ['method', { method: 'tools/call', toolName: CURATED_TOOL }],
+    ['assertion hash', { assertionHash: 'wrong-hash' }],
+    ['status', { status: 'running' as const }],
+    ['expiry', { assertionExpires: new Date(NOW + 29_999) }]
+  ])('rejects a malformed issued persistence result with wrong %s', async (_name, patch) => {
+    const h = harness()
+    h.deps.invocations.mint.mockImplementationOnce(async (input) => ({
+      kind: 'issued',
+      invocation: { ...invocationFromMint(input), ...patch }
+    }))
+
+    const result = await h.service.mintInvocation(mintInput())
+
+    expect(result).toEqual(DELEGATION_DENIED)
+    expect(JSON.stringify(result)).not.toMatch(/ac_mcp_assert_v1_/)
+  })
+
   it.each(['running', 'succeeded', 'failed', 'ambiguous'] as const)(
     'returns only status for an identical %s retry and never mints plaintext',
     async (status) => {
@@ -534,6 +713,11 @@ describe('WebchatMcpDelegationService.mintInvocation', () => {
     async (kind) => {
       const h = harness()
       h.deps.invocations.mint.mockResolvedValueOnce({ kind })
+      if (kind === 'conflict') {
+        h.deps.invocations.get
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(invocation({ status: 'issued', requestHash: 'b'.repeat(64) }))
+      }
 
       const result = await h.service.mintInvocation(mintInput())
 

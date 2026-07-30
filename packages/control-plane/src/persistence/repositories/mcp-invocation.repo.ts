@@ -34,10 +34,19 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
   async mint(input: MintMcpInvocationInput): Promise<MintMcpInvocationResult> {
     try {
       return await this.inTransaction(async (tx) => {
-        // Delegation → Invocation is the shared mint/reap lock order. KEY SHARE
-        // permits sibling mints but conflicts with delegation/cascade deletion.
+        // Delegation → Invocation is the shared mint/reap lock order. SHARE
+        // permits sibling mints but conflicts with revocation, expiry shortening,
+        // and delegation/cascade deletion.
         const parent = await tx.$queryRaw<{ id: string }[]>(
-          Prisma.sql`SELECT "id" FROM "webchat_mcp_delegation" WHERE "id" = ${input.delegationId} FOR KEY SHARE`
+          Prisma.sql`
+            SELECT "id"
+            FROM "webchat_mcp_delegation"
+            WHERE "id" = ${input.delegationId}
+              AND "revokedAt" IS NULL
+              AND "expiresAt" > ${input.mintedAt}
+              AND "expiresAt" >= ${input.assertionExpires}
+            FOR SHARE
+          `
         )
         if (parent.length === 0) return { kind: 'denied' }
 
@@ -53,7 +62,7 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
               method: input.method,
               toolName: input.toolName ?? null,
               assertionExpires: input.assertionExpires,
-              createdAt: input.now
+              createdAt: input.mintedAt
             }
           ],
           skipDuplicates: true

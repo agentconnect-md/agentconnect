@@ -15,22 +15,14 @@
  * everything). `canManageSharing` is relaxed to `=== canEdit` (decision §13.3):
  * anyone who can edit a resource can also change who it is shared with.
  */
-import type { SessionVisibility, Shareable, ViewCtx } from '../persistence/ports.js'
+import { canView, type Shareable, type ViewCtx } from '../domain/visibility.js'
+import type { SessionVisibility } from '../persistence/ports.js'
 
 // Re-export the shared visibility primitives so route code has a single import
 // site (`http/visibility.js`) while the repo layer imports them from `ports.js`.
 export { visibilityWhere } from '../persistence/ports.js'
-export type { Shareable, ViewCtx } from '../persistence/ports.js'
-
-/** Can this caller SEE the resource? Any one arm suffices. */
-export function canView(r: Shareable, c: ViewCtx): boolean {
-  return (
-    c.role === 'owner' || // governance override — owners see everything
-    r.createdByUserId === c.userId || // creator forever
-    r.visibility === 'org' || // default: visible to all org members
-    r.sharedWith.includes(c.userId) // explicitly shared
-  )
-}
+export { canView }
+export type { Shareable, ViewCtx }
 
 /** Can this caller EDIT the resource's content? Viewer never (preserves the
  *  `denyViewerWrite` invariant); owner always; collaborator iff they can see it. */

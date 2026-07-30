@@ -98,6 +98,7 @@ import { RelayRoster } from './orchestrator/relayRoster.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
 import { SlackBotIdentityReconciler } from './orchestrator/slackBotIdentityReconciler.js'
 import { slackConfigApi } from './http/slack-config-api.js'
+import { findTool } from './http/mcp/tools.js'
 
 import { ApiKeyCodec } from './registry/apiKey.js'
 import { DaemonAuthService } from './registry/authService.js'
@@ -391,7 +392,8 @@ export function buildContainer(
     presets: repos.presetAgent,
     daemons: connReg,
     delegations: repos.webchatMcpDelegation,
-    invocations: repos.mcpInvocation
+    invocations: repos.mcpInvocation,
+    isCuratedTool: (toolName) => findTool(toolName) !== undefined
   })
 
   // The relay analogue — relayId → live relay socket, so the CP can push

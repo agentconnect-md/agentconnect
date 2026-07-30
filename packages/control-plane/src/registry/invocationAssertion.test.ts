@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createHmac } from 'node:crypto'
+import { inspect } from 'node:util'
 import { InvocationAssertionCodec } from './invocationAssertion.js'
 
 const PEPPER = 'test-pepper-that-is-at-least-thirty-two-characters'
@@ -44,5 +45,14 @@ describe('InvocationAssertionCodec', () => {
     expect(minted.persistence).toEqual({ assertionHash: codec.hash(minted.plaintext) })
     expect(JSON.stringify(minted.persistence)).not.toContain(minted.plaintext)
     expect(Object.keys(minted.persistence)).toEqual(['assertionHash'])
+  })
+
+  it('keeps plaintext out of whole-object JSON and structural inspection', () => {
+    const minted = new InvocationAssertionCodec(PEPPER).mint()
+
+    expect(minted.plaintext).toMatch(/^ac_mcp_assert_v1_/)
+    expect(JSON.stringify(minted)).not.toContain(minted.plaintext)
+    expect(inspect(minted)).not.toContain(minted.plaintext)
+    expect(Object.keys(minted)).not.toContain('plaintext')
   })
 })

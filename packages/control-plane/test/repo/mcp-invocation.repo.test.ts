@@ -74,12 +74,35 @@ function mintInput(delegationId: string, extra: Record<string, unknown> = {}) {
     method: 'tools/call',
     toolName: 'agents.list',
     assertionExpires: at(30_000),
-    now: NOW,
+    mintedAt: NOW,
     ...extra
   }
 }
 
+function revokeInput(delegation: { id: string; generation: number }) {
+  return {
+    delegationId: delegation.id,
+    conversationId: CONVERSATION,
+    generation: delegation.generation,
+    userId: DEFAULT_OWNER_ID,
+    orgId: OrgId(DEFAULT_ORG_ID),
+    agentId: AgentId(AGENT),
+    daemonId: DaemonId(DAEMON),
+    revokedAt: at(5_000),
+    reason: 'session_closed'
+  }
+}
+
 describe('PgMcpInvocationRepo (real Postgres)', () => {
+  it('denies mint when the parent cannot cover the complete assertion lifetime', async () => {
+    const delegation = await fixtures(at(29_999))
+
+    expect(await new PgMcpInvocationRepo(prisma).mint(mintInput(delegation.id))).toEqual({
+      kind: 'denied'
+    })
+    expect(await prisma.mcpInvocation.count()).toBe(0)
+  })
+
   it('rotates only assertion hash and expiry on an identical issued mint retry', async () => {
     const delegation = await fixtures()
     const repo = new PgMcpInvocationRepo(prisma)
@@ -89,7 +112,7 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
       mintInput(delegation.id, {
         assertionHash: 'peppered:assertion-2',
         assertionExpires: at(60_000),
-        now: at(31_000)
+        mintedAt: at(30_000)
       })
     )
 
@@ -253,7 +276,7 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
         mintInput(delegation.id, {
           assertionHash: 'peppered:rotated',
           assertionExpires: at(60_000),
-          now: at(3_000)
+          mintedAt: at(3_000)
         })
       )
 
@@ -386,8 +409,32 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     expect(await prisma.mcpInvocation.count()).toBe(0)
   })
 
-  it('keeps an expired delegation when mint wins its parent lock first', async () => {
-    const delegation = await fixtures(at(1_000))
+  it('denies without persisting when revocation wins against mint', async () => {
+    const delegation = await fixtures()
+    const revoked = barrier()
+    const releaseRevoke = barrier()
+    const revoking = prisma.$transaction(
+      async (tx) => {
+        const result = await new PgWebchatMcpDelegationRepo(tx).revoke(revokeInput(delegation))
+        revoked.release()
+        await releaseRevoke.promise
+        return result
+      },
+      { timeout: 20_000 }
+    )
+    await revoked.promise
+
+    const minting = new PgMcpInvocationRepo(prisma).mint(mintInput(delegation.id))
+    await expectPending(minting)
+    releaseRevoke.release()
+
+    expect(await revoking).toBe(true)
+    expect(await minting).toEqual({ kind: 'denied' })
+    expect(await prisma.mcpInvocation.count()).toBe(0)
+  })
+
+  it('may issue before revocation, while holding a conflicting parent share lock', async () => {
+    const delegation = await fixtures()
     const minted = barrier()
     const releaseMint = barrier()
     const minting = prisma.$transaction(
@@ -401,7 +448,95 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     )
     await minted.promise
 
-    const reaping = new PgWebchatMcpDelegationRepo(prisma).reapExpired(at(1_000))
+    const revoking = new PgWebchatMcpDelegationRepo(prisma).revoke(revokeInput(delegation))
+    await expectPending(revoking)
+    releaseMint.release()
+
+    expect((await minting).kind).toBe('issued')
+    expect(await revoking).toBe(true)
+    expect(await prisma.mcpInvocation.count()).toBe(1)
+  })
+
+  it('denies without persisting when expiry shortening wins against mint', async () => {
+    const delegation = await fixtures()
+    const shortened = barrier()
+    const releaseShorten = barrier()
+    const shortening = prisma.$transaction(
+      async (tx) => {
+        const result = await new PgWebchatMcpDelegationRepo(tx).establish({
+          conversationId: CONVERSATION,
+          userId: DEFAULT_OWNER_ID,
+          orgId: OrgId(DEFAULT_ORG_ID),
+          agentId: AgentId(AGENT),
+          daemonId: DaemonId(DAEMON),
+          now: NOW,
+          expiresAt: at(20_000)
+        })
+        shortened.release()
+        await releaseShorten.promise
+        return result
+      },
+      { timeout: 20_000 }
+    )
+    await shortened.promise
+
+    const minting = new PgMcpInvocationRepo(prisma).mint(mintInput(delegation.id))
+    await expectPending(minting)
+    releaseShorten.release()
+
+    expect((await shortening)?.expiresAt).toEqual(at(20_000))
+    expect(await minting).toEqual({ kind: 'denied' })
+    expect(await prisma.mcpInvocation.count()).toBe(0)
+  })
+
+  it('may issue before expiry shortening, while holding a conflicting parent share lock', async () => {
+    const delegation = await fixtures()
+    const minted = barrier()
+    const releaseMint = barrier()
+    const minting = prisma.$transaction(
+      async (tx) => {
+        const result = await new PgMcpInvocationRepo(tx).mint(mintInput(delegation.id))
+        minted.release()
+        await releaseMint.promise
+        return result
+      },
+      { timeout: 20_000 }
+    )
+    await minted.promise
+
+    const shortening = new PgWebchatMcpDelegationRepo(prisma).establish({
+      conversationId: CONVERSATION,
+      userId: DEFAULT_OWNER_ID,
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId: AgentId(AGENT),
+      daemonId: DaemonId(DAEMON),
+      now: NOW,
+      expiresAt: at(20_000)
+    })
+    await expectPending(shortening)
+    releaseMint.release()
+
+    expect((await minting).kind).toBe('issued')
+    expect((await shortening)?.expiresAt).toEqual(at(20_000))
+    expect(await prisma.mcpInvocation.count()).toBe(1)
+  })
+
+  it('keeps a delegation when an eligible mint wins its parent lock first', async () => {
+    const delegation = await fixtures(at(60_000))
+    const minted = barrier()
+    const releaseMint = barrier()
+    const minting = prisma.$transaction(
+      async (tx) => {
+        const result = await new PgMcpInvocationRepo(tx).mint(mintInput(delegation.id))
+        minted.release()
+        await releaseMint.promise
+        return result
+      },
+      { timeout: 20_000 }
+    )
+    await minted.promise
+
+    const reaping = new PgWebchatMcpDelegationRepo(prisma).reapExpired(at(60_000))
     await expectPending(reaping)
     releaseMint.release()
 

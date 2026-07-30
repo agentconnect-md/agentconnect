@@ -13,6 +13,28 @@ const NOW = new Date('2026-07-30T00:00:00.000Z')
 
 const at = (milliseconds: number): Date => new Date(NOW.getTime() + milliseconds)
 
+function barrier() {
+  let release!: () => void
+  const promise = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  return { promise, release }
+}
+
+async function expectPending(promise: Promise<unknown>): Promise<void> {
+  let settled = false
+  void promise.then(
+    () => {
+      settled = true
+    },
+    () => {
+      settled = true
+    }
+  )
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  expect(settled).toBe(false)
+}
+
 async function fixtures(): Promise<void> {
   await seedDaemon(prisma, DAEMON)
   await seedDaemon(prisma, OTHER_DAEMON)
@@ -109,6 +131,84 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
       revokedAt: null
     })
     expect(await prisma.webchatMcpDelegation.count({ where: { conversationId: CONVERSATION } })).toBe(1)
+  })
+
+  it('returns null when revocation wins against a reusable expiry shortening', async () => {
+    await fixtures()
+    const repo = new PgWebchatMcpDelegationRepo(prisma)
+    const delegation = (await repo.establish(establishInput(DAEMON, at(120_000))))!
+    const revoked = barrier()
+    const releaseRevoke = barrier()
+    const revoking = prisma.$transaction(
+      async (tx) => {
+        const result = await new PgWebchatMcpDelegationRepo(tx).revoke({
+          delegationId: delegation.id,
+          conversationId: CONVERSATION,
+          generation: delegation.generation,
+          userId: DEFAULT_OWNER_ID,
+          orgId: OrgId(DEFAULT_ORG_ID),
+          agentId: AgentId(AGENT),
+          daemonId: DaemonId(DAEMON),
+          revokedAt: at(5_000),
+          reason: 'session_closed'
+        })
+        revoked.release()
+        await releaseRevoke.promise
+        return result
+      },
+      { timeout: 20_000 }
+    )
+    await revoked.promise
+
+    const shortening = repo.establish(establishInput(DAEMON, at(30_000)))
+    await expectPending(shortening)
+    releaseRevoke.release()
+
+    expect(await revoking).toBe(true)
+    expect(await shortening).toBeNull()
+    expect(await repo.get(delegation.id)).toMatchObject({
+      expiresAt: at(120_000),
+      revokedAt: at(5_000)
+    })
+  })
+
+  it('serializes revocation after a reusable expiry shortening wins', async () => {
+    await fixtures()
+    const repo = new PgWebchatMcpDelegationRepo(prisma)
+    const delegation = (await repo.establish(establishInput(DAEMON, at(120_000))))!
+    const shortened = barrier()
+    const releaseShorten = barrier()
+    const shortening = prisma.$transaction(
+      async (tx) => {
+        const result = await new PgWebchatMcpDelegationRepo(tx).establish(establishInput(DAEMON, at(30_000)))
+        shortened.release()
+        await releaseShorten.promise
+        return result
+      },
+      { timeout: 20_000 }
+    )
+    await shortened.promise
+
+    const revoking = repo.revoke({
+      delegationId: delegation.id,
+      conversationId: CONVERSATION,
+      generation: delegation.generation,
+      userId: DEFAULT_OWNER_ID,
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId: AgentId(AGENT),
+      daemonId: DaemonId(DAEMON),
+      revokedAt: at(5_000),
+      reason: 'session_closed'
+    })
+    await expectPending(revoking)
+    releaseShorten.release()
+
+    expect(await shortening).toMatchObject({ expiresAt: at(30_000), revokedAt: null })
+    expect(await revoking).toBe(true)
+    expect(await repo.get(delegation.id)).toMatchObject({
+      expiresAt: at(30_000),
+      revokedAt: at(5_000)
+    })
   })
 
   it('migrates the agent/revocation lookup index used by placement invalidation', async () => {

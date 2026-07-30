@@ -24,10 +24,16 @@ export class InvocationAssertionCodec {
 
   mint(): MintedInvocationAssertion {
     const plaintext = `${ASSERTION_PREFIX}${randomBytes(ASSERTION_BYTES).toString('base64url')}`
-    return {
-      plaintext,
+    const minted = {
       persistence: Object.freeze({ assertionHash: this.hashUnchecked(plaintext) })
-    }
+    } as MintedInvocationAssertion
+    Object.defineProperty(minted, 'plaintext', {
+      value: plaintext,
+      enumerable: false,
+      writable: false,
+      configurable: false
+    })
+    return Object.freeze(minted)
   }
 
   /** Validate and hash a presented invocation assertion. */

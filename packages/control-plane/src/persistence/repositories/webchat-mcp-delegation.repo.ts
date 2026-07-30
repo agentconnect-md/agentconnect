@@ -58,13 +58,25 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
         latest.orgId === input.orgId &&
         latest.agentId === input.agentId &&
         latest.daemonId === input.daemonId
+      // Revocation is terminal for the same live authority. In particular, a
+      // reconnect that races and loses to revocation must not create a fresh
+      // generation after observing the winner.
+      if (latest?.revokedAt && sameAuthority) return null
       if (latest && !latest.revokedAt && latest.expiresAt.getTime() > input.now.getTime() && sameAuthority) {
         if (input.expiresAt.getTime() < latest.expiresAt.getTime()) {
-          const shortened = await tx.webchatMcpDelegation.update({
-            where: { id: latest.id },
+          const shortened = await tx.webchatMcpDelegation.updateMany({
+            where: {
+              id: latest.id,
+              generation: latest.generation,
+              revokedAt: null,
+              expiresAt: { gt: input.expiresAt }
+            },
             data: { expiresAt: input.expiresAt }
           })
-          return toRecord(shortened)
+          if (shortened.count !== 1) return null
+          const current = await tx.webchatMcpDelegation.findUniqueOrThrow({ where: { id: latest.id } })
+          if (current.revokedAt !== null) return null
+          return toRecord(current)
         }
         return toRecord(latest)
       }

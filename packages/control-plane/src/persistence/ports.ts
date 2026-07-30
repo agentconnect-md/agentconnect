@@ -1131,7 +1131,8 @@ export interface MintMcpInvocationInput {
   method: string
   toolName?: string | null
   assertionExpires: Date
-  now: Date
+  /** Fresh issuance time used for the parent-liveness check and immutable creation timestamp. */
+  mintedAt: Date
 }
 
 export type MintMcpInvocationResult =
