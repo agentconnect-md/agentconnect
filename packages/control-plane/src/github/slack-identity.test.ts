@@ -1,7 +1,7 @@
 /**
  * Unit tests for the Slack half of LogtoIdentityService (fake fetch — claim
- * extraction, per-provider caching, invalidation on link/unlink). No Docker, no
- * network. The GitHub half and the link/unlink writes are covered by
+ * extraction, per-provider caching, invalidation on unlink). No Docker, no
+ * network. The GitHub half and the connector-id/unlink writes are covered by
  * `user-authz.test.ts`.
  */
 import { describe, it, expect } from 'vitest'
@@ -161,15 +161,20 @@ describe('LogtoIdentityService.slackIdentityFor', () => {
     expect(await svc.slackIdentityFor('sub-1')).toBeNull() // re-read, not the stale hit
   })
 
-  it('drops the cached workspace when an identity is linked', async () => {
-    const users: Record<string, unknown> = {}
+  it('drops the cached workspace when the identity is unlinked', async () => {
+    // Two identities, so the last-sign-in-method guard lets the unlink through.
+    const users: Record<string, unknown> = {
+      'sub-1': { identities: { slack: slackUser(SLACK_RAW).identities.slack, github: { userId: 'g' } } }
+    }
     const { fetchImpl } = fakeLogto(users)
     const svc = svcOf(fetchImpl)
 
-    expect(await svc.slackIdentityFor('sub-1')).toBeNull()
-    await svc.linkSocialIdentity('sub-1', 'slack connector', { code: 'c', state: 's' })
-
-    users['sub-1'] = slackUser(SLACK_RAW)
     expect(await svc.slackIdentityFor('sub-1')).toMatchObject({ teamId: 'T0EXAMPLE1' })
+    await svc.unlinkSocialIdentity('sub-1', 'slack')
+
+    // Without invalidation the 10-minute positive cache would keep reporting a
+    // workspace the user just disconnected.
+    users['sub-1'] = { identities: { github: { userId: 'g' } } }
+    expect(await svc.slackIdentityFor('sub-1')).toBeNull()
   })
 })

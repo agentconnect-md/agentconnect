@@ -5,12 +5,13 @@ import useSWR from 'swr'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { SocialLoginMark } from '@/components/marks'
 import { initialsFrom } from '@/lib/auth'
-import { createMySocialIdentityAuthorization, fetchMySlackIdentity, unlinkMySocialIdentity } from '@/lib/api'
+import { fetchMySlackIdentity, resolveMySocialConnectorId, unlinkMySocialIdentity } from '@/lib/api'
 import { slackWorkspaceLine } from '@/lib/slack-identity'
 import {
   LogtoAccountError,
   accountErrorMessage,
   createSocialState,
+  createSocialVerification,
   fetchAccountProfile,
   socialIdentityDetails,
   writeSocialLinkFlow,
@@ -147,10 +148,16 @@ export default function SocialSignInCard({
     setBusyProvider(provider.target)
     try {
       const state = createSocialState()
-      const { authorizationUri, connectorId } = await createMySocialIdentityAuthorization(provider.target, state)
+      // Two hops on purpose: only the CP can name the connector, and only the
+      // browser can authorize it (the Account API is the side with a session).
+      const { connectorId } = await resolveMySocialConnectorId(provider.target)
+      const redirectUri = `${window.location.origin}/auth/social/callback`
+      const { authorizationUri, verificationRecordId } = await createSocialVerification(connectorId, redirectUri, state)
       const stored = writeSocialLinkFlow({
         state,
         connectorId,
+        verificationRecordId,
+        redirectUri,
         providerName: provider.name,
         returnTo: `${window.location.pathname}${window.location.search}`,
         createdAt: Date.now()

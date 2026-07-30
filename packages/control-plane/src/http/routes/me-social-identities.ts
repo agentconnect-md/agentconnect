@@ -1,14 +1,25 @@
 /**
  * The signed-in user's social sign-in methods. These routes deliberately use
- * `oidcAuth` (never devAuth or API keys) and proxy the narrow operation through
- * Logto's Management API, so its M2M credential stays server-side.
+ * `oidcAuth` (never devAuth or API keys). The current OIDC session is the
+ * authorization boundary; unlinking does not add a second email-code step.
  *
- * The current OIDC session is the authorization boundary. Provider OAuth proves
- * the identity being linked; unlinking does not add a second email-code step.
+ * Linking and unlinking deliberately run over DIFFERENT Logto surfaces:
+ *
+ *  - **Unlink** stays here, on the Management API, because it enforces a
+ *    server-side invariant the browser cannot be trusted with: the last social
+ *    sign-in method may not be removed, serialized per user by
+ *    `SocialIdentityMutationGate`. It needs no connector session.
+ *  - **Link** is driven by the browser against Logto's Account API, with the
+ *    user's OWN token — the Management API has no session context, so any
+ *    connector that persists state in `getAuthorizationUri` (Slack, Apple,
+ *    standard OIDC/OAuth 2.0) fails inside Logto with a 500. That path needs
+ *    nothing from the M2M credential, so it never reaches the browser either.
+ *
+ * What the browser still cannot do is discover the connector id, so this
+ * module resolves target → connector id and stops there.
  */
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
-import { resolveWebAppUrl } from '../../config/env.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import type { HttpDeps } from '../deps.js'
 import { ErrorDto } from '../dto/index.js'
@@ -19,15 +30,8 @@ const ConnectorId = z.string().trim().min(1).max(128)
 // Must stay in step with the console's SOCIAL_LOGIN_PROVIDERS: a target the UI
 // offers but this rejects is a Connect button that 400s.
 const SocialTarget = z.enum(['github', 'google', 'slack'])
-const State = z.string().min(32).max(256)
-const ConnectorData = z
-  .record(z.string().max(64), z.string().max(4096))
-  .refine((value) => Object.keys(value).length <= 32, 'too many connector response fields')
-
-const AuthorizationBody = z.object({ target: SocialTarget, state: State }).strict()
-const AuthorizationDto = z.object({ authorizationUri: z.url(), connectorId: ConnectorId })
-const LinkBody = z.object({ connectorId: ConnectorId, connectorData: ConnectorData }).strict()
-const LinkDto = z.object({ linked: z.literal(true) })
+const TargetParamStrict = z.object({ target: SocialTarget })
+const ConnectorDto = z.object({ connectorId: ConnectorId })
 const TargetParam = z.object({ target: z.string().trim().min(1).max(128) })
 
 /** The Slack workspace behind the caller's account. `linked: false` is a real
@@ -47,29 +51,25 @@ const SlackIdentityDto = z.discriminatedUnion('linked', [
   })
 ])
 
-type Operation = 'authorize' | 'link' | 'unlink' | 'read'
-
-function socialCallbackUrl(deps: HttpDeps): string | undefined {
-  const webUrl = resolveWebAppUrl(deps.config)
-  return webUrl ? new URL('/auth/social/callback', webUrl).toString() : undefined
-}
+// No 'link': that runs in the browser against the Account API, so its provider
+// errors (422 "already in use" and friends) are mapped there, not here.
+type Operation = 'authorize' | 'unlink' | 'read'
 
 function logtoFailure(reply: FastifyReply, error: unknown, operation: Operation) {
   if (!(error instanceof LogtoApiError)) throw error
+  // The upstream reason never reaches the caller — the mapping below flattens it
+  // to a generic status — so record it once here. Without this an operator has
+  // nothing to go on when Logto starts refusing.
+  reply.log.warn(
+    { operation, upstreamStatus: error.status, upstreamCode: error.code, retryable: error.retryable },
+    'logto request failed'
+  )
   if (operation === 'unlink' && error.status === 409 && error.code === 'LAST_SOCIAL_IDENTITY') {
     return reply.code(409).send({
       error: 'Conflict',
       statusCode: 409,
       code: error.code,
       message: 'connect another sign-in method before removing this one'
-    })
-  }
-  if (operation === 'link' && error.status === 422) {
-    return reply.code(409).send({
-      error: 'Conflict',
-      statusCode: 409,
-      code: 'SOCIAL_IDENTITY_IN_USE',
-      message: 'this social account is already connected to another account'
     })
   }
   if (error.status === 400) {
@@ -110,19 +110,19 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
       message: 'social sign-in management is not configured'
     } as const
 
-    r.post(
-      '/me/social-identities/authorization-uri',
+    r.get(
+      '/me/social-identities/connectors/:target',
       {
         preHandler: app.oidcAuth,
         schema: {
           tags: [Tag.Profile],
-          summary: 'Start linking a social sign-in method',
+          summary: 'Resolve a social connector id',
           description:
-            'Resolve a statically supported provider target and build its authorization URI. The current OIDC session authorizes the operation; the provider flow proves the new identity.',
-          operationId: 'createMySocialIdentityAuthorization',
-          body: AuthorizationBody,
+            "The tenant's connector id for a supported provider target, so the console can start the Account API link flow. Resolution only — the authorization URI is built by the browser, which is the only side with the connector session Logto needs.",
+          operationId: 'getMySocialConnectorId',
+          params: TargetParamStrict,
           response: {
-            200: AuthorizationDto,
+            200: ConnectorDto,
             400: ErrorDto,
             404: ErrorDto,
             429: ErrorDto,
@@ -133,54 +133,11 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         const identity = deps.logtoIdentity
-        const redirectUri = socialCallbackUrl(deps)
-        if (!identity || !redirectUri) return reply.code(503).send(unavailable)
+        if (!identity) return reply.code(503).send(unavailable)
         try {
-          const authorization = await identity.createSocialAuthorization(req.body.target, redirectUri, req.body.state)
-          return {
-            authorizationUri: authorization.redirectTo,
-            connectorId: authorization.connectorId
-          }
+          return { connectorId: await identity.socialConnectorIdFor(req.params.target) }
         } catch (error) {
           return logtoFailure(reply, error, 'authorize')
-        }
-      }
-    )
-
-    r.post(
-      '/me/social-identities',
-      {
-        preHandler: app.oidcAuth,
-        schema: {
-          tags: [Tag.Profile],
-          summary: 'Link a social sign-in method',
-          description:
-            'Link the social identity authenticated by the provider to the signed-in user. Existing accounts are not merged.',
-          operationId: 'linkMySocialIdentity',
-          body: LinkBody,
-          response: {
-            200: LinkDto,
-            400: ErrorDto,
-            404: ErrorDto,
-            409: ErrorDto,
-            429: ErrorDto,
-            502: ErrorDto,
-            503: ErrorDto
-          }
-        }
-      },
-      async (req, reply) => {
-        const identity = deps.logtoIdentity
-        const redirectUri = socialCallbackUrl(deps)
-        if (!identity || !redirectUri) return reply.code(503).send(unavailable)
-        try {
-          await identity.linkSocialIdentity(req.oidcSubject!, req.body.connectorId, {
-            ...req.body.connectorData,
-            redirectUri
-          })
-          return { linked: true as const }
-        } catch (error) {
-          return logtoFailure(reply, error, 'link')
         }
       }
     )

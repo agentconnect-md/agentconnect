@@ -66,6 +66,8 @@ describe('Logto Account API', () => {
     const flow = {
       state: 'state-123',
       connectorId: 'google-connector',
+      verificationRecordId: 'verification-123',
+      redirectUri: 'https://console.example.test/auth/social/callback',
       providerName: 'Google',
       returnTo: '/agentconnect/profile',
       createdAt: Date.now()
