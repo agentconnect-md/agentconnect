@@ -153,7 +153,7 @@ export default function DaemonDetailView() {
     ]
     const sysRows: [string, ReactNode, string][] = [
       ['Hostname', daemon.host, 'var(--text-primary)'],
-      ['Status', s.label, online ? 'var(--green-500)' : 'var(--amber-500)'],
+      ['Status', s.label, s.text],
       ['Version', daemon.version, 'var(--text-primary)'],
       ...(pending ? ([['Pending', pendingLabel, 'var(--brand)']] as [string, ReactNode, string][]) : [])
     ]

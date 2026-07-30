@@ -20,6 +20,7 @@ import {
   presentedDaemonStatus,
   resolveEffortForModel,
   sessionChannelFilterValue,
+  status,
   type DaemonRow,
   type RuntimeModelCatalog,
   type Session
@@ -35,6 +36,14 @@ describe('planned daemon lifecycle status', () => {
     expect(effectiveAgentStatus('online', upgrading)).toBe('upgrading')
     expect(effectiveAgentStatus('online', { status: 'offline', lifecycleStatus: null })).toBe('offline')
     expect(effectiveAgentStatus('paused', upgrading)).toBe('paused')
+  })
+
+  it('uses the transition tone while a pending daemon is still connected', () => {
+    const restarting = { status: 'online' as const, lifecycleStatus: 'restarting' as const }
+    expect(status(presentedDaemonStatus(restarting))).toMatchObject({
+      label: 'restarting',
+      text: '#9a6500'
+    })
   })
 })
 
