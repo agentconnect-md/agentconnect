@@ -2008,6 +2008,12 @@ export class Daemon {
       cancelOrchestration: (req) => Promise.resolve(this.cancelOrchestrationForOwner(req)),
       submitGithubReview: (req) => this.submitGithubReview(req),
       memory: this.memory,
+      // session-visibility.md §5.1: the same capture gate that blocks automatic
+      // distillation also blocks an EXPLICIT write from a private session —
+      // agent memory is shared across users, so the tool path would otherwise
+      // be a way around it. Resolved from the caller's trusted session coords
+      // at call time, so a session tightened mid-life is covered.
+      memoryWriteAllowed: (ctx) => !this.store.isCaptureExcluded(this.acpSessionIdForToolCall(ctx)),
       recordOutbound: (ctx, channel, thread, text, ts, integrationId) =>
         this.store.appendTranscript({
           channel: transcriptChannelKey(channel, this.transportScopeForIntegrationIds([integrationId])),
@@ -12055,6 +12061,20 @@ export class Daemon {
     const locallyPrivate =
       !isEvaluation && (isA2aChild || msg.isDm || msg.platform === 'webchat' || launchCorrelationId !== undefined)
     this.store.setLocalCaptureGate(acpSessionId, locallyPrivate)
+  }
+
+  /** The ACP session id behind an MCP tool call, from the caller's trusted
+   *  session coords. Undefined when no local row matches — the capture gate
+   *  treats that as unknown, i.e. excluded. */
+  private acpSessionIdForToolCall(ctx: {
+    agentId: string
+    platform: string
+    channel: string
+    thread: string
+    transportScope?: string
+  }): string | undefined {
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    return this.store.getSession(key)?.acpSessionId ?? undefined
   }
 
   /** Mint-once, persisted: stable across restarts and credential rotations. */

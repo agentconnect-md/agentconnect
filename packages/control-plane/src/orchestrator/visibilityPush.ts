@@ -103,6 +103,18 @@ export class SessionVisibilityPushService {
     if (!this.supports(daemonId)) return
     const snapshot = await this.deps.repos.session.visibilitySnapshotForDaemon(daemonId, SNAPSHOT_LIMIT)
     if (snapshot.length === 0) return
+    // The snapshot is bounded, but ordered unacknowledged-first, so a change made
+    // while this daemon was offline is always in it. If the cap still bit, say so
+    // rather than let a truncated replay read as full convergence.
+    if (snapshot.length === SNAPSHOT_LIMIT) {
+      const unacked = await this.deps.repos.session.countUnackedVisibility(daemonId)
+      if (unacked > SNAPSHOT_LIMIT) {
+        this.deps.log?.warn(
+          { daemonId, unacked, limit: SNAPSHOT_LIMIT },
+          'session visibility snapshot truncated: unacknowledged gates exceed the replay cap'
+        )
+      }
+    }
     for (let i = 0; i < snapshot.length; i += SNAPSHOT_CHUNK) {
       const chunk = snapshot.slice(i, i + SNAPSHOT_CHUNK)
       try {
@@ -125,33 +137,44 @@ export class SessionVisibilityPushService {
   /**
    * Has every affected daemon applied this change (§5.1)? The memory boundary
    * takes effect at ACK, so the §4.3 endpoint reports `pending` until then.
-   * Vacuously applied when nothing can ever ack — an unplaced agent, an offline
-   * or pre-upgrade daemon — otherwise the console would spin forever on a state
-   * that will only converge on the daemon's next register.
+   *
+   * Only an UNPLACED agent counts as vacuously applied: nothing is running it,
+   * so nothing can capture. A placed daemon that is merely offline is still
+   * `pending` — daemons keep serving established sessions while the CP is down
+   * (that graceful degradation is the whole point of the edge), so its gate may
+   * genuinely still be `org`. Claiming `applied` there would promise a boundary
+   * that is not in force; it converges when the daemon reconnects and replays.
    */
   async isApplied(sessions: SessionMetaRecord[]): Promise<boolean> {
     for (const s of sessions) {
       if (s.visibilityAckedRev >= s.visibilityRev) continue
       const agent = await this.deps.repos.agent.get(s.agentId)
-      const daemonId = agent?.daemonId
-      if (!daemonId || !this.supports(daemonId)) continue
+      if (!agent?.daemonId) continue // unplaced: no daemon runs it, nothing to stop
       return false
     }
     return true
   }
 }
 
-/** Re-read the affected rows and answer the §4.3 endpoint's cutover state. */
+/** How much of a subtree one cutover-state read will consider. Beyond this the
+ *  answer stays `pending` rather than silently ignoring the tail. */
+const SUBTREE_LIMIT = 500
+
+/**
+ * The §4.3 cutover state for a session AND everything a tightening cascade would
+ * have rewritten under it. The root's daemon acking first must not flip the UI to
+ * `applied` while a descendant's daemon is still behind — the descendant holds
+ * text copied from the root, and its capture is exactly what the change was for.
+ */
 export async function visibilityStateOf(
   push: SessionVisibilityPushService | undefined,
   repos: { session: SessionRepo },
   sessionIds: SessionId[]
 ): Promise<'pending' | 'applied'> {
   if (!push) return 'applied'
-  const rows: SessionMetaRecord[] = []
+  const rows = new Map<string, SessionMetaRecord>()
   for (const id of sessionIds) {
-    const row = await repos.session.get(id)
-    if (row) rows.push(row)
+    for (const row of await repos.session.visibilitySubtree(id, SUBTREE_LIMIT)) rows.set(row.id, row)
   }
-  return (await push.isApplied(rows)) ? 'applied' : 'pending'
+  return (await push.isApplied([...rows.values()])) ? 'applied' : 'pending'
 }

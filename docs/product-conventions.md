@@ -201,6 +201,19 @@ then), and anything the agent already distilled while the session was org-visibl
 retracted. Until a session's daemon has confirmed the current state, that daemon withholds
 capture rather than assuming the session is shareable.
 
+The block covers both ways a session reaches shared memory: the automatic post-turn
+distillation, and an explicit write by the agent itself. A private session's memory-write
+tools refuse with an explanation rather than failing silently, and reads stay available —
+recalling what the agent already knows is not a disclosure of the current conversation.
+Dream sessions skip private transcripts entirely.
+
+**Agents on native runtime memory are the exception, and the product must say so.** With
+that backend the runtime persists memory inside its own process for the whole agent, with
+no per-session control, so a private session on such an agent gets the transcript
+guarantee but not the memory one. Anywhere an agent is configured for native memory, the
+private tier must be described as "hides the transcript, not what the agent learns from
+it" — silence is not an option.
+
 ## Runtime memory-provider compatibility
 
 Memory-provider semantics are part of the support contract for every agent harness, not

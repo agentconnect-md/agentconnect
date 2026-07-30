@@ -135,13 +135,20 @@ describe('isApplied — the §4.3 cutover state', () => {
     expect(await push.isApplied([session({ visibilityRev: 0, visibilityAckedRev: 0 })])).toBe(true)
   })
 
-  it('is vacuously applied when nothing can ever ack (unplaced / offline / pre-upgrade)', async () => {
+  it('is vacuously applied ONLY for an unplaced agent — nothing runs it, nothing captures', async () => {
+    const unplaced = deps({ daemonId: null })
+    expect(await unplaced.push.isApplied([session({ visibilityRev: 1, visibilityAckedRev: -1 })])).toBe(true)
+  })
+
+  it('stays pending for a placed daemon that is merely offline or pre-upgrade', async () => {
+    // A daemon keeps serving established sessions while the CP is down, so its
+    // gate may genuinely still be `org`. Claiming `applied` would promise a
+    // memory boundary that is not in force.
     for (const d of [
-      deps({ daemonId: null }),
       deps({ connReg: connReg({ connected: false }) as never }),
       deps({ connReg: connReg({ feature: false }) as never })
     ]) {
-      expect(await d.push.isApplied([session({ visibilityRev: 1, visibilityAckedRev: -1 })])).toBe(true)
+      expect(await d.push.isApplied([session({ visibilityRev: 1, visibilityAckedRev: -1 })])).toBe(false)
     }
   })
 

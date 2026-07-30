@@ -859,6 +859,8 @@ export interface SessionMilestoneResult {
  *  tightening cascade rewrote. Empty `affected` ⇒ the request was a no-op. */
 export interface SessionVisibilityChange {
   affected: SessionMetaRecord[]
+  /** The lock-time re-authorization refused the change (§4.3 ownership moved). */
+  forbidden?: boolean
 }
 
 /** One entry of the §5.1 register-time gate snapshot. */
@@ -990,7 +992,14 @@ export interface SessionRepo {
    *  cascades to every descendant (transitively, `explicit` ones included —
    *  privacy wins) under the lock-then-scan-to-fixpoint protocol of §4.5. Every
    *  rewritten row's `visibilityRev` is bumped in the same transaction. */
-  setVisibility(sessionId: SessionId, visibility: SessionVisibility): Promise<SessionVisibilityChange>
+  setVisibility(
+    sessionId: SessionId,
+    visibility: SessionVisibility,
+    /** Re-checked against the LOCKED row, closing the gap between the route's
+     *  authorization read and this write: a concurrent ancestor cascade can
+     *  re-own the session in between. Denied ⇒ `forbidden`, nothing written. */
+    authorize?: (row: { visibility: SessionVisibility; ownerIdentity: string | null }) => boolean
+  ): Promise<SessionVisibilityChange>
   /** Raise the daemon-ack watermark (§5.1). Monotonic: a late ack for an older
    *  revision never lowers it, so the tighten stays `applied`. */
   recordVisibilityAck(sessionId: SessionId, visibilityRev: number): Promise<void>
@@ -998,6 +1007,12 @@ export interface SessionRepo {
    *  `(sessionId, visibility, visibilityRev)` set for the sessions it reported,
    *  newest first and bounded. A snapshot, not a diff. */
   visibilitySnapshotForDaemon(daemonId: DaemonId, limit: number): Promise<SessionVisibilityState[]>
+  /** How many of a daemon's sessions still owe an ack — used to report when a
+   *  bounded snapshot could not carry them all (never a silent truncation). */
+  countUnackedVisibility(daemonId: DaemonId): Promise<number>
+  /** A session plus every descendant — the set a tightening cascade rewrote, so
+   *  the detail view's cutover state covers the whole subtree, not just the root. */
+  visibilitySubtree(sessionId: SessionId, limit: number): Promise<SessionMetaRecord[]>
   /** Resolve the agent that owns a bot's `(channel, thread)` — the most-recently-active session
    *  keyed there whose agent still has an active integration for that bot and a current daemon
    *  placement. Backstop for shared-bot thread-affinity lookup: a daemon-created session (e.g.

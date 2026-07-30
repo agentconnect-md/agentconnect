@@ -248,6 +248,52 @@ describe('session visibility — §5.1 daemon-ack cutover', () => {
     expect((await repo.get(SessionId(session)))?.visibilityRev).toBe(1)
   })
 
+  it('replays an unacknowledged gate ahead of newer acknowledged ones', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+
+    // An OLD session tightened while the daemon was offline: it must ride the
+    // snapshot no matter how far past a newest-first cap it sits, or the daemon
+    // keeps capturing against a stale `org` gate forever.
+    const stale = await seedSessionMeta(prisma, `s-stale-${randomUUID()}`, agentId, {
+      daemonId,
+      lastActivityAt: new Date(Date.now() - 86_400_000)
+    })
+    await repo.setVisibility(SessionId(stale), 'private')
+    const fresh = await seedSessionMeta(prisma, `s-fresh-${randomUUID()}`, agentId, {
+      daemonId,
+      lastActivityAt: new Date()
+    })
+    await repo.recordVisibilityAck(SessionId(fresh), 0)
+
+    expect(await repo.countUnackedVisibility(daemonId)).toBe(1)
+    const capped = await repo.visibilitySnapshotForDaemon(daemonId, 1)
+    expect(capped).toEqual([{ sessionId: stale, visibility: 'private', visibilityRev: 1 }])
+  })
+
+  it('reports the cutover as pending while a DESCENDANT daemon is still behind', async () => {
+    const owner = await makeUser('sv-subtree', 'owner')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+
+    const root = await seedSessionMeta(prisma, `s-sub-root-${randomUUID()}`, agentId, { daemonId })
+    const child = await seedSessionMeta(prisma, `s-sub-child-${randomUUID()}`, agentId, {
+      daemonId,
+      parentSessionId: root
+    })
+    const { affected } = await repo.setVisibility(SessionId(root), 'private')
+    expect(affected.map((a) => a.id).sort()).toEqual([child, root].sort())
+
+    // Only the root's daemon acks. The child holds text copied from the root, so
+    // the cutover is NOT complete — the detail view must keep saying pending.
+    await repo.recordVisibilityAck(SessionId(root), 1)
+    const subtree = await repo.visibilitySubtree(SessionId(root), 100)
+    expect(subtree.map((r) => r.id).sort()).toEqual([child, root].sort())
+    expect(subtree.find((r) => r.id === child)).toMatchObject({ visibilityAckedRev: -1, visibilityRev: 1 })
+  })
+
   it('snapshots the gate state for one daemon, newest first', async () => {
     const daemonId = await seedDaemon(prisma, randomUUID())
     const otherDaemonId = await seedDaemon(prisma, randomUUID())
@@ -305,6 +351,69 @@ describe('session visibility — §4.5 inheritance and cascade', () => {
     for (const id of [child, grandchild]) {
       expect((await prisma.sessionMeta.findUnique({ where: { id } }))?.visibility).toBe('private')
     }
+  })
+
+  it('re-owns an already-private descendant, so its old owner loses the copied content', async () => {
+    const owner = await makeUser('sv-reown', 'owner')
+    const other = await makeUser('sv-reown-other', 'collaborator')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+
+    const root = await seedSessionMeta(prisma, `s-reown-root-${randomUUID()}`, agentId, {
+      ownerIdentity: `user:${owner}`
+    })
+    // A child that is ALREADY private but owned by someone else. Its transcript
+    // holds text delegated from the root, so tightening the root must hand it
+    // the root's owner — leaving `other` on it keeps their access to that text.
+    const child = await seedSessionMeta(prisma, `s-reown-child-${randomUUID()}`, agentId, {
+      parentSessionId: root,
+      visibility: 'private',
+      ownerIdentity: `user:${other}`
+    })
+
+    await appAs(owner).app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${root}/visibility`,
+      payload: { visibility: 'private' }
+    })
+
+    expect(await prisma.sessionMeta.findUnique({ where: { id: child } })).toMatchObject({
+      visibility: 'private',
+      ownerIdentity: `user:${owner}`,
+      visibilitySource: 'inherited'
+    })
+    // …and the former owner can no longer read it.
+    expect((await appAs(other).app.inject({ method: 'GET', url: `${ORG}/sessions/${child}` })).statusCode).toBe(404)
+  })
+
+  it('re-authorizes against the locked row, so a revoked owner cannot still widen', async () => {
+    const owner = await makeUser('sv-toctou', 'owner')
+    const child_owner = await makeUser('sv-toctou-child', 'collaborator')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+
+    const root = await seedSessionMeta(prisma, `s-toctou-root-${randomUUID()}`, agentId, {
+      ownerIdentity: `user:${owner}`
+    })
+    const child = await seedSessionMeta(prisma, `s-toctou-child-${randomUUID()}`, agentId, {
+      parentSessionId: root,
+      visibility: 'private',
+      ownerIdentity: `user:${child_owner}`
+    })
+
+    // The ancestor cascade re-owns the child to the root's owner.
+    await repo.setVisibility(SessionId(root), 'private')
+
+    // The child's FORMER owner now tries to publish it. The route's own check
+    // could have passed on a pre-cascade read; the lock-time re-check refuses.
+    const denied = await repo.setVisibility(
+      SessionId(child),
+      'org',
+      (row) => row.ownerIdentity === `user:${child_owner}`
+    )
+    expect(denied).toMatchObject({ forbidden: true, affected: [] })
+    expect((await repo.get(SessionId(child)))?.visibility).toBe('private')
   })
 
   it('settles an out-of-order child once, and never over a human decision', async () => {

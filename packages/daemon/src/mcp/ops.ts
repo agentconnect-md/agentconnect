@@ -269,6 +269,13 @@ export interface SubmitGithubReviewReq extends SubmitGithubReviewInput {
   transportScope?: string
 }
 
+/** Refusal surfaced to the model when a private session tries to write shared
+ *  agent memory (session-visibility.md §5.1). Phrased so the agent stops
+ *  retrying and does not paraphrase the content into its reply instead. */
+export const MEMORY_WRITE_BLOCKED =
+  'This session is private, so it cannot write to the agent memory shared with other users. Keep the information in ' +
+  'this conversation instead; do not retry.'
+
 export interface OpsDeps {
   /** Fail-closed turn gate checked before every daemon bridge tool. Used to make
    *  pause/cancel/loop interrupts terminal even while the runtime is still unwinding. */
@@ -352,6 +359,13 @@ export interface OpsDeps {
   /** The agent memory provider — backs the `readMemory`/`writeMemory` tools.
    *  Universal (every agent has memory), independent of the platform. */
   memory: MemoryProvider
+  /** Session-visibility capture gate (session-visibility.md §5.1) for the tool
+   *  path. Automatic post-turn distillation is gated in the daemon, but an agent
+   *  can also write agent-scoped memory EXPLICITLY — and agent memory is shared
+   *  across users, so a private session must not be able to. Checked at CALL
+   *  time, not session/new, so a session tightened mid-life is covered too.
+   *  Absent ⇒ allowed (no gate wired, e.g. in unit fixtures). */
+  memoryWriteAllowed?: (ctx: SessionContext) => boolean
   /** Record an agent-sent message into the session transcript. */
   recordOutbound: (
     ctx: SessionContext,
@@ -482,6 +496,7 @@ export async function executeTool(
   // them before the platform-gateway gate so an agent with no platform integration works.
   if (name === 'readMemory' || name === 'writeMemory') {
     const scope = { agentId: ctx.agentId }
+    if (name === 'writeMemory' && deps.memoryWriteAllowed?.(ctx) === false) throw new Error(MEMORY_WRITE_BLOCKED)
     try {
       if (name === 'readMemory') {
         const path = optionalString(args, 'path') ?? 'MEMORY.md'
@@ -539,6 +554,11 @@ export async function executeTool(
     const scope = { agentId: ctx.agentId }
     const requireCapability = (operation: 'recall' | 'create' | 'get' | 'update' | 'delete'): void => {
       if (!surface.capabilities.has(operation)) throw new Error(`record memory does not support ${operation}`)
+      // Record memory is agent-scoped and shared just like the file kind, so the
+      // same gate applies to every MUTATION (reads stay available — recalling
+      // what the agent already knows is not a disclosure of THIS session).
+      const mutates = operation === 'create' || operation === 'update' || operation === 'delete'
+      if (mutates && deps.memoryWriteAllowed?.(ctx) === false) throw new Error(MEMORY_WRITE_BLOCKED)
     }
     if (name === 'searchMemory') {
       requireCapability('recall')

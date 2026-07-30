@@ -657,14 +657,26 @@ export class PgSessionRepo implements SessionRepo {
    * update" is not sufficient — a grandchild insert holding `FOR SHARE` on its
    * mid-level parent could commit a stale `org` snapshot after the scan passed.
    */
-  async setVisibility(sessionId: SessionId, visibility: SessionVisibility): Promise<SessionVisibilityChange> {
+  async setVisibility(
+    sessionId: SessionId,
+    visibility: SessionVisibility,
+    authorize?: (row: { visibility: SessionVisibility; ownerIdentity: string | null }) => boolean
+  ): Promise<SessionVisibilityChange> {
     return withAmbientTx(this.db, async (tx) => {
       const locked = await tx.$queryRaw<Array<{ visibility: string; ownerIdentity: string | null }>>(Prisma.sql`
         SELECT "visibility", "ownerIdentity" FROM "session_meta" WHERE "id" = ${sessionId} FOR UPDATE
       `)
       if (locked.length !== 1) return { affected: [] }
-      if (locked[0]!.visibility === visibility) return { affected: [] } // no-op: no rev bump, no push
-      const ownerIdentity = locked[0]!.ownerIdentity
+      const current = {
+        visibility: locked[0]!.visibility as SessionVisibility,
+        ownerIdentity: locked[0]!.ownerIdentity
+      }
+      // Re-authorize against the LOCKED row, not the one the route read. An
+      // ancestor cascade committing in between can re-own this session, and the
+      // former owner's in-flight request must not still widen it.
+      if (authorize && !authorize(current)) return { affected: [], forbidden: true }
+      if (current.visibility === visibility) return { affected: [] } // no-op: no rev bump, no push
+      const ownerIdentity = current.ownerIdentity
       const target = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
         UPDATE "session_meta" SET
           "visibility" = ${visibility}::"SessionVisibility",
@@ -691,6 +703,10 @@ export class PgSessionRepo implements SessionRepo {
         const next = children.map((c) => c.id).filter((id) => !seen.has(id))
         if (next.length === 0) break
         for (const id of next) seen.add(id)
+        // Every descendant is rewritten, including ones ALREADY private: their
+        // transcripts hold text copied from this session, so they must inherit
+        // ITS owner. Leaving a private-but-differently-owned child alone would
+        // keep that other owner's access to the tightened session's content.
         const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
           UPDATE "session_meta" SET
             "visibility" = 'private'::"SessionVisibility",
@@ -699,7 +715,11 @@ export class PgSessionRepo implements SessionRepo {
             "visibilityRev" = "visibilityRev" + 1,
             "updatedAt" = CURRENT_TIMESTAMP
           WHERE "id" = ANY(${next}::text[])
-            AND "visibility" <> 'private'::"SessionVisibility"
+            AND (
+              "visibility" <> 'private'::"SessionVisibility"
+              OR "ownerIdentity" IS DISTINCT FROM ${ownerIdentity}
+              OR "visibilitySource" <> 'inherited'::"VisibilitySource"
+            )
           RETURNING *
         `)
         affected.push(...rows.map(toRecord))
@@ -718,17 +738,45 @@ export class PgSessionRepo implements SessionRepo {
   }
 
   async visibilitySnapshotForDaemon(daemonId: DaemonId, limit: number): Promise<SessionVisibilityState[]> {
-    const rows = await this.db.sessionMeta.findMany({
-      where: { daemonId },
-      orderBy: SESSION_ORDER,
-      take: limit,
-      select: { id: true, visibility: true, visibilityRev: true }
-    })
+    // Unacknowledged revisions FIRST, newest-active after. A session tightened
+    // while this daemon was offline is by definition unacked, so it replays no
+    // matter how old it is — a plain newest-first window would drop it past the
+    // cap and leave the daemon capturing with a stale `org` gate forever.
+    const rows = await this.db.$queryRaw<Array<{ id: string; visibility: string; visibilityRev: number }>>(Prisma.sql`
+      SELECT "id", "visibility", "visibilityRev"
+      FROM "session_meta"
+      WHERE "daemonId" = ${daemonId}::uuid
+      ORDER BY ("visibilityAckedRev" < "visibilityRev") DESC,
+               "lastActivityAt" DESC, "startedAt" DESC, "id" DESC
+      LIMIT ${limit}
+    `)
     return rows.map((r) => ({
       sessionId: SessionId(r.id),
       visibility: r.visibility as SessionVisibility,
       visibilityRev: r.visibilityRev
     }))
+  }
+
+  async countUnackedVisibility(daemonId: DaemonId): Promise<number> {
+    const rows = await this.db.$queryRaw<Array<{ n: bigint }>>(Prisma.sql`
+      SELECT COUNT(*)::bigint AS n FROM "session_meta"
+      WHERE "daemonId" = ${daemonId}::uuid AND "visibilityAckedRev" < "visibilityRev"
+    `)
+    return Number(rows[0]?.n ?? 0)
+  }
+
+  /** The session plus every descendant, for the §5.1 cutover state of a cascade. */
+  async visibilitySubtree(sessionId: SessionId, limit: number): Promise<SessionMetaRecord[]> {
+    const rows = await this.db.$queryRaw<SessionMeta[]>(Prisma.sql`
+      WITH RECURSIVE subtree AS (
+        SELECT * FROM "session_meta" WHERE "id" = ${sessionId}
+        UNION
+        SELECT child.* FROM "session_meta" child
+        JOIN subtree ON child."parentSessionId" = subtree."id"
+      )
+      SELECT * FROM subtree LIMIT ${limit}
+    `)
+    return rows.map(toRecord)
   }
 
   async findThreadOwner(

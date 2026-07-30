@@ -637,7 +637,19 @@ export function sessionRoutes(deps: HttpDeps) {
             .code(403)
             .send({ error: 'Forbidden', statusCode: 403, message: 'not allowed to change this session visibility' })
         }
-        const { affected } = await deps.repos.session.setVisibility(SessionId(req.params.id), req.body.visibility)
+        // The check above read an unlocked row. Re-run it inside the write's
+        // transaction: an ancestor cascade committing in between can re-own this
+        // session, and the former owner must not still be able to widen it.
+        const { affected, forbidden } = await deps.repos.session.setVisibility(
+          SessionId(req.params.id),
+          req.body.visibility,
+          (row) => canChangeSessionVisibility(row, ctx, identitySetOf(ctx))
+        )
+        if (forbidden) {
+          return reply
+            .code(403)
+            .send({ error: 'Forbidden', statusCode: 403, message: 'not allowed to change this session visibility' })
+        }
         // Read gates apply at commit; the daemons learn asynchronously.
         if (affected.length > 0) void deps.visibilityPush?.notifySessions(affected)
         const current = affected.find((s) => s.id === owned.session.id) ?? owned.session
