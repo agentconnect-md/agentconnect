@@ -10,6 +10,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, OrgId } from '../../domain/ids.js'
+import { resolveAgentIconUrl } from '../../agents/agent-icon.js'
 import { denyViewerWrite, ctxOf } from '../rbac.js'
 import { canEdit, canView } from '../visibility.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
@@ -90,6 +91,15 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
 
         const providedName = req.body.name?.trim()
         const appName = providedName || agent.name
+        const avatarUrl = resolveAgentIconUrl(
+          agent.id,
+          agent.icon,
+          {
+            ...(deps.config.PUBLIC_CP_URL ? { cp: deps.config.PUBLIC_CP_URL } : {}),
+            ...(deps.config.S3_PUBLIC_BASE_URL ? { store: deps.config.S3_PUBLIC_BASE_URL } : {})
+          },
+          agent.lastModifiedAt.getTime()
+        )
         const createdByUserId = req.principal.userId
         const targetAgentId = agent.id
         try {
@@ -98,6 +108,7 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
             agentId: targetAgentId,
             fallbackRegion: req.body.region,
             appName,
+            ...(avatarUrl ? { avatarUrl } : {}),
             ...(providedName ? { requestedName: providedName } : {}),
             createdByUserId
           })

@@ -45,7 +45,7 @@ export type PollFeishuRegistration =
   | { outcome: 'failed' }
 
 export interface FeishuRegistrationProvider {
-  begin(appName: string, region: FeishuRegion): Promise<BeginFeishuRegistration>
+  begin(appName: string, region: FeishuRegion, avatarUrl?: string): Promise<BeginFeishuRegistration>
   poll(providerDomain: string, deviceCode: string): Promise<PollFeishuRegistration>
 }
 
@@ -54,7 +54,7 @@ type RegistrationFetch = typeof fetch
 export class OfficialFeishuRegistrationProvider implements FeishuRegistrationProvider {
   constructor(private readonly fetcher: RegistrationFetch = fetch) {}
 
-  async begin(appName: string, region: FeishuRegion): Promise<BeginFeishuRegistration> {
+  async begin(appName: string, region: FeishuRegion, avatarUrl?: string): Promise<BeginFeishuRegistration> {
     const response = await this.request(FEISHU_REGISTRATION_DOMAIN, {
       action: 'begin',
       archetype: AGENTCONNECT_FEISHU_APP_TEMPLATE.archetype,
@@ -67,7 +67,7 @@ export class OfficialFeishuRegistrationProvider implements FeishuRegistrationPro
     const verificationUri = new URL(response.verification_uri_complete)
     if (region === 'lark') verificationUri.hostname = LARK_LAUNCHER_DOMAIN
     return {
-      authorizationUrl: buildFeishuAuthorizationUrl(verificationUri.toString(), appName),
+      authorizationUrl: buildFeishuAuthorizationUrl(verificationUri.toString(), appName, avatarUrl),
       deviceCode: response.device_code,
       providerDomain: FEISHU_REGISTRATION_DOMAIN,
       intervalMs: Math.max(1, response.interval ?? 5) * 1000,

@@ -41,6 +41,7 @@ export interface StartFeishuRegistration {
   agentId: AgentId
   fallbackRegion: FeishuRegion
   appName: string
+  avatarUrl?: string
   requestedName?: string
   createdByUserId: string
 }
@@ -107,7 +108,7 @@ export class FeishuAppRegistrationService {
     const existing = await this.store.getActiveTarget(key)
     if (existing) return this.reuseOrConflict(existing, input.createdByUserId)
 
-    const begun = await this.provider.begin(input.appName, input.fallbackRegion)
+    const begun = await this.provider.begin(input.appName, input.fallbackRegion, input.avatarUrl)
     try {
       const row = await this.store.create({
         id: randomUUID(),

@@ -42,11 +42,12 @@ function encodeAddons(): string {
     .replace(/=+$/, '')
 }
 
-export function buildFeishuAuthorizationUrl(verificationUri: string, appName: string): string {
+export function buildFeishuAuthorizationUrl(verificationUri: string, appName: string, avatarUrl?: string): string {
   const url = new URL(verificationUri)
   url.searchParams.set('from', 'sdk')
   url.searchParams.set('source', 'node-sdk/agentconnect')
   url.searchParams.set('tp', 'sdk')
+  if (avatarUrl) url.searchParams.set('avatar', avatarUrl)
   url.searchParams.set('name', appName)
   url.searchParams.set('desc', AGENTCONNECT_FEISHU_APP_TEMPLATE.description)
   url.searchParams.set('addons', encodeAddons())
