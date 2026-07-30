@@ -164,7 +164,7 @@ function buildManagedManifest(name: string, options: SlackManifestOptions = {}):
 
 /**
  * Build the app manifest object for `apps.manifest.create`. `redirectUrl` is the
- * CP's OAuth callback (`<PUBLIC_CP_URL>/api/v1/integrations/slack/oauth/callback`)
+ * CP's OAuth callback (`<PUBLIC_CP_URL>/v1/integrations/slack/oauth/callback`)
  * and is declared as the app's sole redirect URL so the ensuing OAuth install
  * lands back on us. `name` falls back to the default when blank.
  * `options.httpRelayBase` set ⇒ HTTP-mode (Events API request_urls + Socket Mode
