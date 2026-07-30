@@ -95,7 +95,10 @@ export default function HomeView() {
   // An agent can take a session only when its owning daemon is serving AND that
   // runtime is signed in (its last probe wasn't rejected with ACP auth-required).
   const isOnline = (a: Agent) =>
-    effectiveAgentStatus(a.status, daemons.find((d) => d.daemonId === a.daemon)?.status) === 'online'
+    effectiveAgentStatus(
+      a.status,
+      daemons.find((d) => d.daemonId === a.daemon)
+    ) === 'online'
   const authRequiredFor = (a: Agent) =>
     !!daemons.find((d) => d.daemonId === a.daemon)?.runtimeModels.find((r) => r.runtime === a.runtime)?.authRequired
   const agentReady = (a: Agent) => isOnline(a) && !authRequiredFor(a)
