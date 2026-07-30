@@ -99,10 +99,6 @@ export interface HttpServerConfig extends HumanAuthConfig {
   WS_PATH?: string
   /** Console origin the github setup callback 302s back to (resolveWebAppUrl input). */
   PUBLIC_WEB_URL?: string
-  /** Social sign-in methods this deployment offers (comma-separated Logto
-   *  connector targets; unset / `*` ⇒ all). The console reads the same variable,
-   *  so one entry keeps its buttons and this allowlist in step. */
-  SOCIAL_PROVIDERS?: string
   /** The relay pool's public ingress origin, returned by the webchat-token mint so the
    *  browser knows where to dial. Unset ⇒ the mint endpoint 503s (§10, A4). */
   PUBLIC_RELAY_URL?: string

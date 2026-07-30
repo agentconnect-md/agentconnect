@@ -1,7 +1,6 @@
 /**
  * The documented self-host deployment enumerates each service's environment, so
- * a new variable is silently absent there even when the code reads it. This pins
- * the one that has to reach BOTH services to stay consistent.
+ * a new variable is silently absent there even when the code reads it.
  */
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -21,10 +20,7 @@ function serviceEnv(name: string): string[] {
 }
 
 describe('compose.yaml service environment', () => {
-  it('passes SOCIAL_PROVIDERS to both the control plane and the web console', () => {
-    // Both processes read this same variable; one of them missing it means the
-    // sign-in buttons and the server-side allowlist disagree.
-    expect(serviceEnv('control-plane')).toContain('SOCIAL_PROVIDERS')
+  it('passes SOCIAL_PROVIDERS to the console, which owns the decision', () => {
     expect(serviceEnv('web')).toContain('SOCIAL_PROVIDERS')
   })
 })

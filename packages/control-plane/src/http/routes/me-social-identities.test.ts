@@ -3,23 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import type { HttpDeps } from '../deps.js'
 import { installZod } from '../plugins/zod.js'
-import { enabledSocialTargets, meSocialIdentityRoutes } from './me-social-identities.js'
-
-describe('enabledSocialTargets', () => {
-  it('reads unset, blank and `*` as no restriction', () => {
-    // Same convention as connectors/filter.ts#parseWhitelist.
-    expect(enabledSocialTargets(undefined)).toBeNull()
-    expect(enabledSocialTargets('   ')).toBeNull()
-    expect(enabledSocialTargets('*')).toBeNull()
-  })
-
-  it('narrows to exactly the configured targets', () => {
-    // No catalog intersection on purpose: a second copy of the console's list is
-    // the drift this variable exists to remove.
-    expect(enabledSocialTargets('github, slack')).toEqual(new Set(['github', 'slack']))
-    expect(enabledSocialTargets('github,,')).toEqual(new Set(['github']))
-  })
-})
+import { meSocialIdentityRoutes } from './me-social-identities.js'
 
 describe('my social identities routes', () => {
   it('resolves a connector id and unlinks under the OIDC subject', async () => {
@@ -95,23 +79,6 @@ describe('my social identities routes', () => {
       const res = await app.inject({ method: 'POST', url: '/me/social-identities/refresh' })
       expect(res.statusCode).toBe(204)
       expect(identity.forgetUser).toHaveBeenCalledWith('logto-user')
-    } finally {
-      await app.close()
-    }
-  })
-
-  it('refuses a target this deployment does not offer', async () => {
-    // The console reads the same variable, so its buttons and this allowlist
-    // move together; a narrowed deployment must not still link the rest.
-    const identity = { socialConnectorIdFor: vi.fn(async () => 'github-connector') }
-    const app = await slackApp({ logtoIdentity: identity } as unknown as HttpDeps, {
-      SOCIAL_PROVIDERS: 'github'
-    })
-    try {
-      expect((await app.inject({ method: 'GET', url: '/me/social-identities/connectors/github' })).statusCode).toBe(200)
-      const refused = await app.inject({ method: 'GET', url: '/me/social-identities/connectors/slack' })
-      expect(refused.statusCode).toBe(400)
-      expect(identity.socialConnectorIdFor).toHaveBeenCalledTimes(1)
     } finally {
       await app.close()
     }

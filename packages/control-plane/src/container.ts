@@ -1224,7 +1224,6 @@ export function httpServerConfigFrom(
     WAITLIST_MODE: config.WAITLIST_MODE,
     ...(config.CORS_ORIGIN !== undefined ? { CORS_ORIGIN: config.CORS_ORIGIN } : {}),
     ...(config.PUBLIC_WEB_URL ? { PUBLIC_WEB_URL: config.PUBLIC_WEB_URL } : {}),
-    ...(config.SOCIAL_PROVIDERS ? { SOCIAL_PROVIDERS: config.SOCIAL_PROVIDERS } : {}),
     ...(config.PUBLIC_RELAY_URL ? { PUBLIC_RELAY_URL: config.PUBLIC_RELAY_URL } : {}),
     ...(config.S3_PUBLIC_BASE_URL ? { S3_PUBLIC_BASE_URL: config.S3_PUBLIC_BASE_URL } : {}),
     RELAY_STALE_MS: relayStaleMs

@@ -1,9 +1,9 @@
 /**
  * The composition seam between validated env and the HTTP layer's config slice.
  *
- * It is an explicit field list, and every other test hand-builds `HttpDeps`, so
- * a variable forgotten here reads as unset in production while all the focused
- * tests still pass. SOCIAL_PROVIDERS shipped that way once.
+ * It is an explicit field list, and every other test hand-builds `HttpDeps` —
+ * including the shared integration harness — so a variable forgotten here reads
+ * as unset in production while every focused test still passes. One did.
  */
 import { describe, expect, it } from 'vitest'
 import { httpServerConfigFrom } from './container.js'
@@ -15,14 +15,10 @@ const appConfig = (over: Partial<AppConfig> = {}): AppConfig =>
   ({ HEARTBEAT_SEC: 10, MISSED_BEATS: 3, WAITLIST_MODE: false, ...over }) as AppConfig
 
 describe('httpServerConfigFrom', () => {
-  it('carries the social provider list through to the routes', () => {
-    expect(httpServerConfigFrom(appConfig({ SOCIAL_PROVIDERS: 'github,slack' }), EXTRAS).SOCIAL_PROVIDERS).toBe(
-      'github,slack'
-    )
-  })
-
-  it('omits it when unset, which the routes read as no restriction', () => {
-    expect(httpServerConfigFrom(appConfig(), EXTRAS)).not.toHaveProperty('SOCIAL_PROVIDERS')
+  it('omits optional origins that are unset, rather than passing undefined', () => {
+    const projected = httpServerConfigFrom(appConfig(), EXTRAS)
+    expect(projected).not.toHaveProperty('PUBLIC_WEB_URL')
+    expect(projected).not.toHaveProperty('OIDC_ISSUER')
   })
 
   it('carries the other optional public origins too', () => {

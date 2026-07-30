@@ -28,4 +28,18 @@ describe('social login provider selection', () => {
     expect(targets('facebook')).toEqual(SOCIAL_LOGIN_CATALOG.map((p) => p.target))
     expect(targets(',,')).toEqual(SOCIAL_LOGIN_CATALOG.map((p) => p.target))
   })
+
+  // The invariant this variable exists for: whatever the console offers must be
+  // linkable. The CP deliberately does NOT re-derive this set -- it accepts any
+  // connector slug and lets the tenant's connector list be the gate -- so no
+  // second implementation of these rules can drift from these vectors.
+  it.each(['github,google,slack', 'slack', 'facebook', '', '*', 'github,facebook', undefined])(
+    'only ever offers targets the catalog can render (%s)',
+    (raw) => {
+      const offered = selectEnabledProviders(raw).map((p) => p.target)
+      const renderable = SOCIAL_LOGIN_CATALOG.map((p) => p.target)
+      expect(offered.length).toBeGreaterThan(0)
+      expect(offered.every((target) => renderable.includes(target))).toBe(true)
+    }
+  )
 })
