@@ -221,6 +221,62 @@ describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
     ).toBe(404)
   })
 
+  it('refuses an org-owner widen queued behind a concurrent tighten (pre-read passed while org)', async () => {
+    const initiator = await makeUser('sv-queued-init', 'collaborator')
+    const orgOwner = await makeUser('sv-queued-admin', 'owner')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const session = await seedSessionMeta(prisma, `s-queued-${randomUUID()}`, agentId, {
+      ownerIdentity: `user:${initiator}`
+    })
+
+    // The owner's tighten takes the row lock but does NOT commit yet, so the
+    // org owner's PUT pre-reads the still-committed `org` row, passes the view
+    // gate and the unlocked authorization, and queues on `setVisibility`'s
+    // FOR UPDATE — the exact TOCTOU window for the org-owner arm.
+    let lockTaken!: () => void
+    const lockHeld = new Promise<void>((resolve) => (lockTaken = resolve))
+    let commitTighten!: () => void
+    const tightenHeld = new Promise<void>((resolve) => (commitTighten = resolve))
+    const tighten = prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`
+          UPDATE "session_meta" SET
+            "visibility" = 'private'::"SessionVisibility",
+            "visibilitySource" = 'explicit'::"VisibilitySource",
+            "visibilityRev" = "visibilityRev" + 1
+          WHERE "id" = ${session}`
+        lockTaken()
+        await tightenHeld
+      },
+      { timeout: 20_000 }
+    )
+    await lockHeld
+
+    const queuedWiden = appAs(orgOwner).app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${session}/visibility`,
+      payload: { visibility: 'org' }
+    })
+    // Only commit the tighten once the PUT is provably parked on the row lock —
+    // i.e. it already passed its unlocked pre-read against the `org` row.
+    for (let i = 0; ; i++) {
+      const waiters = await prisma.$queryRaw<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock'`
+      if ((waiters[0]?.n ?? 0) > 0) break
+      if (i > 400) throw new Error('the queued PUT never blocked on the row lock')
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    commitTighten()
+    await tighten
+
+    // The lock-time re-check sees a private row: role grants nothing, 403, and
+    // the session stays private — the queued request cannot reopen it.
+    expect((await queuedWiden).statusCode).toBe(403)
+    expect((await prisma.sessionMeta.findUnique({ where: { id: session } }))?.visibility).toBe('private')
+  })
+
   it('reports `applied` when no daemon can ever ack the change', async () => {
     const owner = await makeUser('sv-state', 'owner')
     const agentId = await seedAgent(prisma, randomUUID()) // unplaced: no daemon

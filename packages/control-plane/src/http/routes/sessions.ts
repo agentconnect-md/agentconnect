@@ -15,6 +15,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
+import type { SessionVisibility } from '../../persistence/ports.js'
 import { AgentId, HookId, OrgId, SessionId } from '../../domain/ids.js'
 import { orgOf, ctxOf } from '../rbac.js'
 import { canView, canViewSession, identitySetOf } from '../visibility.js'
@@ -103,20 +104,26 @@ function sessionRelation(s: { id: string; agentId: string; title: string | null 
 
 /**
  * Who may re-classify a session (§4.3): its recorded owner (identity match) and
- * org owners. The route view-gates first and private sessions carry no role
- * override, so the org-owner arm effectively reaches only org-visible sessions
+ * org owners — but the org-owner arm holds only WHILE THE ROW IS ORG-VISIBLE
  * (they may pull a channel session private, never read or widen someone else's
- * private one). Collaborators and viewers cannot re-classify other people's
- * sessions — but note this is deliberately NOT the blanket `denyViewerWrite`
- * guard used elsewhere: the grant follows OWNERSHIP, so a viewer-role member who
- * owns a session keeps control of their own DM's visibility.
+ * private one). The condition cannot lean on the route's view-gate alone:
+ * `setVisibility` re-runs this predicate against the FOR UPDATE-locked row, and
+ * a session tightened (or re-owned by an ancestor cascade) after the unlocked
+ * pre-read must refuse a queued org-owner widen — once private, only an
+ * identity match qualifies. Collaborators and viewers cannot re-classify other
+ * people's sessions — but note this is deliberately NOT the blanket
+ * `denyViewerWrite` guard used elsewhere: the grant follows OWNERSHIP, so a
+ * viewer-role member who owns a session keeps control of their own DM's
+ * visibility.
  */
 function canChangeSessionVisibility(
-  s: { ownerIdentity: string | null },
+  s: { visibility: SessionVisibility; ownerIdentity: string | null },
   ctx: { role: string; userId: string },
   identitySet: ReadonlySet<string>
 ): boolean {
-  return ctx.role === 'owner' || (s.ownerIdentity != null && identitySet.has(s.ownerIdentity))
+  return (
+    (ctx.role === 'owner' && s.visibility === 'org') || (s.ownerIdentity != null && identitySet.has(s.ownerIdentity))
+  )
 }
 
 function hookMetadataForSession(metadata: Map<string, HookSessionMetadata>, session: HookSessionRow) {
@@ -642,7 +649,9 @@ export function sessionRoutes(deps: HttpDeps) {
         }
         // The check above read an unlocked row. Re-run it inside the write's
         // transaction: an ancestor cascade committing in between can re-own this
-        // session, and the former owner must not still be able to widen it.
+        // session (the former owner must not still widen it), and a tighten
+        // committing in between flips it private (a queued org-owner widen must
+        // not reopen it — the org-owner arm requires the LOCKED row to be org).
         const { affected, forbidden } = await deps.repos.session.setVisibility(
           SessionId(req.params.id),
           req.body.visibility,
