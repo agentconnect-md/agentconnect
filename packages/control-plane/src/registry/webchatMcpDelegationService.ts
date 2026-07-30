@@ -48,6 +48,7 @@ export type DelegationDenialReason =
   | 'placement_mismatch'
   | 'daemon_unavailable'
   | 'daemon_feature_missing'
+  | 'delegation_expiry'
   | 'delegation_inactive'
   | 'delegation_generation'
   | 'delegation_binding'
@@ -153,6 +154,7 @@ export class WebchatMcpDelegationService {
       expiresAt
     })
     if (!delegation) return this.denyNull('conversation_binding')
+    if (delegation.expiresAt.getTime() > expiresAt.getTime()) return this.denyNull('delegation_expiry')
     return {
       id: delegation.id,
       generation: delegation.generation,

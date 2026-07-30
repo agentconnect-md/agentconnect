@@ -148,6 +148,9 @@ function harness() {
     delegations: {
       establish: vi.fn(async (input: EstablishWebchatMcpDelegationInput) => {
         established.push(input)
+        if (state.delegation && state.delegation.expiresAt.getTime() > input.expiresAt.getTime()) {
+          state.delegation = { ...state.delegation, expiresAt: input.expiresAt }
+        }
         return state.delegation
       }),
       get: vi.fn(async () => state.delegation)
@@ -220,9 +223,43 @@ describe('WebchatMcpDelegationService.establish', () => {
     const h = harness()
     const sessionExpiresAt = new Date(NOW + 5_000)
 
-    await h.service.establish({ ...establishInput(), sessionExpiresAt })
+    const result = await h.service.establish({ ...establishInput(), sessionExpiresAt })
 
+    expect(result).toEqual({
+      id: DELEGATION_ID,
+      generation: 3,
+      expiresAt: sessionExpiresAt.toISOString()
+    })
     expect(h.established[0]?.expiresAt).toEqual(sessionExpiresAt)
+  })
+
+  it('reuses the generation while monotonically shortening reconnect session ceilings', async () => {
+    const h = harness()
+    const firstCeiling = new Date(NOW + 30_000)
+    const reconnectCeiling = new Date(NOW + 5_000)
+
+    const first = await h.service.establish({ ...establishInput(), sessionExpiresAt: firstCeiling })
+    const reconnect = await h.service.establish({ ...establishInput(), sessionExpiresAt: reconnectCeiling })
+
+    expect(first).toEqual({
+      id: DELEGATION_ID,
+      generation: 3,
+      expiresAt: firstCeiling.toISOString()
+    })
+    expect(reconnect).toEqual({
+      id: DELEGATION_ID,
+      generation: 3,
+      expiresAt: reconnectCeiling.toISOString()
+    })
+    expect(h.established.map(({ expiresAt }) => expiresAt)).toEqual([firstCeiling, reconnectCeiling])
+  })
+
+  it('fails closed if persistence returns a reference beyond the requested session ceiling', async () => {
+    const h = harness()
+    const sessionExpiresAt = new Date(NOW + 5_000)
+    h.deps.delegations.establish.mockResolvedValueOnce(activeDelegation())
+
+    expect(await h.service.establish({ ...establishInput(), sessionExpiresAt })).toBeNull()
   })
 
   it.each([

@@ -59,6 +59,58 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
     ).toEqual({ delegationGeneration: 1 })
   })
 
+  it('atomically shortens a reusable delegation and never extends it again', async () => {
+    await fixtures()
+    const repo = new PgWebchatMcpDelegationRepo(prisma)
+    const first = (await repo.establish(establishInput(DAEMON, at(120_000))))!
+
+    const shortened = (await repo.establish(establishInput(DAEMON, at(30_000))))!
+    const laterCeiling = (await repo.establish(establishInput(DAEMON, at(90_000))))!
+
+    expect(shortened).toMatchObject({
+      id: first.id,
+      generation: first.generation,
+      expiresAt: at(30_000),
+      revokedAt: null
+    })
+    expect(laterCeiling).toMatchObject({
+      id: first.id,
+      generation: first.generation,
+      expiresAt: at(30_000),
+      revokedAt: null
+    })
+    expect(await repo.get(first.id)).toMatchObject({
+      generation: 1,
+      expiresAt: at(30_000),
+      revokedAt: null,
+      revokedReason: null
+    })
+    expect(
+      await prisma.webchatConversation.findUnique({
+        where: { id: CONVERSATION },
+        select: { delegationGeneration: true }
+      })
+    ).toEqual({ delegationGeneration: 1 })
+  })
+
+  it('concurrent reusable establishments converge durably on the earliest ceiling', async () => {
+    await fixtures()
+    const repo = new PgWebchatMcpDelegationRepo(prisma)
+
+    const [later, earlier] = await Promise.all([
+      repo.establish(establishInput(DAEMON, at(120_000))),
+      repo.establish(establishInput(DAEMON, at(20_000)))
+    ])
+
+    expect(later).toMatchObject({ id: earlier?.id, generation: 1 })
+    expect(await repo.get(later!.id)).toMatchObject({
+      generation: 1,
+      expiresAt: at(20_000),
+      revokedAt: null
+    })
+    expect(await prisma.webchatMcpDelegation.count({ where: { conversationId: CONVERSATION } })).toBe(1)
+  })
+
   it('migrates the agent/revocation lookup index used by placement invalidation', async () => {
     const indexes = await prisma.$queryRaw<{ indexname: string }[]>`
       SELECT indexname

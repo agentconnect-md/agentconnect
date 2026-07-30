@@ -1090,7 +1090,9 @@ export interface RevokeWebchatMcpDelegationInput {
 export interface WebchatMcpDelegationRepo {
   /**
    * Serialize on the durable conversation owner. Reconnects reuse matching,
-   * unexpired authority; expiry or placement changes rotate its generation.
+   * unexpired authority without extending it. An earlier requested expiry
+   * atomically shortens the reused row without rotating its generation.
+   * An already-expired row or a placement change rotates its generation.
    * A foreign/unknown conversation binding, wrong daemon, or unplaced agent
    * returns null without mutating the current generation.
    */

@@ -59,6 +59,13 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
         latest.agentId === input.agentId &&
         latest.daemonId === input.daemonId
       if (latest && !latest.revokedAt && latest.expiresAt.getTime() > input.now.getTime() && sameAuthority) {
+        if (input.expiresAt.getTime() < latest.expiresAt.getTime()) {
+          const shortened = await tx.webchatMcpDelegation.update({
+            where: { id: latest.id },
+            data: { expiresAt: input.expiresAt }
+          })
+          return toRecord(shortened)
+        }
         return toRecord(latest)
       }
 
