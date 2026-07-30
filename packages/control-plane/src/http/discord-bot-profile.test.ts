@@ -1,3 +1,4 @@
+import sharp from 'sharp'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { IconStore } from '../icons/icon-store.js'
 import { createDiscordBotIconSyncer } from './discord-bot-profile.js'
@@ -13,14 +14,19 @@ function successfulDiscordFetch(): void {
   globalThis.fetch = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as typeof fetch
 }
 
+function dataUriBytes(data: string): Buffer {
+  expect(data).toMatch(/^data:image\/png;base64,/)
+  return Buffer.from(data.slice(data.indexOf(',') + 1), 'base64')
+}
+
 describe('createDiscordBotIconSyncer', () => {
-  it('renders a glyph once and applies it to the bot user and application', async () => {
+  it('renders the brand glyph as a 512px PNG on a white plate', async () => {
     successfulDiscordFetch()
     const sync = createDiscordBotIconSyncer()
 
     await sync('discord-secret', {
       id: '00000000-0000-4000-8000-000000000001',
-      icon: { kind: 'glyph', glyph: 'terminal', color: '#2a6fdb' },
+      icon: { kind: 'glyph', glyph: 'agentconnect', color: '#1a212b' },
       runtime: 'claude'
     })
 
@@ -35,16 +41,24 @@ describe('createDiscordBotIconSyncer', () => {
     expect(requests.every((init) => new Headers(init.headers).get('authorization') === 'Bot discord-secret')).toBe(true)
     const botBody = JSON.parse(requests[0]!.body as string) as { avatar: string }
     const appBody = JSON.parse(requests[1]!.body as string) as { icon: string }
-    expect(botBody.avatar).toMatch(/^data:image\/png;base64,/)
     expect(appBody.icon).toBe(botBody.avatar)
+    const png = dataUriBytes(botBody.avatar)
+    const metadata = await sharp(png).metadata()
+    expect(metadata).toMatchObject({ format: 'png', width: 512, height: 512, hasAlpha: false })
+    const corner = await sharp(png).extract({ left: 0, top: 0, width: 1, height: 1 }).raw().toBuffer()
+    expect([...corner.subarray(0, 3)]).toEqual([255, 255, 255])
   })
 
-  it('uses the stored uploaded image bytes without replacing them with a fallback glyph', async () => {
+  it('normalizes the stored uploaded image without replacing it with a fallback glyph', async () => {
     successfulDiscordFetch()
-    const bytes = Uint8Array.from([0xff, 0xd8, 0xff, 0xd9])
+    const bytes = await sharp({
+      create: { width: 32, height: 32, channels: 4, background: { r: 12, g: 34, b: 56, alpha: 1 } }
+    })
+      .webp({ lossless: true })
+      .toBuffer()
     const store: IconStore = {
       put: vi.fn(async () => undefined),
-      get: vi.fn(async () => ({ bytes, contentType: 'image/jpeg' })),
+      get: vi.fn(async () => ({ bytes, contentType: 'image/webp' })),
       delete: vi.fn(async () => undefined),
       publicUrl: vi.fn(() => 'https://images.example.test/icon')
     }
@@ -57,7 +71,12 @@ describe('createDiscordBotIconSyncer', () => {
     })
 
     expect(store.get).toHaveBeenCalledWith('icon/agents/00000000-0000-4000-8000-000000000002')
+    expect(store.put).not.toHaveBeenCalled()
     const body = JSON.parse(vi.mocked(globalThis.fetch).mock.calls[0]![1]!.body as string) as { avatar: string }
-    expect(body.avatar).toBe(`data:image/jpeg;base64,${Buffer.from(bytes).toString('base64')}`)
+    const center = await sharp(dataUriBytes(body.avatar))
+      .extract({ left: 256, top: 256, width: 1, height: 1 })
+      .raw()
+      .toBuffer()
+    expect([...center.subarray(0, 3)]).toEqual([12, 34, 56])
   })
 })
