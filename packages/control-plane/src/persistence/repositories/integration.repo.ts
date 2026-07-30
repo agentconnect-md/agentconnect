@@ -239,7 +239,9 @@ export class PgBotSecretStore implements BotSecretStore {
     const sealed = {
       botToken: await this.cipher.seal(material.botToken),
       appToken: material.appToken === null ? null : await this.cipher.seal(material.appToken),
-      signingSecret: material.signingSecret === null ? null : await this.cipher.seal(material.signingSecret)
+      signingSecret: material.signingSecret === null ? null : await this.cipher.seal(material.signingSecret),
+      verificationToken: material.verificationToken == null ? null : await this.cipher.seal(material.verificationToken),
+      encryptKey: material.encryptKey == null ? null : await this.cipher.seal(material.encryptKey)
     }
     await this.db.botSecret.upsert({
       where: { botId },
@@ -254,7 +256,9 @@ export class PgBotSecretStore implements BotSecretStore {
     return {
       botToken: await this.cipher.open(s.botToken),
       appToken: s.appToken === null ? null : await this.cipher.open(s.appToken),
-      signingSecret: s.signingSecret === null ? null : await this.cipher.open(s.signingSecret)
+      signingSecret: s.signingSecret === null ? null : await this.cipher.open(s.signingSecret),
+      verificationToken: s.verificationToken === null ? null : await this.cipher.open(s.verificationToken),
+      encryptKey: s.encryptKey === null ? null : await this.cipher.open(s.encryptKey)
     }
   }
 

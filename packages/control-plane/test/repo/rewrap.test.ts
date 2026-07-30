@@ -147,7 +147,9 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
     expect(await new PgBotSecretStore(prisma, cipher).get(BotId(BOT))).toEqual({
       botToken: 'xoxb-plain',
       appToken: 'xapp-plain',
-      signingSecret: null
+      signingSecret: null,
+      verificationToken: null,
+      encryptKey: null
     })
     expect(await new PgAgentSecretStore(prisma, cipher).get(AgentId(AGENT))).toEqual({ API_KEY: 'sk-agent' })
     expect(await new PgExternalMemoryConnectionSecretStore(prisma, cipher).get(MEM_CONNECTION)).toEqual({

@@ -130,7 +130,11 @@ export const FeishuRegion = z.enum(['feishu', 'lark'])
 export type FeishuRegion = z.infer<typeof FeishuRegion>
 
 export const IntegrationFeishuConfig = z.object({
-  appId: z.string(), // cli_… — app identifier (semi-public), needed to open the WS
+  // `direct` opens the SDK long connection on the daemon. `shared` keeps only
+  // the authenticated REST client on the daemon; HTTP callbacks arrive through
+  // the relay and are delivered pre-addressed over rd/*.
+  mode: z.enum(['direct', 'shared']).default('direct'),
+  appId: z.string(), // cli_… — app identifier (semi-public), needed for REST and direct WS
   appSecret: z.string(), // app secret (plaintext — never log)
   botOpenId: z.string().optional(), // bot's own open_id; lazily resolved via bot/info
   region: FeishuRegion.default('feishu'), // open-platform gateway: feishu.cn vs larksuite.com

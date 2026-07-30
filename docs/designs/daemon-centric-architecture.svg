@@ -8,10 +8,10 @@
 >
   <title id="title">AgentConnect daemon-centric architecture</title>
   <desc id="description">
-    Direct platform connections terminate on daemons. Slack HTTP callbacks, GitHub and
-    generic webhooks, and webchat enter through an optional relay. The Control Plane
-    manages orchestration and never carries live message traffic. Agents run locally
-    behind ACP inside each daemon.
+    Direct platform connections terminate on daemons. Slack and Lark / Feishu HTTP
+    callbacks, GitHub and generic webhooks, and webchat enter through an optional
+    relay. The Control Plane manages orchestration and never carries live message
+    traffic. Agents run locally behind ACP inside each daemon.
   </desc>
 
   <defs>
@@ -70,6 +70,9 @@
         font: 700 29px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         fill: #0f172a;
       }
+      .box-title-compact {
+        font-size: 26px;
+      }
       .box-copy {
         font: 500 21px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         fill: #334155;
@@ -115,10 +118,10 @@
   <text x="96" y="215" class="box-title">Public ingress</text>
   <text x="96" y="248" class="small">Callbacks and browser sessions</text>
 
-  <rect x="96" y="278" width="166" height="44" rx="12" fill="#f1f5f9" />
-  <text x="179" y="307" text-anchor="middle" class="pill">Slack HTTP mode</text>
-  <rect x="278" y="278" width="184" height="44" rx="12" fill="#f1f5f9" />
-  <text x="370" y="307" text-anchor="middle" class="pill">GitHub webhooks</text>
+  <rect x="96" y="278" width="196" height="44" rx="12" fill="#f1f5f9" />
+  <text x="194" y="307" text-anchor="middle" class="pill">Slack / Lark HTTP</text>
+  <rect x="308" y="278" width="154" height="44" rx="12" fill="#f1f5f9" />
+  <text x="385" y="307" text-anchor="middle" class="pill">GitHub hooks</text>
   <rect x="96" y="338" width="184" height="44" rx="12" fill="#f1f5f9" />
   <text x="188" y="367" text-anchor="middle" class="pill">Generic webhooks</text>
   <rect x="296" y="338" width="166" height="44" rx="12" fill="#f1f5f9" />
@@ -209,11 +212,14 @@
       stroke-width="2"
     />
   </g>
-  <text x="96" y="701" class="box-title">Direct platform connections</text>
+  <text x="96" y="701" class="box-title box-title-compact">
+    Direct platform connections
+  </text>
   <text x="96" y="745" class="box-copy">Slack Socket Mode</text>
-  <text x="96" y="782" class="box-copy">Telegram · Discord · Feishu</text>
-  <text x="96" y="831" class="small">Owned end to end by the daemon</text>
-  <text x="96" y="865" class="small">No public callback endpoint required</text>
+  <text x="96" y="782" class="box-copy">Telegram · Discord</text>
+  <text x="96" y="817" class="box-copy">Lark / Feishu Long Connection</text>
+  <text x="96" y="851" class="small">Owned end to end by the daemon</text>
+  <text x="96" y="881" class="small">No public callback endpoint required</text>
 
   <!-- Daemon -->
   <g filter="url(#shadow)">

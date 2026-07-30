@@ -20,9 +20,10 @@ import { WebchatRouter } from './webchat-router.js'
 import { RelayIngressManager } from './relay-ingress-manager.js'
 import { SlackEventDedup } from './slack-event-dedup.js'
 import { registerSlackHttpIngress } from './slack-http-ingress.js'
+import { registerFeishuHttpIngress } from './feishu-http-ingress.js'
 import { CollaborationRouter } from './collaboration-router.js'
 import { createAgentMsgRouter } from './agent-msg-router.js'
-import type { BotAssignment } from './bot-arbitration.js'
+import { mapAgentDirectory, type BotAssignment } from './bot-arbitration.js'
 import { HookTable } from './hooks/hook-table.js'
 import { HookRateLimiter } from './hooks/rate-limit.js'
 import { registerHookIngress } from './hooks/ingress.js'
@@ -40,13 +41,19 @@ function toBotAssignment(a: import('@agentconnect.md/protocol').RcBotAssign): Bo
   return {
     botId: a.botId,
     platform: a.platform,
-    secrets: { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret },
+    secrets:
+      'botToken' in a.secrets
+        ? { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret }
+        : {
+            verificationToken: a.secrets.verificationToken,
+            ...(a.secrets.encryptKey ? { encryptKey: a.secrets.encryptKey } : {})
+          },
     ...(a.apiAppId ? { apiAppId: a.apiAppId } : {}),
     ...(a.teamId ? { teamId: a.teamId } : {}),
     ...(a.credentialRevision !== undefined ? { credentialRevision: a.credentialRevision } : {}),
     ...(a.botUserId ? { botUserId: a.botUserId } : {}),
     members: a.members,
-    agents: a.agents.map((x) => ({ agentId: x.agentId, name: x.name })),
+    agents: mapAgentDirectory(a.agents),
     routes: a.routes,
     ...(a.defaultAgentId ? { defaultAgentId: a.defaultAgentId } : {}),
     ...(a.defaultDaemonId ? { defaultDaemonId: a.defaultDaemonId } : {}),
@@ -149,7 +156,7 @@ async function main(): Promise<void> {
     onRoutes: (r) =>
       held.relayIngress?.updateRoutes(r.botId, {
         members: r.members,
-        agents: r.agents.map((x) => ({ agentId: x.agentId, name: x.name })),
+        agents: mapAgentDirectory(r.agents),
         routes: r.routes,
         ...(r.defaultAgentId ? { defaultAgentId: r.defaultAgentId } : {}),
         ...(r.defaultDaemonId ? { defaultDaemonId: r.defaultDaemonId } : {}),
@@ -177,9 +184,9 @@ async function main(): Promise<void> {
   held.client = client
 
   // Relay ingress manager (§10): loads each `rc/bot-assign`'s inbound routing + creds and
-  // arbitrates/forwards inbound. Constructed before `listen()` so the Slack HTTP
-  // ingress can register its routes; `getDaemon` late-binds the rd/* server (created
-  // after listen). Inbound arrives on `/slack/events` + `/slack/interactions` below.
+  // arbitrates/forwards inbound. Constructed before `listen()` so the IM HTTP
+  // ingresses can register their routes; `getDaemon` late-binds the rd/* server
+  // (created after listen).
   const relayIngress = new RelayIngressManager({
     getDaemon: (daemonId) => held.rdServer?.get(daemonId),
     setChannelAgent: (botId, channelId, agentId) => client.emitSetChannelAgent({ botId, channelId, agentId }),
@@ -197,10 +204,10 @@ async function main(): Promise<void> {
   })
   held.relayIngress = relayIngress
 
-  // Slack HTTP ingress (POST /slack/events + /slack/interactions) — the pool's
-  // ONE inbound Events API surface. Each POST is demuxed+HMAC-verified to a bot, deduped
-  // by event_id, then arbitrated + forwarded. Routes must register before listen.
+  // IM HTTP ingress. Each callback is demuxed, authenticated, deduplicated,
+  // normalized, arbitrated, and forwarded. Routes must register before listen.
   registerSlackHttpIngress(server, { manager: () => held.relayIngress, dedup: new SlackEventDedup(systemClock), log })
+  registerFeishuHttpIngress(server, { manager: () => held.relayIngress, log })
 
   // Public webhook ingress (POST /webhooks/in/:token). Routes must register
   // before listen; the rd/* server only exists after it — hence the late bind.

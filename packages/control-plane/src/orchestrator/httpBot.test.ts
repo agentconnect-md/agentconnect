@@ -6,6 +6,7 @@ import { AgentId, BotId, IntegrationId, OrgId } from '../domain/ids.js'
 import type {
   BotRepo,
   BotRecord,
+  BotSecretMaterial,
   BotSecretStore,
   BotCredentialWriter,
   IntegrationRepo,
@@ -102,7 +103,15 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   let botRow: BotRecord
   let integrations: IntegrationRecord[]
   let channels: IntegrationChannelRecord[]
-  let upserts: { daemonId: string; spec: { platform: string; slack?: { mode?: string; appId?: string } } }[]
+  let upserts: {
+    daemonId: string
+    spec: {
+      platform: string
+      slack?: { mode?: string; appId?: string }
+      feishu?: { mode?: string; appId?: string; appSecret?: string; botOpenId?: string; region?: string }
+    }
+  }[]
+  let secretMaterial: BotSecretMaterial
   // Drives the SessionRepo.findThreadOwner fallback in lookupThread (null = no daemon session).
   let threadOwner: { agentId: string; daemonId: string } | null
   let threadOwnerLookup: { botId: BotId; channel: string; thread: string } | null
@@ -144,7 +153,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       }
     }
     const botSecret: Pick<BotSecretStore, 'get'> = {
-      get: async () => ({ botToken: 'xoxb-x', appToken: 'xapp-x', signingSecret: 'shh-x' })
+      get: async () => secretMaterial
     }
     const threads: ThreadAffinityStore = {
       upsert: async () => {},
@@ -281,6 +290,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     integrations = [integration(INT_A, ALICE), integration(INT_B, BOB)]
     channels = [channel({ integrationId: INT_B, channelId: 'C1', agentId: BOB, trigger: 'mention' })]
     upserts = []
+    secretMaterial = { botToken: 'xoxb-x', appToken: 'xapp-x', signingSecret: 'shh-x' }
     threadOwner = null
     threadOwnerLookup = null
     gatedAgents = new Set()
@@ -347,6 +357,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     expect(upserts.map((u) => u.daemonId).sort()).toEqual([D1, D2].sort())
     for (const u of upserts) expect(u.spec.slack?.mode).toBe('shared')
     // signing secret rides to the relay (to HMAC-verify inbound Events API POSTs), NOT the daemons.
+    if (!('signingSecret' in assign.secrets)) throw new Error('expected Slack credentials')
     expect(assign.secrets.signingSecret).toBe('shh-x')
     // member directory (id→name) for the config modal's selector.
     expect(Object.fromEntries(assign.agents.map((a) => [a.agentId, a.name]))).toEqual({
@@ -367,6 +378,62 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     await makeOrch().syncBot(BOT)
     expect(upserts).toHaveLength(2)
     expect(upserts.every((upsert) => upsert.spec.slack?.appId === 'A123')).toBe(true)
+  })
+
+  it('keeps Feishu API credentials on the daemon and sends only callback credentials to the relay', async () => {
+    botRow = bot({
+      platform: 'feishu',
+      name: 'lark-bot',
+      shareable: false,
+      botUserId: 'ou_bot',
+      agentIds: [ALICE],
+      inUseByAgentId: ALICE
+    })
+    integrations = [
+      {
+        ...integration(INT_A, ALICE),
+        platform: 'feishu',
+        name: 'lark-bot',
+        feishuRegion: 'lark'
+      }
+    ]
+    channels = []
+    secretMaterial = {
+      botToken: 'app-secret',
+      appToken: 'cli_http_app',
+      signingSecret: null,
+      verificationToken: 'verify-token',
+      encryptKey: 'encrypt-key'
+    }
+
+    await makeOrch().syncBot(BOT)
+
+    const assign = ch.sends.find((send) => send.type === 'rc/bot-assign')?.payload as RcBotAssign
+    expect(assign).toMatchObject({
+      platform: 'feishu',
+      apiAppId: 'cli_http_app',
+      botUserId: 'ou_bot',
+      secrets: { verificationToken: 'verify-token', encryptKey: 'encrypt-key' },
+      defaultAgentId: ALICE,
+      defaultDaemonId: D1,
+      agents: [{ agentId: ALICE, daemonId: D1, integrationId: INT_A }]
+    })
+    expect('botToken' in assign.secrets).toBe(false)
+    expect(upserts).toEqual([
+      {
+        daemonId: D1,
+        spec: expect.objectContaining({
+          platform: 'feishu',
+          feishu: expect.objectContaining({
+            mode: 'shared',
+            appId: 'cli_http_app',
+            appSecret: 'app-secret',
+            botOpenId: 'ou_bot',
+            region: 'lark'
+          })
+        })
+      }
+    ])
   })
 
   describe('conversation gating (resource-visibility §14)', () => {

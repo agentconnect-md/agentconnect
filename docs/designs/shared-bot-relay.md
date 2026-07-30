@@ -1,7 +1,7 @@
 # Design: Shared Bots and a Unified Inbound Relay
 
-> **Status:** Implemented for Slack HTTP ingress, webchat, and webhook ingress.
-> Shared Telegram and Discord ingress are not implemented.
+> **Status:** Implemented for Slack and Lark / Feishu HTTP ingress, webchat, and
+> webhook ingress. Shared Telegram and Discord ingress are not implemented.
 >
 > **Naming note:** This is a historical filename. “Shared” here describes the
 > relay pool's shared ingress plane, not `Bot.shareable`. `Bot.transport = 'http'`
@@ -41,20 +41,26 @@ message and agent-execution paths can continue while CP is unavailable.
   membership refresh, and interactive configuration UI.
 - A Slack bot with `Bot.transport = 'socket'` remains daemon-owned and
   single-agent. It does not use the shared ingress path.
+- A Lark / Feishu bot with `Bot.transport = 'http'` receives
+  `im.message.receive_v1` at `/feishu/events`. It remains single-agent in this
+  phase. The relay receives only its Verification Token and optional Encrypt
+  Key; the daemon retains `appId` + `appSecret` for all provider API egress.
+- A Lark / Feishu bot with `Bot.transport = 'socket'` uses the daemon-owned official
+  SDK Long Connection.
 - Relay state is an in-memory projection of CP state. Relays do not persist
   message content.
 
 ## 2. Inbound Source Categories
 
-| Source class             | Examples                          | Why a daemon cannot receive it directly                                | Relay behavior                                                                    | Egress                                                            |
-| ------------------------ | --------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| Public platform callback | Slack Events API and interactions | Daemons are outbound-only and do not expose a public callback endpoint | Authenticate the raw HTTP request, arbitrate, then forward over `rd/*`            | Agent replies go directly from the daemon                         |
-| Webhook                  | GitHub and generic hooks          | The provider requires a public HTTPS endpoint                          | Verify the provider signature, match an attributed rule, then forward over `rd/*` | Follow-up provider API calls go directly from the daemon          |
-| Browser session          | Webchat                           | The browser needs a public WebSocket endpoint                          | Verify a short-lived CP token and bridge the session to the placed daemon         | Output returns through the relay that owns the browser connection |
+| Source class             | Examples                                                        | Why a daemon cannot receive it directly                                | Relay behavior                                                                    | Egress                                                            |
+| ------------------------ | --------------------------------------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Public platform callback | Slack Events API and interactions; Lark / Feishu message events | Daemons are outbound-only and do not expose a public callback endpoint | Authenticate the raw HTTP request, arbitrate, then forward over `rd/*`            | Agent replies go directly from the daemon                         |
+| Webhook                  | GitHub and generic hooks                                        | The provider requires a public HTTPS endpoint                          | Verify the provider signature, match an attributed rule, then forward over `rd/*` | Follow-up provider API calls go directly from the daemon          |
+| Browser session          | Webchat                                                         | The browser needs a public WebSocket endpoint                          | Verify a short-lived CP token and bridge the session to the placed daemon         | Output returns through the relay that owns the browser connection |
 
 Direct integrations are unaffected. If a platform can be consumed safely from
-the daemon without a public ingress surface, the daemon remains the preferred
-owner of that connection.
+the daemon without a public ingress surface, that direct transport remains
+available as a deployment fallback or operator choice.
 
 ## 3. Architecture
 
@@ -135,7 +141,7 @@ Random load balancing is valid for the public origin but not for a registered
 the actual socket topology and a callback could land where its target daemon is
 absent.
 
-All active Slack HTTP assignments, hook rules, and other pool-served
+All active Slack and Lark / Feishu HTTP assignments, hook rules, and other pool-served
 projections are broadcast to the connected pool. A newly registered relay
 receives a full replay. Relay restart therefore reconstructs state from CP
 rather than local disk.
@@ -186,8 +192,9 @@ agent integrations. The integration create path enforces the single-install
 limit for non-shareable bots.
 
 Slack HTTP bots require both a bot token and signing secret in the bot secret
-store. Secret reads and writes pass through the configured `SecretCipher`; list
-and metadata APIs do not select secret material.
+store. Lark / Feishu HTTP bots require `appId`, `appSecret`, Verification Token, and an
+optional Encrypt Key. Secret reads and writes pass through the configured
+`SecretCipher`; list and metadata APIs do not select secret material.
 
 `IntegrationChannel.agentId` represents a channel-scoped default agent. Exactly one
 active integration row carries that owner for each shared channel; sibling rows are
@@ -212,7 +219,9 @@ rc/bot-assign {
   platform,
   botUserId?,
   apiAppId?,
-  secrets: { botToken, signingSecret },
+  secrets:
+    | { botToken, signingSecret }         // Slack
+    | { verificationToken, encryptKey? } // Lark / Feishu
   members: { daemonId, agentIds }[],
   agents: { agentId, name, daemonId }[],
   routes: { agentId, daemonId, integrationId, scope?, match }[],
@@ -276,7 +285,7 @@ they do not alter shared-bot ingress arbitration.
 
 ### 7.3 Daemon Integration Spec
 
-An HTTP bot member receives a send-only Slack specification:
+An HTTP bot member receives a send-only provider specification. Slack uses:
 
 ```ts
 slack: {
@@ -291,6 +300,23 @@ slack: {
 The daemon receives neither the Slack signing secret nor relay-side routes.
 Inbound arbitration has already happened. A socket-transport integration keeps
 the direct specification and its daemon-owned connection.
+
+Lark / Feishu uses:
+
+```ts
+feishu: {
+  mode: 'shared',
+  appId,
+  appSecret,
+  botOpenId,
+  region,
+  allowedUserIds: [],
+  bindRules: []
+}
+```
+
+The daemon uses these API credentials for replies and attachment downloads but
+does not open `WSClient`. The relay never receives `appSecret`.
 
 ## 8. Relay-to-CP Authentication
 
@@ -427,11 +453,11 @@ but does not eliminate concurrent sends from different daemons.
 
 ## 12. Delivery Semantics
 
-Slack event handling follows the provider's short response window:
+Slack and Lark / Feishu event handling follows the providers' short response windows:
 
 1. The relay parses the raw request with a bounded body size.
-2. It resolves a bot assignment and verifies the HMAC using that bot's
-   `signingSecret` and the timestamp replay window.
+2. It resolves a bot assignment and authenticates the callback with that
+   platform's assigned verification material.
 3. It locally deduplicates `event_id`, returns HTTP 200, and processes the
    event asynchronously.
 4. It normalizes, arbitrates, and sends `rd/msg` to the selected daemon.
@@ -440,11 +466,18 @@ Slack's URL-verification challenge is the bootstrap exception: the relay echoes
 the non-secret challenge before an assignment exists. Every operational event
 and interaction is authenticated.
 
+Lark / Feishu resolves the assigned app, verifies the raw-body SHA-256 signature when
+an Encrypt Key is configured, decrypts AES-256-CBC envelopes, checks the
+Verification Token and app identity, deduplicates `event_id`, and then returns
+200 before forwarding. URL verification is handled only after the app has been
+connected, which is why the Console instructs operators to connect first and
+save the Request URL second.
+
 A missing daemon socket or failed `rd/msg` delivery is logged, counted per bot,
-and dropped. There is no offline inbox. Slack may retry requests that did not
-receive a successful HTTP response, but it cannot repair a failure after the
-relay has already returned 200. Duplicate deliveries that reach different
-instances are absorbed by daemon-side idempotency.
+and dropped. There is no offline inbox. The provider may retry a request that
+did not receive a successful HTTP response, but it cannot repair a failure
+after the relay has already returned 200. Duplicate deliveries that reach
+different instances are absorbed by daemon-side idempotency.
 
 Slack interactions are also HMAC-verified. Handlers that must return options in
 the HTTP response complete before the 200 response. Rendered controls are
@@ -475,7 +508,7 @@ delivery.
 
 ## 13. Architectural Degradation Semantics
 
-| Failure                             | Shared Slack ingress                                                                                           | Hook ingress                                                     | Webchat                                                            | Agent API egress                              |
+| Failure                             | HTTP bot ingress                                                                                               | Hook ingress                                                     | Webchat                                                            | Agent API egress                              |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------- |
 | CP unavailable                      | Cached assignments and existing daemon sockets continue; affinity misses and new authentication fail closed    | Cached rules continue; metadata reports may wait or fail visibly | Established sessions continue; new verification is unavailable     | Continues directly from online daemons        |
 | Relay instance unavailable          | Other healthy instances continue receiving public callbacks; daemons reconnect according to the updated roster | Other healthy instances continue                                 | Browser reconnects and resumes from the daemon replay window       | Unaffected                                    |
@@ -483,7 +516,7 @@ delivery.
 | Target daemon unavailable           | Selected messages are dropped and counted; unrelated daemons continue                                          | Target delivery fails visibly                                    | Target session cannot start or continue                            | That daemon cannot send                       |
 | Partial daemon-to-pool connectivity | A callback landing without its target socket is dropped and counted                                            | Same bounded-loss outcome                                        | A browser must reconnect to an instance with the target connection | Unaffected                                    |
 
-Non-shared direct integrations do not depend on relay availability.
+Direct integrations do not depend on relay availability.
 
 ## 14. Security and Trust Boundaries
 
@@ -491,6 +524,9 @@ Non-shared direct integrations do not depend on relay availability.
   relay assigned the HTTP bot. It is never sent to a daemon.
 - The Slack bot token is stored by CP, held by the relay for
   ingress-adjacent API calls, and sent to member daemons for direct egress.
+- The Lark / Feishu Verification Token and optional Encrypt Key are stored by CP
+  and held by assigned relays. The Lark / Feishu App Secret is sent only to member daemons
+  and is never placed in a relay assignment.
 - Hook verification secrets are stored by CP and broadcast only to trusted
   relays.
 - Stored credential material passes through `SecretCipher`. Secret-bearing
@@ -499,6 +535,8 @@ Non-shared direct integrations do not depend on relay availability.
 - Slack HMAC verification uses the exact raw request bytes, a timestamp replay
   window, and timing-safe comparison. An unverifiable event or interaction is
   rejected.
+- Lark / Feishu encrypted-callback verification also uses exact raw request bytes and
+  a timestamp replay window; every callback must match its Verification Token.
 - GitHub signature verification is mandatory. Generic hook endpoints avoid
   revealing whether a token or signature was the failing component.
 - Relay-to-CP, daemon-to-relay, and browser-to-relay authentication are separate
@@ -514,8 +552,8 @@ strict log redaction.
 
 ## 15. Operational Boundaries
 
-- Slack HTTP apps use the stable public relay origin for Events API and
-  interaction request URLs.
+- Slack and Lark / Feishu HTTP apps use the stable public relay origin for their
+  callback request URLs.
 - Relay readiness must cover the public listener, CP projection state, and the
   daemon-facing listener. A process should become unready before draining
   sockets.

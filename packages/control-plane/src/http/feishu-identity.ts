@@ -22,7 +22,7 @@ import type { FeishuRegion } from '@agentconnect.md/protocol'
 /** tenant-access-token exchange outcome: valid creds (with the derived bot name), creds
  *  Feishu rejected, or an inconclusive reachability failure. */
 export type FeishuBotVerification =
-  | { status: 'ok'; name: string | null } // valid; name from bot/v3/info app_name, else null
+  | { status: 'ok'; name: string | null; openId: string | null }
   | { status: 'invalid' } // Feishu returned a non-zero code — bad app id / secret
   | { status: 'unreachable' } // network / timeout / non-2xx — inconclusive, do not block
 
@@ -71,11 +71,12 @@ export const verifyFeishuBot: FeishuBotVerifier = async (appId, appSecret, regio
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(FEISHU_TIMEOUT_MS)
     })
-    if (!res.ok) return { status: 'ok', name: null }
-    const body = (await res.json()) as { code?: number; bot?: { app_name?: string } }
+    if (!res.ok) return { status: 'ok', name: null, openId: null }
+    const body = (await res.json()) as { code?: number; bot?: { app_name?: string; open_id?: string } }
     const name = body.code === 0 && body.bot?.app_name ? body.bot.app_name : null
-    return { status: 'ok', name }
+    const openId = body.code === 0 && body.bot?.open_id ? body.bot.open_id : null
+    return { status: 'ok', name, openId }
   } catch {
-    return { status: 'ok', name: null }
+    return { status: 'ok', name: null, openId: null }
   }
 }

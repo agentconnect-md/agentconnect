@@ -243,7 +243,7 @@ Control Plane replicas are overlaid by `integrationId`; reconciliation prunes
 only resources proven to be Control Plane-owned.
 
 `IntegrationSpec` is a platform-discriminated union for Slack, Telegram,
-Discord, and Feishu. Each platform receives only the credential fields needed
+Discord, and Lark / Feishu. Each platform receives only the credential fields needed
 by its client.
 
 ---

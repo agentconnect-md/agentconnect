@@ -169,7 +169,7 @@ daemon's durable inbox dedup.
 
 ### 4.2 Relay-terminated ingress is mandatory
 
-Feishu chose a daemon-direct `WSClient` because the daemon must dial out.
+Lark / Feishu chose a daemon-direct `WSClient` because the daemon must dial out.
 Linear offers no such transport, so the integration **requires a configured
 `PUBLIC_RELAY_URL` and at least one live relay** — the same precondition hooks
 already enforce at creation time (`routes/hooks.ts` 409s without them). The
@@ -483,7 +483,7 @@ callback exchanges the code at `https://api.linear.app/oauth/token`, queries
 user id, persists the token row, flips the integration `active`, and
 broadcasts `rc/linear-assign` + `integration/upsert`. The token exchange
 doubles as credential verification — there is no separate `verifyLinearBot`
-probe (unlike Feishu, the client secret cannot be validated without OAuth).
+probe (unlike Lark / Feishu, the client secret cannot be validated without OAuth).
 
 ### 7.2 Storage
 
@@ -637,7 +637,7 @@ z.object({ clientId, clientSecret, signingSecret })` block + both
   - `normalize.ts` — `RdMsgLinear` → `NormalizedMessage` (§8), stop-signal
     short-circuit to `interruptTurn`.
   - `render.ts` — `LinearConverger` + `LinearAction` (§5).
-- `daemon.ts` touchpoints (the ~40-site checklist from Feishu): conns map by
+- `daemon.ts` touchpoints (the ~40-site checklist from Lark / Feishu): conns map by
   integrationId, `reconcileLinearConnections()` at the three call sites,
   `applyLinearAction` in `enqueueApply`, converger construction branch,
   `replyConnFor`/`connForIntegration` union widening, ≤10 s ack in the

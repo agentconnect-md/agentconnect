@@ -113,11 +113,11 @@ const PLATFORM_INSTALL_FAILURES: Record<string, string> = {
 }
 
 const FEISHU_REGISTRATION_FAILURES: Record<string, string> = {
-  denied: 'The Feishu/Lark app setup was cancelled.',
+  denied: 'The Lark/Feishu app setup was cancelled.',
   expired: 'This setup link expired — start again.',
   agent_unavailable: 'This agent moved or was removed during setup. Check its daemon, then try again.',
   invalid_credentials: 'The app was created, but its credentials could not be verified.',
-  setup_failed: 'Feishu/Lark could not complete the app setup. Please try again.'
+  setup_failed: 'Lark/Feishu could not complete the app setup. Please try again.'
 }
 
 const GH_TRIGGER_TILES: { mode: GhTriggerMode; label: string; desc: string }[] = [
@@ -190,17 +190,12 @@ const GUIDE: Record<
 }
 
 // Feishu needs a few app-level settings beyond the credentials that aren't obvious
-// and each fails silently if missed — surfaced as a checklist on the Feishu path.
-const FEISHU_REQS: { icon: string; title: string; desc: string }[] = [
+// and each fails silently if missed — surfaced as a transport-aware checklist.
+const FEISHU_COMMON_REQS: { icon: string; title: string; desc: string }[] = [
   {
     icon: 'bot',
     title: 'Enable the bot capability',
     desc: 'In the app’s “Add features”, turn on Bot — otherwise it can’t send or receive messages.'
-  },
-  {
-    icon: 'radio',
-    title: 'Event subscription via Long Connection',
-    desc: 'Set event delivery to Long Connection (not Webhook) and subscribe im.message.receive_v1 — the daemon dials out, so no public URL is needed.'
   },
   {
     icon: 'shield-check',
@@ -213,6 +208,23 @@ const FEISHU_REQS: { icon: string; title: string; desc: string }[] = [
     desc: 'Invite the bot into the target chat — it replies wherever it’s a member and @-mentioned.'
   }
 ]
+
+const FEISHU_DELIVERY_REQS: Record<'socket' | 'http', { icon: string; title: string; desc: string }[]> = {
+  socket: [
+    {
+      icon: 'radio',
+      title: 'Use Long Connection',
+      desc: 'Under Event Subscriptions, choose Long Connection and subscribe to im.message.receive_v1.'
+    }
+  ],
+  http: [
+    {
+      icon: 'radio',
+      title: 'Use HTTP callbacks',
+      desc: 'Connect here first, then add the Request URL shown above under Event Subscriptions and subscribe to im.message.receive_v1.'
+    }
+  ]
+}
 
 // The copy-paste test delivery shown once a webhook is created. The body follows
 // the payload-is-the-message convention (a `message` field speaks for the caller);
@@ -247,24 +259,23 @@ function hookTestCurl(url: string, sig: string | null, body: string, requiresSig
   ].join('\n')
 }
 
-const TRANSPORT_LABEL: Record<'socket' | 'http', string> = {
-  socket: 'Socket Mode',
-  http: 'HTTP (Events API)'
+const TRANSPORT_LABEL: Record<'slack' | 'feishu', Record<'socket' | 'http', string>> = {
+  slack: { socket: 'Socket Mode', http: 'HTTP (Events API)' },
+  feishu: { socket: 'Long connection', http: 'HTTP callbacks' }
 }
 
-// The one-line delivery-mode note under the Slack manifest button (design's
-// `slackTransport`): it names the current inbound transport and, when possible,
-// offers a subtle underlined switch. Socket is kept as minimal as possible — when
-// there's no relay (http unavailable) or the install is locked, it collapses to
-// just "Delivery: Socket Mode." with no switch. `http` (Events API via the relay)
-// is only offerable with a relay connected; `locked` pins it once an auto-install
-// app has been created for that transport.
-function SlackDeliveryLine({
+// The one-line delivery-mode note names the current inbound transport and, when
+// possible, offers a subtle underlined switch. HTTP is only offerable when the
+// deployment has public callback delivery; `locked` pins a Slack auto-install
+// once an app has been created for that transport.
+function DeliveryLine({
+  platform,
   transport,
   relayAvailable,
   locked,
   onSwitch
 }: {
+  platform: 'slack' | 'feishu'
   transport: 'socket' | 'http'
   relayAvailable: boolean
   locked: boolean
@@ -273,9 +284,10 @@ function SlackDeliveryLine({
   const next = transport === 'http' ? 'socket' : 'http'
   // Switching TO http needs a connected relay; switching back to socket is always fine.
   const canSwitch = !locked && (next === 'socket' || relayAvailable)
+  const labels = TRANSPORT_LABEL[platform]
   return (
     <div className="mt-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-      Delivery: <span className="text-(--text-secondary)">{TRANSPORT_LABEL[transport]}</span>.
+      Delivery: <span className="text-(--text-secondary)">{labels[transport]}</span>.
       {canSwitch && (
         <>
           {' '}
@@ -284,7 +296,7 @@ function SlackDeliveryLine({
             className="cursor-pointer border-0 bg-transparent p-0 font-sans text-[11.5px] leading-normal text-(--text-tertiary) underline underline-offset-2 hover:text-(--text-secondary)"
             onClick={() => onSwitch(next)}
           >
-            Switch to {TRANSPORT_LABEL[next]}
+            Switch to {labels[next]}
           </button>
         </>
       )}
@@ -925,8 +937,10 @@ export default function AddIntegrationModal({
   const [appName, setAppName] = useState(agent.name)
   const [botToken, setBotToken] = useState('')
   const [appToken, setAppToken] = useState('')
-  // Feishu/Lark gateway: new installs default to international Lark.
+  // Lark/Feishu gateway: new installs default to international Lark.
   const [feishuRegion, setFeishuRegion] = useState<'feishu' | 'lark'>('lark')
+  const [feishuVerificationToken, setFeishuVerificationToken] = useState('')
+  const [feishuEncryptKey, setFeishuEncryptKey] = useState('')
   const feishuBrand = feishuRegion === 'lark' ? 'Lark' : 'Feishu'
   const [feishuMethod, setFeishuMethod] = useState<'deeplink' | 'manual'>('deeplink')
   const [feishuPhase, setFeishuPhase] = useState<'idle' | 'authorizing'>('idle')
@@ -934,6 +948,7 @@ export default function AddIntegrationModal({
     id: string
     authorizationUrl: string
     expiresAt: string
+    transport: 'socket' | 'http'
   } | null>(null)
   const botIdentityCopy: Record<BotPlatform, { create: string; existing: string }> = {
     slack: { create: 'Create with a Slack manifest', existing: 'An unused Slack app' },
@@ -1137,6 +1152,8 @@ export default function AddIntegrationModal({
     setShared(false)
     setTransport(null)
     setSigningSecret('')
+    setFeishuVerificationToken('')
+    setFeishuEncryptKey('')
     setAppName(agent.name)
     setBotToken('')
     setAppToken('')
@@ -1162,6 +1179,8 @@ export default function AddIntegrationModal({
     setShared(false)
     setTransport(null)
     setSigningSecret('')
+    setFeishuVerificationToken('')
+    setFeishuEncryptKey('')
     setAppName(agent.name)
     setBotToken('')
     setAppToken('')
@@ -1203,16 +1222,16 @@ export default function AddIntegrationModal({
   const hideIdentitySection = slackChecking || slackBuiltin
   const selectedBotId = freeBots.some((b) => b.id === botPick) ? botPick : (freeBots[0]?.id ?? null)
   const selectedBot = freeBots.find((b) => b.id === selectedBotId) ?? null
-  // The effective Slack transport for the CREATE path: an explicit pick, else the
-  // locked default (http when a relay is available, socket when none).
+  // The effective callback-capable transport for the CREATE path: an explicit pick,
+  // else the platform default. Slack prefers HTTP when relay delivery is available;
+  // Feishu starts on Long Connection and offers HTTP as an explicit relay-backed choice.
   // Once an auto-install is pending, PIN the transport to what the app was actually
   // created as (the server row) — not the still-editable selector — so a post-start
   // switch can't drive the wrong finalize path. Before that, it's the user's choice.
-  const effTransport: 'socket' | 'http' = install
-    ? install.transport
-    : (transport ?? (relayAvailable ? 'http' : 'socket'))
+  const defaultTransport: 'socket' | 'http' = platform === 'slack' && relayAvailable ? 'http' : 'socket'
+  const effTransport: 'socket' | 'http' = install ? install.transport : (transport ?? defaultTransport)
   // The inline delivery toggle's switch action: pick the transport, and drop the
-  // shared opt-in when moving to socket (shared bots are http-only).
+  // Slack shared opt-in when moving to socket (shared bots are http-only).
   const switchTransport = (next: 'socket' | 'http') => {
     setTransport(next)
     if (next === 'socket') setShared(false)
@@ -1225,6 +1244,7 @@ export default function AddIntegrationModal({
     (mode === 'existing' ? (selectedBot?.transport ?? 'socket') === 'http' : effTransport === 'http')
   // Reusing an already-shared bot is implicitly a shared install.
   const wantShared = shareToggleAvailable && (shared || (mode === 'existing' && !!selectedBot?.shareable))
+  const feishuDeliveryTransport = mode === 'existing' ? (selectedBot?.transport ?? 'socket') : effTransport
 
   // Slack: bot token (xoxb-) + either an app-level Socket Mode token (xapp-, socket)
   // or a signing secret (http). Telegram: one BotFather token (`<id>:<secret>`).
@@ -1247,7 +1267,9 @@ export default function AddIntegrationModal({
   // Feishu: App ID (cli_…) in the botToken slot, App Secret in the appToken slot.
   const feishuAppIdOk = tokenTrim.startsWith('cli_') && tokenTrim.length >= 8
   const feishuSecretOk = appToken.trim().length >= 8
-  const feishuOk = feishuAppIdOk && feishuSecretOk
+  const feishuVerificationOk = feishuVerificationToken.trim().length > 0
+  const feishuOk = feishuAppIdOk && feishuSecretOk && (effTransport === 'socket' || feishuVerificationOk)
+  const feishuCallbackUrl = relayPublicUrl ? `${relayPublicUrl.replace(/\/+$/, '')}/feishu/events` : null
   // Slack: http needs bot + signing secret; socket needs bot + app-level token.
   const slackCreateOk = effTransport === 'http' ? slackBotOk && slackSigningOk : slackBotOk && slackAppOk
   const createValid = platform === 'slack' ? slackCreateOk : platform === 'feishu' ? feishuOk : singleTokenOk
@@ -1591,8 +1613,8 @@ export default function AddIntegrationModal({
     try {
       let input: CreateIntegrationInput
       if (mode === 'existing') {
-        // Slack carries the reused bot's own transport so the CP validates
-        // shareable⇒http consistently; telegram/discord have no transport field.
+        // Callback-capable platforms carry the reused bot's own transport; the CP
+        // still treats the durable bot row as authoritative.
         input =
           platform === 'slack'
             ? {
@@ -1602,7 +1624,14 @@ export default function AddIntegrationModal({
                 transport: selectedBot?.transport ?? 'socket',
                 ...(wantShared ? { shareable: true } : {})
               }
-            : { platform, agentId: agent.id, botId: selectedBotId!, ...(wantShared ? { shareable: true } : {}) }
+            : platform === 'feishu'
+              ? {
+                  platform: 'feishu',
+                  agentId: agent.id,
+                  botId: selectedBotId!,
+                  transport: selectedBot?.transport ?? 'socket'
+                }
+              : { platform, agentId: agent.id, botId: selectedBotId!, ...(wantShared ? { shareable: true } : {}) }
       } else if (platform === 'slack') {
         // shareable is attached ONLY under http (a socket bot can never be shared).
         input =
@@ -1628,7 +1657,18 @@ export default function AddIntegrationModal({
         input = {
           platform: 'feishu',
           agentId: agent.id,
-          feishu: { appId: tokenTrim, appSecret: appToken.trim(), region: feishuRegion }
+          transport: effTransport,
+          feishu: {
+            appId: tokenTrim,
+            appSecret: appToken.trim(),
+            region: feishuRegion,
+            ...(effTransport === 'http'
+              ? {
+                  verificationToken: feishuVerificationToken.trim(),
+                  ...(feishuEncryptKey.trim() ? { encryptKey: feishuEncryptKey.trim() } : {})
+                }
+              : {})
+          }
         }
       } else {
         input = { platform: 'discord', agentId: agent.id, discord: { botToken: tokenTrim } }
@@ -1743,7 +1783,7 @@ export default function AddIntegrationModal({
     setErr(null)
   }
 
-  // Feishu/Lark's official device flow returns a normal authorization deeplink.
+  // Lark/Feishu's official device flow returns a normal authorization deeplink.
   // Open a blank tab synchronously so popup blockers preserve the user's click
   // while the CP asks the provider for that URL.
   const startFeishuAuto = async () => {
@@ -1757,6 +1797,7 @@ export default function AddIntegrationModal({
       const started = await startFeishuRegistration({
         agentId: agent.id,
         region: feishuRegion,
+        transport: effTransport,
         ...(appName.trim() ? { name: appName.trim() } : {})
       })
       setFeishuRegistration(started)
@@ -1800,7 +1841,7 @@ export default function AddIntegrationModal({
         }
         stop(
           FEISHU_REGISTRATION_FAILURES[status.failureReason ?? ''] ??
-            'Feishu/Lark could not complete the app setup. Please try again.'
+            'Lark/Feishu could not complete the app setup. Please try again.'
         )
       } catch (e) {
         // A missing short-lived session is terminal; ordinary network failures
@@ -1872,6 +1913,28 @@ export default function AddIntegrationModal({
       alive = false
     }
   }, [mode, platform, slackFunnel])
+
+  // Feishu uses the same deployment capability probe, but has no Slack-specific
+  // auto-install funnel. Long Connection remains the default; a public callback
+  // address makes HTTP available as an explicit choice.
+  useEffect(() => {
+    if (mode !== 'create' || platform !== 'feishu') return
+    let alive = true
+    fetchSlackConfig()
+      .then((c) => {
+        if (!alive) return
+        setRelayAvailable(c.relayAvailable)
+        setRelayPublicUrl(c.relayPublicUrl)
+      })
+      .catch(() => {
+        if (!alive) return
+        setRelayAvailable(false)
+        setRelayPublicUrl(null)
+      })
+    return () => {
+      alive = false
+    }
+  }, [mode, platform])
 
   // Kick off the platform-app install: mint the state-bound authorize URL and open
   // it in a popup. The install row's id is what the poll below follows.
@@ -2826,7 +2889,8 @@ export default function AddIntegrationModal({
                 {slackMethod === 'config' && autoUsable ? (
                   <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
                     <div className="mb-[14px]">
-                      <SlackDeliveryLine
+                      <DeliveryLine
+                        platform="slack"
                         transport={effTransport}
                         relayAvailable={relayAvailable}
                         locked={!!install}
@@ -3059,7 +3123,8 @@ export default function AddIntegrationModal({
                           In Slack, choose <span className="font-medium text-(--text-secondary)">From a manifest</span>,
                           paste, select a workspace, then create and install the app.
                         </div>
-                        <SlackDeliveryLine
+                        <DeliveryLine
+                          platform="slack"
                           transport={effTransport}
                           relayAvailable={relayAvailable}
                           locked={false}
@@ -3254,7 +3319,7 @@ export default function AddIntegrationModal({
               </div>
             </div>
           )}
-        {/* Feishu/Lark defaults to the official device-registration deeplink. The
+        {/* Lark/Feishu defaults to the official device-registration deeplink. The
             manual credential pair remains available as an advanced fallback. */}
         {mode === 'create' && platform === 'feishu' && (
           <>
@@ -3287,6 +3352,15 @@ export default function AddIntegrationModal({
                   ? `Recommended — approve in ${feishuBrand}; permissions, events and credentials are connected automatically.`
                   : 'Advanced — configure a self-built app yourself and paste its credentials.'}
               </span>
+            </div>
+            <div className="mb-3 flex justify-end">
+              <DeliveryLine
+                platform="feishu"
+                transport={feishuRegistration?.transport ?? effTransport}
+                relayAvailable={relayAvailable}
+                locked={feishuPhase === 'authorizing'}
+                onSwitch={switchTransport}
+              />
             </div>
             <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
               {/* Region selects the user-facing launcher; the one-click result normally
@@ -3450,6 +3524,57 @@ export default function AddIntegrationModal({
                       />
                     </div>
                   </div>
+                  {effTransport === 'http' && (
+                    <div className="mt-[14px] border-t border-dashed border-(--border-default) pt-[13px]">
+                      <div className="mb-[11px] flex items-center gap-[10px]">
+                        <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
+                          3
+                        </span>
+                        <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+                          Configure HTTP callback security
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 gap-[10px] pl-[30px] min-[440px]:grid-cols-2">
+                        <div className="fld">
+                          <span className="fldlbl">Verification Token</span>
+                          <input
+                            className={`inp mn ${showErrors && !feishuVerificationOk ? 'border-(--status-error)' : ''}`}
+                            placeholder="From Event Subscriptions"
+                            value={feishuVerificationToken}
+                            onChange={(e) => setFeishuVerificationToken(e.target.value)}
+                          />
+                        </div>
+                        <div className="fld">
+                          <span className="fldlbl">
+                            Encrypt Key <span className="font-normal text-(--text-tertiary)">· optional</span>
+                          </span>
+                          <input
+                            className="inp mn"
+                            placeholder="From Event Subscriptions"
+                            value={feishuEncryptKey}
+                            onChange={(e) => setFeishuEncryptKey(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      {feishuCallbackUrl && (
+                        <div className="mt-[10px] pl-[30px]">
+                          <div className="fld">
+                            <span className="fldlbl">Request URL</span>
+                            <input
+                              className="inp mn"
+                              readOnly
+                              value={feishuCallbackUrl}
+                              onFocus={(e) => e.currentTarget.select()}
+                            />
+                          </div>
+                          <div className="mt-[6px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+                            Connect here first, then save this Request URL in {feishuBrand}. It starts receiving as soon
+                            as the integration is connected.
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -3462,7 +3587,11 @@ export default function AddIntegrationModal({
               {feishuBrand} setup checklist
             </div>
             <ul className="flex flex-col gap-[10px]">
-              {FEISHU_REQS.map((r) => (
+              {[
+                ...FEISHU_COMMON_REQS.slice(0, 1),
+                ...FEISHU_DELIVERY_REQS[feishuDeliveryTransport],
+                ...FEISHU_COMMON_REQS.slice(1)
+              ].map((r) => (
                 <li key={r.title} className="flex items-start gap-2">
                   <Icon name={r.icon} size={14} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
                   <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">

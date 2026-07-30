@@ -89,6 +89,13 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
   it('rd/ack carries a rejection verdict (reason, no turn stream)', () => {
     expect(RdAck.safeParse({ msgId: 'm-1', accepted: false, reason: 'no_agent' }).success).toBe(true)
     expect(RdAck.safeParse({ msgId: 'm-1', accepted: true }).success).toBe(true)
+    expect(
+      RdAck.safeParse({
+        msgId: 'm-1',
+        accepted: true,
+        feishuCardAction: { toast: { type: 'info', content: 'Cancellation requested.' } }
+      }).success
+    ).toBe(true)
     expect(RdAck.safeParse({ msgId: 'm-1' }).success).toBe(false) // verdict is required
   })
 
@@ -236,6 +243,35 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       }).success
     ).toBe(false)
     expect(RdMsg.safeParse({ ...base, integrationId: 'not-a-uuid', payload: { kind: 'cancel' } }).success).toBe(false)
+  })
+
+  it('decodes a Lark / Feishu HTTP card action inside rd/msg', () => {
+    const action = {
+      source: 'feishu_action',
+      agentId: AGENT_ID,
+      sessionKey: 'feishu-action:om_card',
+      msgId: 'feishu-action:abc123',
+      botId: DAEMON_ID,
+      integrationId: CONV_ID,
+      payload: {
+        context: { open_message_id: 'om_card', open_chat_id: 'oc_chat' },
+        operator: { open_id: 'ou_human' },
+        action: {
+          tag: 'overflow',
+          option: 'cancel',
+          value: {
+            action: 'agentconnect_reply',
+            target: { v: 1, agentId: AGENT_ID, integrationId: CONV_ID }
+          }
+        }
+      }
+    }
+    const decoded = decodeRelayDaemonFrame(envelope('rd/msg', action))
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok || decoded.frame.type !== 'rd/msg' || decoded.frame.payload.source !== 'feishu_action') {
+      throw new Error('expected Feishu action')
+    }
+    expect(decoded.frame.payload.payload.context?.open_message_id).toBe('om_card')
   })
 
   it('decodes an rd/msg hook fire (B-github) and enforces its required fields', () => {

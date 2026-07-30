@@ -70,17 +70,31 @@ export async function rewrapAllSecrets(
       const sealed = {
         botToken: await reseal(r.botToken),
         appToken: await resealNullable(r.appToken),
-        signingSecret: await resealNullable(r.signingSecret)
+        signingSecret: await resealNullable(r.signingSecret),
+        verificationToken: await resealNullable(r.verificationToken),
+        encryptKey: await resealNullable(r.encryptKey)
       }
       // CAS on the snapshot bytes: a concurrent store.put() (already sealed) wins.
       const res = await prisma.botSecret.updateMany({
-        where: { botId: r.botId, botToken: r.botToken, appToken: r.appToken, signingSecret: r.signingSecret },
+        where: {
+          botId: r.botId,
+          botToken: r.botToken,
+          appToken: r.appToken,
+          signingSecret: r.signingSecret,
+          verificationToken: r.verificationToken,
+          encryptKey: r.encryptKey
+        },
         data: sealed
       })
       if (res.count === 0) skipped += 1
       else {
         rows += 1
-        values += 1 + (r.appToken === null ? 0 : 1) + (r.signingSecret === null ? 0 : 1)
+        values +=
+          1 +
+          (r.appToken === null ? 0 : 1) +
+          (r.signingSecret === null ? 0 : 1) +
+          (r.verificationToken === null ? 0 : 1) +
+          (r.encryptKey === null ? 0 : 1)
       }
     }
     done('bot_secret', rows, values, skipped)

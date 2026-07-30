@@ -218,6 +218,74 @@ export const RdMsgSlackAction = z.object({
 })
 export type RdMsgSlackAction = z.infer<typeof RdMsgSlackAction>
 
+/** The provider-authenticated body of one Lark / Feishu `card.action.trigger`.
+ * The daemon deliberately resolves the opaque message id against its local active-card
+ * map instead of trusting relay-supplied session coordinates. */
+export const WireFeishuCardActionTarget = z.object({
+  v: z.literal(1),
+  agentId: z.string().uuid(),
+  integrationId: z.string().uuid()
+})
+export type WireFeishuCardActionTarget = z.infer<typeof WireFeishuCardActionTarget>
+
+export const WireFeishuCardActionValue = z.object({
+  action: z.string(),
+  target: WireFeishuCardActionTarget.optional()
+})
+export type WireFeishuCardActionValue = z.infer<typeof WireFeishuCardActionValue>
+
+export const WireFeishuCardActionEvent = z.object({
+  context: z
+    .object({
+      open_message_id: z.string().optional(),
+      open_chat_id: z.string().optional()
+    })
+    .optional(),
+  open_message_id: z.string().optional(),
+  open_chat_id: z.string().optional(),
+  operator: z
+    .object({
+      open_id: z.string().optional(),
+      user_id: z.string().optional(),
+      union_id: z.string().optional(),
+      name: z.string().optional()
+    })
+    .optional(),
+  action: z
+    .object({
+      value: z.unknown().optional(),
+      tag: z.string().optional(),
+      name: z.string().optional(),
+      option: z.string().optional()
+    })
+    .optional()
+})
+export type WireFeishuCardActionEvent = z.infer<typeof WireFeishuCardActionEvent>
+
+export const WireFeishuCardActionResponse = z.object({
+  toast: z
+    .object({
+      type: z.enum(['info', 'success', 'warning', 'error']),
+      content: z.string()
+    })
+    .optional()
+})
+export type WireFeishuCardActionResponse = z.infer<typeof WireFeishuCardActionResponse>
+
+/** R→D REQ → rd/ack. The relay validates the card's rendered target against its
+ * current assignment; the daemon then validates the message id and action value
+ * against local active-card state before applying the control. */
+export const RdMsgFeishuAction = z.object({
+  source: z.literal('feishu_action'),
+  agentId: z.string().uuid(),
+  sessionKey: z.string().min(1),
+  msgId: z.string().min(1),
+  botId: z.string().uuid(),
+  integrationId: z.string().uuid(),
+  payload: WireFeishuCardActionEvent
+})
+export type RdMsgFeishuAction = z.infer<typeof RdMsgFeishuAction>
+
 // R→D REQ → rd/ack. One already-adjudicated trigger delivery: the relay matched
 // the hook rule and names the target agent (explicit-agent short-circuit, same
 // as webchat — no local trigger arbitration). The daemon synthesizes a
@@ -250,7 +318,13 @@ export const RdMsgHook = z.object({
 export type RdMsgHook = z.infer<typeof RdMsgHook>
 
 // Shared-bot IM + status actions and webhook fires join the webchat union.
-export const RdMsg = z.discriminatedUnion('source', [RdMsgWebchat, RdMsgIm, RdMsgSlackAction, RdMsgHook])
+export const RdMsg = z.discriminatedUnion('source', [
+  RdMsgWebchat,
+  RdMsgIm,
+  RdMsgSlackAction,
+  RdMsgFeishuAction,
+  RdMsgHook
+])
 export type RdMsg = z.infer<typeof RdMsg>
 
 // D→R REP (corr = rd/msg id). Receipt for dedup/ack bookkeeping; for a webchat
@@ -260,7 +334,8 @@ export const RdAck = z.object({
   msgId: z.string(),
   accepted: z.boolean(),
   turnId: z.string().uuid().optional(),
-  reason: z.string().optional()
+  reason: z.string().optional(),
+  feishuCardAction: WireFeishuCardActionResponse.optional()
 })
 export type RdAck = z.infer<typeof RdAck>
 

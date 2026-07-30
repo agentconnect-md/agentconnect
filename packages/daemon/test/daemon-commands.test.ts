@@ -7,6 +7,7 @@ import {
   SLACK_STATUS_ACTION,
   decodeSharedSlackStatusTarget,
   decodeSlackStatusOverflowValue,
+  type RdMsgFeishuAction,
   type RdMsgIm,
   type RdMsgSlackAction
 } from '@agentconnect.md/protocol'
@@ -270,6 +271,44 @@ describe('Daemon in-conversation commands', () => {
     expect((daemon as any).handleRelayMsg(msg, () => {})).toEqual({ msgId: 'relay-names', accepted: true })
     expect(noteMessage).toHaveBeenCalledWith(conn, payload)
     expect(dispatch).toHaveBeenCalledWith('bot-a', payload, 'int-a')
+  })
+
+  it('discovers an unroutable gated Feishu callback before the last-hop gate drops it', () => {
+    const daemon = new Daemon()
+    const discover = vi.fn()
+    const notice = vi.fn()
+    const dispatch = vi.fn(async () => {})
+    ;(daemon as any).agents.set('bot-a', {})
+    ;(daemon as any).discoverGatedConversations = discover
+    ;(daemon as any).gatedAdmission = () => false
+    ;(daemon as any).maybeGatedNotice = notice
+    ;(daemon as any).dispatch = dispatch
+    const payload = {
+      ...dm('relay-feishu-gated', '@Agent hello'),
+      platform: 'feishu' as const,
+      channel: 'oc_1',
+      thread: 'om_1',
+      mentionedBots: ['ou_bot'],
+      isDm: false
+    }
+    const msg: RdMsgIm = {
+      source: 'im',
+      agentId: 'bot-a',
+      sessionKey: 'oc_1/om_1',
+      msgId: 'relay-feishu-gated',
+      botId: '11111111-1111-4111-8111-111111111111',
+      integrationId: 'int-a',
+      chatId: 'oc_1',
+      payload
+    }
+
+    expect((daemon as any).handleRelayMsg(msg, () => {})).toEqual({
+      msgId: 'relay-feishu-gated',
+      accepted: true
+    })
+    expect(discover).toHaveBeenCalledWith(payload, ['int-a'])
+    expect(notice).toHaveBeenCalledWith(payload, ['int-a'])
+    expect(dispatch).not.toHaveBeenCalled()
   })
 
   it('shared-bot rd/msg(im) honors a !stop thread mute: implicit traffic drops, an @mention un-mutes', async () => {
@@ -1427,6 +1466,55 @@ describe('Slack interactive status bar', () => {
       })
     }
     expect(openStatusModal).toHaveBeenCalledTimes(2)
+
+    await daemon.stop()
+  })
+
+  it('handles shared Feishu card actions only through the exact local integration', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blockingHost().host as any })
+    await daemon.start()
+    const agent = (daemon as any).agents.get('bot-a')
+    agent.integrations = [
+      {
+        id: 'int-a',
+        platform: 'feishu',
+        feishu: {
+          mode: 'shared',
+          appId: 'cli_http_app',
+          appSecret: 'secret',
+          region: 'lark',
+          allowedUserIds: [],
+          bindRules: []
+        }
+      }
+    ]
+    const response = { toast: { type: 'info' as const, content: 'Cancellation requested.' } }
+    const handleCardAction = vi.fn(() => response)
+    ;(daemon as any).fsConnByIntegration.set('int-a', { handleCardAction })
+
+    const action: RdMsgFeishuAction = {
+      source: 'feishu_action',
+      agentId: 'bot-a',
+      sessionKey: 'feishu-action:om_card',
+      msgId: 'feishu-action:one',
+      botId: 'shared-bot',
+      integrationId: 'int-a',
+      payload: {
+        context: { open_message_id: 'om_card', open_chat_id: 'oc_chat' },
+        operator: { open_id: 'ou_human' },
+        action: { tag: 'overflow', option: 'cancel', value: { action: 'agentconnect_reply' } }
+      }
+    }
+
+    expect((daemon as any).handleRelayMsg(action, () => {})).toEqual({
+      msgId: action.msgId,
+      accepted: true,
+      feishuCardAction: response
+    })
+    expect(handleCardAction).toHaveBeenCalledWith(action.payload)
+    expect(
+      (daemon as any).handleRelayMsg({ ...action, msgId: 'feishu-action:wrong', integrationId: 'int-other' }, () => {})
+    ).toMatchObject({ accepted: false, reason: 'not_found' })
 
     await daemon.stop()
   })

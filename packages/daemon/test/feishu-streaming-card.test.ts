@@ -21,6 +21,11 @@ const attribution: ReplyAttributionInfo = {
   model: 'gpt-5.6',
   sessionUrl: 'https://agentconnect.example/sessions/123'
 }
+const cardTarget = {
+  v: 1,
+  agentId: '33333333-3333-4333-8333-333333333333',
+  integrationId: '44444444-4444-4444-8444-444444444444'
+} as const
 
 function connection() {
   const createCardEntity = vi.fn(async () => ({ cardId: 'card-1' }))
@@ -92,7 +97,8 @@ describe('Lark CardKit transport', () => {
 
     const card = await conn.startStreamingCard('oc_chat', 'om_root', {
       sessionKey: 'feishu:oc_chat:om_root:review-bot',
-      sessionUrl: attribution.sessionUrl
+      sessionUrl: attribution.sessionUrl,
+      target: cardTarget
     })
     expect(card).toEqual({ cardId: 'card-1', messageId: 'message-1' })
     expect(createCardEntity.mock.calls[0]![0]).toMatchObject({
@@ -110,6 +116,7 @@ describe('Lark CardKit transport', () => {
                 elements: [
                   {
                     element_id: FEISHU_REPLY_ACTIONS_ELEMENT_ID,
+                    value: { action: FEISHU_REPLY_ACTION_VALUE, target: cardTarget },
                     options: [
                       { value: FEISHU_REPLY_CANCEL_OPTION },
                       { value: 'session', multi_url: { url: attribution.sessionUrl } }
@@ -168,7 +175,8 @@ describe('Lark CardKit transport', () => {
     await conn.start()
     await conn.startStreamingCard('oc_chat', 'om_root', {
       sessionKey: 'feishu:oc_chat:om_root:review-bot',
-      sessionUrl: attribution.sessionUrl
+      sessionUrl: attribution.sessionUrl,
+      target: cardTarget
     })
 
     const event: FeishuRawCardActionEvent = {
@@ -177,7 +185,7 @@ describe('Lark CardKit transport', () => {
       action: {
         tag: 'overflow',
         option: FEISHU_REPLY_CANCEL_OPTION,
-        value: { action: FEISHU_REPLY_ACTION_VALUE }
+        value: { action: FEISHU_REPLY_ACTION_VALUE, target: cardTarget }
       }
     }
     expect(triggerCardAction(event)).toEqual({

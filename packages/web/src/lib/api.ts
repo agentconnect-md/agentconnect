@@ -457,14 +457,13 @@ interface CreateIntegrationBase {
 }
 
 // Register/reuse a platform integration. Discriminated on `platform`: each platform
-// carries its own credential block. Slack additionally carries a `transport`:
+// carries its own credential block. Slack and Feishu additionally carry a `transport`:
 //   - `socket` — Socket Mode; the credential block is bot token (xoxb-) + app-level
-//     token (xapp-). The daemon opens the socket directly (this agent only).
+//     token (xapp-) for Slack, or Long Connection for Feishu. The daemon opens it.
 //   - `http` — Events API via the relay; the credential block is bot token (xoxb-) +
-//     signing secret (no xapp-). Required to SHARE one bot across agents.
+//     signing secret (no xapp-) for Slack, or callback verification values for Feishu.
 // The CP maps socket→IntegrationSlackConfig.mode:'direct', http→'shared' for the
-// daemon. Telegram/Discord each take a single bot token — no transport concept;
-// Feishu takes an appId + appSecret pair (no app-level token / OAuth).
+// daemon. Telegram/Discord each take a single bot token — no transport concept.
 export type CreateIntegrationInput =
   | (CreateIntegrationBase & {
       platform: 'slack'
@@ -475,7 +474,14 @@ export type CreateIntegrationInput =
   | (CreateIntegrationBase & { platform: 'discord'; discord?: { botToken: string } })
   | (CreateIntegrationBase & {
       platform: 'feishu'
-      feishu?: { appId: string; appSecret: string; region?: 'feishu' | 'lark' }
+      transport?: 'socket' | 'http'
+      feishu?: {
+        appId: string
+        appSecret: string
+        region?: 'feishu' | 'lark'
+        verificationToken?: string
+        encryptKey?: string
+      }
     })
 
 // ── Slack config-token auto-install funnel (docs/designs/slack-install-smoothing.md §Tier B) ──
@@ -516,11 +522,13 @@ export interface StartFeishuRegistrationInput {
   agentId: string
   name?: string
   region?: 'feishu' | 'lark'
+  transport?: 'socket' | 'http'
 }
 export interface FeishuRegistrationStartDto {
   id: string
   authorizationUrl: string
   expiresAt: string
+  transport: 'socket' | 'http'
 }
 export interface FeishuRegistrationStatusDto {
   id: string
@@ -612,9 +620,8 @@ export interface BotDto {
   feishuAppId?: string | null // Lark/Feishu app id (cli_…) — optional while older control planes roll out
   feishuRegion?: 'feishu' | 'lark' | null // matching developer-console region; legacy null ⇒ Feishu
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for prebuilt/CLI
-  // Inbound transport (Slack): 'socket' = Socket Mode (this agent only), 'http' =
-  // Events API via the relay. Only an http bot may be shared. Missing (older CP)
-  // ⇒ treat as 'socket'.
+  // Inbound transport: 'socket' = daemon-owned long connection, 'http' = public
+  // callbacks. Only a Slack http bot may be shared. Missing (older CP) ⇒ socket.
   transport: 'socket' | 'http'
   shareable: boolean // shared-bot opt-in — when true it may serve many agents at once
   inUseByAgentId: string | null // classic-bot occupancy; ALWAYS null for a shareable bot

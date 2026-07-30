@@ -8,7 +8,7 @@
 import { randomUUID } from 'node:crypto'
 import type { FeishuRegion } from '@agentconnect.md/protocol'
 import { AgentId, BotId, IntegrationId, type OrgId } from '../domain/ids.js'
-import type { FeishuAppRegistrationRecord, FeishuAppRegistrationStore } from '../persistence/ports.js'
+import type { FeishuAppRegistrationRecord, FeishuAppRegistrationStore, SlackTransport } from '../persistence/ports.js'
 import { OfficialFeishuRegistrationProvider, type FeishuRegistrationProvider } from './feishu-registration-provider.js'
 
 export type FeishuRegistrationFailure =
@@ -40,6 +40,7 @@ export interface StartFeishuRegistration {
   orgId: OrgId
   agentId: AgentId
   fallbackRegion: FeishuRegion
+  transport: SlackTransport
   appName: string
   avatarUrl?: string
   description?: string | null
@@ -57,6 +58,7 @@ export interface FinalizeFeishuRegistration {
   appId: string
   appSecret: string
   region: FeishuRegion
+  transport: SlackTransport
 }
 
 export interface FeishuRegistrationSnapshot {
@@ -65,6 +67,7 @@ export interface FeishuRegistrationSnapshot {
   agentId: AgentId
   authorizationUrl: string
   expiresAt: Date
+  transport: SlackTransport
   status: 'pending' | 'completed' | 'failed'
   failureReason: FeishuRegistrationFailure | null
   integrationId: IntegrationId | null
@@ -84,6 +87,7 @@ function publicSnapshot(row: FeishuAppRegistrationRecord): FeishuRegistrationSna
     agentId: row.agentId,
     authorizationUrl: row.authorizationUrl,
     expiresAt: row.expiresAt,
+    transport: row.transport,
     status,
     failureReason:
       status === 'failed' ? ((row.failureReason as FeishuRegistrationFailure | null) ?? 'setup_failed') : null,
@@ -121,6 +125,7 @@ export class FeishuAppRegistrationService {
         agentId: input.agentId,
         ...(input.requestedName ? { requestedName: input.requestedName } : {}),
         fallbackRegion: input.fallbackRegion,
+        transport: input.transport,
         authorizationUrl: begun.authorizationUrl,
         providerDomain: begun.providerDomain,
         deviceCode: begun.deviceCode,
@@ -178,7 +183,8 @@ export class FeishuAppRegistrationService {
           integrationId: current.integrationId,
           appId: current.appId,
           appSecret: current.appSecret,
-          region: current.resolvedRegion
+          region: current.resolvedRegion,
+          transport: current.transport
         })
       } catch (error) {
         if (error instanceof FeishuRegistrationSetupError) {

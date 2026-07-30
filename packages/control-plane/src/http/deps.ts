@@ -71,6 +71,7 @@ import type { DiscordBotVerifier, DiscordMessageContentIntentEnsurer } from './d
 import type { DiscordBotIconSyncer } from './discord-bot-profile.js'
 import type { FeishuBotVerifier } from './feishu-identity.js'
 import type { FeishuAppRegistrationService } from './feishu-registration.js'
+import type { FeishuHttpAppConfigurator } from './feishu-app-config.js'
 import type { Readiness } from './readiness.js'
 import type { McpRateLimiter } from './mcp/rate-limit.js'
 import type { SessionKey } from '../domain/sessionKey.js'
@@ -276,6 +277,9 @@ export interface HttpDeps {
    *  Optional/injectable so tests stay offline (absent ⇒ no validation, route falls
    *  back to the agent name). */
   verifyFeishuBot?: FeishuBotVerifier
+  /** Applies the sensitive delivery URL and verification keys that the official
+   *  one-click registration deeplink intentionally cannot carry. */
+  configureFeishuHttpApp: FeishuHttpAppConfigurator
   /** Owns the short-lived official Feishu/Lark device-registration poll. The
    *  browser sees only a deeplink + opaque id; credentials are finalized through
    *  BotSecretStore before the session becomes completed. */

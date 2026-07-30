@@ -53,6 +53,7 @@ function connectionFor(
   const group: ConsolidatedFeishuGroup = {
     appId: 'cli_permissiontest',
     appSecret: 'secret',
+    mode: 'direct',
     region,
     integrations: []
   }

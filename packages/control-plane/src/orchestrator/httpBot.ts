@@ -54,10 +54,10 @@ export interface HttpBotLog {
 
 /** The compiled routing table for one HTTP bot (relay-agnostic). */
 interface Compiled {
-  platform: 'slack' | 'telegram' | 'discord'
+  platform: 'slack' | 'telegram' | 'discord' | 'feishu'
   members: { daemonId: string; agentIds: string[] }[]
   /** Member directory (id→name→daemon) for the relay's config-modal selector. */
-  agents: { agentId: string; name: string; daemonId: string }[]
+  agents: { agentId: string; name: string; daemonId: string; integrationId: string }[]
   routes: AttributedRoute[]
   defaultAgentId?: string
   defaultDaemonId?: string
@@ -125,6 +125,10 @@ export class HttpBotOrchestrator {
     if (bot.platform === 'slack' && !secret.signingSecret) {
       // An http-mode Slack bot with no signing secret can't be verified by the relay.
       this.log.warn({ botId }, 'http-bot: no signing secret for http Slack bot — cannot assign')
+      return
+    }
+    if (bot.platform === 'feishu' && (!secret.verificationToken || !secret.appToken)) {
+      this.log.warn({ botId }, 'http-bot: incomplete Feishu callback credentials — cannot assign')
       return
     }
 
@@ -291,6 +295,7 @@ export class HttpBotOrchestrator {
       const secret = await this.botSecret.get(bot.id)
       if (!secret) continue
       if (bot.platform === 'slack' && !secret.signingSecret) continue
+      if (bot.platform === 'feishu' && (!secret.verificationToken || !secret.appToken)) continue
       try {
         ch.send('rc/bot-assign', this.buildAssign(bot, compiled, secret))
         for (const t of await this.threads.listForBot(bot.id)) {
@@ -437,8 +442,8 @@ export class HttpBotOrchestrator {
    */
   async reportConversation(botId: string, conversation: ReportedChannel): Promise<void> {
     const bot = await this.bots.get(BotId(botId))
-    if (!bot || bot.platform !== 'slack' || bot.transport !== 'http') {
-      this.log.warn({ botId }, 'http-bot: conversation report for a non-http/unknown Slack bot — ignored')
+    if (!bot || (bot.platform !== 'slack' && bot.platform !== 'feishu') || bot.transport !== 'http') {
+      this.log.warn({ botId }, 'http-bot: conversation report for a non-http/unknown IM bot — ignored')
       return
     }
     const installs = await this.integrations.listForBot(bot.id)
@@ -762,7 +767,8 @@ export class HttpBotOrchestrator {
       return {
         agentId: p.integration.agentId,
         name: a?.displayName || a?.name || p.integration.agentId,
-        daemonId: p.daemonId
+        daemonId: p.daemonId,
+        integrationId: p.integration.id
       }
     })
     const dmPrefix = `${bot.id}:`
@@ -770,7 +776,14 @@ export class HttpBotOrchestrator {
       .filter((k) => k.startsWith(dmPrefix))
       .map((k) => k.slice(dmPrefix.length))
     return {
-      platform: bot.platform === 'slack' ? 'slack' : bot.platform === 'telegram' ? 'telegram' : 'discord',
+      platform:
+        bot.platform === 'slack'
+          ? 'slack'
+          : bot.platform === 'telegram'
+            ? 'telegram'
+            : bot.platform === 'discord'
+              ? 'discord'
+              : 'feishu',
       members,
       agents,
       routes,
@@ -786,7 +799,7 @@ export class HttpBotOrchestrator {
   private async pushSpecs(
     compiled: Compiled,
     secret: BotSecretMaterial,
-    bot: Pick<BotRecord, 'shareable' | 'slackAppId'>
+    bot: Pick<BotRecord, 'shareable' | 'slackAppId' | 'botUserId'>
   ): Promise<void> {
     // A gated install's spec carries its conversation-scoped rules for the daemon's
     // last-hop admission backstop (§14.3). One listForBot covers every install; rows
@@ -799,7 +812,15 @@ export class HttpBotOrchestrator {
         const channels = gated ? botChannels.filter((c) => c.integrationId === integration.id) : []
         await this.control.integrationUpsert(
           daemonId,
-          httpIntegrationToSpec(integration, secret, bot.shareable, channels, gated, bot.slackAppId ?? undefined)
+          httpIntegrationToSpec(
+            integration,
+            secret,
+            bot.shareable,
+            channels,
+            gated,
+            bot.slackAppId ?? undefined,
+            bot.botUserId ?? undefined
+          )
         )
       } catch (err) {
         if (!(err instanceof NoConnection)) throw err
@@ -809,14 +830,18 @@ export class HttpBotOrchestrator {
   }
 
   /** Assemble the `rc/bot-assign` frame (credentials + attributed routing table).
-   *  Secret — NEVER log the result. Callers guard signingSecret non-null for Slack. */
+   *  Secret — NEVER log the result. */
   private buildAssign(bot: BotRecord, compiled: Compiled, secret: BotSecretMaterial): RcBotAssign {
     return {
       botId: bot.id,
       platform: compiled.platform,
       // Slack app id ("A…", == Events API api_app_id) — O(1) inbound demux. Absent on
       // a manual-paste http bot (no xapp to parse); the relay verify-scans instead.
-      ...(bot.slackAppId ? { apiAppId: bot.slackAppId } : {}),
+      ...(bot.platform === 'feishu' && secret.appToken
+        ? { apiAppId: secret.appToken }
+        : bot.slackAppId
+          ? { apiAppId: bot.slackAppId }
+          : {}),
       // Workspace id ("T…") — present only for a distributed (platform) app's
       // install, where the composite (api_app_id, team_id) is the ONLY safe demux
       // (all sibling installs share the app id AND the signing secret).
@@ -826,7 +851,13 @@ export class HttpBotOrchestrator {
       // Generation of the credentials below — echoed back on `rc/bot-revoked` so a
       // revocation observed under a REPLACED credential cannot kill this one.
       credentialRevision: bot.credentialRevision,
-      secrets: { botToken: secret.botToken, signingSecret: secret.signingSecret ?? '' },
+      secrets:
+        bot.platform === 'feishu'
+          ? {
+              verificationToken: secret.verificationToken ?? '',
+              ...(secret.encryptKey ? { encryptKey: secret.encryptKey } : {})
+            }
+          : { botToken: secret.botToken, signingSecret: secret.signingSecret ?? '' },
       members: compiled.members,
       agents: compiled.agents,
       routes: compiled.routes,

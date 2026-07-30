@@ -3,14 +3,19 @@ import { promises as fs } from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as Lark from '@larksuiteoapi/node-sdk'
-import type { FeishuRegion } from '@agentconnect.md/protocol'
+import type {
+  FeishuRegion,
+  WireFeishuCardActionEvent,
+  WireFeishuCardActionResponse,
+  WireFeishuCardActionTarget
+} from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
 import { SlackSendQueue } from '../slack/send-queue.js'
 import type { InteractionActor } from '../slack/connection.js'
-import { normalizeFeishuMessage, type FeishuAttachmentLike, type FeishuMessageLike } from './normalize.js'
+import { feishuEventToMessageLike, normalizeFeishuMessage, type FeishuRawEvent } from './normalize.js'
 import {
   buildCompletedReplyCard,
   buildPermissionUpdateCard,
@@ -37,10 +42,12 @@ import {
  * tenant token the SDK maintains internally. Bytes stay daemon-local (§9.2).
  */
 
-/** One WSClient long-connection per unique appId (one self-built app = one bot). */
+/** One provider client per unique appId (one self-built app = one bot). */
 export interface ConsolidatedFeishuGroup {
   appId: string
   appSecret: string
+  /** Direct owns the SDK long connection; shared keeps provider APIs send-only. */
+  mode: 'direct' | 'shared'
   /** Open-platform gateway the SDK talks to: 'feishu' (open.feishu.cn, default) vs
    *  'lark' (open.larksuite.com). Same across an appId (an app is region-scoped);
    *  taken from the first integration for the appId. */
@@ -50,7 +57,7 @@ export interface ConsolidatedFeishuGroup {
   integrations: { agentId: string; integrationId: string }[]
 }
 
-/** §6.1 analog: group feishu integrations by appId (one Lark.WSClient per appId). */
+/** §6.1 analog: group Feishu integrations by appId (one provider client per app). */
 export function consolidateFeishu(agents: Agent[]): Map<string, ConsolidatedFeishuGroup> {
   const groups = new Map<string, ConsolidatedFeishuGroup>()
   for (const a of agents) {
@@ -60,6 +67,7 @@ export function consolidateFeishu(agents: Agent[]): Map<string, ConsolidatedFeis
       const g = groups.get(k) ?? {
         appId: k,
         appSecret: int.feishu.appSecret,
+        mode: int.feishu.mode,
         region: int.feishu.region,
         ...(int.feishu.botOpenId ? { botOpenId: int.feishu.botOpenId } : {}),
         integrations: []
@@ -85,58 +93,10 @@ export interface FeishuDeps {
   sendIntervalMs?: number
 }
 
-/** The raw `im.message.receive_v1` event body the WSClient dispatches. `data` IS the
- *  event (the SDK unwraps the envelope), so this is the plain shape we adapt to a pure
- *  {@link FeishuMessageLike} before normalizing. All fields optional — we never trust
- *  the shape and default-fill in {@link FeishuConnection.toLike}. */
-export interface FeishuRawEvent {
-  sender?: {
-    sender_id?: { open_id?: string; user_id?: string; union_id?: string }
-    sender_type?: string
-  }
-  message?: {
-    message_id?: string
-    chat_id?: string
-    chat_type?: string
-    message_type?: string
-    content?: string
-    // root_id = the topic thread's root message id (present on thread replies) — drives
-    // per-thread session keying + threaded replies (see normalize + postMessage).
-    root_id?: string
-    mentions?: { key?: string; id?: { open_id?: string }; name?: string }[]
-  }
-}
-
 /** The raw `card.action.trigger` body delivered by the Lark WSClient. CardKit v2
  * nests message/chat ids under `context`; root-level fallbacks cover older payloads. */
-export interface FeishuRawCardActionEvent {
-  context?: {
-    open_message_id?: string
-    open_chat_id?: string
-  }
-  open_message_id?: string
-  open_chat_id?: string
-  operator?: {
-    open_id?: string
-    user_id?: string
-    union_id?: string
-    name?: string
-  }
-  action?: {
-    value?: unknown
-    tag?: string
-    name?: string
-    option?: string
-  }
-}
-
-export interface FeishuCardActionResponse {
-  toast?: {
-    type: 'info' | 'success' | 'warning' | 'error'
-    content: string
-  }
-}
-
+export type FeishuRawCardActionEvent = WireFeishuCardActionEvent
+export type FeishuCardActionResponse = WireFeishuCardActionResponse
 /**
  * The slice of the Lark SDK the connection drives — hand-declared (like Telegram's
  * `TelegramApi` / Slack's `AppLike`) so the connection is testable with a fake and
@@ -190,6 +150,7 @@ export interface FeishuStreamingCard {
 export interface FeishuStreamingCardControls {
   sessionKey: string
   sessionUrl: string
+  target?: WireFeishuCardActionTarget
 }
 
 /** The handle the connection holds: outbound {@link FeishuApi} + the WSClient lifecycle. */
@@ -547,6 +508,7 @@ export class FeishuConnection {
    *  compares it so a region change on the same appId forces a reconnect rather than
    *  leaving the app bound to the old-domain client. */
   readonly region: FeishuRegion
+  readonly mode: 'direct' | 'shared'
   /** The bot's own open_id, resolved at start() (config value preferred; best-effort
    *  API fallback). Mention-routing matches this (normalize's mentionedBots are
    *  open_ids). '' when neither config nor bot/info yields one. */
@@ -563,6 +525,7 @@ export class FeishuConnection {
   ) {
     this.appId = deps.group.appId
     this.region = deps.group.region
+    this.mode = deps.group.mode
     this.handle = factory(deps.group.appId, deps.group.appSecret, deps.group.region)
     this.queue = new SlackSendQueue(deps.sendIntervalMs ?? 350)
   }
@@ -584,6 +547,10 @@ export class FeishuConnection {
         log?.debug(`feishu: bot/info lookup failed: ${(err as Error).message}`)
       }
     }
+    if (this.mode === 'shared') {
+      log?.debug(`feishu: send-only HTTP client ready (app ${this.appId}, bot ${this.botOpenId || '?'})`)
+      return
+    }
     log?.debug(`feishu: opening WSClient long-connection (app ${this.appId}, bot ${this.botOpenId || '?'})…`)
 
     await this.handle.startWs(
@@ -591,7 +558,7 @@ export class FeishuConnection {
         // The 3s constraint: ONLY normalize + hand off (which enqueues) — never await the
         // agent turn here.
         try {
-          const like = this.toLike(event)
+          const like = feishuEventToMessageLike(event)
           // Skip our own messages — the agent's replies must not re-trigger a turn.
           if (like.senderOpenId && like.senderOpenId === this.botOpenId) return
           const msg = normalizeFeishuMessage(like, { traceId: this.deps.newTraceId() })
@@ -612,7 +579,7 @@ export class FeishuConnection {
   /** Resolve an active reply's overflow selection and acknowledge it within Lark's
    * callback deadline. The daemon owns the actual cancellation and resulting card
    * lifecycle; removing the mapping first makes redelivered clicks idempotent. */
-  private handleCardAction(event: FeishuRawCardActionEvent): FeishuCardActionResponse | undefined {
+  handleCardAction(event: FeishuRawCardActionEvent): FeishuCardActionResponse | undefined {
     const messageId = event.context?.open_message_id ?? event.open_message_id
     const channel = event.context?.open_chat_id ?? event.open_chat_id
     const actorId = event.operator?.open_id ?? event.operator?.user_id
@@ -635,55 +602,6 @@ export class FeishuConnection {
       actor: { userId: actorId }
     })
     return { toast: { type: 'info', content: 'Cancellation requested.' } }
-  }
-
-  /** Adapt a raw `im.message.receive_v1` event to the pure normalizer's plain-object
-   *  view. Parses `message.content` (a JSON string) by type to derive attachments. */
-  private toLike(event: FeishuRawEvent): FeishuMessageLike {
-    const m = event.message ?? {}
-    const senderType = event.sender?.sender_type
-    return {
-      messageId: m.message_id ?? '',
-      chatId: m.chat_id ?? '',
-      chatType: m.chat_type ?? 'group',
-      messageType: m.message_type ?? 'text',
-      content: m.content ?? '',
-      ...(m.root_id ? { rootId: m.root_id } : {}),
-      senderOpenId: event.sender?.sender_id?.open_id ?? '',
-      // Feishu marks human senders 'user'; treat anything else (e.g. 'app') as a bot.
-      senderIsBot: senderType != null && senderType !== 'user',
-      mentions: (m.mentions ?? []).map((x) => ({
-        key: x.key ?? '',
-        ...(x.id ? { id: x.id } : {}),
-        ...(x.name ? { name: x.name } : {})
-      })),
-      attachments: this.deriveAttachments(m.message_type ?? 'text', m.content ?? '')
-    }
-  }
-
-  /** Derive an attachment view from a message's type + JSON content. Feishu ships an
-   *  opaque key (image_key / file_key), not a URL — the connection downloads it with a
-   *  tenant token at prompt-assembly time (§7.2). Empty when the type carries no file. */
-  private deriveAttachments(messageType: string, content: string): FeishuAttachmentLike[] {
-    try {
-      const c = JSON.parse(content || '{}') as Record<string, unknown>
-      if (messageType === 'image' && typeof c.image_key === 'string') {
-        return [{ fileKey: c.image_key, type: 'image' }]
-      }
-      // Both 'file' and 'media' (video/audio) carry a file_key + file_name.
-      if ((messageType === 'file' || messageType === 'media') && typeof c.file_key === 'string') {
-        return [
-          {
-            fileKey: c.file_key,
-            type: 'file',
-            ...(typeof c.file_name === 'string' ? { name: c.file_name } : {})
-          }
-        ]
-      }
-      return []
-    } catch {
-      return []
-    }
   }
 
   /** Send one chunk: reply INTO the topic thread when `anchor` is a message id (the
@@ -825,7 +743,9 @@ export class FeishuConnection {
   ): Promise<FeishuStreamingCard | undefined> {
     return this.queue.enqueue(async () => {
       try {
-        const created = await this.handle.api.createCardEntity(buildStreamingReplyCard(controls?.sessionUrl))
+        const created = await this.handle.api.createCardEntity(
+          buildStreamingReplyCard(controls?.sessionUrl, controls?.target)
+        )
         if (!created.cardId) throw new Error('cardkit.card.create returned no card_id')
         const sent = await this.sendCardEntity(channel, threadAnchor, created.cardId)
         if (!sent.messageId) throw new Error('CardKit IM send returned no message_id')
