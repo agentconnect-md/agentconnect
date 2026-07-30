@@ -66,20 +66,23 @@ export function computeGettingStarted(input: {
   const { agents, daemons, integrations, sessions, members, authOn } = input
   // Pick a chat-capable / bindable agent for the agent-scoped CTAs. Prefer the built-in
   // `agentconnect` preset — the canonical agent every org gets — else the first agent.
-  const firstAgent = (agents.find((a) => a.builtin) ?? agents[0])?.id ?? null
-  // Every org is born with the unplaced built-in preset (daemon '—', deferred runtime),
-  // so "an agent exists" is no longer the signal. The step is done once *some* agent is
-  // placed on a daemon with a runtime — i.e. the built-in got configured (onboarding's
-  // agent step) or a user created a real one.
-  const placedAgent = agents.some(agentIsPlaced)
+  const builtin = agents.find((a) => a.builtin)
+  const firstAgent = (builtin ?? agents[0])?.id ?? null
+  // The agent step tracks the BUILT-IN preset when the org has one — the step's card
+  // (MeetYourAgents) renders that preset, so a placed custom agent alone must not tick
+  // the row while the card still shows "Set up". Orgs without the preset (older
+  // backfills) fall back to "some agent is placed".
+  const placedAgent = builtin ? agentIsPlaced(builtin) : agents.some(agentIsPlaced)
 
-  // Runtime sign-in state, from the daemons' probe reports: a runtime whose last probe
-  // was NOT rejected with ACP auth-required can take a session. Amber only when a daemon
-  // is online yet nothing is signed in — with no online daemon the daemon step already
-  // owns the attention.
+  // Runtime sign-in state, from the daemons' probe reports. `authRequired` alone can't
+  // distinguish "signed in" from "probe pending/failed" (absence is stored as false), so
+  // done additionally requires probe evidence — an advertised model list, which empties
+  // on probe failure and is empty before the first probe. Amber only when a daemon is
+  // online yet nothing is provably signed in — with no online daemon the daemon step
+  // already owns the attention.
   const onlineDaemons = daemons.filter((d) => d.status === 'online')
   const runtimes = (d: DaemonRow) => d.runtimeModels ?? []
-  const runtimeSignedIn = onlineDaemons.some((d) => runtimes(d).some((r) => !r.authRequired))
+  const runtimeSignedIn = onlineDaemons.some((d) => runtimes(d).some((r) => !r.authRequired && r.models.length > 0))
   const runtimeWarn = onlineDaemons.length > 0 && !runtimeSignedIn
   const signInDaemon =
     onlineDaemons.find((d) => runtimes(d).some((r) => r.authRequired))?.daemonId ?? onlineDaemons[0]?.daemonId ?? null
@@ -130,7 +133,9 @@ export function computeGettingStarted(input: {
       key: 'conversation',
       label: 'Complete your first conversation',
       expl: 'Send one message and watch the agent work — in a connected channel or in the Playground.',
-      done: sessions.length > 0,
+      // COMPLETED, not merely minted: a running or failed session hasn't finished a
+      // conversation yet ('completed' is the daemon's terminal success status).
+      done: sessions.some((s) => s.statusLabel === 'completed'),
       ctaLabel: 'Start a conversation',
       action: { kind: 'chat' }
     }

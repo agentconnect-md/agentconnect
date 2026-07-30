@@ -44,8 +44,13 @@ export function useGsActions() {
           return router.push(orgPath(action.daemonId ? `/daemons/${action.daemonId}` : '/daemons'))
         case 'agent':
           return builtinAgent ? openModal('editAgent', builtinAgent, { focusSection: 'basics' }) : openModal('agent')
-        case 'slack':
-          return firstAgent ? openModal('integration', firstAgent, { platform: 'slack' }) : openModal('agent')
+        case 'slack': {
+          // The action targets the built-in preset; honor it — agents[0] is commonly an
+          // older custom agent in backfilled orgs, and the manual fallback must not
+          // configure Slack on the wrong agent.
+          const target = agents.find((a) => a.id === action.agentId) ?? builtinAgent
+          return target ? openModal('integration', target, { platform: 'slack' }) : openModal('agent')
+        }
         case 'github':
           // Land on the Workspace tab with the workspace editor auto-opened on the
           // GitHub mode (`editws` is consumed one-shot by WorkspaceCard).
@@ -61,7 +66,7 @@ export function useGsActions() {
           return router.push(orgPath('/settings?invite=1'))
       }
     },
-    [openModal, router, orgPath, firstAgent, builtinAgent]
+    [openModal, router, orgPath, firstAgent, builtinAgent, agents]
   )
 
   return { runAction, firstAgent }

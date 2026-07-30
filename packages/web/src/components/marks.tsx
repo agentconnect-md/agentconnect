@@ -186,6 +186,7 @@ export function GithubMark({ color = 'currentColor' }: { color?: string }) {
 }
 
 export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fillPct?: number }) {
+  console.log('platform', platform)
   const x = (platform || '').toLowerCase()
   // Marks render at 60% of their box to sit inside .av / .imark tiles; callers can override
   // fillPct — e.g. the Bots row fills a 14px box (fillPct=100) to match the design's full-bleed mark.

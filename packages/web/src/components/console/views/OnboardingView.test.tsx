@@ -148,6 +148,28 @@ describe('onboarding — connect step', () => {
     expect(mocks.skipOnboarding).toHaveBeenCalledWith('acme')
     expect(mocks.push).toHaveBeenCalledWith('/acme/home')
   })
+
+  // Partial-load regression: agents resolving first (every org ships the builtin
+  // preset) must NOT trigger a mint while the fleet list is still loading — the
+  // pending response may already contain a connected daemon.
+  it('does not mint while the daemon list is still loading, even with agents loaded', async () => {
+    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
+    mocks.daemonsLoading = true
+    await render()
+    expect(mocks.provisionDaemon).not.toHaveBeenCalled()
+    expect(mocks.reconnectDaemon).not.toHaveBeenCalled()
+  })
+
+  it('offers Retry after a mint failure and re-drives the request', async () => {
+    mocks.provisionDaemon
+      .mockRejectedValueOnce(new Error('cp unreachable'))
+      .mockResolvedValue({ daemonId: 'dmn_new', command: 'agentconnect run' })
+    await render()
+    expect(host.textContent).toContain('cp unreachable')
+    await click('Retry')
+    expect(mocks.provisionDaemon).toHaveBeenCalledTimes(2)
+    expect(host.textContent).toContain('agentconnect run')
+  })
 })
 
 describe('onboarding — daemon online reveal', () => {

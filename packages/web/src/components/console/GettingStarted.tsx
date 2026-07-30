@@ -79,13 +79,14 @@ export default function GettingStarted() {
 
   return (
     <>
-      {/* 1a — floating pill (desktop only; mobile has the bottom-tab chrome) */}
+      {/* 1a — floating pill. On mobile it floats above the bottom-tab chrome (the
+          drawer below is already full-width there). */}
       {!drawerOpen && (
         <button
           type="button"
           onClick={() => setDrawerOpen(true)}
           title="Getting started — open checklist"
-          className="fixed right-[26px] bottom-[22px] z-[60] hidden h-10 cursor-pointer items-center gap-[9px] rounded-full border border-(--border-default) bg-(--surface-card) pr-[15px] pl-[9px] shadow-(--shadow-lg) hover:border-(--border-strong) hover:shadow-(--shadow-xl) max-desktop:hidden desktop:inline-flex"
+          className="fixed right-[26px] bottom-[22px] z-[60] inline-flex h-10 cursor-pointer items-center gap-[9px] rounded-full border border-(--border-default) bg-(--surface-card) pr-[15px] pl-[9px] shadow-(--shadow-lg) hover:border-(--border-strong) hover:shadow-(--shadow-xl) max-desktop:right-4 max-desktop:bottom-[96px]"
         >
           <Ring ring={gs.ring} size={22} track={3.4} />
           <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">

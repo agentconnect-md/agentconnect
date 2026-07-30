@@ -96,13 +96,21 @@ export default function OnboardingView() {
   const [mintErr, setMintErr] = useState<string | null>(null)
   const [elapsed, setElapsed] = useState(0)
   const [copied, setCopied] = useState(false)
+  // Bumped by the error state's Retry — re-arms the mint effect after a failure.
+  const [mintAttempt, setMintAttempt] = useState(0)
   const provisioned = useRef(false)
   const commandPending = useRef<Promise<DaemonCommand> | null>(null)
   const createdByWizard = useRef(false)
   const connectedOnce = useRef(false)
 
+  // Mint only once BOTH lists have settled: agents can resolve first (every org ships
+  // the builtin preset, so `loading` clears on partial data) while the pending fleet
+  // response still contains a connected daemon — minting against the empty snapshot
+  // would provision a duplicate. Duplicate-safe on retry too: a provision that
+  // succeeded server-side surfaces as an offline row on the next refresh, which routes
+  // the retry through reconnect instead of a second provision.
   useEffect(() => {
-    if (daemonReady || provisioned.current || loading) return
+    if (agentsLoading || daemonsLoading || daemonReady || provisioned.current) return
     provisioned.current = true
     setMintErr(null)
     createdByWizard.current = !offlineDaemonId
@@ -111,7 +119,18 @@ export default function OnboardingView() {
       : provisionDaemon()
     commandPending.current = command
     command.then(setConnect).catch((e) => setMintErr(e instanceof Error ? e.message : String(e)))
-  }, [daemonReady, offlineDaemonId, provisionDaemon, reconnectDaemon, loading])
+  }, [agentsLoading, daemonsLoading, daemonReady, offlineDaemonId, provisionDaemon, reconnectDaemon, mintAttempt])
+
+  // A transient mint failure must not strand the single blocking step: re-arm the
+  // one-shot guard and re-run the effect (refresh first so an ambiguous success shows
+  // up as an offline row and the retry reconnects it rather than minting a duplicate).
+  const retryMint = () => {
+    provisioned.current = false
+    commandPending.current = null
+    setMintErr(null)
+    refresh()
+    setMintAttempt((n) => n + 1)
+  }
 
   // Poll until the daemon connects; tick the elapsed timer while waiting.
   useEffect(() => {
@@ -174,6 +193,7 @@ export default function OnboardingView() {
           mintErr={mintErr}
           copied={copied}
           onCopy={copy}
+          onRetry={retryMint}
           listeningId={listeningId}
           elapsedLabel={elapsedLabel}
           onExplore={goConsole}
@@ -204,6 +224,7 @@ function ConnectDaemon({
   mintErr,
   copied,
   onCopy,
+  onRetry,
   listeningId,
   elapsedLabel,
   onExplore
@@ -212,6 +233,7 @@ function ConnectDaemon({
   mintErr: string | null
   copied: boolean
   onCopy: () => void
+  onRetry: () => void
   listeningId: string
   elapsedLabel: string
   onExplore: () => void
@@ -258,7 +280,17 @@ function ConnectDaemon({
               <span>{cmd}</span>
             </>
           ) : mintErr ? (
-            <span className="text-(--status-error)">Could not provision a key — {mintErr}</span>
+            <span className="flex flex-wrap items-center gap-2">
+              <span className="text-(--status-error)">Could not provision a key — {mintErr}</span>
+              <button
+                type="button"
+                onClick={onRetry}
+                className="inline-flex h-[24px] cursor-pointer items-center gap-[5px] rounded-md border border-white/15 bg-white/5 px-2 font-mono text-[11px] font-medium text-[#e6ebf1] hover:border-white/25 hover:bg-white/10"
+              >
+                <Icon name="refresh-cw" size={11} />
+                Retry
+              </button>
+            </span>
           ) : (
             <span className="text-(--text-inverse-dim)">Minting key…</span>
           )}
