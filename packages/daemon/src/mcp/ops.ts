@@ -324,9 +324,10 @@ export interface OpsDeps {
   viewSessionStatus?: (req: SessionStatusReq) => Promise<SessionStatusResult | null>
   /** session-concept case 2a: an agent's channel-ROOT post seeds a NEW session owned by the same
    *  agent (origin = the current session), so a deliberate top-level post starts its own context.
-   *  Only called for a root post (no thread) with no toAgent. Fire-and-forget; the daemon delivers
-   *  it headless (no channel echo) and guards the self-loop via hopCount. Absent in the chat CLI /
-   *  tests (no daemon) — then a root post is a plain post with no session spawn. */
+   *  Only called for a root post (no thread) with no toAgent. Fire-and-forget; the daemon creates
+   *  the session without running a model turn, then replays the root as context on the first real
+   *  reply. Absent in the chat CLI / tests (no daemon) — then a root post is a plain post with no
+   *  session spawn. */
   spawnChannelRootSession?: (req: {
     agentId: string
     platform: string
