@@ -5,6 +5,7 @@ import { BindMatch, IntegrationChannel } from './integration.js'
 import { CronTarget } from './cron.js'
 import { CollabRoutesSnapshot } from './collab.js'
 import { GithubHookMetadata, HookBigIntString, OptionalHookConfigSnapshot } from './hook.js'
+import { WebchatMcpDelegationReference } from './delegated-mcp.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 
 /**
@@ -105,7 +106,8 @@ export const RcVerifyResult = z.object({
   userId: z.string().optional(),
   user: z.string().optional(), // display handle for the transcript author line
   agentId: z.string().uuid().optional(),
-  conversationId: z.string().uuid().optional()
+  conversationId: z.string().uuid().optional(),
+  delegation: WebchatMcpDelegationReference.optional()
 })
 export type RcVerifyResult = z.infer<typeof RcVerifyResult>
 

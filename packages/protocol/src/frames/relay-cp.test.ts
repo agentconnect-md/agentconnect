@@ -34,6 +34,7 @@ const DAEMON_ID = '22222222-2222-4222-8222-222222222222'
 const AGENT_ID = '33333333-3333-4333-8333-333333333333'
 const INTEGRATION_ID = '44444444-4444-4444-8444-444444444444'
 const HOOK_ID = '88888888-8888-4888-8888-888888888888'
+const DELEGATION_ID = '99999999-9999-4999-8999-999999999999'
 const TS = '2026-07-07T00:00:00.000Z'
 
 function envelope(type: string, payload: unknown, extra: Record<string, unknown> = {}) {
@@ -110,6 +111,46 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     // rejection carries no identity (no existence oracle)
     expect(RcVerifyResult.safeParse({ ok: false, reason: 'expired' }).success).toBe(true)
     expect(RcVerifyResult.safeParse({ ok: false }).success).toBe(true)
+  })
+
+  it('round-trips legacy and delegated webchat verification results', () => {
+    const legacyPayload = {
+      ok: true,
+      userId: 'usr_1',
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID,
+      orgId: 'org_x',
+      conversationId: AGENT_ID
+    }
+    const legacy = decodeRelayCpFrame(envelope('rc/verify/ok', legacyPayload))
+    expect(legacy.ok).toBe(true)
+    if (!legacy.ok || legacy.frame.type !== 'rc/verify/ok') throw new Error('expected legacy verification result')
+    expect(legacy.frame.payload.delegation).toBeUndefined()
+
+    const delegation = { id: DELEGATION_ID, generation: 2, expiresAt: TS }
+    const current = buildRelayCpFrame('rc/verify/ok', { ...legacyPayload, delegation })
+    const decoded = decodeRelayCpFrame(JSON.stringify(current))
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok || decoded.frame.type !== 'rc/verify/ok') throw new Error('expected delegated verification result')
+    expect(decoded.frame.payload.delegation).toEqual(delegation)
+  })
+
+  it('rejects malformed delegated webchat verification references', () => {
+    const base = {
+      ok: true,
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID,
+      conversationId: AGENT_ID
+    }
+    expect(RcVerifyResult.safeParse({ ...base, delegation: { id: 'bad', generation: 1, expiresAt: TS } }).success).toBe(
+      false
+    )
+    expect(
+      RcVerifyResult.safeParse({
+        ...base,
+        delegation: { id: DELEGATION_ID, generation: 0, expiresAt: TS }
+      }).success
+    ).toBe(false)
   })
 
   it('round-trips correlated rc/github-comment-authz → rc/github-comment-authz/ok', () => {

@@ -25,6 +25,9 @@ export const SESSION_LIVE_TAIL_FEATURE = 'session-live-tail-v1'
  */
 export const SESSION_VISIBILITY_FEATURE = 'session-visibility-v1'
 
+/** Daemon supports one-time MCP assertions scoped to entitled webchat sessions. */
+export const DELEGATED_MCP_ASSERTION_FEATURE = 'delegated_mcp_assertion_v1'
+
 /**
  * Exit code a daemon uses for a PLANNED lifecycle exit (drain-then-exit on a
  * `daemon/restart` or `daemon/upgrade`, cli-daemon-split.md §6). It must be

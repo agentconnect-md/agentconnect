@@ -22,6 +22,7 @@ const DAEMON_ID = '22222222-2222-4222-8222-222222222222'
 const AGENT_ID = '33333333-3333-4333-8333-333333333333'
 const CONV_ID = '66666666-6666-4666-8666-666666666666'
 const TURN_ID = '77777777-7777-4777-8777-777777777777'
+const DELEGATION_ID = '99999999-9999-4999-8999-999999999999'
 const ORG_ID = 'org_default00000000000000000'
 const TS = '2026-07-07T00:00:00.000Z'
 
@@ -85,6 +86,43 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     )
     const decodedAck = decodeRelayDaemonFrame(JSON.stringify(ack))
     expect(decodedAck.ok).toBe(true)
+  })
+
+  it('round-trips legacy and delegated rd/msg webchat deliveries', () => {
+    const legacy = decodeRelayDaemonFrame(envelope('rd/msg', turnMsg))
+    expect(legacy.ok).toBe(true)
+    if (!legacy.ok || legacy.frame.type !== 'rd/msg' || legacy.frame.payload.source !== 'webchat') {
+      throw new Error('expected legacy webchat delivery')
+    }
+    expect(legacy.frame.payload.delegation).toBeUndefined()
+
+    const delegation = { id: DELEGATION_ID, generation: 2, expiresAt: TS }
+    const current = buildRelayDaemonFrame('rd/msg', { ...turnMsg, delegation })
+    const decoded = decodeRelayDaemonFrame(JSON.stringify(current))
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok || decoded.frame.type !== 'rd/msg' || decoded.frame.payload.source !== 'webchat') {
+      throw new Error('expected delegated webchat delivery')
+    }
+    expect(decoded.frame.payload.delegation).toEqual(delegation)
+  })
+
+  it('rejects malformed delegated rd/msg webchat references', () => {
+    expect(
+      decodeRelayDaemonFrame(
+        envelope('rd/msg', {
+          ...turnMsg,
+          delegation: { id: DELEGATION_ID, generation: 0, expiresAt: TS }
+        })
+      ).ok
+    ).toBe(false)
+    expect(
+      decodeRelayDaemonFrame(
+        envelope('rd/msg', {
+          ...turnMsg,
+          delegation: { id: 'not-a-uuid', generation: 1, expiresAt: TS }
+        })
+      ).ok
+    ).toBe(false)
   })
 
   it('rd/ack carries a rejection verdict (reason, no turn stream)', () => {

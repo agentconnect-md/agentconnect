@@ -877,11 +877,11 @@ describe('session read-back frames (console history pull)', () => {
 
 describe('milestone A4 gate — the CP is off the webchat hot path', () => {
   it('the daemon↔CP frame registry carries NO webchat content frame type', () => {
-    // The retire is complete iff no `webchat/*` frame can even be encoded onto the
-    // daemon↔CP control WS — webchat content rides the relay `rd/*` wire now. This is
-    // the structural form of the design's e2e gate (no webchat frame on daemon↔CP).
-    expect(FRAME_TYPES.filter((t) => t.startsWith('webchat/'))).toEqual([])
-    expect(Object.keys(FRAME_SCHEMAS).filter((t) => t.startsWith('webchat/'))).toEqual([])
+    // Webchat content rides the relay `rd/*` wire. Metadata-only delegation lifecycle
+    // frames may use the webchat namespace on the daemon↔CP control WebSocket.
+    const retiredContentTypes = ['webchat/msg', 'webchat/ack', 'webchat/output', 'webchat/done']
+    expect(FRAME_TYPES.filter((type) => retiredContentTypes.includes(type))).toEqual([])
+    expect(Object.keys(FRAME_SCHEMAS).filter((type) => retiredContentTypes.includes(type))).toEqual([])
   })
 })
 
