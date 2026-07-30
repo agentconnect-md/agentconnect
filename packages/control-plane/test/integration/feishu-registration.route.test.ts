@@ -89,21 +89,28 @@ describe('Feishu/Lark one-click app registration', () => {
         })
       )
     })
-    const begun = await new OfficialFeishuRegistrationProvider(fetcher).begin(
-      'AgentConnect Lark',
-      'lark',
-      'https://cdn.example.test/agent.png'
-    )
+    const description = `${'a'.repeat(117)}😀tail`
+    const begun = await new OfficialFeishuRegistrationProvider(fetcher).begin('AgentConnect Lark', 'lark', {
+      avatarUrl: 'https://cdn.example.test/agent.png',
+      description
+    })
 
     expect(new URL(String(fetcher.mock.calls[0]![0])).hostname).toBe(FEISHU_REGISTRATION_DOMAIN)
-    expect(new URL(begun.authorizationUrl).hostname).toBe(LARK_LAUNCHER_DOMAIN)
-    expect(new URL(begun.authorizationUrl).searchParams.get('user_code')).toBe('LARK')
-    expect(new URL(begun.authorizationUrl).searchParams.get('avatar')).toBe('https://cdn.example.test/agent.png')
+    const authorizationUrl = new URL(begun.authorizationUrl)
+    expect(authorizationUrl.hostname).toBe(LARK_LAUNCHER_DOMAIN)
+    expect(authorizationUrl.searchParams.get('user_code')).toBe('LARK')
+    expect(authorizationUrl.searchParams.get('avatar')).toBe('https://cdn.example.test/agent.png')
+    expect(authorizationUrl.searchParams.get('desc')).toBe(`${'a'.repeat(117)}😀…`)
+    expect(authorizationUrl.searchParams.get('desc')!.length).toBe(120)
     expect(begun.providerDomain).toBe(FEISHU_REGISTRATION_DOMAIN)
   })
 
   it('survives a CP restart, installs the full template, and never returns credentials', async () => {
     const agentId = await placedAgent()
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { description: 'Helps teammates solve support requests.' }
+    })
     const requests: URLSearchParams[] = []
     const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
       const form = new URLSearchParams(String(init?.body))
@@ -145,6 +152,7 @@ describe('Feishu/Lark one-click app registration', () => {
     const authorizationUrl = new URL(startDto.authorizationUrl)
     expect(authorizationUrl.searchParams.get('createOnly')).toBe('true')
     expect(authorizationUrl.searchParams.get('name')).toBe('AgentConnect Lark')
+    expect(authorizationUrl.searchParams.get('desc')).toBe('Helps teammates solve support requests.')
     const avatarUrl = new URL(authorizationUrl.searchParams.get('avatar')!)
     expect(avatarUrl.origin).toBe('https://cp.example.test')
     expect(avatarUrl.pathname).toBe(`/v1/agents/${agentId}/icon`)
@@ -272,7 +280,7 @@ describe('Feishu/Lark one-click app registration', () => {
     await expect(coordinator.start({ ...common, createdByUserId: 'user-b' })).rejects.toBeInstanceOf(
       FeishuRegistrationConflictError
     )
-    expect(begin).toHaveBeenCalledWith('AgentConnect', 'lark', undefined)
+    expect(begin).toHaveBeenCalledWith('AgentConnect', 'lark', {})
   })
 
   it('does not expire an authorization while its claimed provider poll is completing', async () => {

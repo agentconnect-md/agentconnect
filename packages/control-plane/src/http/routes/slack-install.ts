@@ -165,7 +165,11 @@ export function slackInstallRoutes(deps: HttpDeps) {
         // Brand the created app with the agent's icon color (Slack has no API to set
         // the app image itself) — its avatar plate → the manifest background_color.
         const bgColor = agentIconBackgroundColor(agent.icon)
-        const manifest = buildInstallManifest(name, redirectUri, httpBase, bgColor)
+        const manifest = buildInstallManifest(name, redirectUri, {
+          ...(httpBase ? { httpRelayBase: httpBase } : {}),
+          ...(bgColor ? { backgroundColor: bgColor } : {}),
+          description: agent.description
+        })
         let created = await api.createApp(config.accessToken, manifest)
 
         // Slack rejected the config token. resolve() hands back a fresh (unexpired) access

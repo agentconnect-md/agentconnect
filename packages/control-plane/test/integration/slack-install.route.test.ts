@@ -179,6 +179,10 @@ async function startAndAuthorize(app: HttpApp): Promise<string> {
 describe('slack auto-install funnel', () => {
   it('POST /app uses the caller’s config token to create the app + a pending row, returns an install URL (no tokens)', async () => {
     const agentId = await placedAgent()
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { description: 'Helps teammates solve support requests.' }
+    })
     await seedUserConfig()
     const { app, stub } = withFunnel()
     const res = await app.app.inject({
@@ -197,8 +201,12 @@ describe('slack auto-install funnel', () => {
     expect(url.searchParams.get('state')).toBe(dto.installId)
     // The PUBLIC `/v1` form — the internal `/api/v1` variant would 404 at the edge.
     expect(url.searchParams.get('redirect_uri')).toBe('https://cp.example/v1/integrations/slack/oauth/callback')
-    const manifest = stub.createCalls[0]!.manifest as { oauth_config: { redirect_urls: string[] } }
+    const manifest = stub.createCalls[0]!.manifest as {
+      features: { agent_view: { agent_description: string } }
+      oauth_config: { redirect_urls: string[] }
+    }
     expect(manifest.oauth_config.redirect_urls).toEqual(['https://cp.example/v1/integrations/slack/oauth/callback'])
+    expect(manifest.features.agent_view.agent_description).toBe('Helps teammates solve support requests.')
     const row = await prisma.slackInstall.findUnique({ where: { id: dto.installId } })
     expect(row).toMatchObject({ appId: 'A1TEST', clientSecret: 'csecret', botToken: null })
     expect(JSON.stringify(dto)).not.toContain('csecret')

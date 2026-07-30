@@ -4,7 +4,9 @@ import {
   slackCreateAppUrl,
   SLACK_BOT_SCOPES,
   SLACK_BOT_EVENTS,
-  SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID
+  SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+  DEFAULT_SLACK_APP_DESCRIPTION,
+  SLACK_APP_DESCRIPTION_MAX_LENGTH
 } from './slack-manifest'
 
 // The manual manifest must request exactly what the CP's auto-install manifest does, or
@@ -59,6 +61,16 @@ describe('buildSlackManifest', () => {
     // A color (from the owning agent's icon) ⇒ display_information.background_color.
     const branded = buildSlackManifest({ name: 'acme' }, { backgroundColor: '#c62a78' })
     expect(branded.display_information.background_color).toBe('#c62a78')
+  })
+
+  it('uses the agent description with a fallback and a Unicode-safe platform limit', () => {
+    const description = `${'a'.repeat(297)}😀tail`
+    const custom = buildSlackManifest({ name: 'acme' }, { description })
+    const fallback = buildSlackManifest({ name: 'acme' }, { description: '   ' })
+
+    expect(custom.features.agent_view.agent_description).toBe(`${'a'.repeat(297)}😀…`)
+    expect(custom.features.agent_view.agent_description.length).toBe(SLACK_APP_DESCRIPTION_MAX_LENGTH)
+    expect(fallback.features.agent_view.agent_description).toBe(DEFAULT_SLACK_APP_DESCRIPTION)
   })
 
   it('prefills the Slack create-app link with the manifest', () => {
