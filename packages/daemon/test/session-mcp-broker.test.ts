@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { lstat, mkdtemp, readFile, stat, symlink } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import net from 'node:net'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -34,10 +35,17 @@ const EXPIRY = '2026-07-31T12:00:00.000Z'
 
 const roots: string[] = []
 const brokers: SessionMcpBroker[] = []
+const httpServers: ReturnType<typeof createServer>[] = []
 
 afterEach(async () => {
   vi.useRealTimers()
   await Promise.all(brokers.splice(0).map((broker) => broker.stop()))
+  await Promise.all(
+    httpServers.splice(0).map(async (server) => {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    })
+  )
   await Promise.all(
     roots.splice(0).map((root) => import('node:fs/promises').then((fs) => fs.rm(root, { recursive: true })))
   )
@@ -455,6 +463,396 @@ describe('SessionMcpBroker forwarding', () => {
     expect(post.mock.calls[1]![1].body).toEqual(post.mock.calls[0]![1].body)
     expect(post.mock.calls[1]![1].headers.authorization).toBe(post.mock.calls[0]![1].headers.authorization)
     expect(post.mock.calls[1]![1].headers['x-agentconnect-invocation-id']).toBe(INVOCATION_ID)
+  })
+
+  it('recovers the same invocation when response headers arrive but the first body stream fails', async () => {
+    let executions = 0
+    const post = vi.fn(async (_url: string, init: { body: Buffer; headers: Record<string, string> }) => {
+      if (post.mock.calls.length === 1) {
+        executions += 1
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(Buffer.from('{"jsonrpc":"2.0",'))
+              controller.error(new Error('socket reset while reading response body'))
+            }
+          }),
+          { headers: { 'content-type': 'application/json' } }
+        )
+      }
+      const { id } = JSON.parse(init.body.toString('utf8'))
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: { tools: [] } }), {
+        headers: { 'content-type': 'application/json' }
+      })
+    })
+    const h = await harness({ fetch: post })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+
+    await expect(
+      ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+        id: 101,
+        token: env.AC_MCP_TOKEN!,
+        op: 'listTools'
+      })
+    ).resolves.toEqual({ id: 101, ok: true, result: { tools: [] } })
+    expect(executions).toBe(1)
+    expect(h.mintMcpInvocation).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledTimes(2)
+    expect(post.mock.calls[1]![1].body).toEqual(post.mock.calls[0]![1].body)
+    expect(post.mock.calls[1]![1].headers.authorization).toBe(post.mock.calls[0]![1].headers.authorization)
+    expect(post.mock.calls[1]![1].headers['x-agentconnect-invocation-id']).toBe(INVOCATION_ID)
+  })
+
+  it('recovers a committed invocation through an untrusted gateway 502 with the exact request', async () => {
+    const first = new Response('upstream connection reset', {
+      status: 502,
+      headers: { 'content-type': 'text/plain' }
+    })
+    const post = vi.fn(async (_url: string, init: { body: Buffer; headers: Record<string, string> }) => {
+      if (post.mock.calls.length === 1) return first
+      const { id } = JSON.parse(init.body.toString('utf8'))
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: { tools: [] } }), {
+        headers: { 'content-type': 'application/json' }
+      })
+    })
+    const h = await harness({ fetch: post })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+
+    await expect(
+      ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+        id: 102,
+        token: env.AC_MCP_TOKEN!,
+        op: 'listTools'
+      })
+    ).resolves.toEqual({ id: 102, ok: true, result: { tools: [] } })
+    expect(first.bodyUsed).toBe(true)
+    expect(h.mintMcpInvocation).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledTimes(2)
+    expect(post.mock.calls[1]![1]).toMatchObject({
+      body: post.mock.calls[0]![1].body,
+      headers: post.mock.calls[0]![1].headers
+    })
+  })
+
+  it('treats a matching standard JSON-RPC response on HTTP 500 as a deterministic result', async () => {
+    const post = vi.fn(async (_url: string, init: { body: Buffer }) => {
+      const { id } = JSON.parse(init.body.toString('utf8'))
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          result: { isError: true, content: [{ type: 'text', text: 'definite tool failure' }] }
+        }),
+        { status: 500, headers: { 'content-type': 'application/json' } }
+      )
+    })
+    const h = await harness({
+      fetch: post
+    })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+
+    await expect(
+      ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+        id: 103,
+        token: env.AC_MCP_TOKEN!,
+        op: 'callTool',
+        name: 'updateAgent',
+        args: {}
+      })
+    ).resolves.toEqual({
+      id: 103,
+      ok: true,
+      result: {
+        mcpContent: [{ type: 'text', text: 'definite tool failure' }],
+        mcpIsError: true
+      }
+    })
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('treats a matching standard JSON-RPC error on HTTP 500 as a deterministic failure', async () => {
+    const post = vi.fn(async (_url: string, init: { body: Buffer }) => {
+      const { id } = JSON.parse(init.body.toString('utf8'))
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          error: { code: -32602, message: 'definite protocol failure' }
+        }),
+        { status: 500, headers: { 'content-type': 'application/json' } }
+      )
+    })
+    const h = await harness({ fetch: post })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+
+    await expect(
+      ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+        id: 110,
+        token: env.AC_MCP_TOKEN!,
+        op: 'listTools'
+      })
+    ).resolves.toEqual({ id: 110, ok: false, error: 'definite protocol failure' })
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not remint for a proxy-shaped 401 and recovers with the same assertion', async () => {
+    const proxy401 = new Response(
+      JSON.stringify({ error: 'Unauthorized', statusCode: 401, message: 'gateway authentication required' }),
+      { status: 401, headers: { 'content-type': 'application/json' } }
+    )
+    const post = vi.fn(async (_url: string, init: { body: Buffer; headers: Record<string, string> }) => {
+      if (post.mock.calls.length === 1) return proxy401
+      const { id } = JSON.parse(init.body.toString('utf8'))
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: { tools: [] } }), {
+        headers: { 'content-type': 'application/json' }
+      })
+    })
+    const h = await harness({ fetch: post })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+
+    await expect(
+      ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+        id: 104,
+        token: env.AC_MCP_TOKEN!,
+        op: 'listTools'
+      })
+    ).resolves.toEqual({ id: 104, ok: true, result: { tools: [] } })
+    expect(proxy401.bodyUsed).toBe(true)
+    expect(h.mintMcpInvocation).toHaveBeenCalledTimes(1)
+    expect(post.mock.calls[1]![1].headers.authorization).toBe(post.mock.calls[0]![1].headers.authorization)
+  })
+
+  it('does not trust a proxy-shaped in-progress 409 and remints only after an exact later assertion denial', async () => {
+    const proxy409 = new Response(
+      JSON.stringify({ error: 'Conflict', statusCode: 409, message: 'gateway request is already in progress' }),
+      { status: 409, headers: { 'content-type': 'application/json', 'retry-after': '1' } }
+    )
+    const assertionDenied = new Response(
+      JSON.stringify({ error: 'Unauthorized', statusCode: 401, message: 'invocation assertion denied' }),
+      { status: 401, headers: { 'content-type': 'application/json' } }
+    )
+    const post = vi.fn(async (_url: string, init: { body: Buffer; headers: Record<string, string> }) => {
+      if (post.mock.calls.length === 1) return proxy409
+      if (post.mock.calls.length === 2) return assertionDenied
+      const { id } = JSON.parse(init.body.toString('utf8'))
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: { tools: [] } }), {
+        headers: { 'content-type': 'application/json' }
+      })
+    })
+    let mint = 0
+    const mintMcpInvocation = vi.fn(async (input: McpInvocationMint): Promise<McpInvocationMinted> => ({
+      invocationId: input.invocationId,
+      assertion: `assertion-${++mint}`,
+      expiresAt: new Date(NOW + 30_000).toISOString()
+    }))
+    const h = await harness({
+      fetch: post,
+      recoveryPollMs: 0,
+      cpClient: { mintMcpInvocation, revokeWebchatMcpDelegation: vi.fn() }
+    })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+
+    await expect(
+      ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+        id: 105,
+        token: env.AC_MCP_TOKEN!,
+        op: 'listTools'
+      })
+    ).resolves.toEqual({ id: 105, ok: true, result: { tools: [] } })
+    expect(proxy409.bodyUsed).toBe(true)
+    expect(assertionDenied.bodyUsed).toBe(true)
+    expect(mintMcpInvocation).toHaveBeenCalledTimes(2)
+    expect(mintMcpInvocation.mock.calls[0]![0]).toEqual(mintMcpInvocation.mock.calls[1]![0])
+    expect(post.mock.calls[1]![1].headers.authorization).toBe('Bearer assertion-1')
+    expect(post.mock.calls[2]![1].headers.authorization).toBe('Bearer assertion-2')
+    expect(post.mock.calls[1]![1].body).toEqual(post.mock.calls[0]![1].body)
+    expect(post.mock.calls[2]![1].body).toEqual(post.mock.calls[0]![1].body)
+  })
+
+  it('consumes exact assertion-denied and in-progress response bodies before retrying', async () => {
+    const assertionDenied = new Response(
+      JSON.stringify({ error: 'Unauthorized', statusCode: 401, message: 'invocation assertion denied' }),
+      { status: 401, headers: { 'content-type': 'application/json' } }
+    )
+    const inProgress = new Response(
+      JSON.stringify({ error: 'Conflict', statusCode: 409, message: 'invocation is already in progress' }),
+      { status: 409, headers: { 'content-type': 'application/json', 'retry-after': '1' } }
+    )
+    const post = vi.fn(async (_url: string, init: { body: Buffer }) => {
+      if (post.mock.calls.length === 1) return assertionDenied
+      if (post.mock.calls.length === 2) return inProgress
+      const { id } = JSON.parse(init.body.toString('utf8'))
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: { tools: [] } }), {
+        headers: { 'content-type': 'application/json' }
+      })
+    })
+    const h = await harness({ fetch: post, recoveryPollMs: 0 })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+
+    await expect(
+      ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+        id: 106,
+        token: env.AC_MCP_TOKEN!,
+        op: 'listTools'
+      })
+    ).resolves.toEqual({ id: 106, ok: true, result: { tools: [] } })
+    expect(assertionDenied.bodyUsed).toBe(true)
+    expect(inProgress.bodyUsed).toBe(true)
+  })
+
+  it('consumes an exact ambiguous response and stops without another POST', async () => {
+    const ambiguous = new Response(
+      JSON.stringify({
+        error: 'Conflict',
+        statusCode: 409,
+        message: 'the operation may have taken effect; inspect current state before retrying'
+      }),
+      { status: 409, headers: { 'content-type': 'application/json' } }
+    )
+    const post = vi.fn(async () => ambiguous)
+    const h = await harness({ fetch: post })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+
+    await expect(
+      ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+        id: 111,
+        token: env.AC_MCP_TOKEN!,
+        op: 'callTool',
+        name: 'updateAgent',
+        args: {}
+      })
+    ).resolves.toEqual({ id: 111, ok: false, error: WEBCHAT_MCP_AMBIGUOUS_ERROR })
+    expect(ambiguous.bodyUsed).toBe(true)
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(h.mintMcpInvocation).toHaveBeenCalledTimes(1)
+  })
+
+  it('recovers an oversized response with the same invocation instead of parsing or retrying fresh', async () => {
+    const oversized = new Response('x'.repeat(PRIVATE_MCP_MAX_FRAME_BYTES + 1), {
+      status: 502,
+      headers: { 'content-type': 'text/plain' }
+    })
+    const post = vi.fn(async (_url: string, init: { body: Buffer; headers: Record<string, string> }) => {
+      if (post.mock.calls.length === 1) return oversized
+      const { id } = JSON.parse(init.body.toString('utf8'))
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: { tools: [] } }), {
+        headers: { 'content-type': 'application/json' }
+      })
+    })
+    const h = await harness({ fetch: post })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+
+    await expect(
+      ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+        id: 107,
+        token: env.AC_MCP_TOKEN!,
+        op: 'listTools'
+      })
+    ).resolves.toEqual({ id: 107, ok: true, result: { tools: [] } })
+    expect(oversized.bodyUsed).toBe(true)
+    expect(h.mintMcpInvocation).toHaveBeenCalledTimes(1)
+    expect(post.mock.calls[1]![1].headers.authorization).toBe(post.mock.calls[0]![1].headers.authorization)
+  })
+
+  it('cancels a hanging response body at the hard deadline and clears the deadline timer', async () => {
+    const timers = new Set<ReturnType<typeof globalThis.setTimeout>>()
+    const setTimeoutTracked = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      const timer = globalThis.setTimeout(() => {
+        timers.delete(timer)
+        if (typeof handler === 'function') handler(...args)
+      }, timeout)
+      timers.add(timer)
+      return timer
+    }) as typeof globalThis.setTimeout
+    const clearTimeoutTracked = ((timer: ReturnType<typeof globalThis.setTimeout>) => {
+      timers.delete(timer)
+      globalThis.clearTimeout(timer)
+    }) as typeof globalThis.clearTimeout
+    let canceled = false
+    const hanging = new Response(
+      new ReadableStream({
+        pull() {
+          return new Promise(() => {})
+        },
+        cancel() {
+          canceled = true
+        }
+      }),
+      { headers: { 'content-type': 'application/json' } }
+    )
+    const h = await harness({
+      fetch: vi.fn(async () => hanging),
+      postDeadlineMs: 20,
+      setTimeout: setTimeoutTracked,
+      clearTimeout: clearTimeoutTracked
+    })
+    const server = await h.broker.registerCell(binding())
+    const env = descriptorEnv(server!)
+
+    await expect(
+      ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+        id: 108,
+        token: env.AC_MCP_TOKEN!,
+        op: 'callTool',
+        name: 'updateAgent',
+        args: {}
+      })
+    ).resolves.toEqual({ id: 108, ok: false, error: WEBCHAT_MCP_AMBIGUOUS_ERROR })
+    expect(hanging.bodyUsed).toBe(true)
+    expect(canceled).toBe(true)
+    expect(timers.size).toBe(0)
+  })
+
+  it('aborts and closes a real HTTP response socket whose body stalls past the hard deadline', async () => {
+    const sockets = new Set<net.Socket>()
+    const server = createServer((request, response) => {
+      request.resume()
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.write('{"jsonrpc":"2.0",')
+      // Deliberately never completes the response body.
+    })
+    httpServers.push(server)
+    server.on('connection', (socket) => {
+      sockets.add(socket)
+      socket.once('close', () => sockets.delete(socket))
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', () => {
+        server.off('error', reject)
+        resolve()
+      })
+    })
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('test HTTP server did not bind TCP')
+
+    const h = await harness({
+      fetch: undefined,
+      mcpEndpoint: `http://127.0.0.1:${address.port}/api/v1/mcp`,
+      postDeadlineMs: 20
+    })
+    const descriptor = await h.broker.registerCell(binding())
+    const env = descriptorEnv(descriptor!)
+
+    await expect(
+      ipc(h.broker.getCellMount(CELL_ID)!.sourceSocketPath, {
+        id: 109,
+        token: env.AC_MCP_TOKEN!,
+        op: 'callTool',
+        name: 'updateAgent',
+        args: {}
+      })
+    ).resolves.toEqual({ id: 109, ok: false, error: WEBCHAT_MCP_AMBIGUOUS_ERROR })
+    await vi.waitFor(() => expect(sockets.size).toBe(0))
   })
 
   it('bounds a never-resolving POST, aborts it, clears timers, and returns ambiguous', async () => {

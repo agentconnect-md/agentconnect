@@ -24,6 +24,20 @@ export const PRIVATE_MCP_MAX_FRAME_BYTES = 256 * 1024
 export const PRIVATE_MCP_MAX_PIPELINED_REQUESTS = 8
 export const PRIVATE_MCP_MAX_PENDING_REQUESTS = 8
 
+const ASSERTION_DENIED_BODY = Buffer.from(
+  JSON.stringify({ error: 'Unauthorized', statusCode: 401, message: 'invocation assertion denied' })
+)
+const IN_PROGRESS_BODY = Buffer.from(
+  JSON.stringify({ error: 'Conflict', statusCode: 409, message: 'invocation is already in progress' })
+)
+const AMBIGUOUS_BODY = Buffer.from(
+  JSON.stringify({
+    error: 'Conflict',
+    statusCode: 409,
+    message: 'the operation may have taken effect; inspect current state before retrying'
+  })
+)
+
 export const WEBCHAT_MCP_RECONNECT_ERROR =
   'Your AgentConnect session authorization expired. Reconnect this conversation and retry.'
 export const WEBCHAT_MCP_AMBIGUOUS_ERROR = 'The operation may have taken effect. Inspect current state before retrying.'
@@ -114,11 +128,20 @@ type RpcResponse = {
   error?: { code: number; message: string }
 }
 
+type PostOutcome =
+  | { kind: 'rpc'; response: RpcResponse }
+  | { kind: 'assertion_denied' }
+  | { kind: 'in_progress' }
+  | { kind: 'ambiguous' }
+  | { kind: 'uncertain' }
+
 class AmbiguousInvocationError extends Error {
   constructor() {
     super(WEBCHAT_MCP_AMBIGUOUS_ERROR)
   }
 }
+
+class DefiniteMcpError extends Error {}
 
 function logicalKey(input: Pick<RegisterSessionMcpCell, 'agentId' | 'conversationId'>): string {
   return `${input.agentId}\0${input.conversationId}`
@@ -514,19 +537,11 @@ export class SessionMcpBroker {
       ...(request.op === 'callTool' ? { toolName: request.name } : {})
     }
     const minted = await this.mintUsableAssertion(mintInput)
-    const { response, responseBytes } = await this.withPostDeadline(async (signal) => {
-      const response = await this.dispatchWithRecovery(body, invocationId, mintInput, minted, signal)
-      return { response, responseBytes: Buffer.from(await response.arrayBuffer()) }
-    })
-    if (!response.ok) {
-      const message = this.httpError(response.status, responseBytes)
-      throw new Error(message)
-    }
-    const parsed = rpcFromResponse(response, responseBytes, invocationId)
+    const parsed = await this.withPostDeadline((signal) =>
+      this.dispatchWithRecovery(body, invocationId, mintInput, minted, signal)
+    )
     if (parsed.error) {
-      throw new Error(
-        typeof parsed.error.message === 'string' ? parsed.error.message : 'AgentConnect MCP request failed'
-      )
+      throw new DefiniteMcpError(parsed.error.message)
     }
     if (request.op === 'listTools') {
       const result = parsed.result as { tools?: unknown } | undefined
@@ -572,56 +587,111 @@ export class SessionMcpBroker {
     mintInput: McpInvocationMint,
     initialMint: McpInvocationMinted,
     signal: AbortSignal
-  ): Promise<Response> {
-    let minted = initialMint
-    let response: Response
-    try {
-      response = await this.post(body, invocationId, minted.assertion, signal)
-    } catch {
-      return this.recoverSameInvocation(body, invocationId, minted.assertion, signal)
-    }
+  ): Promise<RpcResponse> {
+    let assertion = initialMint.assertion
+    let reminted = false
+    let recoveryAttempt = 0
+    const recoveryAttempts = this.deps.recoveryAttempts ?? DEFAULT_RECOVERY_ATTEMPTS
+    let outcome = await this.postAttempt(body, invocationId, assertion, signal)
 
-    // A definite 401 proves this assertion did not claim execution. Rotating it
-    // for the same unstarted ledger row remains safe.
-    if (response.status === 401) {
-      minted = await this.mintUsableAssertion(mintInput)
-      try {
-        response = await this.post(body, invocationId, minted.assertion, signal)
-      } catch {
-        return this.recoverSameInvocation(body, invocationId, minted.assertion, signal)
+    for (;;) {
+      if (outcome.kind === 'rpc') return outcome.response
+      if (outcome.kind === 'ambiguous') throw new AmbiguousInvocationError()
+
+      // Only the CP's exact fixed denial proves that this assertion never claimed
+      // the ledger row. Rotate at most once, preserving the invocation id/hash/body.
+      if (outcome.kind === 'assertion_denied') {
+        if (reminted) throw new Error('invocation assertion expired before use')
+        assertion = (await this.mintUsableAssertion(mintInput)).assertion
+        reminted = true
+        outcome = await this.postAttempt(body, invocationId, assertion, signal)
+        continue
       }
+
+      // Both an exact in-progress response and every untrusted/invalid transport
+      // outcome are recovered only by observing the same invocation. Never mint a
+      // new id or alter the exact Buffer after any POST may have reached the CP.
+      if (recoveryAttempt >= recoveryAttempts) throw new AmbiguousInvocationError()
+      if (recoveryAttempt > 0) await this.pollDelay(signal)
+      recoveryAttempt += 1
+      outcome = await this.postAttempt(body, invocationId, assertion, signal)
     }
-    if (this.isInProgress(response)) {
-      return this.recoverSameInvocation(body, invocationId, minted.assertion, signal)
-    }
-    return response
   }
 
-  private async recoverSameInvocation(
+  private async postAttempt(
     body: Buffer,
     invocationId: string,
     assertion: string,
     signal: AbortSignal
-  ): Promise<Response> {
-    const attempts = this.deps.recoveryAttempts ?? DEFAULT_RECOVERY_ATTEMPTS
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
+  ): Promise<PostOutcome> {
+    if (signal.aborted) throw new AmbiguousInvocationError()
+    let response: Response
+    try {
+      response = await this.post(body, invocationId, assertion, signal)
+    } catch {
       if (signal.aborted) throw new AmbiguousInvocationError()
-      try {
-        const response = await this.post(body, invocationId, assertion, signal)
-        if (!this.isInProgress(response)) {
-          if (response.status === 401) throw new AmbiguousInvocationError()
-          return response
-        }
-      } catch (error) {
-        if (error instanceof AmbiguousInvocationError) throw error
-      }
-      if (attempt + 1 < attempts) await this.pollDelay(signal)
+      return { kind: 'uncertain' }
     }
-    throw new AmbiguousInvocationError()
+
+    let bytes: Buffer
+    try {
+      bytes = await this.readBoundedBody(response, signal)
+    } catch {
+      if (signal.aborted) throw new AmbiguousInvocationError()
+      return { kind: 'uncertain' }
+    }
+
+    try {
+      return { kind: 'rpc', response: rpcFromResponse(response, bytes, invocationId) }
+    } catch {
+      // Only the byte-exact fixed CP control responses carry recovery authority.
+      // Status-only or proxy-shaped 401/409 responses remain transport-uncertain.
+    }
+    if (response.status === 401 && bytes.equals(ASSERTION_DENIED_BODY)) {
+      return { kind: 'assertion_denied' }
+    }
+    if (response.status === 409 && response.headers.get('retry-after') !== null && bytes.equals(IN_PROGRESS_BODY)) {
+      return { kind: 'in_progress' }
+    }
+    if (response.status === 409 && bytes.equals(AMBIGUOUS_BODY)) {
+      return { kind: 'ambiguous' }
+    }
+    return { kind: 'uncertain' }
   }
 
-  private isInProgress(response: Response): boolean {
-    return response.status === 409 && response.headers.get('retry-after') !== null
+  private async readBoundedBody(response: Response, signal: AbortSignal): Promise<Buffer> {
+    if (!response.body) return Buffer.alloc(0)
+    const reader = response.body.getReader()
+    const chunks: Buffer[] = []
+    let size = 0
+    let aborted = false
+    const abort = () => {
+      aborted = true
+      void reader.cancel(new AmbiguousInvocationError()).catch(() => undefined)
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    if (signal.aborted) abort()
+    try {
+      for (;;) {
+        const item = await reader.read()
+        if (aborted) throw new AmbiguousInvocationError()
+        if (item.done) break
+        const chunk = Buffer.from(item.value)
+        size += chunk.byteLength
+        if (size > PRIVATE_MCP_MAX_FRAME_BYTES) {
+          await reader.cancel().catch(() => undefined)
+          throw new Error('AgentConnect MCP response exceeded the bounded body limit')
+        }
+        chunks.push(chunk)
+      }
+      return Buffer.concat(chunks, size)
+    } catch (error) {
+      await reader.cancel().catch(() => undefined)
+      throw error
+    } finally {
+      signal.removeEventListener('abort', abort)
+      reader.releaseLock()
+    }
   }
 
   private async withPostDeadline<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
@@ -663,22 +733,13 @@ export class SessionMcpBroker {
     })
   }
 
-  private httpError(status: number, bytes: Buffer): string {
-    try {
-      const parsed = JSON.parse(bytes.toString('utf8')) as { message?: unknown }
-      if (typeof parsed.message === 'string' && parsed.message.length > 0) return parsed.message
-    } catch {
-      // Keep HTTP bodies out of logs/errors unless they contain the bounded public message.
-    }
-    return `AgentConnect MCP request failed (HTTP ${status})`
-  }
-
   private publicError(error: unknown, binding: CellBinding): string {
     if (this.now() >= binding.expiresAtMs) return WEBCHAT_MCP_RECONNECT_ERROR
     if (error instanceof WireError && error.code === 'DELEGATION_DENIED') {
       return WEBCHAT_MCP_RECONNECT_ERROR
     }
     if (error instanceof AmbiguousInvocationError) return WEBCHAT_MCP_AMBIGUOUS_ERROR
+    if (error instanceof DefiniteMcpError) return error.message
     const message = error instanceof Error ? error.message : ''
     if (
       message === WEBCHAT_MCP_RECONNECT_ERROR ||
