@@ -1,6 +1,6 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useConsoleData } from '@/lib/data-context'
 import type { DaemonConnectDto } from '@/lib/api'
 import { daemonCommands } from '@/lib/daemon-commands'
@@ -80,12 +80,21 @@ function CommandBox({ tabs, placeholder }: { tabs: CommandTab[]; placeholder: Re
 // `onDone` (optional) replaces plain close on the connected path's Done button —
 // ModalProvider uses it to chain back into the Edit-agent dialog when this modal
 // was opened from an unplaced agent's "Add daemon" affordance. Cancel never chains.
-export default function AddDaemonModal({ onClose, onDone }: { onClose: () => void; onDone?: () => void }) {
+export default function AddDaemonModal({
+  onClose,
+  onDone,
+  registerDismiss
+}: {
+  onClose: () => void
+  onDone?: () => void
+  registerDismiss: (handler: () => void) => () => void
+}) {
   const { provisionDaemon, daemons, refresh, deleteDaemon } = useConsoleData()
   const [connect, setConnect] = useState<DaemonConnectDto | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [cancelling, setCancelling] = useState(false)
   const provisioned = useRef(false)
+  const provisionPending = useRef<Promise<DaemonConnectDto> | null>(null)
 
   // Mint a daemon + its API key + start command once when the modal opens. The ref
   // guard dedupes StrictMode's double-invoke so only one key is minted; we
@@ -94,9 +103,9 @@ export default function AddDaemonModal({ onClose, onDone }: { onClose: () => voi
   useEffect(() => {
     if (provisioned.current) return
     provisioned.current = true
-    provisionDaemon()
-      .then(setConnect)
-      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+    const pending = provisionDaemon()
+    provisionPending.current = pending
+    pending.then(setConnect).catch((e) => setErr(e instanceof Error ? e.message : String(e)))
   }, [provisionDaemon])
 
   // Onboarding writes the daemon row immediately (status `pending`), so presence
@@ -115,18 +124,21 @@ export default function AddDaemonModal({ onClose, onDone }: { onClose: () => voi
   // Bail out before the daemon connects: drop the provisioned-but-never-connected
   // row so it doesn't linger as an offline daemon in the fleet. Once it has
   // connected we keep it (that path shows Done instead of Cancel).
-  const cancel = async () => {
+  const cancel = useCallback(async () => {
     if (cancelling) return
     setCancelling(true)
-    if (connect && !connected) {
+    const pending = connect ?? (await provisionPending.current?.catch(() => null))
+    if (pending && !connected) {
       try {
-        await deleteDaemon(connect.daemonId)
+        await deleteDaemon(pending.daemonId)
       } catch {
         /* best-effort cleanup — an unclaimed provisioned row is harmless */
       }
     }
     onClose()
-  }
+  }, [cancelling, connect, connected, deleteDaemon, onClose])
+
+  useEffect(() => registerDismiss(() => void cancel()), [cancel, registerDismiss])
 
   return (
     <>
