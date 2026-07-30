@@ -177,6 +177,13 @@ describe('PgUserRepo.provisionOidcUser — signup creates the personal org', () 
     expect(upgraded.userId).toBe(canonicalUserId)
     expect(await prisma.user.findUnique({ where: { id: invited.userId } })).toBeNull()
     expect((await prisma.user.findUniqueOrThrow({ where: { id: canonicalUserId } })).email).toBe(email)
+    expect(
+      (
+        await prisma.membership.findUniqueOrThrow({
+          where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: canonicalUserId } }
+        })
+      ).role
+    ).toBe('owner')
 
     const select = { ownerUserId: true, sharedWith: true, createdByUserId: true } as const
     const resources = await Promise.all([

@@ -98,6 +98,20 @@ export class OrgMembershipMissing extends Error {
 }
 
 /**
+ * An owner transition would leave an organization without any owner. The
+ * repository checks this under the organization transition lock, before the
+ * role update or membership deletion commits.
+ */
+export class OrgOwnerRequired extends Error {
+  readonly code = 'ORG_OWNER_REQUIRED' as const
+
+  constructor() {
+    super('an organization needs at least one owner')
+    this.name = 'OrgOwnerRequired'
+  }
+}
+
+/**
  * Restricted visibility requires a durable owner. Ownerless org-visible rows
  * remain editable, but cannot be made restricted until an explicit,
  * provenance-aware ownership workflow assigns one.

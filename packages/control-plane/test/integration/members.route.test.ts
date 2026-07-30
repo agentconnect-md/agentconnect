@@ -7,9 +7,11 @@
  * invited rows claimed at first SSO sign-in), re-roled (`PATCH`), and removed
  * (`DELETE`), with the last-owner guard keeping the org from orphaning itself.
  */
-import { describe, it, expect } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import { describe, it, expect, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
+import { seedAgent } from '../fixtures/seed.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID, DEFAULT_OWNER_EMAIL } from '../../prisma/seed.js'
 
@@ -26,6 +28,54 @@ interface MemberBody {
 
 const signup = (oidcSubject: string, email: string) =>
   new PgUserRepo(prisma).provisionOidcUser({ oidcSubject, email, emailVerified: true })
+
+async function makeOwner(label: string): Promise<string> {
+  const suffix = randomUUID()
+  const email = `${label}-${suffix}@acme.dev`
+  const { userId } = await signup(`${label}-${suffix}`, email)
+  await new PgUserRepo(prisma).addMemberByEmail(DEFAULT_ORG_ID, email, 'owner')
+  return userId
+}
+
+async function holdOwnerTransitions(): Promise<{ release(): void; blocker: Promise<void> }> {
+  let releaseLock!: () => void
+  let markLocked!: () => void
+  const release = new Promise<void>((resolve) => (releaseLock = resolve))
+  const locked = new Promise<void>((resolve) => (markLocked = resolve))
+  const blocker = prisma.$transaction(
+    async (tx) => {
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "org"
+        WHERE "id" = ${DEFAULT_ORG_ID}
+        FOR UPDATE
+      `
+      markLocked()
+      await release
+    },
+    { timeout: 20_000 }
+  )
+  await locked
+
+  let released = false
+  return {
+    release() {
+      if (released) return
+      released = true
+      releaseLock()
+    },
+    blocker
+  }
+}
+
+async function waitingLocks(): Promise<number> {
+  const rows = await prisma.$queryRaw<Array<{ waiting: bigint }>>`
+    SELECT count(*)::bigint AS "waiting"
+    FROM pg_stat_activity
+    WHERE datname = current_database() AND wait_event_type = 'Lock'
+  `
+  return Number(rows[0]?.waiting ?? 0n)
+}
 
 describe('GET /members', () => {
   it('lists the seeded owner plus members added to the default org', async () => {
@@ -167,6 +217,138 @@ describe('DELETE /members/:id — removal', () => {
       expect(res.statusCode).toBe(409)
     } finally {
       await close()
+    }
+  })
+})
+
+describe('concurrent owner transitions', () => {
+  it('allows only one of two owners to leave and transfers both resources to the survivor', async () => {
+    const otherOwnerId = await makeOwner('concurrent-leave')
+    const firstAgentId = randomUUID()
+    const secondAgentId = randomUUID()
+    await seedAgent(prisma, firstAgentId, {
+      createdByUserId: DEFAULT_OWNER_ID,
+      ownerUserId: DEFAULT_OWNER_ID
+    })
+    await seedAgent(prisma, secondAgentId, {
+      createdByUserId: otherOwnerId,
+      ownerUserId: otherOwnerId
+    })
+    const firstApp = buildHttpApp(prisma)
+    const secondApp = buildHttpApp(prisma, { DEFAULT_OWNER_ID: otherOwnerId })
+    const transitionBlocker = await holdOwnerTransitions()
+    const pending: Promise<unknown>[] = []
+
+    try {
+      const firstLeave = firstApp.app.inject({
+        method: 'DELETE',
+        url: `${ORG}/members/${DEFAULT_OWNER_ID}`
+      })
+      const secondLeave = secondApp.app.inject({
+        method: 'DELETE',
+        url: `${ORG}/members/${otherOwnerId}`
+      })
+      pending.push(firstLeave, secondLeave)
+      await vi.waitFor(async () => expect(await waitingLocks()).toBeGreaterThanOrEqual(2), { timeout: 5_000 })
+
+      transitionBlocker.release()
+      const responses = await Promise.all([firstLeave, secondLeave])
+      expect(responses.map((response) => response.statusCode).sort()).toEqual([204, 409])
+
+      const members = await prisma.membership.findMany({ where: { orgId: DEFAULT_ORG_ID } })
+      expect(members).toHaveLength(1)
+      expect(members[0]!.role).toBe('owner')
+      const resources = await prisma.agent.findMany({
+        where: { id: { in: [firstAgentId, secondAgentId] } },
+        select: { ownerUserId: true }
+      })
+      expect(resources).toHaveLength(2)
+      expect(resources.every((resource) => resource.ownerUserId === members[0]!.userId)).toBe(true)
+    } finally {
+      transitionBlocker.release()
+      await Promise.allSettled([transitionBlocker.blocker, ...pending])
+      await Promise.all([firstApp.close(), secondApp.close()])
+    }
+  })
+
+  it('allows only one of two owners to demote themselves', async () => {
+    const otherOwnerId = await makeOwner('concurrent-demote')
+    const firstApp = buildHttpApp(prisma)
+    const secondApp = buildHttpApp(prisma, { DEFAULT_OWNER_ID: otherOwnerId })
+    const transitionBlocker = await holdOwnerTransitions()
+    const pending: Promise<unknown>[] = []
+
+    try {
+      const firstDemote = firstApp.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/members/${DEFAULT_OWNER_ID}`,
+        payload: { role: 'viewer' }
+      })
+      const secondDemote = secondApp.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/members/${otherOwnerId}`,
+        payload: { role: 'viewer' }
+      })
+      pending.push(firstDemote, secondDemote)
+      await vi.waitFor(async () => expect(await waitingLocks()).toBeGreaterThanOrEqual(2), { timeout: 5_000 })
+
+      transitionBlocker.release()
+      const responses = await Promise.all([firstDemote, secondDemote])
+      expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 409])
+
+      const members = await prisma.membership.findMany({
+        where: { orgId: DEFAULT_ORG_ID },
+        orderBy: { userId: 'asc' }
+      })
+      expect(members.map((member) => member.role).sort()).toEqual(['owner', 'viewer'])
+    } finally {
+      transitionBlocker.release()
+      await Promise.allSettled([transitionBlocker.blocker, ...pending])
+      await Promise.all([firstApp.close(), secondApp.close()])
+    }
+  })
+
+  it('keeps the transfer recipient owned when leave races with demotion', async () => {
+    const otherOwnerId = await makeOwner('leave-demote')
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, {
+      createdByUserId: DEFAULT_OWNER_ID,
+      ownerUserId: DEFAULT_OWNER_ID
+    })
+    const leavingApp = buildHttpApp(prisma)
+    const demotingApp = buildHttpApp(prisma, { DEFAULT_OWNER_ID: otherOwnerId })
+    const transitionBlocker = await holdOwnerTransitions()
+    const pending: Promise<unknown>[] = []
+
+    try {
+      const leave = leavingApp.app.inject({
+        method: 'DELETE',
+        url: `${ORG}/members/${DEFAULT_OWNER_ID}`
+      })
+      const demote = demotingApp.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/members/${otherOwnerId}`,
+        payload: { role: 'viewer' }
+      })
+      pending.push(leave, demote)
+      await vi.waitFor(async () => expect(await waitingLocks()).toBeGreaterThanOrEqual(2), { timeout: 5_000 })
+
+      transitionBlocker.release()
+      const responses = await Promise.all([leave, demote])
+      const statuses = responses.map((response) => response.statusCode)
+      expect(statuses.filter((status) => status === 409)).toHaveLength(1)
+      expect(statuses.some((status) => status === 200 || status === 204)).toBe(true)
+
+      const owners = await prisma.membership.findMany({
+        where: { orgId: DEFAULT_ORG_ID, role: 'owner' },
+        select: { userId: true }
+      })
+      expect(owners).toHaveLength(1)
+      expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).ownerUserId).toBe(owners[0]!.userId)
+    } finally {
+      transitionBlocker.release()
+      await Promise.allSettled([transitionBlocker.blocker, ...pending])
+      await Promise.all([leavingApp.close(), demotingApp.close()])
     }
   })
 })

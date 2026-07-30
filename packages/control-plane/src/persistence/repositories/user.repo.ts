@@ -13,7 +13,6 @@
  * placeholder, or be stored as the user's address. Emails are normalized to
  * lowercase everywhere so invites and sign-ins can't miss on case.
  */
-import type { PrismaClient } from '../../generated/prisma/client.js'
 import { Prisma, withAmbientTx, type PrismaLike } from '../prisma.js'
 import {
   type UserRepo,
@@ -25,9 +24,49 @@ import {
   isSyntheticEmail
 } from '../ports.js'
 import { provisionPresetAgents } from '../preset-agents.js'
-import { OrgMembershipMissing } from '../errors.js'
+import { OrgMembershipMissing, OrgOwnerRequired } from '../errors.js'
 
 const RESOURCE_AUTHORITY_TABLES = ['agent', 'daemon', 'cron_def', 'mcp_provider', 'skill_source'] as const
+const ORG_ROLE_RANK: Record<OrgMemberRole, number> = { viewer: 0, collaborator: 1, owner: 2 }
+
+interface LockedOrgMembership {
+  userId: string
+  role: OrgMemberRole
+}
+
+/**
+ * One transaction-scoped mutex for every owner demotion/removal in an
+ * organization. NO KEY UPDATE conflicts with another transition and org
+ * deletion, but remains compatible with the KEY SHARE lock held by ordinary
+ * resource writes.
+ *
+ * The parent row is always locked before child memberships.
+ */
+async function lockOrgOwnerTransition(tx: Prisma.TransactionClient, orgId: string): Promise<void> {
+  const org = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT "id"
+    FROM "org"
+    WHERE "id" = ${orgId}
+    FOR NO KEY UPDATE
+  `)
+  if (org.length === 0) throw new OrgMembershipMissing()
+}
+
+async function lockOrgMemberships(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  userIds: readonly string[]
+): Promise<LockedOrgMembership[]> {
+  const ids = [...new Set(userIds)].sort()
+  return tx.$queryRaw<LockedOrgMembership[]>(Prisma.sql`
+    SELECT "userId", "role"::text AS "role"
+    FROM "membership"
+    WHERE "orgId" = ${orgId}
+      AND "userId" IN (${Prisma.join(ids)})
+    ORDER BY "userId"
+    FOR UPDATE
+  `)
+}
 
 /**
  * Replace one local user identity with another in a resource's effective
@@ -315,17 +354,20 @@ export class PgUserRepo implements UserRepo {
       const expectedOrgIds = [...new Set(holder.memberships.map((membership) => membership.orgId))].sort()
       const userIds = [holder.id, userId].sort()
       const outcome = await withAmbientTx(this.db, async (tx) => {
-        // Parent before child, matching lockResourceWriteMemberships. KEY SHARE
-        // keeps an org deletion from cascading through memberships while this
-        // identity merge is moving their authority.
-        if (expectedOrgIds.length > 0) {
-          await tx.$queryRaw(Prisma.sql`
+        // Parent before child, matching every membership transition. NO KEY
+        // UPDATE serializes owner-role merges with demotion/removal while
+        // remaining compatible with ordinary resource writers' KEY SHARE.
+        // Lock multiple parents one statement at a time in sorted order; ORDER
+        // BY on one multi-row SELECT does not guarantee row-lock acquisition
+        // order.
+        for (const orgId of expectedOrgIds) {
+          const lockedOrg = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
             SELECT "id"
             FROM "org"
-            WHERE "id" IN (${Prisma.join(expectedOrgIds)})
-            ORDER BY "id"
-            FOR KEY SHARE
+            WHERE "id" = ${orgId}
+            FOR NO KEY UPDATE
           `)
+          if (lockedOrg.length === 0) return 'retry' as const
         }
 
         // Fence both the invited identity and the canonical recipient across all
@@ -385,15 +427,36 @@ export class PgUserRepo implements UserRepo {
         }
 
         const holderMemberships = currentMemberships.filter((membership) => membership.userId === holder.id)
-        if (holderMemberships.length > 0) {
+        const canonicalByOrg = new Map(
+          currentMemberships
+            .filter((membership) => membership.userId === userId)
+            .map((membership) => [membership.orgId, membership])
+        )
+        const missingMemberships = holderMemberships.filter((membership) => !canonicalByOrg.has(membership.orgId))
+        if (missingMemberships.length > 0) {
           await tx.membership.createMany({
-            data: holderMemberships.map((membership) => ({
+            data: missingMemberships.map((membership) => ({
               orgId: membership.orgId,
               userId,
               role: membership.role
             })),
             skipDuplicates: true
           })
+        }
+        // A duplicate membership keeps the stronger role. Otherwise merging an
+        // invited owner into a canonical collaborator could delete the org's
+        // final owner along with the invited placeholder.
+        for (const membership of holderMemberships) {
+          const canonicalMembership = canonicalByOrg.get(membership.orgId)
+          if (
+            canonicalMembership &&
+            ORG_ROLE_RANK[membership.role as OrgMemberRole] > ORG_ROLE_RANK[canonicalMembership.role as OrgMemberRole]
+          ) {
+            await tx.membership.update({
+              where: { id: canonicalMembership.id },
+              data: { role: membership.role }
+            })
+          }
         }
 
         // Resource-table order matches removeMember. Translate grants as well as
@@ -487,13 +550,33 @@ export class PgUserRepo implements UserRepo {
     return rows.map(toMemberRecord)
   }
 
-  async setMemberRole(orgId: string, userId: string, role: OrgMemberRole): Promise<OrgMemberRecord> {
-    const row = await this.db.membership.update({
-      where: { orgId_userId: { orgId, userId } },
-      data: { role },
-      include: { user: true }
+  async setMemberRole(
+    orgId: string,
+    userId: string,
+    role: OrgMemberRole,
+    actingUserId: string
+  ): Promise<OrgMemberRecord> {
+    return withAmbientTx(this.db, async (tx) => {
+      await lockOrgOwnerTransition(tx, orgId)
+      const memberships = await lockOrgMemberships(tx, orgId, [actingUserId, userId])
+      const actor = memberships.find((membership) => membership.userId === actingUserId)
+      const current = memberships.find((membership) => membership.userId === userId)
+      if (actor?.role !== 'owner' || !current) throw new OrgMembershipMissing()
+      if (
+        current.role === 'owner' &&
+        role !== 'owner' &&
+        (await tx.membership.count({ where: { orgId, role: 'owner' } })) === 1
+      ) {
+        throw new OrgOwnerRequired()
+      }
+
+      const row = await tx.membership.update({
+        where: { orgId_userId: { orgId, userId } },
+        data: { role },
+        include: { user: true }
+      })
+      return toMemberRecord(row)
     })
-    return toMemberRecord(row)
   }
 
   async addMemberByEmail(orgId: string, email: string, role: OrgMemberRole): Promise<OrgMemberRecord> {
@@ -509,31 +592,36 @@ export class PgUserRepo implements UserRepo {
     return toMemberRecord(row)
   }
 
-  async removeMember(orgId: string, userId: string, transferToUserId: string): Promise<void> {
+  async removeMember(orgId: string, userId: string, actingUserId: string): Promise<void> {
     // Transfer ownership, prune the departing user's grants, then remove the
     // membership in ONE transaction (docs/designs/resource-visibility.md §8).
     // createdByUserId is immutable audit attribution and is deliberately untouched.
-    const run = async (tx: PrismaLike): Promise<void> => {
-      // Common serialization point with resource create/sharing writes. Lock both
-      // ends in stable order: the departing membership fences its writes, while
-      // the recipient lock prevents another removal from invalidating the transfer
-      // target. Resource writes hold FOR SHARE on every membership whose authority
-      // they persist, so these locks close the scan→delete window.
-      const memberIds = [...new Set([userId, transferToUserId])].sort()
-      const locked = await tx.$queryRaw<Array<{ userId: string; role: string }>>(Prisma.sql`
-        SELECT "userId", "role"::text AS "role"
-        FROM "membership"
-        WHERE "orgId" = ${orgId}
-          AND "userId" IN (${Prisma.join(memberIds)})
-        ORDER BY "userId"
-        FOR UPDATE
-      `)
-      const byUserId = new Map(locked.map((member) => [member.userId, member]))
-      // The target must still exist and the distinct recipient must still own the
-      // organization at this transaction's serialization point.
-      if (userId === transferToUserId || !byUserId.has(userId) || byUserId.get(transferToUserId)?.role !== 'owner') {
+    await withAmbientTx(this.db, async (tx) => {
+      await lockOrgOwnerTransition(tx, orgId)
+      const membershipSnapshot = await tx.membership.findMany({
+        where: { orgId },
+        select: { userId: true, role: true },
+        orderBy: { userId: 'asc' }
+      })
+      const actor = membershipSnapshot.find((membership) => membership.userId === actingUserId)
+      const departing = membershipSnapshot.find((membership) => membership.userId === userId)
+      if (actor?.role !== 'owner' || !departing) throw new OrgMembershipMissing()
+
+      const transferToUserId =
+        userId === actingUserId
+          ? membershipSnapshot.find((membership) => membership.role === 'owner' && membership.userId !== userId)?.userId
+          : actingUserId
+      if (!transferToUserId) throw new OrgOwnerRequired()
+
+      // Fence ownership-bearing resource writes on both ends, then recheck the
+      // snapshot used above. The org transition lock keeps every competing
+      // demotion/removal out until this transaction commits.
+      const locked = await lockOrgMemberships(tx, orgId, [userId, transferToUserId])
+      const byUserId = new Map(locked.map((membership) => [membership.userId, membership]))
+      if (!byUserId.has(userId) || byUserId.get(transferToUserId)?.role !== 'owner') {
         throw new OrgMembershipMissing()
       }
+
       await tx.$executeRaw`UPDATE "agent" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
       await tx.$executeRaw`UPDATE "daemon" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
       await tx.$executeRaw`UPDATE "cron_def" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
@@ -541,11 +629,7 @@ export class PgUserRepo implements UserRepo {
       await tx.$executeRaw`UPDATE "skill_source" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
       // The row is still locked here; deletion completes the same transaction.
       await tx.membership.delete({ where: { orgId_userId: { orgId, userId } } })
-    }
-    // Compose under an ambient transaction when given one (TransactionClient has no
-    // $transaction); open our own interactive transaction otherwise.
-    if ('$transaction' in this.db) await (this.db as PrismaClient).$transaction((tx) => run(tx))
-    else await run(this.db)
+    })
   }
 
   async addMember(orgId: string, userId: string, role: OrgMemberRole): Promise<void> {

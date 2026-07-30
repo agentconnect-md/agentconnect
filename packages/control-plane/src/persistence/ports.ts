@@ -3114,11 +3114,11 @@ export interface UserRepo {
   listMembers(orgId: string): Promise<OrgMemberRecord[]>
 
   /**
-   * Change one member's role. Callers enforce owner-only access and the
-   * last-owner guard. Rejects with Prisma P2025 (→ 404) when the membership
-   * doesn't exist.
+   * Change one member's role under the organization owner-transition lock.
+   * Rechecks that the actor is still an owner and refuses to demote the final
+   * owner before committing.
    */
-  setMemberRole(orgId: string, userId: string, role: OrgMemberRole): Promise<OrgMemberRecord>
+  setMemberRole(orgId: string, userId: string, role: OrgMemberRole, actingUserId: string): Promise<OrgMemberRecord>
 
   /**
    * Add a member directly by email (no email is sent). An existing user gains a
@@ -3128,13 +3128,14 @@ export interface UserRepo {
    */
   addMemberByEmail(orgId: string, email: string, role: OrgMemberRole): Promise<OrgMemberRecord>
 
-  /** Remove a member, transfer all of their resource ownership, and prune their
-   *  share grants atomically. Rejects with a not-found-shaped error when the
-   *  target or transfer recipient is no longer eligible. Callers enforce
-   *  owner-only access and the last-owner guard. */
-  removeMember(orgId: string, userId: string, transferToUserId: string): Promise<void>
+  /**
+   * Remove a member, choose the transfer recipient, transfer all resource
+   * ownership, and prune share grants atomically. Rechecks the acting owner and
+   * refuses to remove the final owner before committing.
+   */
+  removeMember(orgId: string, userId: string, actingUserId: string): Promise<void>
 
-  /** Re-attach a known user to an org (the last-owner compensation path). */
+  /** Attach a known user to an org. */
   addMember(orgId: string, userId: string, role: OrgMemberRole): Promise<void>
 
   /** The caller's own profile (`GET /me`); null when the row is gone. */
@@ -3190,8 +3191,6 @@ export interface OrgRepo {
    * the org still has daemons. Throws P2025 when absent.
    */
   delete(orgId: string): Promise<OrgDeleteResult>
-  /** How many owners the org has (the last-owner guard reads this). */
-  countOwners(orgId: string): Promise<number>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

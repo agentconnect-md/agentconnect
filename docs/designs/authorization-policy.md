@@ -132,15 +132,16 @@ immutable creation attribution. Removing a member transfers every owned
 visibility carrier to a selected remaining organization owner and prunes every
 share vector before deleting the membership.
 
-Removal locks the departing and recipient memberships exclusively, in stable
-order, before scanning resources. Resource creates and sharing writes hold
-compatible shared membership locks and recheck the actor, initial owner, and
-share targets inside the resource-write transaction. This prevents a queued
-write from persisting a departed stable user ID after the removal scan, and
-prevents a concurrent removal from invalidating the selected recipient.
-
-Concurrent last-owner mutation remains tracked in
-[#271](https://github.com/agentconnect-md/agentconnect/issues/271).
+Owner demotion, removal, and invited-identity role merge first lock the
+organization `FOR NO KEY UPDATE`, then recheck the acting owner and lock the
+affected memberships. This serializes competing last-owner transitions without
+conflicting with ordinary resource writers' parent `FOR KEY SHARE`. Removal
+selects its transfer recipient from an authoritative membership snapshot inside
+that transaction before scanning resources. Resource creates and sharing writes
+hold shared membership locks and recheck the actor, initial owner, and share
+targets inside their own resource-write transaction. A queued write therefore
+cannot persist a departed stable user ID, and a transfer recipient cannot lose
+owner status before the transfer commits.
 
 ## 7. Verification
 
