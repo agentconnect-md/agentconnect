@@ -121,6 +121,53 @@ describe('SessionManager', () => {
     store.close()
   })
 
+  it('keeps an initialized self-authored root when first-activation context exceeds the replay cap', async () => {
+    const store = newStore()
+    const host = fakeHost()
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const rootTs = '200.000001'
+    const seed = msg({
+      ts: rootTs,
+      thread: rootTs,
+      source: 'agent',
+      sender: { id: 'bot-a', isBot: true },
+      text: 'ROOT-SUBJECT: investigate the deployment failure.'
+    })
+
+    await sm.handle('bot-a', seed, undefined, undefined, 'acp-parent-1', undefined, undefined, {
+      initializeOnly: true
+    })
+    for (let index = 0; index < 51; index += 1) {
+      store.appendTranscript({
+        channel: 'C1',
+        thread: rootTs,
+        ts: `200.${String(index + 2).padStart(6, '0')}`,
+        sender: 'U1',
+        kind: 'text',
+        text: `missed reply ${index}`
+      })
+    }
+
+    const firstReply = await sm.handle(
+      'bot-a',
+      msg({
+        ts: '200.999999',
+        thread: rootTs,
+        text: 'Please act on the latest thread state.'
+      })
+    )
+    const prompt = firstReply.blocks.map((block: any) => block.text ?? '').join('\n')
+    expect(prompt).toContain('ROOT-SUBJECT: investigate the deployment failure.')
+    expect(prompt).not.toContain('missed reply 0\n')
+    expect(prompt).toContain('missed reply 50')
+    expect(prompt).toContain('1 earlier message(s) elided')
+    expect(firstReply.blocks.at(-1)).toEqual({
+      type: 'text',
+      text: 'Please act on the latest thread state.'
+    })
+    store.close()
+  })
+
   it('does not replay transcript context from another physical bot with the same channel coordinates', async () => {
     const store = newStore()
     const agentB = { ...agent, id: 'bot-b', name: 'bot-b' }

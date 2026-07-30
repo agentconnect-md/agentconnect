@@ -832,6 +832,22 @@ export class SessionManager {
       const participantGap = gap.filter(
         (e) => e.sender !== agentId || (firstPromptAfterOwnRootInitialization && e.ts === thread)
       )
+      // The initialized root is the only own-authored row admitted above, and it is the
+      // founding context for a runtime session that has never seen a prompt. Keep it outside
+      // the ordinary bounded suffix so a busy thread cannot evict it before first activation.
+      const initializedRoot = firstPromptAfterOwnRootInitialization
+        ? participantGap.find((e) => e.sender === agentId && e.ts === thread)
+        : undefined
+      const boundedReplay = (entries: typeof participantGap) => {
+        const includesInitializedRoot =
+          initializedRoot !== undefined && entries.some((e) => e.ts === initializedRoot.ts)
+        const remainder = includesInitializedRoot ? entries.filter((e) => e.ts !== initializedRoot.ts) : entries
+        const suffix = remainder.slice(-MAX_REPLAY_ENTRIES)
+        return {
+          context: includesInitializedRoot ? [initializedRoot, ...suffix] : suffix,
+          elided: remainder.length - suffix.length
+        }
+      }
       // Own authored rows are not repeated to the model, but they ARE first-class events
       // in the shared log and therefore may advance this agent's read cursor once the
       // surrounding stable window is consumed.
@@ -851,7 +867,7 @@ export class SessionManager {
       const hasMessageAfterTrigger =
         msg.platform === 'slack' && participantGap.some((e) => compareSlackTs(e.ts, ts) > 0)
       if (hasMessageAfterTrigger || triggerWasAlreadyDelivered) {
-        const context = participantGap.slice(-MAX_REPLAY_ENTRIES)
+        const { context, elided } = boundedReplay(participantGap)
         if (context.length === 0) {
           rec.lastDeliveredTs = deliveredThrough
           rec.state = 'idle'
@@ -862,7 +878,6 @@ export class SessionManager {
           this.deps.store.upsertSession(rec)
           return { sessionId: rec.acpSessionId!, blocks: [], created, skipped: true }
         }
-        const elided = participantGap.length - context.length
         const head =
           elided > 0
             ? `(unread thread messages, oldest to newest — ${elided} earlier message(s) elided)`
@@ -872,9 +887,8 @@ export class SessionManager {
         // Normal in-order activation: preserve the established context-prefix + current
         // prompt shape, while never replaying this agent's own recorded messages.
         const allContext = participantGap.filter((e) => e.ts !== ts)
-        const context = allContext.slice(-MAX_REPLAY_ENTRIES)
+        const { context, elided } = boundedReplay(allContext)
         if (context.length > 0) {
-          const elided = allContext.length - context.length
           const head =
             elided > 0
               ? `(thread context you may have missed — ${elided} earlier message(s) elided)`
