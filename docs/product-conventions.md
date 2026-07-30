@@ -261,10 +261,15 @@ side respectively, so their entire contents are visibly marked as additions or
 removals before adoption.
 
 Each dream model run appears in Sessions with its runtime, model, token/cost usage,
-and a lifecycle-only history. Dream history and evaluation events must never copy
-memory bodies, source transcript text, model proposals, or mined skill bodies. The
-Memory page links the execution session; source-session selection remains input
-metadata and must not displace that run's own usage in the history presentation.
+and its original ACP activity history. Dream history uses the same transcript
+representation as an ordinary session: the exact extraction prompt, raw reasoning,
+merged tool call/update bodies, and the model's final proposal are visible to anyone
+authorized to view that agent's sessions. Those bodies can quote memory and
+source-session content, so the agent's session access boundary is also the privacy
+boundary; the daemon must not publish the Dream activity to the triggering chat,
+generic evaluation events, or logs. The Memory page links the execution session;
+source-session selection remains input metadata and must not displace that run's own
+usage in the history presentation.
 
 ## GitHub informational review checks
 

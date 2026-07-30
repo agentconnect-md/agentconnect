@@ -440,12 +440,15 @@ Observability:
 `memory.dream.started|completed|failed|adopted|skill_accepted|skill_dismissed`
 evaluation events carry correlation, lifecycle, runtime/model, token/cost, and
 bounded byte-count metadata. Every extraction is also represented as a `dream`
-session in the normal Sessions list and usage reports. Its history contains only
-safe lifecycle messages; the memory snapshot, source transcripts, model proposal,
-and skill bodies never enter session history, evaluation events, or logs. The
-Memory Dream list links the execution session and shows that run's model,
-duration, token/cost, and prompt/output byte metrics. Source-session selection is
-input metadata, not the Dream session's history or usage.
+session in the normal Sessions list and usage reports. Its history contains the
+original ACP activity, using the same transcript recorder as an ordinary session:
+the exact extraction prompt, raw reasoning, merged tool call/update bodies, and the
+model's final proposal. Because those bodies can quote the memory snapshot and
+source transcripts, agent session authorization is the privacy boundary. Raw Dream
+activity never enters generic evaluation events, logs, or the triggering chat. The
+Memory Dream list links the execution session and shows that run's model, duration,
+token/cost, and prompt/output byte metrics. Source-session selection is input
+metadata, not the Dream session's usage.
 
 ## 11. Explicitly out of scope (v1)
 
