@@ -67,7 +67,8 @@ import type {
   DreamFilesReq,
   DreamFileReadReq,
   DreamSkillReviewReq,
-  DreamSkillReadReq
+  DreamSkillReadReq,
+  SessionVisibilityPush
 } from '@agentconnect.md/protocol'
 import {
   buildEnvelope,
@@ -673,6 +674,27 @@ export class CpClient {
       case 'cron/run':
         this.reply(frame, 'ack', this.deps.configApply.runCron((frame.payload as { cronId: string }).cronId))
         return
+      case 'session/visibility': {
+        // session-visibility.md §5.1. ALWAYS reply: a stale revision is answered
+        // `superseded`, never an error frame — an error would reject the CP's
+        // promise and drive its retransmit budget to exhaustion.
+        const p = frame.payload as SessionVisibilityPush
+        const status = this.deps.configApply.applySessionVisibility(p)
+        this.reply(frame, 'session/visibility/ok', {
+          sessionId: p.sessionId,
+          visibilityRev: p.visibilityRev,
+          status
+        })
+        return
+      }
+      case 'session/visibility/snapshot': {
+        // Register-time convergence: the full gate set, applied entry by entry
+        // under the same revision rule. One ack for the whole chunk.
+        const { entries } = frame.payload as { entries: SessionVisibilityPush[] }
+        for (const entry of entries) this.deps.configApply.applySessionVisibility(entry)
+        this.reply(frame, 'ack', { ok: true })
+        return
+      }
       case 'route/assign': {
         const a = frame.payload as Parameters<ConfigApply['applyRouteAssign']>[0]
         this.deps.configApply.applyRouteAssign(a)

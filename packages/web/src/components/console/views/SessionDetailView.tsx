@@ -58,6 +58,7 @@ import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
+import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
 import {
   sessionEffortAfterModelChange,
   sessionEffortChoicesForSelection,
@@ -558,7 +559,8 @@ export default function SessionDetailView() {
     daemons,
     members,
     sessionActivityVersionById,
-    sessionStreamGeneration
+    sessionStreamGeneration,
+    revalidateSessionLists
   } = useConsoleData()
   const {
     getPgSession,
@@ -610,7 +612,11 @@ export default function SessionDetailView() {
     !syntheticPlayground && (!localSession || localSession.steps.length === 0 || localSession.platform === 'playground')
       ? id
       : null
-  const { data: sessionDetail, isLoading: sessionDetailLoading } = useSWR<SessionDetailDto>(
+  const {
+    data: sessionDetail,
+    isLoading: sessionDetailLoading,
+    mutate: mutateSessionDetail
+  } = useSWR<SessionDetailDto>(
     consoleKeys.sessionDetail(activeOrg?.id, detailId),
     ([, orgId, , sessionId]) => fetchSessionDetail(sessionId as string, orgId as string),
     { refreshInterval: 30_000 }
@@ -819,6 +825,28 @@ export default function SessionDetailView() {
   }
 
   const ss = status(session.status)
+  // Session visibility (session-visibility.md §4.3/§6). Rendered in the desktop
+  // header and the mobile meta strip; null when there is nothing to show (an org
+  // session the caller cannot re-classify, or a mock/legacy row).
+  const visibilityControl =
+    sessionDetail && detailId ? (
+      <SessionVisibilityControl
+        sessionId={detailId}
+        visibility={sessionDetail.visibility ?? undefined}
+        state={sessionDetail.visibilityState}
+        canChange={sessionDetail.canChangeVisibility === true}
+        onChanged={({ visibility, state }) => {
+          // Reflect the new tier locally, then re-read: the detail row also
+          // carries the authoritative pending/applied state, and the lists must
+          // drop (or regain) the row for other members.
+          void mutateSessionDetail(
+            (current) => (current ? { ...current, visibility, visibilityState: state } : current),
+            { revalidate: true }
+          )
+          void revalidateSessionLists()
+        }}
+      />
+    ) : null
   const isPg = session.platform === 'playground'
   // A persisted webchat session is the same surface as the live playground — continue
   // it in place. `isLive` gates the composer/typing affordance for both.
@@ -1254,6 +1282,7 @@ export default function SessionDetailView() {
               <span className="dot h-[6px] w-[6px]" style={{ background: ss.dot }} />
               {session.statusLabel || ss.label}
             </span>
+            {visibilityControl}
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-x-[14px] gap-y-2">
             {agentHref ? (
@@ -1360,6 +1389,14 @@ export default function SessionDetailView() {
           </div>
         ))}
       </div>
+
+      {/* MOBILE VISIBILITY ROW — the desktop header is `hidden desktop:flex`, so
+          the badge/toggle needs its own place in the mobile meta strip. */}
+      {visibilityControl && (
+        <div className="flex items-center gap-[10px] border-b border-(--border-subtle) bg-(--surface-card) px-4 py-[10px] desktop:hidden">
+          {visibilityControl}
+        </div>
+      )}
 
       {/* MOBILE AGENT CONFIG ROW — taps through to the owning agent. */}
       {agentHref ? (

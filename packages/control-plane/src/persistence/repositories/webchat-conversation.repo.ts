@@ -5,6 +5,7 @@
  */
 import type { PrismaLike } from '../prisma.js'
 import type { WebchatConversationBinding, WebchatConversationRepo } from '../ports.js'
+import type { AgentId } from '../../domain/ids.js'
 
 export class PgWebchatConversationRepo implements WebchatConversationRepo {
   constructor(private readonly db: PrismaLike) {}
@@ -18,6 +19,14 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
         userId: binding.userId
       }
     })
+  }
+
+  async findOwner(conversationId: string, agentId: AgentId): Promise<string | null> {
+    const row = await this.db.webchatConversation.findFirst({
+      where: { id: conversationId, agentId },
+      select: { userId: true }
+    })
+    return row?.userId ?? null
   }
 
   async owns(binding: WebchatConversationBinding): Promise<boolean> {

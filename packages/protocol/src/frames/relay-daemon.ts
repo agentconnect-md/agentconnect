@@ -319,7 +319,13 @@ export const RdAgentMsg = z.object({
   // standing directive on the child; it is never part of the delivered `text`. Meaningless without
   // an origin to report to, so the target ignores it when `originSessionId` is absent. Optional —
   // an ordinary fire-and-forget wake and any older daemon omit it.
-  needsReply: z.boolean().optional()
+  needsReply: z.boolean().optional(),
+  // session-visibility.md §5.1: the ORIGIN session's current privacy bit, so the
+  // target daemon can seed the woken child's memory-capture gate without a CP
+  // round-trip. TIGHTEN-ONLY: `true` excludes the child immediately; `false` or
+  // absent must NEVER enable capture — an A2A child always starts excluded and
+  // opens only on CP confirmation. Optional — old daemons omit it.
+  parentPrivate: z.boolean().optional()
 })
 export type RdAgentMsg = z.infer<typeof RdAgentMsg>
 
@@ -364,7 +370,12 @@ export const RdAgentMsgFwd = z.object({
   // Forwarded verbatim from RdAgentMsg (session-concept §5.4): the caller's request that the woken
   // session report its outcome back into `originSessionId`. Opaque to the relay — it is the
   // caller's own instruction about its own lineage, not a claim the relay mints or validates.
-  needsReply: z.boolean().optional()
+  needsReply: z.boolean().optional(),
+  // Forwarded verbatim from RdAgentMsg (session-visibility.md §5.1): the origin session's
+  // privacy bit, a TIGHTEN-ONLY hint for the target's memory-capture gate. Opaque to the
+  // relay — the caller's own statement about its own session, not a claim the relay mints
+  // or validates; an `org`/absent value never opens capture on the target.
+  parentPrivate: z.boolean().optional()
 })
 export type RdAgentMsgFwd = z.infer<typeof RdAgentMsgFwd>
 

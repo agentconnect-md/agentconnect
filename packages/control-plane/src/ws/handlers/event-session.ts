@@ -12,10 +12,41 @@
  * Trust boundary: the reported agent must still be placed on the authenticated
  * daemon, and an existing sessionId remains bound to its first agent.
  */
-import { isFrame } from '@agentconnect.md/protocol'
+import { isFrame, type EventSession } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, LaunchId, SessionId } from '../../domain/ids.js'
+import { classifySession } from '../../domain/session-visibility.js'
+import type { DaemonWsDeps } from '../deps.js'
 import type { Handler } from './index.js'
 import { runForReportingAgent } from './reporting-agent.js'
+
+/**
+ * Resolve the ownership lookups the §4.2 classification needs, then classify.
+ *
+ * Both lookups fail closed by construction: they return `null` on a miss and
+ * `classifySession` keeps the row `private` with no owner rather than widening
+ * it (session-visibility.md §4.2). The webchat lookup is additionally scoped to
+ * the reporting agent — a conversation id is only an owner claim for the agent
+ * it was minted against.
+ */
+async function classifyMilestone(p: EventSession, agentId: AgentId, deps: DaemonWsDeps) {
+  const webchatOwnerUserId =
+    p.platform === 'webchat' && p.channel
+      ? ((await deps.webchatConversation?.findOwner(p.channel, agentId)) ?? null)
+      : null
+  const launchOwnerUserId = p.launchCorrelationId
+    ? ((await deps.launch?.ownerByCorrelationId(p.launchCorrelationId)) ?? null)
+    : null
+  return classifySession({
+    ...(p.platform !== undefined ? { platform: p.platform } : {}),
+    ...(p.conversationKind !== undefined ? { conversationKind: p.conversationKind } : {}),
+    ...(p.transportScope !== undefined ? { transportScope: p.transportScope } : {}),
+    ...(p.triggeredBy !== undefined ? { triggeredBy: p.triggeredBy } : {}),
+    ...(p.parentSessionId !== undefined ? { parentSessionId: p.parentSessionId } : {}),
+    ...(p.launchCorrelationId !== undefined ? { launchCorrelationId: p.launchCorrelationId } : {}),
+    webchatOwnerUserId,
+    launchOwnerUserId
+  })
+}
 
 export const handleEventSession: Handler = async (frame, conn, deps) => {
   if (!isFrame('event/session')(frame)) return
@@ -23,7 +54,8 @@ export const handleEventSession: Handler = async (frame, conn, deps) => {
   const agentId = AgentId(p.agentId)
   const daemonId = DaemonId(conn.daemonId)
   await runForReportingAgent(agentId, daemonId, deps, async () => {
-    const recorded = await deps.session.recordMilestone({
+    const classification = await classifyMilestone(p, agentId, deps)
+    const { recorded, session, settled } = await deps.session.recordMilestone({
       sessionId: SessionId(p.sessionId),
       ...(p.parentSessionId !== undefined ? { parentSessionId: SessionId(p.parentSessionId) } : {}),
       agentId,
@@ -47,12 +79,25 @@ export const handleEventSession: Handler = async (frame, conn, deps) => {
       ...(p.fastMode !== undefined ? { fastMode: p.fastMode } : {}),
       ...(p.permissionMode !== undefined ? { permissionMode: p.permissionMode } : {}),
       ...(p.outputMode !== undefined ? { outputMode: p.outputMode } : {}),
+      ...(p.conversationKind !== undefined ? { conversationKind: p.conversationKind } : {}),
+      ...(p.transportScope !== undefined ? { transportScope: p.transportScope } : {}),
+      ...(p.launchCorrelationId !== undefined ? { launchCorrelationId: p.launchCorrelationId } : {}),
+      classification,
       // The reporting daemon comes from the AUTHENTICATED connection, not the
       // frame payload.
       daemonId,
       at: new Date(p.ts)
     })
     if (!recorded) return
+    // Confirm the capture gate for the rows whose privacy the daemon cannot
+    // infer locally (§5.1): an A2A child always starts excluded and only a
+    // CP-confirmed `org` state may open it, and a settled child's tier is by
+    // definition news to the daemon that runs it. The ack watermark keeps this
+    // to one push per revision — later milestones of the same session are silent.
+    const confirm = [...settled, ...(session?.parentSessionId ? [session] : [])].filter(
+      (s) => s.visibilityAckedRev < s.visibilityRev
+    )
+    if (confirm.length > 0) void deps.visibilityPush?.notifySessions(confirm)
     // Publish only after the metadata commit. Browser subscribers use this as an
     // invalidation signal and immediately re-read `/sessions`; publishing first
     // would race that GET against the upsert and leave the new row invisible.

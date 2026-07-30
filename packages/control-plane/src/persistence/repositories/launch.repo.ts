@@ -39,10 +39,20 @@ export class PgLaunchRepo implements LaunchRepo {
         mode: input.mode ?? 'long_lived',
         launchEpoch: input.epoch,
         status: 'running',
-        startedAt: input.startedAt ?? new Date()
+        startedAt: input.startedAt ?? new Date(),
+        ...(input.correlationId !== undefined ? { correlationId: input.correlationId } : {}),
+        ...(input.createdByUserId !== undefined ? { createdByUserId: input.createdByUserId } : {})
       }
     })
     return toRecord(l)
+  }
+
+  async ownerByCorrelationId(correlationId: string): Promise<string | null> {
+    const l = await this.db.agentLaunch.findUnique({
+      where: { correlationId },
+      select: { createdByUserId: true }
+    })
+    return l?.createdByUserId ?? null
   }
 
   async currentLaunch(agentId: AgentId): Promise<LaunchId | undefined> {

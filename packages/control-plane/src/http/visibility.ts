@@ -15,7 +15,7 @@
  * everything). `canManageSharing` is relaxed to `=== canEdit` (decision §13.3):
  * anyone who can edit a resource can also change who it is shared with.
  */
-import type { Shareable, ViewCtx } from '../persistence/ports.js'
+import type { SessionVisibility, Shareable, ViewCtx } from '../persistence/ports.js'
 
 // Re-export the shared visibility primitives so route code has a single import
 // site (`http/visibility.js`) while the repo layer imports them from `ports.js`.
@@ -43,3 +43,34 @@ export function canEdit(r: Shareable, c: ViewCtx): boolean {
  *  `sharedWith`)? Relaxed (§13.3) to exactly the content-edit gate: if you can
  *  edit it, you can re-share it. Only viewers (read-only) are excluded. */
 export const canManageSharing = canEdit
+
+// ── session visibility (docs/designs/session-visibility.md §5) ──────────────
+// Sessions are deliberately NOT `Shareable`: their owner is a namespaced
+// identity string (`user:<id>` | `<platform>:<scope>:<uid>`, §2) matched
+// against the viewer's identity set — not a creator FK — and they carry no
+// `sharedWith`. The repo WHERE arm (session.repo.ts `pageWhereSql` viewer
+// predicate) must stay the SQL mirror of `canViewSession`.
+
+/** The visibility-bearing fields of a session row the predicate needs. */
+export interface SessionViewable {
+  visibility: SessionVisibility
+  ownerIdentity: string | null
+}
+
+/** The viewer's identity set (§2): today just their console identity; identity
+ *  linking (§7) will add verified platform identities, lighting owner-orphan DM
+ *  sessions up retroactively — the stored `ownerIdentity` is already correct. */
+export function identitySetOf(ctx: ViewCtx): Set<string> {
+  return new Set([`user:${ctx.userId}`])
+}
+
+/** Can this caller SEE the session? Any one arm suffices. An unowned private
+ *  session (`ownerIdentity` null — an owner-orphan) is visible to org owners
+ *  only: fail closed, never widen because ownership could not be resolved. */
+export function canViewSession(s: SessionViewable, ctx: ViewCtx, identitySet: ReadonlySet<string>): boolean {
+  return (
+    ctx.role === 'owner' || // governance override — owners see everything
+    s.visibility === 'org' || // default: visible to whoever can view the agent
+    (s.ownerIdentity != null && identitySet.has(s.ownerIdentity)) // private: owner match
+  )
+}

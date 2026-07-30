@@ -17,9 +17,10 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, HookId, OrgId, SessionId } from '../../domain/ids.js'
 import { orgOf, ctxOf } from '../rbac.js'
-import { canView } from '../visibility.js'
+import { canView, canViewSession, identitySetOf } from '../visibility.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
+import { visibilityStateOf } from '../../orchestrator/visibilityPush.js'
 import {
   SessionListPageDto,
   SessionFacetsDto,
@@ -28,7 +29,9 @@ import {
   SessionToolBodyQueryDto,
   SessionToolBodyChunkDto,
   ErrorDto,
-  IdParam
+  IdParam,
+  SetSessionVisibilityBody,
+  SessionVisibilityDto
 } from '../dto/index.js'
 
 const SessionFilterQueryDto = z.object({
@@ -96,6 +99,21 @@ function hookIdForSession(s: HookSessionRow): string | null {
 
 function sessionRelation(s: { id: string; agentId: string; title: string | null }) {
   return { id: s.id, agentId: s.agentId, title: s.title }
+}
+
+/**
+ * Who may re-classify a session (§4.3): its recorded owner (identity match) and
+ * org owners. Collaborators and viewers cannot re-classify other people's
+ * sessions — but note this is deliberately NOT the blanket `denyViewerWrite`
+ * guard used elsewhere: the grant follows OWNERSHIP, so a viewer-role member who
+ * owns a session keeps control of their own DM's visibility.
+ */
+function canChangeSessionVisibility(
+  s: { ownerIdentity: string | null },
+  ctx: { role: string; userId: string },
+  identitySet: ReadonlySet<string>
+): boolean {
+  return ctx.role === 'owner' || (s.ownerIdentity != null && identitySet.has(s.ownerIdentity))
 }
 
 function hookMetadataForSession(metadata: Map<string, HookSessionMetadata>, session: HookSessionRow) {
@@ -253,7 +271,8 @@ function sessionDto(s: SessionPageRow, hookMetadata: Map<string, HookSessionMeta
     fastMode: s.fastMode ?? null,
     permissionMode: s.permissionMode ?? null,
     outputMode: s.outputMode ?? null,
-    daemonId: s.daemonId ?? null
+    daemonId: s.daemonId ?? null,
+    visibility: s.visibility
   }
 }
 
@@ -284,9 +303,20 @@ export function sessionRoutes(deps: HttpDeps) {
       return canView(agent, ctxOf(req)) ? agent : null
     }
 
+    // Session visibility (session-visibility.md §5) COMPOSES with the agent gate
+    // above: a session is visible iff its agent is visible AND the caller passes
+    // the session predicate. The repo arm and this in-app check must stay two
+    // spellings of one rule — both come from `canViewSession`.
+    const viewerOf = (req: FastifyRequest) => {
+      const ctx = ctxOf(req)
+      return { role: ctx.role, identitySet: [...identitySetOf(ctx)] }
+    }
+
     const getOrgViewableSession = async (req: FastifyRequest, sessionId: string) => {
       const session = await deps.repos.session.get(SessionId(sessionId))
       if (!session) return null
+      const ctx = ctxOf(req)
+      if (!canViewSession(session, ctx, identitySetOf(ctx))) return null
       const agent = await getOrgViewableAgent(req, session.agentId)
       return agent ? { session, agent } : null
     }
@@ -312,6 +342,7 @@ export function sessionRoutes(deps: HttpDeps) {
         const { githubHookIds, repoHookIds } = await githubHookFilters(deps, orgOf(req), req.query, true)
         const index = await deps.repos.session.listFacets({
           agentIds: visibleAgentIds,
+          viewer: viewerOf(req),
           ...(req.query.agentId ? { agentId: AgentId(req.query.agentId) } : {}),
           ...(req.query.platform ? { platform: req.query.platform } : {}),
           ...(req.query.integration ? { integration: req.query.integration } : {}),
@@ -368,6 +399,7 @@ export function sessionRoutes(deps: HttpDeps) {
         const { githubHookIds, repoHookIds } = await githubHookFilters(deps, orgOf(req), req.query, false)
         const page = await deps.repos.session.listPage({
           agentIds: selectedAgentIds,
+          viewer: viewerOf(req),
           ...(req.query.platform ? { platform: req.query.platform } : {}),
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
@@ -417,14 +449,18 @@ export function sessionRoutes(deps: HttpDeps) {
         // is indistinguishable from no parent; hidden children are omitted.
         const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((a) => a.id)
         const visibleAgentIdSet = new Set<string>(visibleAgentIds)
+        const ctx = ctxOf(req)
+        const identitySet = identitySetOf(ctx)
         const [parent, children, usage] = await Promise.all([
           s.parentSessionId ? deps.repos.session.get(s.parentSessionId) : Promise.resolve(null),
-          deps.repos.session.listChildren(SessionId(s.id), visibleAgentIds),
+          deps.repos.session.listChildren(SessionId(s.id), visibleAgentIds, viewerOf(req)),
           deps.repos.sessionUsage.get(s.agentId, s.id)
         ])
+        const parentVisible =
+          parent !== null && visibleAgentIdSet.has(parent.agentId) && canViewSession(parent, ctx, identitySet)
         return {
           id: s.id,
-          parentSession: parent && visibleAgentIdSet.has(parent.agentId) ? sessionRelation(parent) : null,
+          parentSession: parentVisible ? sessionRelation(parent) : null,
           childSessions: children.map(sessionRelation),
           agentId: s.agentId,
           launchId: s.launchId,
@@ -450,6 +486,11 @@ export function sessionRoutes(deps: HttpDeps) {
           outputMode: s.outputMode,
           daemonId: s.daemonId,
           activityState: s.activityState,
+          visibility: s.visibility,
+          // The §5.1 cutover state: CP read gates apply at commit, but the memory
+          // boundary only takes effect once every affected daemon has acked.
+          visibilityState: await visibilityStateOf(deps.visibilityPush, deps.repos, [s.id]),
+          canChangeVisibility: canChangeSessionVisibility(s, ctx, identitySet),
           startedAt: s.startedAt.toISOString(),
           endedAt: s.endedAt ? s.endedAt.toISOString() : null
         }
@@ -562,6 +603,54 @@ export function sessionRoutes(deps: HttpDeps) {
               .send({ error: 'Service Unavailable', statusCode: 503, message: 'owning daemon is offline' })
           }
           throw err
+        }
+      }
+    )
+
+    // §4.3 reclassification — the escape hatch in both directions: publish a
+    // useful DM transcript to the org, or pull a channel/group-DM session
+    // private. Tightening cascades to descendants and stops future memory
+    // capture once every affected daemon acks (§5.1); it does NOT scrub what the
+    // agent already distilled while the session was org-visible.
+    r.put(
+      '/sessions/:id/visibility',
+      {
+        schema: {
+          tags: [Tag.Sessions],
+          summary: 'Set session visibility',
+          description:
+            'Reclassifies a session as private or org-visible. Allowed for the session owner and org owners. Tightening cascades to descendant sessions and stops future agent-memory capture once the owning daemons acknowledge; memory already distilled is not retracted.',
+          operationId: 'setSessionVisibility',
+          params: IdParam,
+          body: SetSessionVisibilityBody,
+          response: { 200: SessionVisibilityDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const owned = await getOrgViewableSession(req, req.params.id)
+        if (!owned) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+        }
+        const ctx = ctxOf(req)
+        if (!canChangeSessionVisibility(owned.session, ctx, identitySetOf(ctx))) {
+          return reply
+            .code(403)
+            .send({ error: 'Forbidden', statusCode: 403, message: 'not allowed to change this session visibility' })
+        }
+        const { affected } = await deps.repos.session.setVisibility(SessionId(req.params.id), req.body.visibility)
+        // Read gates apply at commit; the daemons learn asynchronously.
+        if (affected.length > 0) void deps.visibilityPush?.notifySessions(affected)
+        const current = affected.find((s) => s.id === owned.session.id) ?? owned.session
+        return {
+          id: current.id,
+          visibility: current.visibility,
+          visibilityRev: current.visibilityRev,
+          cascadedSessionIds: affected.filter((s) => s.id !== current.id).map((s) => s.id),
+          state: await visibilityStateOf(
+            deps.visibilityPush,
+            deps.repos,
+            affected.length > 0 ? affected.map((s) => s.id) : [current.id]
+          )
         }
       }
     )

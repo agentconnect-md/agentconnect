@@ -106,6 +106,10 @@ const dm = (ts: string, text: string) => ({
   trigger: 'dm' as const
 })
 
+/** Same conversation, but a CHANNEL: org-visible, so agent-memory capture stays
+ *  enabled (a DM is private and excluded — session-visibility.md §4.2/§5.1). */
+const channelMsg = (ts: string, text: string) => ({ ...dm(ts, text), isDm: false, trigger: 'mention' as const })
+
 function transcript(daemon: Daemon): TranscriptEntry[] {
   return (daemon as any).store.transcriptSince(TRANSCRIPT_CHANNEL, 'T1', null)
 }
@@ -162,7 +166,7 @@ describe('Daemon transcript records the agent reply', () => {
     ;(daemon as any).memory.recordTurnForBinding = recordTurn
     const capturedBinding = (daemon as any).agents.get('bot-a').memory
 
-    const turn = (daemon as any).dispatch('bot-a', dm('100', 'question?'), 'int-a')
+    const turn = (daemon as any).dispatch('bot-a', channelMsg('100', 'question?'), 'int-a')
     await vi.waitFor(() => expect(conn.postMessage).toHaveBeenCalled())
     expect(recordTurn).not.toHaveBeenCalled()
 
@@ -172,7 +176,7 @@ describe('Daemon transcript records the agent reply', () => {
     expect(recordTurn).toHaveBeenCalledWith(
       { agentId: 'bot-a', sessionId: 'acp-1' },
       {
-        turnId: stableTurnId('bot-a', dm('100', 'question?')),
+        turnId: stableTurnId('bot-a', channelMsg('100', 'question?')),
         sessionId: 'acp-1',
         input: 'question?',
         output: 'here is my answer'
@@ -180,6 +184,24 @@ describe('Daemon transcript records the agent reply', () => {
       capturedBinding,
       undefined
     )
+    await daemon.stop()
+  }, 15_000)
+
+  // session-visibility.md §5.1: managed memory is agent-scoped and shared across
+  // users, so a private conversation must never be distilled into it. A DM is
+  // private from its first turn, with no CP round-trip.
+  it('never captures post-turn memory from a private DM session', async () => {
+    const { factory } = replyingHost('here is my answer')
+    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    await daemon.start()
+    makeRoutable(daemon)
+    const recordTurn = vi.fn(async () => {})
+    ;(daemon as any).memory.recordTurnForBinding = recordTurn
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'question?'), 'int-a')
+
+    expect((daemon as any).store.isCaptureExcluded('acp-1')).toBe(true)
+    expect(recordTurn).not.toHaveBeenCalled()
     await daemon.stop()
   }, 15_000)
 

@@ -161,6 +161,7 @@ import {
   RELAY_DAEMON_SUBPROTOCOL,
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
+  SESSION_VISIBILITY_FEATURE,
   effectiveMemoryDreamingPolicy,
   gitRepoLabel
 } from '@agentconnect.md/protocol'
@@ -265,7 +266,8 @@ import type {
   FeishuRegion,
   MemoryDreamingPolicy,
   ChildSessionStatus,
-  ChildSessionStatusProbe
+  ChildSessionStatusProbe,
+  SessionVisibilityPush
 } from '@agentconnect.md/protocol'
 
 /** Format an error for logs, surfacing a JSON-RPC/ACP RequestError's `code` and
@@ -617,6 +619,14 @@ interface CallMeta {
    *  Like `deliverHeadless` it does NOT cascade — a grandchild is only obliged if its own parent
    *  asks. Absent ⇒ an ordinary fire-and-forget wake. */
   needsReply?: boolean
+  /** session-visibility.md §5.1: the WAKING session is private, so this child's
+   *  transcript holds prompt text copied out of it and must not feed shared agent
+   *  memory. Strictly ONE-DIRECTIONAL — it can only tighten. A `false`/absent
+   *  value never opens capture: an A2A child always starts excluded, and only a
+   *  CP-confirmed `org` state (which the CP derives from the post-cascade parent)
+   *  may open it. That is what makes a stale hint in flight during a §4.3
+   *  tightening harmless. */
+  parentPrivate?: boolean
 }
 
 type TurnInterruptReason = 'pause' | 'loop protection' | 'stop' | 'cancel' | 'shutdown'
@@ -1087,6 +1097,12 @@ interface WebchatTurnContext {
   sink: WebchatSink
   runtime?: WebchatRuntimeConfig
   doneSent?: boolean
+  /** This turn is driven by the local evaluation harness, not a browser. Its
+   *  webchat shape is synthetic, so the session-visibility capture gate does NOT
+   *  treat it as a private Playground conversation — measuring memory capture is
+   *  the harness's whole purpose (session-visibility.md §4.2 applies to real
+   *  user conversations). */
+  evaluation?: boolean
 }
 
 /** One daemon-owned turn stream. `sink` is stable for the turn engine; `transport`
@@ -1617,7 +1633,8 @@ export class Daemon {
     const sessionId = await this.dispatch(input.agentId, message, undefined, {
       conversationId: input.conversationId,
       turnId,
-      sink
+      sink,
+      evaluation: true
     })
     // Product turns intentionally enqueue post-turn memory work. Evaluation waits
     // for this agent's chain so the returned artifact has a terminal capture event.
@@ -3486,6 +3503,11 @@ export class Daemon {
   ): void {
     if (this.evaluationProfile.memory === 'off') return
     if (!output.trim()) return
+    // Agent memory is agent-scoped and shared across users, so a private
+    // session's turn must never be distilled into it (session-visibility.md
+    // §5.1). The gate is checked HERE — before both the managed distillation and
+    // the external capture outbox — and fails closed on unknown state.
+    if (this.store.isCaptureExcluded(sessionId)) return
     const provider = binding?.provider ?? 'managed'
     const observableCapture = provider === 'managed' || provider === 'external'
     const record = async () => {
@@ -5002,7 +5024,11 @@ export class Daemon {
       ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {}),
       // §5.4: the remote caller asked this child to report its outcome back. Same gate as the
       // local path — the directive names `originSessionId`, so it is meaningless without one.
-      ...(msg.needsReply === true && msg.originSessionId !== undefined ? { needsReply: true } : {})
+      ...(msg.needsReply === true && msg.originSessionId !== undefined ? { needsReply: true } : {}),
+      // §5.1: tighten-only. A `true` seals the child's capture gate immediately;
+      // a `false`/absent value changes nothing, because the child starts excluded
+      // and only the CP may open it.
+      ...(msg.parentPrivate === true ? { parentPrivate: true } : {})
     }
     const narrowed = this.narrowPlatform(platform)
     const resolved = this.resolveCpAgent(msg.toAgentId)
@@ -5337,7 +5363,10 @@ export class Daemon {
       originCoords,
       // §5.3: `toAgent.needsReply` — tell the child to report its outcome back to that origin.
       // Meaningless without an origin to reply into, so it rides the same condition.
-      ...(req.needsReply === true && originSessionId !== undefined ? { needsReply: true } : {})
+      ...(req.needsReply === true && originSessionId !== undefined ? { needsReply: true } : {}),
+      // §5.1: seal the child's capture gate when the waking session is private.
+      // Tighten-only — see CallMeta.parentPrivate.
+      ...(originSessionId !== undefined && this.store.isCaptureExcluded(originSessionId) ? { parentPrivate: true } : {})
     }
 
     const normalized: NormalizedMessage = {
@@ -5445,7 +5474,12 @@ export class Daemon {
       hopCount: sourceHopCount + 1,
       deliveryId,
       ...(replierSessionId !== undefined ? { originSessionId: replierSessionId } : {}),
-      originCoords: replyOriginCoords
+      originCoords: replyOriginCoords,
+      // §5.1: seal the child's capture gate when the waking session is private.
+      // Tighten-only — see CallMeta.parentPrivate.
+      ...(replierSessionId !== undefined && this.store.isCaptureExcluded(replierSessionId)
+        ? { parentPrivate: true }
+        : {})
     }
 
     // Resolve where the origin session lives. Local ⇒ dispatch straight into it through the
@@ -5743,7 +5777,10 @@ export class Daemon {
         platform: originCoordPlatform,
         channel: req.originChannel,
         ...(req.originThread ? { thread: req.originThread } : {})
-      }
+      },
+      // §5.1: seal the child's capture gate when the waking session is private.
+      // Tighten-only — see CallMeta.parentPrivate.
+      ...(originSessionId && this.store.isCaptureExcluded(originSessionId) ? { parentPrivate: true } : {})
     }
     const transportScope = this.transportScopeForIntegrationIds(
       req.integrationId !== undefined ? [req.integrationId] : undefined
@@ -5806,6 +5843,10 @@ export class Daemon {
     try {
       const ack = await this.relays.sendAgentMsg({
         claimedFromAgentId: req.callerAgentId,
+        // Tighten-only privacy hint for the remote child's capture gate (§5.1).
+        ...(ctx.originSessionId !== undefined && this.store.isCaptureExcluded(ctx.originSessionId)
+          ? { parentPrivate: true }
+          : {}),
         toAgentId: req.toAgentId,
         text: req.text,
         coords: {
@@ -8734,6 +8775,12 @@ export class Daemon {
     // First metadata snapshot: enough for the CP's DB-backed session list/detail to
     // resolve this daemon-local session without pulling `session/list` on every view.
     if (created) {
+      // Classify for session visibility BEFORE the first milestone: the CP's
+      // ingest is first-wins, and the daemon's own capture gate must be closed
+      // from turn one for anything that could be private (session-visibility.md
+      // §4.1/§5.1). Persisted on the session row so later re-emits — including
+      // after a restart, when `msg` is long gone — still carry the same facts.
+      this.classifyNewSession(agentId, key, sessionId, msg, callMeta !== undefined, webchat?.evaluation === true)
       this.emitSessionMetadataSnapshot({
         sessionId,
         agentId,
@@ -10222,6 +10269,17 @@ export class Daemon {
       ts: now
     }
     if (row?.parentSessionId !== undefined) event.parentSessionId = row.parentSessionId
+    // Visibility-classification inputs (session-visibility.md §4.1), read from
+    // the session row so every re-emit carries them. Absent fields make the CP
+    // fail closed (no owner) rather than guess — never send a placeholder.
+    const classification = this.store.getSessionClassification(input.agentId, input.sessionId)
+    if (classification?.conversationKind !== undefined) {
+      event.conversationKind = classification.conversationKind as EventSession['conversationKind']
+    }
+    if (classification?.tenantScope !== undefined) event.transportScope = classification.tenantScope
+    if (classification?.launchCorrelationId !== undefined) {
+      event.launchCorrelationId = classification.launchCorrelationId
+    }
     const thread = key?.thread ?? input.thread
     if (thread !== undefined) event.thread = thread
     if (row?.title !== undefined) event.title = row.title
@@ -11861,6 +11919,12 @@ export class Daemon {
    *  lifetime (§14.7 open question 2: a restart re-notices, which is acceptable). */
   private readonly gatedNoticesSent = new Set<string>()
 
+  /** agentId → the CP launch correlation awaiting the next session this agent
+   *  creates (session-visibility.md §4.4). `agent/launch` only warm-starts a
+   *  host — the session arrives later, from the daemon's own ingress — so the
+   *  provenance has to be parked here and consumed once. */
+  private readonly pendingLaunchCorrelation = new Map<string, string>()
+
   /** The integration config backing `integrationId`, across all local agents. */
   private integrationConfigById(integrationId: string): Integration | undefined {
     for (const a of this.agents.values()) {
@@ -11902,6 +11966,103 @@ export class Daemon {
       .digest('hex')
       .slice(0, 24)
     return `${integration.platform}:${digest}`
+  }
+
+  /**
+   * The DURABLE tenant scope for an integration (session-visibility.md §2) — the
+   * middle segment of an IM owner identity `<platform>:<scope>:<uid>`.
+   *
+   * Deliberately NOT `transportScopeForIntegration`: that one hashes the live
+   * credential, so it rotates with tokens and would orphan every historical
+   * identity match. This returns a value that survives rotation — the platform's
+   * own tenant id where one exists, otherwise a scope minted once per
+   * integration and persisted. Undefined ⇒ the CP records no owner (fail closed),
+   * never a guessed one.
+   */
+  private tenantScopeForIntegration(integration: Integration): string | undefined {
+    switch (integration.platform) {
+      case 'slack': {
+        // The workspace id from auth.test, surfaced by the live connection.
+        // Optional-call: the connection map holds live SlackConnections in
+        // production, but a not-yet-authenticated (or test-substituted) one may
+        // not expose the accessor — fall back to a minted scope rather than throw.
+        const teamId = this.connByIntegration.get(integration.id)?.workspaceId?.()
+        return teamId || this.mintedTenantScope(integration.id)
+      }
+      case 'telegram': {
+        // The public bot id prefix survives a BotFather token rotation.
+        const botId = integration.telegram.botToken.split(':', 1)[0]
+        return /^\d+$/.test(botId ?? '') ? `bot${botId}` : this.mintedTenantScope(integration.id)
+      }
+      case 'feishu':
+        // App id + region is the tenant anchor Feishu/Lark exposes to us.
+        return `${integration.feishu.region}:${integration.feishu.appId}`
+      default:
+        // Discord (and anything new) exposes no durable tenant id here.
+        return this.mintedTenantScope(integration.id)
+    }
+  }
+
+  /**
+   * Seed a new session's visibility facts and its local capture gate (§4.1/§5.1).
+   *
+   * The gate's first layer is what the daemon can decide alone, with no CP
+   * round-trip. It is deliberately conservative: an A2A child ALWAYS starts
+   * excluded regardless of any hint it carried, because a delegated prompt may
+   * be copied from a private parent and only a CP-confirmed `org` state may open
+   * capture. Everything else the CP later confirms or overrides.
+   */
+  private classifyNewSession(
+    agentId: string,
+    key: string,
+    acpSessionId: string,
+    msg: NormalizedMessage,
+    isA2aChild: boolean,
+    isEvaluation = false
+  ): void {
+    try {
+      this.classifyNewSessionOrThrow(agentId, key, acpSessionId, msg, isA2aChild, isEvaluation)
+    } catch (err) {
+      // Never let classification break a turn — but fail CLOSED: an unclassified
+      // session keeps memory capture excluded until the CP confirms otherwise.
+      this.log.warn(`session visibility: classification failed for ${acpSessionId} (${formatErr(err)})`)
+      this.store.setLocalCaptureGate(acpSessionId, true)
+    }
+  }
+
+  private classifyNewSessionOrThrow(
+    agentId: string,
+    key: string,
+    acpSessionId: string,
+    msg: NormalizedMessage,
+    isA2aChild: boolean,
+    isEvaluation: boolean
+  ): void {
+    const conversationKind = msg.isDm ? 'dm' : msg.isGroupDm ? 'group_dm' : 'channel'
+    const integrationId =
+      msg.platform === 'webchat'
+        ? undefined
+        : this.integrationIdForTransportScope(agentId, msg.platform, msg.transportScope)
+    const integration = integrationId ? this.integrationConfigById(integrationId) : undefined
+    const tenantScope = integration ? this.tenantScopeForIntegration(integration) : undefined
+    const launchCorrelationId = this.pendingLaunchCorrelation.get(agentId)
+    if (launchCorrelationId) this.pendingLaunchCorrelation.delete(agentId)
+    this.store.setSessionClassification(key, {
+      conversationKind,
+      ...(tenantScope ? { tenantScope } : {}),
+      ...(launchCorrelationId ? { launchCorrelationId } : {})
+    })
+    const locallyPrivate =
+      !isEvaluation && (isA2aChild || msg.isDm || msg.platform === 'webchat' || launchCorrelationId !== undefined)
+    this.store.setLocalCaptureGate(acpSessionId, locallyPrivate)
+  }
+
+  /** Mint-once, persisted: stable across restarts and credential rotations. */
+  private mintedTenantScope(integrationId: string): string {
+    return (
+      this.store.getMintedTenantScope(integrationId) ??
+      this.store.mintTenantScope(integrationId, `mint:${randomUUID().replace(/-/g, '').slice(0, 24)}`)
+    )
   }
 
   /** Source integrations on one live ingress share a physical connection. The
@@ -13618,6 +13779,11 @@ export class Daemon {
         // launchId is a fresh fence value; per-turn mode + launchId-scoped prompt
         // fencing are out of scope (the daemon prompts from its own ingress).
         this.drainingAgents.delete(launch.agentId)
+        // Park the CP's launch provenance for the next session this agent
+        // creates, so ingest can attribute it to the launching user (§4.4).
+        if (launch.launchCorrelationId) {
+          this.pendingLaunchCorrelation.set(launch.agentId, launch.launchCorrelationId)
+        }
         await this.ensureHostAsync(launch.agentId)
         return {
           agentId: launch.agentId,
@@ -13633,7 +13799,14 @@ export class Daemon {
       applyDaemonDrain: (drain: Drain, onProgress: (p: DrainProgress) => void): Promise<DrainDone> =>
         this.runDrain(drain, onProgress),
       applyDaemonRestart: (_req: DaemonRestart): DaemonControlAck => this.scheduleFleetExit('restart'),
-      applyDaemonUpgrade: (req: DaemonUpgrade): DaemonControlAck => this.scheduleFleetExit('upgrade', req.targetVersion)
+      applyDaemonUpgrade: (req: DaemonUpgrade): DaemonControlAck =>
+        this.scheduleFleetExit('upgrade', req.targetVersion),
+      // The CP is the authority on effective visibility (§4.3 changes, §4.5
+      // settlements and cascades); the daemon only enforces the resulting
+      // capture gate. Ordering is by the CP's durable revision, so retransmits
+      // and out-of-order delivery are safe.
+      applySessionVisibility: (p: SessionVisibilityPush): 'applied' | 'superseded' =>
+        this.store.applyCpCaptureGate(p.sessionId, p.visibility === 'private', p.visibilityRev)
     }
   }
 
@@ -14003,7 +14176,11 @@ export class Daemon {
           // with a clear "not supported by this agent's version" instead of
           // sending a frame that daemon would silently drop (and hanging until
           // the request times out), and the console hides the panel.
-          'memory-dreaming-v1'
+          'memory-dreaming-v1',
+          // Per-session memory-capture gate (session-visibility.md §5.1). The CP
+          // only pushes `session/visibility` to daemons that advertise this — an
+          // older daemon would NAK the unknown frame, not ignore it.
+          SESSION_VISIBILITY_FEATURE
         ]
       }),
       // Observed runtime profiles, sent as one `facts/daemon-runtimes` snapshot on

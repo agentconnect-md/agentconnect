@@ -3,6 +3,7 @@ import {
   RdMsg,
   RdAck,
   RdChat,
+  RdAgentMsg,
   RdAgentMsgFwd,
   RdSlackAction,
   RelayWebchatOp,
@@ -317,6 +318,33 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
         deliveryId: 'delivery-1'
       }).success
     ).toBe(true)
+  })
+
+  it('rd/agentmsg + rd/agentmsg/fwd carry the tighten-only parentPrivate hint (session-visibility.md §5.1)', () => {
+    const msg = {
+      claimedFromAgentId: AGENT_ID,
+      toAgentId: '44444444-4444-4444-8444-444444444444',
+      text: 'delegate this',
+      coords: { platform: 'slack' as const, channel: 'C123' },
+      hopCount: 0,
+      deliveryId: 'delivery-1'
+    }
+    // an old daemon omits the hint — still decodable (absent must never open capture)
+    expect(RdAgentMsg.parse(msg).parentPrivate).toBeUndefined()
+    expect(RdAgentMsg.parse({ ...msg, parentPrivate: true }).parentPrivate).toBe(true)
+
+    const fwd = {
+      trustedFromAgentId: AGENT_ID,
+      orgId: ORG_ID,
+      toAgentId: '44444444-4444-4444-8444-444444444444',
+      text: 'delegate this',
+      coords: { platform: 'slack' as const, channel: 'C123' },
+      hopCount: 1,
+      deliveryId: 'delivery-1'
+    }
+    // the relay forwards the hint verbatim — same optional field on the fwd leg
+    expect(RdAgentMsgFwd.parse(fwd).parentPrivate).toBeUndefined()
+    expect(RdAgentMsgFwd.parse({ ...fwd, parentPrivate: true }).parentPrivate).toBe(true)
   })
 
   it('rd/chat streams webchat output and done events verbatim', () => {

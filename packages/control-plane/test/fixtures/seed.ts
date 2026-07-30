@@ -83,6 +83,40 @@ export async function seedAgent(
   return AgentId(id)
 }
 
+/** A converged session milestone row. `visibility`/`ownerIdentity` default to
+ *  what ingest records for a channel session (session-visibility.md §4.2). */
+export async function seedSessionMeta(
+  prisma: PrismaClient,
+  id: string,
+  agentId: string,
+  opts: {
+    visibility?: 'org' | 'private'
+    ownerIdentity?: string
+    daemonId?: string
+    platform?: string
+    channel?: string
+    parentSessionId?: string
+    lastActivityAt?: Date
+  } = {}
+): Promise<string> {
+  await prisma.sessionMeta.create({
+    data: {
+      id,
+      agentId,
+      orgId: DEFAULT_ORG_ID,
+      platform: opts.platform ?? 'slack',
+      channel: opts.channel ?? '#general',
+      phase: 'start',
+      lastActivityAt: opts.lastActivityAt ?? new Date(),
+      ...(opts.visibility ? { visibility: opts.visibility } : {}),
+      ...(opts.ownerIdentity ? { ownerIdentity: opts.ownerIdentity } : {}),
+      ...(opts.daemonId ? { daemonId: opts.daemonId } : {}),
+      ...(opts.parentSessionId ? { parentSessionId: opts.parentSessionId } : {})
+    }
+  })
+  return id
+}
+
 export async function seedLaunch(
   prisma: PrismaClient,
   id: string,

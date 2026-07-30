@@ -1,0 +1,434 @@
+/**
+ * Session visibility end-to-end (docs/designs/session-visibility.md §9).
+ *
+ * Exercises the CP read gates, the §4.3 reclassification endpoint, and the §4.5
+ * cascade semantics against real Postgres and the real HTTP stack. Under devAuth
+ * the principal is fixed, so a second app built with `{ DEFAULT_OWNER_ID }` is
+ * how we "act as" another member — same idiom as visibility.route.test.ts.
+ */
+import { describe, it, expect, afterEach } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import { prisma } from '../setup.db.js'
+import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
+import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
+import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
+import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
+import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { SessionId } from '../../src/domain/ids.js'
+import type { OrgMemberRole } from '../../src/persistence/ports.js'
+
+const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
+const users = () => new PgUserRepo(prisma)
+const opened: HttpApp[] = []
+
+afterEach(async () => {
+  await Promise.all(opened.splice(0).map((a) => a.close()))
+})
+
+async function makeUser(sub: string, role: OrgMemberRole): Promise<string> {
+  const email = `${sub}@acme.dev`
+  const { userId } = await users().provisionOidcUser({ oidcSubject: sub, email, emailVerified: true })
+  await users().addMemberByEmail(DEFAULT_ORG_ID, email, role)
+  return userId
+}
+
+function appAs(userId: string): HttpApp {
+  const app = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId })
+  opened.push(app)
+  return app
+}
+
+const sessionIds = (body: unknown): string[] =>
+  (body as { sessions: Array<{ sessionId: string }> }).sessions.map((s) => s.sessionId)
+
+describe('session visibility — list & detail', () => {
+  it('a collaborator sees org sessions and their own private ones, never another member’s', async () => {
+    const mine = await makeUser('sv-mine', 'collaborator')
+    const theirs = await makeUser('sv-theirs', 'collaborator')
+    const owner = await makeUser('sv-owner', 'owner')
+
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const orgSession = await seedSessionMeta(prisma, `s-org-${randomUUID()}`, agentId, {})
+    const ownSession = await seedSessionMeta(prisma, `s-own-${randomUUID()}`, agentId, {
+      visibility: 'private',
+      ownerIdentity: `user:${mine}`
+    })
+    const otherSession = await seedSessionMeta(prisma, `s-other-${randomUUID()}`, agentId, {
+      visibility: 'private',
+      ownerIdentity: `user:${theirs}`
+    })
+    // No resolvable owner (§2 owner-orphan): org owners only.
+    const orphanSession = await seedSessionMeta(prisma, `s-orphan-${randomUUID()}`, agentId, {
+      visibility: 'private'
+    })
+
+    const mineApp = appAs(mine)
+    const listed = sessionIds((await mineApp.app.inject({ method: 'GET', url: `${ORG}/sessions` })).json())
+    expect(listed).toEqual(expect.arrayContaining([orgSession, ownSession]))
+    expect(listed).not.toContain(otherSession)
+    expect(listed).not.toContain(orphanSession)
+
+    // Detail is 404 (never 403) for a session the caller cannot see.
+    expect((await mineApp.app.inject({ method: 'GET', url: `${ORG}/sessions/${ownSession}` })).statusCode).toBe(200)
+    expect((await mineApp.app.inject({ method: 'GET', url: `${ORG}/sessions/${otherSession}` })).statusCode).toBe(404)
+    expect((await mineApp.app.inject({ method: 'GET', url: `${ORG}/sessions/${orphanSession}` })).statusCode).toBe(404)
+
+    // The governance exception: an org owner sees every session in the org.
+    const ownerApp = appAs(owner)
+    const asOwner = sessionIds((await ownerApp.app.inject({ method: 'GET', url: `${ORG}/sessions` })).json())
+    expect(asOwner).toEqual(expect.arrayContaining([orgSession, ownSession, otherSession, orphanSession]))
+  })
+
+  it('keeps keyset pagination stable under the visibility predicate', async () => {
+    const viewer = await makeUser('sv-page', 'collaborator')
+    const other = await makeUser('sv-page-other', 'collaborator')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+
+    // Interleave visible and hidden rows so a page boundary lands mid-run.
+    const visible: string[] = []
+    for (let i = 0; i < 6; i++) {
+      const at = new Date(Date.now() - i * 1000)
+      const isHidden = i % 2 === 1
+      const id = await seedSessionMeta(prisma, `s-page-${i}-${randomUUID()}`, agentId, {
+        lastActivityAt: at,
+        ...(isHidden ? { visibility: 'private' as const, ownerIdentity: `user:${other}` } : {})
+      })
+      if (!isHidden) visible.push(id)
+    }
+
+    const app = appAs(viewer)
+    const collected: string[] = []
+    let cursor: string | null = null
+    for (let page = 0; page < 5; page++) {
+      const url = `${ORG}/sessions?limit=2${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
+      const body = (await app.app.inject({ method: 'GET', url })).json() as {
+        sessions: Array<{ sessionId: string }>
+        nextCursor: string | null
+      }
+      collected.push(...body.sessions.map((s) => s.sessionId))
+      cursor = body.nextCursor
+      if (!cursor) break
+    }
+    // Every visible row exactly once, newest-first, with no hidden row leaking.
+    expect(collected).toEqual(visible)
+  })
+
+  it('hides a private child and parent from the detail relationship links', async () => {
+    const viewer = await makeUser('sv-rel', 'collaborator')
+    const other = await makeUser('sv-rel-other', 'collaborator')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+
+    const parent = await seedSessionMeta(prisma, `s-parent-${randomUUID()}`, agentId, {})
+    const visibleChild = await seedSessionMeta(prisma, `s-child-ok-${randomUUID()}`, agentId, {
+      parentSessionId: parent
+    })
+    const hiddenChild = await seedSessionMeta(prisma, `s-child-hidden-${randomUUID()}`, agentId, {
+      parentSessionId: parent,
+      visibility: 'private',
+      ownerIdentity: `user:${other}`
+    })
+
+    const body = (await appAs(viewer).app.inject({ method: 'GET', url: `${ORG}/sessions/${parent}` })).json() as {
+      childSessions: Array<{ id: string }>
+    }
+    expect(body.childSessions.map((c) => c.id)).toEqual([visibleChild])
+    expect(body.childSessions.map((c) => c.id)).not.toContain(hiddenChild)
+  })
+})
+
+describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
+  it('lets the recorded owner pull an org session private, and org owners reclassify anything', async () => {
+    const initiator = await makeUser('sv-put-owner', 'collaborator')
+    const orgOwner = await makeUser('sv-put-admin', 'owner')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const session = await seedSessionMeta(prisma, `s-put-${randomUUID()}`, agentId, {
+      ownerIdentity: `user:${initiator}`
+    })
+
+    // The initiator of an `org` channel session may pull it private…
+    const res = await appAs(initiator).app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${session}/visibility`,
+      payload: { visibility: 'private' }
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ id: session, visibility: 'private', visibilityRev: 1 })
+
+    // …and an org owner may publish it back (widening is explicit, never cascaded).
+    const back = await appAs(orgOwner).app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${session}/visibility`,
+      payload: { visibility: 'org' }
+    })
+    expect(back.statusCode).toBe(200)
+    expect(back.json()).toMatchObject({ visibility: 'org', visibilityRev: 2 })
+  })
+
+  it('403s a member who can see the session but does not own it, and 404s one who cannot', async () => {
+    const initiator = await makeUser('sv-put-init', 'collaborator')
+    const bystander = await makeUser('sv-put-bystander', 'collaborator')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+
+    const orgSession = await seedSessionMeta(prisma, `s-put-org-${randomUUID()}`, agentId, {
+      ownerIdentity: `user:${initiator}`
+    })
+    const privateSession = await seedSessionMeta(prisma, `s-put-priv-${randomUUID()}`, agentId, {
+      visibility: 'private',
+      ownerIdentity: `user:${initiator}`
+    })
+
+    const app = appAs(bystander)
+    // Visible but not theirs ⇒ 403.
+    expect(
+      (
+        await app.app.inject({
+          method: 'PUT',
+          url: `${ORG}/sessions/${orgSession}/visibility`,
+          payload: { visibility: 'private' }
+        })
+      ).statusCode
+    ).toBe(403)
+    // Invisible ⇒ 404, never 403: no existence oracle.
+    expect(
+      (
+        await app.app.inject({
+          method: 'PUT',
+          url: `${ORG}/sessions/${privateSession}/visibility`,
+          payload: { visibility: 'org' }
+        })
+      ).statusCode
+    ).toBe(404)
+  })
+
+  it('reports `applied` when no daemon can ever ack the change', async () => {
+    const owner = await makeUser('sv-state', 'owner')
+    const agentId = await seedAgent(prisma, randomUUID()) // unplaced: no daemon
+    const session = await seedSessionMeta(prisma, `s-state-${randomUUID()}`, agentId, {})
+
+    const res = await appAs(owner).app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${session}/visibility`,
+      payload: { visibility: 'private' }
+    })
+    expect(res.json()).toMatchObject({ state: 'applied' })
+  })
+})
+
+describe('session visibility — §5.1 daemon-ack cutover', () => {
+  // The pending→applied decision itself (which needs a live, feature-advertising
+  // daemon connection) is unit-tested in src/orchestrator/visibilityPush.test.ts;
+  // here we pin the durable half: the revision it compares against.
+  it('bumps the revision on every change and never lowers the ack watermark', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const session = await seedSessionMeta(prisma, `s-ack-${randomUUID()}`, agentId, { daemonId })
+    const repo = new PgSessionRepo(prisma)
+
+    // -1 is "never acknowledged" — distinct from an ack of revision 0, which is
+    // a real revision for a session ingested and never re-classified.
+    expect((await repo.get(SessionId(session)))?.visibilityAckedRev).toBe(-1)
+    const { affected } = await repo.setVisibility(SessionId(session), 'private')
+    expect(affected[0]).toMatchObject({ visibilityRev: 1, visibilityAckedRev: -1 })
+
+    // At-least-once delivery means acks can arrive out of order; the watermark
+    // is monotonic so a late one for an older revision cannot un-apply a change.
+    await repo.recordVisibilityAck(SessionId(session), 0)
+    expect((await repo.get(SessionId(session)))?.visibilityAckedRev).toBe(0)
+    await repo.recordVisibilityAck(SessionId(session), 1)
+    await repo.recordVisibilityAck(SessionId(session), 0)
+    expect((await repo.get(SessionId(session)))?.visibilityAckedRev).toBe(1)
+
+    // A no-op re-set neither bumps the revision nor re-opens the cutover.
+    expect((await repo.setVisibility(SessionId(session), 'private')).affected).toEqual([])
+    expect((await repo.get(SessionId(session)))?.visibilityRev).toBe(1)
+  })
+
+  it('snapshots the gate state for one daemon, newest first', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const otherDaemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const older = await seedSessionMeta(prisma, `s-snap-old-${randomUUID()}`, agentId, {
+      daemonId,
+      lastActivityAt: new Date(Date.now() - 60_000)
+    })
+    const newer = await seedSessionMeta(prisma, `s-snap-new-${randomUUID()}`, agentId, {
+      daemonId,
+      visibility: 'private',
+      lastActivityAt: new Date()
+    })
+    await seedSessionMeta(prisma, `s-snap-elsewhere-${randomUUID()}`, agentId, { daemonId: otherDaemonId })
+
+    const snapshot = await new PgSessionRepo(prisma).visibilitySnapshotForDaemon(daemonId, 10)
+    expect(snapshot).toEqual([
+      { sessionId: newer, visibility: 'private', visibilityRev: 0 },
+      { sessionId: older, visibility: 'org', visibilityRev: 0 }
+    ])
+  })
+})
+
+describe('session visibility — §4.5 inheritance and cascade', () => {
+  it('tightening cascades transitively (explicit descendants included); widening never does', async () => {
+    const owner = await makeUser('sv-cascade', 'owner')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+
+    const root = await seedSessionMeta(prisma, `s-root-${randomUUID()}`, agentId, {})
+    const child = await seedSessionMeta(prisma, `s-kid-${randomUUID()}`, agentId, { parentSessionId: root })
+    const grandchild = await seedSessionMeta(prisma, `s-grandkid-${randomUUID()}`, agentId, {
+      parentSessionId: child
+    })
+    // A descendant a human already re-classified: privacy still wins over it.
+    await prisma.sessionMeta.update({ where: { id: grandchild }, data: { visibilitySource: 'explicit' } })
+
+    const app = appAs(owner)
+    await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${root}/visibility`,
+      payload: { visibility: 'private' }
+    })
+    for (const id of [root, child, grandchild]) {
+      expect((await prisma.sessionMeta.findUnique({ where: { id } }))?.visibility).toBe('private')
+    }
+
+    // Widening the root leaves every descendant private — each is its own decision.
+    await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${root}/visibility`,
+      payload: { visibility: 'org' }
+    })
+    expect((await prisma.sessionMeta.findUnique({ where: { id: root } }))?.visibility).toBe('org')
+    for (const id of [child, grandchild]) {
+      expect((await prisma.sessionMeta.findUnique({ where: { id } }))?.visibility).toBe('private')
+    }
+  })
+
+  it('settles an out-of-order child once, and never over a human decision', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const parentId = `s-late-parent-${randomUUID()}`
+
+    // The child's milestone arrives first: no parent row to inherit from yet.
+    const child = await repo.recordMilestone({
+      sessionId: SessionId(`s-early-child-${randomUUID()}`),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      classification: { inherit: true },
+      at: new Date()
+    })
+    expect(child.session).toMatchObject({ visibility: 'private', visibilitySource: 'inherited_pending' })
+
+    // A second pending child that an org owner re-classifies before settlement.
+    const pinned = await repo.recordMilestone({
+      sessionId: SessionId(`s-pinned-child-${randomUUID()}`),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      classification: { inherit: true },
+      at: new Date()
+    })
+    await repo.setVisibility(pinned.session!.id, 'org')
+
+    // Now the parent lands as an org channel session.
+    const parent = await repo.recordMilestone({
+      sessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      classification: { visibility: 'org', ownerIdentity: 'slack:T1:U1', source: 'default' },
+      at: new Date()
+    })
+
+    // The still-pending child settles from the parent, exactly once…
+    expect(parent.settled.map((s) => s.id)).toEqual([child.session!.id])
+    const settled = await prisma.sessionMeta.findUnique({ where: { id: child.session!.id } })
+    expect(settled).toMatchObject({ visibility: 'org', ownerIdentity: 'slack:T1:U1', visibilitySource: 'inherited' })
+    // …and the human decision is untouched (still `explicit`, not re-settled).
+    const untouched = await prisma.sessionMeta.findUnique({ where: { id: pinned.session!.id } })
+    expect(untouched).toMatchObject({ visibility: 'org', visibilitySource: 'explicit' })
+  })
+
+  it('inherits a private parent at ingest, so a delegated prompt is never org-visible', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+
+    const parentId = `s-dm-parent-${randomUUID()}`
+    await repo.recordMilestone({
+      sessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      classification: { visibility: 'private', ownerIdentity: 'user:u-1', source: 'default' },
+      at: new Date()
+    })
+    const child = await repo.recordMilestone({
+      sessionId: SessionId(`s-dm-child-${randomUUID()}`),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      classification: { inherit: true },
+      at: new Date()
+    })
+    expect(child.session).toMatchObject({
+      visibility: 'private',
+      ownerIdentity: 'user:u-1',
+      visibilitySource: 'inherited'
+    })
+  })
+
+  it('never leaves an org-visible descendant of a private parent, in either commit order', async () => {
+    const owner = await makeUser('sv-race', 'owner')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const app = appAs(owner)
+
+    for (const childFirst of [true, false]) {
+      const rootId = `s-race-root-${randomUUID()}`
+      await repo.recordMilestone({
+        sessionId: SessionId(rootId),
+        agentId,
+        phase: 'start',
+        classification: { visibility: 'org', ownerIdentity: 'slack:T1:U9', source: 'default' },
+        at: new Date()
+      })
+      const childId = `s-race-child-${randomUUID()}`
+      const grandchildId = `s-race-grandchild-${randomUUID()}`
+      await repo.recordMilestone({
+        sessionId: SessionId(childId),
+        parentSessionId: SessionId(rootId),
+        agentId,
+        phase: 'start',
+        classification: { inherit: true },
+        at: new Date()
+      })
+
+      // A grandchild ingest racing the ancestor's tighten — the depth-2 case the
+      // lock-then-scan-to-fixpoint cascade exists for.
+      const tighten = app.app.inject({
+        method: 'PUT',
+        url: `${ORG}/sessions/${rootId}/visibility`,
+        payload: { visibility: 'private' }
+      })
+      const insertGrandchild = repo.recordMilestone({
+        sessionId: SessionId(grandchildId),
+        parentSessionId: SessionId(childId),
+        agentId,
+        phase: 'start',
+        classification: { inherit: true },
+        at: new Date()
+      })
+      await (childFirst ? Promise.all([insertGrandchild, tighten]) : Promise.all([tighten, insertGrandchild]))
+
+      for (const id of [rootId, childId, grandchildId]) {
+        const row = await prisma.sessionMeta.findUnique({ where: { id } })
+        expect({ id, visibility: row?.visibility }).toEqual({ id, visibility: 'private' })
+      }
+    }
+  })
+})

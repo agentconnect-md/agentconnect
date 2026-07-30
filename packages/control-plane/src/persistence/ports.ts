@@ -93,6 +93,16 @@ export function visibilityWhere(v?: ViewCtx) {
 export type AssignmentState = 'active' | 'draining' | 'released' | 'frozen'
 export type SessionPhase = 'start' | 'plan' | 'problem' | 'end'
 export type ActivityState = 'thinking' | 'tool_call' | 'awaiting_permission' | 'idle'
+/** Per-session visibility tier (session-visibility.md §1). Distinct from
+ *  `ResourceVisibility` — sessions have no `restricted`/`sharedWith` tier. */
+export type SessionVisibility = 'private' | 'org'
+/** How a session's visibility was determined — the §4.5 A2A reconciliation
+ *  state marker; `explicit` pins the row against settlement (not cascades). */
+export type VisibilitySource = 'default' | 'inherited_pending' | 'inherited' | 'explicit'
+/** Daemon-reported conversation shape (session-visibility.md §4.1) — the
+ *  ingest classification input. NOT the Slack-flavored `ConversationKind`
+ *  ('channel'|'im'|'mpim') used by integration-channel rows. */
+export type SessionConversationKind = 'dm' | 'group_dm' | 'channel'
 export type LaunchMode = 'long_lived' | 'per_turn'
 export type LaunchStatus = 'launching' | 'running' | 'stopped' | 'crashed'
 export type LeaseStatus = 'active' | 'expired' | 'revoked'
@@ -813,7 +823,49 @@ export interface EventSessionInput {
   platform?: Platform
   channel?: string
   thread?: string
+  // ── visibility classification inputs (session-visibility.md §4.1) ──
+  // All optional ⇒ old daemons stay compatible: absent conversationKind means
+  // channel behavior ('org'); absent transportScope/launchCorrelationId means
+  // no owner is recorded (fail closed).
+  conversationKind?: SessionConversationKind
+  transportScope?: string // durable tenant scope for ownerIdentity (§2), NOT the credential-derived hash
+  launchCorrelationId?: string // Web API launch provenance (§4.4)
+  /** The §4.2 verdict the ingest handler computed (its ownership lookups are
+   *  already resolved). Absent ⇒ the row is classified `org` with no owner —
+   *  the pre-visibility behavior, kept for internal callers and fixtures. */
+  classification?: SessionClassification
   at: Date
+}
+
+/** A settled §4.2 classification, or the marker that the row inherits from its
+ *  parent — which the repo resolves under a row lock (§4.5). Structurally
+ *  identical to `domain/session-visibility.ts#SessionClassification`; declared
+ *  here so the port layer does not depend on the domain module. */
+export type SessionClassification =
+  | { inherit: true }
+  | { inherit?: false; visibility: SessionVisibility; ownerIdentity: string | null; source: VisibilitySource }
+
+/** What one `event/session` upsert changed. `recorded: false` means the session
+ *  id is already bound to a different agent (nothing was written). `settled`
+ *  carries the A2A children this milestone resolved out of `inherited_pending`
+ *  (§4.5) — the CP owes each of them a §5.1 gate push. */
+export interface SessionMilestoneResult {
+  recorded: boolean
+  session: SessionMetaRecord | null
+  settled: SessionMetaRecord[]
+}
+
+/** Outcome of a §4.3 visibility change: the target row plus every descendant a
+ *  tightening cascade rewrote. Empty `affected` ⇒ the request was a no-op. */
+export interface SessionVisibilityChange {
+  affected: SessionMetaRecord[]
+}
+
+/** One entry of the §5.1 register-time gate snapshot. */
+export interface SessionVisibilityState {
+  sessionId: SessionId
+  visibility: SessionVisibility
+  visibilityRev: number
 }
 
 export interface SessionMetaRecord {
@@ -842,6 +894,13 @@ export interface SessionMetaRecord {
   outputMode: string | null
   daemonId: DaemonId | null
   activityState: ActivityState
+  // ── session visibility (session-visibility.md §3) ──
+  orgId: OrgId // denormalized from agent.orgId at ingest
+  visibility: SessionVisibility
+  ownerIdentity: string | null // §2 namespaced identity; null for automation/legacy/owner-orphan rows
+  visibilitySource: VisibilitySource
+  visibilityRev: number // bumped in the same tx as any visibility change (§5.1)
+  visibilityAckedRev: number // daemon-ack watermark; 'applied' once >= visibilityRev
   startedAt: Date
   endedAt: Date | null
 }
@@ -864,6 +923,11 @@ export interface SessionFilterQuery extends SessionQuery {
   triggeredBy?: string
   githubHookIds?: HookId[]
   hookTriggerIds?: HookId[]
+  /** Session-visibility predicate inputs (session-visibility.md §5): non-owner
+   *  viewers see `org` rows plus `private` rows whose ownerIdentity is in their
+   *  identity set. Absent ⇒ no session predicate — the internal fail-open,
+   *  mirroring `visibilityWhere(undefined)`. */
+  viewer?: { role: OrgMemberRole; identitySet: string[] }
 }
 
 export interface SessionPageQuery extends SessionFilterQuery {
@@ -900,8 +964,11 @@ export interface SessionFacetIndex {
 
 export interface SessionRepo {
   /** Upsert the converged milestone for a session (advance `phase`; NO message body).
-   *  False means the global session id is already bound to a different agent. */
-  recordMilestone(ev: EventSessionInput): Promise<boolean>
+   *  `recorded: false` means the global session id is already bound to a different
+   *  agent. Classification is first-wins: an existing row keeps the visibility it
+   *  was ingested with (§4.2), and an A2A child resolves its parent under a shared
+   *  row lock, settling any `inherited_pending` children of its own (§4.5). */
+  recordMilestone(ev: EventSessionInput): Promise<SessionMilestoneResult>
   /** Filter, keyset-page, and order in Postgres; usage is hydrated only for the
    *  returned page. `total` is computed only when explicitly requested. */
   listPage(q: SessionPageQuery): Promise<SessionPageRecord>
@@ -912,8 +979,25 @@ export interface SessionRepo {
   list(q: SessionQuery): Promise<SessionListRecord[]>
   get(id: SessionId): Promise<SessionMetaRecord | null>
   /** Visible-child lookup for the session detail page. Parent ids are opaque and
-   *  deliberately not foreign-keyed, so this remains a metadata query. */
-  listChildren(parentSessionId: SessionId, agentIds: AgentId[]): Promise<SessionMetaRecord[]>
+   *  deliberately not foreign-keyed, so this remains a metadata query. `viewer`
+   *  applies the same session predicate as the list (absent ⇒ internal fail-open). */
+  listChildren(
+    parentSessionId: SessionId,
+    agentIds: AgentId[],
+    viewer?: { role: OrgMemberRole; identitySet: string[] }
+  ): Promise<SessionMetaRecord[]>
+  /** §4.3 reclassification. Widening touches only the target row; tightening
+   *  cascades to every descendant (transitively, `explicit` ones included —
+   *  privacy wins) under the lock-then-scan-to-fixpoint protocol of §4.5. Every
+   *  rewritten row's `visibilityRev` is bumped in the same transaction. */
+  setVisibility(sessionId: SessionId, visibility: SessionVisibility): Promise<SessionVisibilityChange>
+  /** Raise the daemon-ack watermark (§5.1). Monotonic: a late ack for an older
+   *  revision never lowers it, so the tighten stays `applied`. */
+  recordVisibilityAck(sessionId: SessionId, visibilityRev: number): Promise<void>
+  /** The §5.1 register-time gate snapshot for one daemon: the current
+   *  `(sessionId, visibility, visibilityRev)` set for the sessions it reported,
+   *  newest first and bounded. A snapshot, not a diff. */
+  visibilitySnapshotForDaemon(daemonId: DaemonId, limit: number): Promise<SessionVisibilityState[]>
   /** Resolve the agent that owns a bot's `(channel, thread)` — the most-recently-active session
    *  keyed there whose agent still has an active integration for that bot and a current daemon
    *  placement. Backstop for shared-bot thread-affinity lookup: a daemon-created session (e.g.
@@ -937,6 +1021,10 @@ export interface WebchatConversationBinding {
 export interface WebchatConversationRepo {
   /** Register a server-allocated conversation before its first relay dial. */
   create(binding: WebchatConversationBinding): Promise<void>
+  /** The owning console user of a conversation, for session-visibility ingest
+   *  (§4.2). Scoped to the agent the conversation was minted against; unknown
+   *  and foreign bindings both return null (the caller fails closed). */
+  findOwner(conversationId: string, agentId: AgentId): Promise<string | null>
   /** Exact owner check for resume. Unknown and foreign bindings both return false. */
   owns(binding: WebchatConversationBinding): Promise<boolean>
 }
@@ -1030,6 +1118,12 @@ export interface RecordLaunchInput {
   mode?: LaunchMode
   epoch: bigint
   startedAt?: Date
+  /** Web API launch provenance (session-visibility.md §4.4): the CP-minted
+   *  correlation id the daemon echoes on the session's `event/session` frame,
+   *  and the principal that requested the launch. Distinct from `launchId`,
+   *  which is the agent-runtime fence. */
+  correlationId?: string
+  createdByUserId?: string
 }
 
 export interface LaunchRecord {
@@ -1047,6 +1141,9 @@ export interface LaunchRepo {
   record(input: RecordLaunchInput): Promise<LaunchRecord>
   /** The current (most recent running/launching) launch for an agent — the fence (§4.8). */
   currentLaunch(agentId: AgentId): Promise<LaunchId | undefined>
+  /** The user a launch correlation belongs to (session-visibility.md §4.4);
+   *  null when the correlation is unknown, so ingest fails closed. */
+  ownerByCorrelationId(correlationId: string): Promise<string | null>
   markStopped(launchId: LaunchId, status: 'stopped' | 'crashed', at: Date): Promise<void>
 }
 

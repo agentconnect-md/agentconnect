@@ -77,11 +77,14 @@ VALUES
 ON CONFLICT ("id") DO NOTHING;
 
 -- ── A converged session milestone (metadata only — NO message bodies) ───────
+-- orgId is denormalized from the agent; visibility columns keep their defaults
+-- ('org' / 'default' / rev 0 — a channel session, visible org-wide).
 INSERT INTO "session_meta"
-  ("id","agentId","launchId","platform","channel","thread","phase","link","summary",
+  ("id","agentId","orgId","launchId","platform","channel","thread","phase","link","summary",
    "activityState","lastActivityAt","startedAt","updatedAt")
 VALUES
   ('55555555-5555-4555-8555-555555555555','22222222-2222-4222-8222-222222222222',
+   'org_default00000000000000000',
    '44444444-4444-4444-8444-444444444444','slack','C0DEMO0001','1718000000.000100',
    'plan','https://app.example/sessions/55555555','Reviewing PR #3: drafted a plan',
    'thinking', now(), now(), now())

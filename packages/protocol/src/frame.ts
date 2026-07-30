@@ -42,7 +42,10 @@ import {
   SessionToolBodyChunk,
   ChildSessionStatus,
   ChildSessionStatusReq,
-  ChildSessionStatusProbe
+  ChildSessionStatusProbe,
+  SessionVisibilityPush,
+  SessionVisibilityOk,
+  SessionVisibilitySnapshot
 } from './frames/session.js'
 import { ChannelAgentsReq, ChannelAgentsOk } from './frames/channel.js'
 import {
@@ -215,6 +218,13 @@ export const FRAME_SCHEMAS = {
   'session/child-status/ok': ChildSessionStatus,
   'session/child-status/probe': ChildSessionStatusProbe,
   'session/child-status/probe/ok': ChildSessionStatus,
+  // ── session visibility gate push (session-visibility.md §5.1). C→D REQs: a single
+  // per-session push (reply: typed `session/visibility/ok`) and the register-time
+  // snapshot replay (reply: generic `ack`). Rev-fenced in the payload — a stale rev
+  // is acked `superseded`, never answered with an error frame.
+  'session/visibility': SessionVisibilityPush,
+  'session/visibility/ok': SessionVisibilityOk,
+  'session/visibility/snapshot': SessionVisibilitySnapshot,
   // ── channel agent directory (agent collaboration; D→C REQ → REP) ──
   'channel/agents': ChannelAgentsReq,
   'channel/agents/ok': ChannelAgentsOk,
@@ -392,6 +402,9 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('session/child-status/ok', FRAME_SCHEMAS['session/child-status/ok']),
   frame('session/child-status/probe', FRAME_SCHEMAS['session/child-status/probe']),
   frame('session/child-status/probe/ok', FRAME_SCHEMAS['session/child-status/probe/ok']),
+  frame('session/visibility', FRAME_SCHEMAS['session/visibility']),
+  frame('session/visibility/ok', FRAME_SCHEMAS['session/visibility/ok']),
+  frame('session/visibility/snapshot', FRAME_SCHEMAS['session/visibility/snapshot']),
   frame('channel/agents', FRAME_SCHEMAS['channel/agents']),
   frame('channel/agents/ok', FRAME_SCHEMAS['channel/agents/ok']),
   frame('workspace/list', FRAME_SCHEMAS['workspace/list']),

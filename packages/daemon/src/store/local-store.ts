@@ -446,6 +446,27 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS session_mutes (
         key TEXT PRIMARY KEY
       );
+      -- Per-session memory-capture gate (session-visibility.md §5.1). Keyed by ACP
+      -- session id, NOT the logical session key: the CP addresses sessions by the
+      -- id it knows, and its push can arrive before (or after a resume recreates)
+      -- the sessions row — so this table stands alone, like session_mutes.
+      --   localExcluded: the daemon-local initial verdict (DM/webchat/launch/A2A).
+      --   cpPrivate    : the CP-confirmed bit; authoritative once it is set.
+      --   cpRev        : the CP's durable visibilityRev — the dedup/order key.
+      -- (localExcluded, not "excluded": SQLite's upsert pseudo-table owns that name.)
+      CREATE TABLE IF NOT EXISTS session_gates (
+        acpSessionId TEXT PRIMARY KEY,
+        localExcluded INTEGER NOT NULL DEFAULT 1,
+        cpPrivate INTEGER,
+        cpRev INTEGER NOT NULL DEFAULT 0,
+        updatedAt INTEGER
+      );
+      -- Minted durable tenant scopes for platforms that expose none (§2).
+      CREATE TABLE IF NOT EXISTS tenant_scopes (
+        integrationId TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        createdAt INTEGER
+      );
       -- Platform id → human display name (Slack channel/user names, daemon-resolved
       -- and cached here so session read-back can label ids without a Slack call).
       CREATE TABLE IF NOT EXISTS display_names (
@@ -690,6 +711,7 @@ export class LocalStore {
     this.migrateDreamObservability()
     this.migrateSessionUsage()
     this.migrateSessionMutes()
+    this.migrateSessionGates()
     this.migrateInboxLoopGuardCounted()
     this.migrateTranscriptToolBody()
     this.migrateTranscriptAttachments()
@@ -958,6 +980,33 @@ export class LocalStore {
       this.db.exec('ALTER TABLE sessions ADD COLUMN needsParentReply INTEGER')
     if (!cols.some((c) => c.name === 'transportScope'))
       this.db.exec('ALTER TABLE sessions ADD COLUMN transportScope TEXT')
+    // session-visibility.md §4.1: persisted so EVERY event/session re-emit
+    // carries them, not just the one dispatch that knew the message.
+    if (!cols.some((c) => c.name === 'conversationKind'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN conversationKind TEXT')
+    if (!cols.some((c) => c.name === 'tenantScope')) this.db.exec('ALTER TABLE sessions ADD COLUMN tenantScope TEXT')
+    if (!cols.some((c) => c.name === 'launchCorrelationId'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN launchCorrelationId TEXT')
+  }
+
+  /** Pre-visibility databases have no gate table; the CREATE above only runs on
+   *  a fresh DB. Missing gate state fails closed (capture excluded) until the
+   *  CP's register-time snapshot lands. */
+  private migrateSessionGates(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS session_gates (
+        acpSessionId TEXT PRIMARY KEY,
+        localExcluded INTEGER NOT NULL DEFAULT 1,
+        cpPrivate INTEGER,
+        cpRev INTEGER NOT NULL DEFAULT 0,
+        updatedAt INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS tenant_scopes (
+        integrationId TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        createdAt INTEGER
+      );
+    `)
   }
 
   /**
@@ -1501,6 +1550,120 @@ export class LocalStore {
     } catch (err) {
       this.db.exec('ROLLBACK')
       throw err
+    }
+  }
+
+  // ── memory-capture gate (session-visibility.md §5.1) ──────────────────────
+  // Two layers: the daemon-local verdict it can reach without a CP round-trip
+  // (DM / webchat / launch-correlated / A2A ⇒ excluded), and the CP-confirmed
+  // effective state, which supersedes it once it arrives. Unknown ⇒ excluded:
+  // a missed or delayed frame may only under-capture, never leak.
+
+  /** Seed the local verdict for a session the daemon just created. Never lowers
+   *  `cpRev`: a CP push that arrived first stays authoritative. */
+  setLocalCaptureGate(acpSessionId: string, localExcluded: boolean): void {
+    this.db
+      .prepare(
+        `INSERT INTO session_gates (acpSessionId, localExcluded, cpRev, updatedAt)
+         VALUES (?, ?, 0, ?)
+         ON CONFLICT(acpSessionId) DO UPDATE SET
+           localExcluded = excluded.localExcluded, updatedAt = excluded.updatedAt`
+      )
+      .run(acpSessionId, localExcluded ? 1 : 0, Date.now())
+  }
+
+  /**
+   * Apply a CP `session/visibility` push. Idempotent by revision: a frame whose
+   * rev is at or below what we hold is NOT reapplied but IS still acknowledged
+   * (`superseded`) — "ignore" must never mean "don't ACK", or a lost ack leaves
+   * the CP retrying forever.
+   */
+  applyCpCaptureGate(acpSessionId: string, isPrivate: boolean, rev: number): 'applied' | 'superseded' {
+    const row = this.db.prepare('SELECT cpRev FROM session_gates WHERE acpSessionId = ?').get(acpSessionId) as
+      { cpRev: number } | undefined
+    // rev 0 is a legitimate first revision (a session ingested and never
+    // changed), so it applies once — but only while we hold nothing newer.
+    if (row && (rev > 0 ? row.cpRev >= rev : row.cpRev > 0)) return 'superseded'
+    this.db
+      .prepare(
+        `INSERT INTO session_gates (acpSessionId, localExcluded, cpPrivate, cpRev, updatedAt)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(acpSessionId) DO UPDATE SET
+           cpPrivate = excluded.cpPrivate, cpRev = excluded.cpRev, updatedAt = excluded.updatedAt`
+      )
+      .run(acpSessionId, isPrivate ? 1 : 0, isPrivate ? 1 : 0, rev, Date.now())
+    return 'applied'
+  }
+
+  /**
+   * Is memory capture excluded for this session? The CP-confirmed bit wins once
+   * we have one; otherwise the local verdict; otherwise excluded. An A2A child
+   * therefore starts closed and only a CP-confirmed `org` state opens it.
+   */
+  isCaptureExcluded(acpSessionId: string | undefined): boolean {
+    if (!acpSessionId) return true
+    const row = this.db
+      .prepare('SELECT localExcluded, cpPrivate FROM session_gates WHERE acpSessionId = ?')
+      .get(acpSessionId) as { localExcluded: number; cpPrivate: number | null } | undefined
+    if (!row) return true
+    if (row.cpPrivate !== null) return row.cpPrivate === 1
+    return row.localExcluded === 1
+  }
+
+  // ── durable tenant scopes (session-visibility.md §2) ──────────────────────
+  // A platform with no durable tenant id of its own (Discord today) mints one
+  // per integration ONCE and keeps it: the credential-derived transportScope
+  // rotates with tokens, which would orphan historical identity matches.
+
+  /** The minted tenant scope for an integration, or undefined if never minted. */
+  getMintedTenantScope(integrationId: string): string | undefined {
+    const row = this.db.prepare('SELECT value FROM tenant_scopes WHERE integrationId = ?').get(integrationId) as
+      { value: string } | undefined
+    return row?.value
+  }
+
+  /** Mint-once: concurrent callers converge on the first stored value. */
+  mintTenantScope(integrationId: string, value: string): string {
+    this.db
+      .prepare('INSERT OR IGNORE INTO tenant_scopes (integrationId, value, createdAt) VALUES (?, ?, ?)')
+      .run(integrationId, value, Date.now())
+    return this.getMintedTenantScope(integrationId) ?? value
+  }
+
+  /** Persist a session's visibility-classification inputs so EVERY later
+   *  `event/session` re-emit carries them, not just the dispatch that knew the
+   *  originating message (session-visibility.md §4.1). First non-null wins. */
+  setSessionClassification(
+    key: string,
+    c: { conversationKind?: string; tenantScope?: string; launchCorrelationId?: string }
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE sessions SET
+           conversationKind = COALESCE(conversationKind, ?),
+           tenantScope = COALESCE(tenantScope, ?),
+           launchCorrelationId = COALESCE(launchCorrelationId, ?)
+         WHERE key = ?`
+      )
+      .run(c.conversationKind ?? null, c.tenantScope ?? null, c.launchCorrelationId ?? null, key)
+  }
+
+  /** Read them back by ACP session id, the key the telemetry emitter holds. */
+  getSessionClassification(
+    agentId: string,
+    acpSessionId: string
+  ): { conversationKind?: string; tenantScope?: string; launchCorrelationId?: string } | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT conversationKind, tenantScope, launchCorrelationId FROM sessions WHERE agentId = ? AND acpSessionId = ?'
+      )
+      .get(agentId, acpSessionId) as
+      { conversationKind: string | null; tenantScope: string | null; launchCorrelationId: string | null } | undefined
+    if (!row) return undefined
+    return {
+      ...(row.conversationKind ? { conversationKind: row.conversationKind } : {}),
+      ...(row.tenantScope ? { tenantScope: row.tenantScope } : {}),
+      ...(row.launchCorrelationId ? { launchCorrelationId: row.launchCorrelationId } : {})
     }
   }
 

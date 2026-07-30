@@ -85,6 +85,7 @@ import {
 
 import { EpochService } from './orchestrator/epoch.js'
 import { ControlSender, NoConnection } from './orchestrator/outbound.js'
+import { SessionVisibilityPushService } from './orchestrator/visibilityPush.js'
 import { AgentSpecAssembler } from './orchestrator/agentSpecAssembler.js'
 import { Placement } from './orchestrator/placement.js'
 import { Watchdog } from './orchestrator/watchdog.js'
@@ -394,6 +395,16 @@ export function buildContainer(
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).
   const sender = new ControlSender(connReg, repos.launch)
 
+  // Per-session memory-capture gate convergence (session-visibility.md §5.1):
+  // the CP is the authority on effective visibility; daemons only enforce it.
+  const visibilityPush = new SessionVisibilityPushService({
+    repos: { session: repos.session, agent: repos.agent },
+    control: sender,
+    connReg,
+    // Lazy over `http.log` (assigned below; only ever called at push time).
+    log: { warn: (o, m) => http.log.warn(o, m) }
+  })
+
   // Bot-agnostic collaboration routing snapshot fan-out (agent-collaboration
   // §2.3/§6.2): relays get the all-org table; daemons get their org-scoped copy.
   const collabRoutes = new CollabRoutesService(repos.daemon, repos.integration, relayControl, sender)
@@ -656,6 +667,7 @@ export function buildContainer(
     // (structurally a `DaemonLiveness`): it knows who is connected RIGHT NOW.
     liveness: connReg,
     control: sender,
+    visibilityPush,
     relayControl,
     httpBot,
     collabRoutes,
@@ -843,6 +855,9 @@ export function buildContainer(
     orchestrator,
     connReg,
     session: repos.session,
+    webchatConversation: repos.webchatConversation,
+    launch: repos.launch,
+    visibilityPush,
     events,
     sessionUsage: repos.sessionUsage,
     integration: repos.integration,

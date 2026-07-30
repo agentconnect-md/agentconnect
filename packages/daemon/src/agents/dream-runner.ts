@@ -77,6 +77,8 @@ export interface DreamStorePort {
     agentId: string,
     limit: number
   ): { sessionId: string; channel: string; thread: string; transportScope?: string | null }[]
+  /** Is this session excluded from agent-memory capture (session-visibility.md §5.1)? */
+  isCaptureExcluded(acpSessionId: string | undefined): boolean
   /** Chronological text rows of one session thread, scoped to the agent. */
   dreamTranscriptText(
     channel: string,
@@ -286,7 +288,13 @@ export class DreamRunner {
       }
       const sessionWindow = opts.sessionWindow ?? policy.sessionWindow ?? DEFAULT_SESSION_WINDOW
       const instructions = opts.instructions ?? policy.instructions
-      const sources = this.deps.store.dreamSessionSources(agentId, sessionWindow)
+      // Dreams distill transcripts straight from the store, bypassing the
+      // per-turn capture path — so the session-visibility gate has to be applied
+      // here too, or a private session's content reaches shared agent memory by
+      // the back door (session-visibility.md §5.1).
+      const sources = this.deps.store
+        .dreamSessionSources(agentId, sessionWindow)
+        .filter((source) => !this.deps.store.isCaptureExcluded(source.sessionId))
 
       // Snapshot the live store — the digest is the adoption fence. Taken under
       // the shared memory-dir lock so it cannot tear against a concurrent

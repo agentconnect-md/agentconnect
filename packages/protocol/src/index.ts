@@ -9,7 +9,13 @@
  */
 
 // ── cross-package wire + lifecycle constants ──
-export { CP_SUBPROTOCOL, CP_WS_PATH, RESERVED_RESTART_CODE, SESSION_LIVE_TAIL_FEATURE } from './consts.js'
+export {
+  CP_SUBPROTOCOL,
+  CP_WS_PATH,
+  RESERVED_RESTART_CODE,
+  SESSION_LIVE_TAIL_FEATURE,
+  SESSION_VISIBILITY_FEATURE
+} from './consts.js'
 
 // ── envelope + control extension ──
 export { Envelope, ControlExt, NIL_UUID } from './envelope.js'

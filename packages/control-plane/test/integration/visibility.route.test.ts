@@ -518,6 +518,7 @@ describe('derived visibility — session bodies, usage', () => {
       data: {
         id: session,
         agentId: R,
+        orgId: DEFAULT_ORG_ID,
         platform: 'slack',
         channel: 'C-HR',
         phase: 'start',

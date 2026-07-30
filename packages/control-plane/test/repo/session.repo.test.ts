@@ -137,16 +137,20 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     await seedAgent(prisma, OTHER_AGENT, { daemonId: DAEMON })
     const repo = new PgSessionRepo(prisma)
 
-    expect(await repo.recordMilestone(ev('start', { title: 'Original', daemonId: DaemonId(DAEMON) }))).toBe(true)
+    expect((await repo.recordMilestone(ev('start', { title: 'Original', daemonId: DaemonId(DAEMON) }))).recorded).toBe(
+      true
+    )
     expect(
-      await repo.recordMilestone(
-        ev('end', {
-          agentId: AgentId(OTHER_AGENT),
-          launchId: undefined,
-          title: 'Forged',
-          daemonId: DaemonId(DAEMON)
-        })
-      )
+      (
+        await repo.recordMilestone(
+          ev('end', {
+            agentId: AgentId(OTHER_AGENT),
+            launchId: undefined,
+            title: 'Forged',
+            daemonId: DaemonId(DAEMON)
+          })
+        )
+      ).recorded
     ).toBe(false)
 
     const got = await repo.get(SessionId(SESSION))
@@ -172,9 +176,9 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
       )
     ])
 
-    expect(accepted.filter(Boolean)).toHaveLength(1)
+    expect(accepted.filter((result) => result.recorded)).toHaveLength(1)
     const got = await repo.get(SessionId(SESSION))
-    if (accepted[0]) {
+    if (accepted[0]!.recorded) {
       expect(got).toMatchObject({ agentId: AGENT, title: 'Agent A', phase: 'start' })
     } else {
       expect(got).toMatchObject({ agentId: OTHER_AGENT, title: 'Agent B', phase: 'end' })

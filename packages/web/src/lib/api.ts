@@ -235,6 +235,11 @@ export interface SessionUsageDto {
   costCurrency?: string
 }
 
+// Session-level visibility (docs/designs/session-visibility.md): 'private' rows are
+// visible only to the session owner + org owners; 'org' to every member who can view
+// the owning agent. Deliberately NOT ResourceVisibility ('org' | 'restricted').
+export type SessionVisibility = 'private' | 'org'
+
 export interface SessionDto {
   sessionId: string
   sessionKey: { platform: string; channel: string; thread?: string }
@@ -243,6 +248,9 @@ export interface SessionDto {
   status: string | null
   lastActivityAt: string | null
   usage: SessionUsageDto | null
+  // Absent/null on a CP that predates session visibility — treated as 'org'
+  // (matching the server-side backfill of legacy rows).
+  visibility?: SessionVisibility | null
   triggeredBy: string | null
   hookKind?: 'webhook' | 'github' | null
   // Daemon-resolved display names; null until the daemon has resolved them.
@@ -346,6 +354,14 @@ export interface SessionDetailDto {
   permissionMode: string | null
   outputMode: string | null
   daemonId: string | null
+  // Session visibility (docs/designs/session-visibility.md §5/§6). All three are
+  // absent on a CP that predates the feature. `visibilityState` is the §5.1
+  // tighten cutover: 'pending' until every affected daemon acked the change,
+  // then 'applied'. `canChangeVisibility` is server-computed (org owner or the
+  // identity-matched session owner) — the client never re-derives it.
+  visibility?: SessionVisibility | null
+  visibilityState?: 'pending' | 'applied' | null
+  canChangeVisibility?: boolean | null
 }
 
 // The full ACP tool body (protocol `ToolBody`), transported as a JSON STRING in
@@ -1529,6 +1545,8 @@ export function sessionFromDto(d: SessionDto): Session {
     user,
     ...(d.triggeredBy ? { triggeredBy: d.triggeredBy } : {}),
     ...(d.hookKind ? { hookKind: d.hookKind } : {}),
+    // Absent on legacy/pre-feature rows — the views treat undefined as 'org'.
+    ...(d.visibility != null ? { visibility: d.visibility } : {}),
     duration: PLACEHOLDER,
     tokens: fmtCountCompact(usage?.totalTokens),
     cost: fmtCost(usage?.costAmount, usage?.costCurrency),
@@ -1573,6 +1591,7 @@ export function sessionFromDetailDto(d: SessionDetailDto): Session {
     channelName: d.channelName,
     triggeredByName: d.triggeredByName,
     threadUrl: d.threadUrl,
+    ...(d.visibility != null ? { visibility: d.visibility } : {}),
     runtime: d.runtime,
     model: d.model,
     effort: d.effort,
@@ -1719,6 +1738,27 @@ export async function fetchSessionFacets(orgId?: string, filters: SessionListFil
  *  rows are already filtered by the caller's agent visibility on the server. */
 export function fetchSessionDetail(sessionId: string, orgId?: string): Promise<SessionDetailDto> {
   return apiGet<SessionDetailDto>(`${orgBase(orgId)}/sessions/${encodeURIComponent(sessionId)}`)
+}
+
+// PUT /sessions/:id/visibility response. `state` is the §5.1 cutover: 'pending'
+// until every affected daemon has acked the new `visibilityRev`, then 'applied'.
+export interface SessionVisibilityResultDto {
+  id: string
+  visibility: SessionVisibility
+  visibilityRev: number
+  state: 'pending' | 'applied'
+}
+
+// Set a session's visibility (PUT /sessions/:id/visibility). Gated server-side:
+// org owners or the identity-matched session owner (`canChangeVisibility` in the
+// detail DTO); invisible sessions 404 — never 403 (no existence oracle).
+export async function putSessionVisibility(
+  sessionId: string,
+  visibility: SessionVisibility
+): Promise<SessionVisibilityResultDto> {
+  return apiPut<SessionVisibilityResultDto>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/visibility`, {
+    visibility
+  })
 }
 
 // One page of a session's transcript, proxied live from the owning daemon. The

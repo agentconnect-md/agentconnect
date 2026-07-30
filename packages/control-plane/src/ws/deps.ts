@@ -18,8 +18,11 @@ import type {
   CronRepo,
   HookRepo,
   AgentRepo,
-  ExternalMemoryConnectionRepo
+  ExternalMemoryConnectionRepo,
+  WebchatConversationRepo,
+  LaunchRepo
 } from '../persistence/ports.js'
+import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
 import type { RelayRosterEntry } from '@agentconnect.md/protocol'
 import type { GithubService } from '../github/service.js'
 import type { GithubReviewBrokerService } from '../github/review-broker.service.js'
@@ -49,6 +52,14 @@ export interface DaemonWsDeps {
   sessionUsage: SessionUsageRepo
   /** Persists session milestones from the `event/session` EVT (deep-link metadata sync). */
   session: SessionRepo
+  /** Resolves a webchat conversation's owning user for session-visibility ingest
+   *  (session-visibility.md §4.2); absent ⇒ webchat sessions stay owner-orphans. */
+  webchatConversation?: WebchatConversationRepo
+  /** Resolves Web API launch provenance for the same classification (§4.4). */
+  launch?: LaunchRepo
+  /** Pushes the CP-confirmed capture gate to the owning daemon (§5.1); absent ⇒
+   *  daemons converge on their next register snapshot instead. */
+  visibilityPush?: SessionVisibilityPushService
   /** Publishes persisted session milestones to the WebUI SSE feed. */
   events: SessionEventSink
   /** Ownership check for the `integration/channels` EVT (integration → daemon scope). */

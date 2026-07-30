@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AnyFrame } from '@agentconnect.md/protocol'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
+import type { SessionMetaRecord, SessionMilestoneResult } from '../../persistence/ports.js'
 import { handleEventSession } from './event-session.js'
 
 const DAEMON_ID = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT_ID = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const SESSION_ID = 'session-407'
 
 function scopedDeps(extra: Record<string, unknown>): DaemonWsDeps {
   return {
@@ -33,16 +35,25 @@ function eventSessionFrame(): AnyFrame {
   }
 }
 
+/** A minimal `recorded` result: the upsert landed and settled no A2A children. */
+function recorded(session: Partial<SessionMetaRecord> = {}): SessionMilestoneResult {
+  return {
+    recorded: true,
+    session: { id: SESSION_ID, agentId: AGENT_ID, parentSessionId: null, ...session } as SessionMetaRecord,
+    settled: []
+  }
+}
+
 describe('handleEventSession', () => {
   it('publishes the milestone only after it has been persisted', async () => {
     const order: string[] = []
     let finishPersist!: () => void
     const recordMilestone = vi.fn(() => {
       order.push('persist:start')
-      return new Promise<boolean>((resolve) => {
+      return new Promise<SessionMilestoneResult>((resolve) => {
         finishPersist = () => {
           order.push('persist:finish')
-          resolve(true)
+          resolve(recorded())
         }
       })
     })
@@ -70,7 +81,7 @@ describe('handleEventSession', () => {
   })
 
   it('passes the execution-config snapshot through and stamps daemonId from the connection', async () => {
-    const recordMilestone = vi.fn().mockResolvedValue(true)
+    const recordMilestone = vi.fn().mockResolvedValue(recorded())
     const deps = scopedDeps({
       session: { recordMilestone },
       events: { publish: vi.fn() }
@@ -119,7 +130,7 @@ describe('handleEventSession', () => {
   it('does not publish a milestone rejected by the session ownership fence', async () => {
     const publish = vi.fn()
     const deps = scopedDeps({
-      session: { recordMilestone: vi.fn().mockResolvedValue(false) },
+      session: { recordMilestone: vi.fn().mockResolvedValue({ recorded: false, session: null, settled: [] }) },
       events: { publish }
     })
 
