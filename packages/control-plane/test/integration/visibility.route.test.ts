@@ -12,7 +12,7 @@ import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -155,8 +155,15 @@ describe('mcp provider visibility — list, get, sharing, enable-gate', () => {
   /** Seed an mcp_provider row directly (bypasses the relay push in POST). */
   async function seedProvider(
     id: string,
-    opts: { name: string; visibility?: 'org' | 'restricted'; sharedWith?: string[]; createdByUserId?: string }
+    opts: {
+      name: string
+      visibility?: 'org' | 'restricted'
+      sharedWith?: string[]
+      createdByUserId?: string
+      ownerUserId?: string
+    }
   ): Promise<void> {
+    const ownerUserId = opts.ownerUserId ?? opts.createdByUserId
     await prisma.mcpProvider.create({
       data: {
         id,
@@ -165,7 +172,8 @@ describe('mcp provider visibility — list, get, sharing, enable-gate', () => {
         url: 'https://mcp.example.com/sse',
         ...(opts.visibility ? { visibility: opts.visibility } : {}),
         ...(opts.sharedWith ? { sharedWith: opts.sharedWith } : {}),
-        ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {})
+        ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {}),
+        ...(ownerUserId ? { ownerUserId } : {})
       }
     })
   }
@@ -253,8 +261,10 @@ describe('skill source visibility — the agent that enables it resolves it anyw
       visibility?: 'org' | 'restricted'
       sharedWith?: string[]
       createdByUserId?: string
+      ownerUserId?: string
     }
   ): Promise<void> {
+    const ownerUserId = opts.ownerUserId ?? opts.createdByUserId
     await prisma.skillSource.create({
       data: {
         id,
@@ -263,7 +273,8 @@ describe('skill source visibility — the agent that enables it resolves it anyw
         source: opts.source ?? 'example-org/example-ai-kit',
         ...(opts.visibility ? { visibility: opts.visibility } : {}),
         ...(opts.sharedWith ? { sharedWith: opts.sharedWith } : {}),
-        ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {})
+        ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {}),
+        ...(ownerUserId ? { ownerUserId } : {})
       }
     })
   }
@@ -435,16 +446,81 @@ describe('agent call policy endpoint', () => {
   })
 })
 
-describe('member removal prunes the share set (transactional, §8.1)', () => {
-  it('removing a member strips their id from every resource sharedWith', async () => {
-    const grantee = await makeUser('prune-grantee', 'collaborator')
-    const R = randomUUID()
-    await seedAgent(prisma, R, { visibility: 'restricted', sharedWith: [grantee] })
+describe('member removal transfers resource ownership (transactional, §8)', () => {
+  it('transfers all five resource types, preserves creator audit, and prunes stale shares', async () => {
+    const departingEmail = 'ownership-departing@acme.dev'
+    const departing = await makeUser('ownership-departing', 'collaborator')
+    const agentId = randomUUID()
+    const daemonId = randomUUID()
+    const cronId = randomUUID()
+    const providerId = randomUUID()
+    const sourceId = randomUUID()
+    const ownership = {
+      visibility: 'restricted' as const,
+      sharedWith: [departing],
+      createdByUserId: departing,
+      ownerUserId: departing
+    }
 
-    await new PgUserRepo(prisma).removeMember(DEFAULT_ORG_ID, grantee)
+    await seedDaemon(prisma, daemonId, ownership)
+    await seedAgent(prisma, agentId, { ...ownership, daemonId })
+    await prisma.cronDef.create({
+      data: {
+        id: cronId,
+        orgId: DEFAULT_ORG_ID,
+        agentId,
+        schedule: '0 * * * *',
+        timezone: 'UTC',
+        trigger: 'ownership transfer',
+        ...ownership
+      }
+    })
+    await prisma.mcpProvider.create({
+      data: {
+        id: providerId,
+        orgId: DEFAULT_ORG_ID,
+        name: `ownership-${providerId.slice(0, 8)}`,
+        url: 'https://mcp.example.com/sse',
+        ...ownership
+      }
+    })
+    await prisma.skillSource.create({
+      data: {
+        id: sourceId,
+        orgId: DEFAULT_ORG_ID,
+        name: `ownership-${sourceId.slice(0, 8)}`,
+        source: 'example-org/example-kit',
+        ...ownership
+      }
+    })
 
-    const row = await prisma.agent.findUnique({ where: { id: R }, select: { sharedWith: true } })
-    expect(row!.sharedWith).not.toContain(grantee)
+    const removed = await appAs(DEFAULT_OWNER_ID).app.inject({
+      method: 'DELETE',
+      url: `${ORG}/members/${departing}`
+    })
+    expect(removed.statusCode).toBe(204)
+
+    const select = { ownerUserId: true, createdByUserId: true, sharedWith: true } as const
+    const rows = await Promise.all([
+      prisma.agent.findUniqueOrThrow({ where: { id: agentId }, select }),
+      prisma.daemon.findUniqueOrThrow({ where: { id: daemonId }, select }),
+      prisma.cronDef.findUniqueOrThrow({ where: { id: cronId }, select }),
+      prisma.mcpProvider.findUniqueOrThrow({ where: { id: providerId }, select }),
+      prisma.skillSource.findUniqueOrThrow({ where: { id: sourceId }, select })
+    ])
+    for (const row of rows) {
+      expect(row.ownerUserId).toBe(DEFAULT_OWNER_ID)
+      expect(row.createdByUserId).toBe(departing)
+      expect(row.sharedWith).not.toContain(departing)
+    }
+
+    // Re-inviting reuses the same app_user id, but neither old ownership nor an
+    // old share grant comes back.
+    await users().addMemberByEmail(DEFAULT_ORG_ID, departingEmail, 'collaborator')
+    expect((await appAs(departing).app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })).statusCode).toBe(404)
+    expect(
+      (await appAs(DEFAULT_OWNER_ID).app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })).statusCode
+    ).toBe(200)
   })
 })
 

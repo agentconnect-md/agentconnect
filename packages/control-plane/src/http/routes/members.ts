@@ -144,7 +144,8 @@ export function memberRoutes(deps: HttpDeps) {
         if (denyNonOwner(req, reply)) return
         const orgId = req.orgCtx!.orgId
         const userId = req.params.id
-        const current = (await deps.repos.user.listMembers(orgId)).find((m) => m.userId === userId)
+        const members = await deps.repos.user.listMembers(orgId)
+        const current = members.find((m) => m.userId === userId)
         if (!current) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'member not found' })
         }
@@ -156,7 +157,20 @@ export function memberRoutes(deps: HttpDeps) {
               .send({ error: 'Conflict', statusCode: 409, message: 'an organization needs at least one owner' })
           }
         }
-        await deps.repos.user.removeMember(orgId, userId)
+        const actingUserId = req.orgCtx!.userId
+        const transferToUserId =
+          userId === actingUserId
+            ? members
+                .filter((member) => member.role === 'owner' && member.userId !== userId)
+                .map((member) => member.userId)
+                .sort()[0]
+            : actingUserId
+        if (!transferToUserId) {
+          return reply
+            .code(409)
+            .send({ error: 'Conflict', statusCode: 409, message: 'an organization needs at least one owner' })
+        }
+        await deps.repos.user.removeMember(orgId, userId, transferToUserId)
         // Compensate the check-then-act window (see PATCH above): if the org just
         // lost its last owner to a concurrent removal, put this membership back.
         if (current.role === 'owner' && (await deps.repos.org.countOwners(orgId)) === 0) {

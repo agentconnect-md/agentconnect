@@ -18,6 +18,7 @@ function source(over: Partial<SkillSourceRecord>): SkillSourceRecord {
     visibility: 'org',
     sharedWith: [],
     createdByUserId: null,
+    ownerUserId: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
     ...over

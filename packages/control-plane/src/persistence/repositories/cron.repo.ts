@@ -37,9 +37,8 @@ function toRecord(c: CronWithUsers): CronRecord {
     createdBy: c.createdBy
       ? { userId: c.createdBy.id, displayName: c.createdBy.displayName, email: c.createdBy.email }
       : null,
-    // Raw creator scalar temporarily supplies the visibility ownership arm,
-    // independent of the joined `createdBy` above. See issue #271.
     createdByUserId: c.createdByUserId,
+    ownerUserId: c.ownerUserId,
     visibility: c.visibility,
     sharedWith: c.sharedWith,
     createdAt: c.createdAt,
@@ -54,6 +53,7 @@ export class PgCronRepo implements CronRepo {
   constructor(private readonly db: PrismaLike) {}
 
   async upsert(input: UpsertCronInput): Promise<CronRecord> {
+    const ownerUserId = input.ownerUserId ?? input.createdByUserId
     const data = {
       orgId: input.orgId,
       agentId: input.agentId,
@@ -76,6 +76,7 @@ export class PgCronRepo implements CronRepo {
         id: input.cronId,
         ...data,
         ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {}),
+        ...(ownerUserId ? { ownerUserId } : {}),
         ...(input.lastModifiedByUserId ? { lastModifiedByUserId: input.lastModifiedByUserId } : {}),
         // Initial visibility on create only (mirrors createdByUserId); the update
         // branch never touches sharing — that's the setSharing / PUT /sharing path.

@@ -43,6 +43,7 @@ function toProviderRecord(p: McpProvider): McpProviderRecord {
     visibility: p.visibility as ResourceVisibility,
     sharedWith: p.sharedWith,
     createdByUserId: p.createdByUserId,
+    ownerUserId: p.ownerUserId,
     createdAt: p.createdAt,
     updatedAt: p.updatedAt
   }
@@ -52,6 +53,7 @@ export class PgMcpProviderRepo implements McpProviderRepo {
   constructor(private readonly db: PrismaLike) {}
 
   async create(input: CreateMcpProviderInput): Promise<McpProviderRecord> {
+    const ownerUserId = input.ownerUserId ?? input.createdByUserId
     const p = await this.db.mcpProvider.create({
       data: {
         orgId: input.orgId,
@@ -61,7 +63,8 @@ export class PgMcpProviderRepo implements McpProviderRepo {
         ...(input.transport ? { transport: input.transport } : {}),
         ...(input.visibility ? { visibility: input.visibility } : {}),
         ...(input.sharedWith ? { sharedWith: input.sharedWith } : {}),
-        ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
+        ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {}),
+        ...(ownerUserId ? { ownerUserId } : {})
       }
     })
     return toProviderRecord(p)

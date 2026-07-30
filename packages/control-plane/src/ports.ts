@@ -207,9 +207,10 @@ export interface DaemonView {
   lastModifiedAt: Date
   /** WebUI user who last edited the daemon; null ⇒ never edited by a human. */
   lastModifiedBy: { userId: string; displayName: string | null; email: string } | null
-  /** Raw creator FK scalar — temporarily the visibility ownership arm, independent
-   *  of joined `createdBy`. null ⇒ CLI/self-registered. See issue #271. */
+  /** Raw immutable creator FK scalar, independent of joined `createdBy`. */
   createdByUserId: string | null
+  /** Current resource owner used by restricted visibility. */
+  ownerUserId: string | null
   /** Per-resource visibility (docs/designs/resource-visibility.md). */
   visibility: ResourceVisibility
   /** app_user.id set granted view when `visibility === 'restricted'`. */

@@ -153,9 +153,8 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     createdBy: a.createdBy
       ? { userId: a.createdBy.id, displayName: a.createdBy.displayName, email: a.createdBy.email }
       : null,
-    // Raw creator scalar temporarily supplies the visibility ownership arm,
-    // independent of the joined `createdBy` above. See issue #271.
     createdByUserId: a.createdByUserId,
+    ownerUserId: a.ownerUserId,
     visibility: a.visibility,
     sharedWith: a.sharedWith,
     callPolicy: a.callPolicy as AgentCallPolicy,
@@ -181,6 +180,7 @@ export class PgAgentRepo implements AgentRepo {
 
   async create(input: CreateAgentInput): Promise<AgentRecord> {
     const ws = input.workspace ?? { mode: 'scratch' }
+    const ownerUserId = input.ownerUserId ?? input.createdByUserId
     return this.transaction(async (tx) => {
       // Close organization deletion's no-agent-row enumeration window without
       // taking a parent-row lock in the reverse order of Hook CRUD.
@@ -233,6 +233,7 @@ export class PgAgentRepo implements AgentRepo {
           ...(input.createdByUserId
             ? { createdByUserId: input.createdByUserId, lastModifiedByUserId: input.createdByUserId }
             : {}),
+          ...(ownerUserId ? { ownerUserId } : {}),
           workspaceMode: ws.mode,
           gitRepo: ws.mode === 'github' ? ws.gitRepo : null,
           gitBranch: ws.mode === 'github' ? (ws.gitBranch ?? 'main') : null,

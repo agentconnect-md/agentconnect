@@ -34,6 +34,7 @@ function toRecord(s: SkillSource): SkillSourceRecord {
     visibility: s.visibility as ResourceVisibility,
     sharedWith: s.sharedWith,
     createdByUserId: s.createdByUserId,
+    ownerUserId: s.ownerUserId,
     createdAt: s.createdAt,
     updatedAt: s.updatedAt
   }
@@ -43,6 +44,7 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
   constructor(private readonly db: PrismaLike) {}
 
   async create(input: CreateSkillSourceInput): Promise<SkillSourceRecord> {
+    const ownerUserId = input.ownerUserId ?? input.createdByUserId
     const s = await this.db.skillSource.create({
       data: {
         orgId: input.orgId,
@@ -54,7 +56,8 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
         ...(input.skills ? { skills: input.skills } : {}),
         ...(input.visibility ? { visibility: input.visibility } : {}),
         ...(input.sharedWith ? { sharedWith: input.sharedWith } : {}),
-        ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
+        ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {}),
+        ...(ownerUserId ? { ownerUserId } : {})
       }
     })
     return toRecord(s)

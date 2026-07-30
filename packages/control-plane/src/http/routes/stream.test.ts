@@ -11,6 +11,7 @@ function agent(orgId: typeof ORG_A, sharing: Partial<Shareable> = {}): Shareable
     orgId,
     visibility: 'org',
     createdByUserId: null,
+    ownerUserId: null,
     sharedWith: [],
     ...sharing
   }

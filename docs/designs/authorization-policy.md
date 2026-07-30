@@ -107,7 +107,7 @@ Human list queries apply:
 WHERE "orgId" = $orgId
   AND (
     "visibility" = 'org'
-    OR "createdByUserId" = $userId
+    OR "ownerUserId" = $userId
     OR "sharedWith" @> ARRAY[$userId]
   )
 ```
@@ -121,16 +121,14 @@ The SQL projection and in-memory `resource.view` rule are colocated and covered
 by the same truth-table tests. Paginated queries must not post-filter an
 already-sized page.
 
-## 6. Ownership follow-up
+## 6. Ownership transfer
 
-`createdByUserId` currently supplies both immutable creation attribution and
-the resource-ownership arm. Those meanings must separate before ownership can
-be transferred safely.
-
-[#271](https://github.com/agentconnect-md/agentconnect/issues/271) tracks a
-dedicated `ownerUserId` and atomic transfer to a remaining organization owner
-when a member leaves. The transaction must also prune every share vector and
-preserve `createdByUserId` for audit history.
+`ownerUserId` supplies the resource-ownership arm; `createdByUserId` remains
+immutable creation attribution. Removing a member transfers every owned
+visibility carrier to a selected remaining organization owner and prunes every
+share vector before deleting the membership. Concurrent last-owner mutation
+remains tracked in
+[#271](https://github.com/agentconnect-md/agentconnect/issues/271).
 
 ## 7. Verification
 

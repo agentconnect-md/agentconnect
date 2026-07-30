@@ -364,19 +364,23 @@ export class PgUserRepo implements UserRepo {
     return toMemberRecord(row)
   }
 
-  async removeMember(orgId: string, userId: string): Promise<void> {
-    // Remove the membership AND prune the departing user's id from every resource's
-    // `sharedWith` in ONE transaction (docs/designs/resource-visibility.md §8.1).
-    // app_user.id is stable across removal→re-invite (JIT from the OIDC `sub`), so a
-    // non-transactional / best-effort prune could silently re-grant a re-invited
-    // user access to restricted resources they were previously shared on.
+  async removeMember(orgId: string, userId: string, transferToUserId: string): Promise<void> {
+    // Transfer ownership, prune the departing user's grants, then remove the
+    // membership in ONE transaction (docs/designs/resource-visibility.md §8).
+    // createdByUserId is immutable audit attribution and is deliberately untouched.
     const run = async (tx: PrismaLike): Promise<void> => {
+      // The recipient must still own this organization when the transfer starts.
+      await tx.membership.findFirstOrThrow({
+        where: { orgId, userId: transferToUserId, role: 'owner' },
+        select: { id: true }
+      })
+      await tx.$executeRaw`UPDATE "agent" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
+      await tx.$executeRaw`UPDATE "daemon" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
+      await tx.$executeRaw`UPDATE "cron_def" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
+      await tx.$executeRaw`UPDATE "mcp_provider" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
+      await tx.$executeRaw`UPDATE "skill_source" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
       // Throws Prisma P2025 when the membership is absent → 404 at the route.
       await tx.membership.delete({ where: { orgId_userId: { orgId, userId } } })
-      await tx.$executeRaw`UPDATE "agent"    SET "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ${userId} = ANY("sharedWith")`
-      await tx.$executeRaw`UPDATE "daemon"   SET "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ${userId} = ANY("sharedWith")`
-      await tx.$executeRaw`UPDATE "cron_def" SET "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ${userId} = ANY("sharedWith")`
-      await tx.$executeRaw`UPDATE "mcp_provider" SET "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ${userId} = ANY("sharedWith")`
     }
     // Compose under an ambient transaction when given one (TransactionClient has no
     // $transaction); open our own interactive transaction otherwise.

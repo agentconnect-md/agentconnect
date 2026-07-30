@@ -50,9 +50,8 @@ function toRecord(d: DaemonWithUsers): DaemonRecord {
     createdBy: d.createdBy
       ? { userId: d.createdBy.id, displayName: d.createdBy.displayName, email: d.createdBy.email }
       : null,
-    // Raw creator scalar temporarily supplies the visibility ownership arm,
-    // independent of the joined `createdBy` above. See issue #271.
     createdByUserId: d.createdByUserId,
+    ownerUserId: d.ownerUserId,
     visibility: d.visibility,
     sharedWith: d.sharedWith,
     lastModifiedAt: d.lastModifiedAt,
@@ -73,7 +72,9 @@ export class PgDaemonRepo implements DaemonRepo {
         status: 'provisioned', // sessionEpoch defaults to 0 (§4.1)
         // Console-provisioned: the provisioning principal is both creator and first
         // last-modifier (lastModifiedAt defaults to now = createdAt).
-        ...(createdByUserId ? { createdByUserId, lastModifiedByUserId: createdByUserId } : {})
+        ...(createdByUserId
+          ? { createdByUserId, ownerUserId: createdByUserId, lastModifiedByUserId: createdByUserId }
+          : {})
       },
       include: withUsers
     })
