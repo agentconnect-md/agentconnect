@@ -71,6 +71,7 @@ import {
   PgGithubInstallationRepo,
   PgGithubInstallStateStore,
   PgAgentRepoAuthorizationRepo,
+  PgSocialIdentityMutationGate,
   PgCronRepo,
   PgHookRepo,
   PgHookSecretStore,
@@ -594,10 +595,14 @@ export function buildContainer(
     : undefined
 
   const logtoMgmtCfg = resolveLogtoMgmtConfig(config)
+  const logtoIdentity =
+    logtoMgmtCfg && config.OIDC_ISSUER
+      ? new LogtoIdentityService(logtoMgmtCfg, clock, new PgSocialIdentityMutationGate(prisma))
+      : undefined
   const githubUserAuthz =
-    github && logtoMgmtCfg && config.OIDC_ISSUER
+    github && logtoIdentity
       ? new GithubUserAuthzService({
-          identity: new LogtoIdentityService(logtoMgmtCfg, clock),
+          identity: logtoIdentity,
           github,
           users: repos.user,
           clock
@@ -677,6 +682,7 @@ export function buildContainer(
     feishuAppRegistration: new FeishuAppRegistrationService(repos.feishuAppRegistration),
     ...(github ? { github } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
+    ...(logtoIdentity ? { logtoIdentity } : {}),
     ...(iconStore ? { iconStore } : {}),
     ...(connectors ? { connectors } : {}),
     ...(slackPlatformApp ? { slackPlatformApp } : {}),

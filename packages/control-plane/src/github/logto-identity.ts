@@ -1,12 +1,11 @@
 /**
- * LogtoIdentityService — resolves a console user's GitHub **login** server-side
- * (docs/designs/github-app-git-credentials.md open question #7, identity-assertion route).
+ * LogtoIdentityService — the Control Plane's one deliberate Logto coupling.
  *
- * The CP is otherwise a provider-agnostic OIDC resource server; this is the ONE
- * deliberate Logto coupling, opt-in via `LOGTO_MGMT_*` config (all-or-none,
- * mirroring `GITHUB_APP_*`). It reads identity METADATA only — the GitHub login
- * a user signed in with — never social tokens (those are end-user-Account-API
- * territory by Logto's design and we don't want them).
+ * It resolves a console user's GitHub login for repo authorization and lets an
+ * authenticated user link or unlink their own social sign-in methods from the
+ * AgentConnect Profile UI. Both use Logto's Management API behind the CP; its
+ * M2M credential never reaches the browser. We read identity metadata only and
+ * never retain social access tokens.
  *
  * Auth: M2M client-credentials against `${endpoint}/oidc/token` with the
  * Management API resource indicator (default `${endpoint}/api`; cloud tenants
@@ -18,6 +17,7 @@
  * single-flight. All lookups fail CLOSED at the callers (authorization gate).
  */
 import type { Clock } from '../domain/clock.js'
+import type { SocialIdentityMutationGate } from '../persistence/ports.js'
 import type { FetchLike } from './api.js'
 
 export interface LogtoMgmtConfig {
@@ -60,7 +60,8 @@ export class LogtoApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
-    readonly retryable: boolean
+    readonly retryable: boolean,
+    readonly code?: string
   ) {
     super(message)
     this.name = 'LogtoApiError'
@@ -102,6 +103,7 @@ export class LogtoIdentityService {
   constructor(
     private readonly cfg: LogtoMgmtConfig,
     private readonly clock: Clock,
+    private readonly mutations: SocialIdentityMutationGate,
     private readonly fetchImpl: FetchLike = fetch as FetchLike
   ) {}
 
@@ -119,6 +121,72 @@ export class LogtoIdentityService {
       this.loginInFlight.set(sub, pending)
     }
     return pending
+  }
+
+  /** Resolve a statically supported provider target and build its link URL. */
+  async createSocialAuthorization(
+    target: string,
+    redirectUri: string,
+    state: string
+  ): Promise<{ connectorId: string; redirectTo: string }> {
+    const connectorsRes = await this.request(`/api/connectors?target=${encodeURIComponent(target)}`)
+    if (!connectorsRes.ok) throw await this.responseError('logto social connector lookup', connectorsRes)
+    const connectors: unknown = await connectorsRes.json()
+    const connector = Array.isArray(connectors)
+      ? connectors.find((entry) => {
+          if (!entry || typeof entry !== 'object') return false
+          const value = entry as { target?: unknown; type?: unknown }
+          return value.target === target && value.type === 'Social'
+        })
+      : undefined
+    const connectorId =
+      connector && typeof (connector as { id?: unknown }).id === 'string' ? (connector as { id: string }).id : undefined
+    if (!connectorId) throw new LogtoApiError('social connector not found', 404, false)
+
+    const res = await this.request(`/api/connectors/${encodeURIComponent(connectorId)}/authorization-uri`, {
+      method: 'POST',
+      body: JSON.stringify({ redirectUri, state })
+    })
+    if (!res.ok) throw await this.responseError('logto social authorization', res)
+    const body = (await res.json()) as { redirectTo?: unknown }
+    if (typeof body.redirectTo !== 'string' || body.redirectTo.length === 0) {
+      throw new LogtoApiError('logto social authorization response missing redirectTo', 502, false)
+    }
+    return { connectorId, redirectTo: body.redirectTo }
+  }
+
+  /** Link the provider identity proved by `connectorData` to this Logto user. */
+  async linkSocialIdentity(sub: string, connectorId: string, connectorData: Record<string, string>): Promise<void> {
+    const res = await this.request(`/api/users/${encodeURIComponent(sub)}/identities`, {
+      method: 'POST',
+      body: JSON.stringify({ connectorId, connectorData })
+    })
+    if (!res.ok) throw await this.responseError('logto social identity link', res)
+    this.logins.delete(sub)
+  }
+
+  /** Remove one provider identity from this Logto user. */
+  async unlinkSocialIdentity(sub: string, target: string): Promise<void> {
+    // Refresh outside the database critical section when needed; normal requests
+    // then reuse the cached token for the complete read/check/delete cycle.
+    await this.mgmtToken()
+    await this.mutations.runExclusive(sub, async () => {
+      const userRes = await this.request(`/api/users/${encodeURIComponent(sub)}`)
+      if (!userRes.ok) throw await this.responseError('logto user lookup', userRes)
+      const user = (await userRes.json()) as LogtoUser
+      const targets = Object.keys(user.identities ?? {})
+      if (!targets.includes(target)) {
+        throw new LogtoApiError('social identity not linked', 404, false)
+      }
+      if (targets.length === 1) {
+        throw new LogtoApiError('the last social sign-in method cannot be removed', 409, false, 'LAST_SOCIAL_IDENTITY')
+      }
+      const res = await this.request(`/api/users/${encodeURIComponent(sub)}/identities/${encodeURIComponent(target)}`, {
+        method: 'DELETE'
+      })
+      if (!res.ok) throw await this.responseError('logto social identity unlink', res)
+      this.logins.delete(sub)
+    })
   }
 
   private async lookupLogin(sub: string): Promise<string | null> {
@@ -141,11 +209,30 @@ export class LogtoIdentityService {
     return login
   }
 
-  private async request(path: string): Promise<Response> {
+  private async responseError(action: string, res: Response): Promise<LogtoApiError> {
+    let detail: { code?: unknown; message?: unknown } = {}
+    try {
+      detail = (await res.json()) as typeof detail
+    } catch {
+      // A status and stable operation label are enough when Logto returns no JSON.
+    }
+    const code = typeof detail.code === 'string' ? detail.code : undefined
+    const message =
+      typeof detail.message === 'string' && detail.message.length > 0
+        ? `${action} failed: ${detail.message}`
+        : `${action} failed: ${res.status}`
+    return new LogtoApiError(message, res.status, res.status >= 500 || res.status === 429, code)
+  }
+
+  private async request(path: string, init: RequestInit = {}): Promise<Response> {
     const token = await this.mgmtToken()
+    const headers = new Headers(init.headers)
+    headers.set('authorization', `Bearer ${token}`)
+    if (init.body) headers.set('content-type', 'application/json')
     try {
       return await this.fetchImpl(`${this.cfg.endpoint}${path}`, {
-        headers: { authorization: `Bearer ${token}` },
+        ...init,
+        headers,
         signal: AbortSignal.timeout(TIMEOUT_MS)
       })
     } catch (e) {

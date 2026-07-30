@@ -9,8 +9,9 @@
 // at any tenant via plain container env — no rebuild. The NEXT_PUBLIC_* statics
 // remain a build-time fallback for local dev (.env.local) and SSR.
 //
-// Social providers (Google/GitHub) are configured inside Logto, not here; the
-// buttons use Logto's `direct_sign_in` to jump straight to a connector.
+// The supported provider targets (Google/GitHub) are a shared static UI list;
+// their credentials and connectors remain configured inside Logto. The buttons
+// use Logto's `direct_sign_in` to jump straight to a connector.
 //
 // Token audience: the CP is an OIDC resource server, so it needs a JWT access
 // token scoped to an API *resource*. Set the Logto API resource indicator and
@@ -21,6 +22,7 @@
 import LogtoClient, { isLogtoRequestError, UserScope } from '@logto/browser'
 import { MOCK_MODE } from '@/lib/data'
 import { identifyUser, resetAnalytics } from '@/lib/analytics'
+import type { SocialLoginTarget } from '@/lib/social-login-providers'
 
 declare global {
   interface Window {
@@ -82,7 +84,7 @@ function getClient(): LogtoClient | undefined {
 }
 
 /** Start sign-in, jumping straight to a social connector when given. */
-export async function login(provider?: 'github' | 'google'): Promise<void> {
+export async function login(provider?: SocialLoginTarget): Promise<void> {
   const c = getClient()
   if (!c) return
   await c.signIn({

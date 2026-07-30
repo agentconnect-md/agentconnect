@@ -21,6 +21,7 @@ import { getToken, getIdTokenRaw, getUser, signOutDeletedAccount } from '@/lib/a
 import { track } from '@/lib/analytics'
 import { createSseParser } from '@/lib/sse'
 import { isUpgradeAvailable } from '@/lib/version'
+import type { SocialLoginTarget } from '@/lib/social-login-providers'
 
 /** A non-2xx CP response. `status` lets callers branch without parsing strings;
  *  `code` carries the CP's machine-readable denial reason when the endpoint
@@ -2839,6 +2840,25 @@ export function uploadMyProfilePicture(blob: Blob): Promise<MeDto> {
 
 export async function deleteMyProfilePicture(): Promise<MeDto> {
   return apiDelete<MeDto>('/me/picture')
+}
+
+// ── my social sign-in methods ────────────────────────────────────────────────
+// The CP uses the verified OIDC subject plus its server-side Logto Management
+// credential. The browser sees only the provider authorization URL and callback
+// data; it never receives that M2M credential.
+export function createMySocialIdentityAuthorization(
+  target: SocialLoginTarget,
+  state: string
+): Promise<{ authorizationUri: string; connectorId: string }> {
+  return apiPost('/me/social-identities/authorization-uri', { target, state })
+}
+
+export async function linkMySocialIdentity(connectorId: string, connectorData: Record<string, string>): Promise<void> {
+  await apiPost('/me/social-identities', { connectorId, connectorData })
+}
+
+export async function unlinkMySocialIdentity(target: string): Promise<void> {
+  await apiDelete(`/me/social-identities/${encodeURIComponent(target)}`)
 }
 
 // ── closed-beta admission (waitlist-and-login.md) ─────────────────────────────

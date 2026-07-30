@@ -38,6 +38,7 @@ import { iconUploadRoutes } from './routes/icon-upload.js'
 import { memberRoutes } from './routes/members.js'
 import { orgInviteAcceptRoutes, orgInviteLinkRoutes } from './routes/org-invite-links.js'
 import { meRoutes } from './routes/me.js'
+import { meSocialIdentityRoutes } from './routes/me-social-identities.js'
 import { waitlistRoutes } from './routes/waitlist.js'
 import { meKeyRoutes } from './routes/me-keys.js'
 import { orgRoutes, orgScopedRoutes } from './routes/orgs.js'
@@ -167,6 +168,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
     async (api) => {
       await api.register(orgRoutes(deps))
       await api.register(meRoutes(deps))
+      await api.register(meSocialIdentityRoutes(deps))
       await api.register(meKeyRoutes(deps))
       await api.register(waitlistRoutes(deps))
       await api.register(orgInviteAcceptRoutes(deps))
