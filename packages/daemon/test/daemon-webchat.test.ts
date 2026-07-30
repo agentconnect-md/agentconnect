@@ -1174,6 +1174,76 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   }, 15_000)
 
+  it('routes a trusted delegated turn through its private host and admin MCP descriptor', async () => {
+    const ordinary = streamingHost([])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: ordinary.factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+
+    const dedicatedHost = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-delegated-1'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const adminMcpServer = {
+      name: 'agentconnect-admin',
+      command: 'agentconnect',
+      args: ['mcp-bridge'],
+      env: []
+    }
+    const startHost = vi.fn(async () => ({
+      isolationCellId: 'cell-1',
+      host: dedicatedHost,
+      runtimeHome: '/private/home',
+      adminMcpServer,
+      mount: {
+        sourceDirectory: '/private/source',
+        sourceSocketPath: '/private/source/mcp.sock',
+        targetDirectory: '/run/agentconnect-admin'
+      }
+    }))
+    ;(daemon as any).delegatedWebchatHosts = { startHost, stop: vi.fn(async () => {}) }
+
+    const expiresAt = new Date(Date.now() + 60_000).toISOString()
+    const events: RdChatEvent[] = []
+    const ack = (daemon as any).handleRelayMsg(
+      rd(
+        { op: 'turn', text: 'go', user: 'ada' },
+        {
+          msgId: 'delegated-1',
+          delegation: {
+            id: '99999999-9999-4999-8999-999999999999',
+            generation: 3,
+            expiresAt
+          }
+        }
+      ),
+      (event: RdChatEvent) => events.push(event)
+    )
+
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((event) => event.kind === 'done')).toBe(true), WAIT)
+    expect(startHost).toHaveBeenCalledWith({
+      agentId: AGENT_ID,
+      conversationId: CONV,
+      delegationId: '99999999-9999-4999-8999-999999999999',
+      generation: 3,
+      expiresAt
+    })
+    expect(dedicatedHost.newSession).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining([adminMcpServer]),
+      undefined,
+      undefined
+    )
+    expect(dedicatedHost.prompt).toHaveBeenCalled()
+    expect(ordinary.host.newSession).not.toHaveBeenCalled()
+    await daemon.stop()
+  }, 15_000)
+
   it('keeps a newer resume bound when a delayed older generation arrives afterward', async () => {
     const { factory } = streamingHost([])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })

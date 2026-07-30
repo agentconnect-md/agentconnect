@@ -152,7 +152,14 @@ export class DelegatedWebchatHostManager {
     const active = this.active.get(key)
     if (active) {
       if (!sameAuthority(active, input)) {
-        throw new Error(`conversation ${input.conversationId} already has an active isolated host`)
+        if (input.generation <= active.generation) {
+          throw new Error(`stale delegation generation ${input.generation}; active generation is ${active.generation}`)
+        }
+        // Replacement is deliberately drain-first. The broker keeps the old
+        // immutable fence until its listener and host are gone, so a failed
+        // replacement can never restore or overlap stale authority.
+        await this.teardown(active, 'explicit_stop')
+        return this.startHost(input)
       }
       return this.publicHost(active)
     }
@@ -192,6 +199,46 @@ export class DelegatedWebchatHostManager {
     if (!record || record.isolationCellId !== input.isolationCellId) return false
     await this.teardown(record, 'explicit_stop')
     return true
+  }
+
+  /** Tear down one logical conversation and return the immutable authority that
+   * the daemon may revoke at the CP. Browser transport close never calls this. */
+  async closeConversation(input: {
+    agentId: string
+    conversationId: string
+  }): Promise<StartDelegatedWebchatHost | null> {
+    const key = logicalKey(input)
+    const pending = this.pending.get(key)
+    if (pending) {
+      pending.cancel()
+      await pending.promise.catch(() => undefined)
+    }
+    const record = this.active.get(key) ?? this.draining.get(key) ?? pending?.record
+    if (!record) return null
+    await this.teardown(record, 'explicit_stop')
+    return this.authority(record)
+  }
+
+  /** Agent detach is a real authority boundary: remove every private cell and
+   * hand their exact generation fences back to the daemon for CP revocation. */
+  async closeAgent(agentId: string): Promise<StartDelegatedWebchatHost[]> {
+    const keys = new Set<string>()
+    for (const record of [...this.active.values(), ...this.draining.values()]) {
+      if (record.agentId === agentId) keys.add(record.key)
+    }
+    for (const pending of this.pending.values()) {
+      if (pending.authority.agentId === agentId) {
+        keys.add(logicalKey(pending.authority))
+      }
+    }
+    const closed = await Promise.all(
+      [...keys].map((key) => {
+        const record = this.active.get(key) ?? this.draining.get(key) ?? this.pending.get(key)?.record
+        if (!record) return Promise.resolve(null)
+        return this.closeConversation(record)
+      })
+    )
+    return closed.filter((authority): authority is StartDelegatedWebchatHost => authority !== null)
   }
 
   /** Manager shutdown is local cell teardown only. The owning daemon calls
@@ -513,6 +560,16 @@ export class DelegatedWebchatHostManager {
       runtimeHome: record.runtimeHome,
       adminMcpServer: record.adminMcpServer,
       mount: record.mount
+    }
+  }
+
+  private authority(record: CellRecord): StartDelegatedWebchatHost {
+    return {
+      agentId: record.agentId,
+      conversationId: record.conversationId,
+      delegationId: record.delegationId,
+      generation: record.generation,
+      expiresAt: record.expiresAt
     }
   }
 }

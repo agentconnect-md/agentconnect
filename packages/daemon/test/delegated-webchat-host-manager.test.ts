@@ -225,6 +225,53 @@ describe('DelegatedWebchatHostManager', () => {
     expect(h.factoryInputs).toHaveLength(1)
   })
 
+  it('drains a lower generation completely before registering its replacement', async () => {
+    const order: string[] = []
+    const broker = new FakeBroker()
+    const register = broker.registerCell.bind(broker)
+    const drain = broker.beginDrainCell.bind(broker)
+    const release = broker.releaseCell.bind(broker)
+    broker.registerCell = async (input) => {
+      order.push(`register:${input.generation}`)
+      return register(input)
+    }
+    broker.beginDrainCell = async (input) => {
+      order.push(`drain:${input.generation}`)
+      return drain(input)
+    }
+    broker.releaseCell = async (input) => {
+      order.push(`release:${input.generation}`)
+      return release(input)
+    }
+    const h = harness({
+      broker,
+      hostFactory: (input) =>
+        ({
+          start: async () => order.push(`start:${input.adminMcpServer.env.at(-1)?.value}`),
+          stop: async () => order.push('stop:old')
+        }) as unknown as AcpHost
+    })
+
+    const first = await h.manager.startHost(cellInput('replace'))
+    const replacement = await h.manager.startHost({
+      ...cellInput('replace'),
+      delegationId: 'delegation-2',
+      generation: 2
+    })
+
+    expect(replacement.isolationCellId).not.toBe(first.isolationCellId)
+    expect(order.indexOf('drain:1')).toBeLessThan(order.indexOf('stop:old'))
+    expect(order.indexOf('stop:old')).toBeLessThan(order.indexOf('release:1'))
+    expect(order.indexOf('release:1')).toBeLessThan(order.indexOf('register:2'))
+    await expect(
+      h.manager.startHost({
+        ...cellInput('replace'),
+        delegationId: 'stale',
+        generation: 1
+      })
+    ).rejects.toThrow(/stale delegation generation/)
+  })
+
   it('cleans the home and broker cell when registration or host start fails', async () => {
     const registrationBroker = new FakeBroker()
     registrationBroker.registerCell = async (input) => {
