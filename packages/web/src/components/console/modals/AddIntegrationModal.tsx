@@ -184,7 +184,7 @@ const GUIDE: Record<
   discord: {
     linkHref: 'https://discord.com/developers/applications?new_application=true',
     linkLabel: 'Create Discord app',
-    step1: 'Name and create the application. In Bot, reset and copy the token, then enable Message Content Intent.',
+    step1: 'Name and create the application. In Bot, reset and copy the token.',
     tokenPlaceholder: 'Bot token from the Developer Portal'
   }
 }
@@ -194,8 +194,8 @@ const GUIDE: Record<
 const DISCORD_REQS: { icon: string; title: string; desc: string }[] = [
   {
     icon: 'message-square',
-    title: 'Message Content intent',
-    desc: 'Bot → Privileged Gateway Intents. Without it every message arrives with empty text and the bot never replies.'
+    title: 'Message Content Intent',
+    desc: 'AgentConnect checks this during install and turns it on when needed. If it can’t be changed automatically, you’ll be asked to enable it manually.'
   },
   {
     icon: 'terminal',
@@ -575,17 +575,6 @@ function BrowserBar({ url }: { url: string }) {
   )
 }
 
-// Discord's Privileged-Gateway-Intents switch, on or off.
-function DiscordToggle({ on }: { on: boolean }) {
-  return (
-    <span
-      className={`relative flex h-3 w-6 flex-none items-center rounded-full ${on ? 'bg-[#5865f2]' : 'bg-[#c4c9ce]'}`}
-    >
-      <span className={`absolute h-2 w-2 rounded-full bg-white ${on ? 'right-[3px]' : 'left-[3px]'}`} />
-    </span>
-  )
-}
-
 const TG_STEPS: WalkthroughStep[] = [
   {
     label: 'Find the bot',
@@ -712,9 +701,8 @@ const TG_STEPS: WalkthroughStep[] = [
   }
 ]
 
-// Discord's Developer Portal walkthrough, following the same three beats: create the app,
-// reveal + copy the bot token, then turn on the Message Content intent (the one setting whose
-// absence looks like a silently broken bot — see DISCORD_REQS).
+// Discord's Developer Portal walkthrough stops after token copy. AgentConnect handles
+// Message Content Intent during install; the checklist explains the automatic fallback.
 const DISCORD_STEPS: WalkthroughStep[] = [
   {
     label: 'New app',
@@ -810,57 +798,6 @@ const DISCORD_STEPS: WalkthroughStep[] = [
                 Reset Token
               </span>
             </div>
-          </div>
-        </div>
-      </MiniScreen>
-    )
-  },
-  {
-    label: 'Intents',
-    caption: (
-      <>
-        Same page: turn on <span className="font-medium text-(--text-secondary)">Message Content Intent</span>&#32;and
-        Save Changes, or every message arrives empty.
-      </>
-    ),
-    screen: (
-      <MiniScreen
-        frameClass="border-[#e3e5e8] bg-white"
-        bar={<BrowserBar url="discord.com/developers/applications/…/bot" />}
-      >
-        <div className="absolute inset-0 bg-white px-2.5 py-2">
-          <div className="font-sans text-[10px] font-bold leading-normal text-[#313338]">
-            Privileged Gateway Intents
-          </div>
-          <div className="mt-0.5 font-sans text-[8px] leading-snug text-[#5c5e66]">
-            Toggle the intents your bot needs to receive.
-          </div>
-          {[
-            { name: 'Presence Intent', on: false },
-            { name: 'Server Members Intent', on: false },
-            { name: 'Message Content Intent', on: true }
-          ].map((row) => (
-            <div key={row.name} className="relative mt-1.5 flex items-center gap-2 rounded px-1 py-1">
-              {row.on && (
-                <span className="pointer-events-none absolute -inset-0.5 step-blink rounded ring-2 ring-[#5865f2]" />
-              )}
-              <span
-                className={`min-w-0 flex-1 truncate font-sans text-[9px] leading-normal ${
-                  row.on ? 'font-bold text-[#313338]' : 'text-[#5c5e66]'
-                }`}
-              >
-                {row.name}
-              </span>
-              <DiscordToggle on={row.on} />
-            </div>
-          ))}
-          <div className="mt-2 flex items-center gap-2 rounded-md bg-[#313338] px-2 py-1.5">
-            <span className="min-w-0 flex-1 truncate font-sans text-[8.5px] leading-normal text-white">
-              Careful — you have unsaved changes!
-            </span>
-            <span className="flex-none rounded bg-[#248046] px-2 py-[3px] font-sans text-[8.5px] font-semibold leading-normal text-white">
-              Save Changes
-            </span>
           </div>
         </div>
       </MiniScreen>
