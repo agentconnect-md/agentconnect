@@ -36,7 +36,11 @@ function integration(botId: string, platform: Platform, agentId = AGENT_ID): Int
   }
 }
 
-function bot(id: string, platform: Platform, options: { shareable?: boolean; revoked?: boolean } = {}): BotRecord {
+function bot(
+  id: string,
+  platform: Platform,
+  options: { shareable?: boolean; revoked?: boolean; feishuAppId?: string; feishuRegion?: 'feishu' | 'lark' } = {}
+): BotRecord {
   return {
     id: BotId(id),
     orgId: ORG_ID,
@@ -52,8 +56,8 @@ function bot(id: string, platform: Platform, options: { shareable?: boolean; rev
     credentialRevision: 1,
     credentialInstalledAt: new Date(0),
     discordAppId: null,
-    feishuAppId: null,
-    feishuRegion: null,
+    feishuAppId: options.feishuAppId ?? null,
+    feishuRegion: options.feishuRegion ?? null,
     shareable: options.shareable ?? false,
     transport: 'socket',
     createdBy: null,
@@ -66,18 +70,20 @@ function bot(id: string, platform: Platform, options: { shareable?: boolean; rev
 }
 
 describe('syncAgentBotIcons', () => {
-  it('syncs each dedicated Telegram/Discord bot once and isolates cosmetic failures', async () => {
+  it('syncs each dedicated Telegram/Discord/Feishu bot once and isolates cosmetic failures', async () => {
     const telegramId = '00000000-0000-4000-8000-000000000001'
     const discordId = '00000000-0000-4000-8000-000000000002'
     const sharedId = '00000000-0000-4000-8000-000000000003'
     const revokedId = '00000000-0000-4000-8000-000000000004'
     const slackId = '00000000-0000-4000-8000-000000000005'
+    const feishuId = '00000000-0000-4000-8000-000000000006'
     const bots = new Map([
       [telegramId, bot(telegramId, 'telegram')],
       [discordId, bot(discordId, 'discord')],
       [sharedId, bot(sharedId, 'telegram', { shareable: true })],
       [revokedId, bot(revokedId, 'discord', { revoked: true })],
-      [slackId, bot(slackId, 'slack')]
+      [slackId, bot(slackId, 'slack')],
+      [feishuId, bot(feishuId, 'feishu', { feishuAppId: 'cli_feishu', feishuRegion: 'lark' })]
     ])
     const integrations = [
       integration(telegramId, 'telegram'),
@@ -85,12 +91,14 @@ describe('syncAgentBotIcons', () => {
       integration(discordId, 'discord'),
       integration(sharedId, 'telegram'),
       integration(revokedId, 'discord'),
-      integration(slackId, 'slack')
+      integration(slackId, 'slack'),
+      integration(feishuId, 'feishu')
     ]
     const telegramSync = vi.fn(async () => {
       throw new Error('rate limited')
     })
     const discordSync = vi.fn(async () => {})
+    const feishuSync = vi.fn(async () => {})
     const secretGets: string[] = []
     const warn = vi.fn()
     const currentAgent = agentRecord(agent.icon)
@@ -111,12 +119,17 @@ describe('syncAgentBotIcons', () => {
             botSecret: {
               get: async (id) => {
                 secretGets.push(id)
-                return { botToken: `token-${id}`, appToken: null, signingSecret: null }
+                return {
+                  botToken: `token-${id}`,
+                  appToken: id === feishuId ? 'cli_secret_fallback' : null,
+                  signingSecret: null
+                }
               }
             }
           },
           syncTelegramBotIcon: telegramSync,
-          syncDiscordBotIcon: discordSync
+          syncDiscordBotIcon: discordSync,
+          syncFeishuAppIcon: feishuSync
         },
         agent,
         { warn }
@@ -127,7 +140,14 @@ describe('syncAgentBotIcons', () => {
     expect(telegramSync).toHaveBeenCalledWith(`token-${telegramId}`, expect.objectContaining(agent))
     expect(discordSync).toHaveBeenCalledOnce()
     expect(discordSync).toHaveBeenCalledWith(`token-${discordId}`, expect.objectContaining(agent))
-    expect(secretGets.sort()).toEqual([telegramId, discordId].sort())
+    expect(feishuSync).toHaveBeenCalledOnce()
+    expect(feishuSync).toHaveBeenCalledWith(
+      'cli_secret_fallback',
+      `token-${feishuId}`,
+      'lark',
+      expect.objectContaining(agent)
+    )
+    expect(secretGets.sort()).toEqual([telegramId, discordId, feishuId].sort())
     expect(warn).toHaveBeenCalledOnce()
   })
 

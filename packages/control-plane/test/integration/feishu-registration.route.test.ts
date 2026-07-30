@@ -166,11 +166,15 @@ describe('Feishu/Lark one-click app registration', () => {
     expect(avatar.statusCode).toBe(200)
     expect(avatar.headers['content-type']).toMatch(/^image\/png/)
     expect(avatar.headers['access-control-allow-origin']).toBe('*')
-    expect(decodeAddons(authorizationUrl.searchParams.get('addons')!)).toMatchObject({
+    const addons = decodeAddons(authorizationUrl.searchParams.get('addons')!)
+    expect(addons).toMatchObject({
       preset: true,
       scopes: { tenant: [...AGENTCONNECT_FEISHU_SCOPES] },
       events: { items: { tenant: [...AGENTCONNECT_FEISHU_EVENTS] } },
       callbacks: { items: [...AGENTCONNECT_FEISHU_CALLBACKS] }
+    })
+    expect(addons).toMatchObject({
+      scopes: { tenant: expect.arrayContaining(['application:application:patch']) }
     })
     await first.close()
 

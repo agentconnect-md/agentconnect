@@ -2148,9 +2148,10 @@ export interface AgentRepoAuthorizationRepo {
 // routes, protocol, or the daemon.
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Secret material for one bot. Feishu HTTP callback credentials are optional
- *  for compatibility with every existing platform row and are stored through
- *  the same cipher boundary. */
+/** Secret material for one bot. `appToken` is Slack Socket Mode's app-level token
+ *  or a Feishu/Lark App ID paired with `botToken`'s App Secret. Feishu HTTP callback
+ *  credentials are optional for compatibility with existing platform rows. Every
+ *  value is stored through the same cipher boundary. */
 export interface BotSecretMaterial {
   botToken: string
   appToken: string | null

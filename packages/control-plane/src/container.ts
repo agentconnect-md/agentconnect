@@ -146,6 +146,7 @@ import { createTelegramBotIconSyncer } from './http/telegram-bot-profile.js'
 import { ensureDiscordMessageContentIntent, verifyDiscordBot } from './http/discord-identity.js'
 import { createDiscordBotIconSyncer } from './http/discord-bot-profile.js'
 import { verifyFeishuBot } from './http/feishu-identity.js'
+import { createFeishuAppIconSyncer } from './http/feishu-app-icon.js'
 import { FeishuAppRegistrationService } from './http/feishu-registration.js'
 import { configureFeishuHttpApp } from './http/feishu-app-config.js'
 
@@ -698,6 +699,7 @@ export function buildContainer(
     syncDiscordBotIcon: createDiscordBotIconSyncer(iconStore),
     verifyFeishuBot,
     configureFeishuHttpApp,
+    syncFeishuAppIcon: createFeishuAppIconSyncer(iconStore),
     feishuAppRegistration: new FeishuAppRegistrationService(repos.feishuAppRegistration),
     ...(github ? { github } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
