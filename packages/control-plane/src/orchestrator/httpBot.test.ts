@@ -252,7 +252,10 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       revoke: async (id, at, fence) => {
         const applied = await bots.revokeIfCurrent!(id, at, fence)
         if (!applied) return { applied: false, integrationIds: [] }
-        return { applied: true, integrationIds: await intRepo.markRevokedForBot!(id) }
+        return {
+          applied: true,
+          integrationIds: await intRepo.markRevokedForBot!(id, botRow.credentialRevision)
+        }
       }
     }
     return new HttpBotOrchestrator(

@@ -107,6 +107,7 @@ const PLATFORM_INSTALL_FAILURES: Record<string, string> = {
   denied: 'The install was cancelled in Slack.',
   expired: 'This install link expired — start again.',
   workspace_taken: 'That Slack workspace is already connected to another organization.',
+  workspace_mismatch: 'Slack authorized a different workspace. Start again and choose the expected workspace.',
   agent_taken: 'That Slack workspace is already connected to another agent here. Remove that integration first.',
   error: 'Slack could not complete the install. Please try again.'
 }
@@ -1960,7 +1961,7 @@ export default function AddIntegrationModal({
     if (busyRef.current) return
     setPlatformErr(null)
     try {
-      const r = await startSlackPlatformInstall(agent.id)
+      const r = await startSlackPlatformInstall({ agentId: agent.id })
       setPlatformInstallId(r.id)
       window.open(r.installUrl, '_blank', 'noopener,width=680,height=760')
       setPlatformPhase('authorizing')
@@ -2763,7 +2764,7 @@ export default function AddIntegrationModal({
           </div>
         )}
         {/* A bot is installed on one agent at a time and OUTLIVES its integration:
-            reuse a freed / prebuilt one, or create a new bot for this platform.
+            reuse a freed / builtin one, or create a new bot for this platform.
             (Webhook and GitHub are bot-less — their bodies render above instead.) */}
         {platform !== 'webhook' && platform !== 'github' && !hideIdentitySection && (
           <div className="mb-3 grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
@@ -2845,7 +2846,7 @@ export default function AddIntegrationModal({
                         </span>
                       )}
                       {b.prebuilt && (
-                        <span className="badge bg-(--surface-active) text-(--text-tertiary)">prebuilt</span>
+                        <span className="badge bg-(--surface-active) text-(--text-tertiary)">builtin</span>
                       )}
                     </div>
                     <div className="mt-[2px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">

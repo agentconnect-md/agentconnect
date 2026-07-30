@@ -1790,6 +1790,9 @@ export interface CreateBotInput {
   /** Slack workspace id (T…), from the platform app's OAuth exchange. Together with
    *  `slackAppId` it is the relay demux key for a distributed app. Public metadata. */
   teamId?: string
+  /** Display-only external workspace metadata; never used for routing/admission. */
+  workspaceId?: string
+  workspaceName?: string
   /** Slack bot user id, from the OAuth exchange (`bot_user_id`). Public metadata. */
   botUserId?: string
   /** Discord application (client) id, decoded from the bot token. Public metadata, NOT a secret. */
@@ -1818,6 +1821,10 @@ export interface BotRecord {
   /** Slack workspace id (T…); non-null only for platform-app installs, where
    *  (slackAppId, teamId) is the relay demux key. */
   teamId: string | null
+  /** Display-only external workspace metadata; unlike teamId, this never changes
+   *  routing or install admission. */
+  workspaceId: string | null
+  workspaceName: string | null
   /** Slack bot user id, persisted from the OAuth exchange; null for legacy bots. */
   botUserId: string | null
   /** Stamped when the workspace uninstalled the app / revoked its tokens
@@ -1863,8 +1870,11 @@ export interface BotRepo {
   create(input: CreateBotInput): Promise<BotRecord>
   get(id: BotId): Promise<BotRecord | null>
   listForOrg(orgId: OrgId): Promise<BotRecord[]>
-  /** Legacy HTTP Slack bots created before app-id persistence was wired. */
-  listHttpMissingSlackAppId(): Promise<BotRecord[]>
+  /** Record workspace metadata learned from OAuth/auth.test. A missing name
+   *  preserves the last known label. */
+  setWorkspaceMetadata(id: BotId, workspaceId: string, workspaceName: string | null): Promise<void>
+  /** Slack bots missing public app/workspace identity metadata. */
+  listSlackMissingIdentity(): Promise<BotRecord[]>
   /** Backfill only a missing id; never replace an established Slack app identity. */
   setSlackAppIdIfMissing(id: BotId, slackAppId: string): Promise<boolean>
   /** Stamp the freed-bot display hints when its LAST integration is removed. */
@@ -2064,8 +2074,15 @@ export interface RevokeBotResult {
  */
 export interface BotCredentialWriter {
   /** A fresh credential landed (platform re-install / rotation): store it and
-   *  advance the generation as one step. Returns the new revision. */
-  install(botId: BotId, material: BotSecretMaterial, at: Date): Promise<number>
+   *  advance the generation as one step. A bot-bound Settings reinstall may
+   *  also restore only memberships revoked with the credential being replaced;
+   *  all three writes remain one transaction. Returns the new revision. */
+  install(
+    botId: BotId,
+    material: BotSecretMaterial,
+    at: Date,
+    options?: { restoreRevokedMemberships?: boolean }
+  ): Promise<number>
   /** Apply `rc/bot-revoked` behind its generation fence, flipping the bot and
    *  its active installs together. */
   revoke(botId: BotId, at: Date, fence: { revision?: number; eventAt?: Date }): Promise<RevokeBotResult>
@@ -2189,12 +2206,15 @@ export type SlackPlatformInstallStatus = 'pending' | 'completed' | 'failed'
 export interface SlackPlatformInstallRecord {
   id: string // == OAuth state (random uuid)
   orgId: OrgId
-  agentId: AgentId // bind target (defaults to the org's `agentconnect` preset)
+  /** Generic-install bind target. Null for bot-bound Settings reauthorization,
+   *  which preserves the bot's current (possibly empty) membership set. */
+  agentId: AgentId | null
   /** Terminal state of the OAuth round trip — the console's completion signal. */
   status: SlackPlatformInstallStatus
   /** Short code (same note the callback's close page shows) when `failed`. */
   failureReason: string | null
-  /** The workspace's Bot once `completed`. */
+  /** Expected Bot fence for Settings reauthorization, or the resulting Bot once
+   *  a generic install completes. */
   botId: string | null
   createdByUserId: string | null
   createdAt: Date
@@ -2205,7 +2225,9 @@ export interface SlackPlatformInstallStore {
   create(input: {
     id: string
     orgId: OrgId
-    agentId: AgentId
+    agentId?: AgentId
+    /** Bind OAuth to an existing platform Bot/workspace without changing membership. */
+    botId?: BotId
     createdByUserId?: string
   }): Promise<SlackPlatformInstallRecord>
   get(id: string): Promise<SlackPlatformInstallRecord | null>
@@ -2455,8 +2477,12 @@ export interface IntegrationRepo {
    *  earliest is the group's default agent). */
   listForBot(botId: BotId): Promise<IntegrationRecord[]>
   /** Flip every ACTIVE integration of `botId` to `revoked` (workspace uninstall /
-   *  token revocation). Returns the affected integration ids. */
-  markRevokedForBot(botId: BotId): Promise<IntegrationId[]>
+   *  token revocation), recording the credential generation that owned it.
+   *  Returns the affected integration ids. */
+  markRevokedForBot(botId: BotId, credentialRevision: number): Promise<IntegrationId[]>
+  /** Restore memberships revoked with exactly `credentialRevision`. Historical
+   *  revoked rows and deliberately deleted/free memberships stay untouched. */
+  restoreRevokedForBot(botId: BotId, credentialRevision: number): Promise<number>
   delete(id: IntegrationId): Promise<void>
 }
 

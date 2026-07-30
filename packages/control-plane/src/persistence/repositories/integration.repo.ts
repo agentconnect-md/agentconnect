@@ -59,6 +59,8 @@ function toBotRecord(b: BotJoined): BotRecord {
     prebuilt: b.prebuilt,
     slackAppId: b.slackAppId,
     teamId: b.teamId,
+    workspaceId: b.workspaceId,
+    workspaceName: b.workspaceName,
     botUserId: b.botUserId,
     revokedAt: b.revokedAt,
     credentialRevision: b.credentialRevision,
@@ -94,6 +96,8 @@ export class PgBotRepo implements BotRepo {
         ...(input.prebuilt !== undefined ? { prebuilt: input.prebuilt } : {}),
         ...(input.slackAppId ? { slackAppId: input.slackAppId } : {}),
         ...(input.teamId ? { teamId: input.teamId } : {}),
+        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+        ...(input.workspaceName ? { workspaceName: input.workspaceName } : {}),
         ...(input.botUserId ? { botUserId: input.botUserId } : {}),
         ...(input.discordAppId ? { discordAppId: input.discordAppId } : {}),
         ...(input.feishuAppId ? { feishuAppId: input.feishuAppId } : {}),
@@ -121,9 +125,22 @@ export class PgBotRepo implements BotRepo {
     return rows.map(toBotRecord)
   }
 
-  async listHttpMissingSlackAppId(): Promise<BotRecord[]> {
+  async setWorkspaceMetadata(id: BotId, workspaceId: string, workspaceName: string | null): Promise<void> {
+    await this.db.bot.update({
+      where: { id },
+      data: {
+        workspaceId,
+        ...(workspaceName ? { workspaceName } : {})
+      }
+    })
+  }
+
+  async listSlackMissingIdentity(): Promise<BotRecord[]> {
     const rows = await this.db.bot.findMany({
-      where: { platform: 'slack', transport: 'http', slackAppId: null },
+      where: {
+        platform: 'slack',
+        OR: [{ transport: 'http', slackAppId: null }, { workspaceId: null }, { workspaceName: null }]
+      },
       include: botInclude,
       orderBy: { createdAt: 'asc' }
     })
@@ -471,7 +488,7 @@ export class PgIntegrationRepo implements IntegrationRepo {
     return rows.map(toRecord)
   }
 
-  async markRevokedForBot(botId: BotId): Promise<IntegrationId[]> {
+  async markRevokedForBot(botId: BotId, credentialRevision: number): Promise<IntegrationId[]> {
     // Read-then-flip inside one statement pair: the ids are needed by the caller
     // (spec removal per daemon), and updateMany returns only a count.
     const rows = await this.db.integration.findMany({
@@ -481,9 +498,17 @@ export class PgIntegrationRepo implements IntegrationRepo {
     if (rows.length === 0) return []
     await this.db.integration.updateMany({
       where: { id: { in: rows.map((r) => r.id) } },
-      data: { status: 'revoked' }
+      data: { status: 'revoked', revokedCredentialRevision: credentialRevision }
     })
     return rows.map((r) => IntegrationId(r.id))
+  }
+
+  async restoreRevokedForBot(botId: BotId, credentialRevision: number): Promise<number> {
+    const { count } = await this.db.integration.updateMany({
+      where: { botId, status: 'revoked', revokedCredentialRevision: credentialRevision },
+      data: { status: 'active', revokedCredentialRevision: null }
+    })
+    return count
   }
 
   async delete(id: IntegrationId): Promise<void> {

@@ -622,6 +622,8 @@ export interface BotDto {
   lastUsedAt: string | null // ISO-8601; stamped when last freed; null ⇒ never used
   freedFromAgent: string | null // agent it was last freed from ("freed from support-bot")
   teamId?: string | null // Slack workspace id (T…) — platform-app installs only
+  workspaceId?: string | null // external workspace identity used only for Console grouping
+  workspaceName?: string | null // human-readable external workspace label
   revokedAt?: string | null // workspace uninstalled the app / revoked tokens; null ⇒ live
   createdAt: string // ISO-8601
 }
@@ -2574,13 +2576,14 @@ export async function finalizeSlackInstall(
 
 // ── Platform-published "Add to Slack" app (preset-agents.md §5.3) ──
 // Mint a pending install of the deployment's distributed Slack app and get the
-// slack.com authorize URL to open. `agentId` optional — the CP defaults to the
-// org's `agentconnect` preset agent. The callback finishes the install
-// server-side; the console polls the row below to learn when it landed.
-export async function startSlackPlatformInstall(agentId?: string): Promise<SlackPlatformInstallDto> {
-  return apiPost<SlackPlatformInstallDto>(`${orgBase()}/integrations/slack/platform-install`, {
-    ...(agentId ? { agentId } : {})
-  })
+// slack.com authorize URL to open. A generic install may select an agent (the CP
+// otherwise defaults to the org preset); Settings supplies `botId` to fence a
+// reauthorization to the bot's existing workspace. The callback finishes the
+// install server-side; the console polls the row below to learn when it landed.
+export async function startSlackPlatformInstall(
+  input: { agentId?: string; botId?: string } = {}
+): Promise<SlackPlatformInstallDto> {
+  return apiPost<SlackPlatformInstallDto>(`${orgBase()}/integrations/slack/platform-install`, input)
 }
 
 // Poll one platform-app install to completion. The ROW's terminal state is the

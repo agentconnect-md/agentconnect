@@ -820,16 +820,17 @@ export function buildContainer(
     http.log
   )
 
-  // Older HTTP Slack installs discarded the public app id even though the OAuth
-  // funnel / bot-token verification knew it. Repair those rows off the request
-  // path so the Settings roster can render app-specific links immediately after
-  // convergence. Unresolved rows remain null and retry every 15 minutes.
+  // Older Slack installs discarded some public app/workspace identity metadata.
+  // Repair those rows off the request path so Settings can render links and
+  // workspace groups without turning GET /bots into a Slack API fan-out.
   const slackBotIdentityReconciler = new SlackBotIdentityReconciler(
     repos.bot,
     repos.botSecret,
     async (botToken) => {
       const result = await verifySlackBot(botToken)
-      return result.status === 'ok' ? result.appId : null
+      return result.status === 'ok'
+        ? { appId: result.appId, workspaceId: result.teamId, workspaceName: result.teamName }
+        : null
     },
     clock,
     { intervalMs: 15 * 60 * 1000 },

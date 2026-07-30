@@ -1184,12 +1184,18 @@ export const FeishuAppRegistrationStatusDto = z.object({
 })
 
 /** `POST /integrations/slack/platform-install` (preset-agents.md §5.3) — mint a
- *  pending install of the PLATFORM-published Slack app. The target defaults to
- *  the org's `agentconnect` preset agent; an unplaced target is fine (http
- *  delivery converges at placement). */
-export const SlackPlatformInstallStartBody = z.object({
-  agentId: z.string().uuid().optional()
-})
+ *  pending install of the PLATFORM-published Slack app. A generic install may
+ *  target an agent (or default to the org preset); Settings reauthorization
+ *  supplies a botId so OAuth is fenced to that existing workspace without
+ *  changing its agent memberships. */
+export const SlackPlatformInstallStartBody = z
+  .object({
+    agentId: z.string().uuid().optional(),
+    botId: z.string().uuid().optional()
+  })
+  .refine((body) => !(body.agentId && body.botId), {
+    message: 'agentId and botId are mutually exclusive'
+  })
 
 /** The pending platform install: its state id + the slack.com authorize URL. */
 export const SlackPlatformInstallStartDto = z.object({
@@ -1207,10 +1213,12 @@ export const SlackPlatformInstallStartDto = z.object({
 export const SlackPlatformInstallStatusDto = z.object({
   id: z.string(),
   status: z.enum(['pending', 'completed', 'failed']),
-  /** Short code identifying the failure ('denied' | 'expired' | 'workspace_taken' |
-   *  'error') — the console renders a message from it. Null unless `failed`. */
+  /** Short code identifying the failure ('denied' | 'expired' |
+   *  'workspace_taken' | 'workspace_mismatch' | 'agent_taken' | 'error') —
+   *  the console renders a message from it. Null unless `failed`. */
   failureReason: z.string().nullable(),
-  /** The workspace's bot once completed (console deep-link); null otherwise. */
+  /** The expected workspace bot during a Settings reauthorization, or the
+   *  installed bot after a generic install; null otherwise. */
   botId: z.string().nullable()
 })
 
@@ -1282,6 +1290,9 @@ export const BotDto = z.object({
   freedFromAgent: z.string().nullable(),
   /** Slack workspace id (T…) — set for platform-app installs (preset-agents.md §5.3). */
   teamId: z.string().nullable(),
+  /** External workspace metadata used only to label/group bots in the Console. */
+  workspaceId: z.string().nullable(),
+  workspaceName: z.string().nullable(),
   /** The workspace uninstalled the app / revoked its tokens (`rc/bot-revoked`);
    *  a platform-app re-install clears it. ISO-8601, null ⇒ live. */
   revokedAt: z.string().nullable(),

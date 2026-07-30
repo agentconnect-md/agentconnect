@@ -151,6 +151,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       name: 'http-bot',
       appId: 'AHTTPBOT',
       teamId: 'T1',
+      teamName: 'Acme',
       scopes: []
     })
 
@@ -169,7 +170,9 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     const dto = res.json() as { botId: string }
     expect(await prisma.bot.findUnique({ where: { id: dto.botId } })).toMatchObject({
       transport: 'http',
-      slackAppId: 'AHTTPBOT'
+      slackAppId: 'AHTTPBOT',
+      workspaceId: 'T1',
+      workspaceName: 'Acme'
     })
   })
 
@@ -446,7 +449,14 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST rejects an app-level token Slack refuses (400) and stores nothing', async () => {
     const agentId = await placedAgent()
     const { app } = withSpy()
-    app.deps.verifySlackBot = async () => ({ status: 'ok', name: null, appId: null, teamId: null, scopes: [] })
+    app.deps.verifySlackBot = async () => ({
+      status: 'ok',
+      name: null,
+      appId: null,
+      teamId: null,
+      teamName: null,
+      scopes: []
+    })
     app.deps.verifySlackAppToken = async () => 'invalid'
 
     const res = await app.app.inject({
@@ -462,7 +472,14 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST rejects valid Slack tokens that belong to different apps', async () => {
     const agentId = await placedAgent()
     const { app } = withSpy()
-    app.deps.verifySlackBot = async () => ({ status: 'ok', name: null, appId: 'AOTHER', teamId: null, scopes: [] })
+    app.deps.verifySlackBot = async () => ({
+      status: 'ok',
+      name: null,
+      appId: 'AOTHER',
+      teamId: null,
+      teamName: null,
+      scopes: []
+    })
     app.deps.verifySlackAppToken = async () => 'ok'
 
     const res = await app.app.inject({
@@ -488,6 +505,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       name: 'matrix_test',
       appId: null,
       teamId: null,
+      teamName: null,
       scopes: []
     })
 
@@ -734,7 +752,11 @@ describe('bot roster (GET/DELETE /bots)', () => {
     const reconciler = new SlackBotIdentityReconciler(
       app.deps.repos.bot,
       app.deps.repos.botSecret,
-      async () => 'ALEGACYHTTP',
+      async () => ({
+        appId: 'ALEGACYHTTP',
+        workspaceId: 'TLEGACY',
+        workspaceName: 'Legacy workspace'
+      }),
       systemClock,
       { intervalMs: 60_000 }
     )
@@ -743,7 +765,14 @@ describe('bot roster (GET/DELETE /bots)', () => {
 
     const res = await app.app.inject({ method: 'GET', url: `${ORG}/bots` })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual([expect.objectContaining({ id: botId, slackAppId: 'ALEGACYHTTP' })])
+    expect(res.json()).toEqual([
+      expect.objectContaining({
+        id: botId,
+        slackAppId: 'ALEGACYHTTP',
+        workspaceId: 'TLEGACY',
+        workspaceName: 'Legacy workspace'
+      })
+    ])
   })
 
   it('GET /bots surfaces free vs in-use, freed-from hints, and never tokens', async () => {
@@ -855,6 +884,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
       name: 'refresh-me',
       appId: 'A0TESTAPP1',
       teamId: 'T0TESTTEAM1',
+      teamName: 'Acme',
       scopes: [...SLACK_BOT_SCOPES]
     })
 
@@ -900,6 +930,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
       name: 'manual-app',
       appId: 'A0MANUAL01',
       teamId: 'T0MANUAL01',
+      teamName: 'Acme',
       scopes: [...SLACK_BOT_SCOPES]
     })
 
@@ -953,6 +984,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
       name: 'mismatched-app',
       appId: 'A0DIFFERENT',
       teamId: 'T0OTHERTEAM',
+      teamName: 'Other',
       scopes: [...SLACK_BOT_SCOPES]
     })
 
@@ -965,6 +997,10 @@ describe('bot roster (GET/DELETE /bots)', () => {
       manifestUrl: 'https://api.slack.com/apps/A0EXPECTED1'
     })
     expect(exportCalls).toBe(0)
+    expect(await prisma.bot.findUnique({ where: { id: created.botId } })).toMatchObject({
+      workspaceId: null,
+      workspaceName: null
+    })
   })
 
   it.each(['assistant:write', 'chat:write.customize'] as const)(
@@ -989,6 +1025,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
         name: 'old-app',
         appId: 'A0OLDAPP01',
         teamId: 'T0OLDTEAM01',
+        teamName: 'Legacy',
         scopes: SLACK_BOT_SCOPES.filter((scope) => scope !== missingScope)
       })
 

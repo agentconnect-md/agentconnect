@@ -11,6 +11,7 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { provisionPresetAgents } from '../../src/persistence/index.js'
+import { SLACK_BOT_SCOPES } from '../../src/http/slack-manifest.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 import type {
   SlackConfigApi,
@@ -104,6 +105,16 @@ async function startInstall(app: HttpApp, agentId?: string): Promise<{ id: strin
   return res.json() as { id: string; installUrl: string }
 }
 
+async function startReauthorization(app: HttpApp, botId: string): Promise<{ id: string; installUrl: string }> {
+  const res = await app.app.inject({
+    method: 'POST',
+    url: `${ORG}/integrations/slack/platform-install`,
+    payload: { botId }
+  })
+  expect(res.statusCode).toBe(201)
+  return res.json() as { id: string; installUrl: string }
+}
+
 /** Poll one install's terminal state — the console's completion signal. */
 async function status(app: HttpApp, id: string) {
   return app.app.inject({ method: 'GET', url: `${ORG}/integrations/slack/platform-install/${id}` })
@@ -188,6 +199,8 @@ describe('GET /integrations/slack/platform/callback', () => {
       prebuilt: true,
       botUserId: 'U0BOT',
       name: 'AgentConnect (Acme)',
+      workspaceId: 'T0WORKSPACE',
+      workspaceName: 'Acme',
       revokedAt: null
     })
     expect(bot!.secret).toMatchObject({ botToken: 'xoxb-workspace-token', signingSecret: PLATFORM.signingSecret })
@@ -196,6 +209,25 @@ describe('GET /integrations/slack/platform/callback', () => {
     })
     expect(bot!.integrations).toHaveLength(1)
     expect(bot!.integrations[0]).toMatchObject({ agentId: preset!.id, status: 'active' })
+
+    app.deps.verifySlackBot = async () => ({
+      status: 'ok',
+      name: 'agentconnect',
+      appId: PLATFORM.appId,
+      teamId: 'T0WORKSPACE',
+      teamName: 'Acme',
+      scopes: [...SLACK_BOT_SCOPES]
+    })
+    const refreshed = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/bots/${bot!.id}/slack/refresh`
+    })
+    expect(refreshed.statusCode).toBe(200)
+    expect(refreshed.json()).toMatchObject({
+      manifest: 'synced',
+      authorization: 'current',
+      missingScopes: []
+    })
 
     // The row SURVIVES as the console's completion signal, but the state is still
     // single-use: a replayed callback is refused rather than re-running the install.
@@ -286,6 +318,143 @@ describe('GET /integrations/slack/platform/callback', () => {
     expect(revived.revokedAt).toBeNull()
     expect(revived.secret?.botToken).toBe('xoxb-workspace-token')
     expect(await prisma.integration.count({ where: { botId: bot.id, status: 'active', agentId } })).toBe(1)
+  })
+
+  it('a Settings reauthorization refuses a different workspace before mutating the bot', async () => {
+    const { app, stub } = withPlatform()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const first = await startInstall(app, agentId)
+    await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c1&state=${first.id}`
+    })
+    const before = await prisma.bot.findFirstOrThrow({
+      where: { slackAppId: PLATFORM.appId },
+      include: { secret: true }
+    })
+
+    const reauthorization = await startReauthorization(app, before.id)
+    expect(await prisma.slackPlatformInstall.findUniqueOrThrow({ where: { id: reauthorization.id } })).toMatchObject({
+      agentId: null,
+      botId: before.id
+    })
+    stub.exchangeResult = {
+      ok: true,
+      result: {
+        botToken: 'xoxb-wrong-workspace',
+        appId: PLATFORM.appId,
+        teamId: 'T0OTHER',
+        teamName: 'Other',
+        botUserId: 'U0OTHER'
+      }
+    }
+
+    const cb = await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c2&state=${reauthorization.id}`
+    })
+
+    expect(cb.body).toContain('authorized a different workspace')
+    expect((await status(app, reauthorization.id)).json()).toMatchObject({
+      status: 'failed',
+      failureReason: 'workspace_mismatch',
+      botId: before.id
+    })
+    const after = await prisma.bot.findUniqueOrThrow({ where: { id: before.id }, include: { secret: true } })
+    expect(after.credentialRevision).toBe(before.credentialRevision)
+    expect(after.secret?.botToken).toBe(before.secret?.botToken)
+    expect(await prisma.bot.count({ where: { slackAppId: PLATFORM.appId } })).toBe(1)
+    expect(await prisma.integration.count({ where: { botId: before.id, status: 'active' } })).toBe(1)
+  })
+
+  it('reauthorizing a free Settings bot rotates its token without attaching an agent', async () => {
+    const { app, stub } = withPlatform()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const first = await startInstall(app, agentId)
+    await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c1&state=${first.id}`
+    })
+    const before = await prisma.bot.findFirstOrThrow({ where: { slackAppId: PLATFORM.appId } })
+    await prisma.integration.deleteMany({ where: { botId: before.id } })
+    await app.deps.httpBot.revokeBot(before.id, 'app_uninstalled')
+
+    stub.exchangeResult = {
+      ok: true,
+      result: {
+        botToken: 'xoxb-refreshed',
+        appId: PLATFORM.appId,
+        teamId: 'T0WORKSPACE',
+        teamName: 'Acme',
+        botUserId: 'U0BOT'
+      }
+    }
+    const reauthorization = await startReauthorization(app, before.id)
+    const cb = await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c2&state=${reauthorization.id}`
+    })
+
+    expect(cb.body).toContain('Connected to Slack')
+    expect((await status(app, reauthorization.id)).json()).toMatchObject({
+      status: 'completed',
+      botId: before.id
+    })
+    const after = await prisma.bot.findUniqueOrThrow({ where: { id: before.id }, include: { secret: true } })
+    expect(after.credentialRevision).toBe(before.credentialRevision + 1)
+    expect(after.secret?.botToken).toBe('xoxb-refreshed')
+    expect(after.revokedAt).toBeNull()
+    expect(await prisma.integration.count({ where: { botId: before.id } })).toBe(0)
+  })
+
+  it('a Settings reauthorization restores memberships revoked with the old credential', async () => {
+    const { app, stub } = withPlatform()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const first = await startInstall(app, agentId)
+    await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c1&state=${first.id}`
+    })
+    const before = await prisma.bot.findFirstOrThrow({ where: { slackAppId: PLATFORM.appId } })
+    const integration = await prisma.integration.findFirstOrThrow({ where: { botId: before.id } })
+    await app.deps.httpBot.revokeBot(before.id, 'app_uninstalled')
+    expect(await prisma.integration.findUniqueOrThrow({ where: { id: integration.id } })).toMatchObject({
+      status: 'revoked',
+      revokedCredentialRevision: before.credentialRevision
+    })
+
+    stub.exchangeResult = {
+      ok: true,
+      result: {
+        botToken: 'xoxb-restored',
+        appId: PLATFORM.appId,
+        teamId: 'T0WORKSPACE',
+        teamName: 'Acme',
+        botUserId: 'U0BOT'
+      }
+    }
+    const reauthorization = await startReauthorization(app, before.id)
+    const cb = await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c2&state=${reauthorization.id}`
+    })
+
+    expect(cb.body).toContain('Connected to Slack')
+    const after = await prisma.bot.findUniqueOrThrow({ where: { id: before.id }, include: { secret: true } })
+    expect(after).toMatchObject({
+      credentialRevision: before.credentialRevision + 1,
+      revokedAt: null
+    })
+    expect(after.secret?.botToken).toBe('xoxb-restored')
+    expect(await prisma.integration.findUniqueOrThrow({ where: { id: integration.id } })).toMatchObject({
+      agentId,
+      status: 'active',
+      revokedCredentialRevision: null
+    })
+    expect(await prisma.integration.count({ where: { botId: before.id, status: 'active' } })).toBe(1)
   })
 
   // Slack does not order `app_uninstalled` / `tokens_revoked`: an event from the

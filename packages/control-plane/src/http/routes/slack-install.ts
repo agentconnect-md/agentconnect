@@ -357,13 +357,10 @@ export function slackInstallRoutes(deps: HttpDeps) {
           })
         }
 
-        // Name: operator-chosen at start, else the bot user name Slack derives, else the agent's.
-        let name = row.name
-        if (!name && deps.verifySlackBot) {
-          const check = await deps.verifySlackBot(row.botToken)
-          if (check.status === 'ok') name = check.name
-        }
-        name = name || agent.name
+        // auth.test supplies display-only workspace metadata for the Settings
+        // grouping. It also remains the fallback source for an omitted app name.
+        const botCheck = deps.verifySlackBot ? await deps.verifySlackBot(row.botToken) : null
+        const name = row.name || (botCheck?.status === 'ok' ? botCheck.name : null) || agent.name
         const release = deps.agentMutations.tryBeginMutation(agent.id)
         if (!release) {
           return reply.code(409).send({
@@ -396,6 +393,8 @@ export function slackInstallRoutes(deps: HttpDeps) {
             botToken: row.botToken,
             transport: row.transport,
             slackAppId: row.appId,
+            ...(botCheck?.status === 'ok' && botCheck.teamId ? { workspaceId: botCheck.teamId } : {}),
+            ...(botCheck?.status === 'ok' && botCheck.teamName ? { workspaceName: botCheck.teamName } : {}),
             // socket: the pasted xapp; http: the signing secret captured at create. The
             // shareable choice rides the finalize body (installNewSlackBot coerces it off
             // for socket regardless).
@@ -565,7 +564,8 @@ export function slackConfigRoutes(deps: HttpDeps) {
   }
 }
 
-export type SlackCallbackNote = 'connected' | 'denied' | 'expired' | 'error' | 'workspace_taken' | 'agent_taken'
+export type SlackCallbackNote =
+  'connected' | 'denied' | 'expired' | 'error' | 'workspace_taken' | 'workspace_mismatch' | 'agent_taken'
 
 /**
  * The callback tab is a THROWAWAY — the real flow continues in the ORIGINAL
@@ -576,8 +576,8 @@ export type SlackCallbackNote = 'connected' | 'denied' | 'expired' | 'error' | '
  * link origin comes from config), so there's nothing to escape.
  *
  * Exported for the platform-app callback (slack-platform-install.ts), which
- * shares the throwaway-tab UX (and adds the `workspace_taken` / `agent_taken`
- * outcomes — the platform bot is non-shareable, so a workspace backs one agent).
+ * shares the throwaway-tab UX (and adds workspace/admission outcomes — the
+ * platform bot is non-shareable, so a workspace backs one agent).
  */
 export function closePageHtml(note: SlackCallbackNote, consoleUrl?: string): string {
   const ok = note === 'connected'
@@ -591,9 +591,11 @@ export function closePageHtml(note: SlackCallbackNote, consoleUrl?: string): str
           ? 'The install was cancelled. Close this tab and try again in AgentConnect.'
           : note === 'workspace_taken'
             ? 'This Slack workspace is already connected to a different AgentConnect organization. Remove that connection first, then try again.'
-            : note === 'agent_taken'
-              ? 'This Slack workspace is already connected to another agent in your organization. Remove that integration first, then try again.'
-              : 'Something went wrong finishing the install. Close this tab and try again in AgentConnect.'
+            : note === 'workspace_mismatch'
+              ? 'Slack authorized a different workspace. Close this tab and try again, choosing the workspace shown in AgentConnect.'
+              : note === 'agent_taken'
+                ? 'This Slack workspace is already connected to another agent in your organization. Remove that integration first, then try again.'
+                : 'Something went wrong finishing the install. Close this tab and try again in AgentConnect.'
   // Auto-close only on success (a failure needs reading). window.close() is allowed
   // for script-opened tabs (this one was window.open'd); the text is the fallback.
   const autoClose = ok ? '<script>setTimeout(function(){try{window.close()}catch(e){}},1500)</script>' : ''
