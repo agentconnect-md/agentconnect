@@ -44,6 +44,7 @@ import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { IntegrationChannelList } from '@/components/console/IntegrationChannelList'
+import { RecentSessionsCard } from '@/components/console/RecentSessionsCard'
 import { discordBotInviteUrl } from '@/lib/discord-invite'
 import { WorkspaceCard, type WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
 import { WorkspaceFiles, workspaceReadModelKey } from '@/components/console/WorkspaceFiles'
@@ -119,8 +120,18 @@ export default function AgentDetailView() {
   const { id } = useParams<{ id: string }>()
   const params = useSearchParams()
   const router = useRouter()
-  const { agents, getAgent, getSessions, daemons, daemonsLoading, integrations, agentsLoading, updateAgent, refresh } =
-    useConsoleData()
+  const {
+    agents,
+    getAgent,
+    getSessions,
+    daemons,
+    daemonsLoading,
+    integrations,
+    agentsLoading,
+    sessionsLoading,
+    updateAgent,
+    refresh
+  } = useConsoleData()
   const { openPlayground } = usePlayground()
   const { openModal } = useModal()
   const { total: agentSessionTotal } = useSessionList(MOCK_MODE ? null : activeOrg?.id, { agentId: id })
@@ -507,7 +518,9 @@ export default function AgentDetailView() {
                 type="button"
                 className="addchip border-0"
                 onClick={() =>
-                  daemons.length === 0 ? openModal('daemon') : openModal('editAgent', da, { focusSection: 'runtime' })
+                  daemons.length === 0
+                    ? openModal('daemon', da, { focusSection: 'runtime' })
+                    : openModal('editAgent', da, { focusSection: 'runtime' })
                 }
               >
                 <Icon name="plus" size={13} />
@@ -761,7 +774,7 @@ export default function AgentDetailView() {
                       className="addchip border-0"
                       onClick={() =>
                         daemons.length === 0
-                          ? openModal('daemon')
+                          ? openModal('daemon', da, { focusSection: 'runtime' })
                           : openModal('editAgent', da, { focusSection: 'runtime' })
                       }
                     >
@@ -1071,7 +1084,9 @@ export default function AgentDetailView() {
 
       {/* Integrations tab — moved out of Configuration into its own tab. */}
       {tab === 'integrations' && (
-        <div className="flex flex-col gap-4 p-4 desktop:gap-[18px] desktop:p-0">
+        // Two-up on desktop (Home's dashboard split): integration cards left,
+        // this agent's recent sessions right. Mobile keeps the single stack.
+        <div className="grid grid-cols-1 gap-4 p-4 desktop:grid-cols-[1.5fr_1fr] desktop:items-start desktop:gap-[18px] desktop:p-0">
           <div className="card overflow-hidden max-desktop:rounded-lg">
             <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
               <span className="font-sans text-[14px] font-semibold leading-normal">Integrations</span>
@@ -1490,6 +1505,17 @@ export default function AgentDetailView() {
               </div>
             )}
           </div>
+
+          {/* This agent's recent sessions — same card as Home's Recent list. */}
+          <RecentSessionsCard
+            title="Recent sessions"
+            sessions={getSessions(da.id)}
+            limit={12}
+            loading={sessionsLoading}
+            allHref={orgPath(`/sessions?agent=${da.id}`)}
+            emptyText="No sessions yet."
+            className="max-desktop:rounded-lg"
+          />
         </div>
       )}
 

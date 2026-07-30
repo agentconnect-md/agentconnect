@@ -77,7 +77,10 @@ function CommandBox({ tabs, placeholder }: { tabs: CommandTab[]; placeholder: Re
   )
 }
 
-export default function AddDaemonModal({ onClose }: { onClose: () => void }) {
+// `onDone` (optional) replaces plain close on the connected path's Done button —
+// ModalProvider uses it to chain back into the Edit-agent dialog when this modal
+// was opened from an unplaced agent's "Add daemon" affordance. Cancel never chains.
+export default function AddDaemonModal({ onClose, onDone }: { onClose: () => void; onDone?: () => void }) {
   const { provisionDaemon, daemons, refresh, deleteDaemon } = useConsoleData()
   const [connect, setConnect] = useState<DaemonConnectDto | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -182,8 +185,8 @@ export default function AddDaemonModal({ onClose }: { onClose: () => void }) {
         </span>
         <div className="flex-1" />
         {connected ? (
-          <Button variant="primary" onClick={onClose}>
-            Done
+          <Button variant="primary" onClick={onDone ?? onClose}>
+            {onDone ? 'Continue' : 'Done'}
           </Button>
         ) : (
           // Can't finish until the daemon connects — offer a Cancel that cleans up
