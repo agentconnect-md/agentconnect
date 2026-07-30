@@ -18,8 +18,9 @@ export interface WebchatVerificationDeps {
 
 /**
  * Builds the relay-facing webchat verifier. Ordinary token and live-placement
- * checks are authoritative; preset MCP delegation is a best-effort additive
- * entitlement and can only add an opaque reference to an otherwise valid result.
+ * checks are authoritative. Expected delegation denials return no reference;
+ * unexpected dependency failures propagate to the relay handler's retryable
+ * INTERNAL response instead of being misreported as a successful verification.
  */
 export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (token: string) => Promise<RcVerifyResult> {
   return async (token) => {
@@ -44,17 +45,13 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
       return verified
     }
 
-    try {
-      const delegation = await deps.delegations.establish({
-        conversationId: claims.conversationId,
-        verifiedUserId: claims.userId,
-        orgId: claims.orgId,
-        agentId: claims.agentId,
-        daemonId: agent.daemonId
-      })
-      return delegation ? { ...verified, delegation } : verified
-    } catch {
-      return verified
-    }
+    const delegation = await deps.delegations.establish({
+      conversationId: claims.conversationId,
+      verifiedUserId: claims.userId,
+      orgId: claims.orgId,
+      agentId: claims.agentId,
+      daemonId: agent.daemonId
+    })
+    return delegation ? { ...verified, delegation } : verified
   }
 }

@@ -253,21 +253,44 @@ describe('webchat verification delegation gate', () => {
     expect(h.establish).not.toHaveBeenCalled()
   })
 
-  it.each([
-    { establish: vi.fn(async () => null), label: 'entitlement is denied' },
-    {
-      establish: vi.fn(async () => {
-        throw new Error('delegation store unavailable')
-      }),
-      label: 'delegation establishment fails'
-    }
-  ])('preserves ordinary webchat when $label', async ({ establish }) => {
-    const h = buildWebchatVerifier({ establish })
+  it('preserves ordinary webchat when delegation entitlement is denied', async () => {
+    const h = buildWebchatVerifier({ establish: vi.fn(async () => null) })
 
     const result = await h.verifier('browser-credential')
 
     expect(result).toMatchObject({ ok: true, agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID })
     expect(result.delegation).toBeUndefined()
+  })
+
+  it('turns an establishment failure into a generic retryable relay error without leaking credentials or details', async () => {
+    const browserCredential = 'browser-credential-secret'
+    const internalDetail = 'delegation database unavailable at postgresql://secret'
+    const h = buildWebchatVerifier({
+      establish: vi.fn(async () => {
+        throw new Error(internalDetail)
+      })
+    })
+    const { transport } = build({ verifyWebchatToken: h.verifier })
+    await toReady(transport)
+    const request = buildRelayCpFrame('rc/verify', {
+      kind: 'webchat-token',
+      credential: browserCredential,
+      conversationBinding: 'v1'
+    })
+
+    transport.feedFrame(request)
+    await vi.waitFor(() =>
+      expect(transport.sent.some((frame) => frame.type === 'rc/verify/ok' || frame.type === 'error')).toBe(true)
+    )
+
+    expect(transport.lastRep('rc/verify/ok')).toBeUndefined()
+    const error = transport.lastRep('error')
+    expect(error).toMatchObject({
+      corr: request.id,
+      payload: { code: 'INTERNAL', message: 'verify failed', retryable: true }
+    })
+    expect(JSON.stringify(error)).not.toContain(browserCredential)
+    expect(JSON.stringify(error)).not.toContain(internalDetail)
   })
 
   it('does not attempt delegation before ordinary token and placement checks succeed', async () => {
