@@ -11,6 +11,7 @@ import {
   agentPermissionDisplay,
   effectiveAgentStatus,
   effortField,
+  enrichSessionWithAgent,
   flattenFiles,
   MOCK_MODE,
   MOCK_PREFIX,
@@ -120,21 +121,27 @@ export default function AgentDetailView() {
   const { id } = useParams<{ id: string }>()
   const params = useSearchParams()
   const router = useRouter()
-  const {
-    agents,
-    getAgent,
-    getSessions,
-    daemons,
-    daemonsLoading,
-    integrations,
-    agentsLoading,
-    sessionsLoading,
-    updateAgent,
-    refresh
-  } = useConsoleData()
+  const { agents, getAgent, getSessions, daemons, daemonsLoading, integrations, agentsLoading, updateAgent, refresh } =
+    useConsoleData()
   const { openPlayground } = usePlayground()
   const { openModal } = useModal()
-  const { total: agentSessionTotal } = useSessionList(MOCK_MODE ? null : activeOrg?.id, { agentId: id })
+  const {
+    sessions: agentSessionRows,
+    total: agentSessionTotal,
+    isLoading: agentSessionsLoading
+  } = useSessionList(MOCK_MODE ? null : activeOrg?.id, { agentId: id })
+  // The Recent-sessions card reads the agent-filtered page above, NOT the
+  // org-wide loaded window (`getSessions`) — a busy org's newest 50 may not
+  // include this agent at all, which would render a false "No sessions yet"
+  // beside a nonzero header count. Mock mode has no CP to filter server-side,
+  // so it keeps the demo rows. Rows are display-enriched like data-context does.
+  const recentSessions = useMemo(
+    () =>
+      MOCK_MODE
+        ? getSessions(id)
+        : agentSessionRows.map((s) => enrichSessionWithAgent(s, s.agentId ? getAgent(s.agentId) : undefined)),
+    [agentSessionRows, getAgent, getSessions, id]
+  )
   // Which webhook row has its recent-deliveries panel expanded (one at a time).
   const [hookRunsFor, setHookRunsFor] = useState<string | null>(null)
   // Hooks are agent-scoped (no org-wide list). Keep a stable resource key so a
@@ -1509,9 +1516,9 @@ export default function AgentDetailView() {
           {/* This agent's recent sessions — same card as Home's Recent list. */}
           <RecentSessionsCard
             title="Recent sessions"
-            sessions={getSessions(da.id)}
+            sessions={recentSessions}
             limit={12}
-            loading={sessionsLoading}
+            loading={agentSessionsLoading}
             allHref={orgPath(`/sessions?agent=${da.id}`)}
             emptyText="No sessions yet."
             className="max-desktop:rounded-lg"
