@@ -117,6 +117,10 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Generate Prisma client

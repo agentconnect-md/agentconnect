@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs'
+import { realpathSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
@@ -35,6 +35,8 @@ export interface DelegatedCellMount {
 /** Raised when a requested sandbox cannot be established safely (e.g. the cwd escapes
  *  the trusted agent dir). Distinct from the "no mechanism" fail-open path. */
 export class SandboxError extends Error {}
+
+const INVALID_DELEGATED_CELL_MOUNT = 'invalid delegated cell mount'
 
 /**
  * Delegated MCP requires enforced Linux mount/PID isolation. A present but optional
@@ -107,6 +109,18 @@ function canonicalTarget(path: string): string {
   }
 }
 
+/** Delegated mount inputs must already exist and be stable directories. Unlike the
+ * general sandbox boundary, missing leaves are not useful here and must fail closed. */
+function existingDelegatedMountDirectory(path: string): string {
+  try {
+    const real = realpathSync(path)
+    if (!statSync(real).isDirectory()) throw new Error('not a directory')
+    return real
+  } catch {
+    throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
+  }
+}
+
 /**
  * Compute the writable allow-list for a confined agent from TRUSTED inputs.
  *
@@ -163,6 +177,9 @@ export function sandboxWrap(
   args: string[],
   opts: { mechanism: SandboxMechanism; writable: string[]; maskedReadRoots?: string[] }
 ): { cmd: string; args: string[] } {
+  if (opts.mechanism !== 'bwrap' && (opts.maskedReadRoots?.length ?? 0) > 0) {
+    throw new SandboxError('sandbox mechanism cannot mask read roots')
+  }
   const writable = canonical(opts.writable)
   if (opts.mechanism === 'bwrap') {
     const maskedReadRoots = canonical(opts.maskedReadRoots ?? [])
@@ -208,10 +225,10 @@ export function delegatedCellSandboxWrap(
   baseWritable: string[],
   mount: DelegatedCellMount
 ): { cmd: string; args: string[] } {
-  const maskedRoot = canonicalTarget(mount.maskedRoot)
-  const sourceDir = canonicalTarget(mount.sourceDir)
+  const maskedRoot = existingDelegatedMountDirectory(mount.maskedRoot)
+  const sourceDir = existingDelegatedMountDirectory(mount.sourceDir)
   if (!strictlyInside(maskedRoot, sourceDir)) {
-    throw new SandboxError(`delegated cell source "${mount.sourceDir}" is not inside masked root "${maskedRoot}"`)
+    throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
   }
 
   const wrapped = sandboxWrap(cmd, args, {
@@ -220,7 +237,8 @@ export function delegatedCellSandboxWrap(
     maskedReadRoots: [maskedRoot]
   })
   const separator = wrapped.args.indexOf('--')
-  const cellBind = ['--bind', sourceDir, canonicalTarget(mount.targetDir)]
+  const targetDir = canonicalTarget(mount.targetDir)
+  const cellBind = ['--dir', targetDir, '--bind', sourceDir, targetDir]
   return {
     cmd: wrapped.cmd,
     args: [...wrapped.args.slice(0, separator), ...cellBind, ...wrapped.args.slice(separator)]

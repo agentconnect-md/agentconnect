@@ -26,7 +26,11 @@ describe('sandboxWrap', () => {
   })
 
   it('sandbox-exec: denies writes then re-allows the writable subpath, runs cmd last', () => {
-    const { cmd, args } = sandboxWrap('codex', ['--acp'], { mechanism: 'sandbox-exec', writable: [agentDir] })
+    const { cmd, args } = sandboxWrap('codex', ['--acp'], {
+      mechanism: 'sandbox-exec',
+      writable: [agentDir],
+      maskedReadRoots: []
+    })
     expect(cmd).toBe('sandbox-exec')
     expect(args[0]).toBe('-p')
     const profile = args[1]!
@@ -34,6 +38,16 @@ describe('sandboxWrap', () => {
     expect(profile).toContain('(deny file-write*)')
     expect(profile).toContain('allow file-write* (subpath')
     expect(args.slice(-2)).toEqual(['codex', '--acp'])
+  })
+
+  it('sandbox-exec: rejects non-empty masked roots instead of silently ignoring them', () => {
+    expect(() =>
+      sandboxWrap('codex', ['--acp'], {
+        mechanism: 'sandbox-exec',
+        writable: [agentDir],
+        maskedReadRoots: [agentDir]
+      })
+    ).toThrow(SandboxError)
   })
 
   it('always makes tmp writable even when the caller omits it', () => {
