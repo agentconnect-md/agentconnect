@@ -353,6 +353,51 @@ describe('session visibility — §4.5 inheritance and cascade', () => {
     expect(untouched).toMatchObject({ visibility: 'org', visibilitySource: 'explicit' })
   })
 
+  it('settles a whole chain that arrived root-last, not just its first level', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const rootId = `s-chain-root-${randomUUID()}`
+    const childId = `s-chain-child-${randomUUID()}`
+    const grandchildId = `s-chain-grandchild-${randomUUID()}`
+
+    // Deepest first: each arrival's parent is missing, or present but itself
+    // still pending — either way the row must stay pending, or the settlement
+    // scan (which matches only `inherited_pending`) would skip it forever.
+    for (const [id, parent] of [
+      [grandchildId, childId],
+      [childId, rootId]
+    ] as const) {
+      const r = await repo.recordMilestone({
+        sessionId: SessionId(id),
+        parentSessionId: SessionId(parent),
+        agentId,
+        phase: 'start',
+        classification: { inherit: true },
+        at: new Date()
+      })
+      expect(r.session).toMatchObject({ visibility: 'private', visibilitySource: 'inherited_pending' })
+    }
+
+    const root = await repo.recordMilestone({
+      sessionId: SessionId(rootId),
+      agentId,
+      phase: 'start',
+      classification: { visibility: 'org', ownerIdentity: 'slack:T1:U7', source: 'default' },
+      at: new Date()
+    })
+
+    // Both levels settle, and both are reported so each gets a §5.1 gate push.
+    expect(root.settled.map((s) => s.id).sort()).toEqual([childId, grandchildId].sort())
+    for (const id of [childId, grandchildId]) {
+      expect(await prisma.sessionMeta.findUnique({ where: { id } })).toMatchObject({
+        visibility: 'org',
+        ownerIdentity: 'slack:T1:U7',
+        visibilitySource: 'inherited'
+      })
+    }
+  })
+
   it('inherits a private parent at ingest, so a delegated prompt is never org-visible', async () => {
     const daemonId = await seedDaemon(prisma, randomUUID())
     const agentId = await seedAgent(prisma, randomUUID(), { daemonId })

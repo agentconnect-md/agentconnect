@@ -300,13 +300,23 @@ export class PgSessionRepo implements SessionRepo {
     if (!classification) return { visibility: 'org', ownerIdentity: null, source: 'default' }
     if (classification.inherit !== true) return classification
     const parent = ev.parentSessionId
-      ? await tx.$queryRaw<Array<{ visibility: string; ownerIdentity: string | null }>>(Prisma.sql`
-          SELECT "visibility", "ownerIdentity" FROM "session_meta" WHERE "id" = ${ev.parentSessionId} FOR SHARE
-        `)
+      ? await tx.$queryRaw<Array<{ visibility: string; ownerIdentity: string | null; visibilitySource: string }>>(
+          Prisma.sql`
+            SELECT "visibility", "ownerIdentity", "visibilitySource"
+            FROM "session_meta" WHERE "id" = ${ev.parentSessionId} FOR SHARE
+          `
+        )
       : []
     // Parent not here yet (it may live on another daemon, or simply arrive
     // later): start private + unowned and mark the row for one-time settlement.
-    if (parent.length !== 1) return { visibility: 'private', ownerIdentity: null, source: 'inherited_pending' }
+    //
+    // A parent that IS here but is itself `inherited_pending` only holds the same
+    // placeholder, so copying it as `inherited` would look settled and drop this
+    // row out of the settlement scan — leaving a deep chain that arrives
+    // root-last stuck private forever. Stay pending; the recursive settlement
+    // below reaches us when the real ancestor lands.
+    const unsettledParent = parent.length !== 1 || parent[0]!.visibilitySource === 'inherited_pending'
+    if (unsettledParent) return { visibility: 'private', ownerIdentity: null, source: 'inherited_pending' }
     return {
       visibility: parent[0]!.visibility as SessionVisibility,
       ownerIdentity: parent[0]!.ownerIdentity,
@@ -315,24 +325,38 @@ export class PgSessionRepo implements SessionRepo {
   }
 
   /**
-   * §4.5 settlement: copy this session's visibility onto the children that
-   * arrived before it. Conditional and one-time — the CAS on `visibilitySource`
-   * means a child an org owner has meanwhile re-classified (`explicit`) is left
+   * §4.5 settlement: copy a settled session's visibility onto the descendants
+   * that arrived before it.
+   *
+   * Recursive by level, because a whole chain can be waiting: a grandchild whose
+   * own parent was still `inherited_pending` when it arrived is pending too, so
+   * settling one level unblocks the next. Every level is the same CAS on
+   * `visibilitySource`, which is what keeps it conditional and one-time — a
+   * descendant an org owner has meanwhile re-classified is `explicit` and left
    * alone: reconciliation never overwrites a human decision.
    */
   private async settlePendingChildren(tx: PrismaLike, parent: SessionMetaRecord): Promise<SessionMetaRecord[]> {
-    const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
-      UPDATE "session_meta" SET
-        "visibility" = ${parent.visibility}::"SessionVisibility",
-        "ownerIdentity" = ${parent.ownerIdentity},
-        "visibilitySource" = 'inherited'::"VisibilitySource",
-        "visibilityRev" = "visibilityRev" + 1,
-        "updatedAt" = CURRENT_TIMESTAMP
-      WHERE "parentSessionId" = ${parent.id}
-        AND "visibilitySource" = 'inherited_pending'::"VisibilitySource"
-      RETURNING *
-    `)
-    return rows.map(toRecord)
+    const settled: SessionMetaRecord[] = []
+    const seen = new Set<string>([parent.id])
+    let frontier: string[] = [parent.id]
+    while (frontier.length > 0) {
+      const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
+        UPDATE "session_meta" SET
+          "visibility" = ${parent.visibility}::"SessionVisibility",
+          "ownerIdentity" = ${parent.ownerIdentity},
+          "visibilitySource" = 'inherited'::"VisibilitySource",
+          "visibilityRev" = "visibilityRev" + 1,
+          "updatedAt" = CURRENT_TIMESTAMP
+        WHERE "parentSessionId" = ANY(${frontier}::text[])
+          AND "visibilitySource" = 'inherited_pending'::"VisibilitySource"
+        RETURNING *
+      `)
+      const next = rows.map((row) => row.id).filter((id) => !seen.has(id))
+      for (const id of next) seen.add(id)
+      settled.push(...rows.map(toRecord))
+      frontier = next
+    }
+    return settled
   }
 
   /**
@@ -343,10 +367,16 @@ export class PgSessionRepo implements SessionRepo {
    */
   private async settleFromParent(sessionId: SessionId, parentSessionId: SessionId): Promise<SessionMetaRecord[]> {
     return withAmbientTx(this.db, async (tx) => {
-      const parent = await tx.$queryRaw<Array<{ visibility: string; ownerIdentity: string | null }>>(Prisma.sql`
-        SELECT "visibility", "ownerIdentity" FROM "session_meta" WHERE "id" = ${parentSessionId} FOR SHARE
-      `)
-      if (parent.length !== 1) return []
+      const parent = await tx.$queryRaw<
+        Array<{ visibility: string; ownerIdentity: string | null; visibilitySource: string }>
+      >(
+        Prisma.sql`
+          SELECT "visibility", "ownerIdentity", "visibilitySource"
+          FROM "session_meta" WHERE "id" = ${parentSessionId} FOR SHARE
+        `
+      )
+      // Nothing to settle from a parent that is itself still waiting.
+      if (parent.length !== 1 || parent[0]!.visibilitySource === 'inherited_pending') return []
       const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
         UPDATE "session_meta" SET
           "visibility" = ${parent[0]!.visibility}::"SessionVisibility",
@@ -358,7 +388,10 @@ export class PgSessionRepo implements SessionRepo {
           AND "visibilitySource" = 'inherited_pending'::"VisibilitySource"
         RETURNING *
       `)
-      return rows.map(toRecord)
+      if (rows.length !== 1) return []
+      const self = toRecord(rows[0]!)
+      // We just settled — anything that was waiting on US can settle now too.
+      return [self, ...(await this.settlePendingChildren(tx, self))]
     })
   }
 
@@ -366,9 +399,11 @@ export class PgSessionRepo implements SessionRepo {
     const result = await withAmbientTx(this.db, async (tx) => this.upsertMilestone(tx, ev))
     if (!result.recorded || !result.session) return result
     // Out-of-order arrival: our parent may have landed while we were writing.
+    // Settling ourselves can in turn settle descendants that were waiting on us,
+    // so they join the set the caller owes a §5.1 gate push.
     if (result.session.visibilitySource === 'inherited_pending' && result.session.parentSessionId) {
-      const settled = await this.settleFromParent(result.session.id, result.session.parentSessionId)
-      if (settled[0]) return { ...result, session: settled[0] }
+      const [self, ...descendants] = await this.settleFromParent(result.session.id, result.session.parentSessionId)
+      if (self) return { ...result, session: self, settled: [...result.settled, ...descendants] }
     }
     return result
   }
@@ -451,7 +486,12 @@ export class PgSessionRepo implements SessionRepo {
     `)
     if (rows.length !== 1) return { recorded: false, session: null, settled: [] }
     const session = toRecord(rows[0]!)
-    return { recorded: true, session, settled: await this.settlePendingChildren(tx, session) }
+    // A row that is itself waiting has only placeholder values, so it must not
+    // settle anything: stamping a descendant `inherited` from a pending parent
+    // would drop it out of the scan when the real ancestor finally lands.
+    const settled =
+      session.visibilitySource === 'inherited_pending' ? [] : await this.settlePendingChildren(tx, session)
+    return { recorded: true, session, settled }
   }
 
   async listPage(q: SessionPageQuery): Promise<SessionPageRecord> {
