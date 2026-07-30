@@ -106,6 +106,7 @@ import { DaemonAuthService } from './registry/authService.js'
 import { ApiKeyService } from './registry/apiKeyService.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
+import { createWebchatTokenVerifier } from './registry/webchatVerification.js'
 import { InvocationAssertionCodec } from './registry/invocationAssertion.js'
 import { WebchatMcpDelegationService } from './registry/webchatMcpDelegationService.js'
 import { OrgInviteLinkCodec } from './registry/orgInviteLink.js'
@@ -966,23 +967,13 @@ export function buildContainer(
     clock,
     // rc/verify(webchat-token): validate the token, then re-resolve the agent's CURRENT
     // placement (agent.daemonId + connReg READY) — placement can move between mint + dial.
-    verifyWebchatToken: async (token) => {
-      const claims = await webchatTokens.verify(token)
-      if (!claims) return { ok: false, reason: 'invalid token' }
-      const agent = await repos.agent.get(AgentId(claims.agentId))
-      if (!agent || agent.orgId !== claims.orgId) return { ok: false, reason: 'invalid token' }
-      if (!agent.daemonId) return { ok: false, reason: 'agent unplaced' }
-      if (connReg.get(agent.daemonId)?.state !== 'READY') return { ok: false, reason: 'daemon offline' }
-      return {
-        ok: true,
-        userId: claims.userId,
-        user: claims.user,
-        agentId: claims.agentId,
-        daemonId: agent.daemonId,
-        orgId: claims.orgId,
-        conversationId: claims.conversationId
-      }
-    },
+    verifyWebchatToken: createWebchatTokenVerifier({
+      enabled: config.WEBCHAT_PRESET_MCP_ENABLED,
+      tokens: webchatTokens,
+      agents: repos.agent,
+      daemons: connReg,
+      delegations: webchatMcpDelegation
+    }),
     // Current-permission fallback for GitHub comment webhooks whose
     // author_association snapshot is stale or inconsistent across event types.
     // Missing GitHub configuration fails closed.

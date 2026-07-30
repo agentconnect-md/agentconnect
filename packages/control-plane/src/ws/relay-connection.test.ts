@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   buildRelayCpFrame,
+  DELEGATED_MCP_ASSERTION_FEATURE,
   RELAY_CP_SUBPROTOCOL,
   type RelayCpFrame,
   type RelayCpFrameType,
@@ -16,11 +17,17 @@ import { RelayAuthService } from '../registry/relayAuthService.js'
 import { ApiKeyCodec } from '../registry/apiKey.js'
 import type { ApiKeyRepo, RelayRepo, RelayRecord } from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
+import type { WebchatTokenClaims } from '../registry/webchatToken.js'
+import { createWebchatTokenVerifier, type WebchatVerificationDeps } from '../registry/webchatVerification.js'
 
 const NOW = 1_700_000_000_000
 const clock = { now: () => NOW } as unknown as Clock
 const RELAY_TOKEN = 'r'.repeat(48)
 const RELAY_ID = '11111111-1111-4111-8111-111111111111'
+const WEBCHAT_AGENT_ID = '33333333-3333-4333-8333-333333333333'
+const WEBCHAT_DAEMON_ID = '44444444-4444-4444-8444-444444444444'
+const WEBCHAT_CONVERSATION_ID = '55555555-5555-4555-8555-555555555555'
+const WEBCHAT_DELEGATION_ID = '66666666-6666-4666-8666-666666666666'
 const GITHUB_COMMENT_AUTHZ_REQUEST = {
   hookId: '88888888-8888-4888-8888-888888888888',
   installationId: '123',
@@ -152,6 +159,133 @@ async function toReady(transport: FakeServerTransport): Promise<void> {
   transport.feed('rc/register', { name: 'pod-0', daemonUrl: 'wss://pod-0.example.test' })
   await Promise.resolve()
 }
+
+function buildWebchatVerifier(
+  over: {
+    enabled?: boolean
+    tokenClaims?: WebchatTokenClaims | null
+    daemonId?: string | null
+    daemonState?: string
+    daemonFeatures?: string[]
+    establish?: WebchatVerificationDeps['delegations']['establish']
+  } = {}
+) {
+  const verify = vi.fn(async () =>
+    over.tokenClaims === undefined
+      ? {
+          userId: 'user-1',
+          user: 'user@example.test',
+          agentId: WEBCHAT_AGENT_ID,
+          orgId: 'org-1',
+          conversationId: WEBCHAT_CONVERSATION_ID
+        }
+      : over.tokenClaims
+  )
+  const getAgent = vi.fn(async () => ({
+    orgId: 'org-1',
+    daemonId: over.daemonId === undefined ? WEBCHAT_DAEMON_ID : over.daemonId
+  }))
+  const getDaemon = vi.fn(() => ({
+    state: over.daemonState ?? 'READY',
+    capabilities: {
+      platforms: [],
+      runtimes: [],
+      acp: true,
+      features: over.daemonFeatures ?? [DELEGATED_MCP_ASSERTION_FEATURE]
+    }
+  }))
+  const establish =
+    over.establish ??
+    vi.fn(async () => ({
+      id: WEBCHAT_DELEGATION_ID,
+      generation: 1,
+      expiresAt: '2030-01-01T00:00:00.000Z'
+    }))
+  return {
+    verify,
+    getAgent,
+    getDaemon,
+    establish,
+    verifier: createWebchatTokenVerifier({
+      enabled: over.enabled ?? true,
+      tokens: { verify },
+      agents: { get: getAgent },
+      daemons: { get: getDaemon },
+      delegations: { establish }
+    })
+  }
+}
+
+describe('webchat verification delegation gate', () => {
+  it('adds only the opaque delegation reference after ordinary verification and both rollout gates pass', async () => {
+    const h = buildWebchatVerifier()
+
+    const result = await h.verifier('browser-credential')
+
+    expect(result).toMatchObject({
+      ok: true,
+      agentId: WEBCHAT_AGENT_ID,
+      daemonId: WEBCHAT_DAEMON_ID,
+      conversationId: WEBCHAT_CONVERSATION_ID,
+      delegation: { id: WEBCHAT_DELEGATION_ID, generation: 1 }
+    })
+    expect(h.establish).toHaveBeenCalledWith({
+      conversationId: WEBCHAT_CONVERSATION_ID,
+      verifiedUserId: 'user-1',
+      orgId: 'org-1',
+      agentId: WEBCHAT_AGENT_ID,
+      daemonId: WEBCHAT_DAEMON_ID
+    })
+    expect(result).not.toHaveProperty('assertion')
+    expect(JSON.stringify(result)).not.toContain('browser-credential')
+  })
+
+  it.each([
+    { enabled: false, features: [DELEGATED_MCP_ASSERTION_FEATURE], label: 'server gate is off' },
+    { enabled: true, features: [], label: 'daemon capability is absent' }
+  ])('returns ordinary webchat without establishment when $label', async ({ enabled, features }) => {
+    const h = buildWebchatVerifier({ enabled, daemonFeatures: features })
+
+    const result = await h.verifier('browser-credential')
+
+    expect(result).toMatchObject({ ok: true, agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID })
+    expect(result.delegation).toBeUndefined()
+    expect(h.establish).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { establish: vi.fn(async () => null), label: 'entitlement is denied' },
+    {
+      establish: vi.fn(async () => {
+        throw new Error('delegation store unavailable')
+      }),
+      label: 'delegation establishment fails'
+    }
+  ])('preserves ordinary webchat when $label', async ({ establish }) => {
+    const h = buildWebchatVerifier({ establish })
+
+    const result = await h.verifier('browser-credential')
+
+    expect(result).toMatchObject({ ok: true, agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID })
+    expect(result.delegation).toBeUndefined()
+  })
+
+  it('does not attempt delegation before ordinary token and placement checks succeed', async () => {
+    const invalid = buildWebchatVerifier({ tokenClaims: null })
+    expect(await invalid.verifier('bad-token')).toEqual({ ok: false, reason: 'invalid token' })
+    expect(invalid.getAgent).not.toHaveBeenCalled()
+    expect(invalid.establish).not.toHaveBeenCalled()
+
+    const unplaced = buildWebchatVerifier({ daemonId: null })
+    expect(await unplaced.verifier('valid-token')).toEqual({ ok: false, reason: 'agent unplaced' })
+    expect(unplaced.getDaemon).not.toHaveBeenCalled()
+    expect(unplaced.establish).not.toHaveBeenCalled()
+
+    const offline = buildWebchatVerifier({ daemonState: 'CLOSED' })
+    expect(await offline.verifier('valid-token')).toEqual({ ok: false, reason: 'daemon offline' })
+    expect(offline.establish).not.toHaveBeenCalled()
+  })
+})
 
 describe('RelayConnection FSM', () => {
   it('runs rc/auth → rc/register → READY and upserts the relay row', async () => {

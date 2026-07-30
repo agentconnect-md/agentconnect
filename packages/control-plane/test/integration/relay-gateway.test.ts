@@ -14,6 +14,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { generateKeyPairSync, randomUUID } from 'node:crypto'
 import { WebSocket } from 'ws'
 import {
+  DELEGATED_MCP_ASSERTION_FEATURE,
   isFrame,
   type AnyFrame,
   RELAY_CP_SUBPROTOCOL,
@@ -28,7 +29,7 @@ import { AppConfigSchema, type AppConfig } from '../../src/config/env.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { MemorySecretsProvider } from '../../src/secrets/providers/memory.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const RELAY_URL = 'https://relay.example.com'
 const AGENT = 'a9a9a9a9-aaaa-4aaa-8aaa-a9a9a9a9a9a9'
@@ -144,14 +145,14 @@ async function mintDaemon(): Promise<string> {
 
 /** Mint + connect the DAEMON over the daemon WS, driving it to READY (so `connReg` holds
  *  it). Returns the still-open socket (caller closes it). */
-async function connectDaemonReady(base: string): Promise<WebSocket> {
+async function connectDaemonReady(base: string, features: string[] = []): Promise<WebSocket> {
   const token = await mintDaemon()
   const ws = await dial(`${base}/daemon/ws`, DAEMON_SUBPROTOCOL)
   sendFrame(ws, 'auth', { apiKey: token, agentVersion: 'test' })
   await nextFrame(ws, 'auth/ok')
   sendFrame(ws, 'register', {
     host: 'h',
-    capabilities: { platforms: [], runtimes: [], acp: false, features: [] },
+    capabilities: { platforms: [], runtimes: [], acp: false, features },
     maxAgents: 1,
     localState: { assignments: [], crons: [], leases: [] }
   })
@@ -166,6 +167,20 @@ function mintWebchatToken(app: App, agentId: string, body: Record<string, unknow
     url: `/api/v1/orgs/${DEFAULT_ORG_ID}/agents/${agentId}/webchat/token`,
     payload: body
   })
+}
+
+async function verifyWebchat(
+  base: string,
+  token: string,
+  relayName: string
+): Promise<{ ws: WebSocket; result: RcVerifyResult }> {
+  const { ws } = await openRelay(base, relayName, `wss://${relayName}.example.test`)
+  sendFrame(ws, 'rc/verify', {
+    kind: 'webchat-token',
+    credential: token,
+    conversationBinding: 'v1'
+  })
+  return { ws, result: (await nextFrame(ws, 'rc/verify/ok')).payload as RcVerifyResult }
 }
 
 describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () => {
@@ -477,6 +492,136 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     })
     expect(typeof ok.user).toBe('string') // the transcript author handle from the token
     ws.close()
+    daemonWs.close()
+  })
+
+  it('rc/verify(webchat-token) establishes a preset delegation only when the rollout gate and daemon capability pass', async () => {
+    const { app, base } = await start({
+      PUBLIC_RELAY_URL: RELAY_URL,
+      WEBCHAT_PRESET_MCP_ENABLED: 'true'
+    })
+    const daemonWs = await connectDaemonReady(base, [DELEGATED_MCP_ASSERTION_FEATURE])
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await prisma.presetAgent.create({
+      data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: AGENT, status: 'created' }
+    })
+    const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as {
+      token: string
+      conversationId: string
+    }
+
+    const { ws } = await openRelay(base, 'pod-delegated', 'wss://pod-delegated.example.test')
+    sendFrame(ws, 'rc/verify', {
+      kind: 'webchat-token',
+      credential: token.token,
+      conversationBinding: 'v1'
+    })
+    const ok = (await nextFrame(ws, 'rc/verify/ok')).payload as RcVerifyResult
+
+    expect(ok).toMatchObject({
+      ok: true,
+      agentId: AGENT,
+      daemonId: DAEMON,
+      conversationId: token.conversationId,
+      delegation: {
+        generation: 1
+      }
+    })
+    expect(ok.delegation?.id).toMatch(/^[0-9a-f-]{36}$/)
+    expect(ok).not.toHaveProperty('assertion')
+    expect(JSON.stringify(ok)).not.toContain(token.token)
+
+    const reconnect = await verifyWebchat(base, token.token, 'pod-delegated-reconnect')
+    expect(reconnect.result.delegation).toEqual(ok.delegation)
+    expect(
+      await prisma.webchatMcpDelegation.count({
+        where: { conversationId: token.conversationId, revokedAt: null }
+      })
+    ).toBe(1)
+
+    reconnect.ws.close()
+    ws.close()
+    daemonWs.close()
+  })
+
+  it('keeps ordinary preset webchat when the rollout gate is disabled', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base, [DELEGATED_MCP_ASSERTION_FEATURE])
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await prisma.presetAgent.create({
+      data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: AGENT, status: 'created' }
+    })
+    const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { token: string }
+
+    const verified = await verifyWebchat(base, token.token, 'pod-gate-off')
+
+    expect(verified.result).toMatchObject({ ok: true, agentId: AGENT, daemonId: DAEMON })
+    expect(verified.result.delegation).toBeUndefined()
+    expect(await prisma.webchatMcpDelegation.count()).toBe(0)
+    verified.ws.close()
+    daemonWs.close()
+  })
+
+  it('keeps ordinary preset webchat when the daemon lacks the isolation capability', async () => {
+    const { app, base } = await start({
+      PUBLIC_RELAY_URL: RELAY_URL,
+      WEBCHAT_PRESET_MCP_ENABLED: 'true'
+    })
+    const daemonWs = await connectDaemonReady(base)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await prisma.presetAgent.create({
+      data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: AGENT, status: 'created' }
+    })
+    const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { token: string }
+
+    const verified = await verifyWebchat(base, token.token, 'pod-incapable')
+
+    expect(verified.result).toMatchObject({ ok: true, agentId: AGENT, daemonId: DAEMON })
+    expect(verified.result.delegation).toBeUndefined()
+    expect(await prisma.webchatMcpDelegation.count()).toBe(0)
+    verified.ws.close()
+    daemonWs.close()
+  })
+
+  it('keeps ordinary non-preset webchat when delegation entitlement is denied', async () => {
+    const { app, base } = await start({
+      PUBLIC_RELAY_URL: RELAY_URL,
+      WEBCHAT_PRESET_MCP_ENABLED: 'true'
+    })
+    const daemonWs = await connectDaemonReady(base, [DELEGATED_MCP_ASSERTION_FEATURE])
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { token: string }
+
+    const verified = await verifyWebchat(base, token.token, 'pod-non-preset')
+
+    expect(verified.result).toMatchObject({ ok: true, agentId: AGENT, daemonId: DAEMON })
+    expect(verified.result.delegation).toBeUndefined()
+    expect(await prisma.webchatMcpDelegation.count()).toBe(0)
+    verified.ws.close()
+    daemonWs.close()
+  })
+
+  it('keeps ordinary webchat but omits delegation when the token owner loses current membership', async () => {
+    const { app, base } = await start({
+      PUBLIC_RELAY_URL: RELAY_URL,
+      WEBCHAT_PRESET_MCP_ENABLED: 'true'
+    })
+    const daemonWs = await connectDaemonReady(base, [DELEGATED_MCP_ASSERTION_FEATURE])
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await prisma.presetAgent.create({
+      data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: AGENT, status: 'created' }
+    })
+    const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { token: string }
+    await prisma.membership.delete({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } }
+    })
+
+    const verified = await verifyWebchat(base, token.token, 'pod-membership-revoked')
+
+    expect(verified.result).toMatchObject({ ok: true, agentId: AGENT, daemonId: DAEMON })
+    expect(verified.result.delegation).toBeUndefined()
+    expect(await prisma.webchatMcpDelegation.count()).toBe(0)
+    verified.ws.close()
     daemonWs.close()
   })
 
