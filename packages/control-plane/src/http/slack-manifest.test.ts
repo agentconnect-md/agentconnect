@@ -10,6 +10,7 @@ import {
 import { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
 import {
   DEFAULT_PLATFORM_APP_DESCRIPTION,
+  PLATFORM_APP_DESCRIPTION_MAX_CHARACTERS,
   SLACK_APP_DESCRIPTION_MAX_BYTES,
   utf8ByteLength
 } from './platform-app-description.js'
@@ -75,19 +76,27 @@ describe('buildInstallManifest', () => {
   })
 
   it('uses the agent description with a fallback and a Unicode-safe platform limit', () => {
-    const description = `${'a'.repeat(297)}😀`
-    expect(description.length).toBeLessThan(SLACK_APP_DESCRIPTION_MAX_BYTES)
-    expect(utf8ByteLength(description)).toBeGreaterThan(SLACK_APP_DESCRIPTION_MAX_BYTES)
+    const longDescription = 'a'.repeat(PLATFORM_APP_DESCRIPTION_MAX_CHARACTERS + 1)
+    const wideDescription = `${'😀'.repeat(75)}a`
+    expect([...wideDescription]).toHaveLength(76)
+    expect(utf8ByteLength(wideDescription)).toBeGreaterThan(SLACK_APP_DESCRIPTION_MAX_BYTES)
 
-    const custom = buildInstallManifest('acme-bot', REDIRECT, { description }) as {
+    const long = buildInstallManifest('acme-bot', REDIRECT, { description: longDescription }) as {
+      features: { agent_view: { agent_description: string } }
+    }
+    const wide = buildInstallManifest('acme-bot', REDIRECT, { description: wideDescription }) as {
       features: { agent_view: { agent_description: string } }
     }
     const fallback = buildInstallManifest('acme-bot', REDIRECT, { description: '   ' }) as {
       features: { agent_view: { agent_description: string } }
     }
 
-    expect(custom.features.agent_view.agent_description).toBe(`${'a'.repeat(297)}…`)
-    expect(utf8ByteLength(custom.features.agent_view.agent_description)).toBe(SLACK_APP_DESCRIPTION_MAX_BYTES)
+    expect(long.features.agent_view.agent_description).toBe(`${'a'.repeat(99)}…`)
+    expect([...long.features.agent_view.agent_description]).toHaveLength(PLATFORM_APP_DESCRIPTION_MAX_CHARACTERS)
+    expect(wide.features.agent_view.agent_description).toBe(`${'😀'.repeat(74)}…`)
+    expect(utf8ByteLength(wide.features.agent_view.agent_description)).toBeLessThanOrEqual(
+      SLACK_APP_DESCRIPTION_MAX_BYTES
+    )
     expect(fallback.features.agent_view.agent_description).toBe(DEFAULT_PLATFORM_APP_DESCRIPTION)
   })
 
