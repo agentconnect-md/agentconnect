@@ -103,27 +103,23 @@ function sessionRelation(s: { id: string; agentId: string; title: string | null 
 }
 
 /**
- * Who may re-classify a session (§4.3): its recorded owner (identity match) and
- * org owners — but the org-owner arm holds only WHILE THE ROW IS ORG-VISIBLE
- * (they may pull a channel session private, never read or widen someone else's
- * private one). The condition cannot lean on the route's view-gate alone:
- * `setVisibility` re-runs this predicate against the FOR UPDATE-locked row, and
- * a session tightened (or re-owned by an ancestor cascade) after the unlocked
- * pre-read must refuse a queued org-owner widen — once private, only an
- * identity match qualifies. Collaborators and viewers cannot re-classify other
- * people's sessions — but note this is deliberately NOT the blanket
- * `denyViewerWrite` guard used elsewhere: the grant follows OWNERSHIP, so a
- * viewer-role member who owns a session keeps control of their own DM's
- * visibility.
+ * Who may re-classify a session (§4.3): ONLY its recorded owner (identity
+ * match). Roles grant nothing here, in either direction — an org owner pulling
+ * someone's published session back to `private` is as much an intrusion on the
+ * owner's decision as reading their DM would be, so there is no org-owner arm
+ * at all (mirroring `canViewSession`). A row with no recorded owner is
+ * re-classifiable by no one. `setVisibility` re-runs this predicate against the
+ * FOR UPDATE-locked row: an ancestor cascade committing after the unlocked
+ * pre-read re-owns the session, and the former owner's queued widen must be
+ * refused. Note this is deliberately NOT the blanket `denyViewerWrite` guard
+ * used elsewhere: the grant follows OWNERSHIP, so a viewer-role member who owns
+ * a session keeps control of their own DM's visibility.
  */
 function canChangeSessionVisibility(
   s: { visibility: SessionVisibility; ownerIdentity: string | null },
-  ctx: { role: string; userId: string },
   identitySet: ReadonlySet<string>
 ): boolean {
-  return (
-    (ctx.role === 'owner' && s.visibility === 'org') || (s.ownerIdentity != null && identitySet.has(s.ownerIdentity))
-  )
+  return s.ownerIdentity != null && identitySet.has(s.ownerIdentity)
 }
 
 function hookMetadataForSession(metadata: Map<string, HookSessionMetadata>, session: HookSessionRow) {
@@ -507,7 +503,7 @@ export function sessionRoutes(deps: HttpDeps) {
           // The §5.1 cutover state: CP read gates apply at commit, but the memory
           // boundary only takes effect once every affected daemon has acked.
           visibilityState: await visibilityStateOf(deps.visibilityPush, deps.repos, [s.id]),
-          canChangeVisibility: canChangeSessionVisibility(s, ctx, identitySet),
+          canChangeVisibility: canChangeSessionVisibility(s, identitySet),
           startedAt: s.startedAt.toISOString(),
           endedAt: s.endedAt ? s.endedAt.toISOString() : null
         }
@@ -636,7 +632,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Set session visibility',
           description:
-            'Reclassifies a session as private or org-visible. Allowed for the session owner, and for org owners on sessions they can view (private sessions are visible only to their owner). Tightening cascades to descendant sessions and stops future agent-memory capture once the owning daemons acknowledge; memory already distilled is not retracted.',
+            "Reclassifies a session as private or org-visible. Allowed only for the session's recorded owner (identity match) — roles grant no re-classification rights. Tightening cascades to descendant sessions and stops future agent-memory capture once the owning daemons acknowledge; memory already distilled is not retracted.",
           operationId: 'setSessionVisibility',
           params: IdParam,
           body: SetSessionVisibilityBody,
@@ -649,7 +645,7 @@ export function sessionRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
         }
         const ctx = ctxOf(req)
-        if (!canChangeSessionVisibility(owned.session, ctx, identitySetOf(ctx))) {
+        if (!canChangeSessionVisibility(owned.session, identitySetOf(ctx))) {
           return reply
             .code(403)
             .send({ error: 'Forbidden', statusCode: 403, message: 'not allowed to change this session visibility' })
@@ -662,7 +658,7 @@ export function sessionRoutes(deps: HttpDeps) {
         const { affected, forbidden } = await deps.repos.session.setVisibility(
           SessionId(req.params.id),
           req.body.visibility,
-          (row) => canChangeSessionVisibility(row, ctx, identitySetOf(ctx))
+          (row) => canChangeSessionVisibility(row, identitySetOf(ctx))
         )
         if (forbidden) {
           return reply

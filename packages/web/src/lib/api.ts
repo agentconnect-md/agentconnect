@@ -361,8 +361,9 @@ export interface SessionDetailDto {
   // Session visibility (docs/designs/session-visibility.md §5/§6). All three are
   // absent on a CP that predates the feature. `visibilityState` is the §5.1
   // tighten cutover: 'pending' until every affected daemon acked the change,
-  // then 'applied'. `canChangeVisibility` is server-computed (org owner or the
-  // identity-matched session owner) — the client never re-derives it.
+  // then 'applied'. `canChangeVisibility` is server-computed (the
+  // identity-matched session owner only — roles grant nothing) — the client
+  // never re-derives it.
   visibility?: SessionVisibility | null
   visibilityState?: 'pending' | 'applied' | null
   canChangeVisibility?: boolean | null
@@ -1768,9 +1769,9 @@ export interface SessionVisibilityResultDto {
   state: 'pending' | 'applied'
 }
 
-// Set a session's visibility (PUT /sessions/:id/visibility). Gated server-side:
-// org owners or the identity-matched session owner (`canChangeVisibility` in the
-// detail DTO); invisible sessions 404 — never 403 (no existence oracle).
+// Set a session's visibility (PUT /sessions/:id/visibility). Gated server-side to
+// the identity-matched session owner only (`canChangeVisibility` in the detail
+// DTO); invisible sessions 404 — never 403 (no existence oracle).
 export async function putSessionVisibility(
   sessionId: string,
   visibility: SessionVisibility
