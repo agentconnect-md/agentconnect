@@ -41,6 +41,7 @@ import {
 } from '@/lib/api'
 import { REPO_ACCESS_BADGE } from '@/components/console/WorkspaceCard'
 import AddAgentRepoModal from './AddAgentRepoModal'
+import { useTelegramPrivacyAutoRefresh } from './telegram-privacy-auto-refresh'
 import {
   GH_DEFAULT_FAMILIES,
   GH_DEFAULT_TRIGGER_MODE,
@@ -192,8 +193,17 @@ const GUIDE: Record<
 }
 
 type TelegramCheckState = 'idle' | 'checking' | TelegramBotCheckDto['status']
+const TELEGRAM_CHECK_DEBOUNCE_MS = 350
 
-function TelegramPrivacyStatus({ status, onRetry }: { status: TelegramCheckState; onRetry: () => void }) {
+function TelegramPrivacyStatus({
+  status,
+  refreshing,
+  onRetry
+}: {
+  status: TelegramCheckState
+  refreshing: boolean
+  onRetry: () => void
+}) {
   if (status === 'idle') return null
   const checking = status === 'checking'
   const ready = status === 'ready'
@@ -203,7 +213,7 @@ function TelegramPrivacyStatus({ status, onRetry }: { status: TelegramCheckState
       : status === 'ready'
         ? 'Privacy Mode is off. This bot can receive ordinary group messages.'
         : status === 'privacy_enabled'
-          ? 'Privacy Mode is still on. In @BotFather, send /setprivacy, select this bot and choose Disable.'
+          ? 'Privacy Mode is still on. Disable it in @BotFather. Checking automatically.'
           : status === 'invalid'
             ? 'Telegram rejected this token. Copy it again from @BotFather.'
             : 'AgentConnect could not reach Telegram. Try the check again.'
@@ -211,6 +221,7 @@ function TelegramPrivacyStatus({ status, onRetry }: { status: TelegramCheckState
 
   return (
     <div
+      aria-live="polite"
       className={`mt-2 flex items-start gap-2 rounded-md border px-[10px] py-2 font-sans text-[11.5px] font-normal leading-[1.5] ${
         ready
           ? 'border-(--status-online) bg-(--status-online-soft) text-(--text-secondary)'
@@ -229,11 +240,12 @@ function TelegramPrivacyStatus({ status, onRetry }: { status: TelegramCheckState
       {retryable && (
         <button
           type="button"
-          className="inline-flex flex-none cursor-pointer items-center gap-[5px] border-0 bg-transparent p-0 font-sans text-[11.5px] font-semibold leading-[1.5] text-(--text-secondary) hover:text-(--text-primary)"
+          disabled={refreshing}
+          className="inline-flex flex-none cursor-pointer items-center gap-[5px] border-0 bg-transparent p-0 font-sans text-[11.5px] font-semibold leading-[1.5] text-(--text-secondary) hover:text-(--text-primary) disabled:cursor-wait"
           onClick={onRetry}
         >
-          <Icon name="refresh-cw" size={12} />
-          Check again
+          <Icon name="refresh-cw" size={12} className={refreshing ? 'animate-spin' : ''} />
+          {refreshing ? 'Checking…' : status === 'privacy_enabled' ? 'Check now' : 'Try again'}
         </button>
       )}
     </div>
@@ -988,11 +1000,12 @@ export default function AddIntegrationModal({
   const [appName, setAppName] = useState(agent.name)
   const [botToken, setBotToken] = useState('')
   const [appToken, setAppToken] = useState('')
-  const [telegramCheckResult, setTelegramCheckResult] = useState<{
+  const [telegramCheckScope] = useState(() => crypto.randomUUID())
+  const telegramCheckSequence = useRef(0)
+  const [telegramCheckRequest, setTelegramCheckRequest] = useState<{
     token: string
-    status: TelegramCheckState
-  }>({ token: '', status: 'idle' })
-  const [telegramCheckRevision, setTelegramCheckRevision] = useState(0)
+    sequence: number
+  } | null>(null)
   // Lark/Feishu gateway: new installs default to international Lark.
   const [feishuRegion, setFeishuRegion] = useState<'feishu' | 'lark'>('lark')
   const [feishuVerificationToken, setFeishuVerificationToken] = useState('')
@@ -1314,34 +1327,41 @@ export default function AddIntegrationModal({
   const botOk = slackBotOk
   const appOk = slackAppOk
   const telegramOk = /^\d+:[A-Za-z0-9_-]{20,}$/.test(tokenTrim)
-  const telegramCheck: TelegramCheckState =
-    mode === 'create' && platform === 'telegram' && telegramOk
-      ? telegramCheckResult.token === tokenTrim
-        ? telegramCheckResult.status
-        : 'checking'
-      : 'idle'
+  const telegramCheckEnabled = mode === 'create' && platform === 'telegram' && telegramOk
   useEffect(() => {
-    if (mode !== 'create' || platform !== 'telegram' || !telegramOk) return
-    if (MOCK_MODE) {
-      setTelegramCheckResult({ token: tokenTrim, status: 'ready' })
+    if (!telegramCheckEnabled || MOCK_MODE) {
+      setTelegramCheckRequest(null)
       return
     }
-    let alive = true
-    setTelegramCheckResult({ token: tokenTrim, status: 'checking' })
     const timer = window.setTimeout(() => {
-      void checkTelegramBot(tokenTrim)
-        .then((result) => {
-          if (alive) setTelegramCheckResult({ token: tokenTrim, status: result.status })
-        })
-        .catch(() => {
-          if (alive) setTelegramCheckResult({ token: tokenTrim, status: 'unreachable' })
-        })
-    }, 350)
-    return () => {
-      alive = false
-      window.clearTimeout(timer)
-    }
-  }, [mode, platform, telegramCheckRevision, telegramOk, tokenTrim])
+      telegramCheckSequence.current += 1
+      setTelegramCheckRequest({ token: tokenTrim, sequence: telegramCheckSequence.current })
+    }, TELEGRAM_CHECK_DEBOUNCE_MS)
+    return () => window.clearTimeout(timer)
+  }, [telegramCheckEnabled, tokenTrim])
+  const telegramCheckKey =
+    telegramCheckEnabled && !MOCK_MODE && telegramCheckRequest?.token === tokenTrim
+      ? ['telegram-bot-check', agent.id, telegramCheckScope, telegramCheckRequest.sequence]
+      : null
+  const {
+    data: telegramCheckData,
+    error: telegramCheckError,
+    isValidating: telegramCheckRefreshing,
+    mutate: refreshTelegramCheck
+  } = useSWR<TelegramBotCheckDto>(telegramCheckKey, () => checkTelegramBot(telegramCheckRequest!.token), {
+    revalidateOnFocus: false,
+    shouldRetryOnError: false
+  })
+  const telegramCheck: TelegramCheckState = !telegramCheckEnabled
+    ? 'idle'
+    : MOCK_MODE
+      ? 'ready'
+      : telegramCheckRequest?.token !== tokenTrim
+        ? 'checking'
+        : telegramCheckError
+          ? 'unreachable'
+          : (telegramCheckData?.status ?? 'checking')
+  useTelegramPrivacyAutoRefresh(telegramCheck === 'privacy_enabled', refreshTelegramCheck)
   const discordOk = tokenTrim.length >= 24
   // The application (client) id is base64-encoded in the bot token's first segment, so
   // once a token is pasted we can offer a ready-made "Add to Discord" invite link with
@@ -3387,10 +3407,8 @@ export default function AddIntegrationModal({
                 {platform === 'telegram' && (
                   <TelegramPrivacyStatus
                     status={telegramCheck}
-                    onRetry={() => {
-                      setTelegramCheckResult({ token: tokenTrim, status: 'checking' })
-                      setTelegramCheckRevision((revision) => revision + 1)
-                    }}
+                    refreshing={telegramCheck !== 'checking' && telegramCheckRefreshing}
+                    onRetry={() => void refreshTelegramCheck().catch(() => undefined)}
                   />
                 )}
                 {/* Discord: the invite is the fiddly part (right scopes + permissions), so once
