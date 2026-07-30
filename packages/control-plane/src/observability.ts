@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { FastifyOtelInstrumentation } from '@fastify/otel'
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http'
-import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici'
+import { UndiciInstrumentation, type UndiciRequest } from '@opentelemetry/instrumentation-undici'
 import { resourceFromAttributes } from '@opentelemetry/resources'
 import { NodeSDK } from '@opentelemetry/sdk-node'
 import {
@@ -19,6 +19,18 @@ export interface OpenTelemetryHandle {
 const noopTelemetry: OpenTelemetryHandle = {
   enabled: false,
   shutdown: async () => {}
+}
+
+/** Telegram puts BotFather tokens in Bot API URL paths. Drop those requests
+ * before Undici instrumentation creates a span so neither url.full nor
+ * url.path can export the credential. */
+export function shouldIgnoreUndiciRequest(request: Pick<UndiciRequest, 'origin' | 'path'>): boolean {
+  try {
+    const url = new URL(request.path, request.origin)
+    return url.protocol === 'https:' && url.hostname === 'api.telegram.org' && url.pathname.startsWith('/bot')
+  } catch {
+    return false
+  }
 }
 
 const fastifyInstrumentation = new FastifyOtelInstrumentation({
@@ -44,7 +56,11 @@ export function startControlPlaneOpenTelemetry(env: NodeJS.ProcessEnv = process.
     }),
     serviceName: env.OTEL_SERVICE_NAME || 'agentconnect-control-plane',
     logRecordProcessors: [],
-    instrumentations: [new HttpInstrumentation(), new UndiciInstrumentation(), fastifyInstrumentation]
+    instrumentations: [
+      new HttpInstrumentation(),
+      new UndiciInstrumentation({ ignoreRequestHook: shouldIgnoreUndiciRequest }),
+      fastifyInstrumentation
+    ]
   })
 
   try {
