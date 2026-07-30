@@ -1196,6 +1196,7 @@ export function buildContainer(
       visibilityPush.stop()
       await Promise.allSettled([
         ...relayRegistrationTasks,
+        visibilityPush.settle(),
         ...(installationDoorbell ? [installationDoorbell.settle()] : [])
       ])
       await prisma.$disconnect()

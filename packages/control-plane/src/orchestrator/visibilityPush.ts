@@ -56,13 +56,25 @@ function toPush(s: SessionMetaRecord): SessionVisibilityPush {
 export class SessionVisibilityPushService {
   /** daemonId → pending resume of a replay that stalled (see `scheduleRetry`). */
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>()
+  /** Resumed replays already running — awaited by `settle()` so shutdown cannot
+   *  disconnect the database underneath one that has already fired. */
+  private readonly inFlight = new Set<Promise<void>>()
+  private stopped = false
 
   constructor(private readonly deps: VisibilityPushDeps) {}
 
-  /** Drop pending resumes (process shutdown / test teardown). */
+  /** Stop scheduling and drop pending resumes (shutdown / test teardown). A run
+   *  already in progress observes the flag at its next page boundary. */
   stop(): void {
+    this.stopped = true
     for (const timer of this.retries.values()) clearTimeout(timer)
     this.retries.clear()
+  }
+
+  /** Wait for any already-fired resume to finish — the shutdown counterpart to
+   *  `stop()`, so Prisma is not disconnected mid-query. */
+  async settle(): Promise<void> {
+    await Promise.allSettled([...this.inFlight])
   }
 
   /**
@@ -112,18 +124,33 @@ export class SessionVisibilityPushService {
    */
   async replayTo(daemonId: DaemonId): Promise<void> {
     this.cancelRetry(daemonId)
-    if (!this.supports(daemonId)) return
-    // Page until nothing is left unacknowledged. Ordering alone is not enough:
-    // with more unacked rows than one page holds, a single pass would ack the
-    // first page and leave the rest carrying a stale gate until some LATER
-    // register — which, for a daemon that stays connected, may never come.
-    //
-    // The loop is bounded by PROGRESS, not by a round count: each page acks its
-    // entries, so the unacknowledged set strictly shrinks and the loop ends. A
-    // fixed cap would instead walk away from gates we KNOW are stale, which is
-    // the privacy gap this replay exists to close.
+    if (this.stopped || !this.supports(daemonId)) return
+    try {
+      await this.replayPages(daemonId)
+    } catch (err) {
+      // A repo read can reject outside `sendSnapshotChunk`'s catch. Abandoning
+      // here would strand exactly the gates we know are stale, so treat it like
+      // any other non-convergence: resume shortly.
+      this.deps.log?.warn({ daemonId, err: (err as Error).message }, 'session visibility replay failed')
+      this.scheduleRetry(daemonId, 'failed')
+    }
+  }
+
+  /**
+   * Page until nothing is left unacknowledged. Ordering alone is not enough:
+   * with more unacked rows than one page holds, a single pass would ack the
+   * first page and leave the rest carrying a stale gate until some LATER
+   * register — which, for a daemon that stays connected, may never come.
+   *
+   * Bounded by PROGRESS, not by a round count: each page acks its entries, so
+   * the unacknowledged set strictly shrinks and the loop ends. A fixed cap would
+   * instead walk away from gates we KNOW are stale, which is the privacy gap
+   * this replay exists to close.
+   */
+  private async replayPages(daemonId: DaemonId): Promise<void> {
     let previousUnacked = Number.POSITIVE_INFINITY
     for (;;) {
+      if (this.stopped) return // shutdown: the next process converges on register
       const page = await this.deps.repos.session.visibilitySnapshotForDaemon(daemonId, SNAPSHOT_CHUNK)
       if (page.length === 0) return
       if (!(await this.sendSnapshotChunk(daemonId, page))) return // offline / rejected: next register retries
@@ -140,17 +167,25 @@ export class SessionVisibilityPushService {
     }
   }
 
-  /** Resume a stalled replay later. One outstanding timer per daemon; unref'd so
-   *  it never holds the process open, and cancelled by the next `replayTo`. */
-  private scheduleRetry(daemonId: DaemonId, unacked: number): void {
+  /** Resume a stalled or failed replay later. One outstanding timer per daemon;
+   *  unref'd so it never holds the process open, cancelled by the next
+   *  `replayTo`, and never armed once `stop()` has run. The resumed run is
+   *  tracked so `settle()` can await it during shutdown. */
+  private scheduleRetry(daemonId: DaemonId, unacked: number | 'failed'): void {
+    if (this.stopped) return
     this.deps.log?.warn(
       { daemonId, unacked, retryMs: REPLAY_RETRY_MS },
-      'session visibility replay not converging — resuming shortly'
+      'session visibility replay incomplete — resuming shortly'
     )
     if (this.retries.has(daemonId)) return
     const timer = setTimeout(() => {
       this.retries.delete(daemonId)
-      void this.replayTo(daemonId)
+      // `replayTo` handles its own failures, but keep the promise observed and
+      // tracked: an unhandled rejection here would be invisible, and shutdown
+      // must be able to wait for a run that has already fired.
+      const run = this.replayTo(daemonId).catch(() => {})
+      this.inFlight.add(run)
+      void run.finally(() => this.inFlight.delete(run))
     }, REPLAY_RETRY_MS)
     timer.unref?.()
     this.retries.set(daemonId, timer)

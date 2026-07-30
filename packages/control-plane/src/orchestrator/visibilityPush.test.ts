@@ -216,6 +216,75 @@ describe('replayTo — register-time convergence', () => {
     }
   })
 
+  it('resumes after a repo failure instead of abandoning the stale tail', async () => {
+    vi.useFakeTimers()
+    try {
+      const warn = vi.fn()
+      // A repo read rejects OUTSIDE sendSnapshotChunk's catch. Left unhandled it
+      // would both surface as an unhandled rejection and strand the gates we
+      // already know are stale.
+      const visibilitySnapshotForDaemon = vi.fn().mockRejectedValueOnce(new Error('db down')).mockResolvedValue(page(2))
+      const sessionVisibilitySnapshot = vi.fn(async () => ({ ok: true }))
+      const push = new SessionVisibilityPushService({
+        repos: {
+          session: {
+            recordVisibilityAck: vi.fn(async () => {}),
+            visibilitySnapshotForDaemon,
+            countUnackedVisibility: vi.fn(async () => 0),
+            get: vi.fn(async () => null)
+          } as never,
+          agent: { get: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+        },
+        control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot } as never,
+        connReg: connReg(),
+        log: { warn }
+      })
+
+      await expect(push.replayTo(DAEMON as never)).resolves.toBeUndefined()
+      expect(sessionVisibilitySnapshot).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(30_000)
+      await push.settle()
+      expect(sessionVisibilitySnapshot).toHaveBeenCalledTimes(1) // the tail went out
+      push.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops scheduling once shut down, and settles a resume that already fired', async () => {
+    vi.useFakeTimers()
+    try {
+      const visibilitySnapshotForDaemon = vi.fn(async () => page(500))
+      const push = new SessionVisibilityPushService({
+        repos: {
+          session: {
+            recordVisibilityAck: vi.fn(async () => {}),
+            visibilitySnapshotForDaemon,
+            countUnackedVisibility: vi.fn(async () => 5_000),
+            get: vi.fn(async () => null)
+          } as never,
+          agent: { get: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+        },
+        control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot: vi.fn(async () => ({ ok: true })) } as never,
+        connReg: connReg(),
+        log: { warn: vi.fn() }
+      })
+
+      await push.replayTo(DAEMON as never) // stalls, arms a resume
+      push.stop()
+      const callsAtShutdown = visibilitySnapshotForDaemon.mock.calls.length
+      await vi.advanceTimersByTimeAsync(60_000)
+      await push.settle()
+      // Nothing re-armed and nothing touched the database after shutdown.
+      expect(visibilitySnapshotForDaemon.mock.calls.length).toBe(callsAtShutdown)
+      await expect(push.replayTo(DAEMON as never)).resolves.toBeUndefined()
+      expect(visibilitySnapshotForDaemon.mock.calls.length).toBe(callsAtShutdown)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('sends nothing to a daemon that does not advertise the feature', async () => {
     const d = deps({ snapshotPages: [page(3)], connReg: connReg({ feature: false }) as never })
     await d.push.replayTo(DAEMON as never)
