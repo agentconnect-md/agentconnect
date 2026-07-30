@@ -462,6 +462,8 @@ export class SessionMcpBroker {
       const bindings = [...this.cells.values()]
       for (const binding of bindings) this.detachBinding(binding)
       await Promise.all(bindings.map((binding) => this.destroyBinding(binding)))
+      this.history.clear()
+      this.seenCellIds.clear()
     })
   }
 

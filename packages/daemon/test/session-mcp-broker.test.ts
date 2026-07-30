@@ -1287,9 +1287,12 @@ describe('SessionMcpBroker forwarding', () => {
     )
     await h.broker.stop()
     expect(h.broker.getCellMount(OTHER_CELL_ID)).toBeNull()
-    expect(h.broker.capacityStats()).toEqual({
-      conversationFences: { count: 1, cap: MAX_CONVERSATION_FENCES, exhausted: false },
-      seenCellIds: { count: 2, cap: MAX_SEEN_CELL_IDS, exhausted: false }
+    expect(h.broker.debugStats()).toEqual({
+      activeCells: 0,
+      historyEntries: 0,
+      seenCellIds: 0,
+      connections: 0,
+      stopped: true
     })
     await expect(
       h.broker.registerCell(
@@ -1300,6 +1303,9 @@ describe('SessionMcpBroker forwarding', () => {
         })
       )
     ).rejects.toThrow(/broker is stopped/i)
+
+    const replacement = await harness()
+    await expect(replacement.broker.registerCell(binding())).resolves.not.toBeNull()
   })
 })
 
