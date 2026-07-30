@@ -66,6 +66,7 @@ import type { SlackBotVerifier, SlackAppTokenVerifier } from './slack-identity.j
 import type { SlackPlatformAppConfig } from '../config/slack-platform.js'
 import type { SlackConfigApi } from './slack-config-api.js'
 import type { TelegramBotNameResolver } from './telegram-identity.js'
+import type { TelegramBotIconSyncer } from './telegram-bot-profile.js'
 import type { DiscordBotVerifier } from './discord-identity.js'
 import type { DiscordBotIconSyncer } from './discord-bot-profile.js'
 import type { FeishuBotVerifier } from './feishu-identity.js'
@@ -257,6 +258,9 @@ export interface HttpDeps {
   /** Derives a Telegram integration's name from `getMe` when the install omits one.
    *  Optional/injectable so tests stay offline (absent ⇒ route falls back to the agent name). */
   resolveTelegramBotName?: TelegramBotNameResolver
+  /** Applies a newly registered Telegram bot's Agent icon to its profile.
+   *  Cosmetic and best-effort: install survives a sync failure. */
+  syncTelegramBotIcon?: TelegramBotIconSyncer
   /** Validates a pasted Discord bot token against `GET /users/@me` (and derives the bot
    *  name from it when the install omits one). Optional/injectable so tests stay offline
    *  (absent ⇒ no validation, route falls back to the agent name). */

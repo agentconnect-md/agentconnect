@@ -1,28 +1,14 @@
-import type { AgentRecord } from '../persistence/ports.js'
-import { renderAgentIconPng } from '../agents/agent-icon-render.js'
-import { agentIconKey, type IconStore } from '../icons/icon-store.js'
+import type { IconStore } from '../icons/icon-store.js'
+import { loadBotProfileIcon, type BotProfileIconAgent } from './bot-profile-icon.js'
 
 const DISCORD_API = 'https://discord.com/api/v10'
 const DISCORD_TIMEOUT_MS = 5000
-const STORED_ICON_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
-type DiscordIconAgent = Pick<AgentRecord, 'id' | 'icon' | 'runtime'>
+export type DiscordBotIconSyncer = (botToken: string, agent: BotProfileIconAgent) => Promise<void>
 
-export type DiscordBotIconSyncer = (botToken: string, agent: DiscordIconAgent) => Promise<void>
-
-async function iconData(agent: DiscordIconAgent, iconStore?: IconStore): Promise<string> {
-  if (agent.icon?.kind === 'image') {
-    if (!iconStore) throw new Error('uploaded agent icon store is unavailable')
-    const stored = await iconStore.get(agentIconKey(agent.id))
-    if (!stored) throw new Error('uploaded agent icon is missing')
-    if (!STORED_ICON_TYPES.has(stored.contentType)) {
-      throw new Error(`uploaded agent icon has unsupported content type ${stored.contentType}`)
-    }
-    return `data:${stored.contentType};base64,${Buffer.from(stored.bytes).toString('base64')}`
-  }
-
-  const png = await renderAgentIconPng(agent.icon, agent.runtime)
-  return `data:image/png;base64,${png.toString('base64')}`
+async function iconData(agent: BotProfileIconAgent, iconStore?: IconStore): Promise<string> {
+  const icon = await loadBotProfileIcon(agent, iconStore)
+  return `data:${icon.contentType};base64,${Buffer.from(icon.bytes).toString('base64')}`
 }
 
 async function patchIcon(botToken: string, path: string, field: 'avatar' | 'icon', data: string): Promise<void> {

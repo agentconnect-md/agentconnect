@@ -141,6 +141,7 @@ import { McpRateLimiter } from './http/mcp/rate-limit.js'
 import { pingDb } from './persistence/prisma.js'
 import { verifySlackBot, verifySlackAppToken } from './http/slack-identity.js'
 import { resolveTelegramBotName } from './http/telegram-identity.js'
+import { createTelegramBotIconSyncer } from './http/telegram-bot-profile.js'
 import { verifyDiscordBot } from './http/discord-identity.js'
 import { createDiscordBotIconSyncer } from './http/discord-bot-profile.js'
 import { verifyFeishuBot } from './http/feishu-identity.js'
@@ -678,6 +679,7 @@ export function buildContainer(
     verifySlackAppToken,
     slackConfigApi,
     resolveTelegramBotName,
+    syncTelegramBotIcon: createTelegramBotIconSyncer(iconStore),
     verifyDiscordBot,
     syncDiscordBotIcon: createDiscordBotIconSyncer(iconStore),
     verifyFeishuBot,

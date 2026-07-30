@@ -179,6 +179,11 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST telegram registers a bot + secret with a NULL appToken, pushes a telegram-shaped upsert', async () => {
     const agentId = await placedAgent()
     const { app, spy } = withSpy()
+    let iconSync: { botToken: string; agentId: string } | undefined
+    app.deps.syncTelegramBotIcon = async (botToken, agent) => {
+      iconSync = { botToken, agentId: agent.id }
+      throw new Error('fixture rate limit')
+    }
 
     const res = await app.app.inject({
       method: 'POST',
@@ -203,6 +208,9 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       platform: 'telegram',
       telegram: { botToken: '123456:AAE-xyz' }
     })
+    // Cosmetic profile updates are attempted after the durable install, but a
+    // Telegram failure never rolls back or blocks the functional integration.
+    expect(iconSync).toEqual({ botToken: '123456:AAE-xyz', agentId })
   })
 
   it('POST discord registers a bot + secret with a NULL appToken, decodes the app id, pushes a discord-shaped upsert', async () => {
