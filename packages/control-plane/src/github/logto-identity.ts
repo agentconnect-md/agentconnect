@@ -171,12 +171,19 @@ export class LogtoIdentityService {
     return pending
   }
 
-  /** Resolve a statically supported provider target and build its link URL. */
-  async createSocialAuthorization(
-    target: string,
-    redirectUri: string,
-    state: string
-  ): Promise<{ connectorId: string; redirectTo: string }> {
+  /**
+   * The tenant's Social connector id for a provider target.
+   *
+   * Resolution only — building the authorization URI is deliberately NOT done
+   * here. Logto's `POST /api/connectors/:id/authorization-uri` runs the
+   * connector with no session context (it passes `notImplemented` as the
+   * session store), so any connector whose `getAuthorizationUri` persists state
+   * — Slack stores `redirectUri` there, and Apple / standard OIDC / OAuth 2.0
+   * do the same — fails inside Logto with a 500. The browser drives the
+   * authorization through the Account API instead, where the verification
+   * record carries that session; it only needs this id to start.
+   */
+  async socialConnectorIdFor(target: string): Promise<string> {
     const connectorsRes = await this.request(`/api/connectors?target=${encodeURIComponent(target)}`)
     if (!connectorsRes.ok) throw await this.responseError('logto social connector lookup', connectorsRes)
     const connectors: unknown = await connectorsRes.json()
@@ -190,27 +197,7 @@ export class LogtoIdentityService {
     const connectorId =
       connector && typeof (connector as { id?: unknown }).id === 'string' ? (connector as { id: string }).id : undefined
     if (!connectorId) throw new LogtoApiError('social connector not found', 404, false)
-
-    const res = await this.request(`/api/connectors/${encodeURIComponent(connectorId)}/authorization-uri`, {
-      method: 'POST',
-      body: JSON.stringify({ redirectUri, state })
-    })
-    if (!res.ok) throw await this.responseError('logto social authorization', res)
-    const body = (await res.json()) as { redirectTo?: unknown }
-    if (typeof body.redirectTo !== 'string' || body.redirectTo.length === 0) {
-      throw new LogtoApiError('logto social authorization response missing redirectTo', 502, false)
-    }
-    return { connectorId, redirectTo: body.redirectTo }
-  }
-
-  /** Link the provider identity proved by `connectorData` to this Logto user. */
-  async linkSocialIdentity(sub: string, connectorId: string, connectorData: Record<string, string>): Promise<void> {
-    const res = await this.request(`/api/users/${encodeURIComponent(sub)}/identities`, {
-      method: 'POST',
-      body: JSON.stringify({ connectorId, connectorData })
-    })
-    if (!res.ok) throw await this.responseError('logto social identity link', res)
-    this.invalidate(sub)
+    return connectorId
   }
 
   /** Remove one provider identity from this Logto user. */

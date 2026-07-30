@@ -6,13 +6,9 @@ import { installZod } from '../plugins/zod.js'
 import { meSocialIdentityRoutes } from './me-social-identities.js'
 
 describe('my social identities routes', () => {
-  it('uses the OIDC subject and server-owned callback for link and unlink', async () => {
+  it('resolves a connector id and unlinks under the OIDC subject', async () => {
     const identity = {
-      createSocialAuthorization: vi.fn(async () => ({
-        connectorId: 'google-connector',
-        redirectTo: 'https://accounts.example.test/authorize'
-      })),
-      linkSocialIdentity: vi.fn(async () => undefined),
+      socialConnectorIdFor: vi.fn(async () => 'google-connector'),
       unlinkSocialIdentity: vi.fn(async () => undefined)
     }
     const deps = {
@@ -27,37 +23,19 @@ describe('my social identities routes', () => {
     await app.register(meSocialIdentityRoutes(deps))
 
     try {
-      const state = 's'.repeat(64)
-      const authorization = await app.inject({
-        method: 'POST',
-        url: '/me/social-identities/authorization-uri',
-        payload: { target: 'google', state }
-      })
-      expect(authorization.statusCode).toBe(200)
-      expect(authorization.json()).toEqual({
-        authorizationUri: 'https://accounts.example.test/authorize',
-        connectorId: 'google-connector'
-      })
-      expect(identity.createSocialAuthorization).toHaveBeenCalledWith(
-        'google',
-        'https://app.example.test/auth/social/callback',
-        state
-      )
+      const connector = await app.inject({ method: 'GET', url: '/me/social-identities/connectors/google' })
+      expect(connector.statusCode).toBe(200)
+      expect(connector.json()).toEqual({ connectorId: 'google-connector' })
+      expect(identity.socialConnectorIdFor).toHaveBeenCalledWith('google')
 
-      const linked = await app.inject({
+      // Linking is not a CP operation any more: the browser drives it against
+      // the Account API, which is the only side with a connector session.
+      const removedLinkRoute = await app.inject({
         method: 'POST',
         url: '/me/social-identities',
-        payload: {
-          connectorId: 'google-connector',
-          connectorData: { code: 'provider-code', state, redirectUri: 'https://attacker.example.test/callback' }
-        }
+        payload: { connectorId: 'google-connector', connectorData: { code: 'c' } }
       })
-      expect(linked.statusCode).toBe(200)
-      expect(identity.linkSocialIdentity).toHaveBeenCalledWith('logto-user', 'google-connector', {
-        code: 'provider-code',
-        state,
-        redirectUri: 'https://app.example.test/auth/social/callback'
-      })
+      expect(removedLinkRoute.statusCode).toBe(404)
 
       const unlinked = await app.inject({ method: 'DELETE', url: '/me/social-identities/google' })
       expect(unlinked.statusCode).toBe(204)
@@ -79,26 +57,26 @@ describe('my social identities routes', () => {
 
   it('accepts slack as a linkable target, matching the console provider list', async () => {
     // The console offers Slack; a server-side allowlist that omitted it would
-    // turn that Connect button into a 400.
-    const identity = {
-      createSocialAuthorization: vi.fn(async () => ({
-        connectorId: 'slack-connector',
-        redirectTo: 'https://slack.example.test/authorize'
-      }))
-    }
+    // turn that Link button into a 400.
+    const identity = { socialConnectorIdFor: vi.fn(async () => 'slack-connector') }
     const app = await slackApp({ logtoIdentity: identity } as unknown as HttpDeps)
     try {
-      const res = await app.inject({
-        method: 'POST',
-        url: '/me/social-identities/authorization-uri',
-        payload: { target: 'slack', state: 's'.repeat(64) }
-      })
+      const res = await app.inject({ method: 'GET', url: '/me/social-identities/connectors/slack' })
       expect(res.statusCode).toBe(200)
-      expect(identity.createSocialAuthorization).toHaveBeenCalledWith(
-        'slack',
-        'https://app.example.test/auth/social/callback',
-        's'.repeat(64)
-      )
+      expect(res.json()).toEqual({ connectorId: 'slack-connector' })
+      expect(identity.socialConnectorIdFor).toHaveBeenCalledWith('slack')
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('rejects a target the console does not offer', async () => {
+    const identity = { socialConnectorIdFor: vi.fn(async () => 'nope') }
+    const app = await slackApp({ logtoIdentity: identity } as unknown as HttpDeps)
+    try {
+      const res = await app.inject({ method: 'GET', url: '/me/social-identities/connectors/facebook' })
+      expect(res.statusCode).toBe(400)
+      expect(identity.socialConnectorIdFor).not.toHaveBeenCalled()
     } finally {
       await app.close()
     }

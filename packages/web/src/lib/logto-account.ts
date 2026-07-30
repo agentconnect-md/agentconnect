@@ -18,6 +18,12 @@ export interface SocialIdentityDetails {
 export interface SocialLinkFlow {
   state: string
   connectorId: string
+  /** The Account API verification this flow is completing. The provider's
+   *  response is only meaningful against the record that started it. */
+  verificationRecordId: string
+  /** Echoed back on verify: Logto exchanges the code against the SAME URI it
+   *  authorized with, and the connectors that keep it in session need it too. */
+  redirectUri: string
   providerName: string
   returnTo: string
   createdAt: number
@@ -102,6 +108,46 @@ export async function fetchAccountProfile(): Promise<LogtoAccountProfile> {
   return { identities }
 }
 
+/**
+ * Start a social link against Logto's Account API, with the user's OWN token.
+ *
+ * This runs in the browser on purpose. The equivalent Management API endpoint
+ * gives the connector no session, so every connector that persists state while
+ * building its authorization URI (Slack keeps `redirectUri` there) fails
+ * upstream with a 500. The Account API's verification record carries that
+ * session, so the same connectors work here.
+ */
+export async function createSocialVerification(
+  connectorId: string,
+  redirectUri: string,
+  state: string
+): Promise<{ verificationRecordId: string; authorizationUri: string }> {
+  return accountRequest('/api/verifications/social', {
+    method: 'POST',
+    body: JSON.stringify({ connectorId, redirectUri, state })
+  })
+}
+
+/** Exchange the provider's response for a verified identity, still unlinked. */
+export async function verifySocialVerification(
+  verificationRecordId: string,
+  connectorData: Record<string, string>
+): Promise<string> {
+  const result = await accountRequest<{ verificationRecordId: string }>('/api/verifications/social/verify', {
+    method: 'POST',
+    body: JSON.stringify({ connectorData, verificationRecordId })
+  })
+  return result.verificationRecordId
+}
+
+/** Attach the verified identity to this account. */
+export async function saveSocialIdentity(verificationRecordId: string): Promise<void> {
+  await accountRequest('/api/my-account/identities', {
+    method: 'POST',
+    body: JSON.stringify({ newIdentifierVerificationRecordId: verificationRecordId })
+  })
+}
+
 export function socialIdentityDetails(identity: SocialIdentity): SocialIdentityDetails {
   const details = identity.details
   const name = stringValue(details.name, details.displayName, details.login, details.username)
@@ -139,6 +185,8 @@ export function takeSocialLinkFlow(): SocialLinkFlow | undefined {
     if (
       typeof flow.state !== 'string' ||
       typeof flow.connectorId !== 'string' ||
+      typeof flow.verificationRecordId !== 'string' ||
+      typeof flow.redirectUri !== 'string' ||
       typeof flow.providerName !== 'string' ||
       typeof flow.returnTo !== 'string' ||
       !flow.returnTo.startsWith('/') ||

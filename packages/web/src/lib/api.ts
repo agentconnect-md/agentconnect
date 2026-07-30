@@ -2861,18 +2861,13 @@ export async function deleteMyProfilePicture(): Promise<MeDto> {
 }
 
 // ── my social sign-in methods ────────────────────────────────────────────────
-// The CP uses the verified OIDC subject plus its server-side Logto Management
-// credential. The browser sees only the provider authorization URL and callback
-// data; it never receives that M2M credential.
-export function createMySocialIdentityAuthorization(
-  target: SocialLoginTarget,
-  state: string
-): Promise<{ authorizationUri: string; connectorId: string }> {
-  return apiPost('/me/social-identities/authorization-uri', { target, state })
-}
-
-export async function linkMySocialIdentity(connectorId: string, connectorData: Record<string, string>): Promise<void> {
-  await apiPost('/me/social-identities', { connectorId, connectorData })
+// The tenant's connector id for a provider target. Only the CP can resolve this
+// (it holds the Logto Management credential, which never reaches the browser);
+// the authorization itself is then driven browser-side against the Account API,
+// because the Management API gives the connector no session — see
+// lib/logto-account.ts#createSocialVerification.
+export function resolveMySocialConnectorId(target: SocialLoginTarget): Promise<{ connectorId: string }> {
+  return apiGet(`/me/social-identities/connectors/${encodeURIComponent(target)}`)
 }
 
 export async function unlinkMySocialIdentity(target: string): Promise<void> {

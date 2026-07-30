@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/api', () => ({
-  createMySocialIdentityAuthorization: vi.fn(),
+  resolveMySocialConnectorId: vi.fn(),
   unlinkMySocialIdentity: vi.fn(),
   // The card reads the Slack workspace through this. An explicit mock factory
   // must export every name the module under test imports, or the import itself

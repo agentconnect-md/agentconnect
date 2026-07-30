@@ -125,7 +125,7 @@ describe('LogtoIdentityService', () => {
     await expect(svc.githubLoginFor('s')).rejects.toMatchObject({ retryable: true })
   })
 
-  it('builds a provider authorization URI, then links and unlinks through the same M2M token', async () => {
+  it('resolves a connector id and unlinks through the same M2M token', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = []
     const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
       if (url.endsWith('/oidc/token')) {
@@ -135,9 +135,6 @@ describe('LogtoIdentityService', () => {
       if (url.endsWith('/api/connectors?target=google')) {
         return Response.json([{ id: 'google connector', target: 'google', type: 'Social' }])
       }
-      if (url.endsWith('/authorization-uri')) {
-        return Response.json({ redirectTo: 'https://accounts.example.test/authorize' })
-      }
       if (url.endsWith('/api/users/logto%20user') && !init?.method) {
         return Response.json({ identities: { google: {}, github: {} } })
       }
@@ -146,33 +143,29 @@ describe('LogtoIdentityService', () => {
     }
     const svc = new LogtoIdentityService(MGMT, new FakeClock(0), MUTATIONS, fetchImpl)
 
-    await expect(
-      svc.createSocialAuthorization('google', 'https://app.example.test/auth/social/callback', 'state')
-    ).resolves.toEqual({
-      connectorId: 'google connector',
-      redirectTo: 'https://accounts.example.test/authorize'
-    })
-    await svc.linkSocialIdentity('logto user', 'google connector', { code: 'provider-code', state: 'state' })
+    await expect(svc.socialConnectorIdFor('google')).resolves.toBe('google connector')
     await svc.unlinkSocialIdentity('logto user', 'google')
 
+    // Notably absent: /authorization-uri and POST …/identities. Both run the
+    // connector without a session, so linking is the browser's job now.
     expect(requests.map(({ url, init }) => [url, init?.method])).toEqual([
       ['https://t.logto.app/api/connectors?target=google', undefined],
-      ['https://t.logto.app/api/connectors/google%20connector/authorization-uri', 'POST'],
-      ['https://t.logto.app/api/users/logto%20user/identities', 'POST'],
       ['https://t.logto.app/api/users/logto%20user', undefined],
       ['https://t.logto.app/api/users/logto%20user/identities/google', 'DELETE']
     ])
-    expect(JSON.parse(String(requests[1]?.init?.body))).toEqual({
-      redirectUri: 'https://app.example.test/auth/social/callback',
-      state: 'state'
-    })
-    expect(JSON.parse(String(requests[2]?.init?.body))).toEqual({
-      connectorId: 'google connector',
-      connectorData: { code: 'provider-code', state: 'state' }
-    })
     expect(requests.every(({ init }) => new Headers(init?.headers).get('authorization') === 'Bearer mgmt-token')).toBe(
       true
     )
+  })
+
+  it('rejects a target with no Social connector in the tenant', async () => {
+    const fetchImpl = async (url: string): Promise<Response> =>
+      url.endsWith('/oidc/token')
+        ? Response.json({ access_token: 'mgmt-token', expires_in: 3600 })
+        : Response.json(url.includes('target=slack') ? [] : [{ id: 'x', target: 'google', type: 'Social' }])
+    const svc = new LogtoIdentityService(MGMT, new FakeClock(0), MUTATIONS, fetchImpl)
+
+    await expect(svc.socialConnectorIdFor('slack')).rejects.toMatchObject({ status: 404 })
   })
 
   it('refuses to unlink the last social sign-in method', async () => {

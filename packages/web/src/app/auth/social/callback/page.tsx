@@ -3,8 +3,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui'
 import { Spinner } from '@/components/marks'
-import { linkMySocialIdentity } from '@/lib/api'
-import { accountErrorMessage, takeSocialLinkFlow, writeAccountNotice } from '@/lib/logto-account'
+import {
+  accountErrorMessage,
+  saveSocialIdentity,
+  takeSocialLinkFlow,
+  verifySocialVerification,
+  writeAccountNotice
+} from '@/lib/logto-account'
 
 export default function SocialAccountCallback() {
   const started = useRef(false)
@@ -37,8 +42,11 @@ export default function SocialAccountCallback() {
       return
     }
 
-    const connectorData = Object.fromEntries(params.entries())
-    linkMySocialIdentity(flow.connectorId, connectorData)
+    // Logto exchanges the provider code against the exact URI it authorized
+    // with, so echo it back alongside the provider's own response params.
+    const connectorData = { ...Object.fromEntries(params.entries()), redirectUri: flow.redirectUri }
+    verifySocialVerification(flow.verificationRecordId, connectorData)
+      .then(saveSocialIdentity)
       .then(() => {
         writeAccountNotice({
           kind: 'success',
