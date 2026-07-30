@@ -113,10 +113,6 @@ export class PgOrgRepo implements OrgRepo {
     return org?.slug ?? null
   }
 
-  async countOwners(orgId: string): Promise<number> {
-    return this.db.membership.count({ where: { orgId, role: 'owner' } })
-  }
-
   async delete(orgId: string): ReturnType<OrgRepo['delete']> {
     // R2a HookRun/projection rows intentionally have no owner FK so ordinary
     // HookDef/Agent deletion can finish GitHub cleanup. Organization deletion

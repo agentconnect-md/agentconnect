@@ -6,9 +6,8 @@
 > Resource and session decisions converge through
 > [`authorization-policy.md`](authorization-policy.md). Resource ownership is
 > independent from immutable creation attribution; normal member removal
-> transfers all five visibility carriers atomically. Concurrent last-owner
-> mutation remains tracked in
-> [#271](https://github.com/agentconnect-md/agentconnect/issues/271).
+> transfers all five visibility carriers atomically, and competing last-owner
+> demotions/removals serialize on the organization row.
 > Section 14 (platform conversation gating) is a **proposed** addendum, not yet
 > implemented.
 >
@@ -457,15 +456,19 @@ CronDef, McpProvider, and SkillSource, the transaction:
 3. leaves `createdByUserId` unchanged;
 4. deletes the membership last.
 
-The transaction first locks both the departing membership and the transfer
-recipient `FOR UPDATE`, in stable user-ID order, and verifies that the recipient
-is still a distinct organization owner. Every ownership-bearing resource create
-and dedicated sharing write uses the matching persistence seam: in the same
-transaction as the resource mutation it first protects the parent organization
-`FOR KEY SHARE`, then locks the current actor, initial owner, and requested share
-targets `FOR SHARE`, rechecks membership, and intersects `sharedWith` again. The
-parent-first order remains compatible with organization deletion; the
-shared/exclusive membership lock pair establishes a commit order:
+Owner demotion, removal, and invited-identity role merge first lock the
+organization `FOR NO KEY UPDATE`. That lock serializes owner transitions and
+conflicts with organization deletion, while remaining compatible with the
+parent `FOR KEY SHARE` held by ordinary resource writes. Removal then rechecks
+the acting owner, chooses the transfer recipient from an authoritative
+membership snapshot, and locks the departing and recipient rows inside the same
+transaction. Every ownership-bearing resource create and dedicated sharing
+write uses the matching persistence seam: in the same transaction as the
+resource mutation it first protects the parent organization `FOR KEY SHARE`,
+then locks the current actor, initial owner, and requested share targets `FOR
+SHARE`, rechecks membership, and intersects `sharedWith` again. The parent-first
+order remains compatible with organization deletion; the shared/exclusive
+membership lock pair establishes a commit order:
 
 - if the resource write commits first, removal waits and then transfers or
   prunes that row;
@@ -496,9 +499,12 @@ The HTTP `resolveShareSet` call remains useful early normalization, but it is
 not the correctness boundary because membership can change before the resource
 write commits.
 
-The existing guard continues to reject removal of the final organization
-owner. Serializing competing last-owner removals and demotions remains a
-separate part of [#271](https://github.com/agentconnect-md/agentconnect/issues/271).
+The last-owner check runs under the same organization transition lock and
+rejects before either a demotion or membership deletion commits. No
+post-transaction compensation is used.
+
+This workflow covers managed membership removal only. Direct deletion of an
+`app_user` row is unsupported and does not run ownership transfer.
 
 ## 9. Data-plane isolation: visibility never enters the daemon wire
 
