@@ -5,6 +5,8 @@ import {
 } from '@agentconnect.md/protocol'
 import type { Attachment } from '../messages/normalized.js'
 
+export { attachmentMention } from '@agentconnect.md/message'
+
 /** Capability + byte-fetch surface the block builder needs (satisfied by the
  *  AcpHost + the owning SlackConnection at dispatch time). */
 export interface AttachmentDeps {
@@ -95,11 +97,4 @@ export function transcriptImageAttachments(attachments: Attachment[] | undefined
       return parsed.success ? [parsed.data] : []
     })
     .slice(0, 1)
-}
-
-/** One-line human summary of attachments for transcript prompt replay. */
-export function attachmentMention(attachments: Attachment[] | undefined): string {
-  if (!attachments?.length) return ''
-  const list = attachments.map((a) => `${a.name} (${a.mimeType})`).join(', ')
-  return `[attached: ${list}]`
 }

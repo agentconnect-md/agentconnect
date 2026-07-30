@@ -14,6 +14,24 @@ export const PlatformAttachmentSchema = z.object({
 })
 export type PlatformAttachment = z.infer<typeof PlatformAttachmentSchema>
 
+type AttachmentSummary = Pick<PlatformAttachment, 'name' | 'mimeType'>
+
+/** One-line human summary used when a platform reply quotes attached media. */
+export function attachmentMention(attachments: readonly AttachmentSummary[] | undefined): string {
+  if (!attachments?.length) return ''
+  const list = attachments.map((attachment) => `${attachment.name} (${attachment.mimeType})`).join(', ')
+  return `[attached: ${list}]`
+}
+
+export const QuotedMessageSchema = z.object({
+  messageId: z.string().optional(),
+  sender: z.string().optional(),
+  text: z.string(),
+  selection: z.boolean().optional(),
+  excerpt: z.boolean().optional()
+})
+export type QuotedMessage = z.infer<typeof QuotedMessageSchema>
+
 /**
  * The transport-neutral platform message produced by pure normalizers.
  *
@@ -39,10 +57,18 @@ export const NormalizedPlatformMessageSchema = z.object({
   isDm: z.boolean(),
   /** Slack `mpim`: classification only; a group DM remains mention-gated. */
   isGroupDm: z.boolean().optional(),
+  /** Provider id of the message this one replies to. */
   replyTo: z.string().optional(),
+  /** Provider-supplied quoted reply content, already bounded and humanized. */
+  quoted: QuotedMessageSchema.optional(),
+  /** Telegram forum topic id, which may be used as `message_thread_id` on send. */
   telegramTopicId: z.string().optional(),
+  /** Telegram non-forum reply-thread root, continued with reply parameters. */
   telegramThreadRoot: z.string().optional(),
+  /** Discord top-level guild message that the daemon should move into a thread. */
   discordTopLevel: z.boolean().optional(),
+  /** Enclosing Discord channel when `channel` is itself a thread channel. */
+  parentChannel: z.string().optional(),
   trigger: z.enum(['mention', 'dm', 'keyword', 'auto', 'cron']).optional(),
   headless: z.boolean().optional()
 })

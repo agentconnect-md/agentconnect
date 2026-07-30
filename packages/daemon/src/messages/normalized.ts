@@ -26,7 +26,6 @@ export interface NormalizedMessage extends Omit<
   NormalizedPlatformMessage,
   'source' | 'platform' | 'attachments' | 'trigger'
 > {
-  msgId: string
   /**
    * A displayable, ordering-safe transcript timestamp when `msgId` itself is not
    * time-based (hook deliveries use `<hookId>:<deliveryKey>`). A suffix after
@@ -34,11 +33,8 @@ export interface NormalizedMessage extends Omit<
    * only the timestamp before the separator.
    */
   transcriptTs?: string
-  traceId: string
   source: 'user' | 'cron' | 'agent' | 'hook'
   platform: 'slack' | 'telegram' | 'webchat' | 'discord' | 'feishu' | 'hook'
-  channel: string
-  thread?: string
   /**
    * Opaque identity of the physical platform bot/connection that received this
    * message. Platform channel ids are only unique within one bot installation
@@ -47,107 +43,13 @@ export interface NormalizedMessage extends Omit<
    * It is internal metadata: user-facing channel/thread coordinates stay unchanged.
    */
   transportScope?: string
-  sender: {
-    id: string
-    isBot: boolean
-    /** Slack app id (`A…`) for app-authored messages, when Slack supplies it.
-     *  Used only to suppress messages from AgentConnect-managed agent apps; it is
-     *  never an authorization claim. */
-    appId?: string
-  }
-  text: string
   /** Ingress-derived title applied only when this message creates a logical
    *  session. A later runtime title remains authoritative and replaces it. */
   initialSessionTitle?: string
-  mentionedBots: string[]
   attachments?: Attachment[]
-  isDm: boolean
-  /**
-   * A multi-person direct conversation (Slack `mpim`) — several humans and the bot in a
-   * room with no channel identity. Deliberately NOT `isDm`: a one-to-one DM is addressed
-   * to the agent by construction, whereas a group DM is a conversation between people
-   * that the agent happens to sit in, so it stays mention-gated like a channel. The flag
-   * exists so the console can label the conversation row for what it is.
-   */
-  isGroupDm?: boolean
-  /**
-   * Platform id of the message this one replies to, when the platform models replies
-   * (Telegram `reply_to_message.message_id`). The daemon stitches a reply back to its
-   * session with it (reply-based Telegram threading); absent when not a reply.
-   */
-  replyTo?: string
-  /**
-   * The CONTENT of the message this one replies to, when the platform ships it inline
-   * (Telegram sends the whole `reply_to_message`, plus a narrower `quote` — which may be
-   * either sender-chosen or server-generated, see `selection`). Deliberately separate from
-   * `replyTo`: that id only stitches the reply into a session, whereas this is what the reply
-   * is ABOUT. Without it, an @mention that quotes a message the daemon never recorded —
-   * someone else's message, or one from before this thread had a session — reaches the agent
-   * as the mention text alone.
-   *
-   * Prompt assembly delivers this whenever it is present, and suppresses it only when the same
-   * prompt already replays the identical body; it does NOT try to establish what the runtime
-   * saw on earlier turns, because nothing the daemon records implies that (see
-   * SessionManager.quotedSourceBlock for why each candidate proxy fails).
-   */
-  quoted?: {
-    /** Platform id of the quoted message — the same value as `replyTo` on Telegram.
-     *  Absent when the platform doesn't identify the quoted source, which leaves the quote
-     *  unmatchable against the prompt and therefore always delivered. */
-    messageId?: string
-    /** Display label for the quoted author (`@username` when known, else the platform id). */
-    sender?: string
-    /** The quoted text — already bounded, with any attachment mention folded in. */
-    text: string
-    /**
-     * True only when the replying user explicitly CHOSE this passage (Telegram `quote` with
-     * `is_manual`). The choice is itself the message — it says which part of the source the
-     * reply is about — so it is delivered even against an identical replayed body, where a
-     * "what about this?" would otherwise be ambiguous. Never set for a quote the server
-     * generated on its own: claiming otherwise would put an intent the user never expressed
-     * in front of the model.
-     */
-    selection?: boolean
-    /** True when `text` is only part of the quoted message — a chosen passage, a server-clipped
-     *  excerpt, or truncated by the ingress cap. Drives the block's label, and marks the quote
-     *  as not comparable to a full transcript row. */
-    excerpt?: boolean
-  }
-  /**
-   * Telegram forum-topic id (`message_thread_id` with `is_topic_message`) — a native,
-   * stable thread. The daemon uses it both as the session-thread key and as the
-   * `message_thread_id` to post back into that topic. Absent outside a forum topic.
-   */
-  telegramTopicId?: string
-  /**
-   * Telegram reply-thread root (`message_thread_id` in a NON-forum supergroup, where
-   * Telegram auto-threads replies to the root message id). A stable session key, but —
-   * unlike a forum topic — it must NOT be sent as `message_thread_id` when posting
-   * (Telegram rejects it outside forums); replies are continued with `reply_parameters`.
-   */
-  telegramThreadRoot?: string
-  /**
-   * Discord only: this message arrived in a top-level guild text channel (not a DM,
-   * not already inside a thread). The daemon opens a thread off it and re-keys the
-   * turn into that thread channel, so the reply + chrome live in a thread instead of
-   * flooding the channel (Slack-parity). Absent for DMs and in-thread messages.
-   */
-  discordTopLevel?: boolean
-  /**
-   * The enclosing CHANNEL when `channel` is itself a thread conversation (Discord: a
-   * session keys on the thread's own channel id). Channel-scoped routing rules and
-   * conversation gating match it as well as `channel`, so a trigger set on "#general"
-   * governs the threads the bot opens under it — and channel discovery reports the
-   * enclosing channel rather than one row per thread. Absent outside a thread.
-   */
-  parentChannel?: string
   /** Trusted activation cause when known. In particular, `mention` means the router
    *  matched a raw platform token against this integration's own bound bot identity. */
   trigger?: 'mention' | 'dm' | 'keyword' | 'auto' | 'cron' | 'hook'
-  // A cron fire with no target channel: run the agent's turn with ALL platform
-  // output suppressed (transcript/session bookkeeping only). `channel` is then a
-  // synthetic key, not a real platform channel.
-  headless?: boolean
 }
 
 /**
