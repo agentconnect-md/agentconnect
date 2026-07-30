@@ -20,6 +20,7 @@ import { AgentIconView, ModelMark, PlatformMark, LoadingState } from '@/componen
 import {
   agentLabel,
   modelLabel,
+  agentModelDisplay,
   runtimeLabel,
   effectiveAgentStatus,
   preferredModelFor,
@@ -433,8 +434,8 @@ export default function HomeView() {
                       <span className="truncate font-sans text-[11.5px] leading-normal">{s.agentName || '—'}</span>
                       {s.channel && (
                         <>
-                          <span className="imark h-[18px] w-[18px] rounded-xs">
-                            <PlatformMark platform={sessionPlatform(s)} />
+                          <span className="imark h-4 w-4 rounded-xs">
+                            <PlatformMark platform={sessionPlatform(s)} fillPct={90} />
                           </span>
                           <span className="mono truncate text-[11px]">{s.channel}</span>
                         </>
@@ -477,7 +478,12 @@ export default function HomeView() {
                         {agentLabel(a)}
                       </span>
                       <span className="mono block truncate text-[11px] text-(--text-tertiary)">
-                        {runtimeLabel(a.runtime)} · {modelLabel(a.model)}
+                        {runtimeLabel(a.runtime)} ·{' '}
+                        {agentModelDisplay(
+                          daemons.find((d) => d.daemonId === a.daemon),
+                          a.runtime,
+                          a.model
+                        )}
                       </span>
                     </span>
                     <span className="mono whitespace-nowrap text-[12px] text-(--text-secondary)">
