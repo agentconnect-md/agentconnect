@@ -457,6 +457,11 @@ scope is required for participant names instead of raw `ou_...` IDs. The user
 still reviews and confirms the app, and tenant policy may require administrator
 approval.
 
+The same creation deeplink pre-fills the bot avatar from the Agent's current
+public icon URL. Uploaded icons use their public object-store URL; glyph and
+runtime icons use the public Control Plane PNG endpoint. If neither public base
+is configured, avatar prefill is omitted and app creation continues normally.
+
 Manual setup must configure the same bot capability, long-connection event,
 scopes, and publication state. In both paths, adding the bot to a target group
 remains a user action. `FEISHU_CHECKLIST` documents those manual prerequisites

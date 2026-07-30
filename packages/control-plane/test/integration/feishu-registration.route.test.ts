@@ -89,11 +89,16 @@ describe('Feishu/Lark one-click app registration', () => {
         })
       )
     })
-    const begun = await new OfficialFeishuRegistrationProvider(fetcher).begin('AgentConnect Lark', 'lark')
+    const begun = await new OfficialFeishuRegistrationProvider(fetcher).begin(
+      'AgentConnect Lark',
+      'lark',
+      'https://cdn.example.test/agent.png'
+    )
 
     expect(new URL(String(fetcher.mock.calls[0]![0])).hostname).toBe(FEISHU_REGISTRATION_DOMAIN)
     expect(new URL(begun.authorizationUrl).hostname).toBe(LARK_LAUNCHER_DOMAIN)
     expect(new URL(begun.authorizationUrl).searchParams.get('user_code')).toBe('LARK')
+    expect(new URL(begun.authorizationUrl).searchParams.get('avatar')).toBe('https://cdn.example.test/agent.png')
     expect(begun.providerDomain).toBe(FEISHU_REGISTRATION_DOMAIN)
   })
 
@@ -123,7 +128,7 @@ describe('Feishu/Lark one-click app registration', () => {
     })
 
     // Replica A begins the flow, then disappears before the browser's first poll.
-    const first = buildHttpApp(prisma, undefined, undefined, undefined, {
+    const first = buildHttpApp(prisma, { PUBLIC_CP_URL: 'https://cp.example.test' }, undefined, undefined, {
       feishuAppRegistration: service(fetcher)
     })
     const started = await first.app.inject({
@@ -140,6 +145,10 @@ describe('Feishu/Lark one-click app registration', () => {
     const authorizationUrl = new URL(startDto.authorizationUrl)
     expect(authorizationUrl.searchParams.get('createOnly')).toBe('true')
     expect(authorizationUrl.searchParams.get('name')).toBe('AgentConnect Lark')
+    const avatarUrl = new URL(authorizationUrl.searchParams.get('avatar')!)
+    expect(avatarUrl.origin).toBe('https://cp.example.test')
+    expect(avatarUrl.pathname).toBe(`/v1/agents/${agentId}/icon`)
+    expect(avatarUrl.searchParams.has('v')).toBe(true)
     expect(decodeAddons(authorizationUrl.searchParams.get('addons')!)).toMatchObject({
       preset: true,
       scopes: { tenant: [...AGENTCONNECT_FEISHU_SCOPES] },
@@ -255,7 +264,7 @@ describe('Feishu/Lark one-click app registration', () => {
     await expect(coordinator.start({ ...common, createdByUserId: 'user-b' })).rejects.toBeInstanceOf(
       FeishuRegistrationConflictError
     )
-    expect(begin).toHaveBeenCalledWith('AgentConnect', 'lark')
+    expect(begin).toHaveBeenCalledWith('AgentConnect', 'lark', undefined)
   })
 
   it('does not expire an authorization while its claimed provider poll is completing', async () => {
