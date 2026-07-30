@@ -46,7 +46,7 @@ export default function SocialAccountCallback() {
     // with, so echo it back alongside the provider's own response params.
     const connectorData = { ...Object.fromEntries(params.entries()), redirectUri: flow.redirectUri }
     verifySocialVerification(flow.verificationRecordId, connectorData)
-      .then(saveSocialIdentity)
+      .then((verified) => saveSocialIdentity(verified, flow.currentVerificationRecordId))
       .then(() => {
         writeAccountNotice({
           kind: 'success',
