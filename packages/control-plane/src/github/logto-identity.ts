@@ -219,6 +219,16 @@ export class LogtoIdentityService {
     }
   }
 
+  /**
+   * Drop the cached user because it was changed somewhere this service cannot
+   * see. Linking runs browser→Logto — the Account API is the only side with a
+   * connector session — so the write never passes through here, and without
+   * this the positive cache would hide a just-linked identity for its full TTL.
+   */
+  forgetUser(sub: string): void {
+    this.users.delete(sub)
+  }
+
   /** The cached upstream user every display read projects from. */
   private async logtoUser(sub: string): Promise<LogtoUser | null> {
     const cached = this.users.get(sub)

@@ -140,6 +140,30 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
       message: 'social sign-in management is not configured'
     } as const
 
+    // The counterpart to linking happening in the browser: that write never
+    // passes through the CP, so the console has to say when one landed or the
+    // cached read would hide the new identity for its full TTL.
+    r.post(
+      '/me/social-identities/refresh',
+      {
+        preHandler: app.oidcAuth,
+        schema: {
+          tags: [Tag.Profile],
+          summary: 'Refresh your cached sign-in methods',
+          description:
+            'Discard the cached copy of your sign-in methods, so the next read reflects a link completed directly against the sign-in provider.',
+          operationId: 'refreshMySocialIdentities',
+          response: { 204: z.null(), 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const identity = deps.logtoIdentity
+        if (!identity) return reply.code(503).send(unavailable)
+        identity.forgetUser(req.oidcSubject!)
+        return reply.code(204).send(null)
+      }
+    )
+
     r.get(
       '/me/social-identities/connectors/:target',
       {

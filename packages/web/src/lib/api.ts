@@ -2915,6 +2915,12 @@ export async function fetchMySocialAccount(): Promise<MySocialAccountDto> {
   return apiGet<MySocialAccountDto>('/me/social-identities')
 }
 
+// Linking runs browser→provider, so the CP never sees that write and its cached
+// copy would hide the new identity. Say so once, right after a link lands.
+export async function refreshMySocialIdentities(): Promise<void> {
+  await apiPost('/me/social-identities/refresh', {})
+}
+
 async function putMyProfilePicture(blob: Blob): Promise<MeDto> {
   const path = '/me/picture'
   const res = await fetch(`${cpBase()}${path}`, {

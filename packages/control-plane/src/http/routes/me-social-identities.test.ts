@@ -70,6 +70,20 @@ describe('my social identities routes', () => {
     }
   })
 
+  it('lets the console announce a link that landed outside the CP', async () => {
+    // Linking runs browser -> provider, so this is the only signal the CP gets
+    // that its cached copy is behind.
+    const identity = { forgetUser: vi.fn() }
+    const app = await slackApp({ logtoIdentity: identity } as unknown as HttpDeps)
+    try {
+      const res = await app.inject({ method: 'POST', url: '/me/social-identities/refresh' })
+      expect(res.statusCode).toBe(204)
+      expect(identity.forgetUser).toHaveBeenCalledWith('logto-user')
+    } finally {
+      await app.close()
+    }
+  })
+
   it('rejects a target the console does not offer', async () => {
     const identity = { socialConnectorIdFor: vi.fn(async () => 'nope') }
     const app = await slackApp({ logtoIdentity: identity } as unknown as HttpDeps)

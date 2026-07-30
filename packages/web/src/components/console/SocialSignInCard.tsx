@@ -372,7 +372,6 @@ export default function SocialSignInCard({
         <div aria-busy={isValidating}>
           {SOCIAL_LOGIN_PROVIDERS.map((provider, index) => {
             const details = currentAccount ? byTarget(currentAccount, provider.target) : undefined
-            const identity = details
             const workspace = details?.workspace
             const canUnlink = linkedProviderCount > 1
             return (
@@ -388,7 +387,7 @@ export default function SocialSignInCard({
                 </div>
                 <div className="col-span-2 row-start-2 min-w-0 desktop:col-span-1 desktop:col-start-2 desktop:row-start-1">
                   {currentAccount ? (
-                    identity ? (
+                    details ? (
                       <div className="flex min-w-0 items-center gap-2.5">
                         <Avatar
                           src={details?.avatar}
@@ -419,7 +418,7 @@ export default function SocialSignInCard({
                 </div>
                 <div className="col-start-2 row-start-1 flex items-center justify-end gap-1 desktop:col-start-3">
                   {currentAccount ? (
-                    identity ? (
+                    details ? (
                       canUnlink ? (
                         <Button
                           variant="ghost"

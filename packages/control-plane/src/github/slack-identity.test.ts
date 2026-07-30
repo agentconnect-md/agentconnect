@@ -245,3 +245,24 @@ describe('LogtoIdentityService.socialAccountFor', () => {
     })
   })
 })
+
+describe('LogtoIdentityService cache freshness after an external link', () => {
+  it('serves a newly linked identity once the CP is told the link happened', async () => {
+    // Linking runs browser→Logto (the Account API is the only side with a
+    // connector session), so the CP never sees the write. Without being told,
+    // the positive whole-user cache would hide the new identity for its full TTL.
+    const users: Record<string, unknown> = { 'sub-1': { identities: { github: { userId: 'g' } } } }
+    const { fetchImpl, calls } = fakeLogto(users)
+    const svc = svcOf(fetchImpl)
+
+    expect((await svc.socialAccountFor('sub-1')).identities.map((i) => i.target)).toEqual(['github'])
+    expect(calls.user).toBe(1)
+
+    // The browser links Slack directly at the provider.
+    users['sub-1'] = { identities: { github: { userId: 'g' }, slack: slackUser(SLACK_RAW).identities.slack } }
+
+    svc.forgetUser('sub-1')
+    expect((await svc.socialAccountFor('sub-1')).identities.map((i) => i.target)).toEqual(['github', 'slack'])
+    expect(calls.user).toBe(2)
+  })
+})
